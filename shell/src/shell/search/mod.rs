@@ -6,15 +6,17 @@
 //! re-query per resource kind, so a network-backed provider gets exactly one
 //! round-trip per input. [`SearchScope::ActiveApp`] narrows the fanout to
 //! whichever provider owns the focused tab ([`SearchProvider::owns_tab`]);
-//! `Workspace` and `All` fan out to every provider.
+//! `Workspace` and `All` fan out to every provider, but `Workspace` ranks
+//! resources from the focused app ahead of equally relevant global results.
 
 pub mod action_api;
 pub mod files_index;
 pub mod providers;
 pub mod visibility;
 
+use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use automerge::{AutoCommit, ObjId};
@@ -80,6 +82,16 @@ fn lexical_strength(needle: &str, result: &SearchResult) -> f32 {
         }
     })
 }
+
+/// A deliberately small contextual preference: proximity should settle close
+/// matches, never make a weak metadata hit beat an exact visible title.
+const ACTIVE_APP_PROXIMITY_BOOST: f32 = 0.25;
+
+/// A provider-perfect application-name match represents launch intent, not a
+/// coincidental lexical occurrence. It must beat an exact filename/note with
+/// the same word, while an exact action (strength 5.0) still beats an
+/// unrelated app that merely received a weak provider score.
+const PERFECT_APPLICATION_INTENT_BOOST: f32 = 3.0;
 
 /// One well-known category a result can belong to — the domain vocabulary
 /// the chip strip and grouping use. Providers pick from it or, via
@@ -204,6 +216,8 @@ pub struct SearchResult {
     /// Optional secondary line under the title — path, preview snippet,
     /// creator handle.
     pub subtitle: Option<String>,
+    /// Optional short live status rendered by trusted shell chrome.
+    pub badge: Option<String>,
     pub score: i32,
     /// What an invocation must carry; empty for the nullary majority (see
     /// [`SearchResult::nullary`]).
@@ -320,6 +334,7 @@ impl SearchResult {
             id: id.into(),
             title: title.into(),
             subtitle,
+            badge: None,
             score,
             params: Vec::new(),
             contract: None,
@@ -351,6 +366,7 @@ impl SearchResult {
             id: id.into(),
             title: title.into(),
             subtitle,
+            badge: None,
             score,
             params: Vec::new(),
             contract: None,
@@ -369,6 +385,7 @@ impl std::fmt::Debug for SearchResult {
             .field("id", &self.id)
             .field("title", &self.title)
             .field("subtitle", &self.subtitle)
+            .field("badge", &self.badge)
             .field("score", &self.score)
             .field("params", &self.params)
             .field("contract", &self.contract)
@@ -464,6 +481,20 @@ pub trait SearchProvider {
     fn available_in_active_app_scope(&self) -> bool {
         false
     }
+
+    /// Contextual location of one result. Providers know what their opaque
+    /// ids mean; the registry does not. Workspace scope uses this only as a
+    /// bounded ranking preference, never as a visibility filter.
+    fn proximity(&self, _result: &SearchResult, _chrome: &ChromeState) -> SearchProximity {
+        SearchProximity::Global
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SearchProximity {
+    CurrentWorkspace,
+    #[default]
+    Global,
 }
 
 /// Bundle of everything a provider might need to answer a query. Passed
@@ -513,10 +544,72 @@ fn estimated_result_bytes(result: &SearchResult) -> usize {
         .saturating_add(result.params.len().saturating_mul(64))
 }
 
+/// Durable, user-owned search-source choices. Provider ids are opaque stable
+/// strings, so preferences also survive a provider being temporarily absent.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchPreferences {
+    disabled_providers: HashSet<String>,
+}
+
+pub type SearchPreferencesHandle = Rc<RefCell<SearchPreferences>>;
+pub type SearchProviderCatalogHandle = Rc<RefCell<Vec<(String, String)>>>;
+
+impl SearchPreferences {
+    const SECTION: &'static str = "search";
+    const DISABLED_KEY: &'static str = "disabled_providers";
+
+    pub fn from_values(values: &serde_json::Map<String, serde_json::Value>) -> Self {
+        let disabled_providers = values
+            .get(Self::DISABLED_KEY)
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .filter(|id| *id != "actions" && !id.is_empty() && id.chars().count() <= 256)
+            .map(str::to_string)
+            .collect();
+        Self { disabled_providers }
+    }
+
+    pub fn load() -> Self {
+        Self::from_values(&settings_store::load_section(Self::SECTION))
+    }
+
+    pub fn provider_enabled(&self, provider_id: &str) -> bool {
+        !self.disabled_providers.contains(provider_id)
+    }
+
+    pub fn set_provider_enabled(&mut self, provider_id: &str, enabled: bool) {
+        if enabled {
+            self.disabled_providers.remove(provider_id);
+        } else if provider_id != "actions"
+            && !provider_id.is_empty()
+            && provider_id.chars().count() <= 256
+        {
+            self.disabled_providers.insert(provider_id.to_string());
+        }
+    }
+
+    /// Persist atomically through the shared settings service while preserving
+    /// unrelated keys in both the search section and the rest of the document.
+    pub fn save(&self) -> std::io::Result<()> {
+        let mut ids: Vec<_> = self.disabled_providers.iter().cloned().collect();
+        ids.sort();
+        let mut values = serde_json::Map::new();
+        values.insert(
+            Self::DISABLED_KEY.into(),
+            serde_json::Value::Array(ids.into_iter().map(serde_json::Value::String).collect()),
+        );
+        settings_store::update_section(Self::SECTION, values)
+    }
+}
+
 /// Registry that fans a query out to every provider under the current
 /// scope, then merges + sorts.
 pub struct SearchRegistry {
     providers: Vec<Rc<dyn SearchProvider>>,
+    preferences: SearchPreferencesHandle,
+    provider_catalog: SearchProviderCatalogHandle,
 }
 
 impl Default for SearchRegistry {
@@ -529,13 +622,71 @@ impl SearchRegistry {
     pub fn new() -> Self {
         Self {
             providers: Vec::new(),
+            preferences: Rc::new(RefCell::new(SearchPreferences::default())),
+            provider_catalog: Rc::new(RefCell::new(Vec::new())),
         }
+    }
+
+    pub fn with_preferences(preferences: &SearchPreferences) -> Self {
+        Self::with_preferences_handle(Rc::new(RefCell::new(preferences.clone())))
+    }
+
+    pub fn with_preferences_handle(preferences: SearchPreferencesHandle) -> Self {
+        Self {
+            providers: Vec::new(),
+            preferences,
+            provider_catalog: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    pub fn preferences_handle(&self) -> SearchPreferencesHandle {
+        Rc::clone(&self.preferences)
+    }
+
+    pub fn provider_catalog_handle(&self) -> SearchProviderCatalogHandle {
+        Rc::clone(&self.provider_catalog)
+    }
+
+    /// Apply the user's provider preferences. Disabled sources are removed at
+    /// the fan-out boundary, so indexing, kind discovery, interactive search,
+    /// and agent paging all observe the same choice.
+    pub fn set_provider_enabled(&self, provider_id: &str, enabled: bool) {
+        self.preferences
+            .borrow_mut()
+            .set_provider_enabled(provider_id, enabled);
+    }
+
+    pub fn provider_enabled(&self, provider_id: &str) -> bool {
+        self.preferences.borrow().provider_enabled(provider_id)
+    }
+
+    fn enabled_providers(&self) -> impl Iterator<Item = &Rc<dyn SearchProvider>> {
+        self.providers
+            .iter()
+            .filter(|provider| self.provider_enabled(provider.id()))
     }
 
     /// Results are re-sorted by score before display, so registration
     /// order only affects which provider's ID wins the de-dup tiebreak.
     pub fn register(&mut self, provider: Rc<dyn SearchProvider>) {
-        self.providers.push(provider);
+        let provider_id = provider.id().to_string();
+        let descriptor = (provider_id.clone(), provider.name().to_string());
+        let mut catalog = self.provider_catalog.borrow_mut();
+        if let Some(existing) = catalog.iter_mut().find(|(id, _)| id == &descriptor.0) {
+            *existing = descriptor;
+        } else {
+            catalog.push(descriptor);
+        }
+        drop(catalog);
+        if let Some(existing) = self
+            .providers
+            .iter_mut()
+            .find(|existing| existing.id() == provider_id)
+        {
+            *existing = provider;
+        } else {
+            self.providers.push(provider);
+        }
     }
 
     /// Install the current owner for a stable provider id.
@@ -550,8 +701,8 @@ impl SearchRegistry {
     }
 
     /// Used by the shell's scope-narrow helper to look up which provider owns a tab.
-    pub fn providers_iter(&self) -> impl Iterator<Item = &dyn SearchProvider> {
-        self.providers.iter().map(std::convert::AsRef::as_ref)
+    pub fn providers_iter(&self) -> impl Iterator<Item = &(dyn SearchProvider + '_)> + '_ {
+        self.enabled_providers().map(|provider| provider.as_ref())
     }
 
     /// Poll/start retained index maintenance without routing a query. This is
@@ -563,7 +714,7 @@ impl SearchRegistry {
             return false;
         }
         let mut changed = false;
-        for provider in &self.providers {
+        for provider in self.enabled_providers() {
             if !scope_allows(provider.as_ref(), args.scope, args.active_provider_id) {
                 continue;
             }
@@ -609,8 +760,7 @@ impl SearchRegistry {
             return Some(SearchPage::exhausted("oversized-query", Vec::new()));
         }
         let provider = self
-            .providers
-            .iter()
+            .enabled_providers()
             .find(|provider| provider.id() == provider_id)?;
         if !scope_allows(provider.as_ref(), args.scope, args.active_provider_id) {
             return None;
@@ -683,7 +833,7 @@ impl SearchRegistry {
     /// [`ResourceKind::sort_key`] — one chip per kind in the palette.
     pub fn registered_kinds(&self) -> Vec<ResourceKind> {
         let mut out: Vec<ResourceKind> = Vec::new();
-        for provider in &self.providers {
+        for provider in self.enabled_providers() {
             for kind in provider.resource_kinds() {
                 if !out.contains(kind) {
                     out.push(kind.clone());
@@ -702,8 +852,16 @@ impl SearchRegistry {
         if !query_input_is_bounded(args.needle) {
             return "oversized-query".into();
         }
-        let mut out = String::new();
-        for provider in &self.providers {
+        // Scope, focused provider and kind filters affect routing or ranking
+        // even when no provider index changed. Include them in the refresh
+        // identity so switching a pill can never reuse stale palette rows.
+        let mut out = format!(
+            "scope:{:?}\0active:{}\0wanted:{:?}\0",
+            args.scope,
+            args.active_provider_id.unwrap_or(""),
+            args.wanted_kinds
+        );
+        for provider in self.enabled_providers() {
             if !scope_allows(provider.as_ref(), args.scope, args.active_provider_id) {
                 continue;
             }
@@ -757,7 +915,7 @@ impl SearchRegistry {
         let mut headless_pages = 0usize;
         let mut headless_results = 0usize;
         let mut headless_bytes = 0usize;
-        for provider in &self.providers {
+        for provider in self.enabled_providers() {
             if exhaustive
                 && (headless_pages >= HEADLESS_MAX_PAGES
                     || headless_results >= HEADLESS_MAX_RESULTS
@@ -841,8 +999,36 @@ impl SearchRegistry {
                     provider.id(),
                     r.score,
                 );
+                let proximity = if scope == SearchScope::Workspace {
+                    let active_app = if active_provider_id == Some(provider.id()) {
+                        ACTIVE_APP_PROXIMITY_BOOST
+                    } else {
+                        0.0
+                    };
+                    let workspace =
+                        if provider.proximity(&r, chrome) == SearchProximity::CurrentWorkspace {
+                            ACTIVE_APP_PROXIMITY_BOOST
+                        } else {
+                            0.0
+                        };
+                    active_app + workspace
+                } else {
+                    0.0
+                };
+                let normalized_score = i32_to_f32_lossy(r.score) / i32_to_f32_lossy(top);
+                let application_intent = if matches!(
+                    r.kind,
+                    ResourceKind::Application | ResourceKind::HostApplication
+                ) && r.score >= top
+                {
+                    PERFECT_APPLICATION_INTENT_BOOST
+                } else {
+                    0.0
+                };
                 let strength = lexical_strength(needle, &r)
-                    + i32_to_f32_lossy(r.score) / i32_to_f32_lossy(top);
+                    + normalized_score
+                    + application_intent
+                    + proximity;
                 let key = (r.provider_id.clone(), r.id.clone());
                 if let Some(&index) = canonical_rows.get(&key) {
                     if strength > merged[index].1 {
@@ -1209,6 +1395,106 @@ mod tests {
     }
 
     #[test]
+    fn disabling_a_provider_removes_it_from_every_search_surface() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "notes".into(),
+            kinds: vec![ResourceKind::Note],
+            results: vec![mk_result(ResourceKind::Note, "notes", "n1", "Note", 80)],
+            max_score: None,
+        }));
+        reg.set_provider_enabled("notes", false);
+
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let args = QueryArgs {
+            needle: "note",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        };
+
+        assert!(!reg.provider_enabled("notes"));
+        assert_eq!(reg.providers_iter().count(), 0);
+        assert!(reg.registered_kinds().is_empty());
+        assert!(!reg.query_revision(&args).contains("notes"));
+        assert!(reg.query(&args).is_empty());
+        assert!(
+            reg.query_provider_page("notes", &args, None, SearchBudget::PALETTE)
+                .is_none(),
+            "agent paging must honor the same preference as the palette"
+        );
+
+        reg.set_provider_enabled("notes", true);
+        assert_eq!(reg.query(&args).len(), 1);
+    }
+
+    #[test]
+    fn search_preferences_parse_deduplicate_and_ignore_malformed_ids() {
+        let mut values = serde_json::Map::new();
+        values.insert(
+            SearchPreferences::DISABLED_KEY.into(),
+            serde_json::json!(["files", "files", "actions", "", 7, "x".repeat(257)]),
+        );
+
+        let preferences = SearchPreferences::from_values(&values);
+        assert!(!preferences.provider_enabled("files"));
+        assert!(preferences.provider_enabled("notes"));
+        assert_eq!(preferences.disabled_providers.len(), 1);
+
+        let registry = SearchRegistry::with_preferences(&preferences);
+        assert!(!registry.provider_enabled("files"));
+        assert!(registry.provider_enabled("notes"));
+    }
+
+    #[test]
+    fn shared_preferences_change_a_live_registry_without_restarting() {
+        let preferences = Rc::new(RefCell::new(SearchPreferences::default()));
+        let mut registry = SearchRegistry::with_preferences_handle(Rc::clone(&preferences));
+        registry.register(Rc::new(FakeProvider {
+            id: "files".into(),
+            kinds: vec![ResourceKind::File],
+            results: Vec::new(),
+            max_score: None,
+        }));
+
+        assert_eq!(registry.providers_iter().count(), 1);
+        preferences
+            .borrow_mut()
+            .set_provider_enabled("files", false);
+        assert_eq!(registry.providers_iter().count(), 0);
+    }
+
+    #[test]
+    fn providers_attached_after_startup_join_the_customization_catalog() {
+        let mut registry = SearchRegistry::new();
+        let catalog = registry.provider_catalog_handle();
+        assert!(catalog.borrow().is_empty());
+
+        registry.register(Rc::new(FakeProvider {
+            id: "live-app-actions".into(),
+            kinds: vec![ResourceKind::Action],
+            results: Vec::new(),
+            max_score: None,
+        }));
+        assert_eq!(
+            catalog.borrow().as_slice(),
+            &[("live-app-actions".into(), "live-app-actions".into())]
+        );
+
+        registry.set_provider_enabled("live-app-actions", false);
+        assert_eq!(
+            catalog.borrow().len(),
+            1,
+            "a disabled dynamic source must remain discoverable for re-enabling"
+        );
+        assert!(registry.providers_iter().next().is_none());
+    }
+
+    #[test]
     fn exact_title_beats_a_high_scoring_metadata_match_across_providers() {
         let mut reg = SearchRegistry::new();
         let mut settings = mk_result(
@@ -1244,6 +1530,184 @@ mod tests {
         });
 
         assert_eq!(out[0].title, "Notes");
+    }
+
+    #[test]
+    fn workspace_scope_prefers_the_focused_app_but_everywhere_is_neutral() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "notes".into(),
+            kinds: vec![ResourceKind::Note],
+            results: vec![mk_result(ResourceKind::Note, "notes", "near", "Draft", 60)],
+            max_score: None,
+        }));
+        reg.register(Rc::new(FakeProvider {
+            id: "files".into(),
+            kinds: vec![ResourceKind::Note],
+            results: vec![mk_result(
+                ResourceKind::Note,
+                "files",
+                "global",
+                "Draft",
+                70,
+            )],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let query = |scope| {
+            reg.query(&QueryArgs {
+                needle: "draft",
+                scope,
+                active_provider_id: Some("notes"),
+                wanted_kinds: &[],
+                chrome: &chrome.borrow(),
+                doc: &doc,
+                doc_root: &root,
+            })
+        };
+
+        assert_eq!(query(SearchScope::Workspace)[0].id, "near");
+        assert_eq!(query(SearchScope::All)[0].id, "global");
+        assert_eq!(query(SearchScope::All).len(), 2);
+    }
+
+    #[test]
+    fn workspace_scope_uses_provider_owned_resource_location() {
+        struct LocatedProvider {
+            id: &'static str,
+            result: SearchResult,
+            proximity: SearchProximity,
+        }
+        impl SearchProvider for LocatedProvider {
+            fn id(&self) -> &str {
+                self.id
+            }
+            fn name(&self) -> &str {
+                self.id
+            }
+            fn resource_kinds(&self) -> &[ResourceKind] {
+                &[ResourceKind::Note]
+            }
+            fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
+                vec![self.result.clone()]
+            }
+            fn proximity(&self, _result: &SearchResult, _chrome: &ChromeState) -> SearchProximity {
+                self.proximity
+            }
+        }
+
+        let mut reg = SearchRegistry::new();
+        // Register global first so Everywhere's stable tie order proves the
+        // workspace flip comes from proximity, not provider order.
+        reg.register(Rc::new(LocatedProvider {
+            id: "global",
+            result: mk_result(ResourceKind::Note, "global", "far", "Draft", 60),
+            proximity: SearchProximity::Global,
+        }));
+        reg.register(Rc::new(LocatedProvider {
+            id: "local",
+            result: mk_result(ResourceKind::Note, "local", "near", "Draft", 60),
+            proximity: SearchProximity::CurrentWorkspace,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let query = |scope| {
+            reg.query(&QueryArgs {
+                needle: "draft",
+                scope,
+                active_provider_id: None,
+                wanted_kinds: &[],
+                chrome: &chrome.borrow(),
+                doc: &doc,
+                doc_root: &root,
+            })
+        };
+
+        assert_eq!(query(SearchScope::All)[0].id, "far");
+        assert_eq!(query(SearchScope::Workspace)[0].id, "near");
+    }
+
+    #[test]
+    fn query_revision_changes_with_scope_focus_and_kind_filter() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "notes".into(),
+            kinds: vec![ResourceKind::Note],
+            results: Vec::new(),
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let revision = |scope, active_provider_id, wanted_kinds: &[ResourceKind]| {
+            reg.query_revision(&QueryArgs {
+                needle: "draft",
+                scope,
+                active_provider_id,
+                wanted_kinds,
+                chrome: &chrome.borrow(),
+                doc: &doc,
+                doc_root: &root,
+            })
+        };
+
+        let workspace = revision(SearchScope::Workspace, Some("notes"), &[]);
+        assert_ne!(workspace, revision(SearchScope::All, Some("notes"), &[]));
+        assert_ne!(workspace, revision(SearchScope::Workspace, None, &[]));
+        assert_ne!(
+            workspace,
+            revision(SearchScope::Workspace, Some("notes"), &[ResourceKind::Note])
+        );
+    }
+
+    #[test]
+    fn reconnecting_provider_replaces_stale_resources_for_palette_and_agent_paging() {
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(FakeProvider {
+            id: "mail".into(),
+            kinds: vec![ResourceKind::Record],
+            results: vec![mk_result(
+                ResourceKind::Record,
+                "mail",
+                "old",
+                "Disconnected mailbox",
+                10,
+            )],
+            max_score: None,
+        }));
+        registry.register(Rc::new(FakeProvider {
+            id: "mail".into(),
+            kinds: vec![ResourceKind::Record],
+            results: vec![mk_result(
+                ResourceKind::Record,
+                "mail",
+                "fresh",
+                "Reconnected mailbox",
+                20,
+            )],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let args = QueryArgs {
+            needle: "mailbox",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        };
+
+        assert_eq!(registry.providers_iter().count(), 1);
+        let rows = registry.query(&args);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "fresh");
+        let page = registry
+            .query_provider_page("mail", &args, None, SearchBudget::PALETTE)
+            .expect("replacement provider page");
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(page.results[0].id, "fresh");
     }
 
     #[test]
