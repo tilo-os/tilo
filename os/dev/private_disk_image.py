@@ -102,6 +102,11 @@ class PrivateDiskImage:
         self.validate()
         self._keep = True
 
+    def fileno(self):
+        """Borrow the validated held descriptor; caller must not close it."""
+        self.validate()
+        return self._fd
+
     def file_identity(self):
         """Return identity from the held descriptor after pathname validation."""
         self.validate()
