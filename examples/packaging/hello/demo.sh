@@ -19,7 +19,7 @@
 
 set -euo pipefail
 
-INTEG=$(cd "$(dirname "$0")/.." && pwd)
+INTEG=$(cd "$(dirname "$0")/../../.." && pwd)
 DEMO=${DEMO:-/tmp/tilo-hello-demo}
 export XDG_DATA_HOME=${XDG_DATA_HOME:-/tmp/tilo-install-demo-data}
 
