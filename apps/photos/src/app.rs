@@ -32,13 +32,15 @@ use taffy::prelude::*;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+use vello::peniko::{Blob, Color, ImageAlphaType, ImageData, ImageFormat};
 
 use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Politeness, Role};
 use ui::icons::{Icon, draw_icon};
 use ui::presence::PresenceCtx;
+use ui::surface;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::tokens::Spacing;
 use ui::widget::{Button, EmptyState, ImageViewer, TextInput, Widget};
 use winit::keyboard::{Key, NamedKey};
 
@@ -50,25 +52,51 @@ use crate::strings::tr;
 /// Toolbar height, and the status bar's. Both are chrome around the canvas,
 /// which takes everything left over.
 const BAR_H: f32 = 48.0;
-const PAD: f32 = 12.0;
+const PAD: f32 = Spacing::BASE.s3;
 
-/// The photo-details sheet, authored at 1×: title 16 px down, subtitle at 48,
-/// fields from 90 on a 60 px pitch (label, 38 px input), a 44 px footer whose
-/// buttons end 20 px above the edge — 408 px in all. The spacing that used to
-/// be `literal × text scale` still scales; the line boxes are now measured,
-/// so a wrapped 200% subtitle pushes the fields down instead of under
-/// "Folder", and the field list scrolls beneath the pinned footer when the
-/// viewport caps the sheet (the footer used to paint over "Captured").
-const SHEET_INSET: f64 = 16.0;
-const SHEET_TOP_PAD: f64 = 16.0;
-const SHEET_TITLE_GAP: f64 = 9.5;
-const SHEET_SUBTITLE_GAP: f64 = 27.0;
-const SHEET_LABEL_GAP: f64 = 2.0;
+/// A `Spacing::BASE` step as the `f64` this painter's geometry uses.
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: `f64::from` is not const; f32 -> f64 is exact"
+)]
+const fn step(px: f32) -> f64 {
+    px as f64
+}
+
+/// The photo-details sheet on one rhythm (HIG §7b): `s4` sheet padding,
+/// title ↔ subtitle `s2` (related rows), subtitle ↔ first field `s6` (the
+/// next group), label ↔ its input `s1`, field ↔ field `s2`, body ↔ footer
+/// `s2`. The line boxes are measured, so a wrapped 200% subtitle pushes the
+/// fields down instead of under "Folder", and the field list scrolls beneath
+/// the pinned footer when the viewport caps the sheet.
+const SHEET_INSET: f64 = step(Spacing::BASE.s4);
+const SHEET_TOP_PAD: f64 = step(Spacing::BASE.s4);
+const SHEET_TITLE_GAP: f64 = step(Spacing::BASE.s2);
+const SHEET_SUBTITLE_GAP: f64 = step(Spacing::BASE.s6);
+const SHEET_LABEL_GAP: f64 = step(Spacing::BASE.s1);
 const SHEET_INPUT_H: f64 = 38.0;
-const SHEET_FIELD_GAP: f64 = 5.0;
-const SHEET_CONTENT_PAD_BOTTOM: f64 = 11.0;
-const SHEET_BODY_FOOTER_GAP: f64 = 8.0;
+const SHEET_FIELD_GAP: f64 = step(Spacing::BASE.s2);
+const SHEET_CONTENT_PAD_BOTTOM: f64 = step(Spacing::BASE.s3);
+const SHEET_BODY_FOOTER_GAP: f64 = step(Spacing::BASE.s2);
 const SHEET_FOOTER_H: f64 = 64.0;
+/// Library shelf rhythm: chips beside each other are siblings (`s2` on the
+/// dense shelf), the album chip row keeps `s3` above the filter chips, the
+/// filter row keeps `s2` above the grid, and the phone's album actions keep
+/// `s2` below the filters and above the grid.
+const LIB_CHIP_GAP: f64 = step(Spacing::BASE.s2);
+const LIB_ROW_GAP: f64 = step(Spacing::BASE.s3);
+const LIB_ROW_GAP_TIGHT: f64 = step(Spacing::BASE.s2);
+
+/// The rest face of a neutral control that sits on `ground`: one control
+/// hairline (`HAIRLINE_ALPHA`) composited over that ground, so the face is a
+/// measured lift off whatever it is painted on — on a `raised` card footer or
+/// sheet, where `Colors::lift(1.0)` would resolve to the ground itself and
+/// the face would vanish into it. Its edge then derives from this face via
+/// [`surface::card`].
+fn control_face(ground: Color) -> Color {
+    let wash = ui::tokens::colors::Colors::hairline_on(ground, ui::chrome::HAIRLINE_ALPHA);
+    ui::tokens::colors::over(ground, wash, wash.components[3])
+}
 const SHEET_BUTTON_H: f64 = 44.0;
 const SHEET_TITLE: &str = "Photo details";
 const SHEET_SUBTITLE: &str = "Shared labels only — no automatic people identification";
@@ -2777,7 +2805,11 @@ impl PhotosApp {
         // overlap their independent destructive controls.
         let large_text = theme.text_scale > 1.25;
         let columns = library_column_count(bounds.width(), large_text, self.metadata_editor);
-        let gap = if columns <= 2 { 8.0 } else { 12.0 };
+        let gap = if columns <= 2 {
+            LIB_ROW_GAP_TIGHT
+        } else {
+            LIB_ROW_GAP
+        };
         let card_w =
             ((bounds.width() - f64::from(PAD * 2.0) - gap * columns.saturating_sub(1) as f64)
                 / columns as f64)
@@ -2785,8 +2817,10 @@ impl PhotosApp {
         let album_h = if self.library_albums.is_empty() || large_text {
             0.0
         } else {
-            38.0
+            26.0 + LIB_ROW_GAP
         };
+        let card_radius = f64::from(theme.tokens.radii.md);
+        let chip_radius = f64::from(theme.tokens.radii.sm);
         let heading_y = bounds.y0 + f64::from(PAD);
         text_renderer.draw_text_weighted(
             scene,
@@ -2838,35 +2872,34 @@ impl PhotosApp {
                 }
                 let chip = Rect::new(x, y, x + width, y + 26.0);
                 let selected = album_id == self.active_album;
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    if selected {
-                        theme.tokens.colors.neutral[3]
-                    } else {
-                        theme.tokens.colors.surfaces.raised
-                    },
-                    None,
-                    &chip,
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.border_standard,
-                    None,
-                    &Rect::new(chip.x0, chip.y1 - 1.0, chip.x1, chip.y1),
-                );
+                // A quiet chip is a small card: raised fill plus derived edge;
+                // the album in force carries the accent (HIG §9.4/§9.5 "Chip
+                // quiet: selected accent, no edge") with ink chosen against it.
+                let ink = if selected {
+                    let fill = theme.tokens.colors.accent[6];
+                    surface::pill(scene, transform, chip, fill, None, Some(chip_radius));
+                    theme.on_surface(fill).ink
+                } else {
+                    surface::card(
+                        scene,
+                        transform,
+                        chip,
+                        chip_radius,
+                        theme.tokens.colors.surfaces.raised,
+                    );
+                    theme.text_primary
+                };
                 text_renderer.draw_text_weighted(
                     scene,
                     &label,
                     12.0,
-                    theme.text_primary,
+                    ink,
                     transform * Affine::translate((chip.x0 + 8.0, chip.y0 + 6.0)),
                     Some((width - 16.0) as f32),
                     TextWeight::Regular,
                 );
                 self.album_cards.push((album_id, chip));
-                x += width + 8.0;
+                x += width + LIB_CHIP_GAP;
             }
         }
         // Metadata filters are deliberately in the shelf rather than hidden
@@ -2937,24 +2970,26 @@ impl PhotosApp {
             let selected = folder.as_ref() == self.active_folder.as_ref()
                 && person.as_ref() == self.active_person.as_ref()
                 && self.active_album.is_none();
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if selected {
-                    theme.tokens.colors.accent[6]
-                } else {
-                    theme.tokens.colors.surfaces.raised
-                },
-                None,
-                &chip,
-            );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.border_standard,
-                None,
-                &Rect::new(chip.x0, chip.y1 - 1.0, chip.x1, chip.y1),
-            );
+            if selected {
+                // Accent means live (HIG §9.4): the filter in force carries
+                // the accent fill and needs no edge against it.
+                surface::pill(
+                    scene,
+                    transform,
+                    chip,
+                    theme.tokens.colors.accent[6],
+                    None,
+                    Some(chip_radius),
+                );
+            } else {
+                surface::card(
+                    scene,
+                    transform,
+                    chip,
+                    chip_radius,
+                    theme.tokens.colors.surfaces.raised,
+                );
+            }
             text_renderer.draw_text_weighted(
                 scene,
                 &label,
@@ -2969,19 +3004,20 @@ impl PhotosApp {
                 TextWeight::Medium,
             );
             self.metadata_filter_cards.push((folder, person, chip));
-            filter_x += width + 8.0;
+            filter_x += width + LIB_CHIP_GAP;
         }
         // On a phone the album-management actions sit beneath the chips, not
         // over the final row of photographs. Reserve their compact strip in
         // the grid geometry so a short library cannot make controls look
-        // attached to (or hide) an unrelated picture.
+        // attached to (or hide) an unrelated picture: the 36 px buttons plus
+        // the same `s2` the filter row keeps above the grid.
         let compact_album_actions_h =
             if bounds.width() < LIBRARY_TWO_COLUMN_MAX_W && !self.album_editor && !large_text {
-                42.0
+                36.0 + LIB_ROW_GAP_TIGHT
             } else {
                 0.0
             };
-        let filter_h = if large_text { 50.0 } else { 34.0 };
+        let filter_h = if large_text { 44.0 } else { 28.0 } + LIB_ROW_GAP_TIGHT;
         let top = heading_y + header_h + album_h + filter_h + compact_album_actions_h;
         // The worker preserves source aspect ratio. A 3:2 shelf avoids the
         // oversized letterbox trays the old 16:10 geometry produced.
@@ -3025,21 +3061,29 @@ impl PhotosApp {
             let y = top + row as f64 * (card_h + gap);
             let card = Rect::new(x, y, x + card_w, y + card_h);
             let preview = Rect::new(x, y, x + card_w, y + preview_h);
-            scene.fill(
+            // The card is one rounded surface with a derived edge; its
+            // preview tray and footer are painted inside that shape so the
+            // edge stays closed all the way round (HIG §9.5).
+            let card_fill = if card.contains(self.pointer) {
+                theme.bg_hover
+            } else {
+                theme.tokens.colors.surfaces.window_card
+            };
+            let card_shape = vello::kurbo::RoundedRect::from_rect(card, card_radius);
+            scene.fill(Fill::NonZero, transform, card_fill, None, &card_shape);
+            scene.push_layer(
                 Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
                 transform,
-                if card.contains(self.pointer) {
-                    theme.tokens.colors.neutral[3]
-                } else {
-                    theme.tokens.colors.surfaces.window_card
-                },
-                None,
-                &card,
+                &card_shape,
             );
+            // The preview tray is a step off the card fill (measured, so it
+            // registers on a white light-theme card as well as a dark one).
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.tokens.colors.neutral[2],
+                control_face(card_fill),
                 None,
                 &preview,
             );
@@ -3080,12 +3124,13 @@ impl PhotosApp {
                 None,
                 &footer,
             );
-            scene.fill(
-                Fill::NonZero,
+            scene.pop_layer();
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
                 transform,
-                theme.border_standard,
+                surface::edge_on(card_fill),
                 None,
-                &Rect::new(footer.x0, footer.y0, footer.x1, footer.y0 + 1.0),
+                &surface::edge_outline(card, card_radius),
             );
             // One description of the action row (see `card_action_controls`):
             // paint, hit-testing and the accessibility export all read it.
@@ -3140,21 +3185,19 @@ impl PhotosApp {
                     (remove, remove.contains(self.pointer)),
                     (star, star.contains(self.pointer)),
                 ] {
-                    scene.fill(
-                        Fill::NonZero,
+                    // Control faces on the card footer: a lift off the
+                    // footer with a derived edge, inset `s1` from their hit
+                    // rect (kurbo's `inset` grows for positive values).
+                    surface::card(
+                        scene,
                         transform,
+                        target.inset(-step(Spacing::BASE.s1)),
+                        chip_radius,
                         if active {
                             theme.bg_hover
                         } else {
-                            theme.tokens.colors.neutral[3]
+                            control_face(theme.tokens.colors.surfaces.raised)
                         },
-                        None,
-                        &Rect::new(
-                            target.x0 + 4.0,
-                            target.y0 + 4.0,
-                            target.x1 - 4.0,
-                            target.y1 - 4.0,
-                        ),
                     );
                 }
                 // Label and pencil centred on the control's centre line
@@ -3276,12 +3319,15 @@ impl PhotosApp {
         let album_chips_h = if self.library_albums.is_empty() {
             0.0
         } else {
-            38.0
+            26.0 + LIB_ROW_GAP
         };
+        let control_radius = f64::from(theme.tokens.radii.md);
+        let panel_radius = f64::from(theme.tokens.radii.lg);
         let panel_y = if !self.album_editor && narrow {
             // Kept in lock-step with `draw_library`'s album and metadata
-            // filter rows before the compact action reserve.
-            bounds.y0 + f64::from(PAD) + 31.0 + album_chips_h + 34.0 + 3.0
+            // filter rows: the buttons start where the filter row (chip +
+            // `s2`) ends, so the shelf keeps one rhythm.
+            bounds.y0 + f64::from(PAD) + 31.0 + album_chips_h + 28.0 + LIB_ROW_GAP_TIGHT
         } else if narrow {
             bounds.y1 - panel_h - 8.0
         } else {
@@ -3304,7 +3350,12 @@ impl PhotosApp {
         self.album_editor_rect = panel;
         if !self.album_editor {
             let new = Rect::new(panel.x0, panel.y0, panel.x0 + 110.0, panel.y0 + 36.0);
-            let edit = Rect::new(new.x1 + 8.0, panel.y0, new.x1 + 116.0, panel.y0 + 36.0);
+            let edit = Rect::new(
+                new.x1 + LIB_CHIP_GAP,
+                panel.y0,
+                new.x1 + LIB_CHIP_GAP + 108.0,
+                panel.y0 + 36.0,
+            );
             for (hit, rect, label, enabled) in [
                 (AlbumEditorHit::New, new, "New album", true),
                 (
@@ -3314,23 +3365,21 @@ impl PhotosApp {
                     self.active_album.is_some(),
                 ),
             ] {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
+                // Neutral button faces on the base canvas: raised fill with a
+                // derived edge; the disabled one is the same face under
+                // `DISABLED_ALPHA`, composited onto the canvas.
+                let base = theme.tokens.colors.surfaces.base;
+                let face = theme.tokens.colors.surfaces.raised;
+                surface::card(
+                    scene,
                     transform,
+                    rect,
+                    control_radius,
                     if enabled {
-                        theme.tokens.colors.surfaces.raised
+                        face
                     } else {
-                        theme.tokens.colors.neutral[2]
+                        ui::tokens::colors::over(base, face, ui::widget::DISABLED_ALPHA)
                     },
-                    None,
-                    &rect,
-                );
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    theme.border_standard,
-                    None,
-                    &Rect::new(rect.x0, rect.y1 - 1.0, rect.x1, rect.y1),
                 );
                 text_renderer.draw_text_weighted(
                     scene,
@@ -3351,19 +3400,13 @@ impl PhotosApp {
             }
             return;
         }
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        // The sheet is a card over the grid: raised fill, derived edge.
+        surface::card(
+            scene,
             transform,
+            panel,
+            panel_radius,
             theme.tokens.colors.surfaces.raised,
-            None,
-            &panel,
-        );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.border_standard,
-            None,
-            &Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 1.0),
         );
         text_renderer.draw_text_weighted(
             scene,
@@ -3463,12 +3506,12 @@ impl PhotosApp {
             (AlbumEditorHit::Cancel, cancel, "Cancel"),
             (AlbumEditorHit::Save, save, "Save"),
         ] {
-            scene.fill(
-                vello::peniko::Fill::NonZero,
+            surface::card(
+                scene,
                 transform,
-                theme.tokens.colors.neutral[3],
-                None,
-                &rect,
+                rect,
+                control_radius,
+                control_face(theme.tokens.colors.surfaces.raised),
             );
             text_renderer.draw_text_weighted(
                 scene,
@@ -3499,12 +3542,13 @@ impl PhotosApp {
             } else {
                 (AlbumEditorHit::Delete, "Delete")
             };
-            scene.fill(
-                vello::peniko::Fill::NonZero,
+            surface::pill(
+                scene,
                 transform,
+                delete,
                 theme.tokens.colors.semantic.danger,
                 None,
-                &delete,
+                Some(control_radius),
             );
             text_renderer.draw_text_weighted(
                 scene,
@@ -3573,19 +3617,12 @@ impl PhotosApp {
             },
         );
         self.album_editor_rect = panel;
-        scene.fill(
-            Fill::NonZero,
+        surface::card(
+            scene,
             transform,
+            panel,
+            f64::from(theme.tokens.radii.lg),
             theme.tokens.colors.surfaces.raised,
-            None,
-            &panel,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.border_standard,
-            None,
-            &Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 1.0),
         );
         text_renderer.draw_text_weighted(
             scene,
@@ -3647,16 +3684,20 @@ impl PhotosApp {
                 AlbumEditorHit::NextPage => self.can_page_library(true),
                 _ => false,
             };
-            scene.fill(
-                Fill::NonZero,
+            let ground = theme.tokens.colors.surfaces.raised;
+            let face = control_face(ground);
+            surface::card(
+                scene,
                 transform,
+                rect,
+                f64::from(theme.tokens.radii.md),
                 if enabled {
-                    theme.tokens.colors.neutral[3]
+                    face
                 } else {
-                    theme.tokens.colors.neutral[2]
+                    // The rest face under `DISABLED_ALPHA`, composited onto
+                    // the sheet so the disabled pager still reads as a face.
+                    ui::tokens::colors::over(ground, face, ui::widget::DISABLED_ALPHA)
                 },
-                None,
-                &rect,
             );
             text_renderer.draw_text_weighted(
                 scene,
@@ -3695,21 +3736,28 @@ impl PhotosApp {
             panel.x1 - 16.0,
             action_y - 10.0,
         );
-        for (hit, rect, label, color) in [
-            (
-                AlbumEditorHit::Cancel,
-                cancel,
-                "Cancel",
-                theme.tokens.colors.neutral[3],
-            ),
-            (
-                AlbumEditorHit::Save,
-                save,
-                "Save",
-                theme.tokens.colors.accent[6],
-            ),
+        for (hit, rect, label, primary) in [
+            (AlbumEditorHit::Cancel, cancel, "Cancel", false),
+            (AlbumEditorHit::Save, save, "Save", true),
         ] {
-            scene.fill(Fill::NonZero, transform, color, None, &rect);
+            if primary {
+                surface::pill(
+                    scene,
+                    transform,
+                    rect,
+                    theme.tokens.colors.accent[6],
+                    None,
+                    Some(f64::from(theme.tokens.radii.md)),
+                );
+            } else {
+                surface::card(
+                    scene,
+                    transform,
+                    rect,
+                    f64::from(theme.tokens.radii.md),
+                    control_face(theme.tokens.colors.surfaces.raised),
+                );
+            }
             text_renderer.draw_text_weighted(
                 scene,
                 label,
@@ -3858,12 +3906,14 @@ impl PhotosApp {
         self.metadata_editor_body = body;
         let origin_y = panel.y0 - self.metadata_editor_scroll;
 
+        let panel_radius = f64::from(theme.tokens.radii.lg);
+        let panel_shape = vello::kurbo::RoundedRect::from_rect(panel, panel_radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
             theme.tokens.colors.surfaces.raised,
             None,
-            &panel,
+            &panel_shape,
         );
         scene.push_layer(
             vello::peniko::Fill::NonZero,
@@ -3917,13 +3967,13 @@ impl PhotosApp {
             input.draw(scene, transform, text_renderer, theme, presence);
         }
         scene.pop_layer();
-        // Top hairline over the (possibly scrolled) content.
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        // The sheet's derived edge, over the (possibly scrolled) content.
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
             transform,
-            theme.border_standard,
+            surface::edge_on(theme.tokens.colors.surfaces.raised),
             None,
-            &Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 1.0),
+            &surface::edge_outline(panel, panel_radius),
         );
         let y = footer_top;
         let button_h = SHEET_BUTTON_H * scale;
@@ -3939,30 +3989,36 @@ impl PhotosApp {
             panel.x1 - SHEET_INSET,
             y + button_h,
         );
-        for (hit, rect, label, color) in [
-            (
-                MetadataEditorHit::Cancel,
-                cancel,
-                "Cancel",
-                theme.tokens.colors.neutral[3],
-            ),
-            (
-                MetadataEditorHit::Save,
-                save,
-                "Save",
-                theme.tokens.colors.accent[6],
-            ),
+        let control_radius = f64::from(theme.tokens.radii.md);
+        for (hit, rect, label, primary) in [
+            (MetadataEditorHit::Cancel, cancel, "Cancel", false),
+            (MetadataEditorHit::Save, save, "Save", true),
         ] {
             let focused = matches!(hit, MetadataEditorHit::Cancel)
                 && self.metadata_editor_focus == 4
                 || matches!(hit, MetadataEditorHit::Save) && self.metadata_editor_focus == 5;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                if focused { theme.bg_hover } else { color },
-                None,
-                &rect,
-            );
+            // Neutral face: lift + derived edge; primary: the accent fill,
+            // which is its own contrast step. Focus is the hover lift.
+            if focused {
+                surface::card(scene, transform, rect, control_radius, theme.bg_hover);
+            } else if primary {
+                surface::pill(
+                    scene,
+                    transform,
+                    rect,
+                    theme.tokens.colors.accent[6],
+                    None,
+                    Some(control_radius),
+                );
+            } else {
+                surface::card(
+                    scene,
+                    transform,
+                    rect,
+                    control_radius,
+                    control_face(theme.tokens.colors.surfaces.raised),
+                );
+            }
             // Label centred on its measured line (the old `14 × scale` top
             // offset only matched the line at 1×).
             let (_, label_line) = text_renderer.measure_weighted(
@@ -4572,23 +4628,36 @@ impl Widget for PhotosApp {
         // same rule above the status line, for the same reason.
         // The status line's rule is drawn only when the line has something in
         // it; an empty band would otherwise be fenced off as if it did.
-        let mut edges = vec![self.toolbar_rect.y1];
+        // Bar-role hairline under the toolbar plate (HIG §9.5); the status
+        // band's rule sits on the base canvas, so it derives from that.
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            ui::chrome::chrome_hairline(theme),
+            None,
+            &Rect::new(
+                self.rect.x0,
+                self.toolbar_rect.y1 - 1.0,
+                self.rect.x1,
+                self.toolbar_rect.y1,
+            ),
+        );
         if !self.status.is_empty() {
-            edges.push(self.status_rect.y0);
-        }
-        for edge in edges {
+            let edge = self.status_rect.y0;
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.border_standard,
+                surface::edge_on(theme.tokens.colors.surfaces.base),
                 None,
                 &Rect::new(self.rect.x0, edge - 1.0, self.rect.x1, edge),
             );
         }
 
-        // Group rules: what opens a file, what adjusts it, what exports it.
+        // Group rules: what opens a file, what adjusts it, what exports it —
+        // derived against the raised plate they sit on.
+        let group_rule = surface::edge_on(theme.tokens.colors.surfaces.raised);
         for sep in &self.separator_rects {
-            scene.fill(Fill::NonZero, transform, theme.border_standard, None, sep);
+            scene.fill(Fill::NonZero, transform, group_rule, None, sep);
         }
 
         for slot in self.toolbar_slots() {
@@ -5118,19 +5187,23 @@ impl PhotosApp {
             self.toolbar_rect.x1 - f64::from(PAD),
             self.toolbar_rect.y1 + 4.0 + row_h * entries.len() as f64,
         );
+        // A floating menu: Panel role ground + border (HIG §9.5), rows
+        // separated by inset derived rules rather than full-bleed ones.
+        let menu_radius = f64::from(theme.tokens.radii.md);
+        let ground = ui::chrome::panel_ground(theme);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.raised,
+            ground,
             None,
-            &panel,
+            &vello::kurbo::RoundedRect::from_rect(panel, menu_radius),
         );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
             transform,
-            theme.border_standard,
+            ui::chrome::panel_border(theme),
             None,
-            &Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 1.0),
+            &surface::edge_outline(panel, menu_radius),
         );
         for (index, (hit, label)) in entries.into_iter().enumerate() {
             let row = Rect::new(
@@ -5167,12 +5240,14 @@ impl PhotosApp {
                 TextWeight::Medium,
             );
             if index > 0 {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
+                surface::separator(
+                    scene,
                     transform,
-                    theme.border_standard,
-                    None,
-                    &Rect::new(row.x0, row.y0, row.x1, row.y0 + 1.0),
+                    row.x0,
+                    row.x1,
+                    row.y0 + 0.5,
+                    step(Spacing::BASE.s3),
+                    ground,
                 );
             }
             if enabled {

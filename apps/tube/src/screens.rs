@@ -17,8 +17,9 @@ use crate::model::{Category, Channel, Playlist, Route, SearchType, SkipMode, Tub
 use crate::util::{clock, human_count, human_views};
 use crate::widgets::{
     Align, ChannelAvatar, Flex, ImageBox, IntoElement, Justify, Len, PlayerHost, SharedPlayer,
-    Surface, Switch, Thumbnail, card_surface, chip_surface, dim, divider, gap, hover_fill,
-    hover_pill_surface, spring, subtle_fill, subtle_surface, text, text_c,
+    Surface, Switch, Thumbnail, card_surface, chip_surface, dim, divider, divider_on, gap,
+    hover_fill, hover_pill_surface, spring, subtle_edge, subtle_fill, subtle_surface, text,
+    text_c,
 };
 
 use crate::contrast::SelectedStyle;
@@ -174,7 +175,7 @@ fn pill(
         (
             Some(subtle_fill(theme)),
             theme.text_primary,
-            Some((1.0, theme.border_standard)),
+            Some((1.0, subtle_edge(theme))),
             hover_fill(theme),
         )
     };
@@ -209,11 +210,7 @@ fn stat_pill(theme: &Theme, label: &str, leading: Icon) -> Flex {
         .gap(sp.s2)
         .pad_xy(sp.s4, PILL_PAD_Y)
         .align(Align::Center)
-        .surface(Surface {
-            fill: Some(subtle_fill(theme)),
-            radius: f64::from(theme.tokens.radii.full),
-            border: Some((1.0, theme.border_standard)),
-        })
+        .surface(subtle_surface(theme))
         .push(icon(leading, 16.0, theme.text_primary))
         .push(text_c(label, 14.0, theme.text_primary))
 }
@@ -538,10 +535,11 @@ pub fn nav_rail(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
         .pad_xy(8.0, 14.0)
         .gap(8.0)
         .align(Align::Center)
+        // Bar-role chrome (the rail): base fill, one derived hairline.
         .surface(Surface {
             fill: Some(theme.tokens.colors.surfaces.base),
             radius: 0.0,
-            border: Some((1.0, theme.border_standard)),
+            border: Some((1.0, ui::chrome::chrome_hairline(theme))),
         })
         .push(
             Flex::col()
@@ -651,11 +649,7 @@ pub fn top_bar(
         .gap(SEARCH_FIELD_GAP)
         .pad_xy(sp.s4, 0.0)
         .align(Align::Center)
-        .surface(Surface {
-            fill: Some(subtle_fill(theme)),
-            radius: f64::from(theme.tokens.radii.full),
-            border: Some((1.0, theme.border_standard)),
-        })
+        .surface(subtle_surface(theme))
         .push(icon(Icon::Search, 18.0, theme.text_dim))
         .push(Flex::row().grow(1.0).push(search_input));
 
@@ -673,10 +667,11 @@ pub fn top_bar(
         .gap(sp.s4)
         .pad_xy(TOP_BAR_PAD_X, 0.0)
         .align(Align::Center)
+        // Bar-role chrome (the top bar): base fill, one derived hairline.
         .surface(Surface {
             fill: Some(theme.tokens.colors.surfaces.base),
             radius: 0.0,
-            border: Some((1.0, theme.border_standard)),
+            border: Some((1.0, ui::chrome::chrome_hairline(theme))),
         })
         .push(menu_button(theme, bus))
         .push_if(can_back, back_button(theme, bus))
@@ -1765,7 +1760,7 @@ fn quality_menu(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
         .surface(Surface {
             fill: Some(subtle_fill(theme)),
             radius: f64::from(theme.tokens.radii.md),
-            border: Some((1.0, theme.border_standard)),
+            border: Some((1.0, subtle_edge(theme))),
         })
         .on_click(bus, Action::SetQuality(next.to_string()))
         .accessible_name(format!(
@@ -1916,7 +1911,7 @@ fn settings_card(theme: &Theme, title: &str, rows: Vec<Flex>) -> Flex {
         .push(gap(1.0, 8.0));
     for (i, r) in rows.into_iter().enumerate() {
         if i > 0 {
-            col = col.push(divider(theme));
+            col = col.push(divider_on(theme.tokens.colors.surfaces.raised));
         }
         col = col.push(r);
     }
@@ -1941,9 +1936,18 @@ fn mode_pill(theme: &Theme, bus: &ActionBus, cat: Category, mode: SkipMode) -> F
         SkipMode::Show => (
             Some(subtle_fill(theme)),
             theme.text_primary,
-            Some((1.0, theme.border_standard)),
+            Some((1.0, subtle_edge(theme))),
         ),
-        SkipMode::Disabled => (None, theme.text_dim, Some((1.0, theme.border_standard))),
+        // An outline-only pill sits straight on the card, so its edge derives
+        // from that surface.
+        SkipMode::Disabled => (
+            None,
+            theme.text_dim,
+            Some((
+                1.0,
+                ui::surface::edge_on(theme.tokens.colors.surfaces.raised),
+            )),
+        ),
     };
     Flex::row()
         .id(&format!("mode_{}", cat.api_key()))
@@ -2204,7 +2208,7 @@ fn device_action(
                 if danger {
                     danger_color
                 } else {
-                    theme.border_standard
+                    subtle_edge(theme)
                 },
             )),
         })
@@ -2279,11 +2283,7 @@ fn device_sync_header(theme: &Theme, summary: &str, status: &str) -> Flex {
         .push(
             Flex::row()
                 .pad_xy(10.0, 6.0)
-                .surface(Surface {
-                    fill: Some(subtle_fill(theme)),
-                    radius: f64::from(theme.tokens.radii.full),
-                    border: Some((1.0, theme.border_standard)),
-                })
+                .surface(subtle_surface(theme))
                 .push(text_c(status, 12.0, theme.text_dim)),
         )
 }
@@ -2626,17 +2626,19 @@ pub fn command_palette(
         .max_w(560.0)
         .gap(10.0)
         .pad(14.0)
+        // A floating dialog: Panel role ground + border (HIG §9.5); the rule
+        // between field and list derives against that ground.
         .surface(Surface {
-            fill: Some(theme.tokens.colors.surfaces.raised),
+            fill: Some(ui::chrome::panel_ground(theme)),
             radius: f64::from(theme.tokens.radii.lg),
-            border: Some((1.0, theme.border_standard)),
+            border: Some((1.0, ui::chrome::panel_border(theme))),
         })
         // Swallow clicks on the card chrome so they don't reach the scrim and
         // close the palette. `OpenPalette` is idempotent (already open).
         .on_click(bus, Action::OpenPalette)
         .accessible_name("Action search dialog")
         .push(field)
-        .push(divider(theme))
+        .push(divider_on(ui::chrome::panel_ground(theme)))
         .push(list);
 
     // Full-bleed scrim; clicking it (outside the card) closes the palette.

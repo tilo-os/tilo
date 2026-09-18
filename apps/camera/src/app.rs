@@ -31,8 +31,10 @@ use vello::peniko::Color;
 
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use ui::presence::PresenceCtx;
+use ui::surface;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tokens::Spacing;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{Image, ImageFit, Toggle, ToggleFace, Widget};
 use winit::event::WindowEvent;
@@ -51,7 +53,23 @@ use crate::paint as p;
 /// every control floats over it at this margin — there is no navigation rail
 /// or sidebar (the OS owns window chrome). Gallery and Settings are reached
 /// from the viewfinder as a push and an overlay sheet, not as rail items.
-const EDGE: f64 = 18.0;
+/// A `Spacing::BASE` step as the `f64` this painter's geometry uses.
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: `f64::from` is not const; f32 -> f64 is exact"
+)]
+const fn step(px: f32) -> f64 {
+    px as f64
+}
+/// The over-media chrome's inset from the window edge: section padding
+/// (HIG §7b `s4`).
+const EDGE: f64 = step(Spacing::BASE.s4);
+/// Siblings beside each other (setting pills, dialog buttons): `s2` on the
+/// dense viewfinder strip, `s3` between a dialog's two actions.
+const PILL_GAP: f64 = step(Spacing::BASE.s2);
+const ACTION_GAP: f64 = step(Spacing::BASE.s3);
+/// Separators inside a grouped card are inset `s3` from both ends (HIG §9.5).
+const SEPARATOR_INSET: f64 = step(Spacing::BASE.s3);
 /// Floating over-viewfinder capsules (the top setting pills and the
 /// Photo/Video/Scan switcher) are authored at these 1× heights and grow only
 /// when the measured label line no longer fits — so 200% text is contained
@@ -63,12 +81,12 @@ const CTRL_PILL_LABEL_SIZE: f32 = 12.0;
 const CTRL_PILL_PAD_Y: f64 = 7.5;
 const MODE_SWITCHER_MIN_H: f64 = 34.0;
 const MODE_LABEL_SIZE: f32 = 13.0;
-const MODE_LABEL_PAD_Y: f64 = 8.0;
+const MODE_LABEL_PAD_Y: f64 = step(Spacing::BASE.s2);
 /// Horizontal room either side of a segment label. Segments split their
 /// capsule equally, so the widest measured label sets the capsule's floor
 /// (`segmented_min_w`); the authored 1× widths are wider than that floor and
 /// stay in charge until an accessibility text scale needs more.
-const MODE_LABEL_PAD_X: f64 = 12.0;
+const MODE_LABEL_PAD_X: f64 = step(Spacing::BASE.s3);
 /// Over-media badges (detected-code tag, gallery duration/"Unavailable" tags)
 /// keep their authored 1× heights and grow to `label line + 2 × BADGE_PAD_Y`
 /// once the measured line no longer fits.
@@ -76,7 +94,7 @@ const BADGE_PAD_Y: f64 = 3.0;
 /// The gallery card's caption strip: authored 44 px at 1×, growing to hold
 /// the measured label + timestamp block with `CAPTION_PAD_Y` above and below.
 const CAPTION_STRIP_MIN_H: f64 = 44.0;
-const CAPTION_PAD_Y: f64 = 8.0;
+const CAPTION_PAD_Y: f64 = step(Spacing::BASE.s2);
 /// The scanner's floating title card: authored 52 px at 1×; the measured
 /// title + subtitle block is centred in it and grows it when needed.
 const GLASS_HEADER_MIN_H: f64 = 52.0;
@@ -86,10 +104,10 @@ const GLASS_HEADER_LINE_GAP: f64 = 1.0;
 /// a 30 px action row 12 px above the bottom edge); each part is measured
 /// and the card grows when the stack needs more than the authored height.
 const SCAN_CARD_MIN_H: f64 = 122.0;
-const SCAN_CARD_PAD: f64 = 16.0;
-const SCAN_CARD_LINE_GAP: f64 = 4.0;
-const SCAN_CARD_SECTION_GAP: f64 = 12.0;
-const SCAN_CARD_ACTION_INSET: f64 = 12.0;
+const SCAN_CARD_PAD: f64 = step(Spacing::BASE.s4);
+const SCAN_CARD_LINE_GAP: f64 = step(Spacing::BASE.s1);
+const SCAN_CARD_SECTION_GAP: f64 = step(Spacing::BASE.s3);
+const SCAN_CARD_ACTION_INSET: f64 = step(Spacing::BASE.s3);
 const SCAN_ACTION_MIN_H: f64 = 30.0;
 const SCAN_ACTION_PAD_Y: f64 = 7.0;
 /// Recent-scans rows: authored 44 px, measured summary + timestamp block.
@@ -98,7 +116,7 @@ const SCAN_ROW_PAD_Y: f64 = 6.0;
 /// 15.6 px line + 10.4 = the authored 26 px pitch) and the label padding of
 /// the Favorite / Share / Delete buttons (authored 38 px at 1×).
 const DETAIL_ROW_GAP: f64 = 10.4;
-const DETAIL_ACTION_PAD_Y: f64 = 8.0;
+const DETAIL_ACTION_PAD_Y: f64 = step(Spacing::BASE.s2);
 /// Width the gallery grid gives up on its right for the 3 px scrollbar thumb
 /// (drawn 3..6 px inside the edge) once the roll overflows, so the thumb no
 /// longer paints over the last column's edge.
@@ -2685,7 +2703,7 @@ impl CameraApp {
             t,
             rect,
             rect.height() / 2.0,
-            p::alpha(c.border_standard, 0.5),
+            surface::edge_on(c.neutral[2]),
             1.0,
         );
         let n = items.len().max(1);
@@ -2877,7 +2895,7 @@ impl CameraApp {
             actions.push(("Choose camera", Action::OpenCameraChooser));
         }
         let count = actions.len();
-        let gap = 8.0;
+        let gap = PILL_GAP;
         let max_w = panel.width() - 28.0;
         let width = ((max_w - gap * (count.saturating_sub(1) as f64)) / count as f64).max(44.0);
         let y = panel.y1 - 52.0;
@@ -2892,25 +2910,13 @@ impl CameraApp {
                 action,
                 Action::OpenCameraPrivacySettings | Action::RetryCamera
             );
-            p::fill_round(
-                scene,
-                t,
-                button,
-                12.0,
-                if primary {
-                    theme.accent_primary
-                } else {
-                    p::alpha(theme.tokens.colors.neutral[2], 0.92)
-                },
-            );
-            p::stroke_round(
-                scene,
-                t,
-                button,
-                12.0,
-                p::alpha(theme.tokens.colors.border_standard, 0.55),
-                1.0,
-            );
+            let face = if primary {
+                theme.accent_primary
+            } else {
+                p::alpha(theme.tokens.colors.neutral[2], 0.92)
+            };
+            p::fill_round(scene, t, button, 12.0, face);
+            p::stroke_round(scene, t, button, 12.0, surface::edge_on(face), 1.0);
             p::text_in(scene, tr, button, label, 11.5, white());
             self.push_tap_region(button, action);
         }
@@ -2924,13 +2930,14 @@ impl CameraApp {
                 panel.x1 - 14.0,
                 panel.y1 + 10.0 + chooser_h,
             );
-            p::fill_round(scene, t, chooser, 14.0, theme.tokens.colors.surfaces.raised);
+            // A floating chooser: Panel role ground + border (HIG §9.5).
+            p::fill_round(scene, t, chooser, 14.0, ui::chrome::panel_ground(theme));
             p::stroke_round(
                 scene,
                 t,
                 chooser,
                 14.0,
-                p::alpha(theme.tokens.colors.border_standard, 0.65),
+                ui::chrome::panel_border(theme),
                 1.0,
             );
             for (index, device) in devices.iter().enumerate() {
@@ -3047,8 +3054,10 @@ impl CameraApp {
             full.center().y + height / 2.0,
         );
         let colors = &theme.tokens.colors;
-        p::fill_round(scene, t, panel, 20.0, colors.surfaces.raised);
-        p::stroke_round(scene, t, panel, 20.0, colors.border_standard, 1.0);
+        // A modal dialog: Panel role ground + border (HIG §9.5).
+        let ground = ui::chrome::panel_ground(theme);
+        p::fill_round(scene, t, panel, 20.0, ground);
+        p::stroke_round(scene, t, panel, 20.0, ui::chrome::panel_border(theme), 1.0);
         p::circle(
             scene,
             t,
@@ -3108,13 +3117,17 @@ impl CameraApp {
             colors.text_dim,
         );
 
-        let gap = 10.0;
+        let gap = ACTION_GAP;
         let button_w = (panel.width() - 48.0 - gap) / 2.0;
         let y = panel.y1 - 62.0;
         let cancel = Rect::new(panel.x0 + 24.0, y, panel.x0 + 24.0 + button_w, y + 42.0);
         let confirm = Rect::new(cancel.x1 + gap, y, panel.x1 - 24.0, y + 42.0);
-        p::fill_round(scene, t, cancel, 12.0, colors.neutral[2]);
-        p::stroke_round(scene, t, cancel, 12.0, colors.border_standard, 1.0);
+        // Neutral action on the panel: a lift off the panel ground with its
+        // own derived edge — not a ramp slot with a declared border.
+        let cancel_face = ui::tokens::colors::Colors::hairline_on(ground, 26);
+        let cancel_fill = ui::tokens::colors::over(ground, cancel_face, cancel_face.components[3]);
+        p::fill_round(scene, t, cancel, 12.0, cancel_fill);
+        p::stroke_round(scene, t, cancel, 12.0, surface::edge_on(cancel_fill), 1.0);
         p::text_in(scene, tr, cancel, "Cancel", 12.5, colors.text_primary);
         p::fill_round(scene, t, confirm, 12.0, colors.semantic.danger);
         p::text_in(scene, tr, confirm, "Delete", 12.5, white());
@@ -3291,9 +3304,9 @@ impl CameraApp {
 
         // Settings gear, top-right — opens Settings as an overlay sheet. Drawn
         // whether or not a feed is present so Settings is always reachable.
-        // Centred on the top pill row (pills start at `y0 + 20`), so the two
-        // share one centre line at every text scale — `y0 + 35` at 1×.
-        let row_cy = full.y0 + 20.0 + Self::ctrl_pill_height(tr) / 2.0;
+        // Centred on the top pill row: both sit on the `EDGE` corner inset's
+        // 32 px circle, so they share one centre line at every text scale.
+        let row_cy = full.y0 + EDGE + 16.0;
         self.glass_button(
             scene,
             t,
@@ -3471,8 +3484,10 @@ impl CameraApp {
         full: Rect,
     ) {
         let mut x = full.x0 + EDGE;
-        let y = full.y0 + 20.0;
-        let gap = 9.0;
+        // The pill row shares the settings gear's centre line (a 32 px circle
+        // on the `EDGE` corner inset), so the four corners read as one frame.
+        let y = full.y0 + EDGE + 16.0 - Self::ctrl_pill_height(tr) / 2.0;
+        let gap = PILL_GAP;
 
         let r = Self::ctrl_pill(
             scene,
@@ -3559,9 +3574,12 @@ impl CameraApp {
         // recording (mode is locked; the stop-square shutter + REC badge carry
         // the state).
         if !state.recording {
-            // Bottom edge sits on the shutter's top (`cy - 34`): the same place
-            // the 34 px capsule ended before, so 1× geometry is unchanged.
-            self.draw_mode_switcher(scene, t, tr, theme, scx, cy - 34.0);
+            // The switcher is the shutter's sibling: its bottom edge keeps
+            // `s3` above the shutter's top (`cy - 34`). Its segments are
+            // 44 px tap targets centred on the 34 px capsule, so anything
+            // closer put their hit boxes 5 px into the shutter's (HIG §7
+            // "nothing touches" — the geometry audit flagged the overlap).
+            self.draw_mode_switcher(scene, t, tr, theme, scx, cy - 34.0 - ACTION_GAP);
         }
         self.draw_gallery_thumb_peek(scene, t, tr, theme, full, cy);
         self.draw_shutter(scene, t, theme, scx, cy, state);
@@ -3744,7 +3762,12 @@ impl CameraApp {
         let red = theme.tokens.colors.semantic.danger;
         let tw = f64::from(p::text_w(tr, &label, 12.5));
         let w = 20.0 + 12.0 + tw + 14.0;
-        let pill = Rect::new(scx - w / 2.0, full.y0 + 18.0, scx + w / 2.0, full.y0 + 46.0);
+        let pill = Rect::new(
+            scx - w / 2.0,
+            full.y0 + EDGE,
+            scx + w / 2.0,
+            full.y0 + EDGE + 28.0,
+        );
         p::fill_round(
             scene,
             t,
@@ -3884,17 +3907,17 @@ impl CameraApp {
             t,
             tr,
             theme,
-            Point::new(full.x0 + EDGE, full.y0 + 18.0),
+            Point::new(full.x0 + EDGE, full.y0 + EDGE),
             title,
             subtitle,
         );
 
-        // Settings gear, top-right.
+        // Settings gear, top-right, on the same corner inset as the header.
         self.glass_button(
             scene,
             t,
             theme,
-            Circle::new(Point::new(full.x1 - EDGE - 16.0, full.y0 + 34.0), 16.0),
+            Circle::new(Point::new(full.x1 - EDGE - 16.0, full.y0 + EDGE + 16.0), 16.0),
             "settings",
             Action::Nav(Screen::Settings),
         );
@@ -4802,7 +4825,7 @@ impl CameraApp {
             back_btn.x,
             back_btn.y,
             16.0,
-            p::alpha(c.border_standard, 0.5),
+            surface::edge_on(c.surfaces.raised),
             1.0,
         );
         p::icon(
@@ -5059,12 +5082,9 @@ impl CameraApp {
             );
         }
 
-        let ring = if selected {
-            theme.accent_primary
-        } else {
-            p::alpha(c.border_standard, 0.0)
-        };
-        p::stroke_round(scene, t, card, 14.0, ring, 2.5);
+        if selected {
+            p::stroke_round(scene, t, card, 14.0, theme.accent_primary, 2.5);
+        }
         self.push_region(card, Action::SelectCapture(cap.id.clone()));
     }
 
@@ -5087,7 +5107,7 @@ impl CameraApp {
     ) {
         let c = &theme.tokens.colors;
         p::fill_round(scene, t, panel, 18.0, c.surfaces.raised);
-        p::stroke_round(scene, t, panel, 18.0, p::alpha(c.border_standard, 0.5), 1.0);
+        p::stroke_round(scene, t, panel, 18.0, surface::edge_on(c.surfaces.raised), 1.0);
 
         // Close button on the overlay variant.
         if overlay {
@@ -5400,9 +5420,10 @@ impl CameraApp {
         let sx = full.center().x - sw / 2.0;
         let sy = full.center().y - sh / 2.0;
         let sheet = Rect::new(sx, sy, sx + sw, sy + sh);
-        // Base-surface sheet so the raised grouped cards read distinctly on it.
+        // Base-surface sheet so the raised grouped cards read distinctly on
+        // it; its edge against the scrim is the Panel border (HIG §9.5).
         p::fill_round(scene, t, sheet, 22.0, c.surfaces.base);
-        p::stroke_round(scene, t, sheet, 22.0, p::alpha(c.border_standard, 0.6), 1.0);
+        p::stroke_round(scene, t, sheet, 22.0, ui::chrome::panel_border(theme), 1.0);
         // Absorb taps on the sheet's own padding so only the scrim dismisses.
         self.push_region(sheet, Action::Nav(Screen::Settings));
 
@@ -5471,19 +5492,10 @@ impl CameraApp {
         y: f64,
         colw: f64,
     ) -> f64 {
-        let c = &theme.tokens.colors;
         let y = Self::group_title(scene, tr, theme, x0, y, "Capture");
         let cap_rows = 4;
         let cap_rect = Rect::new(x0, y, x0 + colw, y + f64::from(cap_rows) * 52.0);
-        p::fill_round(scene, t, cap_rect, 14.0, c.surfaces.raised);
-        p::stroke_round(
-            scene,
-            t,
-            cap_rect,
-            14.0,
-            p::alpha(c.border_standard, 0.5),
-            1.0,
-        );
+        Self::group_card(scene, t, theme, cap_rect);
         let ry = self.value_row(
             scene,
             t,
@@ -5545,18 +5557,9 @@ impl CameraApp {
         y: f64,
         colw: f64,
     ) -> f64 {
-        let c = &theme.tokens.colors;
         let y = Self::group_title(scene, tr, theme, x0, y, "Composition");
         let comp_rect = Rect::new(x0, y, x0 + colw, y + 3.0 * 52.0);
-        p::fill_round(scene, t, comp_rect, 14.0, c.surfaces.raised);
-        p::stroke_round(
-            scene,
-            t,
-            comp_rect,
-            14.0,
-            p::alpha(c.border_standard, 0.5),
-            1.0,
-        );
+        Self::group_card(scene, t, theme, comp_rect);
         let ry = self.toggle_row(
             scene,
             t,
@@ -5615,18 +5618,9 @@ impl CameraApp {
         y: f64,
         colw: f64,
     ) {
-        let c = &theme.tokens.colors;
         let y = Self::group_title(scene, tr, theme, x0, y, "Privacy & camera");
         let pc_rect = Rect::new(x0, y, x0 + colw, y + 2.0 * 52.0);
-        p::fill_round(scene, t, pc_rect, 14.0, c.surfaces.raised);
-        p::stroke_round(
-            scene,
-            t,
-            pc_rect,
-            14.0,
-            p::alpha(c.border_standard, 0.5),
-            1.0,
-        );
+        Self::group_card(scene, t, theme, pc_rect);
         let ry = self.toggle_row(
             scene,
             t,
@@ -5688,16 +5682,23 @@ impl CameraApp {
         y + 24.0
     }
 
+    /// A grouped settings card: raised fill with its derived rest edge
+    /// (`ui::surface::card`, HIG §9.5).
+    fn group_card(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect) {
+        surface::card(scene, t, rect, 14.0, theme.tokens.colors.surfaces.raised);
+    }
+
+    /// The rule between two rows of a grouped card: derived against the
+    /// card's surface and inset `s3` from both ends (HIG §9.5).
     fn row_sep(scene: &mut Scene, t: Affine, theme: &Theme, x: f64, y: f64, w: f64) {
-        p::line(
+        surface::separator(
             scene,
             t,
-            x + 16.0,
+            x,
+            x + w,
             y,
-            x + w - 16.0,
-            y,
-            p::alpha(theme.tokens.colors.border_standard, 0.35),
-            1.0,
+            SEPARATOR_INSET,
+            theme.tokens.colors.surfaces.raised,
         );
     }
 
@@ -6583,15 +6584,21 @@ mod tests {
             if (scale - 1.0).abs() < f32::EPSILON {
                 // 1× keeps the authored 30 / 34 px capsules (both under the
                 // touch minimum, so their regions read exactly 44) and the
-                // 34 px switcher still ends on the shutter's top edge.
+                // 34 px switcher ends `ACTION_GAP` above the shutter's top
+                // edge, so the two 44 px tap boxes never overlap (HIG §7).
                 assert!((pill.height() - TOUCH_MIN).abs() < 0.5, "1× pill: {pill:?}");
                 assert!(
                     (photo.height() - TOUCH_MIN).abs() < 0.5,
                     "1× segment: {photo:?}"
                 );
                 assert!(
-                    (photo.center().y + MODE_SWITCHER_MIN_H / 2.0 - shutter.y0).abs() < 0.5,
-                    "1×: switcher centre {photo:?} puts its bottom on the shutter {shutter:?}"
+                    (photo.center().y + MODE_SWITCHER_MIN_H / 2.0 + ACTION_GAP - shutter.y0).abs()
+                        < 0.5,
+                    "1×: switcher centre {photo:?} puts its bottom `s3` above the shutter {shutter:?}"
+                );
+                assert!(
+                    shutter.y0 - photo.y1 >= step(Spacing::BASE.s1),
+                    "1×: the switcher's tap box {photo:?} keeps a token gap to the shutter's {shutter:?}"
                 );
             } else {
                 // 2×: the measured label lines exceed the minima, so the grown
@@ -6609,8 +6616,8 @@ mod tests {
                     "2×: mode segment {photo:?} cannot contain a {mode_label_h} px label"
                 );
                 assert!(
-                    (photo.y1 - shutter.y0).abs() < 0.5,
-                    "2×: switcher {photo:?} is bottom-anchored on the shutter {shutter:?}"
+                    (shutter.y0 - photo.y1 - ACTION_GAP).abs() < 0.5,
+                    "2×: switcher {photo:?} is bottom-anchored `s3` above the shutter {shutter:?}"
                 );
             }
             // Corner controls share one edge inset (checked through their
