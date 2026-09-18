@@ -462,8 +462,7 @@ pub fn peer_committed(id: u32) -> Result<(), JsValue> {
         }
         if peer.closed.get() { return Ok(()); }
         let pending = peer.outbox.borrow().clone();
-        for message in &pending {
-            if !qos_peer_state::outbox::fresh(message,SystemTime::now()) {continue;}
+        for message in qos_peer_state::outbox::publication_batch(&pending,SystemTime::now()) {
             let Some((channel, qos_peer_state::transport::Retention::Delta)) =
                 qos_peer_state::transport::retention(message, false)
             else {

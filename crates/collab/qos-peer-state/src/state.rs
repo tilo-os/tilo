@@ -208,6 +208,30 @@ impl StatePeer {
     pub fn pending_count(&self) -> usize {
         self.pending.len()
     }
+    /// This only authorizes recovery of an overtaken sequence. It is not
+    /// acknowledgement: covers() additionally requires causal change inclusion.
+    pub(crate) fn checkpoint_sequence_covers(&self, message: &NeighbourMsg) -> bool {
+        let NeighbourMsg::AppDocument {
+            app_id,
+            record_id,
+            envelope,
+            ..
+        } = message
+        else {
+            return false;
+        };
+        self.documents
+            .get(&Route {
+                app: app_id.clone(),
+                record: record_id.clone(),
+            })
+            .and_then(|document| {
+                document
+                    .covered
+                    .get(&hex::encode(envelope.author.as_bytes()))
+            })
+            .is_some_and(|floor| *floor >= envelope.seq)
+    }
     pub fn covers(&self, message: &NeighbourMsg) -> bool {
         let NeighbourMsg::AppDocument {
             app_id,

@@ -1076,3 +1076,98 @@ fn higher_governor_floor_without_causal_changes_does_not_acknowledge_outbox() {
     let (_, text) = final_doc.get(ROOT, "text").unwrap().unwrap();
     assert_eq!(final_doc.text(text).unwrap(), "one two");
 }
+
+#[test]
+fn expired_predecessor_and_fresh_dependent_converge_without_waiting_for_expiry() {
+    let (mut governor, a, b, bc, now) = seeded();
+    let origin = TransportOrigin::RelayDelta(a.verifying_key().to_bytes());
+    let browser_origin = TransportOrigin::RelayDelta(b.verifying_key().to_bytes());
+    let mut client = StatePeer::new(
+        governor.room(),
+        governor.authority().clone(),
+        vec![bc],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    for message in governor.bootstrap_messages(&a, now).unwrap() {
+        client.receive_from(origin, message, now).unwrap();
+    }
+    let mut doc = AutoCommit::load(&client.document("test.app", "tab:1").unwrap()).unwrap();
+    doc.set_actor(automerge::ActorId::from(
+        b.verifying_key().to_bytes().to_vec(),
+    ));
+    let before = doc.get_heads();
+    let text = doc
+        .put_object(ROOT, "text", automerge::ObjType::Text)
+        .unwrap();
+    doc.splice_text(&text, 0, 0, "one ").unwrap();
+    doc.commit();
+    let first = client
+        .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
+        .unwrap();
+    let recent = now + Duration::from_secs(290);
+    let before = doc.get_heads();
+    doc.splice_text(&text, 4, 0, "two").unwrap();
+    doc.commit();
+    let second = client
+        .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, recent)
+        .unwrap();
+    let original_first = postcard::to_allocvec(&first).unwrap();
+    let original_second = postcard::to_allocvec(&second).unwrap();
+    let reconnect = now + Duration::from_secs(301);
+    for message in governor.bootstrap_messages(&a, reconnect).unwrap() {
+        client.receive_from(origin, message, reconnect).unwrap();
+    }
+    let mut outbox = client
+        .reconcile_outbox(&[first, second.clone()], &b, reconnect)
+        .unwrap();
+    assert_eq!(outbox.len(), 3);
+    assert_eq!(postcard::to_allocvec(&outbox[0]).unwrap(), original_first);
+    assert_eq!(postcard::to_allocvec(&outbox[1]).unwrap(), original_second);
+    // Execute the exact production publication filter/order and sent-byte guard.
+    // Native emits fresh covered checkpoints only after an app changes, just as
+    // the real fixture loop does. No manual reconnect or time advance occurs.
+    let mut published = std::collections::BTreeSet::new();
+    let mut delivered_sequences = vec![];
+    for _ in 0..4 {
+        let batch = crate::outbox::publication_batch(&outbox, reconnect)
+            .cloned()
+            .collect::<Vec<_>>();
+        for message in batch {
+            if !published.insert(postcard::to_allocvec(&message).unwrap()) {
+                continue;
+            }
+            if let NeighbourMsg::AppDocument { envelope, .. } = &message {
+                delivered_sequences.push(envelope.seq);
+            }
+            let outcome = governor
+                .receive_from(browser_origin, message, reconnect)
+                .unwrap();
+            if outcome.changed {
+                for checkpoint in governor.bootstrap_messages(&a, reconnect).unwrap() {
+                    client.receive_from(origin, checkpoint, reconnect).unwrap();
+                    outbox = client.reconcile_outbox(&outbox, &b, reconnect).unwrap();
+                }
+            }
+        }
+        if outbox.is_empty() {
+            break;
+        }
+    }
+    assert!(
+        crate::outbox::fresh(&second, reconnect),
+        "dependent must still be fresh throughout recovery"
+    );
+    assert!(
+        outbox.is_empty(),
+        "fresh dependent must be renewed after predecessor overtakes its sequence, without waiting for expiry"
+    );
+    assert_eq!(delivered_sequences, vec![2, 3, 4]);
+    assert_eq!(client.rows(), governor.rows());
+    use automerge::ReadDoc;
+    let final_doc = AutoCommit::load(&governor.document("test.app", "tab:1").unwrap()).unwrap();
+    let (_, text) = final_doc.get(ROOT, "text").unwrap().unwrap();
+    assert_eq!(final_doc.text(text).unwrap(), "one two");
+    assert_eq!(client.outbox_status(&outbox, reconnect).pending, 0);
+}

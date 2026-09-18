@@ -18,6 +18,13 @@ pub fn fresh(message: &NeighbourMsg, now: SystemTime) -> bool {
     let latest = now.checked_add(Duration::from_secs(300)).unwrap_or(now);
     envelope.timestamp >= earliest && envelope.timestamp <= latest
 }
+/// The shared sender selection used by the browser transport and recovery tests.
+pub fn publication_batch(
+    outbox: &[NeighbourMsg],
+    now: SystemTime,
+) -> impl Iterator<Item = &NeighbourMsg> {
+    outbox.iter().filter(move |message| fresh(message, now))
+}
 fn replacement(original: &NeighbourMsg, candidate: &NeighbourMsg, now: SystemTime) -> bool {
     match (original, candidate) {
         (
@@ -78,7 +85,10 @@ impl StatePeer {
             .cloned()
             .collect::<Vec<_>>();
         for original in retained.clone() {
-            if fresh(&original, now)
+            // A fresh envelope may already be impossible to deliver: renewing
+            // its missing predecessor can put the governor's sequence floor
+            // above it before its causal changes were ever materialized.
+            if (fresh(&original, now) && !candidate.checkpoint_sequence_covers(&original))
                 || retained
                     .iter()
                     .any(|other| replacement(&original, other, now))
