@@ -14259,58 +14259,41 @@ fn shortcut_reference_rows(
             .map_or_else(|| "Unassigned".into(), shortcut_guide_chord)
     };
     vec![
-        ("Screenshot", "Print Screen".into()),
         ("Switch windows", "Alt+Tab".into()),
         ("Close tab", "Alt+F4  /  Super+W".into()),
         ("Change workspace", "Super+Page Up / Down".into()),
         ("New window", "Super+N".into()),
         ("Add tab here", "Super+T".into()),
         ("Duplicate tab", "Super+D".into()),
-        ("Open terminal", "Super+Enter".into()),
         ("Global search", chord(ShortcutAction::Search)),
         ("Global search", "Super+Space".into()),
         ("Overview", chord(ShortcutAction::WorkspaceOverview)),
-        ("Lock", chord(ShortcutAction::Lock)),
         ("Quick Settings", chord(ShortcutAction::QuickSettings)),
         ("Workspace wheel", "Super+S".into()),
+        ("Lock", chord(ShortcutAction::Lock)),
+        ("Screenshot", "Print Screen".into()),
         ("Wireless display", "Super+P".into()),
         ("Capture screenshot", "Super+Shift+S".into()),
+        ("Open terminal", "Super+Enter".into()),
         ("Picture in picture", "Super+Shift+P".into()),
         ("Save recent replay", "Super+Shift+R".into()),
     ]
 }
 
-/// Reference cards stay in predictable rows instead of squeezing long labels
-/// into a fixed four-column grid.  Three columns leave enough room for the
-/// longest production chord on compact outputs; the wider card earns a fourth.
+/// The reference is deliberately split into three semantic columns. That
+/// keeps the complete desktop vocabulary scannable without turning the lower
+/// half of the guide into a grid of equally loud buttons.
 fn shortcut_reference_columns(body_width: f64) -> usize {
-    if body_width >= 840.0 { 4 } else { 3 }
+    let _ = body_width;
+    3
 }
 
-fn shortcut_reference_step(columns: usize) -> f64 {
-    if columns >= 4 { 44.0 } else { 37.0 }
+fn shortcut_reference_step(compact: bool) -> f64 {
+    if compact { 31.0 } else { 34.0 }
 }
 
-fn shortcut_reference_card_height(columns: usize) -> f64 {
-    if columns >= 4 { 40.0 } else { 36.0 }
-}
-
-fn shortcut_reference_cell_rect(
-    body: Rect,
-    index: usize,
-    columns: usize,
-    top: f64,
-    row_step: f64,
-) -> Rect {
-    let columns = columns.max(1);
-    let gap = 14.0;
-    let cell_width =
-        (body.width() - gap * usize_to_f64_lossy(columns - 1)) / usize_to_f64_lossy(columns);
-    let column = index % columns;
-    let row = index / columns;
-    let x = body.x0 + usize_to_f64_lossy(column) * (cell_width + gap);
-    let y = top + usize_to_f64_lossy(row) * row_step;
-    Rect::new(x, y, x + cell_width, y + row_step)
+fn shortcut_reference_group_height(compact: bool) -> f64 {
+    if compact { 221.0 } else { 238.0 }
 }
 
 fn shortcut_guide_chord(chord: &settings_store::hardware::KeyChord) -> String {
@@ -17414,11 +17397,11 @@ impl ShellOverlayHost {
 
     fn shortcut_help_panel_rect(&self) -> Rect {
         // Keep the desktop visible around the guide: it is a contextual
-        // reference, not a replacement screen.  The compact height is sized
-        // to the complete two-column reference at 800x600 without relying on
-        // a clipped footer or an unexplained scrollbar.
+        // reference, not a replacement screen. The additional desktop height
+        // gives the two sections room to breathe, while compact height still
+        // contains every documented action.
         let width = (self.rect.width() - 64.0).clamp(0.0, 960.0);
-        let height = (self.rect.height() - 64.0).clamp(0.0, 560.0);
+        let height = (self.rect.height() - 64.0).clamp(0.0, 600.0);
         Rect::new(
             self.rect.center().x - width / 2.0,
             self.rect.center().y - height / 2.0,
@@ -17470,9 +17453,40 @@ impl ShellOverlayHost {
             Some(f64_to_f32_lossy(panel.width() - 140.0)),
             TextWeight::Semibold,
         );
+        let (title_width, _) = text_renderer.measure("Desktop help", title_size, None);
+        let f1_hint = Rect::new(
+            panel.x0 + 34.0 + f64::from(title_width),
+            panel.y0 + 22.0,
+            panel.x0 + 68.0 + f64::from(title_width),
+            panel.y0 + 46.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.neutral[2],
+            None,
+            &RoundedRect::from_rect(f1_hint, 7.0),
+        );
+        let f1_size = theme.tokens.typography.scale.xs;
+        let (f1_width, f1_height) = text_renderer.measure("F1", f1_size, None);
+        text_renderer.draw_text_weighted(
+            scene,
+            "F1",
+            f1_size,
+            colors.text_primary,
+            transform.pre_translate(
+                (
+                    f1_hint.center().x - f64::from(f1_width) / 2.0,
+                    f1_hint.center().y - f64::from(f1_height) / 2.0,
+                )
+                    .into(),
+            ),
+            None,
+            TextWeight::Semibold,
+        );
         text_renderer.draw_text(
             scene,
-            "Press F1 anywhere · Select a navigation shortcut below to change it",
+            "Press F1 anywhere to reopen this guide · Select a navigation keycap to change it",
             theme.tokens.typography.scale.sm,
             colors.text_dim,
             transform.pre_translate((panel.x0 + 24.0, panel.y0 + 54.0).into()),
@@ -17740,21 +17754,35 @@ impl ShellOverlayHost {
                     ),
                 ];
                 let compact = body.height() < 450.0;
-                let navigation_step = if compact { 48.0 } else { 50.0 };
+                let navigation_step = if compact { 41.0 } else { 44.0 };
+                let navigation_height = if compact { 154.0 } else { 168.0 };
+                let navigation_surface =
+                    Rect::new(body.x0, body.y0, body.x1, body.y0 + navigation_height);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.neutral[1],
+                    None,
+                    &RoundedRect::from_rect(navigation_surface, 14.0),
+                );
                 text_renderer.draw_text_weighted(
                     scene,
-                    "NAVIGATE & ARRANGE",
+                    "EDIT NAVIGATION SHORTCUTS",
                     theme.tokens.typography.scale.xs,
                     colors.text_dim,
-                    transform.pre_translate((body.x0, body.y0).into()),
+                    transform.pre_translate((body.x0 + 14.0, body.y0 + 11.0).into()),
                     None,
                     TextWeight::Semibold,
                 );
                 for (index, (label, previous, next)) in rows.iter().enumerate() {
                     let column = index % 2;
                     let row = index / 2;
-                    let x = body.x0 + usize_to_f64_lossy(column) * (body.width() / 2.0);
-                    let y = body.y0 + 22.0 + usize_to_f64_lossy(row) * navigation_step;
+                    let column_width = (navigation_surface.width() - 36.0) / 2.0;
+                    let x = navigation_surface.x0
+                        + 14.0
+                        + usize_to_f64_lossy(column) * (column_width + 8.0);
+                    let y =
+                        navigation_surface.y0 + 31.0 + usize_to_f64_lossy(row) * navigation_step;
                     text_renderer.draw_text(
                         scene,
                         label,
@@ -17767,7 +17795,7 @@ impl ShellOverlayHost {
                     let hit_rects = InputHint::paint_keyboard_choice_at(
                         scene,
                         transform,
-                        Point::new(x, y + 26.0),
+                        Point::new(x, y + 18.0),
                         &binding(*previous),
                         &binding(*next),
                         platform,
@@ -17796,9 +17824,9 @@ impl ShellOverlayHost {
 
                     let reset = Rect::new(
                         hit_rects[1].x1 + 12.0,
-                        y + 26.0,
+                        y + 18.0,
                         hit_rects[1].x1 + 34.0,
-                        y + 48.0,
+                        y + 40.0,
                     );
                     let changed = actions.into_iter().any(|action| {
                         shortcuts.bindings.get(&action) != defaults.bindings.get(&action)
@@ -17846,10 +17874,10 @@ impl ShellOverlayHost {
                         self.shortcut_reset_rects.push((*previous, *next, reset));
                     }
                 }
-                let essentials_y = body.y0 + 22.0 + 3.0 * navigation_step + 6.0;
+                let essentials_y = navigation_surface.y1 + 12.0;
                 text_renderer.draw_text_weighted(
                     scene,
-                    "ESSENTIAL ACTIONS",
+                    "DESKTOP ESSENTIALS",
                     theme.tokens.typography.scale.xs,
                     colors.text_dim,
                     transform.pre_translate((body.x0, essentials_y).into()),
@@ -17857,84 +17885,84 @@ impl ShellOverlayHost {
                     TextWeight::Semibold,
                 );
                 let references = shortcut_reference_rows(shortcuts);
-                let visible_references = references.as_slice();
                 let reference_columns = shortcut_reference_columns(body.width());
-                let reference_step = shortcut_reference_step(reference_columns);
-                let reference_card_height = shortcut_reference_card_height(reference_columns);
-                let reference_offset = 16.0;
-                let reference_rows = visible_references.len().div_ceil(reference_columns);
-                let reference_top = essentials_y + reference_offset;
-                let reference_surface = Rect::new(
-                    body.x0,
-                    reference_top - 2.0,
-                    body.x1,
-                    reference_top + usize_to_f64_lossy(reference_rows) * reference_step - 1.0,
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.neutral[1],
-                    None,
-                    &RoundedRect::from_rect(reference_surface, 12.0),
-                );
-                for (index, (label, chord)) in visible_references.iter().enumerate() {
-                    let cell = shortcut_reference_cell_rect(
-                        body,
-                        index,
-                        reference_columns,
-                        reference_top,
-                        reference_step,
-                    );
-                    let card =
-                        Rect::new(cell.x0, cell.y0, cell.x1, cell.y0 + reference_card_height);
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        colors.neutral[2],
-                        None,
-                        &RoundedRect::from_rect(card, 8.0),
-                    );
-                    let x = card.x0 + 9.0;
-                    let y = card.y0 + 4.0;
-                    let chord_size = theme.tokens.typography.scale.xs;
-                    let (chord_width, chord_height) =
-                        text_renderer.measure(chord, chord_size, None);
-                    let pill_height = f64::from(chord_height) + 6.0;
-                    let pill = Rect::new(
+                let reference_step = shortcut_reference_step(compact);
+                let reference_top = essentials_y + 18.0;
+                let reference_gap = 12.0;
+                let reference_width = (body.width()
+                    - reference_gap * usize_to_f64_lossy(reference_columns - 1))
+                    / usize_to_f64_lossy(reference_columns);
+                let reference_height = shortcut_reference_group_height(compact);
+                let group_titles = [
+                    "WINDOWS & WORKSPACES",
+                    "SEARCH & SYSTEM",
+                    "CAPTURE & DISPLAY",
+                ];
+                for (group_index, group_rows) in references.chunks(6).enumerate() {
+                    let x = body.x0
+                        + usize_to_f64_lossy(group_index) * (reference_width + reference_gap);
+                    let group = Rect::new(
                         x,
-                        card.y0 + reference_card_height - pill_height - 3.0,
-                        (x + f64::from(chord_width) + 16.0).min(card.x1 - 9.0),
-                        card.y0 + reference_card_height - 3.0,
-                    );
-                    text_renderer.draw_text(
-                        scene,
-                        label,
-                        chord_size,
-                        colors.text_primary,
-                        transform.pre_translate((x, y).into()),
-                        Some(f64_to_f32_lossy(card.width() - 18.0)),
+                        reference_top,
+                        x + reference_width,
+                        reference_top + reference_height,
                     );
                     scene.fill(
                         Fill::NonZero,
                         transform,
-                        colors.neutral[3],
+                        colors.neutral[1],
                         None,
-                        &RoundedRect::from_rect(pill, 5.0),
+                        &RoundedRect::from_rect(group, 12.0),
                     );
                     text_renderer.draw_text_weighted(
                         scene,
-                        chord,
-                        chord_size,
-                        colors.text_primary,
-                        transform.pre_translate((pill.x0 + 6.0, pill.y0 + 3.0).into()),
-                        Some(f64_to_f32_lossy((pill.width() - 12.0).max(0.0))),
+                        group_titles[group_index],
+                        theme.tokens.typography.scale.xs,
+                        colors.text_dim,
+                        transform.pre_translate((group.x0 + 12.0, group.y0 + 10.0).into()),
+                        Some(f64_to_f32_lossy(group.width() - 24.0)),
                         TextWeight::Semibold,
                     );
+                    for (row_index, (label, chord)) in group_rows.iter().enumerate() {
+                        let entry_y =
+                            group.y0 + 29.0 + usize_to_f64_lossy(row_index) * reference_step;
+                        let chord_size = theme.tokens.typography.scale.xs;
+                        let (chord_width, chord_height) =
+                            text_renderer.measure(chord, chord_size, None);
+                        let pill_height = f64::from(chord_height) + 6.0;
+                        let pill = Rect::new(
+                            group.x0 + 12.0,
+                            entry_y + 13.0,
+                            (group.x0 + 28.0 + f64::from(chord_width)).min(group.x1 - 12.0),
+                            entry_y + 13.0 + pill_height,
+                        );
+                        text_renderer.draw_text(
+                            scene,
+                            label,
+                            chord_size,
+                            colors.text_primary,
+                            transform.pre_translate((group.x0 + 12.0, entry_y).into()),
+                            Some(f64_to_f32_lossy(group.width() - 24.0)),
+                        );
+                        scene.fill(
+                            Fill::NonZero,
+                            transform,
+                            colors.neutral[2],
+                            None,
+                            &RoundedRect::from_rect(pill, 5.0),
+                        );
+                        text_renderer.draw_text_weighted(
+                            scene,
+                            chord,
+                            chord_size,
+                            colors.text_primary,
+                            transform.pre_translate((pill.x0 + 6.0, pill.y0 + 3.0).into()),
+                            Some(f64_to_f32_lossy((pill.width() - 12.0).max(0.0))),
+                            TextWeight::Semibold,
+                        );
+                    }
                 }
-                let pointer_y = essentials_y
-                    + reference_offset
-                    + usize_to_f64_lossy(reference_rows) * reference_step
-                    + 2.0;
+                let pointer_y = reference_top + reference_height + 4.0;
                 if pointer_y + 18.0 <= body.y1 {
                     scene.fill(
                         Fill::NonZero,
@@ -23571,28 +23599,23 @@ mod palette_dispatch_tests {
     }
 
     #[test]
-    fn shortcut_reference_cards_keep_a_consistent_responsive_rhythm() {
+    fn shortcut_reference_groups_keep_a_consistent_responsive_rhythm() {
         assert_eq!(shortcut_reference_columns(688.0), 3);
-        assert_eq!(shortcut_reference_columns(912.0), 4);
-        assert!(shortcut_reference_card_height(3) < shortcut_reference_step(3));
-        assert!(shortcut_reference_card_height(4) < shortcut_reference_step(4));
-        assert_eq!(shortcut_reference_step(3), 37.0);
-        assert_eq!(shortcut_reference_step(4), 44.0);
+        assert_eq!(shortcut_reference_columns(912.0), 3);
+        assert_eq!(shortcut_reference_step(true), 31.0);
+        assert_eq!(shortcut_reference_step(false), 34.0);
+        assert!(shortcut_reference_group_height(true) >= 6.0 * shortcut_reference_step(true));
+        assert!(shortcut_reference_group_height(false) >= 6.0 * shortcut_reference_step(false));
     }
 
     #[test]
     fn compact_shortcut_reference_keeps_the_complete_action_set_visible() {
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
-        let body_height = 422.0;
-        let essentials_y = 22.0 + 3.0 * 48.0 + 6.0;
-        let reference_offset = 16.0;
-        let reference_step = shortcut_reference_step(3);
-        let reference_card_height = shortcut_reference_card_height(3);
-        let final_row = rows.len().div_ceil(3).saturating_sub(1);
-        let final_pill_bottom = essentials_y
-            + reference_offset
-            + usize_to_f64_lossy(final_row) * reference_step
-            + reference_card_height;
+        let body_height = 426.0;
+        let navigation_height = 154.0;
+        let essentials_y = navigation_height + 12.0;
+        let reference_top = essentials_y + 18.0;
+        let final_pill_bottom = reference_top + 29.0 + 5.0 * shortcut_reference_step(true) + 31.0;
 
         assert_eq!(
             rows.len(),
@@ -23619,10 +23642,10 @@ mod palette_dispatch_tests {
         let mut renderer = TextRenderer::new();
         let chord_size = Theme::dark().tokens.typography.scale.xs;
         // An 800-wide viewport yields a 736-wide panel and 688-wide body. The
-        // compact guide uses three comfortably spaced columns.
+        // compact guide uses three semantic columns with quiet key pills.
         let columns = shortcut_reference_columns(688.0);
         assert_eq!(columns, 3);
-        let available_text_width = (688.0 - 14.0 * 2.0) / 3.0 - 18.0;
+        let available_text_width = (688.0 - 12.0 * 2.0) / 3.0 - 24.0;
         for (_, chord) in rows {
             let (width, _) = renderer.measure(&chord, chord_size, None);
             assert!(
@@ -23633,24 +23656,12 @@ mod palette_dispatch_tests {
     }
 
     #[test]
-    fn shortcut_reference_columns_are_responsive_and_row_aligned() {
+    fn shortcut_reference_columns_stay_semantically_grouped() {
         assert_eq!(shortcut_reference_columns(688.0), 3);
-        assert_eq!(shortcut_reference_columns(912.0), 4);
-
-        let body = Rect::new(56.0, 120.0, 744.0, 542.0);
-        let first = shortcut_reference_cell_rect(body, 0, 3, 300.0, 31.0);
-        let close_tab = shortcut_reference_cell_rect(body, 2, 3, 300.0, 31.0);
-        let next_row = shortcut_reference_cell_rect(body, 3, 3, 300.0, 31.0);
-        assert_eq!(
-            first.y0, close_tab.y0,
-            "Close tab must share its row baseline"
-        );
-        assert_eq!(
-            first.x0, next_row.x0,
-            "row-major cards keep columns aligned"
-        );
-        assert_eq!(next_row.y0 - first.y0, 31.0);
-        assert!(close_tab.x1 <= body.x1);
+        assert_eq!(shortcut_reference_columns(912.0), 3);
+        let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
+        assert_eq!(rows.len(), 18);
+        assert!(rows.chunks(6).all(|group| group.len() == 6));
     }
 
     #[test]
@@ -26391,11 +26402,10 @@ mod overlay_event_absorb_tests {
 
         let body_bottom = panel.y1 - 22.0;
         let body_top = panel.y0 + 88.0;
-        let essentials_y = body_top + 22.0 + 3.0 * 48.0 + 6.0;
-        let compact_final_pill_bottom = essentials_y
-            + 16.0
-            + 6.0 * shortcut_reference_step(3)
-            + shortcut_reference_card_height(3);
+        let navigation_height = 154.0;
+        let essentials_y = body_top + navigation_height + 12.0;
+        let compact_final_pill_bottom =
+            essentials_y + 18.0 + 29.0 + 5.0 * shortcut_reference_step(true) + 31.0;
         assert!(
             compact_final_pill_bottom <= body_bottom,
             "compact help's final recovery shortcut must fit without clipping: pill={compact_final_pill_bottom}, body={body_bottom}"
@@ -26407,7 +26417,7 @@ mod overlay_event_absorb_tests {
         let h = build_harness_sized(1280.0, 800.0);
         let panel = h.host.shortcut_help_panel_rect();
         assert_eq!(panel.width(), 960.0);
-        assert_eq!(panel.height(), 560.0);
+        assert_eq!(panel.height(), 600.0);
         assert!(panel.x0 >= 150.0 && panel.x1 <= 1130.0);
         assert!(panel.y0 >= 100.0 && panel.y1 <= 700.0);
     }
