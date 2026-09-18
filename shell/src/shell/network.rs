@@ -5430,7 +5430,7 @@ mod tests {
     fn personal_display_authorization_is_exact_expiring_and_purgeable() {
         use crate::shell::device_fabric::PersonalDisplayMessage;
 
-        let tree = WorkspaceTreeHandle::new(WorkspaceTree::bootstrap_default());
+        let tree = WorkspaceTreeHandle::new(WorkspaceTree::bootstrap_default().into());
         let (network, _) = shell_network_for_test(tree, 41);
         let source = test_device(1);
         let target = test_device(2);
