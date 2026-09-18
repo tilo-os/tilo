@@ -2,7 +2,20 @@
 # Prove the offline installer carries an exact authority-signed target UKI and
 # a generation-bound PCR11 prediction before the UI offers TPM short-PIN mode.
 set -euo pipefail
-root="${TILO_PREFLIGHT_ROOT:-/boot/tilo-target}"
+root="${TILO_PREFLIGHT_ROOT:-}"
+if [ -z "$root" ]; then
+  # bootc may expose the ESP at /boot or /efi depending on image layout.
+  # Only inspect actual FAT mountpoints, never shadow directories below them.
+  roots=()
+  for esp in /boot /efi /boot/efi; do
+    if [ "$(findmnt -nro FSTYPE --mountpoint "$esp" 2>/dev/null || true)" = vfat ] \
+       && [ -d "$esp/tilo-target" ]; then
+      roots+=("$esp/tilo-target")
+    fi
+  done
+  [ "${#roots[@]}" -eq 1 ] || exit 1
+  root="${roots[0]}"
+fi
 pub="${TILO_PREFLIGHT_PUBLIC_KEY:-/usr/share/tilo/tpm2-pcr-signing.public.pem}"
 crypto_bin="${TILO_PREFLIGHT_CRYPTO:-tilo-crypto}"
 signature_check="${TILO_PREFLIGHT_SIGNATURE_CHECK:-}"

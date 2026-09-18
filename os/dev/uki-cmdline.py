@@ -68,6 +68,7 @@ Two things it deliberately does not do:
     and carries no generation.
 """
 
+import hashlib
 import mmap
 import os
 import struct
@@ -97,6 +98,21 @@ def sections(data):
     """Yield (name, file_offset, raw_size, virtual_size) for each PE section."""
     for _o, name, _va, vsz, rsz, raw in section_table(data):
         yield name, raw, rsz, vsz
+
+
+def boot_digest(data):
+    """bootc 1.16.4 identity: SHA256(.linux virtual bytes + .initrd virtual bytes)."""
+    digest = hashlib.sha256()
+    entries = list(sections(data))
+    for required in ('.linux', '.initrd'):
+        matching = [row for row in entries if row[0] == required]
+        if len(matching) != 1:
+            raise SystemExit('UKI needs exactly one ' + required)
+        _, offset, raw_size, size = matching[0]
+        if not size or size > raw_size or offset + size > len(data):
+            raise SystemExit('invalid UKI section bounds')
+        digest.update(data[offset:offset + size])
+    return digest.hexdigest()
 
 
 def find_cmdline(data):
@@ -281,6 +297,13 @@ def main(argv):
     ):
         raise SystemExit(__doc__)
     action = argv[1]
+
+    if action == "boot-digest":
+        if len(argv) != 3:
+            raise SystemExit("boot-digest needs one UKI path")
+        with open(argv[2], "rb") as fh:
+            print(boot_digest(fh.read()))
+        return 0
 
     if action == "show":
         path = argv[2] if len(argv) > 2 else default_uki()

@@ -719,9 +719,51 @@ log "  timezone    : ${TIMEZONE_VAL:-<system default>}"
 log "  keymap      : $KEYMAP_VAL${KEYVARIANT_VAL:+ ($KEYVARIANT_VAL)}"
 log "  update ref  : $TILO_TARGET_IMGREF"
 
+# The sealed live UKI cannot be changed with bootc --karg-delete. Every mode
+# must install the independently signed target variant on its selected ESP.
+promote_target_uki() {
+  local esp="$1" TARGET_UKI TARGET_VARIANT
+  # Promote the deterministic installed-target UKI. It was built over this
+  # exact composefs tree and uses boot-ESP/same-disk Tilo root discovery, so no
+  # per-machine bytes enter PCR 11.
+  TARGET_UKI="$(find "$esp/EFI/Linux" -type f \
+    -path '*/bootc/bootc_composefs-*.efi' -print -quit)"
+  [ -n "$TARGET_UKI" ] || die "installed target has no bootc UKI on its ESP"
+  # bootc 1.16.4 copies recognized live UKIs, not arbitrary /boot sidecars.
+  # Recover the authority-signed target bundle from the same offline image used
+  # above, never from a network update tag or a mutable live ESP. This changes
+  # only ESP files and therefore does not alter the sealed composefs digest.
+  [ ! -e "$esp/tilo-target" ] \
+    || die "target ESP already contains a target boot bundle"
+  podman run --rm --pull=never --network=none --cap-drop=ALL \
+    --security-opt label=type:unconfined_t \
+    -v "$esp:/target-esp" \
+    --entrypoint /usr/bin/cp "$LOCAL_IMG" -R /boot/tilo-target /target-esp/
+  TARGET_VARIANT="$esp/tilo-target/tilo-target.efi"
+  [ -f "$TARGET_VARIANT" ] || die "installed image has no deterministic target UKI"
+  /usr/libexec/tilo-uki-cmdline show "$TARGET_VARIANT" | grep -qw root=tilo-auto \
+    || die "target UKI lacks Tilo root discovery"
+  ! /usr/libexec/tilo-uki-cmdline show "$TARGET_VARIANT" | grep -qw tilo.install \
+    || die "target UKI still contains the live installer marker"
+  # bootc stores SHA256(.linux + .initrd) in deployment origin metadata.
+  # A command-line-only target variant preserves it; fail before replacing the
+  # ESP entry if finalization accidentally rebuilt either payload differently.
+  [ "$(/usr/libexec/tilo-uki-cmdline boot-digest "$TARGET_UKI")" = \
+    "$(/usr/libexec/tilo-uki-cmdline boot-digest "$TARGET_VARIANT")" ] \
+    || die "target UKI changes the bootc kernel/initramfs identity"
+  install -m 0644 "$TARGET_VARIANT" "$TARGET_UKI.new"
+  mv -f "$TARGET_UKI.new" "$TARGET_UKI"
+  install -d -m 0755 "$esp/EFI/tilo/pcr-predictions"
+  find "$esp/tilo-target/predictions" -maxdepth 1 -type f \
+    \( -name '*.json' -o -name '*.json.uki.sig' \) \
+    -exec install -m 0644 {} "$esp/EFI/tilo/pcr-predictions/" \;
+}
+
 # --- 1. copy booted image into local container storage -----------------------
 step "Copying the running Tilo image into local container storage"
 bootc image copy-to-storage
+LOCAL_IMG="$(podman image inspect --format '{{.Id}}' "$LOCAL_IMG")"
+[[ "$LOCAL_IMG" =~ ^sha256:[0-9a-f]{64}$ ]] || die "offline image did not resolve to an immutable ID"
 log "  -> $LOCAL_IMG"
 
 # Image staging can take minutes. Revalidate at the last common point before
@@ -796,34 +838,7 @@ if [ "$ENCRYPT" -eq 1 ]; then
       --skip-finalize \
       /target
 
-  # Promote the deterministic installed-target UKI. It was built over this
-  # exact composefs tree and uses boot-ESP/same-disk Tilo root discovery, so no
-  # per-machine bytes enter PCR 11.
-  TARGET_UKI="$(find "$ENC_MNT/boot/efi/EFI/Linux" -type f \
-    -path '*/bootc/bootc_composefs-*.efi' -print -quit)"
-  [ -n "$TARGET_UKI" ] || die "installed target has no bootc UKI on its ESP"
-  # bootc 1.16.4 copies recognized live UKIs, not arbitrary /boot sidecars.
-  # Recover the authority-signed target bundle from the same offline image used
-  # above, never from a network update tag or a mutable live ESP. This changes
-  # only ESP files and therefore does not alter the sealed composefs digest.
-  [ ! -e "$ENC_MNT/boot/efi/tilo-target" ] \
-    || die "target ESP already contains a target boot bundle"
-  podman run --rm --network=none --cap-drop=ALL \
-    --security-opt label=type:unconfined_t \
-    -v "$ENC_MNT/boot/efi:/target-esp" \
-    --entrypoint /usr/bin/cp "$LOCAL_IMG" -R /boot/tilo-target /target-esp/
-  TARGET_VARIANT="$ENC_MNT/boot/efi/tilo-target/tilo-target.efi"
-  [ -f "$TARGET_VARIANT" ] || die "installed image has no deterministic target UKI"
-  /usr/libexec/tilo-uki-cmdline show "$TARGET_VARIANT" | grep -qw root=tilo-auto \
-    || die "target UKI lacks Tilo root discovery"
-  ! /usr/libexec/tilo-uki-cmdline show "$TARGET_VARIANT" | grep -qw tilo.install \
-    || die "target UKI still contains the live installer marker"
-  install -m 0644 "$TARGET_VARIANT" "$TARGET_UKI.new"
-  mv -f "$TARGET_UKI.new" "$TARGET_UKI"
-  install -d -m 0755 "$ENC_MNT/boot/efi/EFI/tilo/pcr-predictions"
-  find "$ENC_MNT/boot/efi/tilo-target/predictions" -maxdepth 1 -type f \
-    \( -name '*.json' -o -name '*.json.uki.sig' \) \
-    -exec install -m 0644 {} "$ENC_MNT/boot/efi/EFI/tilo/pcr-predictions/" \;
+  promote_target_uki "$ENC_MNT/boot/efi"
   BOOT_ESP_ROOT="$ENC_MNT/boot/efi"
 elif [ "$ALONGSIDE" -eq 1 ]; then
   validate_alongside
@@ -854,6 +869,7 @@ elif [ "$ALONGSIDE" -eq 1 ]; then
       --root-mount-spec "UUID=$ROOT_FS_UUID" \
       --karg-delete tilo.install --target-imgref "$TILO_TARGET_IMGREF" \
       --skip-finalize /target
+  promote_target_uki "$ALONGSIDE_MNT/boot/efi"
   BOOT_ESP_ROOT="$ALONGSIDE_MNT/boot/efi"
 else
   step "Installing Tilo onto $DISK (this ERASES the disk; unencrypted)"
@@ -869,6 +885,17 @@ else
       --block-setup direct \
       --target-imgref "$TILO_TARGET_IMGREF" \
       "$DISK"
+  # Full-disk bootc chooses its partition layout. Select exactly one ESP on
+  # that disk, mount it temporarily, and promote the same signed target UKI.
+  (
+    mapfile -t target_esps < <(lsblk -lnpo NAME,PARTTYPE "$DISK" |
+      awk 'tolower($2)=="c12a7328-f81f-11d2-ba4b-00a0c93ec93b" {print $1}')
+    [ "${#target_esps[@]}" -eq 1 ] || die "installed disk must have exactly one ESP"
+    target_esp_mount="$(mktemp -d)"
+    trap 'umount "$target_esp_mount" 2>/dev/null || true; rmdir "$target_esp_mount" 2>/dev/null || true' EXIT
+    mount -o nosuid,nodev,noexec "${target_esps[0]}" "$target_esp_mount"
+    promote_target_uki "$target_esp_mount"
+  )
 fi
 [ "$ALONGSIDE" -eq 0 ] || restore_firmware_boot_state
 log "  base system installed."
@@ -925,24 +952,19 @@ HASH="$(printf '%s\n' "$PASSWORD" | tilo-crypto hash-password)"
 DEPLOY_ETC=""
 MOUNTED=""
 find_deploy_etc() {
-  # The WRITABLE per-deployment /etc — NOT the read-only, hardlinked
-  # <csum>.0/usr/etc (writing there corrupts the shared ostree repo).
-  find "$1" -regextype posix-extended \
-    -regex '.*/ostree/deploy/[^/]+/deploy/[^/]+\.[0-9]+/etc' \
-    -type d 2>/dev/null | head -1
+  # composefs mutable state lives outside its immutable mounted root.
+  if [ -d "$1/state/deploy" ]; then
+    find "$1/state/deploy" -mindepth 2 -maxdepth 2 -type d -name etc -print -quit
+  else
+    find "$1" -regextype posix-extended \
+      -regex '.*/ostree/deploy/[^/]+/deploy/[^/]+\.[0-9]+/etc' \
+      -type d 2>/dev/null | head -1
+  fi
 }
 
 if [ "$ENCRYPT" -eq 1 ]; then
   MNT="$ENC_MNT"
   DEPLOY_ETC="$(find_deploy_etc "$MNT")"
-  # The composefs backend has no ostree checkout and does not assemble /etc on
-  # the physical root at install time. Its persistent mutable state is stored
-  # as state/deploy/<composefs-digest>/etc and bound into the assembled root by
-  # initramfs. Seed that backend-owned directory directly.
-  if [ -z "$DEPLOY_ETC" ] && [ -d "$MNT/state/deploy" ]; then
-    DEPLOY_ETC="$(find "$MNT/state/deploy" -mindepth 2 -maxdepth 2 \
-      -type d -name etc -print -quit)"
-  fi
 elif [ "$ALONGSIDE" -eq 1 ]; then
   MNT="$ALONGSIDE_MNT"
   DEPLOY_ETC="$(find_deploy_etc "$MNT")"
@@ -960,10 +982,8 @@ else
       # Is this the root fs (contains an ostree/deploy tree)? Works whether the
       # btrfs top-level (.../root/ostree/deploy) or the 'root' subvol
       # (.../ostree/deploy) got mounted — the regex below tolerates either.
-      if find "$MNT" -maxdepth 6 -type d -path '*/ostree/deploy' 2>/dev/null | grep -q .; then
-        DEPLOY_ETC="$(find_deploy_etc "$MNT")"
-        [ -n "$DEPLOY_ETC" ] && break
-      fi
+      DEPLOY_ETC="$(find_deploy_etc "$MNT")"
+      [ -n "$DEPLOY_ETC" ] && break
       umount "$MNT" 2>/dev/null || true
       MOUNTED=""
     fi
@@ -1022,8 +1042,7 @@ if [ "$ALONGSIDE" -eq 1 ]; then
 fi
 
 # The payload is the offline installer image, so undo its two live-medium-only
-# /etc changes in the installed deployment. The kernel argument is removed by
-# bootc above; restoring greetd and removing the transient privilege drop-in
+# /etc changes in the installed deployment. The signed target UKI omits the live kernel argument; restoring greetd and removing the transient privilege drop-in
 # completes the boundary between installer and target.
 install -D -m 0644 /usr/share/tilo/greetd-config.toml "$DEPLOY_ETC/greetd/config.toml"
 printf '\n[initial_session]\ncommand = "/usr/bin/shell --backend drm"\nuser = "%s"\n' \
