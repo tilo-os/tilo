@@ -7519,6 +7519,59 @@ mod tests {
     }
 
     #[test]
+    fn pinch_and_ctrl_wheel_use_the_same_density_event_path() {
+        use winit::event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent};
+        use winit::keyboard::ModifiersState;
+
+        let mut app = PhotosApp::new();
+        app.library_mode = true;
+        app.canvas_rect = Rect::new(0.0, 48.0, 1_280.0, 800.0);
+        let mut doc = AutoCommit::new();
+        let mut tree = TaffyTree::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+        let mut focus = None;
+        let mut handled = false;
+        let no_modifiers = winit::event::Modifiers::default();
+        app.handle_event(
+            &WindowEvent::PinchGesture {
+                device_id: DeviceId::dummy(),
+                delta: 0.2,
+                phase: TouchPhase::Moved,
+            },
+            1.0,
+            &no_modifiers,
+            &mut doc,
+            &ROOT,
+            &mut handled,
+            &mut focus,
+            node,
+            &tree,
+        );
+        assert!(handled);
+        let after_pinch = app.timeline_density;
+
+        handled = false;
+        let ctrl = winit::event::Modifiers::from(ModifiersState::CONTROL);
+        app.handle_event(
+            &WindowEvent::MouseWheel {
+                device_id: DeviceId::dummy(),
+                delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+                phase: TouchPhase::Moved,
+            },
+            1.0,
+            &ctrl,
+            &mut doc,
+            &ROOT,
+            &mut handled,
+            &mut focus,
+            node,
+            &tree,
+        );
+        assert!(handled);
+        assert_eq!(app.timeline_density, after_pinch + 1);
+    }
+
+    #[test]
     fn opening_an_album_operation_only_changes_the_local_filter_and_refuses_stale_ids() {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
