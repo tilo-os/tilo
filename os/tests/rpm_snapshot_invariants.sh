@@ -96,6 +96,20 @@ has "$workflow" 'test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"' \
   'snapshot pin updates reject source changes during the build'
 has "$workflow" 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' \
   'snapshot signing requires a non-exportable key'
+has "$workflow" '. os/dev/configure-cosign-kms.sh' \
+  'snapshot signing configures the KMS provider from its trusted key reference'
+aws_regions="$(COSIGN_KEY_REF='awskms:///arn:aws:kms:eu-west-2:123456789012:key/example' \
+  sh -c '. "$1"; printf "%s:%s" "$AWS_REGION" "$AWS_DEFAULT_REGION"' \
+  fixture "$repo/os/dev/configure-cosign-kms.sh")"
+[ "$aws_regions" = 'eu-west-2:eu-west-2' ] \
+  && ok 'AWS KMS region is derived from the trusted signing-key ARN' \
+  || bad 'AWS KMS region is not derived from the trusted signing-key ARN'
+if COSIGN_KEY_REF='awskms:///not-an-arn' \
+   sh -c '. "$1"' fixture "$repo/os/dev/configure-cosign-kms.sh" >/dev/null 2>&1; then
+  bad 'malformed AWS KMS key references are accepted'
+else
+  ok 'malformed AWS KMS key references fail closed'
+fi
 if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$workflow" \
    && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$workflow" \
    && grep -Fq 'needs: signing-preflight' "$workflow"; then
