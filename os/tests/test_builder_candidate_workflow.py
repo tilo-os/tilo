@@ -121,8 +121,9 @@ class BuilderCandidates(unittest.TestCase):
         self.assertIn('needs: [build, images, cache-cold, cache-warm]', BUILD)
         self.assertIn('runner: runner-arm64', BUILD)
         self.assertIn('name: builder-index-${{ github.sha }}', BUILD)
-        self.assertEqual(CHECK.count('image: ${{ needs.builder.outputs.image }}'), 2)
+        self.assertEqual(CHECK.count('image: ${{ needs.builder.outputs.image }}'), 3)
         self.assertIn('  select:\n    needs: builder', CHECK)
+        self.assertIn('  security:\n    needs: builder', CHECK)
         self.assertIn('  affected:\n    needs: [builder, select]', CHECK)
         builder_job = CHECK.split('  builder:\n', 1)[1].split('  select:\n', 1)[0]
         self.assertIn('DOCKER_BUILDKIT: "1"', builder_job)
