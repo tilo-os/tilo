@@ -148,6 +148,11 @@ def newc(stream, magic, state, scratch):
         state['entries'] += 1
         if state['entries'] > 100000:
             raise VerificationError('too many CPIO entries')
+        if visitor := state.get('visitor'):
+            visitor(name, mode, size, stream)
+            exact(stream, (-size) % 4)
+            magic = exact(stream, 6)
+            continue
         if name in ('usr', 'usr/share', 'usr/share/tilo') and not stat.S_ISDIR(mode):
             state['key_parent_redirect'] = True
         squash = name in ('squash-root.img', 'squashfs-root.img')
