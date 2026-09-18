@@ -7,7 +7,7 @@ use super::SurfaceTarget;
 use crate::{
     auxil,
     dx12::{
-        device_creation::DeviceFactory, shader_compilation::CompilerContainer, D3D12Lib, DCompLib,
+        D3D12Lib, DCompLib, device_creation::DeviceFactory, shader_compilation::CompilerContainer,
     },
 };
 

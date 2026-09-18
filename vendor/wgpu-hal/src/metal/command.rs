@@ -1,5 +1,5 @@
 use objc2::{
-    rc::{autoreleasepool, Retained},
+    rc::{Retained, autoreleasepool},
     runtime::ProtocolObject,
 };
 use objc2_foundation::{NSRange, NSString, NSUInteger};
@@ -13,7 +13,7 @@ use objc2_metal::{
     MTLVisibilityResultMode,
 };
 
-use super::{adapter, conv, TimestampQuerySupport};
+use super::{TimestampQuerySupport, adapter, conv};
 use crate::CommandEncoder as _;
 use alloc::{
     borrow::{Cow, ToOwned as _},

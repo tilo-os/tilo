@@ -9,8 +9,10 @@ The public wgpu PipelineCache currently works only with Vulkan. This patch
 does not advertise DX12 PIPELINE_CACHE support. It exposes a narrow DX12-only
 Device import/export API for the existing process-local DXC shader cache.
 
-Changes are limited to `src/dx12/{mod,device,shader_cache,shader_cache_key,
-shader_compilation}.rs` and the Windows LibraryLoader feature:
+Behavioral changes are limited to `src/dx12/{mod,device,shader_cache,shader_cache_key,
+shader_compilation}.rs` and the Windows LibraryLoader feature. The imported source
+also follows the workspace rustfmt style and records reasons for retained upstream
+lint exceptions, as required by the repository lint gate:
 
 - Runtime WGSL validation, specialization and layout-specific HLSL generation
   remain unchanged. Only the following compiler invocation can be skipped.

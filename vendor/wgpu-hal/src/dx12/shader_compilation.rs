@@ -5,14 +5,20 @@ use std::path::PathBuf;
 use crate::auxil::dxgi::result::HResult;
 use thiserror::Error;
 use windows::{
+    Win32::Graphics::Direct3D::{D3D_SHADER_MACRO, Dxc, Fxc, ID3DBlob},
     core::{Interface, PCSTR, PCWSTR},
-    Win32::Graphics::Direct3D::{Dxc, Fxc, ID3DBlob, D3D_SHADER_MACRO},
 };
 
 pub(super) enum CompilerContainer {
     Fxc(CompilerFxc),
     DynamicDxc(CompilerDynamicDxc),
-    #[cfg_attr(not(static_dxc), allow(unused))]
+    #[cfg_attr(
+        not(static_dxc),
+        allow(
+            unused,
+            reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+        )
+    )]
     StaticDxc(CompilerStaticDxc),
 }
 
@@ -47,8 +53,9 @@ impl CompilerContainer {
         use windows::Win32::{
             Foundation::HMODULE,
             System::LibraryLoader::{
-                GetModuleFileNameW, GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, GetModuleFileNameW,
+                GetModuleHandleExW,
             },
         };
         let Self::DynamicDxc(container) = self else {
@@ -129,7 +136,9 @@ impl CompilerContainer {
         }
         #[cfg(not(static_dxc))]
         {
-            panic!("Attempted to create a static DXC shader compiler, but the static-dxc feature was not enabled")
+            panic!(
+                "Attempted to create a static DXC shader compiler, but the static-dxc feature was not enabled"
+            )
         }
     }
 
@@ -216,7 +225,10 @@ impl FxcLib {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+    )]
     fn compile(
         &self,
         source: &str,
@@ -369,7 +381,10 @@ unsafe fn dxc_create_instance<T: DxcObj>(
 }
 
 /// Owned PCWSTR
-#[allow(clippy::upper_case_acronyms)]
+#[allow(
+    clippy::upper_case_acronyms,
+    reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+)]
 struct OPCWSTR {
     inner: Vec<u16>,
 }
