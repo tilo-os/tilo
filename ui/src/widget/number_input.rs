@@ -75,7 +75,7 @@ fn parse_leading_number(s: &str) -> Option<f64> {
     }
     // `end` is always 0 or the byte offset just past a char boundary
     // visited above, so this can never actually miss — `.get` keeps the
-    // lint honest without asserting that at runtime.
+    // lint satisfied without asserting that at runtime.
     s.get(..end).and_then(|leading| leading.parse::<f64>().ok())
 }
 

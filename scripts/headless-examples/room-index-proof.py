@@ -3,22 +3,19 @@
 
 A room *is* a workspace (`plan/collaboration.md` §4), and what a room
 holds is its **record index** (`plan/rooms.md`) — the references to the
-documents in it. This proves that index replicates between the room's
+documents in it. This checks that the index replicates between the room's
 members, in both directions, and that a person's own view of the room
 does not travel with it.
 
-Two real compositors, separate identities, separate homes, one room.
+Two compositors with separate identities and homes share one room.
 Every claim is read back from the session that did **not** make the
 change, through the production search path: the records provider matches
 a query against the corpus each session knows about and labels each row
 with the room it lives in, so a session returning "In this room" for a
-record it never referenced is a session whose index genuinely holds it.
+record it never referenced has that record in its index.
 
-Both halves of the user's rule are asserted, because either alone is
-easy to satisfy wrongly: a window one person opens must appear for the
-other, **and** the other must stay on the tab, the strip and the focus
-they were on. Which windows exist is the workspace; which one you are
-looking at is you.
+Both halves are asserted: a window one person opens must appear for the
+other, and the other must stay on its current tab, strip and focus.
 
 Usage:
   ./room-index-proof.py [--keep]

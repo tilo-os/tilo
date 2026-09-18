@@ -13,7 +13,7 @@ only the installer's UI/launcher session domain is relaxed.
 
 - `os/installer-disk.toml` — kernel append is now `tilo.installer=1` (was
   `tilo.installer=1 enforcing=0`).
-- `os/usr/libexec/tilo-install` — re-launches its real work as a **transient
+- `os/usr/libexec/tilo-install` — re-launches its work as a **transient
   systemd unit** (`systemd-run`) so the privileged ops run in `init_t`, not the
   greeter's `xdm_t`.
 - `os/usr/share/tilo/selinux/tilo-installer.cil` — a scoped, live-medium-only
@@ -36,7 +36,7 @@ A/B). The cheap unblock was global `enforcing=0`.
 ## The fix: run the privileged work as a transient system unit
 
 `tilo-install`, once root, stages stdin and output in a mode-0700 directory under
-`/run`, then re-execs its real work via a transient service equivalent to:
+`/run`, then re-execs its work via a transient service equivalent to:
 
 ```
 systemd-run --collect --quiet --wait \
@@ -73,7 +73,7 @@ Why this shape:
   the log.
 - `TILO_INSTALL_TRANSIENT=1` breaks the re-exec recursion (the unit runs the
   same script again, already in the system domain, and falls through to the
-  real work).
+  work).
 - We are already root when calling `systemd-run`, so it talks to the system
   manager directly — **no second sudo, and the existing sudoers rule is
   unchanged** (no fragile `sudo systemd-run *` wildcard to audit).
@@ -93,7 +93,7 @@ whose **source** is `xdm_t`, while every other domain (`init_t`,
 `container_runtime_t`, the install itself, the kernel) stays enforcing. This is
 chosen as the default because the precise allow-rule set for "xdm_t may
 StartTransientUnit" cannot be finalised without live AVCs from a VM install run.
-It is a large, honest improvement over global `enforcing=0` and carries no
+It is a substantial improvement over global `enforcing=0` and carries no
 regression risk for the privileged path.
 
 The module also carries the **hardening rules** (commented) that should replace

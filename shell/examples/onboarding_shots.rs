@@ -4,13 +4,12 @@
 //! cargo run -p shell --example onboarding_shots
 //! ```
 //!
-//! Output is identical to what the live binary paints — the same widget tree
-//! through the same layout and draw passes — so this is how the ceremony is
-//! reviewed rather than by launching a session.
+//! Output uses the same widget tree, layout, and draw passes as the live
+//! binary, allowing the ceremony to be reviewed without launching a session.
 //!
-//! The minter is stubbed with a fixed fingerprint so the "done" screen is
-//! byte-stable across runs. Nothing else is faked: the widget, its state
-//! machine and its copy are the production ones.
+//! The minter uses a fixed fingerprint so the "done" screen is byte-stable
+//! across runs. The widget, state machine, and copy use the same
+//! implementations as the live path.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -90,8 +89,7 @@ fn shoot_in_context(
         OnboardingView::with_minter(minter)
     };
 
-    // Drive the real widget through the real keys, one sync per press, the
-    // way a click would.
+    // Drive the widget through one sync per key press, as a click would.
     for key in steps {
         let _ = state.doc.put(&state.root, *key, ScalarValue::Boolean(true));
         view.sync(&mut state.doc, &state.root);
@@ -121,8 +119,7 @@ fn shoot_in_context(
     // `build_layout` rebuilds the child widgets, so they have not pulled
     // their own state out of the CRDT yet — a freshly built Checkbox does not
     // know it is ticked until it syncs. The live loop syncs once per frame,
-    // so this is the steady state the user actually looks at rather than the
-    // single frame in which the tree was rebuilt.
+    // so this captures the settled state after the tree was rebuilt.
     view.sync(&mut state.doc, &state.root);
     view.settle_motion_for_snapshot();
 

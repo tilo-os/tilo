@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Keep every graphical Tilo app on the production AT-SPI endpoint.
+"""Audit that every graphical Tilo app uses the production AT-SPI endpoint.
 
 Accessibility metadata in an app crate is not an endpoint.  The single
 production endpoint is ``ui::App``: on Linux its winit AccessKit adapter owns
 the AT-SPI provider, delivers actions back to the event loop, and is torn down
 before the window.  Every graphical binary must therefore enter through the
-standard ``ui::launch`` lifecycle (or its small direct-App equivalent).  This
-cheap source boundary is deliberately paired with the installed-image D-Bus
-smoke; it prevents a new app from silently bypassing the shared endpoint.
+standard ``ui::launch`` lifecycle (or its small direct-App equivalent).  The
+source check is paired with the installed-image D-Bus smoke to catch apps that
+bypass the shared endpoint.
 """
 
 from __future__ import annotations
@@ -28,11 +28,10 @@ def audit(root: Path = ROOT) -> list[str]:
         if not main.is_file():
             continue
         source = main.read_text(encoding="utf-8")
-        # `tilo-agent` links the lightweight app-model facade to consume
-        # resource descriptors, but deliberately has no window.  The launch
-        # specification and direct App construction are the two windowed
-        # entrypoint shapes; do not turn a headless collaboration participant
-        # into a fake graphical provider just to satisfy this guard.
+        # `tilo-agent` links the app-model facade to consume
+        # resource descriptors, but has no window. The launch specification and
+        # direct App construction are the two windowed entrypoint shapes; skip
+        # this headless collaboration participant.
         if "LaunchSpec" not in source and "App::new(" not in source:
             continue
         standard_launch = "ui::launch::run(" in source or "ui::launch::run_or_exit(" in source

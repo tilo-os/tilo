@@ -27,8 +27,7 @@ ui = { package = "tilo-app", path = "../../crates/app/tilo-app", features = ["po
 # The Tilo resource + action model: the serializable, replayable buffer-creation
 # action Code exports, plus the Resource tree it publishes to Ctrl+K.
 tilo-actions = { path = "../../crates/collab/actions" }
-# The IDE's terminal panel embeds the real system terminal as a widget, rather
-# than shipping a second, weaker terminal implementation.
+# The IDE's terminal panel embeds the system terminal as a widget.
 terminal = { path = "../terminal" }
 automerge.workspace = true
 serde.workspace = true

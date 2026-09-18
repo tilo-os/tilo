@@ -1,7 +1,7 @@
 //! Two-network-namespace share pipeline test.
 //!
-//! A host ([`SharedFlatpakSession`]) and a viewer over a **real UDP
-//! socket** — the kernel network stack, not an in-process channel. Frames
+//! A host ([`SharedFlatpakSession`]) and a viewer over a **UDP socket** using
+//! the kernel network stack. Frames
 //! flow host -> viewer as `SurfaceFrame`s (u64 seq + u32 len + u8 keyframe
 //! header + Annex-B NALUs); input events flow back over a second socket.
 //!
@@ -12,7 +12,7 @@
 //! # Netns setup
 //!
 //! The default `--include-ignored` run drives both roles as async tasks
-//! in the same process (shared netns). For **actual** two-netns isolation:
+//! in the same process (shared netns). For two-netns isolation:
 //!
 //! ```bash
 //! # As root (or unshare -Urn — netns creation needs CAP_NET_ADMIN):
@@ -45,7 +45,7 @@
 //!
 //! Not automated in-tree: `ip netns add`/veth bridging need `CAP_NET_ADMIN`
 //! and CI runners aren't root, so `--include-ignored` instead runs the
-//! in-process variant (real UDP, shared netns), still exercising the
+//! in-process variant (UDP over a shared namespace), still exercising the
 //! substream + framing contract end-to-end.
 
 #![allow(

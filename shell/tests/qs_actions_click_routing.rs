@@ -252,7 +252,7 @@ fn click_at(
     }
 }
 
-/// Route a pressed logical key through the real host dispatcher. `KeyEvent`
+/// Route a pressed logical key through the host dispatcher. `KeyEvent`
 /// deliberately has no public constructor because a small platform payload is
 /// opaque, so initialise that payload to zero and set every public field just
 /// as the compositor's own test harness does.

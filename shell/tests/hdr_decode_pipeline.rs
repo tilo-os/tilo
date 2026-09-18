@@ -1,14 +1,13 @@
 //! HEVC Main10 decode pipeline test: round-trips a 64x64 gradient 10-bit
 //! YUV frame through libx265 -> HEVC Main10 NALUs -> `HevcDecoder` ->
-//! P010, asserting the output is genuinely 10-bit-wide (the top 6 bits of
+//! P010, asserting the output is 10-bit-wide (the top 6 bits of
 //! luma carry content, not the always-zero pattern an 8-bit-in-16-bit
 //! downconvert leaves).
 //!
 //! Fedora configures `libavcodec-free` with
 //! `--disable-decoder='h264,hevc,vc1,vvc'` and no libx265, so on a stock
-//! image none of this is observable. The gate is explicit rather than a
-//! quiet self-skip — under the feature a missing codec is a failure, the
-//! feature being the caller asserting the codec is there:
+//! image none of this is observable. The feature is explicit: a missing codec
+//! is a failure when the test is enabled.
 //!
 //! ```text
 //! cargo test -p shell --features hevc-codec-tests --test hdr_decode_pipeline
@@ -173,7 +172,7 @@ fn hevc_main10_round_trip_preserves_10_bit_precision() {
             assert_eq!(frame.width, W);
             assert_eq!(frame.height, H);
             got_frame = true;
-            // Genuinely 10-bit: an 8-bit downcast would leave the top 6 bits of Y
+            // An 8-bit downcast would leave the top 6 bits of Y
             // all zero.
             match &frame.pixels {
                 DecodedPixels::P010 { y, .. } => {

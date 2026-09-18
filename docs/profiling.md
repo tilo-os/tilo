@@ -8,7 +8,7 @@ against a regression by driving a scripted interaction and reporting frame-time
 statistics.
 
 It lives in one place — `ui/src/profiling.rs` — and is wired into `ui::App`, so
-**every app gets it for free**. There is no per-app code: an environment
+every app can use it. There is no per-app code: an environment
 variable turns it on, and when it's off nothing on the hot path reads a clock or
 allocates.
 
@@ -85,7 +85,7 @@ jq -s 'map(select(.total_us > 16667)) | length' frames.jsonl
 ## 3. Headless perf-scenario harness (the "performance testing")
 
 This is what lets you measure a fix objectively and fail a test if a later
-change slows a pass down. It drives the app's **real** widget passes with no GPU
+change slows a pass down. It drives the app's widget passes with no GPU
 or display, using the same `ui::headless::Driver` the persistence harness uses.
 
 ### Write a scenario
@@ -119,7 +119,7 @@ doesn't skew the numbers.
 
 ### Run it against any app
 
-One call, over the app's real root widget + `State`:
+One call, over the app's root widget + `State`:
 
 ```rust
 let report = ui::profiling::run_scenario_on(state, app_root(), &scenario);

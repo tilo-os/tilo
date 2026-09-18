@@ -1,8 +1,8 @@
 //! Headless end-to-end snapshot harness for tilo-shell flows. Drives the
-//! real widget tree through synthesised `winit::WindowEvent`s and a full
+//! widget tree through synthesised `winit::WindowEvent`s and a full
 //! build/layout/draw cycle (no window, no compositor), writing frames to
-//! `target/tilo-screenshots/e2e-*.png`. Captures decode to real pixels;
-//! settled decision states are checked against committed goldens.
+//! `target/tilo-screenshots/e2e-*.png`. Captures decode to pixels; settled
+//! decision states are checked against committed goldens.
 //!
 //! No clock test hook, so animations are driven by sleeping past
 //! `OVERVIEW_TRANSITION_MS` between click and "settled" render.
@@ -872,7 +872,7 @@ fn tab_stub(id: u64, title: &str, kind: AppKind, label: &str) -> (TabDescriptor,
 }
 
 /// Each tab pill's centre, via a parallel `TabBar` run through the same
-/// build/compute/apply/draw the real `WindowGroup` uses.
+/// build/compute/apply/draw sequence as `WindowGroup`.
 /// Build layout, measure, apply, and draw once — the boilerplate shared by
 /// both tab-bar probes in [`probe_tab_centers`]. Split out to keep that
 /// function short.
@@ -1467,8 +1467,7 @@ fn e2e_super_k_opens_search_palette_in_live_binary_path() {
     let _guard = TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // The concrete-type sibling of what the live binary builds — exercises the
-    // real widget tree, not a hand-rolled stub.
+    // Use the concrete-type sibling of what the live binary builds.
     let tree = WorkspaceTree::bootstrap_demo();
     let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
     assert!(!host.palette_visible(), "palette starts closed");
@@ -1611,7 +1610,7 @@ fn e2e_overview_arrows_select_and_enter_switches_room() {
 }
 
 /// Arrows belong to the switcher only while it's open. Driven through the
-/// real root/layout since the claim concerns a key the shell declines — the
+/// root/layout since the claim concerns a key the shell declines — the
 /// event must actually reach the content.
 #[test]
 fn e2e_overview_arrows_are_not_swallowed_while_the_panel_is_closed() {

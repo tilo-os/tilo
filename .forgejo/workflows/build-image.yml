@@ -110,7 +110,7 @@ jobs:
             matrix='{"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"}]}'
           else
             # BuildKit layers and OCI export coexist; ordinary 50 GiB runners
-            # filled during export in run #6815. Opt in only this build lane.
+            # can fill during export. Use the larger disk lane for this build.
             matrix='{"include":[{"arch":"x86_64","runner":"runner-disk-100g"}]}'
           fi
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
@@ -564,7 +564,7 @@ jobs:
       # advance of more than 64). So it is read from the published series — every
       # published image carries a `gen<N>` tag, and the next number is max + 1 —
       # rather than from a timestamp, a commit count, or a counter file that can
-      # drift from what was actually published.
+      # drift from the published series.
       #
       # This runs on build-only runs too, even though they publish nothing: the
       # resolution is then exercised on every push instead of only at release time,
@@ -651,7 +651,7 @@ jobs:
           # to empty, `FROM wpe-builder-` is not a stage.
           # The install gate below computes and reseals the authoritative
           # digest. A placeholder avoids duplicating the rootfs in composefs
-          # scratch just to create the deliberately rejected first-pass UKI.
+          # scratch to create the deliberately rejected first-pass UKI.
           build-args: |
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
             BASE_REF=${{ env.BASE_REF }}
@@ -773,8 +773,8 @@ jobs:
           }
 
           # This is the only workflow that needs disk/firmware tooling. Keep it
-          # out of the general runner image and install it only for deliberate
-          # release validation; --no-install-recommends bounds download and
+          # out of the general runner image and install it only for release
+          # validation; --no-install-recommends bounds download and
           # unpack cost. The image build itself is not repeated.
           if command -v apt-get >/dev/null; then
             export DEBIAN_FRONTEND=noninteractive
@@ -835,7 +835,7 @@ jobs:
 
           # build-image may add a deterministic /boot-only UKI reseal layer.
           # Reproduce that exact final layer on the independent image and gate
-          # the artifact that will actually be published, not merely its base.
+          # the artifact to be published, rather than its base.
           repro_image="code.sandbox.example/qos/tilo:repro-${GITHUB_SHA}"
           podman load --input /var/tmp/tilo-image-repro.tar
           rm -f /var/tmp/tilo-image-repro.tar
@@ -856,7 +856,7 @@ jobs:
 
           export TILO_DISK="$TILO_OUTPUT/qcow2/disk.qcow2"
           trap './os/dev/vm.sh stop || true' EXIT
-          # The installed Files AT-SPI gate needs the real Tilo compositor.
+          # The installed Files AT-SPI gate needs the running Tilo compositor.
           # vm.sh documents that its 2D mode may not start that compositor;
           # egl-headless + virgl is the release-test configuration that does.
           ./os/dev/vm.sh boot --gl
@@ -878,9 +878,9 @@ jobs:
           # newly serialized network wait, initramfs stall, or service timeout.
           ./os/dev/vm.sh ssh 'TILO_BOOT_USERSPACE_BUDGET_SEC=20 /usr/libexec/tilo/boot-performance-gate.sh'
 
-          # This is a fresh installed user, so the real compositor must start
+          # This is a fresh installed user, so the compositor must start
           # directly into its trusted first-login identity ceremony. The
-          # release invokes the three normal setup actions through the real
+          # release invokes the three normal setup actions through the
           # AT-SPI provider, then observes each resulting tree transaction;
           # finish still uses ordinary keyboard input. The artifact poll is
           # the deterministic barrier between Create and the final screen; no
@@ -900,7 +900,7 @@ jobs:
           sleep 2
           # Unit/native audits prove the AccessKit shape in-process. This is
           # the release gate that proves the compositor-owned first-use UI is
-          # actually visible to an external AT-SPI consumer on the installed
+          # visible to an external AT-SPI consumer on the installed
           # graphical session.
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-actions
           for attempt in $(seq 1 60); do
@@ -925,9 +925,9 @@ jobs:
           ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh desktop
 
-          # Lock is compositor-owned too, and historically fell outside the
-          # app-window AT-SPI path. Exercise the real Super+L route and require
-          # its protected password field and instructions on the session bus.
+          # Lock is compositor-owned too. It has previously fallen outside the
+          # app-window AT-SPI path; exercise the Super+L route and require its
+          # protected password field and instructions on the session bus.
           ./os/dev/vm.sh keys meta_l-l
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh lock
           ./os/dev/vm.sh type "$TILO_PASS"

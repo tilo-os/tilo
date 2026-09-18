@@ -29,8 +29,7 @@ use serde::{Deserialize, Serialize};
 ///   HDR10 / Dolby Vision (CICP 9).
 ///
 /// Other CICP variants exist (SMPTE 170M, film P3, ...) but aren't
-/// worth first-class support until we hit a hardware pipeline that
-/// actually renders them.
+/// are unsupported until a hardware pipeline can render them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ColorPrimaries {

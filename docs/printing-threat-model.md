@@ -2,8 +2,8 @@
 
 Printing is the one desktop capability where the obvious implementation hands
 an untrusted application a bidirectional socket to a network daemon running as
-another user. This document says what Tilo trusts CUPS with, what it does not,
-and which mechanism enforces each part.
+another user. It defines what Tilo trusts CUPS with, what it does not, and
+which mechanism enforces each part.
 
 The short version: **CUPS runs, confined, reachable only from this machine;
 applications never touch it.** An app that wants to print hands the compositor
@@ -20,7 +20,7 @@ something to be trusted with the run of the machine.
 That framing drives everything below. The goal is not "make CUPS safe" — it is
 "make a compromised CUPS not matter very much".
 
-## What the attack surface actually is
+## Attack surface
 
 CUPS is a large C codebase that, on a default install, does all of the
 following with input it did not author:
@@ -88,7 +88,7 @@ cups.service with no hardening at all; `systemd-analyze security` scores it
 **9.6 UNSAFE**. With the drop-in it scores **2.8 OK**, measured offline against
 the same unit file.
 
-The parts that matter, and what each one is actually for:
+The relevant parts and their purpose are:
 
 | Mechanism | What it denies a compromised cupsd |
 |---|---|
@@ -112,7 +112,7 @@ socket with the right ownership and `setuid()`s per job so filters run as the
 *submitting* user rather than pooling every user's documents under one
 account. `User=lp` on the unit makes it fail at startup, which surfaces as
 "printing is broken" long after whoever set it has moved on. The dedicated
-unprivileged account is applied where it actually bites — `User lp` / `Group
+unprivileged account is applied where it matters — `User lp` / `Group
 lp` in `cupsd.conf`, governing the filter processes that touch document bytes
 and vendor PPD code. Root is contained by the table above instead.
 
@@ -185,7 +185,7 @@ files, or persistence in `/usr`. On a bootc image an attacker who cannot write
 ## Residual risk, knowingly accepted
 
 1. **cupsd is root.** Confined, but root. The alternative breaks printing; see
-   above. If upstream ever supports a genuinely rootless cupsd, this is the
+   above. If upstream ever supports a rootless cupsd, this is the
    first thing to revisit.
 2. **`/etc/cups` is writable by the scheduler.** It must be, or adding a
    printer fails. An attacker who owns cupsd can therefore persist a malicious

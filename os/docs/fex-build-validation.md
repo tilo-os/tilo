@@ -82,7 +82,7 @@ python3 -m unittest discover -s os/tests -p test_fex_payload.py
 On 2026-09-16 the exact recipe's CMake configuration completed offline against
 the existing native buildroot and complete guest SDK with portable CPU settings.
 Mutable input references were rejected before compilation. The complete new
-validator suite passed nine tests, and 36 real staged files passed validation
+validator suite passed nine tests, and 36 staged files passed validation
 in a separate fixture with the upstream license added. The original stage was
 unchanged and correctly failed its missing-license check. A production buildroot/SDK
 digest, separately frozen shipping guest filesystem, dependency-closure checks,
@@ -196,7 +196,7 @@ registration. The full 12,074-case rerun then produced:
 
 The instruction-only success is not full-suite acceptance. The next run needs
 the 32-bit runtime and complete target development headers. Preserve normal RPM
-installation scripts when constructing that environment; simply ignoring the
+installation scripts when constructing that environment; ignoring the
 failed checks or using incomplete header parsing cannot validate ABI layouts.
 
 ## Server lifecycle during tests
@@ -297,7 +297,7 @@ syscall overwrites its allocated register. Upstream
 [commit 91bbce5a96b9e1eaa32f95f440ea8b46bbfbdf20](https://github.com/FEX-Emu/FEX/commit/91bbce5a96b9e1eaa32f95f440ea8b46bbfbdf20)
 fixes Linux syscall block boundaries and advances the saved instruction
 pointer, including cache format invalidation. That exact, unmodified revision
-passed the regression and actual Fedora `ldconfig -p` with normal JIT settings.
+passed the regression and Fedora `ldconfig -p` with normal JIT settings.
 The same configured native ARM suite then passed in 480.47 seconds: 11,616 passes,
 458 upstream skips, and zero failures across 12,074 cases. The source manifest
 now pins this revision and its recursive gitlinks. No downstream FEX patch or
@@ -620,7 +620,7 @@ as `fex-clang21-invalid-home-validation.log` and
 `run-fex-tests.py` now creates its own home below the build directory and sets
 HOME and XDG state paths explicitly. It also supervises the server throughout
 CTest execution and terminates the test process group if the server exits.
-The two formerly failing clock tests passed with the real rebuilt server in
+The two formerly failing clock tests passed with the rebuilt server in
 1.66 seconds. A separate process-lifecycle check verified that simulated server
 exit is detected and its sleeping test child is terminated within five seconds.
 The complete suite must still finish with this corrected fixture.

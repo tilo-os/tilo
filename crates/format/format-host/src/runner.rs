@@ -4,7 +4,7 @@
 //!
 //! Resource caps:
 //! * **Memory** — `ResourceLimiter::memory_growing` rejects growth past
-//!   `MAX_MEMORY_BYTES` (256 MiB). A guest that asks for more gets a clean
+//!   `MAX_MEMORY_BYTES` (256 MiB). A guest that asks for more gets a
 //!   trap.
 //! * **Wallclock** — `Engine::increment_epoch()` is bumped once per
 //!   `EPOCH_TICK` by a Tokio task; each Store sets a deadline `MAX_TICKS`

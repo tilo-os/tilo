@@ -175,7 +175,7 @@ pub enum KeyProtection {
     SecretService,
     /// Stored as a mode-0600 host file, reachable only by the signing broker.
     BrokerFile,
-    /// A real externally supplied provider has sealed this record.
+    /// An externally supplied provider has sealed this record.
     HardwareBacked,
     /// Legacy schema; migration has not completed yet.
     LegacyPlaintext,
@@ -203,8 +203,8 @@ pub struct SecretReference {
     pub locator: String,
 }
 
-/// Non-secret information Settings may show for an identity record.  The
-/// private signing share is intentionally absent and `Debug` is safe.
+/// Non-secret information Settings may show for an identity record. The
+/// private signing share is absent and `Debug` is safe.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IdentitySummary {
     pub id: String,
@@ -1591,8 +1591,8 @@ pub fn load_from_bytes(bytes: &[u8]) -> Result<SigningIdentity, NotAvailable> {
 
 /// Serialize a public-only identity record for an enrolled member device.
 ///
-/// The result identifies the same person principal but intentionally carries
-/// no root signing share. The device authenticates through its separately
+/// The result identifies the same person principal but carries no root
+/// signing share. The device authenticates through its separately
 /// installed root-signed device certificate and signing broker.
 ///
 /// # Errors

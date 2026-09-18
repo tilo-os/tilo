@@ -337,7 +337,7 @@ use vello::{
     peniko::Color,
 };
 
-/// Cached `QUICK_UI_PERF=1` check, so the per-frame read costs nothing.
+/// Cached `QUICK_UI_PERF=1` check, so the per-frame read is cheap.
 fn perf_enabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();

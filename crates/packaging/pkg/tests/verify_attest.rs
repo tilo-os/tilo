@@ -7,10 +7,10 @@
 //! - Scope check: attestor's `prefix:` scope must cover the
 //!   package's declared id.
 //!
-//! Attestation signatures are produced inline with a real
-//! Ed25519 key — matches the format `verify_with_trust` walks.
+//! Attestation signatures are produced inline with an Ed25519 key, matching
+//! the format `verify_with_trust` walks.
 //! The signature covers `(payload_root_hash, publisher_pubkey)`,
-//! which we compute cheaply via one throwaway pack pass.
+//! which we compute via a preliminary pack pass.
 
 #![allow(
     clippy::unwrap_used,

@@ -3,11 +3,11 @@
 //! These carry things the earlier verbs could not express — the bytes
 //! behind a document's reference, an instruction addressed to another
 //! app's document, and the operations one app exports to the session —
-//! so each test drives a real client wrapper against a fake broker and
+//! so each test drives the client wrapper against an in-memory broker and
 //! asserts on what actually crossed the socket.
 //!
-//! No real broker; everything runs against a hand-rolled fake server
-//! over an in-memory `UnixStream` pair, as in `schema_v2.rs`.
+//! Everything runs against an in-memory server over a `UnixStream` pair,
+//! as in `schema_v2.rs`.
 
 // capnp's generated `Server` traits declare each verb as `-> impl Future`,
 // and these fakes return capnp's own `Promise`, which is the concrete type

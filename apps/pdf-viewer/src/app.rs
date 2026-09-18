@@ -385,14 +385,14 @@ pub struct PdfApp {
     pending_worker_plan: Option<Vec<PagePlanEntry>>,
     pending_save: Option<SaveRequest>,
     pending_import: Option<ImportRequest>,
-    /// False until a real file has been loaded — drives the empty state.
+    /// False until a file has been loaded — drives the empty state.
     has_document: bool,
     /// The opened file's display name, shown in the chrome.
     doc_name: String,
     /// A human-readable reason the last open failed, if any.
     load_error: Option<String>,
     /// Seed demonstration markup on first sync. Only ever set on the
-    /// screenshot / test path, never for a real document.
+    /// screenshot / test path, never for a user document.
     seed_sample: bool,
     /// Screenshot-only: drop the caret into the first comment on the first
     /// sync so a still frame can show the inline editor. Never set at runtime.
@@ -500,9 +500,9 @@ pub struct PdfApp {
     active_match: usize,
     search_whole_word: bool,
     search_case_sensitive: bool,
-    /// Raster-backend search hits over the real pdfium text layer. Used instead
-    /// of `matches` (which is the text backend's block model) when a real PDF
-    /// is open, so search highlights land on genuine glyph rectangles.
+    /// Raster-backend search hits over the pdfium text layer. Used instead
+    /// of `matches` (which is the text backend's block model) when a PDF
+    /// is open, so search highlights land on glyph rectangles.
     raster_matches: Vec<TextMatch>,
 
     // Real PDF text layer (raster backend) — glyph geometry per visible page,
@@ -639,8 +639,7 @@ pub struct PdfApp {
 
     /// Framework-owned action dispatch: brackets the undo boundary (the same undo
     /// path the Ctrl+K palette takes), encodes and dispatches each on-page markup
-    /// action, and remembers the last one so a test can prove a button dispatches
-    /// the byte-identical action the palette would.
+    /// action, and records the last one for parity checks with the palette.
     actions: ui::ActionHost,
 }
 
@@ -1710,7 +1709,7 @@ impl PdfApp {
     )]
     #[cfg(test)]
     pub fn import_file(&mut self, path: &std::path::Path, state: &mut AutoCommit) -> bool {
-        // Real files are read and decoded by the session owner. The UI only
+        // Files are read and decoded by the session owner. The UI only
         // receives validated content-address metadata, then emits the normal
         // collaborative page-plan action on this thread.
         if self.raster.is_none() && self.worker_raster_active() {
@@ -2810,9 +2809,9 @@ impl PdfApp {
     }
 
     /// The signature the composer currently holds: the drawn strokes when in
-    /// draw mode (and something has actually been drawn), otherwise the typed
+    /// draw mode (and strokes have been drawn), otherwise the typed
     /// name. `None` when draw mode is selected but the pad is empty — there is
-    /// no real signature to place yet.
+    /// no signature to place yet.
     fn composed_ink(&self) -> Option<SignatureInk> {
         match self.sig_mode {
             SigMode::Draw => {
@@ -3944,8 +3943,8 @@ impl Widget for PdfApp {
 
         if !self.seeded {
             // Demonstration markup is seeded only on the screenshot / test
-            // path; a real document opens with whatever markup the shared
-            // CRDT already holds and never fabricates content.
+            // path; a user document opens with whatever markup the shared
+            // CRDT already holds.
             if self.seed_sample && !PdfDoc::is_seeded(state) {
                 self.seed(state);
             }
@@ -4685,7 +4684,7 @@ impl Widget for PdfApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Tick only while a hover is genuinely counting toward the tooltip's
+        // Tick only while a hover is counting toward the tooltip's
         // reveal delay. Once the tooltip is shown (or the pointer isn't over a
         // button at all) no further frames are needed, so an idle window
         // settles to zero frames instead of redrawing forever. The pointer
@@ -5574,7 +5573,7 @@ mod tests {
 
     /// Drive-review on the real bundled `sample.pdf`: exact 50 / 100 / 200 %
     /// zoom, a panned view, and a placed annotation — each run through the live
-    /// frame path and shot to `/tmp/pdf_repro`. Proves zoom actually changes
+    /// frame path and shot to `/tmp/pdf_repro`. Checks that zoom changes
     /// the on-screen page size and that horizontal pan reaches new content.
     #[test]
     #[serial(pdfium)]
@@ -5661,7 +5660,7 @@ mod tests {
             app.viewport.max_scroll_x()
         );
 
-        // --- place an annotation on the real document and shoot it. ---
+        // --- place an annotation on the document and shoot it. ---
         app.fit = FitMode::Page;
         app.viewport.set_zoom(app.fit_page_zoom());
         full_frame(&mut app, &mut st, 1280.0, 800.0, None);
@@ -6000,11 +5999,6 @@ mod tests {
         (72.0 + i as f64 * 9.0 + 4.0, 126.0)
     }
 
-    /// The reviewer's core ask: double-clicking a word selects the whole word,
-    /// exactly like a text field. Drives the production `begin_selection` /
-    /// `finish_selection` path (the same functions the press/release handlers
-    /// call) so the shared `DragSelect` click ladder + `word_range` are proven,
-    /// not a re-derived helper.
     #[test]
     fn double_click_selects_the_word_through_the_selection_path() {
         let (mut app, _st) = app_with_state();
@@ -6576,9 +6570,6 @@ mod tests {
 
     #[test]
     fn responsive_mode_reflows_on_resize_not_cached() {
-        // Prove the breakpoint is re-derived from the *current* width on every
-        // layout pass: the same instance must reflow when resized between size
-        // classes, not stay frozen at whatever it launched as.
         let (mut app, _st) = app_with_state(); // starts wide (1280)
         app.reconcile_overlay();
         app.recompute_regions();
@@ -6638,8 +6629,8 @@ mod tests {
 
     #[test]
     fn ymd_from_unix_secs_matches_known_dates() {
-        // Fixed reference points, so the pure date conversion is proven
-        // correct independently of the wall clock.
+        // Fixed reference points keep the pure date conversion independent of
+        // the wall clock.
         assert_eq!(ymd_from_unix_secs(0), "1970-01-01"); // Unix epoch
         assert_eq!(ymd_from_unix_secs(946_684_800), "2000-01-01");
         assert_eq!(ymd_from_unix_secs(1_582_977_600), "2020-02-29"); // a leap day
@@ -7425,9 +7416,9 @@ mod tests {
             "and is non-empty"
         );
 
-        // Reopen the saved file with a fresh pdfium document and prove the
-        // markup is really in the file: page 1 gained content objects, and the
-        // signer name + note body are extractable text (so any viewer sees them).
+        // Reopen the saved file with a fresh pdfium document: page 1 gained
+        // content objects, and the signer name + note body are extractable text
+        // (so any viewer sees them).
         let reopened = crate::source::open(&out).expect("the saved PDF reopens");
         let mut rz = reopened.raster.expect("the saved PDF reopens via pdfium");
         let after = rz
@@ -7589,7 +7580,7 @@ mod tests {
         };
         let n = app.doc.page_count();
 
-        // A genuine PNG on disk, imported through the real code path.
+        // A PNG on disk, imported through the normal code path.
         let img = image::RgbaImage::from_pixel(96, 64, image::Rgba([210, 60, 60, 255]));
         let png = std::env::temp_dir()
             .join("tilo_pdf_edit")
@@ -7783,8 +7774,8 @@ mod tests {
         );
     }
 
-    /// Drive the real fixture PDF through the live frame path to produce the
-    /// review shots: a search hit over genuine glyphs, a placed highlight +
+    /// Drive the fixture PDF through the live frame path to produce the
+    /// review shots: a search hit over glyphs, a placed highlight +
     /// signature, and the *reopened saved* file rendered by pdfium with the
     /// flattened markup baked in. PNGs are written only under `PDF_SHOTS=1`
     /// (to `$PDF_SHOT_DIR`, default a temp dir); the assertions always run.
@@ -7805,7 +7796,7 @@ mod tests {
         let mut st = ui::State::new();
         full_frame(&mut app, &mut st, 1280.0, 800.0, None);
 
-        // --- search a real word and shoot the hit over genuine glyphs. ---
+        // --- search a word and shoot the hit over glyphs. ---
         let word = {
             let layer = app.raster.as_mut().unwrap().page_text(0);
             first_word(&layer.text, 4).expect("a searchable word")

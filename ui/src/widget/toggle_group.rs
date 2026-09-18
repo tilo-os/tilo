@@ -731,7 +731,7 @@ impl Widget for ToggleGroup {
             // A segmented strip has an intrinsic label-bearing width. In a
             // horizontal `Scrollable`, shrinking it to the viewport defeats
             // scrolling and makes labels collide. Non-scrollable parents can
-            // clip it, which is still more honest than overlapping controls.
+            // clip it, which prevents overlapping controls.
             // Width is already resolved as a percentage in flexible mode;
             // never let a tall sibling squash the 44px touch target.
             flex_shrink: 0.0,
@@ -1249,7 +1249,7 @@ mod tests {
             vec![Segment::new("a"), Segment::new("b"), Segment::new("c")],
             0,
         );
-        // Run a real layout pass so `segment_rects` is populated.
+        // Run a layout pass so `segment_rects` is populated.
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = g.build_layout(&mut taffy, &Theme::dark(), &mut node_map);

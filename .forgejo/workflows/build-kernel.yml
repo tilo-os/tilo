@@ -130,8 +130,8 @@ jobs:
             type=raw,value=pr-${{ github.event.number }}-${{ matrix.arch }},enable=${{ github.event_name == 'pull_request' }}
             type=raw,value=dispatch-${{ github.sha }}-${{ matrix.arch }},enable=${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
 
-      # push:true only on tags/dispatch — same guardrail as build-image.yml
-      # so main-branch commits verify without touching the registry.
+      # Push only on tags/dispatch so main-branch commits verify without
+      # touching the registry.
       - name: Build the tilo-kernel image (push only on tags/dispatch)
         id: build
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5

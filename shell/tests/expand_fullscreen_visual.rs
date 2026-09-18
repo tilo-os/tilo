@@ -1,7 +1,6 @@
-//! Visual harness for expand-to-fullscreen + its floating pill decoration:
-//! renders the real chrome (the same `FrameBuilder` the live compositor
-//! paints with) before and after clicking a tab's Expand chip and writes
-//! PNGs, so the result can be looked at rather than inferred.
+//! Visual harness for expand-to-fullscreen and its floating pill decoration.
+//! It renders the compositor's `FrameBuilder` before and after clicking a
+//! tab's Expand chip and writes PNGs for inspection.
 //!
 //! `#[ignore]` by default — needs a GPU adapter, and is a review tool, not
 //! a gate. Run with an output directory:

@@ -128,7 +128,7 @@ mod tests {
         Arc::new(RwLock::new(tree))
     }
 
-    /// Seed via a real [`NotesApp`], so the write lands where the provider reads.
+    /// Seed via [`NotesApp`], so the write lands where the provider reads.
     fn seed_note_body(chrome: &ChromeState, tab_id: u64, body: &str) {
         let record = crate::shell::tab_documents::scratch_tab_record(tab_id);
         let store = chrome.records();

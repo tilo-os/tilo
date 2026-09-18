@@ -493,7 +493,7 @@ impl Settings {
 /// looking at real `YouTube` data or the bundled offline sample.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DataSource {
-    /// True once a live backend has actually returned real data this session.
+    /// True once a live backend has returned data this session.
     pub live: bool,
     /// Short human label for the pill (e.g. "offline — sample data",
     /// "live (rustypipe)", "connecting…").
@@ -638,7 +638,7 @@ pub struct TubeModel {
     pub dearrow_thumb_url: BTreeMap<VideoId, String>,
     /// Whether the home/trending feed is currently being fetched from the live
     /// backend. Drives the Home skeleton so a cold, empty catalogue reads as
-    /// "loading" rather than a blank page. The real app starts `true` (it fetches
+    /// "loading" rather than a blank page. The online app starts `true` (it fetches
     /// on launch); the hermetic `--shots`/sample path leaves it `false`.
     #[serde(default)]
     pub feed_loading: bool,

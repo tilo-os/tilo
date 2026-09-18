@@ -21,8 +21,8 @@
 //!
 //! # Rendering
 //!
-//! Each cell is a real [`crate::widget::TextInput`] in plain-chrome mode, so
-//! caret placement, selection, word navigation and clipboard come for free.
+//! Each cell uses [`crate::widget::TextInput`] in plain-chrome mode, so caret
+//! placement, selection, word navigation, and clipboard handling are shared.
 //! Cells are laid out with a CSS-grid Taffy node (one track per column, fixed
 //! row height); the widget paints the grid lines, header band, row banding,
 //! and the insert / delete / resize affordances in the gutters on top.

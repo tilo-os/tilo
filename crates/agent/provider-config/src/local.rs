@@ -79,8 +79,8 @@ pub enum ModelArtifactFormat {
     /// The service verifies the compressed object, then refuses unsafe archive
     /// entries before atomically promoting the extracted directory.
     HfSnapshotTarZst,
-    /// An explicit GGUF single-file release. This is intentionally not an
-    /// implicit fallback: catalog authors must assert vLLM compatibility.
+    /// An explicit GGUF single-file release. Catalog authors must assert vLLM
+    /// compatibility; the format is not inferred as a fallback.
     VllmGguf,
 }
 
@@ -240,7 +240,7 @@ fn accelerator_memory(hardware: &HardwareSnapshot, runtime: RuntimeKind) -> u64 
 
 /// Determine the best runtime without probing hardware from an unprivileged
 /// agent process. `CUDA` and `ROCm` are selected only when both the driver stack
-/// and sufficient VRAM are confirmed; CPU is an honest fallback.
+/// and sufficient VRAM are confirmed; CPU is used otherwise.
 pub fn select_runtime(hardware: &HardwareSnapshot) -> RuntimeDecision {
     if hardware.accelerators.iter().any(|accelerator| matches!(accelerator, Accelerator::Nvidia { vram_mib, driver } if *vram_mib >= 8192 && !driver.trim().is_empty())) {
         return RuntimeDecision::Ready(RuntimeKind::NvidiaCuda);
@@ -263,7 +263,7 @@ pub enum RuntimeDecision {
     Unavailable(&'static str),
 }
 
-/// Typed lifecycle state shown to the task manager. It deliberately separates
+/// Typed lifecycle state shown to the task manager. It separates
 /// downloading from verification and activation: a complete file is not an
 /// installed model until the hash was checked, and an installed model is not
 /// necessarily running.

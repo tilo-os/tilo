@@ -5,7 +5,7 @@
 //! owns scrubbing state only — it never touches the CRDT itself, so the same
 //! scrubber works across artifact kinds whose restore wiring differs.
 //!
-//! A track with one tick per change is unusable on a real document: a
+//! A track with one tick per change is unusable for a document: a
 //! debounced editor produces hundreds of them and they smear into a grey
 //! band. Installing groups ([`Self::set_groups`]) adds a segment band above
 //! the track and snaps the handle to boundaries; per-change resolution stays
@@ -96,7 +96,7 @@ pub type NameCallback = Box<dyn FnMut(&GroupNameRequest)>;
 pub type VersionCallback = Box<dyn FnMut(&VersionAction)>;
 
 /// `start` / `end` are **inclusive** tick indices. `label` is `None` for a
-/// group nobody named, in which case `derived` carries the honest
+/// group nobody named, in which case `derived` carries the
 /// description the popover shows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScrubberGroup {
@@ -223,7 +223,7 @@ impl HistoryScrubber {
     }
 
     /// Segments outside the entry range are dropped rather than clamped: a
-    /// segment that doesn't describe real ticks would put a label over the
+    /// segment that doesn't describe existing ticks would put a label over the
     /// wrong part of the track.
     pub fn set_groups(&mut self, groups: Vec<ScrubberGroup>) {
         let n = self.entries.len();
@@ -769,7 +769,7 @@ impl HistoryScrubber {
         let size = (theme.tokens.typography.scale.sm - 3.0).max(9.0);
 
         // Segments abut at the tick each one ends on so every visible edge is
-        // a real boundary; spanning only first-tick..last-tick would leave a
+        // a boundary; spanning only first-tick..last-tick would leave a
         // gap between neighbours — 50 px on a twenty-change document.
         let mut cursor = band.x0;
         let last_index = self.groups.len().saturating_sub(1);
@@ -802,7 +802,7 @@ impl HistoryScrubber {
             // Every segment says what it is, even unnamed ones ("8 edits over
             // 2 min", in dim ink) — a blank grey block beside labelled ones
             // reads as a gap in the history rather than as a version. Only
-            // shown when it genuinely fits: a two-character stub is worse
+            // shown when it fits: a two-character stub is worse
             // than the block on its own.
             let (label, ink) = match &g.label {
                 Some(l) => (l.as_str(), colors.text_primary),
@@ -2044,7 +2044,7 @@ mod version_tests {
             "'revision 13 of 20' alone is not something a user can act on"
         );
 
-        // An unnamed version falls back to its honest derived description.
+        // An unnamed version falls back to its derived description.
         s.set_current_tick(7);
         let node = Widget::accessibility(&s).unwrap();
         assert_eq!(node.value.as_deref(), Some("5 edits, revision 8 of 20"));
@@ -2348,7 +2348,7 @@ mod version_tests {
             "the unnamed block is blank grey"
         );
 
-        // And it is genuinely the segment's own text: blank the description and
+        // It is the segment's own text: blank the description and
         // the same block goes back to being a flat fill.
         let mut groups = s.groups().to_vec();
         groups[1].derived = String::new();

@@ -13,7 +13,7 @@
 //! its own binary), with a hidden `__sandbox-exec` first argument. The
 //! re-entered launcher parses the argv following the token, builds a
 //! Landlock ruleset against the *sandbox-side* paths, calls
-//! `restrict_self()`, then `execvp`s the real app.
+//! `restrict_self()`, then `execvp`s the target app.
 //!
 //! qpkg applications require this layer.  An unsupported kernel, a partial
 //! ABI, or ruleset construction failure refuses the launch instead of quietly
@@ -58,7 +58,7 @@ pub struct ShimArgs {
     /// Connected broker descriptors intentionally handed to the app. Every
     /// other descriptor above stderr is closed before the entrypoint executes.
     pub keep_fds: Vec<i32>,
-    /// The real app argv to `execvp` after restricting.
+    /// The app argv passed to `execvp` after restricting.
     pub command: Vec<String>,
 }
 

@@ -6,13 +6,10 @@
 //! daemon loads it via wasmtime 46.
 //!
 //! The guest binds itself to the WIT package shipped by `format-provider-wit`
-//! through `wit-bindgen::generate!`. The implementation delegates to the existing
-//! `qdoc::MarkdownCodec` host-Rust source — the same code that runs in-process
-//! for the editor + builtin codecs path.
+//! through `wit-bindgen::generate!` and delegates to `qdoc::MarkdownCodec`.
 //!
-//! "Canonical bytes" on the wire are the Automerge save() output of the
-//! qdoc::Document; the host hands those back to clients verbatim so the
-//! collaborating CRDT layer is preserved across the WASM boundary.
+//! Canonical bytes are the Automerge `save()` output of `qdoc::Document`; the
+//! host passes them through the WASM boundary for clients to reload.
 //!
 //! The crate is gated to `target_arch = "wasm32"`. Building it for the host
 //! target is a no-op (an empty lib) — the workspace can still validate
@@ -40,7 +37,9 @@ mod guest {
         world: "provider",
     });
 
-    use exports::tilo::format_provider::format_provider::{CodecError, Confidence, Detected, Guest};
+    use exports::tilo::format_provider::format_provider::{
+        CodecError, Confidence, Detected, Guest,
+    };
 
     struct Component;
 

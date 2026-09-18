@@ -1,7 +1,7 @@
 //! Content-addressed CRDT change-history storage + versioning for office documents.
 //!
-//! An office file isn't re-saved as an opaque blob each write: its canonical
-//! form is a `qdoc` automerge document, persisted here as change history —
+//! Office files use a canonical `qdoc` automerge document rather than an
+//! opaque blob on each write; the document is persisted here as change history —
 //! each change stored once as a content-addressed blob in [`ContentStore`],
 //! and a *version* a small [`VersionManifest`] of change hashes chained to
 //! the previous version (so a save appends only new changes, and dedups).

@@ -80,8 +80,8 @@ const REPORT_CASE_KEY_PREFIX: &str = "store.report_case.";
 const REPORT_NOTE_KEY_PREFIX: &str = "store.report_note.";
 const PAGE_SIZE: usize = 48;
 /// Bound CRDT-supplied configuration before it is rendered, serialized, or
-/// forwarded to the Flatpak worker. These are deliberately generous relative
-/// to real remote names and HTTPS URLs, but prevent a hostile collaboration
+/// forwarded to the Flatpak worker. These limits are deliberately generous
+/// relative to remote names and HTTPS URLs, but prevent a hostile collaboration
 /// document from allocating an unbounded action payload or layout paragraph.
 const MAX_REMOTE_NAME_CHARS: usize = 128;
 const MAX_REMOTE_URL_BYTES: usize = 2_048;
@@ -1404,8 +1404,8 @@ impl StoreApp {
     }
 
     /// Keep desktop pages readable on large displays without imposing a
-    /// fixed width on narrow windows.  The surrounding spacers make the
-    /// 1120 px surface genuinely centred rather than merely indented.
+    /// fixed width on narrow windows. The surrounding spacers centre the
+    /// 1120 px surface.
     fn centered_content(&self, child: Box<dyn Widget>) -> Box<dyn Widget> {
         let width = if self.rect.width() > 0.0 {
             self.rect.width()
@@ -3549,8 +3549,7 @@ impl StoreApp {
 
     /// The label for the floating status bubble: a running action
     /// status while one is set, else the catalog counts (`N apps · M
-    /// shown`) — the same genuinely-contextual info the old permanent
-    /// footer strip carried. Never empty.
+    /// shown`). Never empty.
     fn footer_label(&self) -> String {
         if self.operation_error.is_some() {
             return "Operation failed".into();
@@ -3751,8 +3750,7 @@ impl StoreApp {
 /// one, so the host must seed it before the input syncs.
 ///
 /// # Panics
-/// Never in practice: `root` is always a live Map (the widget's own CRDT
-/// path), so `put_object` on it cannot fail short of a corrupted document.
+/// Panics if `root` is not a live Map.
 #[allow(
     clippy::expect_used,
     reason = "root is always a live Map (the widget's own CRDT path), so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"

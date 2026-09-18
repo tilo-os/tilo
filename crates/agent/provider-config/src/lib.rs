@@ -1,6 +1,6 @@
 //! Provider-neutral configuration for Tilo agents.
 //!
-//! This crate deliberately stores *descriptions* of model providers, never a
+//! This crate stores *descriptions* of model providers, never a
 //! bearer token. A profile can point at a system-vault item via
 //! [`SecretReference`], while the process that owns the secret service is
 //! responsible for resolving that reference at call time. Keeping this
@@ -42,7 +42,7 @@ impl ProviderProtocol {
 }
 
 /// Where an endpoint runs. This is an explicit trust cue in the UI: a local
-/// vLLM server must never look like a hosted API merely because it shares the
+/// vLLM server must remain distinct from a hosted API even though it shares the
 /// `OpenAI` wire protocol.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -75,7 +75,7 @@ impl EndpointLocation {
 /// A stable pointer to a secret held outside this configuration document.
 ///
 /// `locator` is an opaque non-secret item name such as
-/// `agent-provider/01J.../api-key`. It is intentionally not an environment
+/// `agent-provider/01J.../api-key`. It is not an environment
 /// variable name: the desktop broker can apply per-agent access policy before
 /// handing the secret to an outbound request.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,7 +158,7 @@ pub struct ProviderProfile {
     pub protocol: ProviderProtocol,
     pub endpoint: String,
     pub location: EndpointLocation,
-    /// Absent for an intentionally unauthenticated local endpoint. The secret
+    /// Absent for an unauthenticated local endpoint. The secret
     /// itself is never accepted or serialised by this type.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credential: Option<SecretReference>,
@@ -213,7 +213,7 @@ impl ProviderProfile {
         }
     }
 
-    /// An OpenAI-compatible local profile suitable for vLLM. It is deliberately
+    /// An OpenAI-compatible local profile suitable for vLLM. It is
     /// unauthenticated by default because a loopback server need not have a
     /// token; users can attach a vault reference if their deployment requires
     /// one.

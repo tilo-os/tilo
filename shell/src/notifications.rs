@@ -1779,7 +1779,7 @@ mod tests {
 
     // D-Bus round-trip over an in-process p2p connection, mirroring
     // `tests/portal_test.rs`'s hermetic fixture: a `UnixStream::pair()`
-    // carries a server and a raw-proxy client — no real session bus or broker needed.
+    // carries a server and a raw-proxy client — no session bus or broker needed.
 
     #[cfg(target_os = "linux")]
     const TEST_GUID: &str = "0123456789abcdef0123456789abcdef";

@@ -2,13 +2,13 @@
 //!
 //! The collaborative library is an Automerge document ([`crate::doc`]). For the
 //! Tilo self-hosting model — and so a headless home server's replica survives
-//! restarts — the raw `doc.save()` bytes are persisted to disk (NOT a JSON
-//! projection), exactly like `chat/src/storage.rs`: persisting the Automerge
+//! restarts — the raw `doc.save()` bytes are persisted to disk rather than a
+//! JSON projection, as in `chat/src/storage.rs`: persisting the Automerge
 //! save means a future peer can merge against the file directly.
 //!
 //! The default GUI app keeps its document in memory, starting from an **empty**
-//! library each run (real tracks arrive from playback, search, or a synced
-//! relay — never fabricated); this module is the seam the headless relay
+//! library each run (tracks arrive from playback, search, or a synced relay);
+//! this module is the seam the headless relay
 //! ([`crate::relay`]) uses to load and atomically persist its authoritative
 //! copy. Playback and credentials remain device-local effects and are
 //! intentionally absent from this file. Durable media bytes live in the

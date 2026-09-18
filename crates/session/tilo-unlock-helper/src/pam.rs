@@ -269,7 +269,7 @@ mod tests {
         assert_eq!(out, Outcome::Error);
     }
 
-    /// A password containing an interior NUL cannot be a real credential;
+    /// A password containing an interior NUL cannot be a valid credential;
     /// it is rejected as denied (bad credential), never accepted.
     #[test]
     fn interior_nul_password_is_denied_not_ok() {
@@ -281,18 +281,18 @@ mod tests {
         assert_ne!(out, Outcome::Ok);
     }
 
-    /// Full real-PAM path, opt-in: authenticate a **guaranteed-unknown** user
+    /// Full PAM path, opt-in: authenticate a **guaranteed-unknown** user
     /// and assert PAM denies it. This drives dlopen + the conversation
-    /// callback + `pam_authenticate` against the live PAM stack for real.
+    /// callback + `pam_authenticate` against the live PAM stack.
     ///
     /// An unknown user is used deliberately: a *known* local account may be
     /// passwordless (`passwd -S` reports `NP`), in which case `pam_unix`'s
     /// `nullok` legitimately returns success regardless of the typed password
-    /// — that is real PAM policy, not a helper fault. An unknown user has no
+    /// — that is PAM policy, not a helper fault. An unknown user has no
     /// entry to match, so any sane stack denies it, giving a stable deny
     /// oracle across environments.
     ///
-    /// `#[ignore]` by default: a real failed auth trips `pam_unix`'s ~2s fail
+    /// `#[ignore]` by default: a failed auth trips `pam_unix`'s ~2s fail
     /// delay and can feed `pam_faillock`, so it stays out of the default
     /// suite. Opt in with:
     ///   `cargo test -p tilo-unlock-helper -- --ignored real_pam_denies_unknown_user`

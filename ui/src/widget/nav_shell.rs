@@ -199,7 +199,7 @@ impl NavShell {
     /// Use this instead of [`NavShell::new`] when the left pane is a list of
     /// *destinations*: passing it as `new`'s `overview` makes it §1b
     /// content, which narrow then promotes to a full-screen page, pushing
-    /// the real content off the window.
+    /// the content off the window.
     pub fn sidebar_over_content(sidebar: Element, content: Element) -> Self {
         let mut shell = Self::new(content, Box::new(crate::widget::Spacer::new()));
         shell.sidebar = Some(sidebar);
@@ -604,7 +604,7 @@ impl NavShell {
     /// over that pane. Resolved here, in the same pass that positions the
     /// chip, rather than by the host: a host re-deriving it from last
     /// frame's rect would see the content shift by a frame once the shell is
-    /// actually measured, and a moving target is one the pointer can't hit.
+    /// measured, and a moving target is one the pointer can't hit.
     fn content_child_rect(&self, r: Rect) -> Rect {
         if self.affordance == Affordance::None || r.width() <= 0.0 || r.height() <= 0.0 {
             return r;
@@ -706,7 +706,7 @@ impl NavShell {
     }
 
     /// Driven from the draw path, never `update` (which `ui::App` never
-    /// calls), so the slides actually play and settle to no frames at rest
+    /// calls), so the slides play and settle to no frames at rest
     /// (HIG §5).
     fn self_tick(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
         if theme.reduce_motion {

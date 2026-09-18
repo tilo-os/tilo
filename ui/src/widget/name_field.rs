@@ -378,7 +378,7 @@ impl NameField {
 ///
 /// Binary chop on the char index; `measure` is cheap and the common case (a short
 /// label in a wide slot) exits on the first measurement. Returns an empty string
-/// when not even one character fits, which is the honest answer for a slot that
+/// when not even one character fits, which is the empty result for a slot that
 /// has been squeezed to nothing.
 ///
 /// Shared by every history surface: a version name that ellipsises one way in the

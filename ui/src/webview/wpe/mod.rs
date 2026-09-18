@@ -372,7 +372,7 @@ fn engine_thread(
             ffi::WPE_VIEW_ACTIVITY_STATE_VISIBLE | ffi::WPE_VIEW_ACTIVITY_STATE_IN_WINDOW,
         );
 
-        // Advertise a modern desktop Safari UA (honest about the WebKit
+        // Advertise a modern desktop Safari UA (accurate for the WebKit
         // engine) so UA-sniffing sites serve their normal responsive
         // layouts instead of the degraded one WPE's stale default
         // triggers. The Resize handler swaps to the mobile UA at narrow

@@ -1,27 +1,16 @@
-//! `tilo-collab-probe` — a packaged app that collaborates, and says out
-//! loud whether it could.
-//!
-//! Exists because the interesting question is not "does the broker fan
-//! out" (unit tests cover that) but "does an edit from a **sandboxed**
-//! process reach another machine" — which needs a real launcher, a
-//! real bwrap sandbox, and the descriptor the launcher hands a
-//! sandboxed app as `TILO_SVC_COLLAB_FD`; nothing here dials a path or
-//! reads an env socket, so a broken handoff means the probe can't work.
+//! `tilo-collab-probe` is a packaged app that checks collaboration through the
+//! sandbox service descriptor supplied by the launcher (`TILO_SVC_COLLAB_FD`).
+//! It does not connect to a socket path directly.
 //!
 //! ```text
 //! tilo-collab-probe write:<text>      # author an edit, publish it
 //! tilo-collab-probe read:<seconds>    # wait for one, print it
 //! ```
 //!
-//! The room comes from `TILO_WORKSPACE_ID` (as for every Tilo app); the
-//! payload is a genuine Automerge document — `write` publishes a typed,
-//! route-bound, signed incremental change via the same broker path as the UI
-//! toolkit, and `read` loads the signed change into its own document. A line
-//! from `read` means a real CRDT edit converged.
-//!
-//! Exit status is the verdict (0 only on real success); every failure
-//! names the step, since "collaboration is off" / "no peer connected"
-//! / "nobody typed" would otherwise all look like silence.
+//! The room comes from `TILO_WORKSPACE_ID`. `write` publishes a signed
+//! Automerge change through the broker, and `read` loads the change into its
+//! own document. Exit status is zero only when the requested operation
+//! succeeds; failures identify the step that failed.
 
 #![cfg_attr(
     test,
@@ -68,8 +57,7 @@ fn main() -> ExitCode {
     };
     let (mode, arg) = (mode.to_string(), arg.to_string());
 
-    // The room is the collaboration address; an app that can't name one
-    // isn't in a room — refuse rather than inventing a channel id that reaches nobody.
+    // The room is the collaboration address; without one the app cannot join.
     let channel = match std::env::var("TILO_WORKSPACE_ID") {
         Ok(v) if !v.trim().is_empty() => v,
         _ => {
@@ -82,9 +70,8 @@ fn main() -> ExitCode {
     };
     println!("probe: room = {channel}");
 
-    // The fd is the whole subject of the exercise, so report it before
-    // using it. `service_fd` returns None both when the env var is absent
-    // and when it names something not open — the two shapes the handoff can fail in.
+    // Report the descriptor before using it. `service_fd` returns None when
+    // the variable is absent or names a closed descriptor.
     if let Some(fd) = runtime_portal::service_fd("collab") {
         println!("probe: collab service fd = {fd}");
     } else {

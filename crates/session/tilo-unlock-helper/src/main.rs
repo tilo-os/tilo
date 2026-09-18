@@ -12,7 +12,7 @@
 //!   caller treats this as fail-closed: stay locked.
 //!
 //! The password is read from stdin (never argv, so it never appears in
-//! `/proc/*/cmdline` or `ps`). Nothing secret is ever printed. The real PAM
+//! `/proc/*/cmdline` or `ps`). Nothing secret is ever printed. The PAM
 //! conversation lives in [`pam`]; this file is the (unit-testable) CLI
 //! contract around it.
 //!

@@ -4,10 +4,10 @@
 //! can't be filled in from outside the winit crate, so a full
 //! `WindowEvent::KeyboardInput` can't be built from test code on Linux.
 //! [`KeyPress`] is a tiny constructible stand-in that
-//! [`super::Shell::dispatch_key`] consumes directly; the real compositor
+//! [`super::Shell::dispatch_key`] consumes directly; the compositor
 //! path extracts the same logical-key + modifier pair from a winit event
-//! and feeds it through the same dispatcher, so production and test paths
-//! exercise identical routing code.
+//! and feeds it through the same dispatcher, so both paths exercise identical
+//! routing code.
 //!
 //! `Mods` is hand-rolled as a `u8` bitmask rather than pulled in via
 //! `bitflags`, to keep the crate's dependency surface tight.

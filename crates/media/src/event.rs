@@ -1,9 +1,7 @@
 //! The toolkit-free frame + event vocabulary the engine speaks.
 //!
-//! Both the real `GStreamer` backend and the synthesized fallback produce the
-//! exact same [`VideoFrame`] (tightly-packed RGBA8) and the same
-//! [`MediaEvent`] stream, so a consumer (`ui::widget::VideoPlayer`) never
-//! branches on which backend is linked.
+//! The `GStreamer` backend and synthesized fallback produce the same
+//! [`VideoFrame`] (tightly packed RGBA8) and [`MediaEvent`] stream.
 
 use std::sync::Arc;
 
@@ -17,7 +15,7 @@ pub struct VideoFrame {
     /// `width * height * 4` bytes, row-major, no stride padding.
     pub rgba: Arc<Vec<u8>>,
     /// Presentation timestamp of this frame, in milliseconds from the start of
-    /// the stream. The widget uses it to keep the scrubber honest even when the
+    /// the stream. The widget uses it to keep the scrubber accurate when the
     /// pipeline's position query lags the last pulled frame.
     pub pts_ms: u64,
 }

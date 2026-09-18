@@ -314,7 +314,7 @@ pub enum A11yTarget {
         /// Ordinals, for a widget that identifies one by position —
         /// `synthetic_accessibility_rect` indexes into `seg_rects`.
         ///
-        /// Both are carried because both are genuinely needed, and they differ
+        /// Both are carried because both are required, and they differ
         /// for any node that sets an explicit key. Handing a positional
         /// implementor a key it never had is a silent mis-target.
         ordinal_path: Vec<usize>,

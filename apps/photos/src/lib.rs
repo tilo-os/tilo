@@ -1,6 +1,6 @@
 //! Photos — view a photograph, adjust it, and get the result out.
 //!
-//! A viewer with a small, honest set of edits:
+//! A viewer with a small set of edits:
 //!
 //!   * **Open** an image through the host XDG portal chooser (never a bespoke
 //!     dialog), or from a path on the command line.
@@ -162,11 +162,8 @@ pub const SHOT_SCENARIOS: &[&str] = &[
 
 /// A generated test pattern, used **only** by `--shots`.
 ///
-/// Deliberately not a photograph and deliberately not shipped as a file: it is
-/// drawn here so a screenshot is deterministic offline and so no sample image
-/// can leak into the live app. Wide (3:2) and asymmetric, so a shot proves
-/// letterboxing, orientation and crop rather than looking plausible either way
-/// round.
+/// Generated in memory for deterministic offscreen screenshots. Wide (3:2) and
+/// asymmetric to exercise letterboxing, orientation and crop.
 ///
 /// # Panics
 ///
@@ -224,7 +221,7 @@ pub fn shots_pattern(w: u32, h: u32) -> pixels::Rgba {
 /// Deterministic, hermetic gallery fixtures. They are deliberately derived
 /// from the same small procedural scene rather than bundled stock imagery,
 /// but each has a distinct light and colour story so an offscreen library
-/// reads as a real collection instead of four copies of one placeholder.
+/// reads as a collection instead of four copies of one placeholder.
 #[allow(
     clippy::many_single_char_names,
     clippy::indexing_slicing,
@@ -284,10 +281,10 @@ pub fn seed_scenario(
         return;
     }
 
-    // These two poses exercise the honest states a collaborator can see
+    // These two poses exercise the states a collaborator can see
     // before their content arrives, and after bytes turn out not to be an
     // image.  They intentionally write only tiny document metadata: neither
-    // state fabricates picture bytes merely to make a screenshot attractive.
+    // state adds picture bytes solely for a screenshot.
     if scenario == "loading" {
         let open = OpenImage::from_path("/photos-shots/not-here-yet.png", 1200, 800)
             .with_content("0".repeat(64));

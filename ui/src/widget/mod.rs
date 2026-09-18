@@ -1185,7 +1185,7 @@ pub trait Widget {
     /// Paint only the audience content in a separate surface. This is not a
     /// second layout pass: it must be a pure projection of already-owned app
     /// state, so a presenter and audience stay in lock-step without cloning a
-    /// document or rendering a fake split pane.
+    /// document or rendering a split pane.
     fn draw_audience_presentation(
         &mut self,
         _scene: &mut Scene,
@@ -1347,7 +1347,7 @@ pub trait Widget {
     }
 
     /// Presentation (navigation), not a CRDT action — mutate the doc only
-    /// if selecting genuinely changes shared state.
+    /// if selecting changes shared state.
     fn activate_search_result(&mut self, _action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {}
 
     /// The affordance-driven twin of the Ctrl+K palette: when a widget's own
@@ -1370,7 +1370,7 @@ pub trait Widget {
     /// [`UndoAccess`](crate::undo::UndoAccess)) and read it back in `draw`, in
     /// [`is_enabled`](Widget::is_enabled), and in
     /// [`accessibility`](Widget::accessibility) — which only gets `&self`, and
-    /// is exactly where the disabled state has to be honest.
+    /// is exactly where the disabled state must be reflected.
     ///
     /// The host sweeps its `node_map`, so this reaches a widget at any depth
     /// with no container forwarding. Default: ignore it.
@@ -1740,7 +1740,7 @@ pub trait Widget {
 /// Panic-free node construction, used by every `build_layout` implementation
 /// in this module. `TaffyTree::new_leaf` and `new_with_children` are typed
 /// `-> TaffyResult<NodeId>` for API generality, but taffy 0.10's
-/// implementation shows neither can actually return `Err`: `new_leaf` always
+/// implementation shows neither can return `Err`: `new_leaf` always
 /// inserts and returns `Ok`, and `new_with_children` only fails for a child
 /// `NodeId` belonging to a *different* tree, which never happens here since
 /// every child passed in was just built in this same tree by the calls

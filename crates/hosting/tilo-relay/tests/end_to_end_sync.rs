@@ -1,11 +1,10 @@
 //! End-to-end workspace sync through a host: two member devices + a
-//! durable host, real Automerge deltas, live fan-out, author
+//! durable host, Automerge deltas, live fan-out, author
 //! exclusion, and offline store-and-forward.
 //!
 //! This is the whole "workspace = unit of sync" contract in one
-//! timeline, asserted on the real `WorkspaceRuntime`/daemon path
-//! (no mocks of the code under test) with genuine Automerge
-//! documents so convergence — not just byte-equality of an opaque
+//! timeline, asserted on the `WorkspaceRuntime`/daemon path with
+//! Automerge documents so convergence — not just byte-equality of an opaque
 //! blob — is what gets proven:
 //!
 //!   1. Host + devices A and B come up; A and B are workspace

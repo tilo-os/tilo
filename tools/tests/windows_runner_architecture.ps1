@@ -1,5 +1,5 @@
 # Load only the pure architecture resolver. Never execute registration or read
-# credentials from the actual ephemeral-runner launcher during this test.
+# credentials from the ephemeral-runner launcher during this test.
 $ErrorActionPreference = 'Stop'
 $Tokens = $null
 $Errors = $null

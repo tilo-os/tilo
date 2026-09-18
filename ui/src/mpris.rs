@@ -181,7 +181,7 @@ impl MprisHandle {
         }
     }
 
-    /// Whether the MPRIS D-Bus service is actually running.
+    /// Whether the MPRIS D-Bus service is running.
     pub fn is_active(&self) -> bool {
         self.cmd_rx.is_some()
     }

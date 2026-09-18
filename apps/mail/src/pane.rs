@@ -2,7 +2,7 @@
 //! parameterised by [`Role`] so the [`ui::widget::NavShell`] can own three
 //! distinct child `Element`s that all share one [`MailState`].
 //!
-//! * [`Role::Sidebar`] — the genuine menu (accounts + folders + compose).
+//! * [`Role::Sidebar`] — the menu (accounts + folders + compose).
 //! * [`Role::List`] — the message overview (search + threaded rows).
 //! * [`Role::Reader`] — the message detail (headers + body + actions).
 //!

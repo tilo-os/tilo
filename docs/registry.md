@@ -8,9 +8,8 @@ their own registry; the Tilo org runs one at
 and ships **the registry client itself as a `.qpkg` app** so it
 can be swapped out or forked like any other Tilo app.
 
-This document covers the architecture, how to bootstrap a
-self-hosted instance, publisher-allowlist workflow, TLS setup,
-backup/restore, and where the moderation hooks live.
+The registry architecture covers self-hosted bootstrap, publisher-allowlist
+workflow, TLS setup, backup/restore, and moderation hooks.
 
 ---
 
@@ -223,13 +222,12 @@ covering entries and change requests — clients verify these
 against the pinned owner pubkey regardless of whether the
 transport is HTTPS.
 
-That said, for deployments you almost always want a real
-TLS-terminating reverse proxy in front:
+For deployments, use a TLS-terminating reverse proxy in front:
 
 - Rotate certificates without restarting the registry.
 - Rate-limit and cache GETs at the edge.
 - Serve the `.qpkg` payloads themselves — the entries just point
-  at HTTPS URLs; the actual bytes can live on any CDN / object
+  at HTTPS URLs; the bytes can live on any CDN / object
   store.
 
 ### nginx example

@@ -7,9 +7,8 @@
 //! the same CLI.
 //!
 //! When no engine is reachable (CI, or a host without podman installed) the
-//! live read returns an honest *empty* snapshot flagged `live = false`, and
-//! lifecycle actions become no-ops rather than errors — the UI renders a real
-//! "no engine" zero-state, never fabricated containers. The bundled
+//! live read returns an empty snapshot flagged `live = false`, and lifecycle
+//! actions become no-ops rather than errors. The bundled
 //! [`crate::model::sample_engine`] is reserved for the headless `--shots`
 //! renderer alone.
 
@@ -87,11 +86,9 @@ pub fn engine_available() -> bool {
         .is_some_and(|out| out.status.success())
 }
 
-/// Collect a full snapshot from the live engine, or an honest empty snapshot
-/// when none is reachable. Never returns an error, and never fabricates
-/// containers: an unreachable engine yields an empty [`Engine`] flagged
-/// `live = false` so the UI renders a real "no engine" zero-state rather than
-/// bundled sample data (which belongs only to `--shots`).
+/// Collect a full snapshot from the live engine, or an empty snapshot when none
+/// is reachable. An unreachable engine yields an [`Engine`] flagged
+/// `live = false`; bundled sample data is reserved for `--shots`.
 pub fn probe() -> Probe {
     match probe_live() {
         Some(engine) => Probe { engine },

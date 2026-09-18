@@ -1386,7 +1386,7 @@ impl Widget for Scrollable {
     }
 
     /// `scroll_dirty` alone must NOT force a full `compute_layout` — only a
-    /// genuinely measure-dirty descendant does — or every scroll frame
+    /// measure-dirty descendant does — or every scroll frame
     /// re-solves the whole content tree.
     fn layout_needs_measure(&self) -> bool {
         self.child

@@ -1371,8 +1371,8 @@ fn topbar_right_cluster_paints_avatar_stack_when_collaborators_present() {
 
 /// The reverse: a first boot has no collaborators, so the cluster must
 /// paint none — a fabricated avatar would misrepresent presence and write a
-/// fake person into the user's own workspace doc. Asserted on the real
-/// `persist::load_or_default` -> `bootstrap_default` path.
+/// fake person into the user's own workspace doc. Asserted through
+/// `persist::load_or_default` -> `bootstrap_default`.
 #[test]
 fn topbar_right_cluster_paints_no_avatar_on_a_first_boot() {
     let tree = WorkspaceTree::bootstrap_default();
@@ -1451,8 +1451,8 @@ fn topbar_right_cluster_paints_no_avatar_on_a_first_boot() {
 }
 
 /// A workspace nobody has joined paints no avatars — the empty case is what
-/// distinguishes "renders the real roster" from "fabricates one", since
-/// both satisfy "something painted".
+/// distinguishes an empty roster from a fabricated one, since both satisfy
+/// "something painted".
 #[test]
 fn topbar_right_cluster_paints_nobody_when_the_workspace_is_empty() {
     let tree = WorkspaceTree::bootstrap_default();
@@ -1572,8 +1572,8 @@ fn layout_topbar_and_collect_fills(
     collect_solid_colors(&scene)
 }
 
-/// Two real peers, wire to painted avatars, through the production path
-/// only: an empty first-boot tree fed the exact `InboundPresence` records
+/// Two peers, wire to painted avatars, through the event path: an empty
+/// first-boot tree fed the exact `InboundPresence` records
 /// the network hands the compositor. Don't seed `ws.collaborators` directly
 /// (the presence path must fill it) and don't drop the empty-before half.
 #[test]

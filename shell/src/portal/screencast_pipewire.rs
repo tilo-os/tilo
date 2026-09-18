@@ -8,7 +8,7 @@
 //! [`MockScreenCastProvisioner`] is test-only. `RealPipewireProvisioner` opens
 //! a connection to the system daemon, creates a video stream of the
 //! workspace's composed scene at the negotiated dimensions, and returns
-//! the real node id, which the compositor's frame loop pushes buffers into.
+//! the node id, which the compositor's frame loop pushes buffers into.
 //!
 //! Pipewire is a C-library system dependency. Tilo's native image includes it;
 //! tests inject the mock and hosted mode remains explicitly unavailable.

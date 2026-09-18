@@ -90,7 +90,7 @@ pub struct ExportedAction {
 }
 
 /// Permission hook: decides whether a caller may *see* a given resource.
-/// The permission subsystem ([`ui::permissions`]) owns the real policy; a
+/// The permission subsystem ([`ui::permissions`]) owns the policy; a
 /// caller wires it in against a `PermissionContext`.
 pub trait ActionVisibility {
     /// `true` if the caller may see (and so select + invoke) this resource.
@@ -365,7 +365,7 @@ mod tests {
     }
 
     /// The headline covenant: enumerate → select by id → invoke, entirely
-    /// headless, mutating real chrome state through the production path.
+    /// headless, mutating chrome state through the production path.
     #[test]
     fn enumerate_select_invoke_mutates_state_with_no_rendering() {
         let reg = registry_with_actions();

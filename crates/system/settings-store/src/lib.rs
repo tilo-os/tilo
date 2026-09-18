@@ -81,7 +81,7 @@ pub fn load() -> Map<String, Value> {
 }
 
 /// [`load`] from an explicit path. Exposed so tests can drive a scratch file without
-/// touching the real one.
+/// touching the configured settings file.
 pub fn load_at(path: &Path) -> Map<String, Value> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Map::new();
@@ -107,7 +107,7 @@ pub fn section(text: &str, name: &str) -> Map<String, Value> {
     }
 }
 
-/// Read one top-level section from the real settings file.
+/// Read one top-level section from the configured settings file.
 pub fn load_section(name: &str) -> Map<String, Value> {
     match load().get(name) {
         Some(Value::Object(m)) => m.clone(),

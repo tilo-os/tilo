@@ -1,6 +1,6 @@
 //! Manifests for the shipped app fleet, checked against the production `pkg`
-//! schema (not a local copy), so a schema change that breaks a real install
-//! breaks this suite first. Every app needs a valid `tilo-app.toml` to be
+//! schema, so a schema change that breaks an install breaks this suite first.
+//! Every app needs a valid `tilo-app.toml` to be
 //! packable, installable, and launchable at all.
 
 #![allow(

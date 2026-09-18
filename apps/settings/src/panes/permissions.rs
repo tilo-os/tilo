@@ -8,16 +8,14 @@
 //! launcher sandbox enforce exactly that list. This pane reads that same file
 //! and renders the live grants — which app in which workspace holds camera,
 //! microphone, screen-sharing, file, or network access, and for how long —
-//! rather than a hand-mirrored description that could drift from what is
-//! actually enforced.
+//! using the grants enforced by the compositor.
 //!
 //! It is deliberately **read-only**. Granting happens at the compositor's
 //! consent prompt (an app reaching outside what it owns) and revoking happens
 //! in the workspace that owns the grant; this pane does not write
 //! `state.json`, so it ships no buttons that would look live but change
 //! nothing. When there are no grants — a fresh session, or one where no app
-//! has been approved for anything — it shows an honest empty state, never a
-//! fabricated permission.
+//! has been approved for anything — it shows an empty state.
 
 use crate::widgets::{El, caption, card, cards, hgap, rows, status_pill, value_row, vgap};
 use collab_types::caps::{CapOverride, Effect, Expiry, Principal, Scope, Subject, Verb};
@@ -432,7 +430,7 @@ fn workspace_grants_intro_card() -> El {
     )
 }
 
-/// Honest empty state — a successfully loaded workspace record contains no
+/// Empty state — a successfully loaded workspace record contains no
 /// app grants.
 fn no_workspace_grants_card() -> El {
     card(
@@ -512,7 +510,7 @@ fn push_workspace_grant_cards(
     }
 }
 
-/// Where enforcement actually happens — unchanged truth.
+/// Where the compositor enforces the grants.
 fn enforcement_card() -> El {
     card(
         "Where enforcement happens",
@@ -653,7 +651,7 @@ mod tests {
         assert_eq!(all[0].apps[0].app, "org.tilo.Camera");
         assert_eq!(all[0].apps[0].caps.len(), 2, "camera + file grant");
         assert_eq!(grant_count(&all), 2);
-        // The file grant carries the real path + mode; the camera grant its kind.
+        // The file grant carries the path + mode; the camera grant its kind.
         let kinds: Vec<&str> = all[0].apps[0].caps.iter().map(|c| c.kind).collect();
         assert!(kinds.contains(&"Camera") && kinds.contains(&"Files"));
         let file = all[0].apps[0]

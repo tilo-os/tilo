@@ -57,7 +57,7 @@ Driven entirely by `[sandbox]` fields.
 
 `--unshare-all` is always applied; the `namespaces` list is currently
 informational (the launcher unshares the full set by default). Include
-the ones you actually want unshared — omitting `net` in a future launcher
+the ones you want unshared — omitting `net` in a future launcher
 would leave the network namespace shared.
 
 ### FS bind mounts
@@ -128,7 +128,7 @@ sentence, at the filesystem layer.
 
 `crates/packaging/launcher/tests/room_confinement.rs` proves it by
 reading: an app writes a record in room A and gets `ENOENT` for it in
-room B, under a real `bwrap`.
+room B, under `bwrap`.
 
 ### Portals
 
@@ -216,8 +216,9 @@ Note the launcher's log line:
 tilo-sandbox-exec: landlock: partially enforced (kernel ABI dropped some rights) (12 ro, 2 rw, net_restricted=true)
 ```
 
-"partially enforced" is not a bug — Landlock supports up to ABI v5 today,
-and older kernel ABIs silently drop rights the kernel doesn't understand.
+"partially enforced" indicates that the kernel supports fewer Landlock rights
+than the profile requests — Landlock supports up to ABI v5 today, and older
+kernel ABIs silently drop rights they do not understand.
 The launcher records the count of successful rules and continues. On a
 kernel with Landlock v3+ the enforcement is total.
 
@@ -249,7 +250,7 @@ Three consequences worth knowing before you write networking code:
   and the sandbox's `127.0.0.1` is its own.
 
 A refused destination answers SOCKS5 `HOST_UNREACHABLE` / HTTP `502`, the
-same as a host that is genuinely unreachable. That is deliberate: handle it
+same as a host that is unreachable. That is deliberate: handle it
 as "offline", not as "ask the user to grant something".
 
 ### Denial is an absence, not a refusal

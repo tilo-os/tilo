@@ -109,7 +109,7 @@ pub struct Toast {
 /// The stack is render-only — input routing (click-to-dismiss, hover
 /// pause) is wired by the first shell consumer. The primitive itself
 /// exposes timing/capacity API so it stays unit-testable without a live
-/// event loop or a real clock.
+/// event loop or a wall clock.
 pub struct ToastStack {
     toasts: Vec<Toast>,
     max: usize,

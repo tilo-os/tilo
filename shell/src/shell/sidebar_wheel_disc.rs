@@ -2344,7 +2344,7 @@ mod tests {
         handled
     }
 
-    /// The real `Widget::draw`, which populates the scene cache, the
+    /// `Widget::draw`, which populates the scene cache, the
     /// fingerprint and every cached hit rect.
     fn paint(d: &mut SidebarWheelDisc) {
         let mut scene = Scene::new();
@@ -2533,8 +2533,8 @@ mod tests {
         }
     }
 
-    /// Drives the real press path at every position a label passes
-    /// through, rather than comparing rectangles — the ordering where
+    /// Drives the press path at every position a label passes through, rather
+    /// than comparing rectangles — the ordering where
     /// the button resolves before a sector is the thing that must hold.
     #[test]
     fn the_add_button_stays_pressable_at_every_rotation() {

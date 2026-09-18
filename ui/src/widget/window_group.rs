@@ -220,7 +220,7 @@ pub struct WindowGroup {
     pending_tab_reorder: Option<(usize, usize)>,
     /// Close-button requests still awaiting the shell's durable workspace
     /// and client-lifecycle transaction. The widget owns the fade; the
-    /// shell owns whether a window actually remains open.
+    /// shell owns whether a window remains open.
     pending_close_commit: Vec<u64>,
     /// `None` while alive; `Some` once the last tab-close drains with no
     /// tabs or in-flight closing hosts left. `GroupRow` prunes the group

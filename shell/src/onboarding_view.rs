@@ -206,7 +206,7 @@ pub enum OnboardingContext {
 }
 
 /// Deterministic states used only by the offscreen production renderer.
-/// They exercise the real composition without performing identity I/O.
+/// They exercise the composition without performing identity I/O.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OnboardingVisualState {

@@ -553,7 +553,8 @@ mod tests {
             "and a handle that names nothing is refused identically"
         );
 
-        // Editing it must change nothing — this is the fine-grained authoring path a read participant must not have.
+        // Editing it must change nothing: a read participant has no authoring
+        // capability.
         let heads = namespace.lock().unwrap().heads();
         assert!(
             c.splice(secret_ino, &hidden_block, 0, 0, "TAMPERED")
@@ -582,7 +583,7 @@ mod tests {
         );
     }
 
-    /// A read participant sees the document but cannot author it — this is where "read participation" either holds or does not.
+    /// A read participant sees the document but cannot author it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_read_participant_cannot_author_over_the_socket() {
         use collab_types::{CapOverride, Ed25519PublicKey, Effect, Scope, Subject, Verb};

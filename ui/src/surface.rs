@@ -584,8 +584,8 @@ mod tests {
     }
 
     /// The corner sprite must equal the edge profile along the two
-    /// rows/columns where it meets an edge slice — the seam is seamless
-    /// by construction, not luck.
+    /// rows/columns where it meets an edge slice — the join is continuous by
+    /// construction.
     #[test]
     fn corner_sprite_joins_the_edge_profile_where_the_slices_meet() {
         let s = build_shadow_sprites(0, 0, 0);

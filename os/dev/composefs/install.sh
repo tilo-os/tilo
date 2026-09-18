@@ -25,7 +25,7 @@
 #   Pulling image into composefs repository: Opening stream '':
 #   Creating new splitstream reader: Invalid splitstream content type
 #
-# Pulling the same image over HTTP works. That is a real constraint on replacing
+# Pulling the same image over HTTP works. That is a constraint on replacing
 # bib: the disk step needs a registry the installer can reach, so a local one is
 # started here rather than assumed.
 set -euo pipefail

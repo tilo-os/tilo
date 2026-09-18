@@ -10,8 +10,8 @@ name = "tilo-power"
 path = "src/main.rs"
 
 [dependencies]
-# Kept deliberately tiny — this is a systemd notify daemon that watches
-# a single sysfs file. No async runtime, no serde, no clap.
+# This systemd notify daemon watches a single sysfs file and needs no async
+# runtime, serde, or clap.
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -194,7 +194,7 @@ mod tests {
     /// The defect the split exists to prevent, pinned at the shape that
     /// actually broke.
     ///
-    /// A widget that fakes a soft shadow with a stack of concentric rings
+    /// A widget that approximates a soft shadow with a stack of concentric rings
     /// composites every ring where they overlap, so the weight compounds. With
     /// the dark ladder's alphas on a white card that stack landed on `#A6A6A6`
     /// — a 2.12:1 band, heavier than the card border and heavy enough that a

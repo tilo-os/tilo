@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fail if any crate on disk (apps/*, crates/**) is missing from the workspace
-# members — this is what let 37 apps silently drop out of the build. Fast, no cargo.
+# members. Fast, no cargo.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 fail=0

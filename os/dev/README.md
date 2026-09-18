@@ -11,7 +11,6 @@ os/dev/
   build-image.sh   podman build (in-image compile) -> disk-image.sh -> qcow2
   disk-image.sh    container image -> bootable qcow2 (systemd-repart + bootc install)
   vm.sh            boot / login / screenshot / logs / stop
-  README.md        this file
 ```
 
 ## Prerequisites
@@ -68,7 +67,7 @@ TILO_SKIP_BUILD=1 ./os/dev/build-image.sh
 
 Login: **`tester` / `tilo`** (from `os/config.toml`).
 
-## Display modes — the key gotcha
+## Display modes
 
 QEMU's `screendump` can only read the surface its display backend exposes. There
 is **no single headless mode that captures both the 2D greeter and the GL
@@ -81,16 +80,11 @@ compositor**, so pick per task:
 
 `vm.sh serial` works in both (the image boots with `console=ttyS0`).
 
-Two corrections to what this table used to say, both established by booting the
-image rather than by reading the flags:
-
-* **`--2d` does reach the desktop.** The compositor was described as possibly
-  not starting under software GL. It starts: `/usr/bin/shell --backend drm`
-  paints the full desktop through llvmpipe, just slowly. So `--2d` is the mode
-  that can capture a whole boot — firmware, bootloader, console, greeter, login
-  and desktop — in one continuous take, which no GL mode can, and it is what
-  `record-boot.py` defaults to.
-* **The greeter is not tuigreet.** greetd runs `cage -s -- tilo-greeter` on vt1
+* **`--2d` reaches the desktop.** `/usr/bin/shell --backend drm` paints the
+  full desktop through llvmpipe, slowly. `--2d` captures a whole boot — firmware,
+  bootloader, console, greeter, login and desktop — in one continuous take, and
+  it is what `record-boot.py` defaults to.
+* **Graphical greeter.** greetd runs `cage -s -- tilo-greeter` on vt1
   (`/etc/greetd/config.toml`), a graphical Wayland session with a two-field
   form. Return on the username submits, so anything driving it wants Tab
   between the fields.
@@ -216,7 +210,7 @@ re-implementation of it, and both need `sshpass` on the host.
    `Failed to open /dev/nbd0: Permission denied`, run `qemu-nbd` from a real-root
    context, or fall back to method 2 (route the unit's stderr to the console).
 
-## Gotchas baked into these scripts (bringup notes)
+## Operational notes
 
 - **Image base = `fedora-bootc:44`.** F42 is EOL. Binaries are built in a
   Fedora 43 toolbox (glibc 2.42) and run on F44 (newer glibc) — forward-compatible.
@@ -237,11 +231,10 @@ re-implementation of it, and both need `sshpass` on the host.
 
 ## Installer (self-install)
 
-Tilo installs with its own **Tilo-branded installer**: a bootable live qcow2 that
+Tilo installs with its own installer: a bootable live qcow2 that
 runs the graphical installer (`installer/`, binary `tilo-installer`) under `cage`
 and **self-installs the booted image** onto a target disk — offline, no network
-pull. This is the only installer; an early Anaconda ISO path was scaffolding
-from before this existed and has been removed.
+pull.
 
 How it works:
 

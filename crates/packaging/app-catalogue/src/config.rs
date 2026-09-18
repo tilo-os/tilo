@@ -1,19 +1,16 @@
 //! The registries this machine pulls app entries from.
 //!
 //! One file, `registries.toml`, under `$XDG_CONFIG_HOME/tilo-store/`.
-//! That path is not a typo and not a new invention: it is where the
-//! store app has always kept the user's registry list, and a second
-//! list somewhere else would mean the desktop and the store disagreed
-//! about what software exists. One list, two readers.
+//! The store app and desktop read this same list so they agree about
+//! which software is available.
 //!
-//! Reading is deliberately split in two:
+//! Reading is split in two:
 //!
 //! * [`load_registries`] seeds a default file when none exists — what
 //!   an app the user opened on purpose should do.
 //! * [`load_registries_no_seed`] never writes. The compositor consults
 //!   the catalogue on a timer, and a background timer that
-//!   materialises config files in `~/.config` is a side effect nobody
-//!   asked for.
+//!   materialises config files in `~/.config` as a side effect.
 
 use std::fs;
 use std::path::PathBuf;
@@ -111,7 +108,7 @@ impl RegistriesFile {
         }
     }
 
-    /// Just the registries the user has left switched on.
+    /// The registries the user has left switched on.
     pub fn enabled(&self) -> impl Iterator<Item = &RegistryConfig> {
         self.registries.iter().filter(|r| r.enabled)
     }
@@ -141,8 +138,8 @@ pub fn registries_path() -> Option<PathBuf> {
 
 /// Read `registries.toml` without ever writing one.
 ///
-/// A missing file means "no registries configured", which is a real
-/// and correct answer, not an error: a machine that has not been
+/// A missing file means "no registries configured", which is a valid
+/// answer rather than an error: a machine that has not been
 /// pointed at a registry has nothing available to offer.
 pub fn load_registries_no_seed() -> RegistriesFile {
     let Some(path) = registries_path() else {

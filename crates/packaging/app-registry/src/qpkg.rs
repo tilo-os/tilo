@@ -202,7 +202,7 @@ pub fn verify_bytes(
 
 #[cfg(test)]
 pub(crate) mod test_fixture {
-    //! Shared fixture builder — a tiny, real, signed `.qpkg`. Also used
+    //! Shared fixture builder for a signed `.qpkg`. Also used
     //! by the crate's integration tests.
     use super::*;
     use pkg::pack::{SigningIdentity, pack};

@@ -8,7 +8,7 @@ the mount existed but writes were denied, preventing runtimes from creating
 temporary files and local socket state. The planner now includes the private
 mount in its writable rules; it does not bind the host's temporary directory.
 
-The regression test parses the actual generated launcher-shim arguments for
+The regression test parses the generated launcher-shim arguments for
 both capsule layers. It requires writable `/tmp`, a private tmpfs rather than
 a host bind, active Landlock, and the existing network restriction. It failed
 before the fix; all 48 compatibility-service tests passed afterward on ARM.
@@ -24,7 +24,7 @@ bash os/tests/kernel-landlock-private-tmp.sh \
   /path/to/kernel target/debug/qos-launcher /path/to/new-results
 ```
 
-The script builds a small initramfs containing the real launcher and a file
+The script builds a small initramfs containing the shipped launcher and a file
 access probe. QEMU uses TCG, no network, and no attached disk. The init process
 mounts a private tmpfs and runs the launcher with and without the writable rule.
 It requires `/tmp` writes to succeed only with the rule, and unrelated writes
@@ -55,7 +55,7 @@ the qOS ABI 5 requirement; that is why this check uses the built qOS kernel.
 
 ## FEX syscall-policy comparison
 
-The actual launcher library generated both `qos-default` and `qos-jit` BPF
+The launcher library generated both `qos-default` and `qos-jit` BPF
 programs for AArch64. A native helper installed each filter with
 `PR_SET_NO_NEW_PRIVS` and `PR_SET_SECCOMP` before executing the test command.
 Native `/usr/bin/true` passed under both filters. FEX executing the guest
@@ -87,7 +87,7 @@ The executor now passes the anchored prefix and home descriptors directly.
 It duplicates sources above all reserved child slots before `pre_exec`,
 preventing descriptor remapping from overwriting another pending source.
 
-The real executor test also exposed an existing seccomp handoff bug. The
+The executor test also exposed an existing seccomp handoff bug. The
 filter memfd was positioned at EOF after writing; Bubblewrap read an empty
 program and `PR_SET_SECCOMP` returned `EINVAL`. Rewinding before inheritance
 resolved this failure without changing the syscall policy.
@@ -101,10 +101,10 @@ cargo test -p compat-service --locked \
 ```
 
 This passed on native ARM with Rust 1.97.1, both without a filter and with
-the actual `qos-default` filter loaded by Bubblewrap. The normal service suite
+the `qos-default` filter loaded by Bubblewrap. The normal service suite
 also passed all 48 tests; the environment-dependent regression is excluded
 from the default suite and was run separately. The shell integration check
-passed. These tests validate descriptor transfer, real mounts, and filter
+passed. These tests validate descriptor transfer, mounts, and filter
 loading; they do not replace the full capsule/Landlock runtime acceptance.
 
 ## Native translated-runtime supervisor
@@ -128,7 +128,7 @@ early server exit, mode validation, and exit/signal status translation.
 The service suite passes 55 tests, with the environment-dependent Bubblewrap
 regression still run separately. Strict Clippy also passes with Rust 1.97.1.
 
-`os/tests/managed-fex-wine-smoke.py` exercises the real helper with fresh
+`os/tests/managed-fex-wine-smoke.py` exercises the helper with fresh
 32-bit and 64-bit Wine prefixes. For each architecture it requires an exact
 console marker and propagation of guest exit code 23 on a second invocation.
 Unlike the earlier Wine fixture, it starts no external FEXServer: the native
@@ -200,7 +200,7 @@ descriptor regression passed with both its tested filter configurations:
 shadow database was visible.
 
 Three ignored `generated_arm_*_namespace_executes_windows_console` tests now
-exercise the actual Wine32, Wine64, and Proton namespace plans. They require
+exercise the Wine32, Wine64, and Proton namespace plans. They require
 the fixed production artifact paths, a matching PE `cmd.exe` supplied through
 `QOS_ARM_CAPSULE_CMD_EXE`, writable `/run/user/<uid>`, Wine resource mountpoint
 directories, and a dummy render node inside a disposable container. They create
@@ -244,9 +244,9 @@ at `C:` are rejected, and a symlinked `drive_c` directory is not followed.
 The private `C:` and grant-only `Q:` mappings remain separate from the removed
 default `Z:` mapping.
 
-After removing the temporary diagnostic mapping hook and rebuilding, the actual
+After removing the temporary diagnostic mapping hook and rebuilding, the
 generated Wine32, Wine64 and Proton ARM namespaces all passed on 2026-09-16
-(18.45, 27.01 and 29.29 seconds respectively). Each required a real Windows
+(18.45, 27.01 and 29.29 seconds respectively). Each required a Windows
 file marker; Wine retained the production JIT filter. The service suite passed
 63 tests and strict Clippy. Logs are `capsule-wine32-c-drive-fixed.log`,
 `capsule-wine64-c-drive-fixed.log`, and `capsule-proton-c-drive-fixed.log` in

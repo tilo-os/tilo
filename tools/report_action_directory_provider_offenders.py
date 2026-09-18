@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Emit the explicit migration inventory for remote ActionDirectory search.
+"""Emit the migration inventory for remote ActionDirectory search.
 
-The normal resource/action contract remains green during this additive rollout.
-This report is intentionally machine-readable: a provider listed here is
-locally searchable but is omitted from broker-pulled discovery until it proves
-both a retained generation and cursor-generation validation.
+The report is machine-readable. A provider listed here is locally searchable
+but omitted from broker-pulled discovery until it proves both a retained
+generation and cursor-generation validation.
 """
 
 from __future__ import annotations

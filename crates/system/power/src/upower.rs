@@ -1,9 +1,9 @@
-//! The real `UPower` glue (`org.freedesktop.UPower`) over `zbus`.
+//! `UPower` integration (`org.freedesktop.UPower`) over `zbus`.
 //!
 //! Reads the machine's composite battery (the *display device*) and lid
 //! state from the running `upowerd`. As with [`super::logind`], this is pure
 //! I/O — the threshold decisions live in [`super::battery`], which this
-//! module feeds with real [`BatterySnapshot`]s.
+//! module feeds with [`BatterySnapshot`]s.
 
 use zbus::Connection;
 

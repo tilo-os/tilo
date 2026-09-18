@@ -15,7 +15,7 @@
 //!    **and** holding the relevant device grant. Accepted events decode
 //!    into a [`RemoteAction`](crate::network::streaming::RemoteAction)
 //!    and go to the [`RemoteInputInjector`]; the compositor drains that
-//!    into [`State::apply_remote_desktop_action`], driving the real
+//!    into [`State::apply_remote_desktop_action`], driving the
 //!    smithay `Seat` at whatever surface holds focus.
 //!
 //! [`State::apply_remote_desktop_action`]: crate::compositor::state::State::apply_remote_desktop_action

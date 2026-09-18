@@ -40,9 +40,8 @@ rand_core.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-# Reproduces the exact bogus `secret_bytes` an earlier identity
-# ceremony wrote, so the loader's refusal is tested against the real
-# historical shape rather than an invented one.
+# Reproduces malformed `secret_bytes` records written by an earlier identity
+# ceremony, so the loader rejects those records.
 sha2.workspace = true
 serial_test.workspace = true
 

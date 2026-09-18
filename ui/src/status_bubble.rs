@@ -25,7 +25,7 @@ pub const DEFAULT_LINGER: Duration = Duration::from_millis(1900);
 const FADE: Duration = Duration::from_millis(300);
 
 /// Every method takes an explicit `now: Instant`, so a test drives the
-/// whole show → linger → fade → hide cycle with no real clock.
+/// whole show → linger → fade → hide cycle without a wall clock.
 #[derive(Clone, Debug)]
 pub struct StatusBubble {
     linger: Duration,

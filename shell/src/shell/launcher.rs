@@ -1,4 +1,4 @@
-//! Launching real applications from the desktop.
+//! Launching applications from the desktop.
 //!
 //! The shell never builds a sandbox itself — it execs `tilo-launcher`, which
 //! reads the manifest, compiles the seccomp filter, mounts the signed

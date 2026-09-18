@@ -6,9 +6,9 @@ Bridges two protocols, both newline-delimited JSON:
   language model  <--JSON-RPC 2.0 over stdio-->  this shim
   this shim       <--TILO_TEST_CONTROL socket-->  compositor
 
-The point of the shim is that a model drives the OS *semantically*: it asks
-which actions exist and invokes one by its stable `(provider, id)` address.
-Nothing here screenshots, hit-tests or synthesises input.
+The shim lets a model drive the OS *semantically*: it asks which actions
+exist and invokes one by its stable `(provider, id)` address. Nothing here
+screenshots, hit-tests or synthesises input.
 
 MCP resources are deliberately lazy. `resources/list` exposes applications,
 not the entire action catalogue. Reading an application exposes its current
@@ -18,7 +18,7 @@ applications' schemas out of the model's context. Every read rebuilds the
 permission-filtered catalogue, so nesting does not turn a stale or revoked
 descriptor into authority.
 
-Honesty contract: this shim never invents an action, a result or a success.
+Error handling contract: this shim never invents an action, result or success.
 If the compositor is unreachable, or answers `{"err": ...}`, the caller gets
 that fact -- with the compositor's own error code and message -- as a tool
 error. A refusal is a result, not a failure to paper over.

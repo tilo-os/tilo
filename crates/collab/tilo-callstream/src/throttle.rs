@@ -64,7 +64,8 @@ impl Default for StreamingThrottle {
 mod tests {
     use super::*;
 
-    /// Drives 100 simulated captures across one wall-clock second via a fake clock; asserts at most 30 are accepted.
+    /// Drives 100 simulated captures across one wall-clock second; asserts at
+    /// most 30 are accepted.
     #[test]
     fn damage_loop_throttles_to_30fps() {
         let start = Instant::now();

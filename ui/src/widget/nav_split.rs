@@ -261,7 +261,7 @@ pub struct NavSplit {
     /// Whether the user toggled this frame (so the host re-syncs).
     dirty: bool,
     /// Wall-clock anchor of the last `draw`, so the slide self-ticks off a
-    /// real `dt` from inside the draw path — `ui::App` never calls
+    /// `dt` from inside the draw path — `ui::App` never calls
     /// `Widget::update()`, so the flap must advance here. `None` until the
     /// first draw, which therefore advances by `0` and never jumps.
     last_tick: Option<Instant>,
@@ -534,9 +534,9 @@ impl NavSplit {
         self.inner_taffy = Some(taffy);
     }
 
-    /// Advance the reveal + push animations off a real wall-clock delta,
+    /// Advance the reveal + push animations off a wall-clock delta,
     /// recomputing the child rects when something moved. Driven from `draw`
-    /// (NOT `update`, which `ui::App` never calls) so the slide actually
+    /// (NOT `update`, which `ui::App` never calls) so the slide
     /// plays. The first draw sees `dt == 0` (no prior `Instant`), so the
     /// flap never teleports; later deltas are clamped to [`MAX_FRAME_DT`] so
     /// a parked event loop can't skip the slide.
@@ -643,7 +643,7 @@ impl Widget for NavSplit {
 
     fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
         // The reveal/push slide is driven from the draw path (`self_tick`),
-        // not here, because drawing owns its real frame delta. This pass only
+        // not here, because drawing owns its frame delta. This pass only
         // forwards to children and reports whether anything still needs
         // frames; `needs_animation_frame` is authoritative.
         let sc = self.sidebar.update(state, path);
@@ -659,7 +659,7 @@ impl Widget for NavSplit {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Advance the slide off a real per-frame delta (the App pumps frames
+        // Advance the slide off a per-frame delta (the App pumps frames
         // via `needs_animation_frame`, never `update`).
         self.self_tick(theme, text_renderer);
 
@@ -793,7 +793,7 @@ impl Widget for NavSplit {
             return;
         };
         if self.layout_mode() == SplitLayout::Overlay && self.is_sidebar_open() {
-            // An open flap is a real modal drawer, not merely a painted layer:
+            // An open flap is a modal drawer, not merely a painted layer:
             // keeping the detail pane from receiving keyboard/pointer events
             // prevents a focused search field or underlying card from acting
             // through the scrim. Esc and scrim clicks were handled above;
@@ -1147,7 +1147,7 @@ mod tests {
 
     #[test]
     fn a_later_breakpoint_cross_still_animates() {
-        // Only the *first* resolution snaps; a real resize is a transition the
+        // Only the *first* resolution snaps; a resize is a transition the
         // user should see.
         let mut f = FlapState::open_when_docked();
         f.reconcile(SplitLayout::Docked);
@@ -1199,7 +1199,7 @@ mod tests {
         assert!(fills >= 1, "a laid-out split must paint something");
     }
 
-    /// Helper: run a full presence draw through the real production path.
+    /// Helper: run a full presence draw through the production path.
     fn draw_frame(ns: &mut NavSplit) {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
@@ -1244,8 +1244,7 @@ mod tests {
             "first frame establishes the clock and must not jump the slide"
         );
 
-        // A real wall-clock gap, then a second draw advances the easing by a
-        // genuine dt.
+        // A wall-clock gap, then a second draw advances the easing by a dt.
         std::thread::sleep(std::time::Duration::from_millis(16));
         draw_frame(&mut ns);
         let r = ns.flap().reveal();
@@ -1281,7 +1280,7 @@ mod tests {
         ns.open_sidebar();
         ns.snap_open(true);
         assert_eq!(ns.flap().reveal(), 1.0, "snap jumps straight to fully open");
-        // Even with a real time gap, a snapped (already-settled) flap stays
+        // Even with a time gap, a snapped (already-settled) flap stays
         // put because tick() is a no-op once reveal == target.
         std::thread::sleep(std::time::Duration::from_millis(20));
         draw_frame(&mut ns);
@@ -1398,7 +1397,7 @@ mod tests {
             "a pure reposition must not rebuild/re-solve the content pane"
         );
 
-        // A resize genuinely changes the pane geometry → a full re-solve.
+        // A resize changes the pane geometry → a full re-solve.
         solve(&mut taffy, 900.0);
         ns.apply_layout(&taffy, node, Point::ZERO);
         assert!(

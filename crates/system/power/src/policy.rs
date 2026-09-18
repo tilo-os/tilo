@@ -4,7 +4,7 @@
 //! total function of the policy configuration and the event, so the whole
 //! layer is exhaustively unit-testable without a bus or a battery.
 //!
-//! The [`super::service::PowerService`] pairs these decisions with the real
+//! The [`super::service::PowerService`] pairs these decisions with the
 //! `systemd-logind` / `UPower` glue in [`super::logind`] / [`super::upower`];
 //! the compositor applies the resulting [`PowerAction`]s.
 

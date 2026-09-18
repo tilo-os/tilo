@@ -49,7 +49,7 @@ impl ChangeRun {
 }
 
 /// A place in the document a change wrote to, at the granularity where two
-/// writers genuinely collide.
+/// writers collide.
 ///
 /// Deliberately *not* the whole object for sequences: two people appending
 /// different paragraphs to the same list have not collided, and treating the
@@ -89,14 +89,14 @@ pub struct RevertOutcome {
     /// the ordinary case; non-empty means this revert was partial **and the
     /// caller must say so**.
     pub kept: Vec<KeptSlot>,
-    /// True when the document actually changed. A run whose effect had already
+    /// True when the document changed. A run whose effect had already
     /// been undone reverts nothing and is not an error.
     pub wrote: bool,
 }
 
 impl RevertOutcome {
     /// True when every slot the run wrote was inverted — i.e. the caller may
-    /// honestly say the work was undone, full stop.
+    /// report that the work was undone completely.
     pub fn is_complete(&self) -> bool {
         self.kept.is_empty()
     }
@@ -159,7 +159,7 @@ pub fn run_bounds(
         return Err(RevertError::Inverted);
     }
     // A run starting at the document's very first change is bracketed by the
-    // empty document — the honest "before", and a valid head set for `diff`.
+    // empty document — the starting state, and a valid head set for `diff`.
     let before = if i0 == 0 {
         Vec::new()
     } else {
@@ -266,8 +266,8 @@ fn later_writers(
     // enumerated offset for no clarity gain.
     #[allow(clippy::needless_range_loop)]
     for i in start_at..versions.len() {
-        // `i` is always `< versions.len()` by the loop bound, so this is
-        // never actually `None`; `continue` just keeps that provable.
+        // `i` is always `< versions.len()` by the loop bound; retain the
+        // checked access for a panic-free path.
         let Some(v) = versions.get(i).cloned() else {
             continue;
         };
@@ -432,7 +432,7 @@ fn classify(
 
 /// Work out what undoing `run` would do, without touching the document.
 ///
-/// The dry run behind an affordance that has to be honest *before* the user
+/// The dry run behind an affordance that must be explicit *before* the user
 /// commits to it — a menu item saying "undo, except the paragraph you edited"
 /// needs this, and so does a caller deciding whether to refuse.
 ///

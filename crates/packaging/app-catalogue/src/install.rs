@@ -96,7 +96,7 @@ pub fn tilo_install_bin() -> String {
 }
 
 /// The exact `tilo-install` invocation [`install`] runs. Split out so a
-/// test can assert on argv without a network or real installer — in
+/// test can assert on argv without a network or launching the installer — in
 /// particular, that --allow-self-signed is not in it.
 pub fn install_argv(
     staged_qpkg: &Path,
@@ -515,7 +515,7 @@ mod tests {
     }
 
     /// The rendered toast already says who refused it, so the installer's
-    /// own name prefix would stutter — caught by looking at the real notification.
+    /// own name prefix would stutter — caught by looking at the rendered notification.
     #[test]
     fn the_installers_own_name_prefix_is_stripped() {
         let msg = InstallError::Refused {

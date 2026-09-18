@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch installed Tilo packages through the compositor's real launch
+"""Launch installed Tilo packages through the compositor's launch
 path and report which ones adopt a toplevel.
 
 Drives the whole chain, no mocks:
@@ -11,7 +11,7 @@ Drives the whole chain, no mocks:
 Success is read off the compositor's own `state_dump` — a
 `TileContent::Foreign` entry in the live WorkspaceTree — not off the
 process table. Each app's stderr is captured from the compositor log, so
-a failure reports its real error rather than "it didn't work".
+a failure reports its error rather than "it didn't work".
 
 **One fresh compositor per app.** These are debug builds whose vello
 pipeline compile runs for tens of seconds; stacking dozens of live GPU
@@ -334,7 +334,7 @@ class Compositor:
     ):
         self.sock = f"/tmp/tilo-app-sweep-{os.getpid()}.sock"
         # The compositor loads and writes ~/.config/tilo/state.json, so an
-        # un-isolated sweep inherits whatever workspace the last real session
+        # An un-isolated sweep inherits whatever workspace the last session
         # left behind and photographs *that* app instead of the one it just
         # launched. Give every compositor its own config root.
         self.config_home = tempfile.mkdtemp(prefix="tilo-sweep-config-")
@@ -557,9 +557,9 @@ def app_log_lines(logpath: pathlib.Path, package_id: str) -> list[str]:
 
 
 def was_launched(logpath: pathlib.Path, package_id: str) -> bool:
-    """Did the compositor actually fork a launch for this package?
+    """Did the compositor fork a launch for this package?
 
-    Distinguishes a real app failure from the palette never having
+    Distinguishes an app failure from the palette never having
     offered the row — two very different results that otherwise both
     read as "no tab appeared".
     """

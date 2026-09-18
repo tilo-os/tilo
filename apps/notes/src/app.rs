@@ -120,7 +120,7 @@ pub struct NotesApp {
     /// through every nested widget.
     last_mouse: Point,
     /// Start of the seed-grace window. Set to the time of the FIRST
-    /// `sync` (when collab is actually live), not spawn — renderer init
+    /// `sync` (when collaboration is live), not spawn — renderer init
     /// takes seconds, and measuring from spawn would let a late joiner's
     /// grace lapse before its first sync, making it seed its own welcome
     /// instead of adopting an existing peer's.
@@ -143,7 +143,7 @@ pub struct NotesApp {
     /// Desired layout mode derived from the last observed window width.
     /// Updated in `apply_layout`; consumed at the next `build_layout`.
     want_narrow: bool,
-    /// The mode the current taffy tree was actually built with. `draw`
+    /// The mode used to build the current taffy tree. `draw`
     /// and `handle_event` read this so they always match the live tree,
     /// even for the one frame before a breakpoint crossing rebuilds.
     built_narrow: bool,
@@ -166,11 +166,8 @@ pub struct NotesApp {
     /// to place the drawer scrim in narrow mode.
     content_rect: Rect,
     /// Framework-owned action dispatch. Each on-screen affordance dispatches its
-    /// [`NotesAction`] through this: the host brackets the undo boundary, applies
-    /// the action through the executor (so it replays byte-identically on peers,
-    /// exactly as the Ctrl+K palette does), and records the last one so a test can
-    /// prove a sidebar affordance and its [`ActionSpec`](tilo_actions::ActionSpec)
-    /// build the identical action.
+    /// [`NotesAction`] through this: the host brackets the undo boundary and
+    /// applies the action through the executor, as the Ctrl+K palette does.
     actions: ui::ActionHost,
     /// Page ids that have appeared in the shared document. Steady-state `sync`
     /// uses this to tell a never-yet-mirrored local page (push it up) from a page
@@ -1941,11 +1938,8 @@ impl NotesApp {
         self.apply_event(ev);
     }
 
-    /// Test hook: apply one [`OutEvent`] AND dispatch the matching page-tree
-    /// action against `doc`, exactly as the live sidebar-event path does. Lets a
-    /// test prove the on-screen affordance and the Ctrl+K palette resolve to the
-    /// same [`EncodedAction`](tilo_actions::EncodedAction), and drive the real
-    /// undo path.
+    /// Test hook: apply one [`OutEvent`] and dispatch its page-tree action against
+    /// `doc`, as the live sidebar-event path does.
     #[doc(hidden)]
     pub fn dispatch_event_for_test(&mut self, doc: &mut AutoCommit, ev: OutEvent) {
         self.apply_and_dispatch(doc, ev);
@@ -3546,17 +3540,12 @@ mod tests {
     #[test]
     fn unchanged_document_heads_skip_full_search_snapshot_work() {
         let (mut app, mut state, _tmp, _welcome) = app_seeded_into_doc();
-        // Prove the fast path before asking NotesDoc for every page's block
-        // list: a matching durable revision leaves the retained snapshot as-is.
         app.search_blocks.clear();
         app.search_heads = Some(state.doc.get_heads());
         app.refresh_search_blocks(&state.doc);
         assert!(app.search_blocks.is_empty());
     }
 
-    /// One source of truth: the sidebar's Delete event, dispatched through the
-    /// real app path, encodes the byte-identical [`NotesAction`] the Ctrl+K
-    /// palette's "Delete page" spec does.
     #[test]
     fn sidebar_delete_and_palette_encode_identically() {
         let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();

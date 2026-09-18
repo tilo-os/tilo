@@ -177,7 +177,7 @@ jobs:
 
   # Two separate, fresh job containers prove that an object written by the
   # first compiler process is read back from the remote S3 cache by another.
-  # A unique prefix makes the first run genuinely cold without deleting or
+  # A unique prefix makes the first run cold without deleting or
   # disturbing the production cache. The package is deliberately small: this
   # is a cache-path assertion, not another workspace build.
   cache-cold:
@@ -333,8 +333,8 @@ jobs:
           printf '[storage]\ndriver = "vfs"\ngraphroot = "%s/graph"\nrunroot = "%s/run"\n' \
             "$storage" "$storage" > "$CONTAINERS_STORAGE_CONF"
           channel=$(awk -F'"' '/^channel/{print $2}' rust-toolchain.toml)
-          # Feature builds are reviewable candidates. Only main may advance
-          # shared builder aliases after the native/cache acceptance gates.
+          # Feature builds are candidates. Only main may advance shared builder
+          # aliases after the native/cache acceptance gates.
           tags=(--tag "candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}")
           if [ "$BUILDER_REF" = refs/heads/main ]; then
             tags=(--tag "$GITHUB_SHA" --tag "$channel" --tag latest)

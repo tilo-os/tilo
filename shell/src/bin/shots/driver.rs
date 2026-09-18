@@ -980,9 +980,8 @@ impl ShellDriver {
         false
     }
 
-    /// Show that presence attaches to app content. We focus the real Files
-    /// hosted window and move Ada's location to its tab; it is not a second
-    /// shell-only mock of the same avatar.
+    /// Show that presence attaches to app content. Focus the Files hosted
+    /// window and move Ada's location to its tab.
     pub fn show_collaborator_in_files_for_shots(&mut self) -> bool {
         let target = {
             let state = self.chrome();
@@ -1127,8 +1126,7 @@ impl ShellDriver {
         Ok(())
     }
 
-    /// Bare desktop — the driver's default state already renders it, so
-    /// this scene is a deliberate no-op kept for catalogue symmetry.
+    /// Bare desktop; the driver's default state already renders it.
     fn scene_desktop() {}
 
     fn scene_overview(&mut self) {
