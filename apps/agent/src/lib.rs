@@ -11,6 +11,15 @@
 //! actor, so every change is attributed to it in the history strip and its
 //! caret shows up in the other participants' windows while it works.
 //!
+//! With `app_id = "dev.qos.chat"` and no record, the same Session reads the
+//! canonical package-primary Chat document. Structured mentions target the
+//! stable admitted `agent_id`; name addressing uses the display name. Replies
+//! and AgentWork live in that document and conservatively prevent repeats
+//! after restart, including an unfinished dispatch. This bounded mode only
+//! executes broker-published document actions. External effects, pause/resume,
+//! authenticated agent roster projection, and durable delegated effect
+//! admission remain separate integrations.
+//!
 //! *Which* action answers an instruction is decided by a model (`model`),
 //! from the catalogue of things the app exports (`plan::CATALOGUE`) and
 //! nothing else: the model names one entry, that name is checked against the

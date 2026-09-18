@@ -34,9 +34,9 @@ use std::time::Duration;
 use clap::Parser;
 use qos_agent::{Config, Session};
 
-/// A participant without a window: joins a word-processor document through
-/// the session's collaboration broker and carries out instructions written
-/// to it ("Claude: turn the bullets into a table").
+/// A participant without a window: joins the session's collaboration broker
+/// and handles addressed document instructions or canonical package-primary
+/// Chat summons (`--app dev.qos.chat`, no `--record`).
 #[derive(Parser, Debug)]
 #[command(name = "qos-agent")]
 struct Cli {
@@ -51,10 +51,13 @@ struct Cli {
     /// The app whose document this is (its manifest package id).
     #[arg(long, default_value = "dev.qos.word-processor")]
     app: String,
-    /// The agent's name: its caret pill, its history author, and the word
-    /// an instruction starts with.
+    /// The display name used by name-addressed instructions. Structured
+    /// mentions and authorship use the stable --agent-id.
     #[arg(long, default_value = "Claude")]
     name: String,
+    /// Stable admitted agent id. Defaults to the name for existing launchers.
+    #[arg(long)]
+    agent_id: Option<String>,
     /// Explicit typed Cap'n Proto broker socket for headless diagnostics.
     /// Normal launched sessions inherit `QOS_SVC_COLLAB_FD` instead.
     #[arg(long)]
@@ -112,13 +115,14 @@ fn main() -> anyhow::Result<()> {
     // What this run's invitation actually was: write on the app it was
     // asked to join, and nothing else. Widening this is a deployment
     // decision, not something a headless participant grants itself.
+    let agent_id = cli.agent_id.clone().unwrap_or_else(|| cli.name.clone());
     let permissions = {
         use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
         PermissionContext::from_capabilities(
-            Actor::agent(&cli.name),
+            Actor::agent(&agent_id),
             vec![
                 CapOverride::grant(
-                    Subject::agent(&cli.name),
+                    Subject::agent(&agent_id),
                     Scope::App(cli.app.clone()),
                     Verb::Write,
                 )
@@ -127,6 +131,7 @@ fn main() -> anyhow::Result<()> {
         )
     };
     let cfg = Config {
+        agent_id,
         endpoint: cli.endpoint,
         endpoint_identity: None,
         app_id: cli.app,

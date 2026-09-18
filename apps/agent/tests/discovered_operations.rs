@@ -250,6 +250,7 @@ fn a_discovered_destructive_operation_requires_explicit_confirmation() {
             app_id: APP.into(),
             cluster: room,
             record: Some(RECORD.into()),
+            agent_id: "Scribe".into(),
             name: "Scribe".into(),
             pace: Duration::from_millis(10),
             once: true,
@@ -331,6 +332,7 @@ fn a_discovered_operation_is_performed_once_under_the_agents_own_actor() {
             app_id: APP.into(),
             cluster: room,
             record: Some(RECORD.into()),
+            agent_id: "Scribe".into(),
             name: "Scribe".into(),
             pace: Duration::from_millis(10),
             once: true,
@@ -711,7 +713,7 @@ fn one_action_result_is_carried_into_the_next_app_without_model_authored_content
 
     // The photo editor: a second application's document, in the same room,
     // that the agent was never told about.
-    let (photo_peer, photo_replica) = connect_photo_editor(&sock, room);
+    let photo_socket = sock.clone();
     std::thread::sleep(Duration::from_millis(100));
 
     let permissions = word_processor_and_photos_permissions();
@@ -721,6 +723,7 @@ fn one_action_result_is_carried_into_the_next_app_without_model_authored_content
         app_id: APP.into(),
         cluster: room,
         record: Some(RECORD.into()),
+        agent_id: "Scribe".into(),
         name: "Scribe".into(),
         pace: Duration::from_millis(10),
         once: true,
@@ -753,8 +756,11 @@ fn one_action_result_is_carried_into_the_next_app_without_model_authored_content
     // processor to answer, which is what pins the order rather than hoping
     // for it.
     let (photo_ready_tx, photo_ready_rx) = std::sync::mpsc::sync_channel::<()>(1);
-    let photo_thread =
-        std::thread::spawn(move || drive_photo_peer(photo_peer, photo_replica, &photo_ready_tx));
+    let photo_thread = std::thread::spawn(move || {
+        // The typed collaboration manager is local to its owning thread.
+        let (photo_peer, photo_replica) = connect_photo_editor(&photo_socket, room);
+        drive_photo_peer(photo_peer, photo_replica, &photo_ready_tx)
+    });
 
     let (wp_replica, done) = drive_word_processor_peer(wp_peer, wp_replica, &photo_ready_rx);
 
@@ -816,6 +822,7 @@ fn without_the_capability_a_discovered_operation_is_never_performed() {
             app_id: APP.into(),
             cluster: room,
             record: Some(RECORD.into()),
+            agent_id: "Scribe".into(),
             name: "Scribe".into(),
             pace: Duration::from_millis(10),
             once: true,

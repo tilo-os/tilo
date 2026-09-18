@@ -21,6 +21,9 @@ use crate::providers::default_selection;
 use crate::surface::{self, AppContract, View};
 use crate::wire::Link;
 
+mod chat;
+use chat::ChatRun;
+
 const TASK_CATALOGUE_WAIT: Duration = Duration::from_secs(2);
 const TASK_ACTION_WAIT: Duration = Duration::from_secs(30);
 
@@ -163,6 +166,8 @@ struct ActiveRun {
 
 #[derive(Clone, Debug)]
 pub struct Config {
+    /// Stable workspace-admitted identity, independent of the display name.
+    pub agent_id: String,
     /// Explicit typed Cap'n Proto endpoint for headless diagnostics outside
     /// the launcher. Normal sessions leave this `None` and inherit the fd.
     pub endpoint: Option<PathBuf>,
@@ -177,8 +182,8 @@ pub struct Config {
     /// The record the app announced for the document (`file:<path>`), or
     /// `None` for an untitled document.
     pub record: Option<String>,
-    /// The agent's name: the caret pill, the history author, and the word
-    /// instructions start with.
+    /// Display name used by name-addressed instructions. The admitted id
+    /// remains the author and structured-mention target.
     pub name: String,
     /// Pause between edits, so people can watch the caret work.
     pub pace: Duration,
@@ -255,6 +260,13 @@ pub struct Session {
     broker_surfaces: Vec<ui::collaboration::BrokerActionSurface>,
     next_broker_request: u64,
     active_run: Option<ActiveRun>,
+    chat_run: Option<ChatRun>,
+    chat_pending: bool,
+    chat_catalogue_received: bool,
+    last_chat_action: Option<crate::listen::LastAction>,
+    /// First accepted forwarding frame for each message. Its certified key
+    /// authenticates the frame, never the inner Message.author claim.
+    chat_sources: HashMap<String, (String, collab_types::Ed25519PublicKey)>,
 }
 
 /// How often the agent asks again while it still has no document.
@@ -263,10 +275,10 @@ const REASK_EVERY: Duration = Duration::from_millis(750);
 /// Ask the room for the document: peers already in it answer an `Arrived`
 /// with their full state. Safe to repeat — a second copy of a document the
 /// agent already holds merges to the same thing.
-fn ask_for_document(link: &mut Link) -> Result<()> {
+fn ask_for_document(link: &mut Link, app_id: &str) -> Result<()> {
     link.send(&CollabRequest::Presence {
         key: PresenceKey::Workspace {
-            id: "word-processor".to_string(),
+            id: app_id.to_string(),
         },
         payload: PresencePayload::Arrived,
     })
@@ -291,20 +303,23 @@ impl Session {
     /// be made, or the initial route join or presence announce fails to
     /// send.
     pub fn connect(cfg: Config) -> Result<Self> {
+        if cfg.app_id == "dev.qos.chat" && cfg.record.is_some() {
+            anyhow::bail!("canonical Chat requires the package-primary route");
+        }
         let mut link = match &cfg.endpoint {
             Some(path) => Link::connect_endpoint(
                 path,
                 &cfg.app_id,
                 cfg.cluster,
                 cfg.record.clone(),
-                Some(cfg.name.clone()),
+                Some(cfg.agent_id.clone()),
                 cfg.endpoint_identity.clone(),
             )?,
             None => Link::connect(
                 &cfg.app_id,
                 cfg.cluster,
                 cfg.record.clone(),
-                Some(cfg.name.clone()),
+                Some(cfg.agent_id.clone()),
             )?,
         };
         // Discovery is room-wide, but writes never are. This subscription
@@ -313,7 +328,7 @@ impl Session {
         link.join_route(RouteSpec::cluster(cfg.cluster));
         // The late-join handshake: every peer in the room answers an
         // `Arrived` with its full document.
-        ask_for_document(&mut link)?;
+        ask_for_document(&mut link, &cfg.app_id)?;
         tracing::info!(
             transport = if cfg.endpoint.is_some() { "typed-endpoint" } else { "QOS_SVC_COLLAB_FD" },
             app = %cfg.app_id,
@@ -353,7 +368,20 @@ impl Session {
             broker_surfaces: Vec::new(),
             next_broker_request: 1,
             active_run: None,
+            chat_run: None,
+            chat_pending: false,
+            chat_catalogue_received: false,
+            last_chat_action: None,
+            chat_sources: HashMap::new(),
         })
+    }
+
+    fn has_primary_document(&self) -> bool {
+        if self.cfg.app_id == "dev.qos.chat" {
+            self.peers.contains_key("chat")
+        } else {
+            self.editor.is_some()
+        }
     }
 
     /// How the last instruction was decided, for a test or an operator
@@ -390,7 +418,7 @@ impl Session {
             if self.step(Duration::from_millis(100))? && self.cfg.once {
                 return Ok(());
             }
-            if self.editor.is_none()
+            if !self.has_primary_document()
                 && !self.cfg.await_document.is_zero()
                 && joined.elapsed() >= self.cfg.await_document
             {
@@ -769,7 +797,7 @@ impl Session {
             // admission before fan-out. They are populated only so the
             // strongly typed value is valid before crossing that boundary.
             actor: qos_actions::InteractionActor {
-                id: self.cfg.name.clone(),
+                id: self.cfg.agent_id.clone(),
                 kind: qos_actions::InteractionActorKind::Agent,
             },
             phase,
@@ -901,23 +929,14 @@ impl Session {
         // Still empty-handed: ask again. An app that was still opening its
         // file when the agent arrived never saw the first ask, and nothing
         // else would ever prompt a reply.
-        if self.editor.is_none() && self.asked_at.elapsed() >= REASK_EVERY {
-            ask_for_document(&mut self.link)?;
+        if !self.has_primary_document() && self.asked_at.elapsed() >= REASK_EVERY {
+            ask_for_document(&mut self.link, &self.cfg.app_id)?;
             self.asked_at = Instant::now();
             tracing::debug!("asked the room for the document again");
         }
         match self.link.recv(wait)? {
             Some(event @ CollabEvent::Document { .. }) => {
-                changed = match event
-                    .document_mutation()
-                    .transpose()?
-                    .ok_or_else(|| anyhow::anyhow!("document event lost its mutation"))?
-                {
-                    DocumentMutation::Snapshot(data) => self.absorb_snapshot(&data)?,
-                    DocumentMutation::Incremental(data) => {
-                        self.merge_incremental_anywhere(&data)?
-                    }
-                };
+                changed = self.absorb_document_event(&event)?;
             }
             Some(CollabEvent::RemotePresenceUpdate {
                 user_id,
@@ -942,6 +961,8 @@ impl Session {
             }
             Some(CollabEvent::ActionCatalogue { surfaces }) => {
                 self.broker_surfaces = surfaces;
+                self.chat_catalogue_received = true;
+                changed = self.cfg.app_id == "dev.qos.chat";
                 tracing::debug!(
                     actions = self
                         .broker_surfaces
@@ -953,10 +974,18 @@ impl Session {
             }
             Some(_) | None => {}
         }
-        if !changed {
+        if !changed && !self.chat_pending {
             return Ok(false);
         }
-        self.act()
+        if self.cfg.app_id == "dev.qos.chat" {
+            let acted = self.act_chat()?;
+            // Completion can leave another summons in the same snapshot.
+            // Waiting parks until new state arrives, without a polling loop.
+            self.chat_pending = acted;
+            Ok(acted)
+        } else {
+            self.act()
+        }
     }
 
     /// Take a peer's whole-document frame, if it is ours to take.
@@ -984,7 +1013,7 @@ impl Session {
                 // `peers` rather than being dropped outright.
                 return self.absorb_peer(data);
             }
-            self.editor = Some(Editor::from_snapshot(data, &self.cfg.name)?);
+            self.editor = Some(Editor::from_snapshot(data, &self.cfg.agent_id)?);
             tracing::info!(bytes = data.len(), "received the document");
             return Ok(true);
         };
@@ -1027,7 +1056,7 @@ impl Session {
         if let Some(peer) = self.peers.get_mut(contract.namespace) {
             return peer.merge_full_any(data);
         }
-        let peer = Editor::peer_from_snapshot(contract, data, &self.cfg.name)?;
+        let peer = Editor::peer_from_snapshot(contract, data, &self.cfg.agent_id)?;
         tracing::info!(
             app = contract.namespace,
             bytes = data.len(),
@@ -1079,6 +1108,16 @@ impl Session {
         view: &View,
     ) -> Vec<surface::Offer> {
         let mut offers = Self::document_broker_offers(&self.broker_surfaces, &self.cfg.permissions);
+        if self.cfg.app_id == "dev.qos.chat" {
+            offers.retain(|offer| {
+                self.broker_surfaces.iter().any(|surface| {
+                    Some(surface.peer_id) == offer.broker_peer_id
+                        && surface.cluster_id == self.cfg.cluster.to_string()
+                        && surface.record_id.is_empty()
+                })
+            });
+            return offers;
+        }
         for local in surface::offers(held, view, &self.cfg.permissions) {
             if !offers
                 .iter()
@@ -1136,6 +1175,11 @@ impl Session {
     ) -> Result<Result<StepOutcome, String>> {
         if let Some(offer) = self.wait_for_broker_offer(id)? {
             return self.perform_broker(id, &offer, arguments, confirmation);
+        }
+        if self.chat_run.is_some() {
+            return Ok(Err(
+                "The owning application is not offering this action through the broker".into(),
+            ));
         }
         self.perform_local(id, arguments, confirmation)
     }
@@ -1211,6 +1255,34 @@ impl Session {
                 serde_json::json!({"confirmation_phrase": phrase})
             }
         };
+        if self.chat_run.is_some() && descriptor.kind != qos_actions::OperationKind::Document {
+            return Ok(Err("This Chat runner cannot admit external effects with durable delegated identity yet".into()));
+        }
+        if self.chat_run.is_some()
+            && !self.broker_surfaces.iter().any(|surface| {
+                surface.peer_id == peer_id
+                    && surface.cluster_id == self.cfg.cluster.to_string()
+                    && surface.record_id.is_empty()
+            })
+        {
+            return Ok(Err(
+                "This Chat runner requires the owning application's package-primary route".into(),
+            ));
+        }
+        if let Some(run) = &mut self.chat_run {
+            run.observed_mutation = false;
+            run.target_artifact = self
+                .broker_surfaces
+                .iter()
+                .find(|surface| surface.peer_id == peer_id)
+                .map(|surface| {
+                    collab_types::document_artifact_id(
+                        &surface.app_id,
+                        &surface.cluster_id,
+                        &surface.record_id,
+                    )
+                });
+        }
         let request_id = self.next_request_id();
         if descriptor.resource_kind == surface::APPLICATION_KIND
             && descriptor.address.action == surface::OPEN_ACTION
@@ -1229,6 +1301,7 @@ impl Session {
                 confirmation: confirmation_json,
             })?;
         }
+        self.chat_dispatched(&descriptor.address.resource, &descriptor.action_label)?;
         let (invocation_id, mut update) = match self.wait_for_broker_result(request_id)? {
             Ok(receipt) => receipt,
             Err(error) => return Ok(Err(format!("I couldn't do that - {error}"))),
@@ -1250,6 +1323,11 @@ impl Session {
             return Ok(Err(format!(
                 "action {invocation_id} was admitted but did not reach a terminal state in time"
             )));
+        }
+        if let Some(run) = &mut self.chat_run {
+            run.uncertain = matches!(&update, qos_actions::InvocationUpdate::Failed { error, .. }
+                if run.observed_mutation || error.code == "action_outcome_unknown" ||
+                (error.code == "action_failed" && error.message == "application disconnected before completing the action"));
         }
         match update {
             qos_actions::InvocationUpdate::Failed { error, .. } => {
@@ -1390,18 +1468,7 @@ impl Session {
                     self.broker_surfaces = surfaces;
                 }
                 Some(event @ CollabEvent::Document { .. }) => {
-                    match event
-                        .document_mutation()
-                        .transpose()?
-                        .ok_or_else(|| anyhow::anyhow!("document event lost its mutation"))?
-                    {
-                        DocumentMutation::Snapshot(data) => {
-                            let _ = self.absorb_snapshot(&data)?;
-                        }
-                        DocumentMutation::Incremental(data) => {
-                            let _ = self.merge_incremental_anywhere(&data)?;
-                        }
-                    }
+                    let _ = self.absorb_document_event(&event)?;
                 }
                 Some(event) => deferred.push(event),
                 None => {}
@@ -1583,6 +1650,14 @@ impl Session {
                 .iter()
                 .map(|(contract, _)| contract.namespace)
                 .collect(),
+        };
+        let catalogue = match self
+            .chat_run
+            .as_ref()
+            .and_then(|run| run.subject.as_deref())
+        {
+            Some(resource) => catalogue.scoped_to(resource),
+            None => catalogue,
         };
         let offers = &catalogue.offers;
         let decision = self.chooser.choose_actions(asked, blocks, &catalogue, 8);
@@ -1899,7 +1974,7 @@ impl Session {
         let before = self.editor.as_mut().and_then(Editor::latest_entry_id);
         let invocation = qos_actions::InvocationId::new();
         let resource_id = "word-processor.document".to_string();
-        let agent_name = self.cfg.name.clone();
+        let agent_id = self.cfg.agent_id.clone();
         let app_id = self.cfg.app_id.clone();
         let resource_label = self
             .cfg
@@ -1912,7 +1987,7 @@ impl Session {
             invocation,
             sequence,
             actor: qos_actions::InteractionActor {
-                id: agent_name.clone(),
+                id: agent_id.clone(),
                 kind: qos_actions::InteractionActorKind::Agent,
             },
             phase,
@@ -2454,18 +2529,6 @@ mod tests {
             let open = photos::OpenImage::from_path("held.png", 3, 2).with_content(source_hash);
             photos::doc::PhotosDoc::set_image(&mut photo, Some(&open));
             let image_id = photos::actions::resource_id(&open);
-            let mut photo_resources = photos::actions::PhotosResources.resources(&photo);
-            for resource in &mut photo_resources {
-                resource.children.clear();
-                resource
-                    .actions
-                    .retain(|action| action.id == PRODUCE || action.id == "view");
-                for action in &mut resource.actions {
-                    if action.id == PRODUCE {
-                        action.contract.result = result.clone();
-                    }
-                }
-            }
             let mut document = automerge::AutoCommit::new();
             let model = qdoc::model::init(&mut document, &automerge::ROOT);
             let mut ids = qdoc::model::seeded_id_gen(&document, &model);
@@ -2480,14 +2543,111 @@ mod tests {
                 id
             };
             document.commit();
-            let mut photo_peer = connect_peer(&socket, PHOTOS, "photos", None);
-            let mut writer_peer = connect_peer(&socket, WRITER, "quinten", Some(RECORD));
-            peer::publish_actions(&mut photo_peer, PHOTOS, &photo_resources);
-            peer::publish_actions(
-                &mut writer_peer,
-                WRITER,
-                &writer_resources(&document, &instruction_id),
-            );
+            let calls = Arc::new(Mutex::new(Calls::new()));
+            let stop = Arc::new(AtomicBool::new(false));
+            let mut threads = Vec::new();
+            for is_photo in [true, false] {
+                let worker_socket = socket.clone();
+                let photo = photo.clone();
+                let result = result.clone();
+                let calls = Arc::clone(&calls);
+                let stop = Arc::clone(&stop);
+                let output = output.clone();
+                let mut replica = document.clone();
+                let caret = instruction_id.clone();
+                threads.push(std::thread::spawn(move || {
+                    // Each typed manager is constructed and used on its owner thread.
+                    let mut client = if is_photo {
+                        let mut client = connect_peer(&worker_socket, PHOTOS, "photos", None);
+                        let mut photo_resources =
+                            photos::actions::PhotosResources.resources(&photo);
+                        for resource in &mut photo_resources {
+                            resource.children.clear();
+                            resource
+                                .actions
+                                .retain(|action| action.id == PRODUCE || action.id == "view");
+                            for action in &mut resource.actions {
+                                if action.id == PRODUCE {
+                                    action.contract.result = result.clone();
+                                }
+                            }
+                        }
+                        peer::publish_actions(&mut client, PHOTOS, &photo_resources);
+                        client
+                    } else {
+                        let mut client =
+                            connect_peer(&worker_socket, WRITER, "quinten", Some(RECORD));
+                        peer::publish_actions(
+                            &mut client,
+                            WRITER,
+                            &writer_resources(&replica, &caret),
+                        );
+                        client
+                    };
+                    while !stop.load(Ordering::Acquire) {
+                        let Some(event) = client.recv().unwrap() else {
+                            continue;
+                        };
+                        if let CollabEvent::Invocation {
+                            id,
+                            resource,
+                            action,
+                            argument,
+                            actor,
+                            ..
+                        } = event
+                        {
+                            let json = argument
+                                .as_deref()
+                                .unwrap()
+                                .strip_prefix(qos_actions::ARGUMENTS_JSON_PREFIX)
+                                .expect("Session must dispatch the typed JSON argument envelope");
+                            let arguments = serde_json::from_str(json).unwrap();
+                            calls.lock().unwrap().push((action.clone(), arguments));
+                            let invocation =
+                                qos_actions::InvocationId(Uuid::from_u128(u128::from(id)));
+                            let update = if is_photo {
+                                if failed && action == PRODUCE {
+                                    qos_actions::InvocationUpdate::Failed {
+                                        invocation,
+                                        error: qos_actions::ActionFailure {
+                                            code: "fixture.failed".into(),
+                                            message: "Producer refused".into(),
+                                            details: None,
+                                            retryable: false,
+                                        },
+                                    }
+                                } else {
+                                    qos_actions::InvocationUpdate::Succeeded {
+                                        invocation,
+                                        output: if action == PRODUCE {
+                                            output.clone()
+                                        } else {
+                                            ActionOutput::default()
+                                        },
+                                    }
+                                }
+                            } else {
+                                let resources = writer_resources(&replica, &caret);
+                                peer::service_document_invocation(
+                                    &mut client,
+                                    &mut replica,
+                                    &resources,
+                                    wp::register,
+                                    id,
+                                    resource,
+                                    action,
+                                    argument.as_deref(),
+                                    &actor,
+                                )
+                            };
+                            client
+                                .send(&CollabRequest::UpdateInvocation { id, update })
+                                .unwrap();
+                        }
+                    }
+                }));
+            }
             let permissions = PermissionContext::from_capabilities(
                 ui::permissions::Actor::agent("Scribe"),
                 ["photos", "word-processor"]
@@ -2507,6 +2667,7 @@ mod tests {
                 app_id: WRITER.into(),
                 cluster: peer::room(),
                 record: Some(RECORD.into()),
+                agent_id: "Scribe".into(),
                 name: "Scribe".into(),
                 pace: Duration::ZERO,
                 once: true,
@@ -2585,80 +2746,6 @@ mod tests {
                     serde_json::Value::String("model-invented-hash".into()),
                 )]),
             ));
-            let calls = Arc::new(Mutex::new(Calls::new()));
-            let stop = Arc::new(AtomicBool::new(false));
-            let mut threads = Vec::new();
-            for (mut client, is_photo) in [(photo_peer, true), (writer_peer, false)] {
-                let calls = Arc::clone(&calls);
-                let stop = Arc::clone(&stop);
-                let output = output.clone();
-                let mut replica = document.clone();
-                let caret = instruction_id.clone();
-                threads.push(std::thread::spawn(move || {
-                    while !stop.load(Ordering::Acquire) {
-                        let Some(event) = client.recv().unwrap() else {
-                            continue;
-                        };
-                        if let CollabEvent::Invocation {
-                            id,
-                            resource,
-                            action,
-                            argument,
-                            actor,
-                            ..
-                        } = event
-                        {
-                            let json = argument
-                                .as_deref()
-                                .unwrap()
-                                .strip_prefix(qos_actions::ARGUMENTS_JSON_PREFIX)
-                                .expect("Session must dispatch the typed JSON argument envelope");
-                            let arguments = serde_json::from_str(json).unwrap();
-                            calls.lock().unwrap().push((action.clone(), arguments));
-                            let invocation =
-                                qos_actions::InvocationId(Uuid::from_u128(u128::from(id)));
-                            let update = if is_photo {
-                                if failed && action == PRODUCE {
-                                    qos_actions::InvocationUpdate::Failed {
-                                        invocation,
-                                        error: qos_actions::ActionFailure {
-                                            code: "fixture.failed".into(),
-                                            message: "Producer refused".into(),
-                                            details: None,
-                                            retryable: false,
-                                        },
-                                    }
-                                } else {
-                                    qos_actions::InvocationUpdate::Succeeded {
-                                        invocation,
-                                        output: if action == PRODUCE {
-                                            output.clone()
-                                        } else {
-                                            ActionOutput::default()
-                                        },
-                                    }
-                                }
-                            } else {
-                                let resources = writer_resources(&replica, &caret);
-                                peer::service_document_invocation(
-                                    &mut client,
-                                    &mut replica,
-                                    &resources,
-                                    wp::register,
-                                    id,
-                                    resource,
-                                    action,
-                                    argument.as_deref(),
-                                    &actor,
-                                )
-                            };
-                            client
-                                .send(&CollabRequest::UpdateInvocation { id, update })
-                                .unwrap();
-                        }
-                    }
-                }));
-            }
             let outcome = session.run_plan(&instruction_id, &Plan { steps });
             stop.store(true, Ordering::Release);
             for thread in threads {
