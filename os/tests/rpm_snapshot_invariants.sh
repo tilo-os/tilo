@@ -99,7 +99,8 @@ has "$workflow" 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' \
 has "$workflow" '. os/dev/configure-cosign-kms.sh' \
   'snapshot signing configures the KMS provider from its trusted key reference'
 oidc_fixture="$(mktemp -d)"
-printf '{"value":"signed-for-test"}\n' > "$oidc_fixture/token&audience=tilo-release-signing"
+printf '{"value":"e30.eyJzdWIiOiJ0ZXN0LXN1YmplY3QifQ.signature"}\n' \
+  > "$oidc_fixture/token&audience=tilo-release-signing"
 aws_config="$(COSIGN_KEY_REF='awskms:///arn:aws:kms:eu-west-2:123456789012:key/example' \
   AWS_SIGNING_ROLE_ARN='arn:aws:iam::123456789012:role/release' \
   ACTIONS_ID_TOKEN_REQUEST_URL="file://$oidc_fixture/token" \
@@ -110,7 +111,8 @@ aws_config="$(COSIGN_KEY_REF='awskms:///arn:aws:kms:eu-west-2:123456789012:key/e
     "$(stat -c %a "$AWS_WEB_IDENTITY_TOKEN_FILE")"; \
     cat "$AWS_WEB_IDENTITY_TOKEN_FILE"' fixture "$repo/os/dev/configure-cosign-kms.sh")"
 rm -rf -- "$oidc_fixture"
-[ "$aws_config" = 'eu-west-2:eu-west-2:arn:aws:iam::123456789012:role/release:unset:600:signed-for-test' ] \
+[ "$aws_config" = 'Using Forgejo OIDC subject: test-subject
+eu-west-2:eu-west-2:arn:aws:iam::123456789012:role/release:unset:600:e30.eyJzdWIiOiJ0ZXN0LXN1YmplY3QifQ.signature' ] \
   && ok 'AWS KMS setup derives the region and installs least-exposure web identity' \
   || bad 'AWS KMS setup does not configure Forgejo web identity safely'
 if COSIGN_KEY_REF='awskms:///arn:aws:kms:eu-west-2:123456789012:key/example' \
