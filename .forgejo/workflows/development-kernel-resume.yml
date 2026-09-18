@@ -137,7 +137,7 @@ jobs:
           file: kernel-recovery.Containerfile
           build-contexts: |
             kernel-checkpoint=./checkpoint-context
-          target: publish
+          target: reconstructed-publish
           platforms: linux/arm64
           load: true
           push: false
@@ -165,6 +165,7 @@ jobs:
           }
           trap cleanup EXIT
           docker cp "$container:/repo/." kernel-repo/
+          docker cp "$container:/reconstruction/." kernel-evidence/
           shopt -s nullglob
           packages=(kernel-repo/*.rpm)
           test "${#packages[@]}" -eq 1
@@ -214,6 +215,15 @@ jobs:
           package = next(pathlib.Path('kernel-repo').glob('*.rpm'))
           recipes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest()
                      for p in sorted(pathlib.Path('os/kernel').rglob('*')) if p.is_file()}
+          runtime_path = pathlib.Path('kernel-evidence/runtime.json')
+          runtime = json.loads(runtime_path.read_bytes())
+          assert runtime['purpose'] == 'tilo-kernel-reconstruction-runtime-evidence'
+          assert runtime['regenerated_certificate_matches'] is True
+          assert runtime['embedded_certificate_verified'] is True
+          assert re.fullmatch('[0-9a-f]{64}', runtime['module_certificate_der_sha256'])
+          invalidations = pathlib.Path('kernel-evidence/invalidations.json').read_bytes()
+          assert runtime['invalidations_sha256'] == hashlib.sha256(invalidations).hexdigest()
+          assert runtime['invalidated_paths'] == len(json.loads(invalidations))
           receipt = dict(schema=1, purpose='tilo-development-reconstructed-kernel', architecture='aarch64',
               reference=reference, config_digest=image['Id'], source_revision=os.environ['SOURCE_REVISION'],
               source_date_epoch=int(os.environ['SOURCE_DATE_EPOCH']), base=os.environ['BASE_REF'],
@@ -221,6 +231,9 @@ jobs:
               package=dict(name=package.name, sha256=hashlib.file_digest(package.open('rb'), 'sha256').hexdigest()),
               run_id=os.environ['GITHUB_RUN_ID'], attempt=os.environ['GITHUB_RUN_ATTEMPT'],
               kernel_build_jobs=int(os.environ['KERNEL_BUILD_JOBS']), production_signed=False, boot_validated=False,
+              installable=False, original_recipe_executed_verbatim=False,
+              runtime_evidence=runtime,
+              runtime_evidence_sha256=hashlib.sha256(runtime_path.read_bytes()).hexdigest(),
               reconstruction=json.loads(pathlib.Path('kernel-evidence/reconstruction.json').read_text()))
           pathlib.Path('kernel-evidence/receipt.json').write_text(json.dumps(receipt, sort_keys=True, indent=2) + '\n')
           print(reference)
