@@ -7659,6 +7659,111 @@ impl channel_handle::Server for CapnpChannelHandle {
         );
         Promise::ok(())
     }
+
+    fn wifi_continuity_command(
+        self: Rc<Self>,
+        params: channel_handle::WifiContinuityCommandParams,
+        mut results: channel_handle::WifiContinuityCommandResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let route = self.route();
+        if route.app_id != "dev.tilo.settings" {
+            return Promise::err(capnp::Error::failed(
+                "Wi-Fi continuity is restricted to the certified Settings application".into(),
+            ));
+        }
+        let request = match params.get() {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        let claimed_app = match request.get_app_id().and_then(|value| {
+            value
+                .to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+        }) {
+            Ok(value) => value,
+            Err(error) => return Promise::err(error),
+        };
+        if claimed_app != route.app_id {
+            return Promise::err(capnp::Error::failed(
+                "Wi-Fi continuity app id must match the certified connection route".into(),
+            ));
+        }
+        let bytes = match request.get_command_json() {
+            Ok(bytes) if bytes.len() <= runtime_collab::MAX_WIFI_CONTINUITY_WIRE_BYTES => bytes,
+            Ok(_) => {
+                return Promise::err(capnp::Error::failed(
+                    "Wi-Fi continuity command exceeds the local protocol bound".into(),
+                ));
+            }
+            Err(error) => return Promise::err(error),
+        };
+        let command = match serde_json::from_slice::<runtime_collab::WifiContinuityCommand>(bytes) {
+            Ok(command) if command.valid() => command,
+            Ok(_) => {
+                return Promise::err(capnp::Error::failed(
+                    "Wi-Fi continuity command is structurally invalid".into(),
+                ));
+            }
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        let Some(network) = self.state.workspace_control_network() else {
+            return Promise::err(capnp::Error::failed(
+                "certified personal-device network is unavailable".into(),
+            ));
+        };
+        let security = |security| match security {
+            runtime_collab::PortableWifiSecurity::Wpa2 => os_actions::WifiSecurity::Wpa2,
+            runtime_collab::PortableWifiSecurity::Wpa3 => os_actions::WifiSecurity::Wpa3,
+        };
+        let reply = match command {
+            runtime_collab::WifiContinuityCommand::Lookup {
+                ssid,
+                security: mode,
+            } => network
+                .shared_wifi_password(&ssid, security(mode))
+                .map_or(runtime_collab::WifiContinuityReply::NotFound, |password| {
+                    runtime_collab::WifiContinuityReply::Password { password }
+                }),
+            runtime_collab::WifiContinuityCommand::Share {
+                ssid,
+                security: mode,
+                password,
+            } => {
+                let password = zeroize::Zeroizing::new(password);
+                match network.share_wifi_credential(&ssid, security(mode), &password) {
+                    Ok(()) => runtime_collab::WifiContinuityReply::Shared { ssid },
+                    Err(reason) => runtime_collab::WifiContinuityReply::Rejected { reason },
+                }
+            }
+            runtime_collab::WifiContinuityCommand::ShareSavedProfile { profile_uuid } => {
+                match os_actions::portable_wifi_profile_secret(&profile_uuid).and_then(|profile| {
+                    network
+                        .share_wifi_credential(&profile.ssid, profile.security, &profile.password)
+                        .map(|()| profile.ssid)
+                }) {
+                    Ok(ssid) => runtime_collab::WifiContinuityReply::Shared { ssid },
+                    Err(reason) => runtime_collab::WifiContinuityReply::Rejected { reason },
+                }
+            }
+        };
+        let reply = match serde_json::to_vec(&reply) {
+            Ok(reply) if reply.len() <= runtime_collab::MAX_WIFI_CONTINUITY_WIRE_BYTES => reply,
+            Ok(_) => {
+                return Promise::err(capnp::Error::failed(
+                    "Wi-Fi continuity reply exceeds the local protocol bound".into(),
+                ));
+            }
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        results.get().set_reply_json(&reply);
+        Promise::ok(())
+    }
 }
 
 struct CapnpWorkspaceControlHandle {

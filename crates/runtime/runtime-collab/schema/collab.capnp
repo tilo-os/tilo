@@ -303,6 +303,12 @@ interface ChannelHandle {
   # into an existing personal-device transfer. No file bytes, certificate, or
   # ambient device authority crosses this command surface.
   nearbyTransferCommand @40 (appId :Text, commandJson :Data) -> (replyJson :Data);
+
+  # Settings-only, launcher-authenticated access to the shell's sealed
+  # personal Wi-Fi credential authority. The command contains portable Wi-Fi
+  # semantics only; NetworkManager UUIDs are accepted solely as local lookup
+  # capabilities and never enter personal-fabric state.
+  wifiContinuityCommand @41 (appId :Text, commandJson :Data) -> (replyJson :Data);
 }
 
 # Application-owned, broker-pulled resource/action directory. A capability is
