@@ -34,10 +34,25 @@ pub fn stroke_rrect(
     scene.stroke(&Stroke::new(width), t, color, None, &shape);
 }
 
-/// Filled rounded rect with a 1px border — the canonical "card" treatment.
-pub fn card(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, fill: Color, border: Color) {
-    fill_rrect(scene, t, rect, radius, fill);
-    stroke_rrect(scene, t, rect, radius, border, 1.0);
+/// Filled rounded rect with its derived 1px rest edge — the canonical
+/// "card" treatment, routed through `ui::surface::card` so the edge comes
+/// from the fill it sits on (HIG §9.5) rather than a declared colour.
+pub fn card(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, fill: Color) {
+    ui::surface::card(scene, t, rect, radius, fill);
+}
+
+/// A 1px rule between rows inside `surface`, derived against it and inset
+/// `inset` from both ends (`ui::surface::separator`).
+pub fn separator(
+    scene: &mut Scene,
+    t: Affine,
+    x0: f64,
+    x1: f64,
+    y: f64,
+    inset: f64,
+    surface: Color,
+) {
+    ui::surface::separator(scene, t, x0, x1, y, inset, surface);
 }
 
 pub fn hline(scene: &mut Scene, t: Affine, x0: f64, x1: f64, y: f64, color: Color, width: f64) {
@@ -184,7 +199,8 @@ pub fn pill(
     let h = f64::from(th) + PILL_PAD_Y * 2.0;
     let w = f64::from(tw) + pad * 2.0;
     let rect = Rect::new(x, cy - h / 2.0, x + w, cy + h / 2.0);
-    fill_rrect(scene, t, rect, h / 2.0, bg);
+    // A tinted capsule: the tint is its contrast step against the row.
+    ui::surface::pill(scene, t, rect, bg, None, None);
     let ty = rect.y0 + PILL_PAD_Y;
     tr.draw_text(
         scene,
@@ -215,8 +231,14 @@ pub fn tag_pill(
     let h = f64::from(th) + PILL_PAD_Y * 2.0;
     let w = f64::from(tw) + pad * 2.0;
     let rect = Rect::new(x, cy - h / 2.0, x + w, cy + h / 2.0);
-    fill_rrect(scene, t, rect, h / 2.0, accent.with_alpha_factor(0.18));
-    stroke_rrect(scene, t, rect, h / 2.0, accent.with_alpha_factor(0.55), 1.0);
+    ui::surface::pill(
+        scene,
+        t,
+        rect,
+        accent.with_alpha_factor(0.18),
+        Some(accent.with_alpha_factor(0.55)),
+        None,
+    );
     let ty = rect.y0 + PILL_PAD_Y;
     tr.draw_text(
         scene,

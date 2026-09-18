@@ -59,6 +59,7 @@ pub fn main() {
                 "active-change",
                 "service-error",
                 "services",
+                "selected",
             ])
             .configure_app(|app| firewall::actions::register(app.action_registry_mut())),
     );
