@@ -280,22 +280,31 @@ fn draw_button(
     }
     scene.fill(Fill::NonZero, transform, bg, None, &shape);
 
+    // Rest edge derived from the face itself (HIG §9.5), under the same
+    // alpha the disabled face carries; a declared `border_standard` sat
+    // within rounding distance of `raised` on the dark preset.
     let border = if state.disabled {
-        theme.tokens.colors.border_standard.with_alpha_factor(0.4)
+        crate::surface::edge_on(bg).with_alpha_factor(0.4)
     } else {
-        theme.tokens.colors.border_standard
+        crate::surface::edge_on(bg)
     };
-    scene.stroke(
-        &Stroke::new(if state.focused { 2.0 } else { 1.0 }),
-        transform,
-        if state.focused {
-            theme.border_focus
-        } else {
-            border
-        },
-        None,
-        &shape,
-    );
+    if state.focused {
+        scene.stroke(
+            &Stroke::new(2.0),
+            transform,
+            theme.border_focus,
+            None,
+            &shape,
+        );
+    } else {
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            border,
+            None,
+            &crate::surface::edge_outline(rect, radius),
+        );
+    }
 
     let text_color = if state.disabled {
         theme.tokens.colors.text_primary.with_alpha_factor(0.4)
@@ -385,12 +394,14 @@ impl Widget for PermissionPrompt {
             None,
             &shape,
         );
+        // Panel role (HIG §9.1): the derived panel edge as a crisp 1 px
+        // inset stroke, never a declared `border_standard`.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.tokens.colors.border_standard,
+            crate::chrome::panel_border(theme),
             None,
-            &shape,
+            &crate::surface::edge_outline(self.rect, radius),
         );
 
         // Placeholder pulled from the accent ramp until the portal layer
@@ -407,13 +418,28 @@ impl Widget for PermissionPrompt {
             &icon_shape,
         );
 
+        // Button geometry first: the label block ends `spacing.s3` before the
+        // leftmost button and is elided to that width, so the two never
+        // overlap on a narrow strip (HIG §7 "Nothing touches"). Also keeps a
+        // draw without a preceding `apply_layout` hit-testing correctly.
+        self.apply_layout_helper();
         let label_x = icon_x + ICON_SIZE + f64::from(theme.tokens.spacing.s2);
+        let label_max_w =
+            (self.allow_rect.x0 - f64::from(theme.tokens.spacing.s3) - label_x).max(0.0);
         let app_id_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let cap_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.base);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "bounded screen-space width; f32 precision is sufficient for text layout"
+        )]
+        let label_max_w = label_max_w as f32;
+        let app_id = text_renderer.elide_to_width(&self.app_id, app_id_size, label_max_w);
+        let capability =
+            text_renderer.elide_to_width(&self.capability_label, cap_size, label_max_w);
         // Centre the two-line block on its measured line boxes, not on the
         // font sizes, so both lines sit where the band says they are.
-        let (_, app_id_h) = text_renderer.measure(&self.app_id, app_id_size, None);
-        let (_, cap_h) = text_renderer.measure(&self.capability_label, cap_size, None);
+        let (_, app_id_h) = text_renderer.measure(&app_id, app_id_size, None);
+        let (_, cap_h) = text_renderer.measure(&capability, cap_size, None);
         let label_y = centered_text_top(
             self.rect.y0,
             PROMPT_HEIGHT,
@@ -421,7 +447,7 @@ impl Widget for PermissionPrompt {
         );
         text_renderer.draw_text(
             scene,
-            &self.app_id,
+            &app_id,
             app_id_size,
             theme.tokens.colors.text_dim,
             transform.pre_translate(Vec2::new(label_x, label_y)),
@@ -429,15 +455,12 @@ impl Widget for PermissionPrompt {
         );
         text_renderer.draw_text(
             scene,
-            &self.capability_label,
+            &capability,
             cap_size,
             theme.tokens.colors.text_primary,
             transform.pre_translate(Vec2::new(label_x, label_y + f64::from(app_id_h) + 4.0)),
             None,
         );
-
-        // So a draw without a preceding `apply_layout` still hit-tests correctly.
-        self.apply_layout_helper();
 
         let buttons = [
             (self.allow_rect, PromptChoice::Allow, true), // primary (accent)

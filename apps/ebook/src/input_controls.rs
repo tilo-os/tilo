@@ -10,7 +10,6 @@ use taffy::{NodeId, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Color;
 use winit::event::{Modifiers, WindowEvent};
 
 use ui::text_render::{TextRenderer, TextWeight};
@@ -484,34 +483,9 @@ impl NoteComposer {
         annotation: &Annotation,
     ) {
         let colors = &theme.tokens.colors;
-        let shadow = Rect::new(
-            layout.card.x0 - 1.0,
-            layout.card.y0 + 4.0,
-            layout.card.x1 + 1.0,
-            layout.card.y1 + 7.0,
-        );
-        paint::fill_round(
-            scene,
-            transform,
-            shadow,
-            12.0,
-            Color::from_rgba8(0, 0, 0, 80),
-        );
-        paint::fill_round(
-            scene,
-            transform,
-            layout.card,
-            f64::from(theme.tokens.radii.lg),
-            colors.surfaces.raised,
-        );
-        paint::stroke_round(
-            scene,
-            transform,
-            layout.card,
-            f64::from(theme.tokens.radii.lg),
-            theme.border_focus,
-            1.4,
-        );
+        // A floating Panel: elevation, ground and the derived Panel border.
+        // The focus ring belongs to the text input inside, not to the card.
+        crate::chrome::panel(scene, transform, theme, layout.card);
 
         let y = layout.card.y0 + layout.pad;
         paint::circle(

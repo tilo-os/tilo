@@ -1312,7 +1312,12 @@ impl CommandPalette {
         let chip_text_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
 
         let active_fill = theme.tokens.colors.accent[5];
-        let idle_fill = Color::from_rgba8(255, 255, 255, 13); // white/5
+        // Idle scope chips are Selectors (HIG §9.5): no fill, outlined by a
+        // hairline derived against the panel ground they sit on — a white
+        // veneer disappeared on a light palette, and a base-relative lift
+        // reads as a well on a panel ground darker than `raised`.
+        let idle_fill = Color::TRANSPARENT;
+        let idle_edge = Some(crate::surface::edge_on(crate::chrome::panel_ground(theme)));
         let active_text = theme.tokens.colors.text_primary;
         let idle_text = theme.tokens.colors.text_dim;
 
@@ -1333,6 +1338,7 @@ impl CommandPalette {
                 label,
                 chip_text_size,
                 if active { active_fill } else { idle_fill },
+                if active { None } else { idle_edge },
                 if active { active_text } else { idle_text },
             );
             x += chip_w + 6.0;
@@ -1343,8 +1349,11 @@ impl CommandPalette {
         let ft_chip_w = f64::from(ft_w) + 16.0;
         let ft_chip = Self::chip_rect(strip, strip.x1 - ft_chip_w, ft_chip_w);
         let ft_on = self.search_filter.full_text;
-        let ft_active_fill = Color::from_rgba8(34, 197, 94, 51); // emerald-500/20
-        let ft_active_text = Color::from_rgba8(0x4a, 0xde, 0x80, 0xff); // emerald-400
+        // "On" is a semantic state the theme defines (HIG §9.4), not a
+        // Tailwind emerald that ignores the palette.
+        let success = theme.tokens.colors.semantic.success;
+        let ft_active_fill = success.with_alpha_factor(0.2);
+        let ft_active_text = success;
         Self::draw_chip(
             scene,
             transform,
@@ -1353,6 +1362,7 @@ impl CommandPalette {
             ft_label,
             chip_text_size,
             if ft_on { ft_active_fill } else { idle_fill },
+            if ft_on { None } else { idle_edge },
             if ft_on { ft_active_text } else { idle_text },
         );
 
@@ -1376,6 +1386,7 @@ impl CommandPalette {
                 label,
                 chip_text_size,
                 if active { active_fill } else { idle_fill },
+                if active { None } else { idle_edge },
                 if active { active_text } else { idle_text },
             );
             fx += chip_w + 6.0;
@@ -1399,12 +1410,22 @@ impl CommandPalette {
         label: &str,
         text_size: f32,
         body: Color,
+        edge: Option<Color>,
         text_color: Color,
     ) {
         // `rounded-full` ≈ half-height radius.
         let radius = chip.height() / 2.0;
         let shape = RoundedRect::from_rect(chip, radius);
         scene.fill(vello::peniko::Fill::NonZero, transform, body, None, &shape);
+        if let Some(edge) = edge {
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                edge,
+                None,
+                &crate::surface::edge_outline(chip, radius),
+            );
+        }
         let (w, h) = text_renderer.measure(label, text_size, None);
         let tx = f64::midpoint(chip.x0, chip.x1) - f64::from(w) / 2.0;
         let ty = f64::midpoint(chip.y0, chip.y1) - f64::from(h) / 2.0;
@@ -1427,16 +1448,25 @@ impl CommandPalette {
     ) {
         let colors = &theme.tokens.colors;
         let footer = self.footer_rect();
-        scene.stroke(
-            &Stroke::new(1.0),
+        // HIG §9.5: a separator inside a Panel derives against the panel
+        // ground and is inset `spacing.s3`, never full-bleed into the radius.
+        let ground = crate::chrome::panel_ground(theme);
+        // Centred on the half pixel so the 1 px rule fills the footer's
+        // first pixel row instead of smearing across two at half strength.
+        crate::surface::separator(
+            scene,
             transform,
-            colors.border_standard.with_alpha_factor(0.6),
-            None,
-            &vello::kurbo::Line::new(
-                Point::new(footer.x0 + 4.0, footer.y0),
-                Point::new(footer.x1 - 4.0, footer.y0),
-            ),
+            footer.x0,
+            footer.x1,
+            footer.y0 + 0.5,
+            f64::from(theme.tokens.spacing.s3),
+            ground,
         );
+        // Key chips are static hints resting on the panel: no fill, just a
+        // hairline derived against the panel ground (HIG §9.5) — never a
+        // white veneer that is invisible on a light palette, and not a
+        // base-relative lift that reads as a well on a darker ground.
+        let chip_edge = crate::surface::edge_on(ground);
 
         let size = (theme.tokens.typography.scale.xs).max(9.0);
         let dim = colors.text_dim;
@@ -1460,20 +1490,12 @@ impl CommandPalette {
             let (kw, kh) = text_renderer.measure(key, size, None);
             let chip_w = (f64::from(kw) + 10.0).max(chip_h);
             let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
-            let chip_shape = RoundedRect::from_rect(chip_rect, 4.0);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                colors.surface_white_5,
-                None,
-                &chip_shape,
-            );
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                colors.border_white_10,
+                chip_edge,
                 None,
-                &chip_shape,
+                &crate::surface::edge_outline(chip_rect, 4.0),
             );
             text_renderer.draw_text(
                 scene,
@@ -1598,11 +1620,12 @@ impl CommandPalette {
     /// A selected row is the card plus an accent wash; ink chosen against
     /// the bare card would read a tier lower there. Resolve the composite
     /// once so paint and contrast checks agree.
-    pub(crate) fn row_ground(colors: &crate::tokens::Colors, selected: bool) -> Color {
+    pub(crate) fn row_ground(theme: &Theme, selected: bool) -> Color {
+        let ground = crate::chrome::panel_ground(theme);
         if selected {
-            crate::tokens::colors::over(colors.surfaces.raised, colors.accent[5], SELECTION_WASH)
+            crate::tokens::colors::over(ground, theme.tokens.colors.accent[5], SELECTION_WASH)
         } else {
-            colors.surfaces.raised
+            ground
         }
     }
 
@@ -1756,7 +1779,7 @@ impl CommandPalette {
         platform: PlatformConventions,
     ) {
         let colors = &theme.tokens.colors;
-        let row_ground = Self::row_ground(colors, selected);
+        let row_ground = Self::row_ground(theme, selected);
         // Needs contrast against the selection wash: take the nearest
         // legible step from the theme's dim tone rather than promoting it
         // to the title's weight to survive.
@@ -2046,20 +2069,25 @@ impl Widget for CommandPalette {
         text_renderer.set_text_scale(1.0);
         self.text_scale = f64::from(theme.text_scale);
         let colors = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(self.rect, self.surface_radius_px());
+        // Panel role (HIG §9.1): panel ground + the derived panel edge as a
+        // crisp 1 px inset stroke. The declared `border_standard` sat within
+        // rounding distance of `raised` on the dark preset and read as no
+        // edge at all.
+        let radius = self.surface_radius_px();
+        let shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            colors.surfaces.raised,
+            crate::chrome::panel_ground(theme),
             None,
             &shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            crate::chrome::panel_border(theme),
             None,
-            &shape,
+            &crate::surface::edge_outline(self.rect, radius),
         );
 
         // ONE control for the query — the magnifier lives inside its rounded
@@ -2080,7 +2108,7 @@ impl Widget for CommandPalette {
         let (ring, ring_w) = if self.is_focused {
             (colors.accent[5].with_alpha_factor(0.45), 1.0)
         } else {
-            (colors.border_standard, 1.0)
+            (crate::surface::edge_on(colors.surfaces.base), 1.0)
         };
         scene.stroke(&Stroke::new(ring_w), transform, ring, None, &field_shape);
 

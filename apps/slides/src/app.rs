@@ -2277,18 +2277,44 @@ impl SlidesApp {
         // not (the picker's vertical layout is fixed). Its hex / rgb readouts
         // still overrun the rect at 2× — a `ColorPicker` defect, recorded for
         // its owner in the A7 round-two review.
-        let scale = self.chrome_metrics.scale;
+        let m = &self.chrome_metrics;
+        let scale = m.scale;
         let (w, h) = (FILL_PICKER_W * scale, FILL_PICKER_H);
         // Leave ~64px of slack on the right: the picker's hex field extends
         // past its preview swatch, so a flush-right anchor would clip it.
-        let x = (inspector.x0 + 12.0)
+        let x = (inspector.x0 + INSPECTOR_PAD)
             .min(r.x1 - w - 64.0 * scale)
-            .max(r.x0 + 8.0);
-        // Sit below the top property controls, above the notes box.
+            .max(r.x0 + m.s2);
+        // Sit below the top property controls, above the notes box, and
+        // keep the whole popover panel (caption row above, `s3` below) at
+        // least `s1` inside the body so it never paints over the toolbar.
+        let (top_inset, bottom_inset) = self.fill_picker_panel_insets();
         let y = (inspector.y0 + 300.0)
-            .min(r.y1 - h - 8.0)
-            .max(body_top + 8.0);
+            .min(r.y1 - h - bottom_inset - m.s1)
+            .max(body_top + top_inset + m.s1);
         Some(Rect::new(x, y, x + w, y + h))
+    }
+
+    /// How far the fill-picker popover panel extends beyond the picker's own
+    /// rect above (its caption row: `s2` + the caption line box + `s2`) and
+    /// below (`s3`); the sides are `s3`.
+    fn fill_picker_panel_insets(&self) -> (f64, f64) {
+        let m = &self.chrome_metrics;
+        (m.s2 + m.lh_caption + m.s2, m.s3)
+    }
+
+    /// The popover panel painted around the fill picker at `picker` — the
+    /// same rect `draw_inspector_widgets` paints and the pointer dismisses
+    /// against, so a click on the caption row never closes the popover.
+    fn fill_picker_panel_rect(&self, picker: Rect) -> Rect {
+        let (top, bottom) = self.fill_picker_panel_insets();
+        let side = self.chrome_metrics.s3;
+        Rect::new(
+            picker.x0 - side,
+            picker.y0 - top,
+            picker.x1 + side,
+            picker.y1 + bottom,
+        )
     }
 
     /// Lay out the inspector contents; returns the speaker-notes box rect.
@@ -4129,7 +4155,9 @@ impl SlidesApp {
         let c = &theme.tokens.colors;
         let rail_overlay = chrome.layout == SplitLayout::Overlay;
         let insp_overlay = chrome.inspector_layout == SplitLayout::Overlay;
-        let div = c.border_standard;
+        // Panel dividers are the raised panels' own derived edge (HIG §9.5);
+        // the declared `border_standard` is within a shade of dark `raised`.
+        let div = ui::surface::edge_on(c.surfaces.raised);
 
         // Resolve any pending pointer interaction (click-to-place caret,
         // double-click word-select, drag-extend) now that the text layout is
@@ -4206,40 +4234,35 @@ impl SlidesApp {
         if !insp_overlay {
             chrome::fill_rect(scene, t, chrome.inspector, c.surfaces.raised);
         }
-        chrome::fill_rect(
-            scene,
-            t,
-            chrome.toolbar,
-            mix_panel(c.surfaces.raised, c.surfaces.base),
-        );
-        // Divider lines.
-        stroke_line(
+        let toolbar_fill = mix_panel(c.surfaces.raised, c.surfaces.base);
+        chrome::fill_rect(scene, t, chrome.toolbar, toolbar_fill);
+        // Divider lines: each panel's derived edge on its own last pixel
+        // row / column, crisp (a stroke centred on the boundary blurred
+        // across two pixels).
+        chrome::hairline_h(
             scene,
             t,
             chrome.toolbar.x0,
-            chrome.toolbar.y1,
             chrome.toolbar.x1,
-            chrome.toolbar.y1,
-            div,
+            chrome.toolbar.y1 - 1.0,
+            ui::surface::edge_on(toolbar_fill),
         );
         if !rail_overlay {
-            stroke_line(
+            chrome::hairline_v(
                 scene,
                 t,
-                chrome.rail.x1,
+                chrome.rail.x1 - 1.0,
                 chrome.rail.y0,
-                chrome.rail.x1,
                 chrome.rail.y1,
                 div,
             );
         }
         if !insp_overlay {
-            stroke_line(
+            chrome::hairline_v(
                 scene,
                 t,
                 chrome.inspector.x0,
                 chrome.inspector.y0,
-                chrome.inspector.x0,
                 chrome.inspector.y1,
                 div,
             );
@@ -4437,12 +4460,11 @@ impl SlidesApp {
         // viewport so it can never bleed over the pinned Add/Dup/Del row.
         if rail_overlay && chrome.reveal > 0.001 {
             chrome::fill_rect(scene, t, chrome.rail, c.surfaces.raised);
-            stroke_line(
+            chrome::hairline_v(
                 scene,
                 t,
-                chrome.rail.x1,
+                chrome.rail.x1 - 1.0,
                 chrome.rail.y0,
-                chrome.rail.x1,
                 chrome.rail.y1,
                 div,
             );
@@ -4581,12 +4603,11 @@ impl SlidesApp {
         // Inspector group on top: panel fill (overlay only), buttons, notes, labels.
         if insp_overlay && chrome.inspector_reveal > 0.001 {
             chrome::fill_rect(scene, t, chrome.inspector, c.surfaces.raised);
-            stroke_line(
+            chrome::hairline_v(
                 scene,
                 t,
                 chrome.inspector.x0,
                 chrome.inspector.y0,
-                chrome.inspector.x0,
                 chrome.inspector.y1,
                 div,
             );
@@ -4672,30 +4693,14 @@ impl SlidesApp {
                 self.fill_picker_needs_init = false;
             }
             let c = &theme.tokens.colors;
-            let panel = rect.inflate(12.0, 16.0);
-            let shadow = panel + vello::kurbo::Vec2::new(0.0, 5.0);
-            chrome::fill_rrect(
-                scene,
-                t,
-                shadow.inflate(2.0, 2.0),
-                14.0,
-                render::with_alpha(Color::BLACK, 100),
-            );
-            chrome::fill_rrect(scene, t, panel, 12.0, c.surfaces.raised);
-            chrome::stroke_rrect(
-                scene,
-                t,
-                panel,
-                12.0,
-                render::with_alpha(c.text_primary, 48),
-                1.0,
-            );
+            let panel = self.fill_picker_panel_rect(rect);
+            chrome::panel(scene, t, theme, panel, f64::from(theme.tokens.radii.lg));
             tr.draw_text_weighted(
                 scene,
                 &crate::strings::tr("slides-fill-colour"),
-                11.0,
+                FONT_CAPTION,
                 c.text_dim,
-                t * Affine::translate((rect.x0, panel.y0 + 8.0)),
+                t * Affine::translate((rect.x0, panel.y0 + self.chrome_metrics.s2)),
                 None,
                 TextWeight::Semibold,
             );
@@ -4812,22 +4817,26 @@ impl SlidesApp {
         active: bool,
         danger: bool,
     ) {
-        let (bg, fg) = if danger {
-            (render::with_alpha(c.semantic.danger, 38), c.semantic.danger)
+        // Rest: the base face with its derived edge (HIG §9.5 "Button
+        // Neutral"); active: the accent fill alone; danger: the tint
+        // composited over the face first, so its edge and ink are measured
+        // against what is on screen.
+        let fg = if danger {
+            let chip = c.tinted_chip_on(
+                c.surfaces.base,
+                c.semantic.danger,
+                DANGER_WASH,
+                ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+            );
+            ui::surface::card(scene, t, rect, 8.0, chip.fill);
+            chip.ink
         } else if active {
-            (pal.accent, Color::WHITE)
+            chrome::fill_rrect(scene, t, rect, 8.0, pal.accent);
+            on_accent(c, pal)
         } else {
-            (c.surfaces.base, c.text_primary)
+            ui::surface::card(scene, t, rect, 8.0, c.surfaces.base);
+            c.text_primary
         };
-        chrome::fill_rrect(scene, t, rect, 8.0, bg);
-        chrome::stroke_rrect(
-            scene,
-            t,
-            rect,
-            8.0,
-            render::with_alpha(c.text_primary, 26),
-            1.0,
-        );
         if !label.is_empty() {
             chrome::text_centered(scene, t, tr, label, rect, 13.0, fg, TextWeight::Semibold);
         }
@@ -4850,22 +4859,13 @@ impl SlidesApp {
         label: &str,
         accent: bool,
     ) {
-        let (bg, fg) = if accent {
-            (pal.accent, Color::WHITE)
+        let fg = if accent {
+            chrome::fill_rrect(scene, t, rect, 8.0, pal.accent);
+            on_accent(c, pal)
         } else {
-            (c.surfaces.base, c.text_primary)
+            ui::surface::card(scene, t, rect, 8.0, c.surfaces.base);
+            c.text_primary
         };
-        chrome::fill_rrect(scene, t, rect, 8.0, bg);
-        if !accent {
-            chrome::stroke_rrect(
-                scene,
-                t,
-                rect,
-                8.0,
-                render::with_alpha(c.text_primary, 26),
-                1.0,
-            );
-        }
         let ir = Rect::new(rect.x0 + 11.0, rect.y0 + 8.0, rect.x0 + 29.0, rect.y1 - 8.0);
         draw_icon(scene, t, ir, icon, fg, 1.8);
         chrome::text_vcenter(
@@ -4890,18 +4890,15 @@ impl SlidesApp {
         icon: Icon,
         active: bool,
     ) {
-        let bg = if active { pal.accent } else { c.surfaces.base };
-        chrome::fill_rrect(scene, t, rect, 7.0, bg);
-        chrome::stroke_rrect(
-            scene,
-            t,
-            rect,
-            7.0,
-            render::with_alpha(c.text_primary, 30),
-            1.0,
-        );
+        let fg = if active {
+            chrome::fill_rrect(scene, t, rect, 7.0, pal.accent);
+            on_accent(c, pal)
+        } else {
+            ui::surface::card(scene, t, rect, 7.0, c.surfaces.base);
+            c.text_primary
+        };
         let ir = rect.inflate(-6.0, -6.0);
-        draw_icon(scene, t, ir, icon, c.text_primary, 1.8);
+        draw_icon(scene, t, ir, icon, fg, 1.8);
     }
 
     fn draw_button_swatch(
@@ -4914,27 +4911,12 @@ impl SlidesApp {
         selected: bool,
     ) {
         if let Some(col) = pal.resolve_role(role) {
-            chrome::fill_rrect(scene, t, rect, 6.0, col);
-            // contrast border for light swatches
-            chrome::stroke_rrect(
-                scene,
-                t,
-                rect,
-                6.0,
-                render::with_alpha(Color::BLACK, 50),
-                1.0,
-            );
+            // The swatch's edge is derived from the swatch itself, so a
+            // near-black and a near-white role both keep a visible frame.
+            ui::surface::card(scene, t, rect, 6.0, col);
         } else {
             // "none" → hatched empty box
-            chrome::fill_rrect(scene, t, rect, 6.0, c.surfaces.base);
-            chrome::stroke_rrect(
-                scene,
-                t,
-                rect,
-                6.0,
-                render::with_alpha(c.text_primary, 60),
-                1.0,
-            );
+            ui::surface::card(scene, t, rect, 6.0, c.surfaces.base);
             stroke_line(
                 scene,
                 t,
@@ -4967,19 +4949,10 @@ impl SlidesApp {
         selected: bool,
     ) {
         let col = Palette::resolve(kind, theme).accent;
-        chrome::fill_rrect(scene, t, rect, 8.0, c.surfaces.base);
-        chrome::stroke_rrect(
-            scene,
-            t,
-            rect,
-            8.0,
-            if selected {
-                col
-            } else {
-                render::with_alpha(c.text_primary, 26)
-            },
-            if selected { 2.0 } else { 1.0 },
-        );
+        ui::surface::card(scene, t, rect, 8.0, c.surfaces.base);
+        if selected {
+            chrome::stroke_rrect(scene, t, rect, 8.0, col, 2.0);
+        }
         let dot = Rect::new(
             rect.x0 + 8.0,
             rect.center().y - 6.0,
@@ -5026,13 +4999,13 @@ impl SlidesApp {
         pos: SegPos,
     ) {
         let (bg, fg) = if active {
-            (pal.accent, Color::WHITE)
+            (pal.accent, on_accent(c, pal))
         } else {
             (c.surfaces.base, c.text_primary)
         };
         // Round only the outer corners so the row reads as one pill.
         let r = 8.0;
-        let shape = match pos {
+        let shape_of = |rect: Rect, r: f64| match pos {
             SegPos::First => {
                 vello::kurbo::RoundedRect::new(rect.x0, rect.y0, rect.x1, rect.y1, (r, 0.0, 0.0, r))
             }
@@ -5041,13 +5014,15 @@ impl SlidesApp {
             }
             SegPos::Mid => vello::kurbo::RoundedRect::from_rect(rect, 0.0),
         };
-        scene.fill(Fill::NonZero, t, bg, None, &shape);
+        scene.fill(Fill::NonZero, t, bg, None, &shape_of(rect, r));
+        // Each cell's edge derives from its own fill and sits half a pixel
+        // inside it (the `ui::surface::card` geometry, per-corner radii).
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            render::with_alpha(c.text_primary, 26),
+            ui::surface::edge_on(bg),
             None,
-            &shape,
+            &shape_of(rect.inset(-0.5), r - 0.5),
         );
         chrome::text_centered(scene, t, tr, label, rect, 12.5, fg, TextWeight::Semibold);
     }
@@ -5061,17 +5036,13 @@ impl SlidesApp {
         rect: Rect,
     ) {
         let active = self.rail_open();
-        let bg = if active { pal.accent } else { c.surfaces.base };
-        let fg = if active { Color::WHITE } else { c.text_primary };
-        chrome::fill_rrect(scene, t, rect, 8.0, bg);
-        chrome::stroke_rrect(
-            scene,
-            t,
-            rect,
-            8.0,
-            render::with_alpha(c.text_primary, 30),
-            1.0,
-        );
+        let fg = if active {
+            chrome::fill_rrect(scene, t, rect, 8.0, pal.accent);
+            on_accent(c, pal)
+        } else {
+            ui::surface::card(scene, t, rect, 8.0, c.surfaces.base);
+            c.text_primary
+        };
         // Three evenly-spaced horizontal lines.
         let cx0 = rect.x0 + 9.0;
         let cx1 = rect.x1 - 9.0;
@@ -5415,24 +5386,20 @@ impl SlidesApp {
         notes: &str,
     ) {
         let c = &theme.tokens.colors;
-        let bg = if self.editing_notes {
-            render::with_alpha(self.palette(theme).accent, 28)
-        } else {
-            c.surfaces.base
-        };
-        chrome::fill_rrect(scene, t, nb, 8.0, bg);
-        chrome::stroke_rrect(
-            scene,
-            t,
-            nb,
-            8.0,
-            if self.editing_notes {
-                self.palette(theme).accent
-            } else {
-                render::with_alpha(c.text_primary, 26)
-            },
-            1.0,
-        );
+        // A text field: the base face with its derived rest edge; editing
+        // lays the accent wash and ring over it (focus state, not an edge).
+        ui::surface::card(scene, t, nb, 8.0, c.surfaces.base);
+        if self.editing_notes {
+            let accent = self.palette(theme).accent;
+            chrome::fill_rrect(scene, t, nb, 8.0, render::with_alpha(accent, 28));
+            scene.stroke(
+                &Stroke::new(1.0),
+                t,
+                accent,
+                None,
+                &ui::surface::edge_outline(nb, 8.0),
+            );
+        }
         if self.editing_notes {
             self.notes_input.apply_layout_external(nb);
             if self.notes_input.value().is_empty() {
@@ -5551,6 +5518,21 @@ fn mix_panel(a: Color, b: Color) -> Color {
 fn stroke_line(scene: &mut Scene, t: Affine, x0: f64, y0: f64, x1: f64, y1: f64, color: Color) {
     let line = Line::new(Point::new(x0, y0), Point::new(x1, y1));
     scene.stroke(&Stroke::new(1.0), t, color, None, &line);
+}
+
+/// Wash strength of a danger-tinted Neutral button (the Delete actions):
+/// a faint tint over the button face, matched to the classic `danger/38`.
+const DANGER_WASH: f32 = 0.15;
+
+/// Ink on the deck palette's accent fill (active buttons): white where it
+/// reads, stepped toward the contrasting extreme on a bright accent — one
+/// answer per palette, so a row of active pills never mixes polarities.
+fn on_accent(c: &ui::tokens::Colors, pal: &Palette) -> Color {
+    c.ink_on_any(
+        &[pal.accent],
+        Color::WHITE,
+        ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+    )
 }
 
 /// Line starts (char index of the first char of every `\n`-delimited line).
@@ -7623,7 +7605,7 @@ impl SlidesApp {
             ..
         } = event
         {
-            let panel = self.fill_picker.get_rect().inflate(12.0, 16.0);
+            let panel = self.fill_picker_panel_rect(self.fill_picker.get_rect());
             if !panel.contains(self.last_mouse) {
                 Widget::set_focus(&mut self.fill_picker, false);
                 self.fill_picker_open = false;

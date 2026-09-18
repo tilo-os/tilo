@@ -28,6 +28,9 @@ use crate::keypad::{CalcScreen, MEM_KEYS};
 use crate::model::{self, CalcModel, Mode, PlotFn};
 
 const TOPBAR_H: f64 = 60.0;
+/// Gap between the segments of the mode switch and of the RAD/DEG toggle:
+/// one `s1`, so no two segments touch inside their shared track (HIG §7).
+const SEG_GAP: f64 = ui::tokens::spacing::Spacing::BASE.s1 as f64;
 
 /// Painted widths of the topbar's widest labels (see
 /// `CalculatorApp::measure_topbar_labels`). Zero before the first draw, where
@@ -195,15 +198,16 @@ impl CalculatorApp {
         // half must seat its measured label, so enlarged type widens the
         // toggle rather than spilling out of it.
         let compact_toggle = w < 620.0;
-        let toggle_min = 2.0 * (self.topbar_labels.toggle + 2.0 * TopbarLabels::TOGGLE_PAD_X);
+        let toggle_min =
+            2.0 * (self.topbar_labels.toggle + 2.0 * TopbarLabels::TOGGLE_PAD_X) + SEG_GAP;
         let toggle_base: f64 = if compact_toggle { 100.0 } else { 124.0 };
         let toggle_w = toggle_base.max(toggle_min);
         let right_margin = if compact_toggle { 12.0 } else { 24.0 };
         let ax1 = self.area.x1 - right_margin;
         let ax0 = ax1 - toggle_w;
-        let half = toggle_w / 2.0;
+        let half = (toggle_w - SEG_GAP) / 2.0;
         self.rad_rect = Rect::new(ax0, y0, ax0 + half, y0 + seg_h);
-        self.deg_rect = Rect::new(ax0 + half, y0, ax1, y0 + seg_h);
+        self.deg_rect = Rect::new(ax0 + half + SEG_GAP, y0, ax1, y0 + seg_h);
 
         // The mode switcher fills the gap between the brand and the toggle,
         // centred, with each segment clamped to a tappable width. The clamps
@@ -216,14 +220,14 @@ impl CalculatorApp {
         let seg_max = 128.0_f64.max(full_w);
         let seg_area_left = brand_right + 12.0;
         let seg_area_right = ax0 - 12.0;
-        let avail = (seg_area_right - seg_area_left).max(3.0 * seg_min);
-        let seg_w = (avail / 3.0).clamp(seg_min, seg_max);
+        let avail = (seg_area_right - seg_area_left).max(3.0 * seg_min + 2.0 * SEG_GAP);
+        let seg_w = ((avail - 2.0 * SEG_GAP) / 3.0).clamp(seg_min, seg_max);
         self.seg_short = seg_w < 104.0_f64.max(full_w);
-        let seg_total = seg_w * 3.0;
+        let seg_total = seg_w * 3.0 + 2.0 * SEG_GAP;
         let seg_start =
             seg_area_left + ((seg_area_right - seg_area_left) - seg_total).max(0.0) / 2.0;
         for (i, rect) in self.seg_rects.iter_mut().enumerate() {
-            let sx = seg_start + i as f64 * seg_w;
+            let sx = seg_start + i as f64 * (seg_w + SEG_GAP);
             *rect = Rect::new(sx, y0, sx + seg_w, y0 + seg_h);
         }
     }
@@ -391,7 +395,7 @@ impl CalculatorApp {
             t,
             Point::new(self.topbar.x0, self.topbar.y1),
             Point::new(self.topbar.x1, self.topbar.y1),
-            c.border_standard,
+            ui::chrome::chrome_hairline(theme),
             1.0,
         );
 
@@ -405,13 +409,14 @@ impl CalculatorApp {
             self.seg_rects[2].x1 + 4.0,
             self.seg_rects[2].y1 + 4.0,
         );
-        draw::fill_rrect(scene, t, outer, 10.0, c.neutral[2]);
+        ui::surface::card(scene, t, outer, 10.0, c.neutral[2]);
         let sel = self.model.mode.index();
+        let on_accent = c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
         for (i, (m, &r)) in Mode::all().iter().zip(self.seg_rects.iter()).enumerate() {
             if i == sel {
                 draw::fill_rrect(scene, t, r, 8.0, c.accent[5]);
             }
-            let col = if i == sel { Color::WHITE } else { c.text_dim };
+            let col = if i == sel { on_accent } else { c.text_dim };
             let label = if self.seg_short {
                 m.short_label()
             } else {
@@ -437,22 +442,14 @@ impl CalculatorApp {
             self.deg_rect.x1 + 4.0,
             self.deg_rect.y1 + 4.0,
         );
-        draw::fill_rrect(scene, t, outer2, 10.0, c.neutral[2]);
+        ui::surface::card(scene, t, outer2, 10.0, c.neutral[2]);
         if self.model.deg {
             draw::fill_rrect(scene, t, self.deg_rect, 8.0, c.accent[5]);
         } else {
             draw::fill_rrect(scene, t, self.rad_rect, 8.0, c.accent[5]);
         }
-        let rad_col = if self.model.deg {
-            c.text_dim
-        } else {
-            Color::WHITE
-        };
-        let deg_col = if self.model.deg {
-            Color::WHITE
-        } else {
-            c.text_dim
-        };
+        let rad_col = if self.model.deg { c.text_dim } else { on_accent };
+        let deg_col = if self.model.deg { on_accent } else { c.text_dim };
         draw::text_in(
             scene,
             tr,

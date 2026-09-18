@@ -764,11 +764,7 @@ impl Scrollable {
         let radius = BAR_THICKNESS / 2.0;
         // An idle overlay bar is just the thumb, like macOS/GNOME.
         let expanded = !self.overlay || self.bar_pinned();
-        let track_color = theme
-            .tokens
-            .colors
-            .surface_white_5
-            .with_alpha_factor(opacity);
+        let track_color = crate::widget::scrollbar::track_color(theme).with_alpha_factor(opacity);
         for (track, thumb, active) in [
             (
                 self.vertical_track(),
@@ -791,13 +787,9 @@ impl Scrollable {
                 );
             }
             if let Some(thumb) = thumb {
-                // Hover/drag/focus brightens the idle border-token thumb.
-                let base = if active || self.focused {
-                    theme.text_dim
-                } else {
-                    theme.border_standard
-                };
-                let color = base.with_alpha_factor(opacity);
+                // Hover/drag/focus brightens the derived idle thumb.
+                let color = crate::widget::scrollbar::thumb_color(theme, active || self.focused)
+                    .with_alpha_factor(opacity);
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,

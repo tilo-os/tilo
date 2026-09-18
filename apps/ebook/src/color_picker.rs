@@ -5,9 +5,8 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Color;
 
-use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
@@ -257,13 +256,7 @@ impl ColorPicker {
             return;
         };
         let colors = &theme.tokens.colors;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(0.45),
-            None,
-            &viewport,
-        );
+        crate::chrome::sheet_scrim(scene, transform, theme, viewport);
         self.hits.push((viewport, HitAction::Cancel));
 
         let width = 372.0_f64.min(viewport.width() - 40.0);
@@ -271,21 +264,7 @@ impl ColorPicker {
         let x = viewport.x0 + (viewport.width() - width) / 2.0;
         let y = viewport.y0 + (viewport.height() - height) / 2.0;
         let panel = Rect::new(x, y, x + width, y + height);
-        paint::fill_round(
-            scene,
-            transform,
-            panel,
-            f64::from(theme.tokens.radii.lg),
-            colors.surfaces.raised,
-        );
-        paint::stroke_round(
-            scene,
-            transform,
-            panel,
-            f64::from(theme.tokens.radii.lg),
-            colors.border_standard,
-            1.0,
-        );
+        crate::chrome::panel(scene, transform, theme, panel);
         self.hits.push((panel, HitAction::Swallow));
 
         let ix0 = x + 20.0;
@@ -311,7 +290,7 @@ impl ColorPicker {
         let preview_y = top + 206.0;
         draw_preview(scene, transform, text, colors, ix0, preview_y, &pick);
         self.draw_chips(scene, transform, theme, ix0, ix1, preview_y + 46.0, cursor);
-        self.draw_buttons(scene, transform, text, theme, ix1, y + height - 46.0);
+        self.draw_buttons(scene, transform, text, theme, ix1, y + height - 46.0, cursor);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -347,7 +326,13 @@ impl ColorPicker {
                 );
             }
         }
-        paint::stroke_round(scene, t, self.sv, 6.0, colors.border_standard, 1.0);
+        // The field holds every colour, so its frame derives from the panel
+        // it sits on rather than from a declared border.
+        let frame = ui::tokens::colors::Colors::hairline_on(
+            colors.surfaces.base,
+            ui::chrome::PANEL_BORDER_ALPHA,
+        );
+        paint::stroke_round(scene, t, self.sv, 6.0, frame, 1.0);
         let cursor = Point::new(
             self.sv.x0 + f64::from(pick.sat) * size,
             self.sv.y0 + f64::from(1.0 - pick.val) * size,
@@ -377,7 +362,7 @@ impl ColorPicker {
                 Color::from_rgb8(rgb[0], rgb[1], rgb[2]),
             );
         }
-        paint::stroke_round(scene, t, self.hue, 4.0, colors.border_standard, 1.0);
+        paint::stroke_round(scene, t, self.hue, 4.0, frame, 1.0);
         let mark_y = self.hue.y0 + f64::from(pick.hue / 360.0) * size;
         paint::stroke_round(
             scene,
@@ -424,31 +409,24 @@ impl ColorPicker {
         let mut x = ix0;
         for rgb in CHIPS {
             let rect = Rect::new(x, y, x + 26.0, y + 26.0);
-            paint::fill_round(
-                scene,
-                t,
-                rect,
-                6.0,
-                Color::from_rgb8(rgb[0], rgb[1], rgb[2]),
-            );
-            let hover = rect.contains(cursor);
-            paint::stroke_round(
-                scene,
-                t,
-                rect,
-                6.0,
-                if hover {
-                    theme.border_focus
-                } else {
-                    theme.tokens.colors.border_standard
-                },
-                if hover { 2.0 } else { 1.0 },
-            );
+            let fill = Color::from_rgb8(rgb[0], rgb[1], rgb[2]);
+            paint::fill_round(scene, t, rect, 6.0, fill);
+            // Each chip's edge derives from the chip, so the white and the
+            // near-black ones keep an outline on every panel.
+            if rect.contains(cursor) {
+                paint::stroke_round(scene, t, rect, 6.0, theme.border_focus, 2.0);
+            } else {
+                crate::chrome::edge(scene, t, fill, rect, 6.0);
+            }
             self.hits.push((rect, HitAction::Swatch(rgb)));
             x += 26.0 + gap;
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "draw context plus anchor geometry and the cursor for hover"
+    )]
     fn draw_buttons(
         &mut self,
         scene: &mut Scene,
@@ -457,37 +435,47 @@ impl ColorPicker {
         theme: &Theme,
         ix1: f64,
         y: f64,
+        cursor: Point,
     ) {
         let done_w = f64::from(
             text.measure_weighted("Done", 13.0, None, TextWeight::Semibold)
                 .0,
         ) + 44.0;
+        use crate::chrome::rhythm;
         let done = Rect::new(ix1 - done_w, y, ix1, y + 34.0);
-        paint::fill_round(scene, t, done, 17.0, theme.accent_primary);
-        text.draw_text_weighted(
+        // The shared Primary and Neutral faces (HIG §8), a sibling step apart.
+        ui::widget::Button::paint(
             scene,
-            "Done",
-            13.0,
-            Color::from_rgb8(248, 248, 252),
-            t * Affine::translate((done.x0 + 22.0, y + 9.0)),
-            None,
-            TextWeight::Semibold,
+            t,
+            text,
+            theme,
+            &ui::widget::ButtonFace::new(done, "Done")
+                .primary()
+                .radius(17.0)
+                .text_size(13.0)
+                .weight(TextWeight::Semibold)
+                .hovered(done.contains(cursor)),
         );
         self.hits.push((done, HitAction::Done));
         let cancel_w = f64::from(
             text.measure_weighted("Cancel", 13.0, None, TextWeight::Medium)
                 .0,
         ) + 30.0;
-        let cancel = Rect::new(done.x0 - 10.0 - cancel_w, y, done.x0 - 10.0, y + 34.0);
-        paint::fill_round(scene, t, cancel, 17.0, theme.tokens.colors.surfaces.overlay);
-        text.draw_text_weighted(
+        let cancel = Rect::new(
+            done.x0 - rhythm::SIBLING - cancel_w,
+            y,
+            done.x0 - rhythm::SIBLING,
+            y + 34.0,
+        );
+        ui::widget::Button::paint(
             scene,
-            "Cancel",
-            13.0,
-            theme.tokens.colors.text_primary,
-            t * Affine::translate((cancel.x0 + 15.0, y + 9.0)),
-            None,
-            TextWeight::Medium,
+            t,
+            text,
+            theme,
+            &ui::widget::ButtonFace::new(cancel, "Cancel")
+                .radius(17.0)
+                .text_size(13.0)
+                .hovered(cancel.contains(cursor)),
         );
         self.hits.push((cancel, HitAction::Cancel));
     }
@@ -517,14 +505,9 @@ fn draw_preview(
 ) {
     let rgb = pick.edit().rgb;
     let swatch = Rect::new(x, y, x + 54.0, y + 34.0);
-    paint::fill_round(
-        scene,
-        t,
-        swatch,
-        8.0,
-        Color::from_rgb8(rgb[0], rgb[1], rgb[2]),
-    );
-    paint::stroke_round(scene, t, swatch, 8.0, colors.border_standard, 1.0);
+    let fill = Color::from_rgb8(rgb[0], rgb[1], rgb[2]);
+    paint::fill_round(scene, t, swatch, 8.0, fill);
+    crate::chrome::edge(scene, t, fill, swatch, 8.0);
     text.draw_text_weighted(
         scene,
         &hex_string(rgb),

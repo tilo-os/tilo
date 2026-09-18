@@ -2116,15 +2116,9 @@ impl Grid {
                 ScrollAxis::Vertical => self.vertical_scrollbar_rect(),
             };
             scene.fill(Fill::NonZero, transform, rail, None, &track);
-            let handle = self.scrollbar_thumb(axis);
-            scene.fill(Fill::NonZero, transform, thumb, None, &handle);
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.tokens.colors.border_standard,
-                None,
-                &handle,
-            );
+            // The thumb's edge is derived against the thumb itself, so it
+            // stays a crisp inset hairline on every accent (HIG §9.5).
+            ui::surface::card(scene, transform, self.scrollbar_thumb(axis), 0.0, thumb);
         }
         let body = self.body_rect();
         let corner = Rect::new(body.x1, body.y1, self.rect.x1, self.rect.y1);
@@ -2504,16 +2498,15 @@ impl Grid {
             );
         }
         scene.pop_layer();
-        // bottom border of column strip
-        scene.stroke(
-            &Stroke::new(1.0),
+        // Bottom edge of the column strip: the strip's own derived edge on
+        // its last pixel row — `border_standard` is within a shade of the
+        // dark raised strip and vanished there.
+        scene.fill(
+            Fill::NonZero,
             transform,
-            colors.border_standard,
+            ui::surface::edge_on(colors.surfaces.raised),
             None,
-            &Line::new(
-                (self.rect.x0, self.grid_y0()),
-                (self.rect.x1, self.grid_y0()),
-            ),
+            &Rect::new(self.rect.x0, self.grid_y0() - 1.0, self.rect.x1, self.grid_y0()),
         );
     }
 
@@ -2578,16 +2571,13 @@ impl Grid {
             );
         }
         scene.pop_layer();
-        // right border of row strip
-        scene.stroke(
-            &Stroke::new(1.0),
+        // Right edge of the row strip: its derived edge on its last column.
+        scene.fill(
+            Fill::NonZero,
             transform,
-            colors.border_standard,
+            ui::surface::edge_on(colors.surfaces.raised),
             None,
-            &Line::new(
-                (self.grid_x0(), self.rect.y0),
-                (self.grid_x0(), self.rect.y1),
-            ),
+            &Rect::new(self.grid_x0() - 1.0, self.rect.y0, self.grid_x0(), self.rect.y1),
         );
     }
 

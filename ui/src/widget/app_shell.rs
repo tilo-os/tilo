@@ -573,9 +573,11 @@ impl AppShell {
         presence: &PresenceCtx,
         permissions: Option<&crate::permissions::PermissionContext>,
     ) {
-        let sidebar_fill = theme.tokens.colors.neutral[0];
+        // The sidebar is the raised surface tier (HIG §9.2), never a ramp
+        // slot, and its divider derives from that surface (HIG §9.5).
+        let sidebar_fill = theme.tokens.colors.surfaces.raised;
         let content_fill = theme.tokens.colors.surfaces.base;
-        let divider = theme.tokens.colors.border_standard;
+        let divider = crate::surface::edge_on(sidebar_fill);
 
         let narrow_list =
             self.layout == ShellLayout::Narrow && self.narrow_screen == NarrowScreen::List;
@@ -607,7 +609,7 @@ impl AppShell {
                 None,
                 &self.sidebar_panel_rect,
             );
-            let x = self.sidebar_panel_rect.x1;
+            let x = self.sidebar_panel_rect.x1 - 0.5;
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -641,11 +643,11 @@ impl AppShell {
         }
 
         if self.layout == ShellLayout::Narrow && self.narrow_screen == NarrowScreen::Content {
-            let y = self.rect.y0 + self.back_band_h();
+            let y = self.rect.y0 + self.back_band_h() - 0.5;
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                divider,
+                crate::surface::edge_on(content_fill),
                 None,
                 &Line::new(Point::new(self.rect.x0, y), Point::new(self.rect.x1, y)),
             );

@@ -13,6 +13,7 @@ use vello::peniko::Color;
 use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::ButtonFace;
 
 use crate::draw;
 use crate::model::RepoModel;
@@ -173,7 +174,7 @@ impl PanelsView {
     ) {
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, rect, c.surfaces.raised);
-        draw::hline(scene, t, rect.y1, rect.x0, rect.x1, c.border_standard);
+        draw::hline(scene, t, rect.y1, rect.x0, rect.x1, draw::edge(c.surfaces.raised));
 
         // Ahead/behind for the head branch.
         let head = model.branches.iter().find(|b| b.is_head);
@@ -229,36 +230,14 @@ impl PanelsView {
             let brect = Rect::new(bx, by, bx + bw, by + bh);
             let primary = *action == RemoteAction::Push;
             let hovered = hover == Some(*action);
-            let bg = if primary {
-                if hovered {
-                    theme.accent_hover
-                } else {
-                    theme.accent_primary
-                }
-            } else if hovered {
-                c.lift(1.0)
-            } else {
-                c.lift(0.72)
-            };
-            let fg = if primary {
-                Color::WHITE
-            } else {
-                c.text_primary
-            };
-            draw::fill_round(scene, t, brect, 6.0, bg);
-            let ty_1 = draw::centered_top(tr, label, 12.0, TextWeight::Medium, by, bh);
-            draw::text_weighted(
-                scene,
-                tr,
-                t,
-                label,
-                12.0,
-                fg,
-                bx + (bw - lw) / 2.0,
-                ty_1,
-                None,
-                TextWeight::Medium,
-            );
+            // The shared face paints rest / hover / primary from one palette
+            // and gives the neutral verbs their rest edge (HIG §9.5).
+            let face = ButtonFace::new(brect, label)
+                .radius(6.0)
+                .text_size(12.0)
+                .hovered(hovered);
+            let face = if primary { face.primary() } else { face };
+            draw::button(scene, tr, t, theme, &face);
             regions.push(HitRegion {
                 rect: brect,
                 action: PanelHit::Remote(*action),
@@ -277,8 +256,7 @@ impl PanelsView {
         count: usize,
     ) -> Rect {
         let c = &theme.tokens.colors;
-        draw::fill_round(scene, t, rect, 10.0, c.surfaces.raised);
-        draw::stroke_round(scene, t, rect, 10.0, 1.0, c.border_standard);
+        draw::card(scene, t, rect, 10.0, c.surfaces.raised);
         // Title and count pill share the header band's centre line.
         let header_h = 40.0;
         let (cw, _) = tr.measure_weighted(title, 13.0, None, TextWeight::Semibold);
@@ -307,7 +285,7 @@ impl PanelsView {
             &count.to_string(),
             c.text_dim,
             c.lift(0.72),
-            None,
+            draw::PillEdge::Derived,
         );
         draw::hline(
             scene,
@@ -387,10 +365,15 @@ impl PanelsView {
             // Right edge: tip id, ahead/behind, and a delete affordance for
             // non-head local branches.
             let mut rx = body.x1 - 16.0;
+            // Where the row's own (checkout) hit rect ends: before the delete
+            // affordance and its `s2` gap when one is painted, so the two
+            // targets never share pixels.
+            let mut checkout_x1 = rx;
             // Delete (✕) for local, non-head branches.
             if !b.is_remote && !b.is_head {
                 let dw = 16.0;
                 let drect = Rect::new(rx - dw, y, rx, y + 16.0);
+                checkout_x1 = drect.x0 - f64::from(theme.tokens.spacing.s2);
                 draw::text_weighted(
                     scene,
                     tr,
@@ -424,7 +407,7 @@ impl PanelsView {
             // region is pushed first so it wins the hit-test for its sub-rect.
             if !b.is_head {
                 regions.push(HitRegion {
-                    rect: Rect::new(row.x0, row.y0, body.x1 - 28.0, row.y1),
+                    rect: Rect::new(row.x0, row.y0, checkout_x1, row.y1),
                     action: PanelHit::Branch(BranchAction::Checkout(b.name.clone())),
                 });
             }
@@ -471,7 +454,7 @@ impl PanelsView {
                 &tag.name,
                 c.surfaces.base,
                 Color::from_rgba8(a.r(), a.g(), a.b(), 220),
-                None,
+                draw::PillEdge::Bare,
             );
             let nw = draw::pill_width(tr, &tag.name, 12.0) + 8.0;
             let tw = f64::from(draw::mono_width(tr, &tag.target, 11.0));

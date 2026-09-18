@@ -48,10 +48,11 @@ pub fn draw(
 ) {
     let colors = &theme.tokens.colors;
     scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &rect);
+    // Bar role (HIG §9.1): one derived top hairline.
     scene.fill(
         Fill::NonZero,
         transform,
-        colors.border_standard,
+        crate::chrome::chrome_hairline(theme),
         None,
         &Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + 1.0),
     );

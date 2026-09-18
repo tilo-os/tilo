@@ -747,14 +747,28 @@ fn run_with_args_with_attachment(
     }
 
     if let Some(headless) = &args.headless {
-        let root = spec.live_root(&args)?;
-        let code = if let Some(history) = spec.history_definition {
+        // A named `--scenario` drives the screenshot fixture (the same root
+        // `--shots --scenario` renders) so its geometry can be dumped; without
+        // one the live root is driven, as before. The theme follows the
+        // screenshot policy (`QOS_SHOTS_THEME`, `QOS_SHOTS_TEXT_SCALE`,
+        // `--text-scale`), defaulting to dark at 1×.
+        let root = if args.scenario.is_some() {
+            spec.screenshot_root(&args)?
+        } else {
+            spec.live_root(&args)?
+        };
+        let theme = shot_theme(&args);
+        // The document comes through the spec's own opener — the one the
+        // live app and `--shots --scenario` use — so a fixture seeded from
+        // the arguments (`--scenario`, `--demo`) is what gets driven, and an
+        // app never has to seed inside `sync` to be dumpable.
+        let (state, autosave) = spec.open_state_with_args.map_or_else(|| (spec.open_state)(spec.app_id), |open| open(spec.app_id, &args));
+        let history = if let Some(history) = spec.history_definition {
             if !spec.history_app_global_storage { return Err(LaunchError::Operation("History requires explicit storage provenance for a custom opener".into())); }
-            let (state, autosave) = spec.open_state_with_args.map_or_else(|| (spec.open_state)(spec.app_id), |open| open(spec.app_id, &args));
-            let registration = crate::history_mode::HistoryRegistration::installed_app_state(history, Some(&autosave), uuid::Uuid::new_v4())
-                .map_err(|error| LaunchError::Operation(error.to_string()))?;
-            headless::run_opened(headless, root, spec.app_id, state, autosave, Some(registration))
-        } else { headless::run(headless, root, spec.app_id) };
+            Some(crate::history_mode::HistoryRegistration::installed_app_state(history, Some(&autosave), uuid::Uuid::new_v4())
+                .map_err(|error| LaunchError::Operation(error.to_string()))?)
+        } else { None };
+        let code = headless::run_opened(headless, root, spec.app_id, state, autosave, history, theme);
         std::process::exit(code);
     }
 
@@ -977,6 +991,24 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
     theme.with_reduce_motion(shot_motion_reduced())
 }
 
+/// The screenshot theme for capture frontends that have no [`LaunchArgs`]
+/// (the `ui-shots` examples): `QOS_SHOTS_THEME`, `QOS_SHOTS_TEXT_SCALE` and
+/// the motion preference through the same policy as [`shot_theme`]. An
+/// unknown theme name is an error rather than a silent fall back to dark, so
+/// a mis-typed light capture cannot masquerade as a dark one.
+pub fn shot_theme_from_env() -> Result<Theme, String> {
+    let theme = match std::env::var("QOS_SHOTS_THEME") {
+        Ok(name) => {
+            Theme::named(&name).ok_or_else(|| format!("unknown QOS_SHOTS_THEME `{name}`"))?
+        }
+        Err(_) => Theme::dark(),
+    };
+    let environment_scale = std::env::var("QOS_SHOTS_TEXT_SCALE").ok();
+    Ok(theme
+        .with_text_scale(shot_text_scale(None, environment_scale.as_deref()))
+        .with_reduce_motion(shot_motion_reduced()))
+}
+
 /// Resolve screenshot text-scale precedence without reading process-global
 /// state. Custom capture frontends can pass their parsed CLI value and the
 /// compatibility environment value through the same policy as [`shot_theme`].
@@ -1133,7 +1165,9 @@ fn parse_args_extended(
         if parsed.viewport.is_some() {
             return Err(LaunchError::ShotsOnly("--viewport".to_owned()));
         }
-        if parsed.scenario.is_some() {
+        // A headless drive may name a scenario: it dumps that fixture's
+        // geometry, the counterpart of `--shots --scenario`.
+        if parsed.scenario.is_some() && parsed.headless.is_none() {
             return Err(LaunchError::ShotsOnly("--scenario".to_owned()));
         }
         if let Some(extra) = parsed

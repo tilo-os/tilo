@@ -841,31 +841,6 @@ impl WindowGroup {
         self.close_hover = hover;
     }
 
-    #[cfg(test)]
-    pub(crate) fn maximized_close_chip_color_for_tests(
-        &self,
-        theme: &Theme,
-    ) -> vello::peniko::Color {
-        if self.close_hover {
-            theme.tokens.colors.semantic.danger.with_alpha_factor(0.8)
-        } else {
-            vello::peniko::Color::from_rgba8(255, 255, 255, 38)
-        }
-    }
-
-    /// On hover promoted to full white (concept: `hover:text-white`).
-    #[cfg(test)]
-    pub(crate) fn maximized_close_glyph_color_for_tests(
-        &self,
-        theme: &Theme,
-    ) -> vello::peniko::Color {
-        if self.close_hover {
-            vello::peniko::Color::from_rgba8(255, 255, 255, 255)
-        } else {
-            theme.tokens.colors.text_primary
-        }
-    }
-
     /// The event kinds a group's own resize handle, maximized-chrome
     /// close/restore chips, and pin shortcut own outright — decided before
     /// the tab bar or active tile ever see the event. Returns whether the
@@ -1406,9 +1381,10 @@ impl WindowGroup {
             close_border,
             None,
         );
-        // On hover the glyph promotes to full white (`hover:text-white`).
+        // On hover the glyph takes the ink that reads on the danger face —
+        // derived, so it stays legible on a light theme's danger red too.
         let glyph_color = if self.close_hover {
-            vello::peniko::Color::from_rgba8(255, 255, 255, 255)
+            theme.on_surface(theme.tokens.colors.semantic.danger).ink
         } else {
             theme.tokens.colors.text_primary
         };
@@ -3502,63 +3478,188 @@ mod tests {
         );
     }
 
-    /// Concept parity: `hover:bg-red-500/80` — `semantic.danger` at 80%
-    /// alpha, glyph promoted to full white.
+    /// Lays `g` out at `w`×`h`, draws it through the production
+    /// [`Widget::draw`] and composites the scene on the theme's app ground —
+    /// the frame a person sees, not a helper that restates the paint code.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "small fixed test-canvas dimensions, exactly representable in f32"
+    )]
+    fn production_frame(g: &mut WindowGroup, theme: &Theme, w: u32, h: u32) -> Vec<u8> {
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let mut tr = TextRenderer::new();
+        let node = g.build_layout(&mut taffy, theme, &mut node_map);
+        // A maximized group is `width: auto, flex_grow: 1e6`: it fills the
+        // strip it sits in. Give it one — a sized flex parent, as the strip
+        // is — or as a taffy root it collapses to 0 px and its chrome lands
+        // off-canvas.
+        let root = taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::length(w as f32),
+                    height: Dimension::length(h as f32),
+                },
+                ..Style::default()
+            },
+            &[node],
+        );
+        taffy
+            .compute_layout_with_measure(
+                root,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(w as f32),
+                    height: taffy::AvailableSpace::Definite(h as f32),
+                },
+                |k, a, id, _, _| {
+                    node_map.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
+                        (*p).measure(k, a, &mut tr)
+                    })
+                },
+            )
+            .unwrap();
+        g.apply_layout(&taffy, node, Point::ZERO);
+        let mut scene = Scene::new();
+        g.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            theme,
+            &PresenceCtx::empty(),
+        );
+        crate::offscreen::OffscreenRenderer::new(w, h).render(&scene, theme.bg_app)
+    }
+
+    /// `$UX1X_F4_OUT/<theme>/<name>` when the 1× review asked for evidence.
+    fn ux1x_out(theme: &Theme, name: &str) -> Option<std::path::PathBuf> {
+        let dir = std::path::PathBuf::from(std::env::var_os("UX1X_F4_OUT")?)
+            .join(theme.name.to_lowercase());
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir.join(name))
+    }
+
+    /// Writes an RGBA frame as a PNG — the by-eye half of the evidence.
+    fn write_png(rgba: &[u8], w: u32, h: u32, path: &std::path::Path) {
+        let file = std::fs::File::create(path).expect("create evidence png");
+        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().expect("png header");
+        writer.write_image_data(rgba).expect("png data");
+    }
+
+    /// The composited colour at (`x`, `y`) of a `w`-wide RGBA frame.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "probe coordinates are non-negative pixel positions inside the test canvas"
+    )]
+    fn pixel(rgba: &[u8], w: u32, x: f64, y: f64) -> vello::peniko::Color {
+        let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(
+            rgba,
+            w,
+            x.floor() as u32,
+            y.floor() as u32,
+        );
+        vello::peniko::Color::from_rgb8(r, g, b)
+    }
+
+    /// Concept parity: `hover:bg-red-500/80` — `semantic.danger` at 80 %
+    /// alpha — sampled from the **production paint path** on both presets.
+    /// At rest the × chip is the quiet chip face (`chip_colors`: the raised
+    /// surface under a rest edge that registers against it), not a literal
+    /// white tint; on hover it turns to the danger token and the × glyph
+    /// stays legible on that face, where the old opaque white only happened
+    /// to on the dark preset's red.
     #[test]
     fn maximized_close_chip_uses_danger_token_on_hover() {
-        let mut g = make_group();
-        g.maximized = true;
-        let theme = Theme::dark();
+        use crate::a11y::{contrast_ratio, relative_luminance};
+        const EDGE_MIN: f64 = 0.008;
+        let (w, h) = (620u32, 200u32);
+        for theme in [Theme::dark(), Theme::light()] {
+            let theme = theme.with_reduce_motion(true);
+            let mut g = make_group();
+            g.maximized = true;
+            // The chrome paints while the cursor is in the top band.
+            g.last_cursor = Point::new(600.0, 10.0);
 
-        g.set_close_hover_for_tests(false);
-        let idle_chip = g.maximized_close_chip_color_for_tests(&theme);
-        assert_eq!(
-            (idle_chip.r(), idle_chip.g(), idle_chip.b(), idle_chip.a()),
-            (255, 255, 255, 38),
-            "idle maximized close chip stays as the chrome white tint",
-        );
-        let idle_glyph = g.maximized_close_glyph_color_for_tests(&theme);
-        let expected = theme.tokens.colors.text_primary;
-        assert_eq!(
-            (
-                idle_glyph.r(),
-                idle_glyph.g(),
-                idle_glyph.b(),
-                idle_glyph.a()
-            ),
-            (expected.r(), expected.g(), expected.b(), expected.a()),
-            "idle glyph uses theme text_primary",
-        );
+            g.set_close_hover_for_tests(false);
+            let idle = production_frame(&mut g, &theme, w, h);
+            if let Some(png) = ux1x_out(&theme, "window_group_close_chip_idle.png") {
+                write_png(&idle, w, h, &png);
+            }
+            let chip = g.close_rect;
+            assert!(
+                chip.width() > 0.0
+                    && chip.x0 >= 0.0
+                    && chip.y0 >= 0.0
+                    && chip.x1 <= f64::from(w)
+                    && chip.y1 <= f64::from(h),
+                "{}: the maximized × chip was laid out on the canvas: {chip:?} in {:?}",
+                theme.name,
+                g.rect
+            );
+            // Interior, on the chip's centre column just under its top edge —
+            // inside the capsule and above the × glyph's box.
+            let (cx, top) = (chip.center().x, chip.y0);
+            let face = pixel(&idle, w, cx, top + 3.0);
+            let (quiet_fill, quiet_edge) = crate::surface::chip_colors(&theme, false);
+            assert!(
+                contrast_ratio(face, quiet_fill) < 1.02,
+                "{}: idle × chip {chip:?} (group {:?}) paints the quiet chip face {quiet_fill:?}, got {face:?}",
+                theme.name,
+                g.rect
+            );
+            assert!(quiet_edge.is_some(), "{}: the quiet chip declares a rest edge", theme.name);
+            let edge = pixel(&idle, w, cx, top);
+            let moved = (relative_luminance(edge) - relative_luminance(face)).abs();
+            assert!(
+                moved >= EDGE_MIN,
+                "{}: the × chip's rest edge {edge:?} moved only {moved:.4} against its face {face:?}",
+                theme.name
+            );
 
-        g.set_close_hover_for_tests(true);
-        let hover_chip = g.maximized_close_chip_color_for_tests(&theme);
-        let expected_chip = theme.tokens.colors.semantic.danger.with_alpha_factor(0.8);
-        assert_eq!(
-            (
-                hover_chip.r(),
-                hover_chip.g(),
-                hover_chip.b(),
-                hover_chip.a()
-            ),
-            (
-                expected_chip.r(),
-                expected_chip.g(),
-                expected_chip.b(),
-                expected_chip.a()
-            ),
-            "hover maximized close chip paints the theme danger token at 80% alpha",
-        );
-        let hover_glyph = g.maximized_close_glyph_color_for_tests(&theme);
-        assert_eq!(
-            (
-                hover_glyph.r(),
-                hover_glyph.g(),
-                hover_glyph.b(),
-                hover_glyph.a()
-            ),
-            (255, 255, 255, 255),
-            "hover glyph promotes to opaque white (concept: hover:text-white)",
-        );
+            g.set_close_hover_for_tests(true);
+            let hover = production_frame(&mut g, &theme, w, h);
+            if let Some(png) = ux1x_out(&theme, "window_group_close_chip_hover.png") {
+                write_png(&hover, w, h, &png);
+            }
+            let hot = pixel(&hover, w, cx, top + 3.0);
+            let danger = theme.tokens.colors.semantic.danger;
+            assert!(
+                contrast_ratio(hot, face) >= 1.5,
+                "{}: hover must visibly recolour the × chip ({face:?} -> {hot:?})",
+                theme.name
+            );
+            // The face is the danger token at 80 % over the card: red-led on
+            // every preset, and nearer the token than the rest face was.
+            assert!(
+                hot.r() > hot.g() && hot.r() > hot.b(),
+                "{}: hovered × chip {hot:?} is not the danger red",
+                theme.name
+            );
+            assert!(
+                contrast_ratio(hot, danger) < contrast_ratio(face, danger),
+                "{}: hovered × chip {hot:?} did not move toward danger {danger:?}",
+                theme.name
+            );
+            // The × glyph stays readable on the hot face: the darkest or
+            // lightest pixel in the glyph's central 5×5 block clears the
+            // non-text minimum against the face beside it.
+            let c = chip.center();
+            let mut best = 1.0_f64;
+            for dy in -2..=2 {
+                for dx in -2..=2 {
+                    let px = pixel(&hover, w, c.x + f64::from(dx), c.y + f64::from(dy));
+                    best = best.max(contrast_ratio(px, hot));
+                }
+            }
+            assert!(
+                best >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                "{}: the × glyph reads {best:.2}:1 on the hovered face {hot:?}",
+                theme.name
+            );
+        }
     }
 
     /// Concept parity: `WindowFrame.tsx:108-123`'s `clientY <= 80` gate.

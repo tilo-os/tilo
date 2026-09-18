@@ -1,10 +1,12 @@
 //! Small Vello drawing helpers shared across the firewall views.
 //!
 //! These are thin wrappers over `Scene::fill` / `Scene::stroke` and the
-//! `TextRenderer` so the view code reads declaratively (`fill_rrect`,
-//! `label`, `chip`) instead of repeating affine + shape boilerplate. Every
-//! colour is passed in by the caller — the helpers never reach for a
-//! literal — so the whole app stays theme-driven.
+//! `TextRenderer` so the view code reads declaratively (`card`, `label`,
+//! `chip`) instead of repeating affine + shape boilerplate. Every colour is
+//! passed in by the caller — the helpers never reach for a literal — so the
+//! whole app stays theme-driven. Edged surfaces (`card`, `separator`,
+//! `chip`) go through `ui::surface`, so the edge is derived from the fill
+//! it sits on (HIG §9.5) rather than declared.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -30,6 +32,8 @@ pub fn fill_rrect(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: 
     scene.fill(Fill::NonZero, t, color, None, &shape);
 }
 
+/// An emphasis stroke (selection, danger, focus) on top of a surface that
+/// already carries its derived rest edge from [`card`].
 pub fn stroke_rrect(
     scene: &mut Scene,
     t: Affine,
@@ -40,6 +44,26 @@ pub fn stroke_rrect(
 ) {
     let shape = RoundedRect::from_rect(rect, radius);
     scene.stroke(&Stroke::new(width), t, color, None, &shape);
+}
+
+/// A filled card / tile / row with its rest edge derived from `fill`
+/// (`ui::surface::card`): the one way this app paints an edged surface.
+pub fn card(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, fill: Color) {
+    ui::surface::card(scene, t, rect, radius, fill);
+}
+
+/// A 1 px rule between rows inside `surface`, inset `inset` from both ends
+/// and derived against that surface (`ui::surface::separator`).
+pub fn separator(
+    scene: &mut Scene,
+    t: Affine,
+    x0: f64,
+    x1: f64,
+    y: f64,
+    inset: f64,
+    surface: Color,
+) {
+    ui::surface::separator(scene, t, x0, x1, y, inset, surface);
 }
 
 pub fn hline(scene: &mut Scene, t: Affine, x0: f64, x1: f64, y: f64, color: Color, width: f64) {
@@ -134,7 +158,9 @@ pub fn label_right_v(
     label(tr, scene, t, text, size, color, x, y, f64::from(w) + 2.0);
 }
 
-/// A filled pill with centred label. Returns the pill width used.
+/// A filled pill with centred label. Returns the pill width used. The fill
+/// is a tint or a solid accent, so the pill reads as a contrast step against
+/// the surface it sits on rather than needing a declared border.
 #[allow(
     clippy::too_many_arguments,
     reason = "a pill-draw primitive called from dozens of sites across app.rs; bundling \
@@ -158,7 +184,7 @@ pub fn chip(
     let (w, text_h) = tr.measure(text, size, None);
     let w = f64::from(w) + pad_x * 2.0;
     let rect = Rect::new(x, y_center - height / 2.0, x + w, y_center + height / 2.0);
-    fill_rrect(scene, t, rect, radius, bg);
+    ui::surface::pill(scene, t, rect, bg, None, Some(radius));
     let ty = y_center - f64::from(text_h) / 2.0;
     label(tr, scene, t, text, size, text_color, x + pad_x, ty, w);
     w
