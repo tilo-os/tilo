@@ -103,7 +103,8 @@ Typst is also available as an explicit preview with
 `./tools/install-windows-apps.ps1 -Apps typst-editor`; native source editing,
 Save/Open, and PDF export have been verified, including reduced-motion settings
 and emoji export through the shared font catalog. It remains outside the
-default set while optimized-installation and Start integration checks finish.
+default set while startup measurements and Start integration checks finish. The
+installed optimized binary has passed those native file and PDF workflows.
 
 The installer verifies the real Windows Start catalog and reports an error if
 Windows has not indexed the shortcut, even when the executable was copied.
@@ -391,12 +392,14 @@ cargo test --locked -p totp --all-targets
 ```
 
 Feeds runs natively on Windows with asynchronous feed fetching, persisted
-subscriptions and article state, and the native OPML import picker. Article links
+subscriptions and article state, and native OPML Open and Save pickers. Article links
 use the Windows default application through ShellExecute; local file and script
 URLs are rejected. The shared subscription dialog exposes its real text input and
-footer actions to Windows accessibility. OPML export currently writes
-`feeds-subscriptions.opml` in the temporary directory shown by its confirmation,
-rather than presenting a save picker.
+footer actions to Windows accessibility. OPML export suggests
+`feeds-subscriptions.opml` and writes the subscription snapshot to the selected
+destination. Import and export choosers are also available as local resource
+actions. Transfer outcomes are exposed as accessibility announcements, and
+background fetches and file-picker results are polled with reduced motion enabled.
 
 ```powershell
 cargo test --locked -p feeds --all-targets
