@@ -222,10 +222,25 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: application-source
-          fetch-depth: 5 # Frozen source plus reviewed provider, recipe, policy, and optional acceptance corrections.
+          # Anchor ancestry needs commit history, not historical file contents.
+          fetch-depth: ${{ inputs.assembly_layer_epoch_anchor != '' && '0' || '5' }}
+          filter: ${{ inputs.assembly_layer_epoch_anchor != '' && 'blob:none' || '' }}
           ref: ${{ inputs.source_revision }}
           token: ${{ secrets.REGISTRY_TOKEN }}
           persist-credentials: false
+      - name: Validate layer timestamp anchor before building tools
+        if: inputs.assembly_layer_epoch_anchor != ''
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          ASSEMBLY_LAYER_EPOCH_ANCHOR: ${{ inputs.assembly_layer_epoch_anchor }}
+        run: |
+          set -euo pipefail
+          test "$(git -C ../application-source rev-parse HEAD)" = "$SOURCE_REVISION"
+          git -C ../application-source merge-base --is-ancestor "$ASSEMBLY_LAYER_EPOCH_ANCHOR" "$SOURCE_REVISION"
+          source_epoch=$(git -C ../application-source show -s --format=%ct "$SOURCE_REVISION")
+          layer_epoch=$(git -C ../application-source show -s --format=%ct "$ASSEMBLY_LAYER_EPOCH_ANCHOR")
+          test "$layer_epoch" -ge 0
+          test "$layer_epoch" -le "$source_epoch"
       # The workflow checkout remains the orchestrator. Only the independently
       # selected controller enters /work/repo and executes application helpers.
       - name: Checkout independently pinned compatible helpers
