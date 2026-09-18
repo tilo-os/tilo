@@ -7,7 +7,6 @@ license.workspace = true
 
 [dependencies]
 bounded-command = { path = "../crates/system/bounded-command" }
-# Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../crates/system/atomic-file" }
 anyhow.workspace = true
 bytes.workspace = true
@@ -21,16 +20,10 @@ qdoc = { path = "../crates/doc/qdoc" }
 collab-types = { path = "../crates/collab/collab-types" }
 ed25519-dalek.workspace = true
 getrandom.workspace = true
-# The shared thumbnail generator + content-addressed cache. Default features
-# only (raster images + EPUB covers — pure Rust, no native deps): the OS
-# filesystem daemon host-generates the light preview types and never pulls
-# pdfium or the gstreamer stack into the image. PDF/video previews are the
-# client's job (the file manager builds this crate with those features on).
+# Keep PDF/video features in the file manager to avoid native decoding
+# dependencies in the filesystem daemon.
 thumbnail = { path = "../crates/thumbnail" }
-# The machine's one device key. The mount derives its iroh node key from
-# it rather than minting its own, so the node id names the device.
 tilo-user-identity = { path = "../crates/identity/tilo-user-identity" }
-# Bus-free, production battery/AC sampling for speculative-hydration policy.
 tilo-power-mgmt = { path = "../crates/system/power", default-features = false }
 runtime-fs = { path = "../crates/runtime/runtime-fs" }
 libc.workspace = true
@@ -51,8 +44,6 @@ futures-util.workspace = true
 rand.workspace = true
 
 [dev-dependencies]
-# Encode PNG fixtures for the thumbnail tests (the crate itself never decodes
-# images — that is the `thumbnail` crate's job).
 image = { workspace = true, features = ["png"] }
 
 [lints]

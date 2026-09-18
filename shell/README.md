@@ -48,8 +48,7 @@ This runner hosts Tilo inside one resizable macOS window. Linux compositor,
 Wayland clients, D-Bus portals, package sandboxes and Linux auxiliary binaries
 remain Linux-specific. Native Terminal process services are not configured;
 peer synchronization is disabled. Embedded apps retain their existing host
-capabilities and limitations. This does not qualify the broader Notes/Files
-capability and cross-host collaboration milestone.
+capabilities and limitations.
 
 Targeted verification:
 
