@@ -1,7 +1,8 @@
 //! Persistent device enrollment and revocation for each local user identity.
 
-use std::fs;
+use std::fs::{self, File};
 use std::io;
+use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 
 use rand_core::{OsRng, RngCore};
@@ -9,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, EnrollmentToken, IdentityPaths, RevocationEntry,
     RevocationReason, decode_enrollment_token, encode_enrollment_token, mint_enrollment_token,
-    revocation_signing_digest, verify_device_cert, verify_enrollment_token,
+    revocation_signing_digest, verify_device_cert, verify_device_cert_at, verify_enrollment_token,
     verify_revocation_entry,
 };
 
@@ -22,6 +23,17 @@ pub struct DeviceFleet {
     pub identity_id: String,
     pub certificates: Vec<DeviceCert>,
     pub revocations: Vec<RevocationEntry>,
+    /// Successfully redeemed enrollment nonces retained until their signed
+    /// expiry. Missing in schema-v1 files written before replay protection.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    consumed_enrollments: Vec<ConsumedEnrollment>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConsumedEnrollment {
+    nonce: [u8; 16],
+    expires_at_ns: u64,
 }
 
 impl DeviceFleet {
@@ -31,6 +43,7 @@ impl DeviceFleet {
             identity_id,
             certificates: Vec::new(),
             revocations: Vec::new(),
+            consumed_enrollments: Vec::new(),
         }
     }
 
@@ -177,7 +190,8 @@ impl DeviceFleetStore {
             .device_cert_for_user(&profile.user_public_key);
         let cert = tilo_user_identity::persist::read_device_cert(&cert_path)
             .map_err(|error| io::Error::other(error.to_string()))?;
-        verify_device_cert(&cert).map_err(|error| io::Error::other(error.to_string()))?;
+        verify_device_cert_at(&cert, issued_at_ns)
+            .map_err(|error| io::Error::other(error.to_string()))?;
         if cert.device_public_key != device.verifying_key().to_bytes()
             || !cert.capabilities.can_admit_devices
         {
@@ -221,7 +235,25 @@ impl DeviceFleetStore {
         verify_enrollment_token(&token, now_ns)
             .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error.to_string()))?;
         let (root, profile) = self.identity(identity_id)?;
-        self.validate_issuer(&token, &profile.user_public_key)?;
+        // Serialize nonce consumption with certificate publication. Atomic file
+        // replacement alone prevents torn JSON, but without this directory
+        // lock two concurrent redeemers could both load the nonce as unused.
+        let _fleet_lock = self.lock_fleets()?;
+        let mut fleet = self.load(identity_id)?;
+        self.validate_issuer(&token, &profile.user_public_key, &fleet, now_ns)?;
+        fleet
+            .consumed_enrollments
+            .retain(|consumed| consumed.expires_at_ns > now_ns);
+        if fleet
+            .consumed_enrollments
+            .iter()
+            .any(|consumed| consumed.nonce == token.nonce)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "enrollment token has already been consumed",
+            ));
+        }
         let mut cert = DeviceCert {
             user_public_key: profile.user_public_key,
             device_public_key: new_device_public_key,
@@ -237,7 +269,17 @@ impl DeviceFleetStore {
             .sign(&digest)
             .map_err(|error| io::Error::other(error.to_string()))?;
         verify_device_cert(&cert).map_err(|error| io::Error::other(error.to_string()))?;
-        self.insert_certificate(identity_id, cert.clone())?;
+        fleet
+            .certificates
+            .retain(|existing| existing.device_public_key != cert.device_public_key);
+        fleet.certificates.push(cert.clone());
+        fleet.consumed_enrollments.push(ConsumedEnrollment {
+            nonce: token.nonce,
+            expires_at_ns: token.expires_at_ns,
+        });
+        // Persist nonce and certificate in one durable replacement before the
+        // caller receives the root-signed certificate.
+        self.save(&fleet)?;
         Ok(cert)
     }
 
@@ -256,6 +298,7 @@ impl DeviceFleetStore {
         revoked_at_ns: u64,
     ) -> io::Result<RevocationEntry> {
         let (root, profile) = self.identity(identity_id)?;
+        let _fleet_lock = self.lock_fleets()?;
         let mut fleet = self.load(identity_id)?;
         if !fleet
             .certificates
@@ -287,14 +330,19 @@ impl DeviceFleetStore {
         Ok(entry)
     }
 
-    fn validate_issuer(&self, token: &EnrollmentToken, user_key: &[u8; 32]) -> io::Result<()> {
+    fn validate_issuer(
+        &self,
+        token: &EnrollmentToken,
+        user_key: &[u8; 32],
+        fleet: &DeviceFleet,
+        now_ns: u64,
+    ) -> io::Result<()> {
         if &token.user_public_key != user_key {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "enrollment token belongs to another identity",
             ));
         }
-        let fleet = self.load(&hex_encode(user_key))?;
         let issuer = fleet
             .certificates
             .iter()
@@ -302,6 +350,10 @@ impl DeviceFleetStore {
             .ok_or_else(|| {
                 io::Error::new(io::ErrorKind::PermissionDenied, "issuer not enrolled")
             })?;
+        verify_device_cert_at(issuer, token.issued_at_ns)
+            .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error.to_string()))?;
+        verify_device_cert_at(issuer, now_ns)
+            .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error.to_string()))?;
         if !issuer.capabilities.can_admit_devices || fleet.is_revoked(&issuer.device_public_key) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -313,6 +365,7 @@ impl DeviceFleetStore {
 
     fn insert_certificate(&self, identity_id: &str, cert: DeviceCert) -> io::Result<DeviceFleet> {
         verify_device_cert(&cert).map_err(|error| io::Error::other(error.to_string()))?;
+        let _fleet_lock = self.lock_fleets()?;
         let mut fleet = self.load(identity_id)?;
         if cert.user_public_key != decode_hex_32(identity_id)? {
             return Err(io::Error::new(
@@ -360,23 +413,23 @@ impl DeviceFleetStore {
         atomic_file::write_creating_parent(&path, &bytes)
     }
 
+    fn lock_fleets(&self) -> io::Result<File> {
+        let directory = self.identity_dir.join("fleets");
+        fs::create_dir_all(&directory)?;
+        let file = File::open(directory)?;
+        // SAFETY: flock consumes a valid live directory descriptor and no
+        // pointers. Dropping the returned File releases the lock on all paths.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(file)
+    }
+
     fn path(&self, identity_id: &str) -> PathBuf {
         self.identity_dir
             .join("fleets")
             .join(format!("{identity_id}.json"))
     }
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    // `char::from_digit` with radix 16 only returns `None` for digits >= 16;
-    // both nibbles are masked to 0..=15, so the fallback never triggers —
-    // it exists only to avoid indexing a lookup table.
-    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        out.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
-        out.push(char::from_digit(u32::from(byte & 0x0f), 16).unwrap_or('0'));
-    }
-    out
 }
 
 fn decode_hex_32(value: &str) -> io::Result<[u8; 32]> {
@@ -404,6 +457,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn schema_v1_fleets_without_replay_state_migrate_empty() {
+        let fleet: DeviceFleet = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "identity_id": "00",
+            "certificates": [],
+            "revocations": []
+        }))
+        .expect("legacy fleet");
+        assert!(fleet.consumed_enrollments.is_empty());
+    }
+
+    #[test]
     fn enroll_list_and_revoke_a_secondary_device() {
         let root = tempfile::tempdir().expect("temp root");
         let identity_dir = root.path().join("config/identity");
@@ -417,8 +482,14 @@ mod tests {
 
         let before = store.load(&identity_id).expect("fleet");
         assert_eq!(before.certificates.len(), 1);
+        let issued_at_ns = before.certificates[0].issued_at_ns;
         let token = store
-            .mint_enrollment(&identity_id, DeviceCapabilities::member(), 5_000, 10_000)
+            .mint_enrollment(
+                &identity_id,
+                DeviceCapabilities::member(),
+                issued_at_ns,
+                issued_at_ns + 5_000,
+            )
             .expect("token");
         let phone = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
         let cert = store
@@ -427,7 +498,7 @@ mod tests {
                 &token,
                 phone.verifying_key().to_bytes(),
                 "Phone",
-                5_000,
+                issued_at_ns,
             )
             .expect("complete");
         assert_eq!(cert.device_label, "Phone");
@@ -436,13 +507,65 @@ mod tests {
             store.load(&identity_id).expect("fleet").certificates.len(),
             2
         );
+        let replay_device = ed25519_dalek::SigningKey::from_bytes(&[92; 32]);
+        let replay = store.complete_enrollment(
+            &identity_id,
+            &token,
+            replay_device.verifying_key().to_bytes(),
+            "Replay",
+            issued_at_ns + 1,
+        );
+        assert_eq!(
+            replay
+                .expect_err("a redeemed nonce must be single-use")
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            store.load(&identity_id).expect("fleet").certificates.len(),
+            2,
+            "replay must not publish another root-signed certificate"
+        );
+
+        let expires_with_issuer = store
+            .mint_enrollment(
+                &identity_id,
+                DeviceCapabilities::member(),
+                issued_at_ns + 1,
+                issued_at_ns + 5_000,
+            )
+            .expect("second token");
+        let (root_signer, _) = store.identity(&identity_id).expect("root signer");
+        let mut fleet = store.load(&identity_id).expect("fleet");
+        let issuer = fleet
+            .certificates
+            .iter_mut()
+            .find(|cert| cert.capabilities.can_admit_devices)
+            .expect("issuer certificate");
+        issuer.expires_at_ns = Some(issued_at_ns + 2);
+        let digest = tilo_user_identity::device_cert_signing_digest(issuer).expect("cert digest");
+        issuer.signature = root_signer.sign(&digest).expect("root signature");
+        store.save(&fleet).expect("expired issuer fleet");
+        let after_issuer_expiry = store.complete_enrollment(
+            &identity_id,
+            &expires_with_issuer,
+            replay_device.verifying_key().to_bytes(),
+            "Expired issuer",
+            issued_at_ns + 3,
+        );
+        assert_eq!(
+            after_issuer_expiry
+                .expect_err("expired issuer must not admit devices")
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
 
         store
             .revoke(
                 &identity_id,
                 phone.verifying_key().to_bytes(),
                 RevocationReason::Lost,
-                6_000,
+                issued_at_ns + 2,
             )
             .expect("revoke");
         assert!(
@@ -451,5 +574,66 @@ mod tests {
                 .expect("fleet")
                 .is_revoked(&phone.verifying_key().to_bytes())
         );
+    }
+
+    #[test]
+    fn concurrent_enrollment_redeemers_publish_exactly_one_certificate() {
+        let root = tempfile::tempdir().expect("temp root");
+        let identity_dir = root.path().join("config/identity");
+        let paths = IdentityPaths::under(root.path().join("system"));
+        crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths).expect("provision");
+        let registry = crate::identity_registry::IdentityRegistryStore::at(&identity_dir)
+            .load()
+            .expect("registry");
+        let identity_id = registry.default_identity.expect("default identity");
+        let store = DeviceFleetStore::at(&identity_dir, paths);
+        let issued_at_ns = store.load(&identity_id).expect("fleet").certificates[0].issued_at_ns;
+        let token = store
+            .mint_enrollment(
+                &identity_id,
+                DeviceCapabilities::member(),
+                issued_at_ns,
+                issued_at_ns + 5_000,
+            )
+            .expect("token");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+
+        let results = std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for seed in [93_u8, 94_u8] {
+                let store = store.clone();
+                let identity_id = identity_id.clone();
+                let token = token.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                handles.push(scope.spawn(move || {
+                    let device = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+                    barrier.wait();
+                    store.complete_enrollment(
+                        &identity_id,
+                        &token,
+                        device.verifying_key().to_bytes(),
+                        format!("Device {seed}"),
+                        issued_at_ns,
+                    )
+                }));
+            }
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("redeemer thread"))
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| result
+                    .as_ref()
+                    .is_err_and(|error| error.kind() == io::ErrorKind::PermissionDenied))
+                .count(),
+            1
+        );
+        let fleet = store.load(&identity_id).expect("fleet");
+        assert_eq!(fleet.certificates.len(), 2);
+        assert_eq!(fleet.consumed_enrollments.len(), 1);
     }
 }
