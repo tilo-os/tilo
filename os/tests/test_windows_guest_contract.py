@@ -93,6 +93,20 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "buildroot_ref"):
             CONTRACT.verify_snapshot(self.packages, self.repo, REF.replace("a" * 64, "b" * 64))
 
+    def test_fedora_post_release_caret_version_preserves_header_binding(self):
+        name = "aribb24-1.0.3^20160216git5e9be27-5.fc44.x86_64.rpm"
+        (self.repo / name).write_bytes(b"Fedora post-release fixture")
+        self.assertEqual(CONTRACT.rpm_inventory(self.repo)[name]["version"],
+                         "1.0.3^20160216git5e9be27")
+        def mismatched(path):
+            header = fixture_header(path)
+            if path.name == name:
+                header["version"] = "1.0.3"
+            return header
+        with patch.object(CONTRACT, "read_rpm_header", side_effect=mismatched):
+            with self.assertRaisesRegex(ValueError, "does not match its header"):
+                CONTRACT.rpm_inventory(self.repo)
+
     def test_duplicate_nevra_with_distinct_filename_rejected(self):
         duplicate = self.repo / "zz-1-1.x86_64.rpm"
         duplicate.write_bytes(b"duplicate")
