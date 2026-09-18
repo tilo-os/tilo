@@ -124,6 +124,48 @@ fn library_column_count(width: f64, large_text: bool, metadata_editor: bool) -> 
     }
 }
 
+/// Presentation-only density for the chronological library.  It is deliberately
+/// pure: a pinch and the visible +/- buttons must land on the same geometry.
+/// The lower bound protects the 44 px card actions; the upper bound keeps a
+/// photograph recognisable rather than turning the timeline into a file list.
+pub fn timeline_column_count(width: f64, density: u8, large_text: bool) -> usize {
+    let base = if width < LIBRARY_ONE_COLUMN_MAX_W {
+        1
+    } else if width < 720.0 {
+        2
+    } else if width < 1_080.0 {
+        3
+    } else {
+        4
+    };
+    let density = usize::from(density.min(4));
+    let maximum = if large_text {
+        2
+    } else if width >= 1_440.0 {
+        6
+    } else {
+        5
+    };
+    (base + density).min(maximum).max(1)
+}
+
+/// Bounded virtual window for a row of a long chronological collection.
+/// Keeping this independent of painting prevents a large library from being
+/// accidentally decoded or exposed to accessibility as one giant surface.
+pub fn timeline_virtual_range(
+    total: usize,
+    first_row: usize,
+    rows: usize,
+    columns: usize,
+) -> std::ops::Range<usize> {
+    let columns = columns.max(1);
+    let start = first_row.saturating_mul(columns).min(total);
+    let end = start
+        .saturating_add(rows.saturating_add(2).saturating_mul(columns))
+        .min(total);
+    start..end
+}
+
 #[derive(Clone)]
 struct ThumbnailJob {
     generation: u64,
@@ -223,6 +265,12 @@ enum SelectionHit {
     Done,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TimelineHit {
+    ZoomOut,
+    ZoomIn,
+}
+
 /// One chooser page always fits: six chips in a desktop row or a 3×2 compact
 /// grid. The complete album collection remains available through paging.
 const SELECTION_ALBUMS_PER_PAGE: usize = 6;
@@ -236,6 +284,7 @@ struct LibraryItem {
     name: String,
     favorite: bool,
     metadata: String,
+    captured_at: String,
 }
 
 #[derive(Clone)]
@@ -539,6 +588,15 @@ pub struct PhotosApp {
     /// are local navigation only; their stable semantic targets let keyboard
     /// and assistive-technology users reach the same bounded slice.
     library_page_hits: Vec<(bool, bool, Rect)>,
+    timeline_density_hits: Vec<(TimelineHit, Rect)>,
+    timeline_density_buttons: Vec<(TimelineHit, Button)>,
+    timeline_density_pending: Rc<Cell<Option<TimelineHit>>>,
+    /// Number of visual density steps, from spacious (0) to compact (4).
+    /// This remains local UI state: collaborators should never change a
+    /// person's preferred thumbnail size.
+    timeline_density: u8,
+    timeline_scroll_row: usize,
+    timeline_last_columns: usize,
     library_details_cards: Vec<(String, Rect)>,
     album_cards: Vec<(Option<String>, Rect)>,
     album_editor: bool,
@@ -649,6 +707,7 @@ impl PhotosApp {
             .map(|_| thumbnail_job_tx);
         let pending: Rc<Cell<Option<Hit>>> = Rc::new(Cell::new(None));
         let album_page_pending: Rc<Cell<Option<AlbumEditorHit>>> = Rc::new(Cell::new(None));
+        let timeline_density_pending: Rc<Cell<Option<TimelineHit>>> = Rc::new(Cell::new(None));
         let faces: Vec<Face> = TOOLBAR.iter().map(|t| t.3).collect();
         let mut buttons = Vec::new();
         for ((hit, key, icon, _), face) in TOOLBAR.iter().zip(faces.iter()) {
@@ -700,6 +759,12 @@ impl PhotosApp {
             library_tags: Vec::new(),
             metadata_filter_cards: Vec::new(),
             library_page_hits: Vec::new(),
+            timeline_density_hits: Vec::new(),
+            timeline_density_buttons: build_timeline_density_buttons(&timeline_density_pending),
+            timeline_density_pending,
+            timeline_density: 1,
+            timeline_scroll_row: 0,
+            timeline_last_columns: 1,
             library_details_cards: Vec::new(),
             album_cards: Vec::new(),
             album_editor: false,
@@ -1555,6 +1620,42 @@ impl PhotosApp {
         }
     }
 
+    /// Change the local timeline density through any input source.  One step
+    /// is shared by the +/- affordances, Ctrl-wheel and pinch, which makes
+    /// their resulting layout testable for parity.
+    fn adjust_timeline_density(&mut self, increase: bool) -> bool {
+        let before = self.timeline_density;
+        let anchor = self
+            .timeline_scroll_row
+            .saturating_mul(self.timeline_last_columns.max(1));
+        if increase {
+            self.timeline_density = self.timeline_density.saturating_add(1).min(4);
+        } else {
+            self.timeline_density = self.timeline_density.saturating_sub(1);
+        }
+        if before == self.timeline_density {
+            return false;
+        }
+        let columns = timeline_column_count(
+            self.canvas_rect.width(),
+            self.timeline_density,
+            self.large_text_toolbar,
+        );
+        self.timeline_scroll_row = anchor / columns.max(1);
+        self.timeline_last_columns = columns;
+        true
+    }
+
+    fn scroll_timeline_rows(&mut self, delta: i32) {
+        if delta.is_negative() {
+            self.timeline_scroll_row = self
+                .timeline_scroll_row
+                .saturating_add(delta.unsigned_abs() as usize);
+        } else {
+            self.timeline_scroll_row = self.timeline_scroll_row.saturating_sub(delta as usize);
+        }
+    }
+
     #[allow(
         clippy::too_many_arguments,
         clippy::too_many_lines,
@@ -2357,6 +2458,27 @@ impl PhotosApp {
                         )
                     })
             }));
+            for (hit, bounds) in &self.timeline_density_hits {
+                let (name, target) = match hit {
+                    TimelineHit::ZoomOut => {
+                        ("Show fewer photographs", "photos:timeline:density-out")
+                    }
+                    TimelineHit::ZoomIn => ("Show more photographs", "photos:timeline:density-in"),
+                };
+                cards.push(
+                    AccessNode::new(Role::Button)
+                        .with_name(name)
+                        .with_description(
+                            "Changes how many photographs appear in each timeline row",
+                        )
+                        .with_bounds(*bounds)
+                        .with_state(AccessState {
+                            focusable: true,
+                            ..Default::default()
+                        })
+                        .with_action_target(target),
+                );
+            }
             for (forward, enabled, bounds) in &self.library_page_hits {
                 cards.push(
                     AccessNode::new(Role::Button)
@@ -2692,6 +2814,14 @@ impl PhotosApp {
         action: &AccessAction,
         doc: &mut AutoCommit,
     ) -> bool {
+        if let Some(direction) = target.strip_prefix("photos:timeline:density-") {
+            return match (direction, action) {
+                ("in", AccessAction::Activate) => self.adjust_timeline_density(true),
+                ("out", AccessAction::Activate) => self.adjust_timeline_density(false),
+                ("in" | "out", AccessAction::Focus) => true,
+                _ => false,
+            };
+        }
         if let Some(command) = target.strip_prefix("photos:selection:") {
             if !matches!(action, AccessAction::Activate | AccessAction::Focus) {
                 return false;
@@ -3304,6 +3434,7 @@ impl PhotosApp {
         self.album_cards.clear();
         self.metadata_filter_cards.clear();
         self.library_page_hits.clear();
+        self.timeline_density_hits.clear();
         self.library_details_cards.clear();
         if self.library_items.is_empty() {
             self.draw_empty_state(
@@ -3332,7 +3463,7 @@ impl PhotosApp {
         // only a few words of metadata per card at 200%, which makes labels
         // overlap their independent destructive controls.
         let large_text = theme.text_scale > 1.25;
-        let columns = library_column_count(bounds.width(), large_text, self.metadata_editor);
+        let columns = timeline_column_count(bounds.width(), self.timeline_density, large_text);
         let gap = if columns <= 2 { 8.0 } else { 16.0 };
         let card_w =
             ((bounds.width() - f64::from(PAD * 2.0) - gap * columns.saturating_sub(1) as f64)
@@ -3429,6 +3560,45 @@ impl PhotosApp {
             Some(count_width as f32),
             TextWeight::Regular,
         );
+        // Density is a first-class browsing affordance, not a hidden gesture.
+        // The two small controls are intentionally next to the count so they
+        // remain discoverable on a touch display and at 200% text.
+        let density_y = if desktop_library {
+            masthead.y0 + 16.0
+        } else {
+            heading_y + 25.0
+        };
+        let density_x = bounds.x1 - f64::from(PAD) - 96.0;
+        for (hit, rect, enabled) in [
+            (
+                TimelineHit::ZoomOut,
+                Rect::new(density_x, density_y, density_x + 44.0, density_y + 44.0),
+                self.timeline_density > 0,
+            ),
+            (
+                TimelineHit::ZoomIn,
+                Rect::new(
+                    density_x + 52.0,
+                    density_y,
+                    density_x + 96.0,
+                    density_y + 44.0,
+                ),
+                self.timeline_density < 4,
+            ),
+        ] {
+            if let Some((_, button)) = self
+                .timeline_density_buttons
+                .iter_mut()
+                .find(|(candidate, _)| *candidate == hit)
+            {
+                button.set_enabled(enabled);
+                button.apply_layout_external(rect);
+                button.draw(scene, transform, text_renderer, theme, presence);
+            }
+            if enabled {
+                self.timeline_density_hits.push((hit, rect));
+            }
+        }
         if !self.library_albums.is_empty() {
             let mut x = bounds.x0 + f64::from(PAD) + if desktop_library { 60.0 } else { 0.0 };
             let y = if desktop_library {
@@ -3524,12 +3694,10 @@ impl PhotosApp {
         };
         let filter_y = heading_y + header_h + album_h;
         let mut filter_x = bounds.x0 + f64::from(PAD) + if desktop_library { 60.0 } else { 0.0 };
-        // On a full desktop shelf paging belongs beside filtering, not below
-        // the last row where it would steal a complete card lane. Reserve a
-        // named 44px control pair whenever this view has more than its two
-        // intended rows; narrow and enlarged-text layouts retain their
-        // dedicated full-width pager below the filters.
-        let desktop_pager = desktop_library && self.library_total > columns.saturating_mul(2);
+        // Paging remains for the album editor's bounded membership draft;
+        // the normal timeline itself scrolls continuously by chronological row.
+        let desktop_pager =
+            self.album_editor && desktop_library && self.library_total > columns.saturating_mul(2);
         let filter_x1 = bounds.x1 - f64::from(PAD) - if desktop_pager { 192.0 } else { 0.0 };
         if desktop_library {
             text_renderer.draw_text_weighted(
@@ -3743,13 +3911,15 @@ impl PhotosApp {
                 0.0
             };
         let filter_h = if large_text { 50.0 } else { 34.0 };
-        let pager_h =
-            if large_text && bounds.width() < 620.0 && !self.album_editor && self.library_total > 1
-            {
-                52.0
-            } else {
-                0.0
-            };
+        let pager_h = if large_text
+            && bounds.width() < 620.0
+            && self.album_editor
+            && self.library_total > 1
+        {
+            52.0
+        } else {
+            0.0
+        };
         let pager_y = heading_y + header_h + album_h + filter_h + compact_album_actions_h;
         if pager_h > 0.0 {
             let previous = Rect::new(
@@ -3881,16 +4051,52 @@ impl PhotosApp {
         let visible = if large_text && self.metadata_editor {
             0
         } else {
-            columns.saturating_mul(rows)
+            // Two overscan rows make a wheel/pinch density change feel
+            // immediate while keeping rendering and thumbnail decoding bounded.
+            timeline_virtual_range(self.library_items.len(), 0, rows, columns).len()
         };
-        for (index, item) in self.library_items.iter().take(visible).enumerate() {
+        let mut timeline_y = top;
+        let mut timeline_column = columns;
+        let mut previous_day = String::new();
+        for item in self.library_items.iter().take(visible) {
             let id = &item.id;
             let name = &item.name;
             let favorite = item.favorite;
-            let col = index % columns;
-            let row = index / columns;
-            let x = bounds.x0 + f64::from(PAD) + col as f64 * (card_w + gap);
-            let y = top + row as f64 * (card_h + gap);
+            if item.captured_at != previous_day {
+                if timeline_column != columns {
+                    timeline_y += card_h + gap;
+                }
+                let day_rule = Rect::new(
+                    bounds.x0 + f64::from(PAD),
+                    timeline_y + 24.0,
+                    bounds.x1 - f64::from(PAD),
+                    timeline_y + 25.0,
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    &item.captured_at,
+                    if large_text { 15.0 } else { 13.0 },
+                    theme.text_primary,
+                    transform * Affine::translate((day_rule.x0, timeline_y + 4.0)),
+                    Some((day_rule.width() - 84.0) as f32),
+                    TextWeight::Medium,
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.border_standard,
+                    None,
+                    &Rect::new(day_rule.x0 + 136.0, day_rule.y0, day_rule.x1, day_rule.y1),
+                );
+                timeline_y += 34.0;
+                timeline_column = 0;
+                previous_day.clone_from(&item.captured_at);
+            }
+            if timeline_y + card_h > bounds.y1 - f64::from(PAD) {
+                break;
+            }
+            let x = bounds.x0 + f64::from(PAD) + timeline_column as f64 * (card_w + gap);
+            let y = timeline_y;
             let card = Rect::new(x, y, x + card_w, y + card_h);
             let preview = Rect::new(x, y, x + card_w, y + preview_h);
             scene.fill(
@@ -4118,6 +4324,11 @@ impl PhotosApp {
                 );
             }
             self.library_cards.push((id.clone(), card, favorite));
+            timeline_column += 1;
+            if timeline_column == columns {
+                timeline_y += card_h + gap;
+                timeline_column = 0;
+            }
         }
         self.draw_album_editor(scene, transform, text_renderer, theme, presence);
         self.draw_metadata_editor(scene, transform, text_renderer, theme, presence);
@@ -5790,6 +6001,42 @@ fn build_album_page_buttons(
     .collect()
 }
 
+/// Shared retained controls placed over the custom timeline geometry.  The
+/// timeline owns placement, while Button owns its visual states, names and
+/// minimum target treatment.
+fn build_timeline_density_buttons(
+    pending: &Rc<Cell<Option<TimelineHit>>>,
+) -> Vec<(TimelineHit, Button)> {
+    [
+        (
+            TimelineHit::ZoomOut,
+            "photos-timeline-density-out",
+            "Show fewer photographs",
+            Icon::Minimize2,
+        ),
+        (
+            TimelineHit::ZoomIn,
+            "photos-timeline-density-in",
+            "Show more photographs",
+            Icon::Plus,
+        ),
+    ]
+    .into_iter()
+    .map(|(hit, id, name, icon)| {
+        let slot = pending.clone();
+        (
+            hit,
+            Button::new(id, "", None)
+                .with_icon(icon)
+                .with_size(44.0, 44.0)
+                .tooltip(name)
+                .with_accessible_name(name)
+                .on_effect(move || slot.set(Some(hit))),
+        )
+    })
+    .collect()
+}
+
 /// Wrap an RGBA buffer as the image type the scene draws.
 fn to_peniko(img: &Rgba) -> ImageData {
     ImageData {
@@ -5809,6 +6056,19 @@ fn decode_key(open: &OpenImage) -> String {
         open.path,
         open.content.as_deref().unwrap_or_default()
     )
+}
+
+/// Turn the portable capture value into a calm timeline heading without
+/// parsing it into the viewer's timezone.  A collaborator who only supplied
+/// a date sees exactly that date, and an ISO timestamp naturally groups with
+/// its calendar day.
+fn timeline_date_label(captured_at: &str) -> String {
+    captured_at
+        .split_whitespace()
+        .next()
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Undated")
+        .to_owned()
 }
 
 /// Read at most the encoded-image budget plus one sentinel byte. A hostile
@@ -6160,18 +6420,48 @@ impl Widget for PhotosApp {
         self.library_offset = self
             .library_offset
             .min(self.library_total.saturating_sub(1));
-        self.library_items = library
+        let timeline_columns = timeline_column_count(
+            self.canvas_rect.width(),
+            self.timeline_density,
+            self.large_text_toolbar,
+        );
+        self.timeline_last_columns = timeline_columns;
+        self.timeline_scroll_row = self
+            .timeline_scroll_row
+            .min(self.library_total.saturating_sub(1) / timeline_columns.max(1));
+        let browse_offset = if self.album_editor {
+            self.library_offset
+        } else {
+            self.timeline_scroll_row.saturating_mul(timeline_columns)
+        };
+        let mut timeline_items: Vec<_> = library
             .photos
             .iter()
             .filter(|photo| matches_filter(photo))
-            .skip(self.library_offset)
-            .take(120)
             .map(|photo| LibraryItem {
                 id: photo.id.clone(),
                 name: photo.image.name.clone(),
                 favorite: photo.favorite,
                 metadata: photo.metadata_card_summary(),
+                captured_at: photo
+                    .captured_at
+                    .as_deref()
+                    .map_or_else(|| "Undated".to_owned(), timeline_date_label),
             })
+            .collect();
+        // A timeline reads newest-first.  The id tie-breaker makes peers with
+        // the same capture-day stable without making the date a mutable sort
+        // key in the shared document.
+        timeline_items.sort_by(|left, right| {
+            right
+                .captured_at
+                .cmp(&left.captured_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        self.library_items = timeline_items
+            .into_iter()
+            .skip(browse_offset)
+            .take(120)
             .collect();
         self.library_albums = library
             .albums
@@ -6442,6 +6732,13 @@ impl Widget for PhotosApp {
         if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
             self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
+        if self.library_mode
+            && let Some(hit) = self.timeline_density_pending.take()
+        {
+            self.adjust_timeline_density(matches!(hit, TimelineHit::ZoomIn));
+            *handled = true;
+            return;
+        }
 
         // The phone overflow is a real keyboard menu, not a pointer-only
         // drawing. Its entries are normal canonical toolbar actions, so this
@@ -6522,6 +6819,42 @@ impl Widget for PhotosApp {
             return;
         }
 
+        // Ctrl + wheel is the cross-platform density gesture.  Keep an
+        // ordinary wheel for chronological browsing; otherwise a trackpad
+        // scroll would unexpectedly rearrange the entire library.
+        if self.library_mode
+            && !self.album_editor
+            && !self.metadata_editor
+            && modifiers.state().control_key()
+            && let winit::event::WindowEvent::MouseWheel { delta, .. } = event
+        {
+            let amount = match delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => *y,
+                winit::event::MouseScrollDelta::PixelDelta(position) => position.y as f32,
+            };
+            if amount != 0.0 {
+                // Natural scroll semantics: up means see more at once.
+                self.adjust_timeline_density(amount < 0.0);
+                *handled = true;
+                return;
+            }
+        }
+
+        // Tilo's vendored Wayland winit maps zwp_pointer_gestures_v1 to this
+        // same event; macOS/iOS use it natively.  Ctrl-wheel above remains the
+        // fallback on compositors that do not advertise pinch gestures.
+        if self.library_mode
+            && !self.album_editor
+            && !self.metadata_editor
+            && let winit::event::WindowEvent::PinchGesture { delta, .. } = event
+            && delta.is_finite()
+            && *delta != 0.0
+        {
+            self.adjust_timeline_density(*delta > 0.0);
+            *handled = true;
+            return;
+        }
+
         if self.library_mode
             && self.handle_metadata_editor_event(
                 event,
@@ -6588,10 +6921,34 @@ impl Widget for PhotosApp {
                 _ => None,
             };
             if let Some(forward) = forward {
-                self.page_library(forward);
+                if self.album_editor {
+                    self.page_library(forward);
+                } else {
+                    self.scroll_timeline_rows(if forward { -3 } else { 3 });
+                }
                 *handled = true;
                 return;
             }
+        }
+
+        if self.library_mode
+            && matches!(
+                event,
+                winit::event::WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Released,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+            )
+            && let Some((hit, _)) = self
+                .timeline_density_hits
+                .iter()
+                .find(|(_, rect)| rect.contains(self.pointer))
+                .copied()
+        {
+            self.adjust_timeline_density(matches!(hit, TimelineHit::ZoomIn));
+            *handled = true;
+            return;
         }
 
         if self.library_mode
@@ -6777,9 +7134,9 @@ impl Widget for PhotosApp {
                 winit::event::MouseScrollDelta::PixelDelta(position) => position.y.signum() as f32,
             };
             if direction < 0.0 {
-                self.page_library(true);
+                self.scroll_timeline_rows(-1);
             } else if direction > 0.0 {
-                self.page_library(false);
+                self.scroll_timeline_rows(1);
             }
             *handled = true;
             return;
@@ -7134,6 +7491,31 @@ mod tests {
                 .children
                 .iter()
                 .any(|child| has_resource_id(child, id))
+    }
+
+    #[test]
+    fn timeline_geometry_keeps_200_percent_text_legible_and_density_bounded() {
+        assert_eq!(timeline_column_count(390.0, 4, false), 1);
+        assert_eq!(timeline_column_count(1_440.0, 0, false), 4);
+        assert_eq!(timeline_column_count(1_440.0, 4, false), 6);
+        assert_eq!(timeline_column_count(1_440.0, 4, true), 2);
+    }
+
+    #[test]
+    fn timeline_virtual_window_has_stable_overscan_without_materialising_the_library() {
+        assert_eq!(timeline_virtual_range(500, 12, 4, 5), 60..90);
+        assert_eq!(timeline_virtual_range(3, 4, 4, 1), 3..3);
+    }
+
+    #[test]
+    fn density_reanchors_the_same_first_photo() {
+        let mut app = PhotosApp::new();
+        app.canvas_rect = Rect::new(0.0, 0.0, 1_440.0, 800.0);
+        app.timeline_density = 1;
+        app.timeline_last_columns = 5;
+        app.timeline_scroll_row = 6;
+        assert!(app.adjust_timeline_density(true));
+        assert_eq!(app.timeline_scroll_row * app.timeline_last_columns, 30);
     }
 
     #[test]
