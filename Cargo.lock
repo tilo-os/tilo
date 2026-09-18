@@ -5053,6 +5053,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "shlex",
  "taffy",
  "tempfile",
  "tilo-actions",
