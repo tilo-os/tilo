@@ -3548,6 +3548,77 @@ fn hosted_terminal_requires_ush_before_construction() {
     ));
 }
 
+fn private_ush_listener(runtime: &std::path::Path) -> std::os::unix::net::UnixListener {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tilo = runtime.join("tilo");
+    let services = tilo.join("services");
+    std::fs::create_dir_all(&services).unwrap();
+    for directory in [runtime, tilo.as_path(), services.as_path()] {
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let socket = services.join("ush.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    listener
+}
+
+#[test]
+fn hosted_services_discover_and_use_a_healthy_ush_socket() {
+    use std::io::{BufRead, BufReader};
+    use std::os::fd::AsRawFd;
+
+    let runtime = tempfile::tempdir().unwrap();
+    let listener = private_ush_listener(runtime.path());
+    let server = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut request = String::new();
+        BufReader::new(stream.try_clone().unwrap())
+            .read_line(&mut request)
+            .unwrap();
+        assert!(request.contains("\"op\":\"open-session\""), "{request}");
+        assert!(request.contains("\"profile\":\"ush\""), "{request}");
+        let (master, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        runtime_portal::fd_transport::send_with_fd(
+            stream.as_raw_fd(),
+            b"{\"result\":\"session\",\"session\":\"test\",\"profile\":\"ush\"}\n",
+            master.as_raw_fd(),
+        )
+        .unwrap();
+    });
+
+    let services = crate::HostedProcessServices::discover_from_runtime_dir(runtime.path());
+    let widget = crate::TerminalWidget::spawn_hosted(services)
+        .expect("the discovered ush connection must use the supervisor protocol");
+    drop(widget);
+    server.join().unwrap();
+}
+
+#[test]
+fn hosted_services_leave_ush_missing_when_the_socket_is_absent() {
+    let runtime = tempfile::tempdir().unwrap();
+    let services = crate::HostedProcessServices::discover_from_runtime_dir(runtime.path());
+    assert!(services.ush.is_none());
+    assert!(matches!(
+        crate::TerminalWidget::spawn_hosted(services),
+        Err(crate::HostedTerminalError::RequiredServiceMissing("ush"))
+    ));
+}
+
+#[test]
+fn hosted_services_leave_ush_missing_when_the_socket_refuses_connections() {
+    let runtime = tempfile::tempdir().unwrap();
+    let listener = private_ush_listener(runtime.path());
+    drop(listener);
+
+    let services = crate::HostedProcessServices::discover_from_runtime_dir(runtime.path());
+    assert!(services.ush.is_none());
+    assert!(matches!(
+        crate::TerminalWidget::spawn_hosted(services),
+        Err(crate::HostedTerminalError::RequiredServiceMissing("ush"))
+    ));
+}
+
 #[test]
 fn hosted_terminal_service_failure_never_falls_back_to_a_login_shell() {
     use std::os::unix::net::UnixStream;
