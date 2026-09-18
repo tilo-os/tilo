@@ -20,6 +20,8 @@ use ui::collaboration::{CollabEvent, CollabRequest};
 use ui::state::State;
 use ui::widget::{Column, Text};
 
+type PeerInboxes = HashMap<String, VecDeque<CollabEvent>>;
+
 /// An in-memory stand-in for the Unix-socket `CollaborationManager`.
 /// Each `Peer` exposes `send(req)` and `poll() -> Vec<CollabEvent>`.
 ///
@@ -33,14 +35,14 @@ use ui::widget::{Column, Text};
 ///     let events = `bob.poll()`;
 pub struct MemoryRelay {
     pending_out: Vec<(String, CollabRequest)>,
-    inboxes: Arc<Mutex<HashMap<String, VecDeque<CollabEvent>>>>,
+    inboxes: Arc<Mutex<PeerInboxes>>,
 }
 
 #[derive(Clone)]
 pub struct Peer {
     id: String,
     outbox: Arc<Mutex<VecDeque<CollabRequest>>>,
-    inbox: Arc<Mutex<HashMap<String, VecDeque<CollabEvent>>>>,
+    inbox: Arc<Mutex<PeerInboxes>>,
 }
 
 impl MemoryRelay {
@@ -123,61 +125,36 @@ pub fn pump(relay: &mut MemoryRelay) {
     let peer_ids: Vec<String> = inboxes.keys().cloned().collect();
     for (from, req) in pending {
         match req {
-            CollabRequest::Document {
-                mutation: ui::collaboration::DocumentMutation::Incremental(data),
-            } => {
-                let event =
-                    document_event(&collab_types::DocumentMutation::Incremental(data), &from);
-                for id in &peer_ids {
-                    if id == &from {
-                        continue;
+            CollabRequest::Document { mutation } => {
+                let mutation = match mutation {
+                    ui::collaboration::DocumentMutation::Incremental(data) => {
+                        collab_types::DocumentMutation::Incremental(data)
                     }
-                    inboxes.get_mut(id).unwrap().push_back(event.clone());
-                }
-            }
-            CollabRequest::Document {
-                mutation: ui::collaboration::DocumentMutation::Snapshot(data),
-            } => {
-                let event = document_event(&collab_types::DocumentMutation::Snapshot(data), &from);
-                for id in &peer_ids {
-                    if id == &from {
-                        continue;
+                    ui::collaboration::DocumentMutation::Snapshot(data) => {
+                        collab_types::DocumentMutation::Snapshot(data)
                     }
-                    inboxes.get_mut(id).unwrap().push_back(event.clone());
-                }
+                };
+                let event = document_event(&mutation, &from);
+                broadcast_to_others(&mut inboxes, &peer_ids, &from, &event);
             }
             CollabRequest::Presence { key, payload } => {
-                for id in &peer_ids {
-                    if id == &from {
-                        continue;
-                    }
-                    inboxes
-                        .get_mut(id)
-                        .unwrap()
-                        .push_back(CollabEvent::RemotePresenceUpdate {
-                            user_id: from.clone(),
-                            key: key.clone(),
-                            payload: payload.clone(),
-                        });
-                }
+                let event = CollabEvent::RemotePresenceUpdate {
+                    user_id: from.clone(),
+                    key,
+                    payload,
+                };
+                broadcast_to_others(&mut inboxes, &peer_ids, &from, &event);
             }
             CollabRequest::SignedOperation { envelope } => {
                 // Mirror the production fan-out (collaboration.rs): the
                 // in-toolkit test broker routes verbatim (no role
                 // enforcement — that's the shell collab_broker's job).
-                for id in &peer_ids {
-                    if id == &from {
-                        continue;
-                    }
-                    inboxes
-                        .get_mut(id)
-                        .unwrap()
-                        .push_back(CollabEvent::Document {
-                            envelope: envelope.clone(),
-                            from_user_id: from.clone(),
-                            decrypted_payload: None,
-                        });
-                }
+                let event = CollabEvent::Document {
+                    envelope,
+                    from_user_id: from.clone(),
+                    decrypted_payload: None,
+                };
+                broadcast_to_others(&mut inboxes, &peer_ids, &from, &event);
             }
             CollabRequest::FetchScrollback { artifact, .. } => {
                 // The test broker holds no op log — answer the requester
@@ -242,6 +219,20 @@ pub fn pump(relay: &mut MemoryRelay) {
                 // fan out through another application's document channel.
             }
         }
+    }
+}
+
+fn broadcast_to_others(
+    inboxes: &mut PeerInboxes,
+    peer_ids: &[String],
+    sender: &str,
+    event: &CollabEvent,
+) {
+    for id in peer_ids.iter().filter(|id| id.as_str() != sender) {
+        inboxes
+            .get_mut(id)
+            .expect("attached peer retains an inbox")
+            .push_back(event.clone());
     }
 }
 
