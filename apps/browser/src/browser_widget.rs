@@ -99,6 +99,34 @@ enum PipFeedbackKind {
 struct PipFeedback {
     kind: PipFeedbackKind,
     started: std::time::Instant,
+    /// Screenshot/debug guidance is deliberately steady: headless rendering
+    /// can be queued behind a busy renderer, and must not race the ordinary
+    /// short-lived live toast away before it is inspected.
+    persistent: bool,
+}
+
+impl PipFeedback {
+    fn transient(kind: PipFeedbackKind) -> Self {
+        Self {
+            kind,
+            started: std::time::Instant::now(),
+            persistent: false,
+        }
+    }
+
+    fn persistent(kind: PipFeedbackKind) -> Self {
+        Self {
+            kind,
+            started: std::time::Instant::now()
+                .checked_sub(PIP_FEEDBACK_FADE)
+                .unwrap_or_else(std::time::Instant::now),
+            persistent: true,
+        }
+    }
+
+    fn is_expired(&self) -> bool {
+        !self.persistent && self.started.elapsed() >= PIP_FEEDBACK_LIFETIME
+    }
 }
 
 const BROWSER_OPERATION_TYPE: &str = "browser.operation";
@@ -582,12 +610,7 @@ impl BrowserWidget {
 
     /// Headless visual-review hook: show the settled no-video guidance card.
     pub fn debug_show_empty_pip_feedback(&mut self) {
-        self.pip_feedback = Some(PipFeedback {
-            kind: PipFeedbackKind::NoVideo,
-            started: std::time::Instant::now()
-                .checked_sub(std::time::Duration::from_millis(500))
-                .unwrap_or_else(std::time::Instant::now),
-        });
+        self.pip_feedback = Some(PipFeedback::persistent(PipFeedbackKind::NoVideo));
     }
 
     /// Headless visual-review hook for the toolbar's adopted `PiP` state.
@@ -1099,10 +1122,7 @@ impl BrowserWidget {
         }
         self.pip_request_seq = self.pip_request_seq.saturating_add(1);
         self.active_pip_probe = Some(self.pip_request_seq);
-        self.pip_feedback = Some(PipFeedback {
-            kind: PipFeedbackKind::Finding,
-            started: std::time::Instant::now(),
-        });
+        self.pip_feedback = Some(PipFeedback::transient(PipFeedbackKind::Finding));
         self.engine.send(WebViewCommand::RequestMediaElement {
             request_id: self.pip_request_seq,
         });
@@ -1132,10 +1152,7 @@ impl BrowserWidget {
 
         let region = self.media_element_region(&element);
         if region.width() < 1.0 || region.height() < 1.0 {
-            self.pip_feedback = Some(PipFeedback {
-                kind: PipFeedbackKind::NoVideo,
-                started: std::time::Instant::now(),
-            });
+            self.pip_feedback = Some(PipFeedback::transient(PipFeedbackKind::NoVideo));
             self.finish_pip_operation_failure(
                 request_id,
                 "browser.picture_in_picture_unavailable",
@@ -1211,10 +1228,7 @@ impl BrowserWidget {
         self.next_pip_refresh_at = None;
         self.pending_pip_region_update = None;
         self.published_pip_region = None;
-        self.pip_feedback = Some(PipFeedback {
-            kind: PipFeedbackKind::NoVideo,
-            started: std::time::Instant::now(),
-        });
+        self.pip_feedback = Some(PipFeedback::transient(PipFeedbackKind::NoVideo));
         self.structure_dirty = true;
     }
 
@@ -1318,10 +1332,7 @@ impl BrowserWidget {
             return;
         }
         self.active_pip_probe = None;
-        self.pip_feedback = Some(PipFeedback {
-            kind: PipFeedbackKind::NoVideo,
-            started: std::time::Instant::now(),
-        });
+        self.pip_feedback = Some(PipFeedback::transient(PipFeedbackKind::NoVideo));
         self.finish_pip_operation_failure(
             request_id,
             "browser.picture_in_picture_unavailable",
@@ -3749,8 +3760,7 @@ impl Widget for BrowserWidget {
         let select_area_hovered = self.pip_select_area_rect.contains(self.cursor);
         if !feedback_hovered
             && self.pip_feedback.as_ref().is_some_and(|feedback| {
-                feedback.kind == PipFeedbackKind::NoVideo
-                    && feedback.started.elapsed() >= PIP_FEEDBACK_LIFETIME
+                feedback.kind == PipFeedbackKind::NoVideo && feedback.is_expired()
             })
         {
             self.pip_feedback = None;
@@ -3766,7 +3776,10 @@ impl Widget for BrowserWidget {
             } else {
                 (elapsed.as_secs_f32() / PIP_FEEDBACK_FADE.as_secs_f32()).min(1.0)
             };
-            if feedback.kind == PipFeedbackKind::NoVideo && !feedback_hovered {
+            if feedback.kind == PipFeedbackKind::NoVideo
+                && !feedback.persistent
+                && !feedback_hovered
+            {
                 let remaining = PIP_FEEDBACK_LIFETIME.saturating_sub(elapsed);
                 alpha =
                     alpha.min((remaining.as_secs_f32() / PIP_FEEDBACK_FADE.as_secs_f32()).min(1.0));
@@ -3815,6 +3828,7 @@ impl Widget for BrowserWidget {
         let feedback_animates = self.pip_feedback.as_ref().is_some_and(|feedback| {
             feedback.started.elapsed() < PIP_FEEDBACK_FADE
                 || (feedback.kind == PipFeedbackKind::NoVideo
+                    && !feedback.persistent
                     && feedback.started.elapsed() < PIP_FEEDBACK_LIFETIME)
         });
         feedback_animates
@@ -4927,6 +4941,7 @@ mod tests {
         w.pip_feedback = Some(PipFeedback {
             kind: PipFeedbackKind::NoVideo,
             started: std::time::Instant::now(),
+            persistent: false,
         });
 
         assert!(w.needs_animation_frame());
@@ -4944,6 +4959,7 @@ mod tests {
         w.pip_feedback = Some(PipFeedback {
             kind: PipFeedbackKind::NoVideo,
             started: std::time::Instant::now(),
+            persistent: false,
         });
         w.pip_feedback_rect = Rect::new(100.0, 80.0, 454.0, 192.0);
         w.pip_float_page_rect = Rect::new(114.0, 154.0, 273.0, 184.0);
@@ -5035,6 +5051,7 @@ mod tests {
             started: std::time::Instant::now()
                 .checked_sub(PIP_FEEDBACK_LIFETIME + std::time::Duration::from_secs(1))
                 .unwrap_or_else(std::time::Instant::now),
+            persistent: false,
         });
         w.pip_feedback_rect = Rect::new(100.0, 80.0, 426.0, 144.0);
         w.cursor = w.pip_feedback_rect.center();
