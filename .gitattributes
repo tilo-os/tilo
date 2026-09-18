@@ -7,3 +7,8 @@
 # Font licenses are content-addressed by the canonical font manifest.
 ui/assets/fonts/LICENSES/*.txt -text
 ui/assets/fonts/manifest.toml text eol=lf
+
+# Media license notices retain the bytes verified by sources.json.
+tools/gstreamer-licenses/*.txt -text
+tools/gstreamer-licenses/*-COPYING -text
+tools/gstreamer-licenses/*-LICENSE -text
