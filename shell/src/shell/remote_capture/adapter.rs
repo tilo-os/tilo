@@ -1,13 +1,13 @@
-//! Target-local adapters for certified-device camera, microphone, and scanner input.
+//! Target-local adapters for certified-device camera and microphone input.
 //!
 //! Fabric messages stop at [`RemoteCaptureProfile`]. PipeWire node identifiers,
-//! V4L2 file descriptors, scanner files, and the fresh app-consent capability in
-//! this module are process-local and deliberately have no serialization traits.
+//! V4L2 file descriptors, and the fresh app-consent capability in this module
+//! are process-local and deliberately have no serialization traits.
 
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{Seek, SeekFrom, Write};
-use std::os::fd::{FromRawFd as _, OwnedFd};
+use std::io::Write;
+use std::os::fd::OwnedFd;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -31,7 +31,6 @@ use crate::shell::remote_capture::device::{
 pub(crate) enum RemoteCaptureEndpoint {
     PipeWireNode(u32),
     V4l2Device(OwnedFd),
-    DocumentScanner,
 }
 
 /// Injection seam implemented by the target's PipeWire/V4L2 backend.
@@ -61,20 +60,6 @@ pub(crate) trait RemoteCaptureAdapter: Send {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RemoteCaptureApproval([u8; 32]);
 
-struct ScannerSpool {
-    file: File,
-    bytes: u64,
-    max_bytes: u64,
-    last_page: Option<u32>,
-    complete: bool,
-    delivered: bool,
-}
-
-enum PreparedEndpoint {
-    Media,
-    Scanner(ScannerSpool),
-}
-
 struct LocalSession {
     source: DeviceId,
     target: DeviceId,
@@ -83,9 +68,8 @@ struct LocalSession {
     profile: RemoteCaptureProfile,
     grant: RemoteCaptureGrant,
     binding: CaptureSessionBinding,
-    source_id: Option<String>,
-    endpoint: PreparedEndpoint,
-    approval: Option<(RemoteCaptureApproval, Option<CaptureAuthorizationId>)>,
+    source_id: String,
+    approval: Option<(RemoteCaptureApproval, CaptureAuthorizationId)>,
     lease: Option<CaptureLeaseId>,
     active: bool,
 }
@@ -138,36 +122,16 @@ impl RemoteCaptureTargetBridge {
         let binding =
             CaptureSessionBinding::from_verified(app, hex::encode(session_id), target.as_str())
                 .map_err(|_| RemoteCaptureAdapterError::BindingMismatch)?;
-        let (source_id, endpoint) = match endpoint {
+        let source_id = match endpoint {
             RemoteCaptureEndpoint::PipeWireNode(node) => {
                 let id = local_source_id(session_id);
                 self.register_source(&id, request, LocalCaptureHandle::PipeWireNode(node))?;
-                (Some(id), PreparedEndpoint::Media)
+                id
             }
             RemoteCaptureEndpoint::V4l2Device(fd) => {
                 let id = local_source_id(session_id);
                 self.register_source(&id, request, LocalCaptureHandle::FileDescriptor(fd))?;
-                (Some(id), PreparedEndpoint::Media)
-            }
-            RemoteCaptureEndpoint::DocumentScanner => {
-                let RemoteCaptureProfile::DocumentScanner {
-                    max_document_bytes, ..
-                } = request.profile
-                else {
-                    unreachable!("endpoint kind was checked above")
-                };
-                let file = unnamed_scanner_spool().map_err(RemoteCaptureAdapterError::Spool)?;
-                (
-                    None,
-                    PreparedEndpoint::Scanner(ScannerSpool {
-                        file,
-                        bytes: 0,
-                        max_bytes: max_document_bytes,
-                        last_page: None,
-                        complete: false,
-                        delivered: false,
-                    }),
-                )
+                id
             }
         };
         self.sessions.insert(
@@ -181,7 +145,6 @@ impl RemoteCaptureTargetBridge {
                 grant,
                 binding,
                 source_id,
-                endpoint,
                 approval: None,
                 lease: None,
                 active: false,
@@ -206,27 +169,19 @@ impl RemoteCaptureTargetBridge {
         if session.lease.is_some() {
             return Err(RemoteCaptureAdapterError::AlreadyActive);
         }
-        let capture_authorization = if let Some(source_id) = session.source_id.as_deref() {
-            let kind = capture_kind(session.profile.kind())?;
-            Some(
-                broker
-                    .lock()
-                    .map_err(|_| RemoteCaptureAdapterError::BrokerUnavailable)?
-                    .authorize(&session.binding, source_id, kind, now)
-                    .map_err(|error| RemoteCaptureAdapterError::Broker(error.to_string()))?,
-            )
-        } else {
-            None
-        };
+        let kind = capture_kind(session.profile.kind())?;
+        let capture_authorization = broker
+            .lock()
+            .map_err(|_| RemoteCaptureAdapterError::BrokerUnavailable)?
+            .authorize(&session.binding, &session.source_id, kind, now)
+            .map_err(|error| RemoteCaptureAdapterError::Broker(error.to_string()))?;
         if let Some((_, old)) = session
             .approval
             .replace((mint_approval(), capture_authorization))
         {
-            if let Some(old) = old {
-                let _ = broker
-                    .lock()
-                    .map(|mut broker| broker.revoke_authorizations(&[old]));
-            }
+            let _ = broker
+                .lock()
+                .map(|mut broker| broker.revoke_authorizations(&[old]));
         }
         Ok(session.approval.expect("approval was inserted").0)
     }
@@ -251,19 +206,19 @@ impl RemoteCaptureTargetBridge {
             session.approval = Some((expected, authorization));
             return Err(RemoteCaptureAdapterError::ApprovalRequired);
         }
-        if let Some(authorization) = authorization {
-            let source_id = session
-                .source_id
-                .as_deref()
-                .ok_or(RemoteCaptureAdapterError::WrongEndpoint)?;
-            let kind = capture_kind(session.profile.kind())?;
-            let lease = broker
-                .lock()
-                .map_err(|_| RemoteCaptureAdapterError::BrokerUnavailable)?
-                .acquire(authorization, &session.binding, source_id, kind, now)
-                .map_err(|error| RemoteCaptureAdapterError::Broker(error.to_string()))?;
-            session.lease = Some(lease);
-        }
+        let kind = capture_kind(session.profile.kind())?;
+        let lease = broker
+            .lock()
+            .map_err(|_| RemoteCaptureAdapterError::BrokerUnavailable)?
+            .acquire(
+                authorization,
+                &session.binding,
+                &session.source_id,
+                kind,
+                now,
+            )
+            .map_err(|error| RemoteCaptureAdapterError::Broker(error.to_string()))?;
+        session.lease = Some(lease);
         session.active = true;
         Ok(())
     }
@@ -289,7 +244,7 @@ impl RemoteCaptureTargetBridge {
         adapter: &mut dyn RemoteCaptureAdapter,
     ) -> Result<(), RemoteCaptureAdapterError> {
         let session = self.exact_session_mut(app, source, target, chunk.session_id, chunk.grant)?;
-        if !session.active || !matches!(session.endpoint, PreparedEndpoint::Media) {
+        if !session.active {
             return Err(RemoteCaptureAdapterError::ApprovalRequired);
         }
         if !chunk.valid_for(session.profile.kind()) {
@@ -298,74 +253,7 @@ impl RemoteCaptureTargetBridge {
         adapter.ingest(chunk.session_id, &session.profile, chunk)
     }
 
-    /// Append one registry-validated scanner chunk to an unnamed, bounded file.
-    pub(crate) fn append_scanner_chunk(
-        &mut self,
-        app: &VerifiedAppRegistration,
-        source: &DeviceId,
-        target: &DeviceId,
-        chunk: &RemoteCaptureChunk,
-    ) -> Result<(), RemoteCaptureAdapterError> {
-        let session = self.exact_session_mut(app, source, target, chunk.session_id, chunk.grant)?;
-        if !session.active || !matches!(session.endpoint, PreparedEndpoint::Scanner(_)) {
-            return Err(RemoteCaptureAdapterError::ApprovalRequired);
-        }
-        let PreparedEndpoint::Scanner(spool) = &mut session.endpoint else {
-            return Err(RemoteCaptureAdapterError::WrongEndpoint);
-        };
-        if !chunk.valid_for(RemoteCaptureKind::DocumentScanner)
-            || chunk.offset != spool.bytes
-            || chunk.total_bytes > spool.max_bytes
-            || chunk.page_index < spool.last_page
-            || (chunk.end_of_unit && chunk.offset + chunk.payload.len() as u64 != chunk.total_bytes)
-        {
-            return Err(RemoteCaptureAdapterError::InvalidChunk);
-        }
-        spool
-            .file
-            .seek(SeekFrom::Start(spool.bytes))
-            .and_then(|_| spool.file.write_all(&chunk.payload))
-            .map_err(RemoteCaptureAdapterError::Spool)?;
-        spool.bytes = spool
-            .bytes
-            .checked_add(chunk.payload.len() as u64)
-            .ok_or(RemoteCaptureAdapterError::InvalidChunk)?;
-        spool.last_page = chunk.page_index;
-        if chunk.end_of_unit {
-            spool.complete = true;
-        }
-        Ok(())
-    }
-
-    /// Return a single target-local descriptor for a completed scan. The
-    /// unnamed file never acquires a path and exact app/session binding is
-    /// rechecked at delivery time.
-    pub(crate) fn take_completed_scanner(
-        &mut self,
-        app: &VerifiedAppRegistration,
-        source: &DeviceId,
-        target: &DeviceId,
-        session_id: [u8; 16],
-        grant: RemoteCaptureGrant,
-    ) -> Result<File, RemoteCaptureAdapterError> {
-        let session = self.exact_session_mut(app, source, target, session_id, grant)?;
-        let PreparedEndpoint::Scanner(spool) = &mut session.endpoint else {
-            return Err(RemoteCaptureAdapterError::WrongEndpoint);
-        };
-        if !session.active || !spool.complete || spool.delivered {
-            return Err(RemoteCaptureAdapterError::ApprovalRequired);
-        }
-        let mut file = spool
-            .file
-            .try_clone()
-            .map_err(RemoteCaptureAdapterError::Spool)?;
-        file.seek(SeekFrom::Start(0))
-            .map_err(RemoteCaptureAdapterError::Spool)?;
-        spool.delivered = true;
-        Ok(file)
-    }
-
-    /// Atomically revoke broker authority and drop the unnamed scanner spool.
+    /// Atomically revoke broker authority and the local media endpoint.
     pub(crate) fn revoke(
         &mut self,
         app: &VerifiedAppRegistration,
@@ -459,9 +347,7 @@ impl RemoteCaptureTargetBridge {
     fn revoke_local(&self, session: &LocalSession) {
         if let Ok(mut broker) = self.broker.lock() {
             broker.session_ended(&session.binding);
-            if let Some(source_id) = session.source_id.as_deref() {
-                broker.remove_source(source_id);
-            }
+            broker.remove_source(&session.source_id);
         }
     }
 
@@ -511,9 +397,6 @@ fn endpoint_matches(endpoint: &RemoteCaptureEndpoint, kind: RemoteCaptureKind) -
         ) | (
             RemoteCaptureEndpoint::V4l2Device(_),
             RemoteCaptureKind::Camera
-        ) | (
-            RemoteCaptureEndpoint::DocumentScanner,
-            RemoteCaptureKind::DocumentScanner
         )
     )
 }
@@ -536,24 +419,6 @@ fn mint_approval() -> RemoteCaptureApproval {
         OsRng.fill_bytes(&mut value);
     }
     RemoteCaptureApproval(value)
-}
-
-fn unnamed_scanner_spool() -> std::io::Result<File> {
-    let directory = c"/tmp";
-    // SAFETY: `directory` is a static NUL-terminated path and a successful
-    // O_TMPFILE open returns a new descriptor owned exclusively by this call.
-    let fd = unsafe {
-        libc::open(
-            directory.as_ptr(),
-            libc::O_TMPFILE | libc::O_RDWR | libc::O_CLOEXEC,
-            0o600,
-        )
-    };
-    if fd < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: ownership of the fresh descriptor transfers to `File` once.
-    Ok(unsafe { File::from_raw_fd(fd) })
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -588,9 +453,10 @@ impl ProductionRemoteCaptureAdapter {
                 microphone: trusted_command("pw-loopback").is_some()
                     && trusted_command("pw-cat").is_some()
                     && trusted_command("pw-dump").is_some(),
-                // Reception needs only the compositor-private anonymous spool.
-                // `scanimage` is a source-side capability.
-                scanner: true,
+                // Scanner transport is source-capable, but target reception is
+                // not advertised until an app-facing document capability can
+                // consume the completed scan.
+                scanner: false,
             },
             sessions: BTreeMap::new(),
         }
@@ -751,7 +617,11 @@ impl RemoteCaptureAdapter for ProductionRemoteCaptureAdapter {
         match profile.kind() {
             RemoteCaptureKind::Camera => self.provision_camera(session_id, profile),
             RemoteCaptureKind::Microphone => self.provision_microphone(session_id, profile),
-            RemoteCaptureKind::DocumentScanner => Ok(RemoteCaptureEndpoint::DocumentScanner),
+            RemoteCaptureKind::DocumentScanner => {
+                Err(RemoteCaptureAdapterError::BackendUnavailable(
+                    "remote scanner document delivery is unavailable".into(),
+                ))
+            }
         }
     }
 
@@ -873,10 +743,8 @@ pub(crate) enum RemoteCaptureAdapterError {
     BrokerUnavailable,
     #[error("target-local capture broker rejected the operation: {0}")]
     Broker(String),
-    #[error("invalid or out-of-order scanner chunk")]
+    #[error("invalid remote capture chunk")]
     InvalidChunk,
-    #[error("private scanner spool failed: {0}")]
-    Spool(std::io::Error),
     #[error("remote capture backend is unavailable: {0}")]
     BackendUnavailable(String),
     #[error("remote capture backend I/O failed: {0}")]
@@ -887,12 +755,11 @@ pub(crate) enum RemoteCaptureAdapterError {
 mod tests {
     use super::*;
     use crate::shell::remote_capture::device::{
-        REMOTE_CAPTURE_PROTOCOL_VERSION, RemoteDocumentFormat, RemoteVideoFormat,
+        REMOTE_CAPTURE_PROTOCOL_VERSION, RemoteVideoFormat,
     };
 
     #[derive(Default)]
     struct FakeAdapter {
-        scanner: bool,
         revoked: Vec<[u8; 16]>,
     }
 
@@ -901,7 +768,7 @@ mod tests {
             RemoteCaptureAvailability {
                 camera: true,
                 microphone: true,
-                scanner: true,
+                scanner: false,
             }
         }
 
@@ -910,11 +777,7 @@ mod tests {
             _session_id: [u8; 16],
             _profile: &RemoteCaptureProfile,
         ) -> Result<RemoteCaptureEndpoint, RemoteCaptureAdapterError> {
-            Ok(if self.scanner {
-                RemoteCaptureEndpoint::DocumentScanner
-            } else {
-                RemoteCaptureEndpoint::PipeWireNode(42)
-            })
+            Ok(RemoteCaptureEndpoint::PipeWireNode(42))
         }
 
         fn revoke(&mut self, session_id: [u8; 16]) {
@@ -963,6 +826,23 @@ mod tests {
         bridge.prepare_endpoint(
             owner, request, source, target, session, grant, endpoint, adapter,
         )
+    }
+
+    #[test]
+    fn production_receiver_does_not_advertise_undeliverable_scans() {
+        let mut adapter = ProductionRemoteCaptureAdapter::detect();
+        assert!(!adapter.availability().scanner);
+        assert!(matches!(
+            adapter.provision(
+                [7; 16],
+                &RemoteCaptureProfile::DocumentScanner {
+                    format: crate::shell::remote_capture::device::RemoteDocumentFormat::Png,
+                    max_pages: 1,
+                    max_document_bytes: 1024,
+                }
+            ),
+            Err(RemoteCaptureAdapterError::BackendUnavailable(_))
+        ));
     }
 
     #[test]
@@ -1056,94 +936,6 @@ mod tests {
                 .enumerate(CaptureKind::Camera)
                 .is_empty()
         );
-        assert_eq!(adapter.revoked, vec![session]);
-    }
-
-    #[test]
-    fn scanner_uses_unnamed_bounded_sequential_spool_and_peer_teardown() {
-        let broker = Arc::new(Mutex::new(CaptureBroker::new()));
-        let mut bridge = RemoteCaptureTargetBridge::new(broker);
-        let mut adapter = FakeAdapter {
-            scanner: true,
-            ..FakeAdapter::default()
-        };
-        let request = request(RemoteCaptureProfile::DocumentScanner {
-            format: RemoteDocumentFormat::Pdf,
-            max_pages: 2,
-            max_document_bytes: 8,
-        });
-        let (session, grant) = grant_for(&request);
-        let owner = app("dev.tilo.Camera", "workspace-a");
-        let source = DeviceId::new("phone").unwrap();
-        let target = DeviceId::new("laptop").unwrap();
-        prepare(
-            &mut bridge,
-            &mut adapter,
-            &owner,
-            &request,
-            source.clone(),
-            target.clone(),
-            session,
-            grant,
-        )
-        .unwrap();
-        let approval = bridge
-            .approve(&owner, &source, &target, session, grant, Instant::now())
-            .unwrap();
-        bridge
-            .activate(
-                &owner,
-                &source,
-                &target,
-                session,
-                grant,
-                approval,
-                Instant::now(),
-            )
-            .unwrap();
-        let first = RemoteCaptureChunk {
-            session_id: session,
-            grant,
-            sequence: 1,
-            offset: 0,
-            total_bytes: 8,
-            page_index: Some(0),
-            end_of_unit: false,
-            payload: vec![1, 2, 3, 4],
-        };
-        bridge
-            .append_scanner_chunk(&owner, &source, &target, &first)
-            .unwrap();
-        let mut sparse = first.clone();
-        sparse.sequence = 2;
-        sparse.offset = 6;
-        sparse.payload = vec![5, 6];
-        assert!(matches!(
-            bridge.append_scanner_chunk(&owner, &source, &target, &sparse),
-            Err(RemoteCaptureAdapterError::InvalidChunk)
-        ));
-        let second = RemoteCaptureChunk {
-            sequence: 2,
-            offset: 4,
-            end_of_unit: true,
-            payload: vec![5, 6, 7, 8],
-            ..first
-        };
-        bridge
-            .append_scanner_chunk(&owner, &source, &target, &second)
-            .unwrap();
-        let mut completed = bridge
-            .take_completed_scanner(&owner, &source, &target, session, grant)
-            .unwrap();
-        assert_eq!(completed.metadata().unwrap().len(), 8);
-        let mut contents = Vec::new();
-        std::io::Read::read_to_end(&mut completed, &mut contents).unwrap();
-        assert_eq!(contents, vec![1, 2, 3, 4, 5, 6, 7, 8]);
-        assert!(matches!(
-            bridge.take_completed_scanner(&owner, &source, &target, session, grant),
-            Err(RemoteCaptureAdapterError::ApprovalRequired)
-        ));
-        assert_eq!(bridge.revoke_peer(&source, &mut adapter), 1);
         assert_eq!(adapter.revoked, vec![session]);
     }
 
