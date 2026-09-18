@@ -32,7 +32,7 @@ class RawLayerEpoch(unittest.TestCase):
         self.assertLess(workflow.index('Validate layer timestamp anchor before building tools'), workflow.index('docker build --file'))
         guard = textwrap.dedent('          anchor = ' + workflow.split('          anchor = ', 1)[1].split("          s = importlib.util.spec_from_file_location('compile'", 1)[0])
         valid = {'ASSEMBLY_LAYER_EPOCH_ANCHOR':'b'*40, 'COMPILE_MODE':'full-build',
-                 'RECONSTRUCTED_NATIVE_RECEIPT':'{}', 'WPE_ADOPTION_RECEIPT':'{}'}
+                 'RECONSTRUCTED_NATIVE_RECEIPT':'{}', 'WPE_ADOPTION_RECEIPT':'{}', 'NATIVE_SOURCE_COMPATIBILITY':'{}'}
         import re
         exec(guard, {'e':valid, 're':re})
         for field,value in [('COMPILE_MODE','cache-only'), ('COMPILE_MODE','native-payload'),

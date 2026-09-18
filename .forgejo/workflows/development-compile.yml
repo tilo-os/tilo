@@ -188,7 +188,7 @@ jobs:
           anchor = e['ASSEMBLY_LAYER_EPOCH_ANCHOR']
           if anchor and (not re.fullmatch('[0-9a-f]{40}', anchor)
                   or e['COMPILE_MODE'] != 'full-build' or not e['RECONSTRUCTED_NATIVE_RECEIPT']
-                  or not e['WPE_ADOPTION_RECEIPT']):
+                  or not e['WPE_ADOPTION_RECEIPT'] or not e['NATIVE_SOURCE_COMPATIBILITY']):
               raise ValueError('layer epoch anchor requires exact commit and reconstructed-native/adopted-WPE full assembly')
           s = importlib.util.spec_from_file_location('compile', 'os/dev/compile-development-os.py')
           m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
@@ -228,6 +228,15 @@ jobs:
           ref: ${{ inputs.source_revision }}
           token: ${{ secrets.REGISTRY_TOKEN }}
           persist-credentials: false
+      - name: Hydrate reviewed historical source blobs
+        if: inputs.assembly_layer_epoch_anchor != ''
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          NATIVE_SOURCE_COMPATIBILITY: ${{ inputs.native_source_compatibility }}
+          NATIVE_SOURCE_COMPATIBILITY_SHA256: ${{ inputs.native_source_compatibility_sha256 }}
+          TILO_HISTORY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          TILO_HISTORY_USER: ${{ github.actor }}
+        run: python3 os/dev/hydrate-assembly-history.py --repo ../application-source
       - name: Validate layer timestamp anchor before building tools
         if: inputs.assembly_layer_epoch_anchor != ''
         env:
@@ -350,7 +359,7 @@ jobs:
             execution_revision="$HELPERS_REVISION"
           fi
           if [ -n "$NATIVE_SOURCE_COMPATIBILITY" ]; then
-            python3 - "$execution_controller" "$context/native-source-compatibility.json" "$evidence/native-source-compatibility-preflight.json" <<'PY'
+            GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.allow GIT_CONFIG_VALUE_0=never python3 - "$execution_controller" "$context/native-source-compatibility.json" "$evidence/native-source-compatibility-preflight.json" <<'PY'
           import importlib.util, json, os, pathlib, sys
           path = pathlib.Path(sys.argv[1]) / 'os/dev/native_source_compatibility.py'
           spec = importlib.util.spec_from_file_location('compatibility', path)
