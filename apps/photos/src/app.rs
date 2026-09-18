@@ -160,6 +160,69 @@ pub fn timeline_virtual_range(
     start..end
 }
 
+/// Build continuous chronological rows from document-owned image dimensions.
+/// A row never crosses a capture day; complete rows fill the available width,
+/// while a day's final partial row remains at its natural target height.
+fn justified_timeline_layout(
+    items: &[LibraryItem],
+    available_width: f64,
+    target_height: f64,
+    gap: f64,
+) -> Vec<TimelineItemLayout> {
+    let mut layout = Vec::with_capacity(items.len());
+    let mut start = 0;
+    while start < items.len() {
+        let day = &items[start].captured_at;
+        let mut day_end = start + 1;
+        while day_end < items.len() && items[day_end].captured_at == *day {
+            day_end += 1;
+        }
+        let mut row_start = start;
+        while row_start < day_end {
+            let mut row_end = row_start;
+            let mut aspect_sum = 0.0;
+            while row_end < day_end {
+                let next_aspect = items[row_end].aspect_ratio.clamp(0.35, 3.0);
+                let next_count = row_end - row_start + 1;
+                let next_width = (aspect_sum + next_aspect) * target_height
+                    + gap * next_count.saturating_sub(1) as f64;
+                aspect_sum += next_aspect;
+                row_end += 1;
+                if next_width >= available_width || next_count >= 6 {
+                    break;
+                }
+            }
+            let fills_row = row_end < day_end || aspect_sum * target_height >= available_width;
+            let height = if fills_row {
+                ((available_width - gap * (row_end - row_start - 1) as f64) / aspect_sum)
+                    .clamp(76.0, 320.0)
+            } else {
+                target_height.clamp(76.0, 320.0)
+            };
+            let mut used = 0.0;
+            for index in row_start..row_end {
+                let is_last = index + 1 == row_end;
+                let width = if fills_row && is_last {
+                    (available_width - used).max(44.0)
+                } else {
+                    let width = (items[index].aspect_ratio.clamp(0.35, 3.0) * height).round();
+                    used += width + gap;
+                    width
+                };
+                layout.push(TimelineItemLayout {
+                    width,
+                    height,
+                    row_start: index == row_start,
+                    row_end: is_last,
+                });
+            }
+            row_start = row_end;
+        }
+        start = day_end;
+    }
+    layout
+}
+
 /// Measured rows for the compact library masthead.  Compact and 200% text
 /// share this source of truth so the count, selection affordance, density,
 /// collection rail, and first date never occupy the same vertical space.
@@ -493,8 +556,20 @@ struct LibraryItem {
     id: String,
     name: String,
     favorite: bool,
-    metadata: String,
     captured_at: String,
+    /// Intrinsic geometry is document metadata, available before thumbnail
+    /// hydration.  Keeping it in the projected item avoids a 3:2 placeholder
+    /// grid that jumps every time a decoder finishes.
+    aspect_ratio: f64,
+}
+
+/// Presentation-only geometry for a stable justified row.
+#[derive(Clone, Copy, Debug)]
+struct TimelineItemLayout {
+    width: f64,
+    height: f64,
+    row_start: bool,
+    row_end: bool,
 }
 
 #[derive(Clone)]
@@ -5108,7 +5183,7 @@ impl PhotosApp {
         let top = selection_y + selection_h;
         // The worker preserves source aspect ratio. A 3:2 shelf avoids the
         // oversized letterbox trays the old 16:10 geometry produced.
-        let preview_h = (card_w * 0.667).clamp(
+        let default_preview_h = (card_w * 0.667).clamp(
             76.0,
             if large_text && self.metadata_editor {
                 // The sheet owns the right side; retain one complete, bounded
@@ -5136,22 +5211,12 @@ impl PhotosApp {
         // The footer has two text lines and an honest 44px action row. Keep
         // it roomy instead of letting desktop density turn controls into
         // loose glyphs or make metadata collide with a filename.
-        let card_h = preview_h
-            + if large_text {
-                96.0
-            } else if desktop_library {
-                // The timeline is photography first.  Names sit in a small
-                // caption band; the editing controls appear only on hover,
-                // focus, or selection rather than consuming every tile.
-                32.0
-            } else {
-                // Compact cards show a filename, one concise provenance
-                // line, and three independent 44px actions. Give those
-                // separate vertical lanes; the former 76px footer made the
-                // metadata baseline collide with Details/Delete/Favorite.
-                106.0
-            };
-        let rows = ((bounds.y1 - top - f64::from(PAD)).max(0.0) / (card_h + gap)).floor() as usize;
+        // Cards are photographs in every responsive mode.  A compact screen
+        // opens a card directly or enters selection; it never trades half a
+        // tile for a filename and three permanent action buttons.
+        let default_card_h = default_preview_h;
+        let rows =
+            ((bounds.y1 - top - f64::from(PAD)).max(0.0) / (default_card_h + gap)).floor() as usize;
         // The index speaks in chronological *rows*, the exact continuous
         // coordinate used by the virtualised timeline. It is not derived from
         // `library_items.len()`: that is just the 120-item materialisation
@@ -5180,9 +5245,8 @@ impl PhotosApp {
             // immediate while keeping rendering and thumbnail decoding bounded.
             timeline_virtual_range(self.library_items.len(), 0, rows, columns).len()
         };
-        // The timeline itself may be fractionally translated by a wheel or
-        // trackpad. Clip that moving content to the measured canvas region so
-        // a fast scroll can never paint over the search/header or status bar.
+        // Clip the moving content to the measured canvas region so a fast
+        // scroll can never paint over the search/header or status bar.
         let timeline_clip = Rect::new(bounds.x0, top, bounds.x1, bounds.y1);
         scene.push_layer(
             Fill::NonZero,
@@ -5191,25 +5255,51 @@ impl PhotosApp {
             transform,
             &timeline_clip,
         );
-        let mut timeline_y =
-            top - (self.timeline_scroll_row - self.timeline_scroll_row.floor()) * (card_h + gap);
-        let mut timeline_column = columns;
+        // The canonical scroll anchor is an item offset. Do not apply the old
+        // fixed-row fractional translation to justified rows: it could bisect
+        // a variable-height row and orphan its date heading.
+        let mut timeline_y = top;
+        let timeline_left = bounds.x0 + f64::from(PAD);
+        let timeline_width = bounds.x1 - f64::from(PAD) - 18.0 - timeline_left;
+        let timeline_layout = if desktop_library {
+            justified_timeline_layout(
+                &self.library_items[..visible],
+                timeline_width.max(44.0),
+                default_preview_h,
+                gap,
+            )
+        } else {
+            // Phone and 200% layouts use one full-width photo per row. This
+            // keeps portrait cards above the 44px interaction minimum and
+            // avoids putting the old footer/actions inside a narrow row.
+            self.library_items[..visible]
+                .iter()
+                .map(|item| TimelineItemLayout {
+                    width: timeline_width.max(44.0),
+                    height: (timeline_width / item.aspect_ratio.clamp(0.35, 3.0))
+                        .clamp(140.0, 420.0),
+                    row_start: true,
+                    row_end: true,
+                })
+                .collect()
+        };
+        let mut timeline_x = timeline_left;
         let mut previous_day = String::new();
         let mut painted_items = 0usize;
-        for item in self.library_items.iter().take(visible) {
+        for (item, item_layout) in self
+            .library_items
+            .iter()
+            .take(visible)
+            .zip(timeline_layout.iter().copied())
+        {
             let id = &item.id;
             let name = &item.name;
             let favorite = item.favorite;
-            if item.captured_at != previous_day {
-                let group_top = timeline_y
-                    + if timeline_column == columns {
-                        0.0
-                    } else {
-                        card_h + gap
-                    };
+            if item_layout.row_start && item.captured_at != previous_day {
+                let group_top = timeline_y;
                 // Do not leave an orphan date label at the bottom of a
                 // viewport; every heading earns room for its first photo.
-                if group_top + 34.0 + card_h > bounds.y1 - f64::from(PAD) {
+                if group_top + 34.0 + default_card_h > bounds.y1 - f64::from(PAD) {
                     break;
                 }
                 timeline_y = group_top;
@@ -5237,16 +5327,24 @@ impl PhotosApp {
                     &Rect::new(day_rule.x0 + 148.0, day_rule.y0, day_rule.x1, day_rule.y1),
                 );
                 timeline_y += 34.0;
-                timeline_column = 0;
+                timeline_x = timeline_left;
                 previous_day.clone_from(&item.captured_at);
             }
-            if timeline_y + card_h > bounds.y1 - f64::from(PAD) {
+            // The desktop timeline reserves no artificial 3:2 tray.  Its
+            // width stays predictable for scrolling while every item's
+            // height is derived from document-owned intrinsic dimensions.
+            // This is stable before pixels hydrate, so decoded images never
+            // reflow the chronology under a user's pointer.
+            let card_w = item_layout.width;
+            let item_preview_h = item_layout.height;
+            let item_card_h = item_preview_h;
+            if timeline_y + item_card_h > bounds.y1 - f64::from(PAD) {
                 break;
             }
-            let x = bounds.x0 + f64::from(PAD) + timeline_column as f64 * (card_w + gap);
+            let x = timeline_x;
             let y = timeline_y;
-            let card = Rect::new(x, y, x + card_w, y + card_h);
-            let preview = Rect::new(x, y, x + card_w, y + preview_h);
+            let card = Rect::new(x, y, x + card_w, y + item_card_h);
+            let preview = Rect::new(x, y, x + card_w, y + item_preview_h);
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -5294,30 +5392,23 @@ impl PhotosApp {
                     1.5,
                 );
             }
-            let footer = Rect::new(card.x0, preview.y1, card.x1, card.y1);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.raised,
-                None,
-                &footer,
-            );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.border_standard,
-                None,
-                &Rect::new(footer.x0, footer.y0, footer.x1, footer.y0 + 1.0),
-            );
             let action_y = card.y1 - LIBRARY_ACTION_H;
             let control_w = LIBRARY_ACTION_H;
-            let details = Rect::new(
-                card.x0 + 8.0,
-                action_y,
-                (card.x0 + if desktop_library { 136.0 } else { 108.0 })
-                    .min(card.x1 - control_w * 2.0),
-                card.y1,
-            );
+            let details = if desktop_library {
+                Rect::new(
+                    card.x1 - control_w * 3.0,
+                    action_y,
+                    card.x1 - control_w * 2.0,
+                    card.y1,
+                )
+            } else {
+                Rect::new(
+                    card.x0 + 8.0,
+                    action_y,
+                    (card.x0 + 108.0).min(card.x1 - control_w * 2.0),
+                    card.y1,
+                )
+            };
             let remove = Rect::new(
                 card.x1 - control_w * 2.0,
                 action_y,
@@ -5334,42 +5425,30 @@ impl PhotosApp {
                     .floor()
                     .max(8.0) as usize,
             );
-            text_renderer.draw_text_weighted(
-                scene,
-                &display_name,
-                if desktop_library { 14.0 } else { 13.0 },
-                theme.text_primary,
-                transform
-                    * Affine::translate((x + 9.0, preview.y1 + if large_text { 8.0 } else { 9.0 })),
-                Some((card_w - 18.0) as f32),
-                TextWeight::Medium,
-            );
-            if !desktop_library && !large_text && !item.metadata.is_empty() {
-                let metadata = compact_label(
-                    &item.metadata,
-                    ((card_w - 18.0) / if large_text { 14.0 } else { 6.5 })
-                        .floor()
-                        .max(12.0) as usize,
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    &metadata,
-                    if desktop_library { 12.0 } else { 11.0 },
-                    theme.text_dim,
-                    transform
-                        * Affine::translate((
-                            x + 9.0,
-                            preview.y1 + if large_text { 34.0 } else { 29.0 },
-                        )),
-                    Some((card_w - 18.0) as f32),
-                    TextWeight::Regular,
-                );
-            }
-            if !self.album_editor && !self.selection_mode {
-                if !desktop_library || card.contains(self.pointer) {
+            if desktop_library && !self.album_editor && !self.selection_mode {
+                if card.contains(self.pointer) {
                     // Desktop controls are deliberately transient: the
                     // photograph remains the dominant surface until someone
                     // intends to act on it.
+                    if desktop_library {
+                        let overlay = Rect::new(card.x0, action_y, card.x1, card.y1);
+                        scene.fill(
+                            Fill::NonZero,
+                            transform,
+                            theme.tokens.colors.neutral[0].with_alpha(0.78),
+                            None,
+                            &overlay,
+                        );
+                        text_renderer.draw_text_weighted(
+                            scene,
+                            &display_name,
+                            12.0,
+                            theme.text_primary,
+                            transform * Affine::translate((card.x0 + 10.0, action_y + 16.0)),
+                            Some((card.width() - control_w * 3.0 - 18.0).max(1.0) as f32),
+                            TextWeight::Medium,
+                        );
+                    }
                     for (target, active) in [
                         (details, details.contains(self.pointer)),
                         (remove, remove.contains(self.pointer)),
@@ -5392,22 +5471,13 @@ impl PhotosApp {
                             ),
                         );
                     }
-                    text_renderer.draw_text_weighted(
-                        scene,
-                        "Details",
-                        12.0,
-                        theme.tokens.colors.accent[6],
-                        transform * Affine::translate((details.x0 + 28.0, details.y0 + 15.0)),
-                        Some((details.width() - 30.0) as f32),
-                        TextWeight::Medium,
-                    );
                     draw_icon(
                         scene,
                         transform,
                         Rect::new(
-                            details.x0 + 10.0,
+                            details.center().x - 8.0,
                             details.y0 + 16.0,
-                            details.x0 + 26.0,
+                            details.center().x + 8.0,
                             details.y0 + 32.0,
                         ),
                         Icon::Pencil,
@@ -5478,10 +5548,11 @@ impl PhotosApp {
             }
             self.library_cards.push((id.clone(), card, favorite));
             painted_items += 1;
-            timeline_column += 1;
-            if timeline_column == columns {
-                timeline_y += card_h + gap;
-                timeline_column = 0;
+            if item_layout.row_end {
+                timeline_y += item_card_h + gap;
+                timeline_x = timeline_left;
+            } else {
+                timeline_x += card_w + gap;
             }
         }
         // Never leave a short final viewport looking like a failed virtual
@@ -5493,14 +5564,9 @@ impl PhotosApp {
             || (self.timeline_index_markers.len() == 1
                 && self.library_items.len() == self.library_total
                 && self.library_items.len() < visible
-                && timeline_column == 0);
+                && (timeline_x - timeline_left).abs() < f64::EPSILON);
         if can_summarise {
-            let summary_y = timeline_y
-                + if timeline_column == 0 {
-                    2.0
-                } else {
-                    card_h + gap + 2.0
-                };
+            let summary_y = timeline_y + 2.0;
             let summary_bottom = (summary_y + 122.0).min(bounds.y1 - f64::from(PAD));
             if summary_bottom - summary_y >= 82.0 {
                 let summary = Rect::new(
@@ -7730,8 +7796,9 @@ impl PhotosApp {
         }
     }
 
-    /// Keep thumbnail work to one small queued item per synchronization. The
-    /// worker, rather than this method, may read a file or decode bytes.
+    /// Fill the small bounded worker queue each synchronization. This keeps
+    /// decoding off the UI thread while avoiding a 24-frame wait for a single
+    /// visible shelf to become useful after a scroll or first library open.
     fn schedule_library_thumbnail(&mut self, sources: Vec<LibraryPhoto>, document_changed: bool) {
         let ids: Vec<_> = sources.iter().map(|photo| photo.id.clone()).collect();
         if document_changed || ids != self.thumbnail_visible_ids {
@@ -7760,20 +7827,20 @@ impl PhotosApp {
         else {
             return;
         };
-        let Some(photo) = sources.into_iter().find(|photo| {
+        for photo in sources.into_iter().filter(|photo| {
             !self.library_thumbnails.contains_key(&photo.id)
                 && !self.thumbnail_unavailable.contains(&photo.id)
                 && !self.thumbnail_queued.contains(&photo.id)
-        }) else {
-            return;
-        };
-        let id = photo.id.clone();
-        let job = ThumbnailJob {
-            generation,
-            id: id.clone(),
-            image: photo.image,
-        };
-        if tx.try_send(job).is_ok() {
+        }) {
+            let id = photo.id.clone();
+            let job = ThumbnailJob {
+                generation,
+                id: id.clone(),
+                image: photo.image,
+            };
+            if tx.try_send(job).is_err() {
+                break;
+            }
             self.thumbnail_queued.insert(id);
         }
     }
@@ -8288,11 +8355,18 @@ impl Widget for PhotosApp {
                 id: photo.id.clone(),
                 name: photo.image.name.clone(),
                 favorite: photo.favorite,
-                metadata: photo.metadata_card_summary(),
                 captured_at: photo
                     .captured_at
                     .as_deref()
                     .map_or_else(|| "Undated".to_owned(), capture_day),
+                aspect_ratio: if photo.image.width > 0 && photo.image.height > 0 {
+                    f64::from(photo.image.width) / f64::from(photo.image.height)
+                } else {
+                    // Legacy path-only records did not retain dimensions.
+                    // Keep their geometry stable without pretending to know
+                    // the original aspect ratio.
+                    1.5
+                },
             })
             .collect();
         // A timeline reads newest-first.  The id tie-breaker makes peers with
@@ -9294,6 +9368,8 @@ impl Widget for PhotosApp {
             if self.selection_mode {
                 self.toggle_library_selection(&photo_id, modifiers.state().shift_key());
             } else if !self.album_editor
+                && !self.large_text_toolbar
+                && self.canvas_rect.width() >= 720.0
                 && self.pointer.y >= card.y1 - 44.0
                 && self.pointer.x >= card.x1 - 88.0
             {
@@ -9657,6 +9733,35 @@ mod tests {
     }
 
     #[test]
+    fn justified_timeline_preserves_aspects_and_never_crosses_a_day() {
+        let item = |id: &str, day: &str, aspect_ratio| LibraryItem {
+            id: id.into(),
+            name: id.into(),
+            favorite: false,
+            captured_at: day.into(),
+            aspect_ratio,
+        };
+        let items = vec![
+            item("wide", "2026-06-18", 2.0),
+            item("portrait", "2026-06-18", 0.5),
+            item("square", "2026-06-18", 1.5),
+            item("next-day", "2026-06-17", 1.5),
+        ];
+        let layout = justified_timeline_layout(&items, 600.0, 160.0, 12.0);
+        assert_eq!(layout.len(), items.len());
+        assert!(layout[0].row_start);
+        assert!(layout[2].row_end);
+        assert!(layout[3].row_start && layout[3].row_end);
+        let first_day_width = layout[..3].iter().map(|entry| entry.width).sum::<f64>() + 24.0;
+        assert!((first_day_width - 600.0).abs() <= 1.0);
+        assert!(
+            layout
+                .iter()
+                .all(|entry| entry.width >= 44.0 && entry.height >= 76.0)
+        );
+    }
+
+    #[test]
     fn density_reanchors_the_same_first_photo() {
         let mut app = PhotosApp::new();
         app.canvas_rect = Rect::new(0.0, 0.0, 1_440.0, 800.0);
@@ -9689,22 +9794,22 @@ mod tests {
                 id: "new".into(),
                 name: "new".into(),
                 favorite: false,
-                metadata: String::new(),
                 captured_at: "2026-02-03".into(),
+                aspect_ratio: 1.5,
             },
             LibraryItem {
                 id: "same-day".into(),
                 name: "same-day".into(),
                 favorite: false,
-                metadata: String::new(),
                 captured_at: "2026-02-03".into(),
+                aspect_ratio: 1.5,
             },
             LibraryItem {
                 id: "old".into(),
                 name: "old".into(),
                 favorite: false,
-                metadata: String::new(),
                 captured_at: "2025-12-31".into(),
+                aspect_ratio: 1.5,
             },
         ];
         let markers = timeline_index_markers(&items, 2);
@@ -10473,7 +10578,7 @@ mod tests {
     }
 
     #[test]
-    fn a_large_library_schedules_only_one_background_thumbnail_at_a_time() {
+    fn a_large_library_fills_a_bounded_background_thumbnail_queue() {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
@@ -10491,8 +10596,9 @@ mod tests {
         app.sync(&mut doc, &ROOT);
 
         assert_eq!(app.thumbnail_visible_ids.len(), 24);
-        assert!(app.thumbnail_queued.len() <= 1);
-        assert!(app.library_thumbnails.len() <= 1);
+        assert!(app.thumbnail_queued.len() <= THUMBNAIL_QUEUE_LIMIT);
+        assert!(app.thumbnail_queued.len() >= 2);
+        assert!(app.library_thumbnails.len() <= THUMBNAIL_QUEUE_LIMIT);
         assert!(
             app.thumbnail_generation
                 .is_some_and(|generation| generation > 0)
