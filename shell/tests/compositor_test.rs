@@ -204,12 +204,12 @@ fn clean_exit_removes_runtime_endpoints_and_allows_canonical_rebind() {
         );
     };
     let assert_clean = || {
-        let qos_session = runtime.path().join("tilo-session");
+        let tilo_session = runtime.path().join("tilo-session");
         assert!(
-            !qos_session.join("wayland-display").exists(),
+            !tilo_session.join("wayland-display").exists(),
             "wayland-display marker survived clean compositor exit"
         );
-        for root in [runtime.path(), qos_session.as_path()] {
+        for root in [runtime.path(), tilo_session.as_path()] {
             if !root.exists() {
                 continue;
             }

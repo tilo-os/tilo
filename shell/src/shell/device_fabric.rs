@@ -2746,7 +2746,7 @@ mod tests {
                 PersonalFabricAction::RealtimeOffer {
                     offer: crate::shell::realtime_session::RealtimeFabricOffer {
                         session_id: realtime_id,
-                        app_id: "dev.qos.chat".into(),
+                        app_id: "dev.tilo.chat".into(),
                         workspace_id: "room".into(),
                         provider: "chat".into(),
                         room_id: "call".into(),
@@ -2889,7 +2889,7 @@ mod tests {
                 broker: [1; 16],
                 nonce: [2; 16],
             },
-            app_id: "dev.qos.chat".into(),
+            app_id: "dev.tilo.chat".into(),
             workspace_id: "room".into(),
             provider: "chat".into(),
             room_id: "call-7".into(),

@@ -2164,7 +2164,7 @@ pub fn spawn_launch(
         let stderr_tag = app.package_id.clone();
         let stderr_drain = child.stderr.take().and_then(|stderr| {
             std::thread::Builder::new()
-                .name("qos-app-stderr".to_string())
+                .name("tilo-app-stderr".to_string())
                 .spawn(move || {
                     let mut tail = VecDeque::with_capacity(STDERR_TAIL_LINES);
                     relay_capped_lines(stderr, |line| {

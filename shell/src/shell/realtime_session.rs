@@ -2209,7 +2209,7 @@ mod tests {
         let now = Instant::now();
         let source = device("laptop");
         let target = device("tablet");
-        let app = FakeCallingApp::verified("dev.qos.calls", "work");
+        let app = FakeCallingApp::verified("dev.tilo.calls", "work");
         let mut origin = RealtimeSessionBroker::new();
         let id = origin
             .register(
@@ -2295,7 +2295,7 @@ mod tests {
         let source = device("laptop");
         let target = device("tablet");
         let attacker = device("attacker");
-        let app = FakeCallingApp::verified("dev.qos.calls", "work");
+        let app = FakeCallingApp::verified("dev.tilo.calls", "work");
         let mut origin = RealtimeSessionBroker::new();
         let id = origin
             .register(
@@ -2337,7 +2337,7 @@ mod tests {
         let now = Instant::now();
         let source = device("laptop");
         let target = device("tablet");
-        let app = FakeCallingApp::verified("dev.qos.calls", "work");
+        let app = FakeCallingApp::verified("dev.tilo.calls", "work");
         let source_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
         let target_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
         let source_adapter =
@@ -2451,7 +2451,7 @@ mod tests {
         let source = device("laptop");
         let target = device("tablet");
         let attacker = device("attacker");
-        let app = FakeCallingApp::verified("dev.qos.calls", "work");
+        let app = FakeCallingApp::verified("dev.tilo.calls", "work");
         let source_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
         let target_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
         let source_adapter =
@@ -2543,7 +2543,7 @@ mod tests {
         let now = Instant::now();
         let source = device("laptop");
         let target = device("tablet");
-        let app = FakeCallingApp::verified("dev.qos.calls", "work");
+        let app = FakeCallingApp::verified("dev.tilo.calls", "work");
         let source_broker = Arc::new(Mutex::new(RealtimeSessionBroker::with_limits(
             4,
             Duration::from_secs(60),
