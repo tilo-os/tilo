@@ -4,20 +4,21 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Verified, content-addressed local-model runtime service for qOS."
+description = "Verified, content-addressed local-model runtime service for Tilo."
 
 [lib]
 name = "local_model_service"
 path = "src/lib.rs"
 
 [[bin]]
-name = "qos-model-manager"
+name = "tilo-model-manager"
 path = "src/main.rs"
 
 [dependencies]
 agent-provider-config = { path = "../provider-config" }
 system-extension = { path = "../../system/system-extension" }
 atomic-file = { path = "../../system/atomic-file" }
+bounded-command = { path = "../../system/bounded-command" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -27,6 +28,7 @@ reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
 clap.workspace = true
 ed25519-dalek.workspace = true
 libc.workspace = true
+zeroize.workspace = true
 tar.workspace = true
 zstd.workspace = true
 

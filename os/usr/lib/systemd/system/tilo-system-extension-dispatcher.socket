@@ -1,0 +1,19 @@
+[Unit]
+Description=Tilo fixed-verb system-extension request socket
+Documentation=file:///usr/share/doc/tilo/system-extensions.md
+After=systemd-tmpfiles-setup.service
+Before=sockets.target
+
+[Socket]
+ListenStream=/run/tilo/system-extension-api/request.sock
+SocketUser=root
+SocketGroup=tilo-identity
+SocketMode=0660
+DirectoryMode=0750
+Accept=yes
+Backlog=16
+MaxConnections=16
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

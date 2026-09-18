@@ -78,6 +78,9 @@ mod conv;
 mod dcomp;
 mod descriptor;
 mod device;
+mod shader_cache;
+mod shader_cache_key;
+pub use shader_cache::{ShaderCacheEntry, ShaderCacheStats};
 mod device_creation;
 mod instance;
 mod pipeline_desc;
@@ -95,7 +98,6 @@ use hashbrown::HashMap;
 use parking_lot::{Mutex, RwLock};
 use suballocation::Allocator;
 use windows::{
-    core::{Free as _, Interface},
     Win32::{
         Foundation,
         Graphics::{
@@ -105,6 +107,7 @@ use windows::{
         },
         System::Threading,
     },
+    core::{Free as _, Interface},
 };
 
 use self::dcomp::DCompLib;
@@ -644,7 +647,10 @@ impl Surface {
 #[derive(Debug, Clone, Copy)]
 enum MemoryArchitecture {
     Unified {
-        #[allow(unused)]
+        #[allow(
+            unused,
+            reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+        )]
         cache_coherent: bool,
     },
     NonUnified,
@@ -654,7 +660,10 @@ enum MemoryArchitecture {
 struct PrivateCapabilities {
     instance_flags: wgt::InstanceFlags,
     workarounds: Workarounds,
-    #[allow(unused)]
+    #[allow(
+        unused,
+        reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+    )]
     heterogeneous_resource_heaps: bool,
     memory_architecture: MemoryArchitecture,
     heap_create_not_zeroed: bool,
@@ -1194,6 +1203,8 @@ impl crate::DynShaderModule for ShaderModule {}
 pub struct ShaderCache {
     nr_of_shaders_compiled: u32,
     entries: HashMap<ShaderCacheKey, ShaderCacheValue>,
+    imported: HashMap<Vec<u8>, Vec<u8>>,
+    stats: ShaderCacheStats,
 }
 
 #[derive(PartialEq, Eq, Hash)]
@@ -1202,6 +1213,8 @@ pub(super) struct ShaderCacheKey {
     entry_point: String,
     stage: naga::ShaderStage,
     shader_model: naga::back::hlsl::ShaderModel,
+    compiler_flags: u8,
+    source_name: Vec<u8>,
 }
 
 pub(super) struct ShaderCacheValue {
@@ -1216,6 +1229,7 @@ pub(super) enum CompiledShader {
     Dxc(Direct3D::Dxc::IDxcBlob),
     Fxc(Direct3D::ID3DBlob),
     Precompiled(Vec<u8>),
+    Cached(Vec<u8>),
 }
 
 impl CompiledShader {
@@ -1229,10 +1243,12 @@ impl CompiledShader {
                 pShaderBytecode: unsafe { shader.GetBufferPointer() },
                 BytecodeLength: unsafe { shader.GetBufferSize() },
             },
-            CompiledShader::Precompiled(shader) => Direct3D12::D3D12_SHADER_BYTECODE {
-                pShaderBytecode: shader.as_ptr().cast(),
-                BytecodeLength: shader.len(),
-            },
+            CompiledShader::Precompiled(shader) | CompiledShader::Cached(shader) => {
+                Direct3D12::D3D12_SHADER_BYTECODE {
+                    pShaderBytecode: shader.as_ptr().cast(),
+                    BytecodeLength: shader.len(),
+                }
+            }
         }
     }
 }

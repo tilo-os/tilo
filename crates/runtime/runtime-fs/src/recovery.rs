@@ -163,7 +163,7 @@ impl OperationOwner {
         let directory = Dir::from_std_file(opened_storage);
         let writer = rustix::fs::openat(
             &directory,
-            ".qos-operation-writer",
+            ".tilo-operation-writer",
             rustix::fs::OFlags::RDWR
                 | rustix::fs::OFlags::CREATE
                 | rustix::fs::OFlags::NOFOLLOW

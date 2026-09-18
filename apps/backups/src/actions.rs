@@ -9,7 +9,7 @@
 //! whole action surface: a single [`BackupsAction::SetRetention`] that sets one
 //! policy field to an absolute, pre-resolved count. The exact same
 //! [`EncodedAction`] the on-screen +/- affordance dispatches is what Ctrl+K
-//! dispatches — one source of truth, one replay path, undo for free.
+//! dispatches, keeping one source of truth and one replay path.
 //!
 //! Carrying the resolved target (rather than a delta) makes replay order-free:
 //! two replicas at the same heads land on the byte-identical result, and a set
@@ -18,11 +18,11 @@
 
 use automerge::{AutoCommit, ROOT};
 
-use qos_actions::{
+use serde::{Deserialize, Serialize};
+use tilo_actions::{
     Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
     ExecutionLocus, OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
-use serde::{Deserialize, Serialize};
 
 use crate::doc::{BackupsDoc, PolicyField};
 use crate::model::RetentionPolicy;
@@ -83,7 +83,33 @@ fn operation_spec(
     kind: OperationKind,
     operation: &BackupOperation,
 ) -> Option<ActionSpec> {
-    ActionSpec::operation(id, label, kind, BACKUPS_OPERATION_TYPE, operation).ok()
+    let spec = ActionSpec::operation(id, label, kind, BACKUPS_OPERATION_TYPE, operation).ok()?;
+    // A backup is deliberately local to this device.  Its contract must say
+    // more than "effect": agents need to know which calls can be retried and
+    // which one crosses the user's recovery-folder boundary.
+    Some(match operation {
+        BackupOperation::Setup => spec
+            .with_description("Choose a local source and a destination outside it.")
+            .retry_policy(RetryPolicy::AtMostOnce),
+        BackupOperation::BackupNow => spec
+            .with_description("Create one new checksummed local snapshot.")
+            .requiring(tilo_actions::PermissionRequirement::Write)
+            .retry_policy(RetryPolicy::AtMostOnce),
+        BackupOperation::Verify { .. } => spec
+            .with_description("Read every file in this stored snapshot and verify its checksum.")
+            .requiring(tilo_actions::PermissionRequirement::Read)
+            .retry_policy(RetryPolicy::Idempotent),
+        BackupOperation::Restore { .. } => spec
+            .with_description(
+                "Choose a new or empty local folder, then restore and verify the whole snapshot.",
+            )
+            .requiring(tilo_actions::PermissionRequirement::Write)
+            .retry_policy(RetryPolicy::AtMostOnce),
+        BackupOperation::OpenSource { .. }
+        | BackupOperation::OpenDestination { .. }
+        | BackupOperation::OpenSnapshot { .. }
+        | BackupOperation::OpenSchedule { .. } => spec,
+    })
 }
 
 /// Every collaborative operation the Backups app exports on its stored
@@ -101,7 +127,7 @@ pub enum BackupsAction {
     SetRetention { field: PolicyField, count: u32 },
 }
 
-impl qos_actions::Action for BackupsAction {
+impl tilo_actions::Action for BackupsAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
             BackupsAction::SetRetention { field, count } => {
@@ -216,6 +242,24 @@ pub fn provide_resources(
     catalog: &Catalog,
     configured: bool,
 ) -> Vec<Resource> {
+    provide_resources_with_unavailable_reason(policy, catalog, configured, None)
+}
+
+/// As [`provide_resources`], but lets a live local backend surface the reason
+/// an otherwise-saved configuration is unavailable. The public three-argument
+/// form keeps deterministic callers and tests independent of host-only paths.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the complete stable resource hierarchy is intentionally visible together"
+)]
+pub fn provide_resources_with_unavailable_reason(
+    policy: &RetentionPolicy,
+    catalog: &Catalog,
+    configured: bool,
+    unavailable_reason: Option<&str>,
+) -> Vec<Resource> {
+    let unavailable_reason =
+        unavailable_reason.unwrap_or("Choose a source and destination before running a backup");
     let mut root = Resource::new("backups.policy", "backups.policy", "Retention policy");
 
     for field in PolicyField::ALL {
@@ -268,10 +312,7 @@ pub fn provide_resources(
         backups = backups.with_action(if configured {
             spec
         } else {
-            spec.unavailable(
-                "not_configured",
-                "Choose a source and destination before running a backup",
-            )
+            spec.unavailable("not_configured", unavailable_reason)
         });
     }
     if let Some(spec) = operation_spec(
@@ -305,14 +346,14 @@ pub fn provide_resources(
             format!("backups.schedule:{}", source.id),
             "backups.schedule",
             format!(
-                "{} schedule · {}",
+                "{} cadence · {} (observed)",
                 source.kind.label(),
                 source.cadence.label()
             ),
         );
         if let Some(spec) = operation_spec(
             "open",
-            "Show schedule",
+            "Show global retention policy",
             OperationKind::View,
             &BackupOperation::OpenSchedule { source_id },
         ) {
@@ -347,9 +388,14 @@ pub fn provide_resources(
     }
     backups = backups.with_child(destinations);
 
-    let mut snapshots = Resource::new("backups.snapshots", "backups.snapshot-set", "Snapshots");
+    let mut snapshots = Resource::new(
+        "backups.snapshots",
+        "backups.snapshot-set",
+        "Snapshot versions and runs · recent page",
+    );
     for snapshot in catalog.snapshots.iter().take(128) {
-        snapshots = snapshots.with_child(snapshot_resource(snapshot, configured));
+        snapshots =
+            snapshots.with_child(snapshot_resource(snapshot, configured, unavailable_reason));
     }
     backups = backups.with_child(snapshots);
 
@@ -358,7 +404,61 @@ pub fn provide_resources(
     vec![root, backups]
 }
 
-fn snapshot_resource(snapshot: &Snapshot, configured: bool) -> Resource {
+/// Resolve one stable resource without requiring it to be in the contextual
+/// recent-history page. Search result addresses use these ids, so an older
+/// recovery point remains agent-invokable with the same Verify/Restore tree.
+pub fn resource(
+    policy: &RetentionPolicy,
+    catalog: &Catalog,
+    configured: bool,
+    id: &str,
+) -> Option<Resource> {
+    resource_with_unavailable_reason(policy, catalog, configured, id, None)
+}
+
+/// Resolve one resource with the live backend's current unavailable reason.
+/// This keeps a search result's individually-materialized action tree in sync
+/// with the contextual resource page.
+pub fn resource_with_unavailable_reason(
+    policy: &RetentionPolicy,
+    catalog: &Catalog,
+    configured: bool,
+    id: &str,
+    unavailable_reason: Option<&str>,
+) -> Option<Resource> {
+    if id == "backups.policy" || id == "backups" {
+        return provide_resources_with_unavailable_reason(
+            policy,
+            catalog,
+            configured,
+            unavailable_reason,
+        )
+        .into_iter()
+        .find(|resource| resource.id.as_str() == id);
+    }
+    let snapshot_id = id
+        .strip_prefix("backups.snapshot:")
+        .or_else(|| id.strip_prefix("backups.run:"))
+        .or_else(|| id.strip_prefix("backups.restore-target:"))?;
+    let snapshot = catalog
+        .snapshots
+        .iter()
+        .find(|snapshot| snapshot.id == snapshot_id)?;
+    let snapshot_resource = snapshot_resource(
+        snapshot,
+        configured,
+        unavailable_reason.unwrap_or("This local repository is not configured on this device"),
+    );
+    if id.starts_with("backups.snapshot:") {
+        return Some(snapshot_resource);
+    }
+    snapshot_resource
+        .children
+        .into_iter()
+        .find(|child| child.id.as_str() == id)
+}
+
+fn snapshot_resource(snapshot: &Snapshot, configured: bool, unavailable_reason: &str) -> Resource {
     let mut resource = Resource::new(
         format!("backups.snapshot:{}", snapshot.id),
         "backups.snapshot",
@@ -390,10 +490,7 @@ fn snapshot_resource(snapshot: &Snapshot, configured: bool) -> Resource {
         resource = resource.with_action(if configured {
             spec
         } else {
-            spec.unavailable(
-                "not_configured",
-                "This local repository is not configured on this device",
-            )
+            spec.unavailable("not_configured", unavailable_reason)
         });
     }
     if let Some(spec) = operation_spec(
@@ -407,12 +504,52 @@ fn snapshot_resource(snapshot: &Snapshot, configured: bool) -> Resource {
         resource = resource.with_action(if configured {
             spec
         } else {
-            spec.unavailable(
-                "not_configured",
-                "This local repository is not configured on this device",
-            )
+            spec.unavailable("not_configured", unavailable_reason)
         });
     }
+    let mut run = Resource::new(
+        format!("backups.run:{}", snapshot.id),
+        "backups.run",
+        format!(
+            "Completed {} run · {}",
+            snapshot.kind.label(),
+            snapshot.time
+        ),
+    );
+    if let Some(spec) = operation_spec(
+        "open",
+        "Show run result",
+        OperationKind::View,
+        &BackupOperation::OpenSnapshot {
+            snapshot_id: snapshot.id.clone(),
+        },
+    ) {
+        run = run.with_action(spec);
+    }
+    resource = resource.with_child(run);
+    // The selected folder is an explicit child resource rather than an
+    // unspoken side effect of Restore.  This gives palette/agent users the
+    // same truthful "new or empty folder" contract the restore sheet shows.
+    let mut restore_target = Resource::new(
+        format!("backups.restore-target:{}", snapshot.id),
+        "backups.restore-target",
+        "Restore target · choose a new or empty local folder",
+    );
+    if let Some(spec) = operation_spec(
+        "restore",
+        "Restore into a new or empty folder…",
+        OperationKind::Effect,
+        &BackupOperation::Restore {
+            snapshot_id: snapshot.id.clone(),
+        },
+    ) {
+        restore_target = restore_target.with_action(if configured {
+            spec
+        } else {
+            spec.unavailable("not_configured", unavailable_reason)
+        });
+    }
+    resource = resource.with_child(restore_target);
     resource
 }
 
@@ -420,10 +557,21 @@ impl ResourceProvider for crate::app::BackupsApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         // Level-triggered: recomputed each frame from the document, the source of
         // truth every action reads and writes.
-        provide_resources(
+        provide_resources_with_unavailable_reason(
             &BackupsDoc::policy(doc, &ROOT),
             self.resource_catalog(),
             self.is_configured(),
+            self.unavailable_reason(),
+        )
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        resource_with_unavailable_reason(
+            &BackupsDoc::policy(doc, &ROOT),
+            self.resource_catalog(),
+            self.is_configured(),
+            id,
+            self.unavailable_reason(),
         )
     }
 }
@@ -433,7 +581,7 @@ mod tests {
     use super::*;
     use crate::app::BackupsApp;
     use crate::model::Catalog;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, Availability, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -498,7 +646,7 @@ mod tests {
         assert!(d_actions.contains(&"decrement"), "{d_actions:?}");
 
         // The flattened tree exports every action across all four classes.
-        let flat: Vec<&str> = qos_actions::flatten(&resources)
+        let flat: Vec<&str> = tilo_actions::flatten(&resources)
             .iter()
             .map(|f| f.action.label.as_str())
             .collect();
@@ -593,6 +741,92 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_repository_reason_reaches_the_canonical_backup_action() {
+        let reason = "The saved backup location is unavailable. Choose another location.";
+        let resources = provide_resources_with_unavailable_reason(
+            &RetentionPolicy::default(),
+            &Catalog::empty(),
+            false,
+            Some(reason),
+        );
+        let workspace = resources
+            .iter()
+            .find(|resource| resource.id.as_str() == "backups")
+            .expect("backups workspace resource");
+        let backup = workspace
+            .actions
+            .iter()
+            .find(|action| action.id == "backup-now")
+            .expect("backup action");
+        assert!(matches!(
+            &backup.contract.availability,
+            Availability::Unavailable { reason: actual, .. } if actual == reason
+        ));
+    }
+
+    #[test]
+    fn local_effects_publish_honest_retry_risk_and_restore_target_contracts() {
+        let resources = provide_resources(&RetentionPolicy::default(), &Catalog::sample(), true);
+        let workspace = resources
+            .iter()
+            .find(|resource| resource.kind == "backups.workspace")
+            .expect("backup workspace root");
+        let snapshots = workspace
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == "backups.snapshots")
+            .expect("snapshot collection");
+        let backup_now = workspace
+            .actions
+            .iter()
+            .find(|action| action.id == "backup-now")
+            .expect("backup action");
+        assert_eq!(
+            backup_now.contract.permission,
+            tilo_actions::PermissionRequirement::Write
+        );
+        let snapshot = snapshots.children.first().expect("sample snapshot");
+        let verify = snapshot
+            .actions
+            .iter()
+            .find(|action| action.id == "verify")
+            .expect("verify action");
+        assert_eq!(verify.contract.retry, RetryPolicy::Idempotent);
+        assert_eq!(
+            verify.contract.permission,
+            tilo_actions::PermissionRequirement::Read
+        );
+        let restore = snapshot
+            .actions
+            .iter()
+            .find(|action| action.id == "restore")
+            .expect("restore action");
+        assert_eq!(restore.contract.risk, tilo_actions::RiskLevel::Low);
+        assert_eq!(
+            restore.contract.permission,
+            tilo_actions::PermissionRequirement::Write
+        );
+        assert!(
+            restore.contract.validate_declaration().is_empty(),
+            "the empty-target restore contract has no misleading confirmation"
+        );
+        let target = snapshot
+            .children
+            .iter()
+            .find(|child| child.kind == "backups.restore-target")
+            .expect("explicit restore target resource");
+        assert!(target.label.contains("new or empty"));
+        assert_eq!(target.actions.len(), 1);
+        assert!(
+            snapshot
+                .children
+                .iter()
+                .any(|child| child.kind == "backups.run"),
+            "every stored version exposes its completed run in the history tree"
+        );
+    }
+
+    #[test]
     fn action_records_one_undo_boundary_and_reverts() {
         let mut app = BackupsApp::new();
         let mut state = ui::State::new();
@@ -606,7 +840,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -645,8 +879,8 @@ mod tests {
         let action = set_retention_action(PolicyField::Monthly, was + 6);
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -676,7 +910,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         assert_eq!(doc.get_heads(), before, "a no-change set changed nothing");
     }

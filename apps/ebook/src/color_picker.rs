@@ -10,6 +10,7 @@ use vello::peniko::Color;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
+use crate::input_controls::InputPaintCtx;
 use crate::model::{hex_string, hsv_to_rgb, rgb_to_hsv};
 use crate::paint;
 
@@ -29,6 +30,19 @@ pub(super) struct ColorEdit {
 enum DragPart {
     Sv,
     Hue,
+}
+
+struct SvHueLayout {
+    x0: f64,
+    x1: f64,
+    top: f64,
+    size: f64,
+}
+
+struct PickerRow {
+    x0: f64,
+    x1: f64,
+    y: f64,
 }
 
 #[derive(Clone)]
@@ -290,7 +304,15 @@ impl ColorPicker {
         let preview_y = top + 206.0;
         draw_preview(scene, transform, text, colors, ix0, preview_y, &pick);
         self.draw_chips(scene, transform, theme, ix0, ix1, preview_y + 46.0, cursor);
-        self.draw_buttons(scene, transform, text, theme, ix1, y + height - 46.0, cursor);
+        self.draw_buttons(
+            scene,
+            transform,
+            text,
+            theme,
+            ix1,
+            y + height - 46.0,
+            cursor,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -379,10 +401,6 @@ impl ColorPicker {
         );
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw context plus chip row geometry"
-    )]
     fn draw_chips(
         &mut self,
         scene: &mut Scene,

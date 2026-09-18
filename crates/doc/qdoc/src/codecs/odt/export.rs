@@ -1398,13 +1398,13 @@ mod tests {
         let mut d = Document::new();
         let id = d.insert_block(None, "paragraph");
         d.splice_text(&id, 0, 0, "go home now");
-        d.as_mut().add_mark(&id, 3, 7, "link", "https://qos.dev/");
+        d.as_mut().add_mark(&id, 3, 7, "link", "https://tilo.dev/");
 
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let c = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
         assert!(
-            content.contains(r#"<text:a xlink:href="https://qos.dev/">home</text:a>"#),
+            content.contains(r#"<text:a xlink:href="https://tilo.dev/">home</text:a>"#),
             "exported a text:a element: {content}"
         );
 
@@ -1418,7 +1418,7 @@ mod tests {
             .find(|m| m.name == "link")
             .expect("link survives round-trip");
         assert_eq!((link.start, link.end), (3, 7), "{:?}", b.marks);
-        assert_eq!(link.value, MarkValue::Str("https://qos.dev/".into()));
+        assert_eq!(link.value, MarkValue::Str("https://tilo.dev/".into()));
     }
 
     #[test]
@@ -2818,7 +2818,7 @@ mod tests {
             original_styles.as_slice(),
             "segmented styles.xml re-emits byte-for-byte"
         );
-        // It really is stored segmented (two style atoms are addressable).
+        // The part is stored as two addressable style atoms.
         let r = d.as_ref();
         assert!(
             crate::model::preserved_atoms(r.doc, r.c, "odt/part/styles.xml").len() >= 2,
@@ -2826,10 +2826,9 @@ mod tests {
         );
     }
 
-    /// THE convergence win, through the real `.odt` codec path: two replicas import
-    /// the same document, each rewrites a DIFFERENT preserved style atom, merge —
-    /// and BOTH edits survive in the exported `styles.xml`. Under the old whole-part
-    /// `Bytes` scalar this clobbered (last-writer-wins on the entire part).
+    /// Two replicas import the same document, each rewrites a different
+    /// preserved style atom, and both edits survive in the exported
+    /// `styles.xml`. A whole-part `Bytes` scalar would overwrite the other edit.
     #[test]
     fn different_preserved_atom_edits_converge_through_codec() {
         let odt = odt_with_two_style_atoms();

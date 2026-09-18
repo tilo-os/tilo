@@ -16,12 +16,12 @@ for tool in gpg rpmkeys; do
 done
 
 case $arches in
-    # Nine package artifacts plus the native OS payload pair, four public
+    # Ten package artifacts plus the native OS payload pair, four public
     # RPM-key trust artifacts, and the maintained verified repo definition.
     # ARM adds its package/payload set, but only the x86 lane publishes the
     # duplicate-free key and repo trust bundle.
-    amd64) expected_count=17 ;;
-    amd64,arm64) expected_count=24 ;;
+    amd64) expected_count=18 ;;
+    amd64,arm64) expected_count=26 ;;
     *) echo "unsupported release architecture set: $arches" >&2; exit 2 ;;
 esac
 
@@ -39,13 +39,13 @@ expect_one() {
 
 # Ubuntu 24.04 and Debian 13 are separate ABI/package-manager build roots.
 for distro_revision in 1+ubuntu24.04 1+deb13; do
-    expect_one "qos-session_${version}-${distro_revision}_amd64.deb"
-    expect_one "qos-session-devel_${version}-${distro_revision}_all.deb"
+    expect_one "tilo-session_${version}-${distro_revision}_amd64.deb"
+    expect_one "tilo-session-devel_${version}-${distro_revision}_all.deb"
     if [[ $arches == amd64,arm64 ]]; then
-        expect_one "qos-session_${version}-${distro_revision}_arm64.deb"
+        expect_one "tilo-session_${version}-${distro_revision}_arm64.deb"
     fi
 done
-for name in qos-session qos-session-devel; do
+for name in tilo-session tilo-session-devel; do
     expect_one "${name}-${version}-1.fc44.x86_64.rpm"
     expect_one "${name}-${version}-1-x86_64.pkg.tar.zst"
     if [[ $arches == amd64,arm64 ]]; then
@@ -53,45 +53,49 @@ for name in qos-session qos-session-devel; do
         expect_one "${name}-${version}-1-aarch64.pkg.tar.zst"
     fi
 done
-expect_one "qos-session-amd64.nar.gz"
+expect_one "tilo-session-amd64.nar.gz"
+expect_one "tilo-session-apps-${version}-1.fc44.x86_64.rpm"
 if [[ $arches == amd64,arm64 ]]; then
-    expect_one "qos-session-arm64.nar.gz"
+    expect_one "tilo-session-apps-${version}-1.fc44.aarch64.rpm"
+fi
+if [[ $arches == amd64,arm64 ]]; then
+    expect_one "tilo-session-arm64.nar.gz"
 fi
 for payload_arch in x86_64; do
-    expect_one "qos-desktop-os-${payload_arch}.tar.gz"
-    expect_one "qos-desktop-os-${payload_arch}.tar.gz.sha256"
+    expect_one "tilo-desktop-os-${payload_arch}.tar.gz"
+    expect_one "tilo-desktop-os-${payload_arch}.tar.gz.sha256"
 done
 if [[ $arches == amd64,arm64 ]]; then
-    expect_one "qos-desktop-os-aarch64.tar.gz"
-    expect_one "qos-desktop-os-aarch64.tar.gz.sha256"
+    expect_one "tilo-desktop-os-aarch64.tar.gz"
+    expect_one "tilo-desktop-os-aarch64.tar.gz.sha256"
 fi
-for key_artifact in qos-rpm-signing-key.asc qos-rpm-signing-key.fingerprint \
-                    qos-rpm-signing-key.asc.sha256 qos-rpm-signing-key.fingerprint.sha256; do
+for key_artifact in tilo-rpm-signing-key.asc tilo-rpm-signing-key.fingerprint \
+                    tilo-rpm-signing-key.asc.sha256 tilo-rpm-signing-key.fingerprint.sha256; do
     expect_one "$key_artifact"
 done
 (cd "$release_dir" && sha256sum --check --strict \
-    qos-rpm-signing-key.asc.sha256 qos-rpm-signing-key.fingerprint.sha256)
-expect_one qos-fedora-44.repo
-expect_one qos-fedora-44.repo.sha256
-(cd "$release_dir" && sha256sum --check --strict qos-fedora-44.repo.sha256)
-fingerprint=$(tr -d '[:space:]' <"$release_dir/qos-rpm-signing-key.fingerprint")
+    tilo-rpm-signing-key.asc.sha256 tilo-rpm-signing-key.fingerprint.sha256)
+expect_one tilo-fedora-44.repo
+expect_one tilo-fedora-44.repo.sha256
+(cd "$release_dir" && sha256sum --check --strict tilo-fedora-44.repo.sha256)
+fingerprint=$(tr -d '[:space:]' <"$release_dir/tilo-rpm-signing-key.fingerprint")
 [[ $fingerprint =~ ^[A-Fa-f0-9]{40}$|^[A-Fa-f0-9]{64}$ ]] || {
     echo "RPM release key fingerprint is malformed" >&2
     exit 1
 }
 fingerprint=${fingerprint^^}
-rpm_keyring=$(mktemp -d /var/tmp/qos-rpm-release-keyring.XXXXXX)
-gpg_home=$(mktemp -d /var/tmp/qos-rpm-release-gpg.XXXXXX)
-expected_repo=$(mktemp /var/tmp/qos-fedora-44.expected.XXXXXX)
+rpm_keyring=$(mktemp -d /var/tmp/tilo-rpm-release-keyring.XXXXXX)
+gpg_home=$(mktemp -d /var/tmp/tilo-rpm-release-gpg.XXXXXX)
+expected_repo=$(mktemp /var/tmp/tilo-fedora-44.expected.XXXXXX)
 repo_generator=$(dirname "${BASH_SOURCE[0]}")/../rpm/make-repo-file.sh
 trap 'find "$rpm_keyring" "$gpg_home" -depth -delete; rm -f -- "$expected_repo"' EXIT
 chmod 0700 "$rpm_keyring" "$gpg_home"
 "$repo_generator" "$version" "$expected_repo"
-cmp -- "$expected_repo" "$release_dir/qos-fedora-44.repo" || {
+cmp -- "$expected_repo" "$release_dir/tilo-fedora-44.repo" || {
     echo "RPM release repo definition is not the maintained versioned definition" >&2
     exit 1
 }
-GNUPGHOME="$gpg_home" gpg --batch --import "$release_dir/qos-rpm-signing-key.asc" >/dev/null 2>&1
+GNUPGHOME="$gpg_home" gpg --batch --import "$release_dir/tilo-rpm-signing-key.asc" >/dev/null 2>&1
 mapfile -t key_fingerprints < <(
     GNUPGHOME="$gpg_home" gpg --batch --with-colons --fingerprint 2>/dev/null \
         | awk -F: '$1 == "fpr" { print toupper($10) }'
@@ -110,7 +114,7 @@ if GNUPGHOME="$gpg_home" gpg --batch --with-colons --list-secret-keys 2>/dev/nul
     echo "RPM release key artifact contains private key material" >&2
     exit 1
 fi
-rpmkeys --dbpath "$rpm_keyring" --import "$release_dir/qos-rpm-signing-key.asc" >/dev/null
+rpmkeys --dbpath "$rpm_keyring" --import "$release_dir/tilo-rpm-signing-key.asc" >/dev/null
 mapfile -t release_rpms < <(find "$release_dir" -maxdepth 1 -type f -name '*.rpm' -print | sort)
 [[ ${#release_rpms[@]} -gt 0 ]] || { echo "release has no RPMs" >&2; exit 1; }
 for rpm_file in "${release_rpms[@]}"; do

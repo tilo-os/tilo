@@ -9,8 +9,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
-#[cfg(unix)]
-use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
@@ -236,12 +234,9 @@ struct RootWriteLock(std::fs::File);
 
 impl Drop for RootWriteLock {
     fn drop(&mut self) {
-        #[cfg(unix)]
-        {
-            // The OS also releases this lock when a process dies.  Explicitly
-            // unlock so a waiting writer can proceed before the File drops.
-            let _ = unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
-        }
+        // The OS also releases this lock when a process dies. std selects
+        // flock/LockFileEx for the host while retaining the same quota boundary.
+        let _ = self.0.unlock();
     }
 }
 
@@ -273,44 +268,48 @@ impl FsBlobStore {
             .truncate(false)
             .open(path)
             .map_err(|error| BlobStoreError::Io(error.to_string()))?;
-        #[cfg(unix)]
-        {
-            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-                return Err(BlobStoreError::Io(
-                    std::io::Error::last_os_error().to_string(),
-                ));
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            // Failing closed is preferable to claiming a process-wide quota
-            // on a platform where this build has no interprocess lock.
-            return Err(BlobStoreError::Io(
-                "filesystem blob quotas require an interprocess lock on this platform".into(),
-            ));
-        }
+        file.lock()
+            .map_err(|error| BlobStoreError::Io(error.to_string()))?;
         Ok(RootWriteLock(file))
     }
 
-    /// The store this machine uses unless told otherwise. `QOS_BLOB_STORE` overrides it, letting two
+    /// The store this machine uses unless told otherwise. `TILO_BLOB_STORE` overrides it, letting two
     /// sessions on one host be genuinely separate peers rather than one store they both hit.
     pub fn default_root() -> PathBuf {
-        if let Ok(v) = std::env::var("QOS_BLOB_STORE")
+        Self::default_root_with(|key| std::env::var_os(key))
+    }
+
+    fn default_root_with(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> PathBuf {
+        if let Some(v) = env("TILO_BLOB_STORE")
             && !v.is_empty()
         {
             return PathBuf::from(v);
         }
-        let base = std::env::var("XDG_CACHE_HOME")
-            .ok()
+        let native_base = || {
+            #[cfg(windows)]
+            {
+                env("LOCALAPPDATA")
+                    .map(PathBuf::from)
+                    .filter(|path| path.is_absolute())
+                    .or_else(|| {
+                        env("USERPROFILE")
+                            .map(PathBuf::from)
+                            .filter(|path| path.is_absolute())
+                            .map(|path| path.join("AppData/Local"))
+                    })
+            }
+            #[cfg(not(windows))]
+            {
+                None
+            }
+        };
+        let base = env("XDG_CACHE_HOME")
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var("HOME")
-                    .ok()
-                    .map(|h| PathBuf::from(h).join(".cache"))
-            })
+            .or_else(native_base)
+            .or_else(|| env("HOME").map(|h| PathBuf::from(h).join(".cache")))
             .unwrap_or_else(std::env::temp_dir);
-        base.join("qos").join("blobs")
+        base.join("tilo").join("blobs")
     }
 
     fn path_for(&self, hash: &str) -> Option<PathBuf> {
@@ -610,7 +609,7 @@ mod runtime_store_tests {
         for stage in ["write", "read"] {
             let status = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "blobstore::runtime_store_tests::explicit_runtime_store_carries_bytes_between_processes", "--nocapture"])
-                .env("QOS_BLOB_STORE", directory.path())
+                .env("TILO_BLOB_STORE", directory.path())
                 .env("QOS_BLOB_PROOF_STAGE", stage)
                 .status().unwrap();
             assert!(status.success(), "{stage} process failed");
@@ -621,7 +620,7 @@ mod runtime_store_tests {
 fn cell() -> &'static RwLock<Arc<dyn BlobStore>> {
     STORE.get_or_init(|| {
         let store: Arc<dyn BlobStore> =
-            match std::env::var_os("QOS_BLOB_STORE").filter(|path| !path.is_empty()) {
+            match std::env::var_os("TILO_BLOB_STORE").filter(|path| !path.is_empty()) {
                 Some(path) => Arc::new(FsBlobStore::new(PathBuf::from(path))),
                 None => Arc::new(MemoryBlobStore::default()),
             };
@@ -637,7 +636,7 @@ pub fn set_store(store: Arc<dyn BlobStore>) {
     }
 }
 
-/// The process-wide store: the explicitly configured `QOS_BLOB_STORE`, or
+/// The process-wide store: the explicitly configured `TILO_BLOB_STORE`, or
 /// in-memory when absent. [`set_store`] overrides either choice. A trusted
 /// local runtime can supply one shared directory; sandboxed hosts must still
 /// provide their authorized content transport rather than an ambient path.
@@ -1003,6 +1002,43 @@ mod tests {
         assert_eq!(m.mime, "image/png");
         assert_eq!((m.w, m.h), (1, 1));
         assert_eq!(m.len, TINY_PNG.len() as u64);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn default_blob_root_uses_the_windows_profile_instead_of_temp() {
+        let root = FsBlobStore::default_root_with(|key| match key {
+            "LOCALAPPDATA" => Some("C:/Users/Photo User/AppData/Local".into()),
+            "HOME" => Some("C:/old-unix-home".into()),
+            _ => None,
+        });
+        assert_eq!(
+            root,
+            PathBuf::from("C:/Users/Photo User/AppData/Local/tilo/blobs")
+        );
+        let fallback = FsBlobStore::default_root_with(|key| match key {
+            "USERPROFILE" => Some("C:/Users/Photo User".into()),
+            _ => None,
+        });
+        assert_eq!(
+            fallback,
+            PathBuf::from("C:/Users/Photo User/AppData/Local/tilo/blobs")
+        );
+    }
+
+    #[test]
+    fn default_blob_root_preserves_explicit_peer_and_cache_locations() {
+        let peer = FsBlobStore::default_root_with(|key| match key {
+            "TILO_BLOB_STORE" => Some("peer-blobs".into()),
+            "XDG_CACHE_HOME" => Some("cache".into()),
+            _ => None,
+        });
+        assert_eq!(peer, PathBuf::from("peer-blobs"));
+        let cache = FsBlobStore::default_root_with(|key| match key {
+            "XDG_CACHE_HOME" => Some("cache".into()),
+            _ => None,
+        });
+        assert_eq!(cache, PathBuf::from("cache/tilo/blobs"));
     }
 
     #[test]

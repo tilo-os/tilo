@@ -20,7 +20,8 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use crate::model::{Draft, Folder, Mailbox, Message};
+use crate::attachment_store;
+use crate::model::{Draft, DraftAttachment, Folder, Mailbox, Message};
 
 pub struct MailDoc;
 
@@ -155,6 +156,15 @@ impl MailDoc {
         if let Some(html) = &draft.html_body {
             ui::doc::put_if_changed(doc, &d, "html_body", html.as_str());
         }
+        if let Some(calendar_ics) = &draft.calendar_ics {
+            ui::doc::put_if_changed(doc, &d, "calendar_ics", calendar_ics.as_str());
+        } else if doc.get(&d, "calendar_ics").ok().flatten().is_some() {
+            let _ = doc.delete(&d, "calendar_ics");
+        }
+        let attachments = attachment_store::bounded(&draft.attachments);
+        if let Ok(serialized) = serde_json::to_string(&attachments) {
+            ui::doc::put_if_changed(doc, &d, "attachments", serialized.as_str());
+        }
     }
 
     pub fn load_draft(doc: &AutoCommit) -> Draft {
@@ -168,7 +178,12 @@ impl MailDoc {
             subject: Self::read_str(doc, &d, "subject").unwrap_or_default(),
             body: Self::read_str(doc, &d, "body").unwrap_or_default(),
             html_body: Self::read_str(doc, &d, "html_body"),
-            attachments: Vec::new(),
+            calendar_ics: Self::read_str(doc, &d, "calendar_ics")
+                .filter(|value| crate::actions::valid_calendar_invitation(value)),
+            attachments: Self::read_str(doc, &d, "attachments")
+                .and_then(|raw| serde_json::from_str::<Vec<DraftAttachment>>(&raw).ok())
+                .map(|items| attachment_store::bounded(&items))
+                .unwrap_or_default(),
             in_reply_to: None,
         }
     }
@@ -177,7 +192,16 @@ impl MailDoc {
     /// Backs [`crate::actions::MailAction::DiscardDraft`].
     pub fn clear_draft(doc: &mut AutoCommit) {
         let d = Self::map(doc, &ROOT, "draft");
-        for key in ["to", "cc", "bcc", "subject", "body", "html_body"] {
+        for key in [
+            "to",
+            "cc",
+            "bcc",
+            "subject",
+            "body",
+            "html_body",
+            "calendar_ics",
+            "attachments",
+        ] {
             if doc.get(&d, key).ok().flatten().is_some() {
                 let _ = doc.delete(&d, key);
             }
@@ -534,16 +558,20 @@ mod tests {
     #[test]
     fn draft_round_trips() {
         let mut doc = AutoCommit::new();
+        let attachment = crate::attachment_store::stage_bytes(b"draft blob", "agenda.txt")
+            .expect("portable attachment");
         let draft = Draft {
             to: "x@y.example".into(),
             subject: "Hi".into(),
             body: "Body".into(),
+            attachments: vec![attachment.clone()],
             ..Default::default()
         };
         MailDoc::store_draft(&mut doc, &draft);
         let loaded = MailDoc::load_draft(&doc);
         assert_eq!(loaded.to, "x@y.example");
         assert_eq!(loaded.subject, "Hi");
+        assert_eq!(loaded.attachments, vec![attachment]);
     }
 
     #[test]

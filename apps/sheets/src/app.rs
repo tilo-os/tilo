@@ -118,7 +118,8 @@ const DATE_STYLES: [(&str, DateStyle); 4] = [
     ("EU", DateStyle::Eu),
     ("Long", DateStyle::Long),
 ];
-const TIME_STYLES: [(&str, TimeStyle); 2] = [("24-hour", TimeStyle::H24), ("12-hour", TimeStyle::H12)];
+const TIME_STYLES: [(&str, TimeStyle); 2] =
+    [("24-hour", TimeStyle::H24), ("12-hour", TimeStyle::H12)];
 const SETTINGS_SECTIONS: [&str; 3] = ["Currency", "Date", "Time"];
 /// Every painted chart/comment command gets a normal touch target, not a
 /// text-baseline-sized link. Kept as a shared constant so the renderer and
@@ -290,6 +291,10 @@ enum MenuItem {
     ClearFormat,
     // Settings.
     OpenDocSettings,
+    /// A view-only operation: display raw formulas in the grid instead of
+    /// their calculated values. Kept alongside the other painted commands so
+    /// narrow layouts do not hide this useful inspection mode behind Ctrl+K.
+    ToggleFormulaView,
     // Inline bar action.
     AutoSum,
 }
@@ -300,6 +305,9 @@ enum OpenMenu {
     None,
     File,
     Format,
+    /// Holds secondary commands when the accessible text scale or viewport
+    /// leaves insufficient room for the full toolbar.
+    More,
 }
 
 /// Whether the per-document settings panel is open.
@@ -593,8 +601,7 @@ impl ChromeMetrics {
     /// `s1`, and the band never starts closer than the classic seam.
     fn annotation_controls_top(&self, title_top: f64) -> f64 {
         let label_top = title_top + self.lh_sm + self.s1;
-        (label_top - (ANNOTATION_ACTION_H - self.lh_xs) / 2.0)
-            .max(title_top + CHART_CONTROLS_SEAM)
+        (label_top - (ANNOTATION_ACTION_H - self.lh_xs) / 2.0).max(title_top + CHART_CONTROLS_SEAM)
     }
 
     /// Row rhythm of a floating chart card, relative to the card's top:
@@ -627,7 +634,8 @@ impl ChromeMetrics {
         let body_top = heading_top + (self.lh_sm + self.s2).max(COMMENT_BODY_ADV);
         let detail_top = body_top + (self.lh_sm + self.s4).max(COMMENT_DETAIL_ADV);
         let controls_y0 = detail_top + (self.lh_xs + self.s3).max(COMMENT_CONTROLS_ADV);
-        let toggle_y1 = (detail_top + self.lh_xs / 2.0 + ANNOTATION_ACTION_H / 2.0).min(controls_y0);
+        let toggle_y1 =
+            (detail_top + self.lh_xs / 2.0 + ANNOTATION_ACTION_H / 2.0).min(controls_y0);
         CommentCardRows {
             heading_top,
             body_top,
@@ -799,6 +807,10 @@ fn tab_action_label(act: TabAction) -> &'static str {
 )]
 pub struct SheetsApp {
     grid: Grid,
+    /// The custom chrome has no toolkit layout primitives to inherit type
+    /// sizing from, so keep its touch targets and modal spacing aligned with
+    /// the current accessibility text preference.
+    text_scale: f64,
     rect: Rect,
     menubar_rect: Rect,
     formula_rect: Rect,
@@ -918,13 +930,13 @@ pub struct SheetsApp {
     interchange_rx: Option<Receiver<InterchangeResult>>,
     interchange_generation: u64,
     active_interchange_generation: Option<u64>,
-    resource_invocation: Option<qos_actions::InvocationId>,
-    resource_result: Option<qos_actions::InvocationUpdate>,
-    pending_resource_io: Option<(qos_actions::InvocationId, actions::SheetsOperation)>,
+    resource_invocation: Option<tilo_actions::InvocationId>,
+    resource_result: Option<tilo_actions::InvocationUpdate>,
+    pending_resource_io: Option<(tilo_actions::InvocationId, actions::SheetsOperation)>,
     prepared_resource_io: Option<PreparedResourceIo>,
     /// Set by a non-cancelled lifecycle poll; the following mutable `sync`
     /// receipt may then publish/import the prepared result.
-    resource_confirmation: Option<qos_actions::InvocationId>,
+    resource_confirmation: Option<tilo_actions::InvocationId>,
     /// A cancellation can arrive while the bounded worker is still parsing or
     /// encoding. Its eventual result is discarded by this exact generation.
     cancelled_interchange_generation: Option<u64>,
@@ -982,6 +994,7 @@ impl SheetsApp {
     pub fn new() -> Self {
         Self {
             grid: Grid::new(),
+            text_scale: 1.0,
             rect: Rect::ZERO,
             menubar_rect: Rect::ZERO,
             formula_rect: Rect::ZERO,
@@ -1083,7 +1096,7 @@ impl SheetsApp {
         &mut self,
         doc: &mut AutoCommit,
         action: &SheetsAction,
-    ) -> Result<(), qos_actions::ActionError> {
+    ) -> Result<(), tilo_actions::ActionError> {
         self.actions.try_dispatch_with_context(
             doc,
             actions::SHEETS_ACTION_TYPE,
@@ -1141,8 +1154,8 @@ impl SheetsApp {
         clippy::expect_used,
         reason = "the palette builds serializable action enum values in one authoritative surface"
     )]
-    fn native_palette_actions(&self) -> Vec<qos_actions::ActionSpec> {
-        use qos_actions::{ActionSpec, OperationKind};
+    fn native_palette_actions(&self) -> Vec<tilo_actions::ActionSpec> {
+        use tilo_actions::{ActionSpec, OperationKind};
 
         let immediate = |id: &str, label: &str, action: SheetsAction| {
             ActionSpec::immediate(id, label, actions::SHEETS_ACTION_TYPE, &action)
@@ -1310,7 +1323,7 @@ impl SheetsApp {
             }
         }
 
-        specs.push(qos_actions::ActionSpec::prompted_operation(
+        specs.push(tilo_actions::ActionSpec::prompted_operation(
             "go-to-cell",
             "Go to cell…",
             "Cell reference",
@@ -1318,7 +1331,7 @@ impl SheetsApp {
             OperationKind::View,
             actions::SHEETS_OPERATION_TYPE,
             |reference| {
-                qos_actions::EncodedAction::encode_operation(
+                tilo_actions::EncodedAction::encode_operation(
                     actions::SHEETS_OPERATION_TYPE,
                     &actions::SheetsOperation::GoToCell {
                         reference: reference.to_string(),
@@ -1344,12 +1357,12 @@ impl SheetsApp {
         specs
     }
 
-    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
-    /// affordance dispatched, for the affordance == [`ActionSpec`](qos_actions::ActionSpec)
+    /// The last [`EncodedAction`](tilo_actions::EncodedAction) an on-screen
+    /// affordance dispatched, for the affordance == [`ActionSpec`](tilo_actions::ActionSpec)
     /// covenant test: a control and its Ctrl+K entry must build the identical
     /// action.
     #[cfg(test)]
-    fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+    fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
@@ -1410,6 +1423,13 @@ impl SheetsApp {
     /// Shots hook: open the Format menu.
     pub fn shots_open_format_menu(&mut self) {
         self.open_menu = OpenMenu::Format;
+    }
+
+    /// Shots hook: expose the compact-toolbar overflow menu so responsive
+    /// visual regression covers controls that are intentionally moved off the
+    /// narrow, enlarged-text command row.
+    pub fn shots_open_more_menu(&mut self) {
+        self.open_menu = OpenMenu::More;
     }
 
     /// Shots hook: open the per-document settings panel.
@@ -1753,9 +1773,7 @@ impl SheetsApp {
                         file.sync_all().map_err(|error| error.to_string())?;
                         drop(file);
                         std::fs::rename(&temporary, &path).map_err(|error| error.to_string())?;
-                        std::fs::File::open(parent)
-                            .and_then(|dir| dir.sync_all())
-                            .map_err(|error| error.to_string())
+                        atomic_file::sync_directory(parent).map_err(|error| error.to_string())
                     })();
                     if write_result.is_err() {
                         let _ = std::fs::remove_file(&temporary);
@@ -2984,7 +3002,9 @@ impl SheetsApp {
             let _ = std::fs::remove_file(&temporary);
             return Err(error);
         }
-        std::fs::File::open(&temporary)
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&temporary)
             .and_then(|file| file.sync_all())
             .map_err(|error| {
                 let _ = std::fs::remove_file(&temporary);
@@ -3007,7 +3027,7 @@ impl SheetsApp {
             .unwrap_or("workbook");
         for _ in 0..4 {
             let temporary = parent.join(format!(
-                ".{stem}.qos-export-{generation}-{}.tmp",
+                ".{stem}.tilo-export-{generation}-{}.tmp",
                 Uuid::new_v4()
             ));
             match std::fs::OpenOptions::new()
@@ -3034,9 +3054,7 @@ impl SheetsApp {
             .parent()
             .ok_or_else(|| "export destination has no parent directory".to_string())?;
         std::fs::rename(temporary, destination).map_err(|error| error.to_string())?;
-        std::fs::File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| error.to_string())
+        atomic_file::sync_directory(parent).map_err(|error| error.to_string())
     }
 
     fn publish_or_discard_export_temp(
@@ -3088,18 +3106,21 @@ impl SheetsApp {
                     }
                     PortalOutcome::Cancelled => {
                         if let Some(invocation) = self.resource_invocation.take() {
-                            self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
-                                invocation,
-                                message: Some("spreadsheet file selection was cancelled".into()),
-                            });
+                            self.resource_result =
+                                Some(tilo_actions::InvocationUpdate::Cancelled {
+                                    invocation,
+                                    message: Some(
+                                        "spreadsheet file selection was cancelled".into(),
+                                    ),
+                                });
                         }
                     }
                     PortalOutcome::Failed(e) => {
                         self.status = format!("File chooser unavailable: {e}");
                         if let Some(invocation) = self.resource_invocation.take() {
-                            self.resource_result = Some(qos_actions::InvocationUpdate::Failed {
+                            self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
                                 invocation,
-                                error: qos_actions::ActionFailure {
+                                error: tilo_actions::ActionFailure {
                                     code: "sheets.portal_failed".into(),
                                     message: e,
                                     details: None,
@@ -3115,9 +3136,9 @@ impl SheetsApp {
                 self.io = None;
                 self.status = "File chooser disconnected before returning a selection".into();
                 if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(qos_actions::InvocationUpdate::Failed {
+                    self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "sheets.portal_disconnected".into(),
                             message: self.status.clone(),
                             details: None,
@@ -3321,13 +3342,13 @@ impl SheetsApp {
         };
         self.resource_confirmation = None;
         self.resource_result = Some(match result {
-            Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             },
-            Err(message) => qos_actions::InvocationUpdate::Failed {
+            Err(message) => tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "sheets.io_failed".into(),
                     message,
                     details: None,
@@ -3341,7 +3362,7 @@ impl SheetsApp {
     /// forcibly killed (that is neither portable nor safe around codecs), but
     /// their exact generation becomes inert and any prepared export is removed
     /// before it can publish.
-    fn cancel_resource_io(&mut self, invocation: qos_actions::InvocationId) -> bool {
+    fn cancel_resource_io(&mut self, invocation: tilo_actions::InvocationId) -> bool {
         let pending_matches = self
             .pending_resource_io
             .as_ref()
@@ -3360,7 +3381,7 @@ impl SheetsApp {
         }
         self.resource_invocation = None;
         self.status = "Spreadsheet operation cancelled".into();
-        self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
+        self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
             invocation,
             message: Some("spreadsheet operation cancelled before it changed data or files".into()),
         });
@@ -3435,7 +3456,7 @@ impl SheetsApp {
         };
         self.palette.clear();
         let resources = actions::provide_resources(&self.sheets_resource_ctx(), doc);
-        let mut actions = qos_actions::flatten(&resources);
+        let mut actions = tilo_actions::flatten(&resources);
         actions.sort_by_key(|action| usize::from(action.action.id != "go-to-cell"));
         for action in actions {
             if action.action.id == "commands" {
@@ -3456,10 +3477,10 @@ impl SheetsApp {
         let intent = self
             .take_control_invocation()
             .expect("palette emitted a resource action");
-        let resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
-        let spec = qos_actions::door::resolve(&resources, &intent.address)
+        let resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        let spec = tilo_actions::door::resolve(&resources, &intent.address)
             .expect("palette address resolves");
-        assert_eq!(spec.kind, qos_actions::OperationKind::View);
+        assert_eq!(spec.kind, tilo_actions::OperationKind::View);
         let encoded = spec.build_json(&intent.arguments).expect("valid arguments");
         assert!(
             self.invoke_resource_operation(
@@ -3641,7 +3662,11 @@ impl SheetsApp {
             .map(|(label, opens, _)| Self::menu_button_label(label, opens.is_some()))
             .collect();
         labels.extend(self.sheet_names.iter().cloned());
-        labels.extend(TAB_MENU_ACTIONS.iter().map(|act| tab_action_label(*act).to_owned()));
+        labels.extend(
+            TAB_MENU_ACTIONS
+                .iter()
+                .map(|act| tab_action_label(*act).to_owned()),
+        );
         labels.push("Colour".to_owned());
         labels.extend(Self::file_menu_items().iter().map(|(l, _)| (*l).to_owned()));
         labels.extend(
@@ -3691,7 +3716,26 @@ impl SheetsApp {
         let bh = m.menu_button_h();
         let by = self.menubar_rect.y0 + (self.menubar_rect.height() - bh) / 2.0;
         let mut x = self.menubar_rect.x0 + m.s2;
-        for (label, opens, item) in MENU_BAR_BUTTONS {
+        let compact_toolbar = MENU_BAR_BUTTONS
+            .iter()
+            .map(|(label, opens, _)| {
+                m.menu_button_w(&Self::menu_button_label(label, opens.is_some())) + m.s2
+            })
+            .sum::<f64>()
+            > r.width() - 2.0 * m.s2;
+        for (index, (label, opens, item)) in MENU_BAR_BUTTONS.into_iter().enumerate() {
+            if compact_toolbar && index >= 2 {
+                if index == 2 {
+                    let w = m.menu_button_w("More ▾");
+                    self.menu_buttons.push(MenuButton {
+                        rect: Rect::new(x, by, x + w, by + bh),
+                        label: "More".into(),
+                        item: None,
+                        opens: Some(OpenMenu::More),
+                    });
+                }
+                continue;
+            }
             let w = m.menu_button_w(&Self::menu_button_label(label, opens.is_some()));
             self.menu_buttons.push(MenuButton {
                 rect: Rect::new(x, by, x + w, by + bh),
@@ -3765,6 +3809,21 @@ impl SheetsApp {
                     self.layout_dropdown(anchor, &items, FORMAT_MENU_MIN_W);
                 }
             }
+            OpenMenu::More => {
+                if let Some(anchor) = opener {
+                    let formula_label = if self.grid.formula_view() {
+                        "Hide formulas"
+                    } else {
+                        "Show formulas"
+                    };
+                    let items = [
+                        ("AutoSum", MenuItem::AutoSum),
+                        ("Document settings", MenuItem::OpenDocSettings),
+                        (formula_label, MenuItem::ToggleFormulaView),
+                    ];
+                    self.layout_dropdown(anchor, &items, 190.0);
+                }
+            }
         }
 
         if self.settings_panel != SettingsPanel::None {
@@ -3820,10 +3879,8 @@ impl SheetsApp {
 
         let mut y = y0 + pad;
         for act in TAB_MENU_ACTIONS {
-            self.tab_menu_rows.push((
-                Rect::new(x0 + pad, y, x0 + width - pad, y + row_h),
-                act,
-            ));
+            self.tab_menu_rows
+                .push((Rect::new(x0 + pad, y, x0 + width - pad, y + row_h), act));
             y += row_h;
         }
         // Colour swatch strip, below the "Colour" caption.
@@ -3861,8 +3918,14 @@ impl SheetsApp {
             ("Number", MenuItem::SetFormat(CellFormat::Number)),
             ("Currency", MenuItem::SetFormat(CellFormat::Currency(cur))),
             ("Percent", MenuItem::SetFormat(CellFormat::Percent)),
-            ("Date", MenuItem::SetFormat(CellFormat::Date(locale.date_format))),
-            ("Time", MenuItem::SetFormat(CellFormat::Time(locale.time_format))),
+            (
+                "Date",
+                MenuItem::SetFormat(CellFormat::Date(locale.date_format)),
+            ),
+            (
+                "Time",
+                MenuItem::SetFormat(CellFormat::Time(locale.time_format)),
+            ),
             ("Boolean", MenuItem::SetFormat(CellFormat::Boolean)),
             ("Text", MenuItem::SetFormat(CellFormat::Text)),
             ("Clear format", MenuItem::ClearFormat),
@@ -3879,8 +3942,13 @@ impl SheetsApp {
             .iter()
             .map(|(label, _)| m.label_w(label))
             .fold(0.0_f64, f64::max);
-        let width = (widest + 2.0 * (pad + m.s2)).max(min_width);
-        let x0 = anchor.x0;
+        let width = (widest + 2.0 * (pad + m.s2))
+            .max(min_width)
+            .min((self.rect.width() - 2.0 * m.s1).max(1.0));
+        let x0 = anchor
+            .x0
+            .min(self.rect.x1 - width - m.s1)
+            .max(self.rect.x0 + m.s1);
         let y0 = anchor.y1 + m.s1;
         let h = count_f64(items.len()) * row_h + pad * 2.0;
         self.dropdown_rect = Rect::new(x0, y0, x0 + width, y0 + h);
@@ -3938,9 +4006,21 @@ impl SheetsApp {
         self.settings_section_y[0] = y;
         {
             let mut x = row_start;
-            push(&mut chips, &mut x, &mut y, "Default", SettingKind::Currency(None));
+            push(
+                &mut chips,
+                &mut x,
+                &mut y,
+                "Default",
+                SettingKind::Currency(None),
+            );
             for c in Currency::ALL {
-                push(&mut chips, &mut x, &mut y, c.code(), SettingKind::Currency(Some(c)));
+                push(
+                    &mut chips,
+                    &mut x,
+                    &mut y,
+                    c.code(),
+                    SettingKind::Currency(Some(c)),
+                );
             }
         }
         y += chip_h + m.s4;
@@ -3949,9 +4029,21 @@ impl SheetsApp {
         self.settings_section_y[1] = y;
         {
             let mut x = row_start;
-            push(&mut chips, &mut x, &mut y, "Default", SettingKind::Date(None));
+            push(
+                &mut chips,
+                &mut x,
+                &mut y,
+                "Default",
+                SettingKind::Date(None),
+            );
             for (label, d) in DATE_STYLES {
-                push(&mut chips, &mut x, &mut y, label, SettingKind::Date(Some(d)));
+                push(
+                    &mut chips,
+                    &mut x,
+                    &mut y,
+                    label,
+                    SettingKind::Date(Some(d)),
+                );
             }
         }
         y += chip_h + m.s4;
@@ -3960,9 +4052,21 @@ impl SheetsApp {
         self.settings_section_y[2] = y;
         {
             let mut x = row_start;
-            push(&mut chips, &mut x, &mut y, "Default", SettingKind::Time(None));
+            push(
+                &mut chips,
+                &mut x,
+                &mut y,
+                "Default",
+                SettingKind::Time(None),
+            );
             for (label, t) in TIME_STYLES {
-                push(&mut chips, &mut x, &mut y, label, SettingKind::Time(Some(t)));
+                push(
+                    &mut chips,
+                    &mut x,
+                    &mut y,
+                    label,
+                    SettingKind::Time(Some(t)),
+                );
             }
         }
         // Footer note (an `xs` line box) sits `s6` under the last row.
@@ -4014,7 +4118,12 @@ impl SheetsApp {
             );
         } else {
             let face = if style.accent {
-                colors.accent_chip_on(colors.surfaces.raised, ui::tokens::colors::NON_TEXT_MIN_CONTRAST).fill
+                colors
+                    .accent_chip_on(
+                        colors.surfaces.raised,
+                        ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                    )
+                    .fill
             } else {
                 colors.surfaces.raised
             };
@@ -4080,7 +4189,9 @@ impl SheetsApp {
         for b in &self.menu_buttons {
             let active = matches!(
                 (&b.opens, self.open_menu),
-                (Some(OpenMenu::File), OpenMenu::File) | (Some(OpenMenu::Format), OpenMenu::Format)
+                (Some(OpenMenu::File), OpenMenu::File)
+                    | (Some(OpenMenu::Format), OpenMenu::Format)
+                    | (Some(OpenMenu::More), OpenMenu::More)
             );
             let accent = matches!(b.item, Some(MenuItem::AutoSum));
             let label = Self::menu_button_label(&b.label, b.opens.is_some());
@@ -4135,7 +4246,13 @@ impl SheetsApp {
         let nb_radius = f64::from(theme.tokens.radii.sm);
         // Rest: the raised face with its derived edge; editing: the accent
         // ring (focus state, not a second edge).
-        ui::surface::card(scene, transform, name_box, nb_radius, colors.surfaces.raised);
+        ui::surface::card(
+            scene,
+            transform,
+            name_box,
+            nb_radius,
+            colors.surfaces.raised,
+        );
         if nb_editing {
             scene.stroke(
                 &Stroke::new(2.0),
@@ -4822,7 +4939,8 @@ impl SheetsApp {
         );
         // Heading and body are elided to the card: a scaled or long line ends
         // inside the frame instead of running over the grid beside it.
-        let heading = tr.elide_to_width_weighted(&heading, self.metrics.sm, text_w, TextWeight::Regular);
+        let heading =
+            tr.elide_to_width_weighted(&heading, self.metrics.sm, text_w, TextWeight::Regular);
         tr.draw_text(
             scene,
             &heading,
@@ -5088,10 +5206,7 @@ impl SheetsApp {
             m.xs,
             colors.text_dim,
             transform
-                * Affine::translate((
-                    self.panel_rect.x0 + pad,
-                    self.panel_rect.y1 - pad - m.lh_xs,
-                )),
+                * Affine::translate((self.panel_rect.x0 + pad, self.panel_rect.y1 - pad - m.lh_xs)),
             None,
         );
     }
@@ -5440,6 +5555,7 @@ fn menu_item_label(item: &MenuItem) -> &'static str {
         MenuItem::ClearFormat => "Clear format",
         MenuItem::OpenDocSettings => "Document settings",
         MenuItem::AutoSum => "AutoSum",
+        MenuItem::ToggleFormulaView => "Show/hide formulas",
     }
 }
 
@@ -5478,14 +5594,14 @@ fn tsv_cell(display: &str) -> String {
 }
 
 /// Where the workbook is persisted between sessions:
-/// `$XDG_DATA_HOME/qos/sheets/workbook.automerge` (falls back to
+/// `$XDG_DATA_HOME/tilo/sheets/workbook.automerge` (falls back to
 /// `~/.local/share`).
 fn workbook_path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty())
         .or_else(dirs::data_dir)?;
-    Some(base.join("qos").join("sheets").join("workbook.automerge"))
+    Some(base.join("tilo").join("sheets").join("workbook.automerge"))
 }
 
 /// A new sheet name derived from an imported file's stem.
@@ -5552,13 +5668,13 @@ impl Widget for SheetsApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         if type_id != actions::SHEETS_OPERATION_TYPE {
@@ -5602,14 +5718,7 @@ impl Widget for SheetsApp {
             }
             actions::SheetsOperation::OpenCommandPalette => self.open_command_palette(doc),
             actions::SheetsOperation::GoToCell { reference } => self.go_to_cell(&reference),
-            actions::SheetsOperation::ToggleFormulaView => {
-                let on = self.grid.toggle_formula_view();
-                self.status = if on {
-                    "Showing formulas".into()
-                } else {
-                    "Showing results".into()
-                };
-            }
+            actions::SheetsOperation::ToggleFormulaView => self.toggle_formula_view(),
             actions::SheetsOperation::RevealSheet { sheet_id } => {
                 if !self
                     .searchable_sheets
@@ -5641,8 +5750,8 @@ impl Widget for SheetsApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -5700,18 +5809,18 @@ impl Widget for SheetsApp {
             Ok(Some(ui::widget::ResourceOperationStart::Accepted))
         } else {
             Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                qos_actions::ActionOutput::default(),
+                tilo_actions::ActionOutput::default(),
             )))
         }
     }
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if cancellation_requested {
             let _ = self.cancel_resource_io(invocation);
         }
@@ -5822,9 +5931,15 @@ impl Widget for SheetsApp {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // Unlike toolkit tables, this virtualised canvas owns its geometry.
+        // Keep its row/header metrics in step with accessibility typography
+        // before the subsequent layout + hit-test pass.
+        self.text_scale = f64::from(theme.text_scale);
+        self.grid.set_text_scale(self.text_scale);
+
         // `new_leaf` on a freshly created tree never fails.
         #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
         let node = taffy
@@ -5940,10 +6055,10 @@ impl Widget for SheetsApp {
 
     /// Publish the open workbook + its sheets so the host's Ctrl+K action
     /// palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     fn action_directory_resource_page(
@@ -5966,8 +6081,8 @@ impl Widget for SheetsApp {
         })
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -6078,15 +6193,109 @@ impl Widget for SheetsApp {
         use ui::a11y::{AccessNode, AccessState, Role};
         let active = self.grid.active();
         let active_name = crate::model::addr_to_a1(active.0, active.1);
+        let toolbar_controls = self
+            .menu_buttons
+            .iter()
+            .filter_map(|button| {
+                let (name, target, description) = match (button.opens, &button.item) {
+                    (Some(OpenMenu::File), _) => (
+                        "File menu",
+                        "sheets.toolbar.file",
+                        "Open file and interchange actions",
+                    ),
+                    (Some(OpenMenu::Format), _) => (
+                        "Format menu",
+                        "sheets.toolbar.format",
+                        "Apply a number or text format to the selection",
+                    ),
+                    (Some(OpenMenu::More), _) => (
+                        "More sheet actions",
+                        "sheets.toolbar.more",
+                        "Open AutoSum, document settings, and formula-view actions",
+                    ),
+                    (_, Some(MenuItem::AutoSum)) => (
+                        "AutoSum",
+                        "sheets.toolbar.autosum",
+                        "Insert a sum for the numeric run above the active cell",
+                    ),
+                    (_, Some(MenuItem::OpenDocSettings)) => (
+                        "Document settings",
+                        "sheets.toolbar.settings",
+                        "Set workbook-wide currency, date, and time conventions",
+                    ),
+                    _ => return None,
+                };
+                Some(
+                    AccessNode::new(Role::Button)
+                        .with_name(name)
+                        .with_description(description)
+                        .with_action_target(target)
+                        .with_bounds(button.rect)
+                        .with_state(AccessState::new().focusable(true)),
+                )
+            })
+            .chain([
+                AccessNode::new(Role::Button)
+                    .with_name(if self.grid.formula_view() {
+                        "Show calculated results"
+                    } else {
+                        "Show formulas"
+                    })
+                    .with_description(
+                        "Toggle calculated values and raw formulas; shortcut Control+Shift+F",
+                    )
+                    .with_action_target("sheets.toolbar.formula-view")
+                    .with_bounds(self.fx_rect)
+                    .with_state(AccessState::new().focusable(true)),
+                AccessNode::new(Role::TextInput)
+                    .with_name("Name box")
+                    .with_description("Go to a cell or range; shortcut Control+G")
+                    .with_value(self.grid.selection_label())
+                    .with_action_target("sheets.name-box")
+                    .with_bounds(self.name_box_rect)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.name_box_edit.is_some()),
+                    ),
+                AccessNode::new(Role::TextInput)
+                    .with_name("Formula bar")
+                    .with_description("Edit the active cell's value or formula")
+                    .with_value(self.grid.active_display_raw())
+                    .with_action_target("sheets.formula-bar")
+                    .with_bounds(self.formula_field_rect)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.grid.is_editing()),
+                    ),
+                AccessNode::new(Role::Button)
+                    .with_name("Add sheet")
+                    .with_action_target("sheets.new-sheet")
+                    .with_bounds(self.add_tab_rect)
+                    .with_state(AccessState::new().focusable(true)),
+            ])
+            .collect();
         let tabs = self
             .sheet_names
             .iter()
             .enumerate()
             .map(|(index, name)| {
+                let bounds = self
+                    .tab_rects
+                    .iter()
+                    .find(|(_, candidate)| *candidate == index)
+                    .map(|(rect, _)| *rect);
                 AccessNode::new(Role::Tab)
                     .with_name(name.clone())
                     .with_position(index + 1, self.sheet_names.len())
-                    .with_state(AccessState::new().selected(index == self.active_sheet))
+                    .with_action_target(format!("sheets.tab:{}", self.sheet_identity(index)))
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(index == self.active_sheet),
+                    )
+                    .with_bounds(bounds.unwrap_or_default())
             })
             .collect();
         // The painted grid is virtualized, so its semantic tree must be too:
@@ -6109,6 +6318,11 @@ impl Widget for SheetsApp {
         rows.push(
             AccessNode::new(Role::Row)
                 .with_name("Column headers")
+                // The virtual table's data rows are keyed by their durable
+                // row coordinate. Give the fixed header row its own reserved
+                // key too: mixing keyed and positional synthetic siblings
+                // makes AccessKit node identity shift as the viewport moves.
+                .with_key(u64::MAX)
                 .with_children(header_cells),
         );
         rows.extend(window.rows.into_iter().map(|row| {
@@ -6249,6 +6463,9 @@ impl Widget for SheetsApp {
                 .with_description("Editable workbook with formula bar and sheet tabs")
                 .with_state(AccessState::new().focusable(true))
                 .with_children(vec![
+                    AccessNode::new(Role::Toolbar)
+                        .with_name("Spreadsheet actions")
+                        .with_children(toolbar_controls),
                     AccessNode::new(Role::TabBar)
                         .with_name("Sheets")
                         .with_children(tabs),
@@ -6265,6 +6482,64 @@ impl Widget for SheetsApp {
         state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
+        let activates = matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus);
+        if activates {
+            let opened = match target {
+                "sheets.toolbar.file" => Some(OpenMenu::File),
+                "sheets.toolbar.format" => Some(OpenMenu::Format),
+                "sheets.toolbar.more" => Some(OpenMenu::More),
+                _ => None,
+            };
+            if let Some(menu) = opened {
+                self.settings_panel = SettingsPanel::None;
+                self.tab_menu_target = None;
+                self.open_menu = if self.open_menu == menu {
+                    OpenMenu::None
+                } else {
+                    menu
+                };
+                self.relayout_overlays();
+                self.pending.redraw = true;
+                return true;
+            }
+            match target {
+                "sheets.toolbar.autosum" => {
+                    self.run_menu_item(state, &MenuItem::AutoSum);
+                    return true;
+                }
+                "sheets.toolbar.settings" => {
+                    self.run_menu_item(state, &MenuItem::OpenDocSettings);
+                    return true;
+                }
+                "sheets.toolbar.formula-view" => {
+                    self.toggle_formula_view();
+                    return true;
+                }
+                "sheets.name-box" => {
+                    self.begin_name_box_edit();
+                    return true;
+                }
+                "sheets.formula-bar" => {
+                    self.grid.begin_edit_in_place();
+                    self.pending.redraw = true;
+                    return true;
+                }
+                "sheets.new-sheet" => {
+                    self.add_sheet(state);
+                    return true;
+                }
+                _ => {}
+            }
+            if let Some(sheet_id) = target.strip_prefix("sheets.tab:")
+                && let Some(index) = self
+                    .searchable_sheets
+                    .iter()
+                    .position(|sheet| sheet.id == sheet_id)
+            {
+                self.switch_sheet(state, index);
+                return true;
+            }
+        }
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }
@@ -6275,7 +6550,7 @@ impl Widget for SheetsApp {
         true
     }
 
-    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.palette.take_control_invocation()
     }
 
@@ -6667,7 +6942,7 @@ impl SheetsApp {
         prefill: String,
     ) -> bool {
         let resources = actions::provide_resources(&self.sheets_resource_ctx(), doc);
-        let entry = qos_actions::flatten(&resources)
+        let entry = tilo_actions::flatten(&resources)
             .into_iter()
             .find(|flat| flat.resource_id.as_str() == resource_id && flat.action.id == "edit")
             .map(|flat| CommandEntry::from_flat_action(&flat));
@@ -6934,18 +7209,31 @@ impl SheetsApp {
             *handled = true;
             return;
         }
-        // Ctrl+K opens the command palette.
+        // Familiar spreadsheet navigation remains available even when the
+        // compact toolbar has moved secondary commands into More.
         if let WindowEvent::KeyboardInput { event: ke, .. } = event {
             let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
             if ke.state.is_pressed()
                 && ctrl
                 && !self.grid.is_editing()
                 && let winit::keyboard::Key::Character(c) = &ke.logical_key
-                && c.as_str().eq_ignore_ascii_case("k")
             {
-                self.open_command_palette(state);
-                *handled = true;
-                return;
+                if c.as_str().eq_ignore_ascii_case("g") {
+                    self.begin_name_box_edit();
+                    *handled = true;
+                    return;
+                }
+                if modifiers.state().shift_key() && c.as_str().eq_ignore_ascii_case("f") {
+                    self.toggle_formula_view();
+                    *handled = true;
+                    return;
+                }
+                // Ctrl+K opens the command palette.
+                if c.as_str().eq_ignore_ascii_case("k") {
+                    self.open_command_palette(state);
+                    *handled = true;
+                    return;
+                }
             }
         }
 
@@ -7144,7 +7432,21 @@ impl SheetsApp {
                 self.relayout_overlays();
             }
             MenuItem::AutoSum => self.auto_sum(doc),
+            MenuItem::ToggleFormulaView => self.toggle_formula_view(),
         }
+        self.pending.redraw = true;
+    }
+
+    /// Shared implementation behind the More menu, accessibility control, and
+    /// the canonical view operation. Formula visibility is presentation state,
+    /// so it intentionally does not create a CRDT/undo entry.
+    fn toggle_formula_view(&mut self) {
+        let on = self.grid.toggle_formula_view();
+        self.status = if on {
+            "Showing formulas".into()
+        } else {
+            "Showing results".into()
+        };
         self.pending.redraw = true;
     }
 
@@ -7590,7 +7892,11 @@ mod tests {
     /// resolved against a renderer at `text_scale`, exactly as the first draw
     /// of a frame does. Returns the renderer so a test can re-measure labels
     /// with the same instance.
-    pub(super) fn measured_app(width: f64, height: f64, text_scale: f32) -> (SheetsApp, TextRenderer) {
+    pub(super) fn measured_app(
+        width: f64,
+        height: f64,
+        text_scale: f32,
+    ) -> (SheetsApp, TextRenderer) {
         let (mut app, _doc) = seeded_app();
         app.rect = Rect::new(0.0, 0.0, width, height);
         app.relayout();
@@ -7603,7 +7909,10 @@ mod tests {
 
     /// Final-pixel width of `label` painted at the chrome's `sm` size.
     fn sm_label_w(tr: &mut TextRenderer, app: &SheetsApp, label: &str) -> f64 {
-        f64::from(tr.measure_weighted(label, app.metrics.sm, None, TextWeight::Semibold).0)
+        f64::from(
+            tr.measure_weighted(label, app.metrics.sm, None, TextWeight::Semibold)
+                .0,
+        )
     }
 
     /// At 1× the measured chrome reproduces the classic band density
@@ -7613,7 +7922,10 @@ mod tests {
     fn chrome_metrics_keep_the_one_x_density() {
         let (app, _tr) = measured_app(1280.0, 720.0, 1.0);
         assert!((app.menubar_rect.height() - 44.0).abs() < 0.01, "menu bar");
-        assert!((app.formula_rect.height() - 34.0).abs() < 0.01, "formula bar");
+        assert!(
+            (app.formula_rect.height() - 34.0).abs() < 0.01,
+            "formula bar"
+        );
         assert!((app.tabs_rect.height() - 34.0).abs() < 0.01, "tab strip");
         let g = app.grid.metrics();
         assert!((g.col_header_h() - 28.0).abs() < 0.01, "column header");
@@ -7632,7 +7944,11 @@ mod tests {
         // Sizes handed to the renderer are the theme tokens divided back by
         // the renderer scale, so the final glyphs land at the token size.
         assert!((m.sm - 12.0).abs() < 0.01, "sm renderer input {}", m.sm);
-        assert!((m.base - 14.0).abs() < 0.01, "base renderer input {}", m.base);
+        assert!(
+            (m.base - 14.0).abs() < 0.01,
+            "base renderer input {}",
+            m.base
+        );
         assert!(m.lh_sm > 28.0 && m.lh_sm < 32.0, "sm line box {}", m.lh_sm);
 
         // Bands grew to their text.
@@ -7646,7 +7962,10 @@ mod tests {
         // label it paints (measured with the painting style).
         let centre = app.menu_buttons[0].rect.center().y;
         for pair in app.menu_buttons.windows(2) {
-            assert!((pair[0].rect.center().y - centre).abs() < 0.01, "one centre line");
+            assert!(
+                (pair[0].rect.center().y - centre).abs() < 0.01,
+                "one centre line"
+            );
             assert!(
                 (pair[1].rect.x0 - pair[0].rect.x1 - m.s2).abs() < 0.01,
                 "menu buttons are s2 apart"
@@ -7660,7 +7979,10 @@ mod tests {
                 "'{label}' needs {w:.1} + padding, button is {:.1}",
                 b.rect.width()
             );
-            assert!(b.rect.height() >= m.lh_sm, "button taller than its line box");
+            assert!(
+                b.rect.height() >= m.lh_sm,
+                "button taller than its line box"
+            );
         }
 
         // Formula bar: the fx glyph fits its own hit slot, which is exactly
@@ -7678,7 +8000,10 @@ mod tests {
             assert!(rect.height() >= m.lh_sm);
             assert!((rect.center().y - app.add_tab_rect.center().y).abs() < 0.01);
         }
-        assert!((app.add_tab_rect.width() - app.add_tab_rect.height()).abs() < 0.01, "+ is square");
+        assert!(
+            (app.add_tab_rect.width() - app.add_tab_rect.height()).abs() < 0.01,
+            "+ is square"
+        );
     }
 
     /// The floating status pill anchors above the grid's horizontal scrollbar
@@ -7697,8 +8022,12 @@ mod tests {
             // The pill is at least as tall as its measured text plus `s2`
             // above and below, so a 2× label never spills out of it.
             let (w, h) = app.status_pill_size(&mut tr, "Currency (USD)");
-            let (tw, th) = tr.measure_weighted("Currency (USD)", app.metrics.sm, None, TextWeight::Medium);
-            assert!(h >= f64::from(th) + 2.0 * app.metrics.s2 - 0.01, "pill height {h} at {scale}x");
+            let (tw, th) =
+                tr.measure_weighted("Currency (USD)", app.metrics.sm, None, TextWeight::Medium);
+            assert!(
+                h >= f64::from(th) + 2.0 * app.metrics.s2 - 0.01,
+                "pill height {h} at {scale}x"
+            );
             assert!(w >= f64::from(tw), "pill width {w} at {scale}x");
         }
     }
@@ -7716,8 +8045,14 @@ mod tests {
             let g = app.metrics.text_growth();
             let (wide, _) = app.tab_rects[0];
             let (narrow, _) = app.tab_rects[1];
-            assert!(wide.width() <= TAB_MAX_W * g + 0.01, "long name is capped at {scale}x");
-            assert!(narrow.width() >= TAB_MIN_W * g - 0.01, "short name keeps the floor at {scale}x");
+            assert!(
+                wide.width() <= TAB_MAX_W * g + 0.01,
+                "long name is capped at {scale}x"
+            );
+            assert!(
+                narrow.width() >= TAB_MIN_W * g - 0.01,
+                "short name keeps the floor at {scale}x"
+            );
             assert!(app.add_tab_rect.x1 <= app.rect.x1, "'+' stays on the strip");
             // The painter's elision fits the capped tab with `s3` each side.
             let elided = tr.elide_to_width_weighted(
@@ -7765,13 +8100,19 @@ mod tests {
                         "chips in a row are s2 apart"
                     );
                 } else {
-                    assert!(pair[1].rect.y0 >= pair[0].rect.y1 + m.s2 - 0.01, "rows do not overlap");
+                    assert!(
+                        pair[1].rect.y0 >= pair[0].rect.y1 + m.s2 - 0.01,
+                        "rows do not overlap"
+                    );
                 }
             }
             for chip in &app.setting_chips {
                 let (label, _) = app.chip_label_and_state(chip.kind);
                 let w = sm_label_w(&mut tr, &app, &label);
-                assert!(chip.rect.width() >= w + 2.0 * m.s3 - 0.01, "chip '{label}' fits");
+                assert!(
+                    chip.rect.width() >= w + 2.0 * m.s3 - 0.01,
+                    "chip '{label}' fits"
+                );
                 assert!(chip.rect.height() >= m.lh_sm);
                 assert!(app.panel_rect.contains(chip.rect.center()));
                 assert!(chip.rect.x1 <= app.panel_rect.x1 - m.s6 + 0.01);
@@ -7798,14 +8139,24 @@ mod tests {
         let m = app.metrics.clone();
         let panel = app.tab_menu_rect;
         for (rect, act) in &app.tab_menu_rows {
-            assert!(rect.height() >= m.lh_sm - MENU_ROW_SEAM, "row fits its line box");
+            assert!(
+                rect.height() >= m.lh_sm - MENU_ROW_SEAM,
+                "row fits its line box"
+            );
             let w = sm_label_w(&mut tr, &app, tab_action_label(*act));
-            assert!(rect.width() >= w + 2.0 * m.s2 - 0.01, "row fits '{}'", tab_action_label(*act));
+            assert!(
+                rect.width() >= w + 2.0 * m.s2 - 0.01,
+                "row fits '{}'",
+                tab_action_label(*act)
+            );
         }
         let first = app.tab_menu_swatches[0].0;
         let caption_top = first.y0 - m.s1 - m.lh_xs;
         let last_row = app.tab_menu_rows.last().expect("rows").0;
-        assert!(caption_top >= last_row.y1, "caption sits under the last row");
+        assert!(
+            caption_top >= last_row.y1,
+            "caption sits under the last row"
+        );
         for (swatch, _) in &app.tab_menu_swatches {
             assert!(panel.contains(swatch.center()));
             assert!(swatch.x1 <= panel.x1 - m.s2 + 0.01 && swatch.y1 <= panel.y1 - m.s2 + 0.01);
@@ -7861,7 +8212,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 actions::SHEETS_OPERATION_TYPE,
                 &toggle,
                 &doc,
@@ -7878,8 +8229,8 @@ mod tests {
         assert!(
             Widget::start_resource_operation(
                 &mut app,
-                qos_actions::InvocationId::new(),
-                qos_actions::OperationKind::View,
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::View,
                 actions::SHEETS_OPERATION_TYPE,
                 &import,
                 &doc,
@@ -7895,14 +8246,14 @@ mod tests {
     fn cancelled_import_completion_is_inert_before_any_crdt_action() {
         let (mut app, mut doc) = seeded_app();
         let before = SheetsDoc::sheet_count(&mut doc);
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.resource_invocation = Some(invocation);
         app.active_interchange_generation = Some(41);
         let cancelled =
             Widget::poll_resource_operation(&mut app, invocation, true, &doc, &automerge::ROOT);
         assert!(matches!(
             cancelled,
-            Some(qos_actions::InvocationUpdate::Cancelled { .. })
+            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
         ));
         let (tx, rx) = mpsc::sync_channel(1);
         tx.send(InterchangeResult::Import {
@@ -7926,13 +8277,13 @@ mod tests {
     #[test]
     fn cancelling_prepared_export_never_touches_the_destination() {
         let (mut app, doc) = seeded_app();
-        let directory = std::env::temp_dir().join(format!("qos-sheets-cancel-{}", Uuid::new_v4()));
+        let directory = std::env::temp_dir().join(format!("tilo-sheets-cancel-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&directory).unwrap();
         let destination = directory.join("report.csv");
-        let temporary = directory.join(".report.csv.qos-export-prepared.tmp");
+        let temporary = directory.join(".report.csv.tilo-export-prepared.tmp");
         std::fs::write(&destination, "original").unwrap();
         std::fs::write(&temporary, "new export").unwrap();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.resource_invocation = Some(invocation);
         app.prepared_resource_io = Some(PreparedResourceIo::Export {
             generation: 42,
@@ -7945,7 +8296,7 @@ mod tests {
             Widget::poll_resource_operation(&mut app, invocation, true, &doc, &automerge::ROOT);
         assert!(matches!(
             cancelled,
-            Some(qos_actions::InvocationUpdate::Cancelled { .. })
+            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
         ));
         assert_eq!(std::fs::read_to_string(&destination).unwrap(), "original");
         assert!(!temporary.exists());
@@ -7955,10 +8306,10 @@ mod tests {
     #[test]
     fn stale_export_completion_is_discarded_without_destination_mutation() {
         let (mut app, mut doc) = seeded_app();
-        let directory = std::env::temp_dir().join(format!("qos-sheets-stale-{}", Uuid::new_v4()));
+        let directory = std::env::temp_dir().join(format!("tilo-sheets-stale-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&directory).unwrap();
         let destination = directory.join("report.csv");
-        let temporary = directory.join(".report.csv.qos-export-stale.tmp");
+        let temporary = directory.join(".report.csv.tilo-export-stale.tmp");
         std::fs::write(&destination, "original").unwrap();
         std::fs::write(&temporary, "stale export").unwrap();
         app.active_interchange_generation = Some(44);
@@ -7981,7 +8332,8 @@ mod tests {
     #[test]
     fn export_preparation_does_not_mutate_destination_before_publish() {
         let (app, mut doc) = seeded_app();
-        let directory = std::env::temp_dir().join(format!("qos-sheets-prepare-{}", Uuid::new_v4()));
+        let directory =
+            std::env::temp_dir().join(format!("tilo-sheets-prepare-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&directory).unwrap();
         let destination = directory.join("report.csv");
         std::fs::write(&destination, "original").unwrap();
@@ -8001,7 +8353,7 @@ mod tests {
     fn prepared_resource_import_waits_for_lifecycle_confirmation() {
         let (mut app, mut doc) = seeded_app();
         let before = SheetsDoc::sheet_count(&mut doc);
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.resource_invocation = Some(invocation);
         app.prepared_resource_io = Some(PreparedResourceIo::Import {
             generation: 46,
@@ -8024,7 +8376,7 @@ mod tests {
         assert_eq!(SheetsDoc::sheet_count(&mut doc), before + 1);
         assert!(matches!(
             Widget::poll_resource_operation(&mut app, invocation, false, &doc, &automerge::ROOT,),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
 
@@ -8489,6 +8841,42 @@ mod tests {
         );
     }
 
+    /// Custom-painted controls have no toolkit button wrapper to enforce the
+    /// interaction minimum. Keep their hit geometry aligned with the shared
+    /// fine-pointer contract, and prove the same surfaces expand at 2× type.
+    #[test]
+    fn chrome_targets_meet_the_pointer_minimum_and_scale_with_type() {
+        let (mut app, _doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+        app.relayout();
+        let minimum = f64::from(ui::interaction::InteractionEnvironment::POINTER.minimum_target());
+        assert!(
+            app.menu_buttons
+                .iter()
+                .all(|button| button.rect.height() >= minimum)
+        );
+        assert!(app.name_box_rect.height() >= minimum);
+        assert!(app.formula_field_rect.height() >= minimum);
+        assert!(
+            app.tab_rects
+                .iter()
+                .all(|(rect, _)| rect.height() >= minimum)
+        );
+
+        app.text_scale = 2.0;
+        app.grid.set_text_scale(2.0);
+        app.relayout();
+        assert!(
+            app.menu_buttons
+                .iter()
+                .all(|button| button.rect.height() >= minimum * 2.0)
+        );
+        assert!(
+            app.grid.accessibility_window().rows[0].bounds.height()
+                >= crate::grid::DEFAULT_ROW_H * 2.0
+        );
+    }
+
     // --- sheet tab context-menu actions ------------------------------------
 
     #[test]
@@ -8580,7 +8968,7 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         // A real launch (persist on, but pointed at an empty temp data dir)
         // must NOT fabricate the sample workbook.
-        let tmp = std::env::temp_dir().join(format!("qos-sheets-blank-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("tilo-sheets-blank-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         unsafe { std::env::set_var("XDG_DATA_HOME", &tmp) };
 
@@ -8603,47 +8991,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// Not a correctness test: a perf guard demonstrating that a no-op reload
-    /// (no document change, as on every scroll/selection/hover frame) skips the
-    /// snapshot + full recalculation. Run with `--ignored --nocapture`.
     #[test]
-    #[ignore = "a benchmark that prints timings; run with --ignored --nocapture"]
-    fn bench_reload_memoisation() {
+    fn reload_reuses_unchanged_cache_and_invalidates_it_after_an_edit() {
         let (mut app, mut doc) = seeded_app();
-        let n = 20_000;
+        // Commit the startup seed and refresh once at its steady-state heads.
+        app.sync(&mut doc, &automerge::ROOT);
+        let cached_heads = app
+            .cache
+            .as_ref()
+            .expect("seed reload populates cache")
+            .heads
+            .clone();
 
-        // Memoised path (heads unchanged) — what interaction frames now hit.
-        let t0 = std::time::Instant::now();
-        for _ in 0..n {
-            app.reload(&mut doc);
-        }
-        let memo = t0.elapsed();
-
-        // Forced path (snapshot + recalculate every call) — the old behaviour.
-        let t1 = std::time::Instant::now();
-        for _ in 0..n {
-            app.cache = None;
-            app.reload(&mut doc);
-        }
-        let forced = t1.elapsed();
-
-        eprintln!(
-            "reload x{n}: memoised={:?} ({:.3}us/call)  forced={:?} ({:.3}us/call)",
-            memo,
-            memo.as_secs_f64() * 1e6 / f64::from(n),
-            forced,
-            forced.as_secs_f64() * 1e6 / f64::from(n),
-        );
+        app.pending.redraw = false;
+        app.reload(&mut doc);
         assert!(
-            memo < forced,
-            "memoised reload must be cheaper than a forced one"
+            !app.pending.redraw,
+            "unchanged reload should return before rebuilding"
         );
+        assert_eq!(app.cache.as_ref().unwrap().heads, cached_heads);
+
+        SheetsDoc::set_cell_raw(&mut doc, 0, (0, 0), "1234");
+        app.pending.redraw = false;
+        app.reload(&mut doc);
+
+        let refreshed_heads = &app
+            .cache
+            .as_ref()
+            .expect("edited reload refreshes cache")
+            .heads;
+        assert_ne!(refreshed_heads, &cached_heads);
+        assert_eq!(refreshed_heads, &doc.get_heads());
+        assert_eq!(value_at(&app, (0, 0)), Some(CellValue::Number(1234.0)));
+        assert!(app.pending.redraw, "rebuilt grid must request a redraw");
     }
 
     #[test]
     fn workbook_persists_and_reloads() {
         let _guard = ENV_LOCK.lock().unwrap();
-        let tmp = std::env::temp_dir().join(format!("qos-sheets-persist-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("tilo-sheets-persist-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         unsafe { std::env::set_var("XDG_DATA_HOME", &tmp) };
 
@@ -8713,7 +9099,7 @@ mod tests {
     fn persistence_coalesces_edits_that_arrive_during_a_save() {
         let _guard = ENV_LOCK.lock().unwrap();
         let tmp = std::env::temp_dir().join(format!(
-            "qos-sheets-persist-coalesce-{}",
+            "tilo-sheets-persist-coalesce-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&tmp);
@@ -8756,7 +9142,8 @@ mod tests {
     #[test]
     fn incoming_change_during_load_is_saved_after_the_disk_workbook_merges() {
         let _guard = ENV_LOCK.lock().unwrap();
-        let tmp = std::env::temp_dir().join(format!("qos-sheets-load-race-{}", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("tilo-sheets-load-race-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         unsafe { std::env::set_var("XDG_DATA_HOME", &tmp) };
         let mut on_disk = AutoCommit::new();
@@ -9104,7 +9491,7 @@ mod tests {
         export_to: fn(&mut SheetsApp, &mut AutoCommit, &std::path::Path),
         import_from: fn(&mut SheetsApp, &mut AutoCommit, &std::path::Path),
     ) {
-        let tmp = std::env::temp_dir().join(format!("qos-sheets-io-{ext}-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("tilo-sheets-io-{ext}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let path = tmp.join(format!("Budget.{ext}"));
@@ -9155,7 +9542,7 @@ mod tests {
     #[test]
     fn sparse_csv_dimensions_refuse_before_dense_materialisation() {
         let path =
-            std::env::temp_dir().join(format!("qos-sheets-sparse-csv-{}.csv", std::process::id()));
+            std::env::temp_dir().join(format!("tilo-sheets-sparse-csv-{}.csv", std::process::id()));
         let payload = format!("{}x", "\n".repeat(MAX_CSV_MATERIALIZED_SLOTS));
         std::fs::write(&path, payload).expect("test CSV writes");
         let error = SheetsApp::read_import_tables(Interchange::Csv, &path)
@@ -9183,7 +9570,7 @@ mod tests {
     /// the host file chooser feeds, via an injected outcome (no D-Bus dialog).
     #[test]
     fn portal_drain_exports_then_imports_through_the_picked_path() {
-        let tmp = std::env::temp_dir().join(format!("qos-sheets-portal-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("tilo-sheets-portal-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let path = tmp.join("Exported.csv");
@@ -9508,8 +9895,8 @@ mod tests {
             let sheet1 = &resources[0].children[1];
             let spec = sheet1.actions.iter().find(|a| a.id == "delete").unwrap();
             match &spec.input {
-                qos_actions::ActionInput::Immediate(enc) => enc.clone(),
-                qos_actions::ActionInput::Prompted { .. } => {
+                tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
+                tilo_actions::ActionInput::Prompted { .. } => {
                     panic!("delete is an immediate action")
                 }
             }
@@ -9610,12 +9997,18 @@ mod tests {
         app.grid.select_only((1, 1));
         let tree = app.accessibility().expect("spreadsheet semantics");
         assert_eq!(tree.role, ui::a11y::Role::Document);
-        let tabs = &tree.children[0];
+        let toolbar = &tree.children[0];
+        assert_eq!(toolbar.role, ui::a11y::Role::Toolbar);
+        assert!(toolbar.children.iter().any(|control| {
+            control.name.as_deref() == Some("Name box") && control.action_target.is_some()
+        }));
+        let tabs = &tree.children[1];
         assert_eq!(tabs.role, ui::a11y::Role::TabBar);
         assert!(tabs.children.iter().any(|tab| tab.state.selected));
-        let cell = &tree.children[1].children[0].children[0];
+        assert!(tabs.children.iter().all(|tab| tab.action_target.is_some()));
+        let cell = &tree.children[2].children[0].children[0];
         assert_eq!(cell.name.as_deref(), Some("Column A"));
-        let visible_row = tree.children[1]
+        let visible_row = tree.children[2]
             .children
             .iter()
             .find(|row| row.name.as_deref() == Some("Row 2"))
@@ -9636,8 +10029,59 @@ mod tests {
         let (mut app, _doc) = seeded_app();
         app.shots_show_loading();
         let tree = app.accessibility().expect("spreadsheet semantics");
-        let table = &tree.children[1];
+        let table = &tree.children[2];
         assert!(table.state.busy);
         assert!(table.children.len() < 30, "a11y remains viewport-bounded");
+    }
+
+    #[test]
+    fn semantic_toolbar_and_tabs_use_the_same_live_controls() {
+        use ui::widget::Widget as _;
+
+        let (mut app, mut doc) = seeded_app();
+        let root = automerge::ROOT;
+        assert!(app.perform_semantic_action(
+            "sheets.toolbar.formula-view",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &root,
+        ));
+        assert!(app.grid.formula_view());
+        assert!(app.perform_semantic_action(
+            "sheets.name-box",
+            &ui::a11y::Action::Focus,
+            &mut doc,
+            &root,
+        ));
+        assert!(app.name_box_edit.is_some());
+        let target = format!("sheets.tab:{}", app.sheet_identity(1));
+        assert!(
+            app.perform_semantic_action(&target, &ui::a11y::Action::Activate, &mut doc, &root,)
+        );
+        assert_eq!(app.active_sheet, 1);
+    }
+
+    #[test]
+    fn narrow_large_text_collapses_secondary_toolbar_actions_without_clipping() {
+        let (mut app, _doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+        app.text_scale = 2.0;
+        app.grid.set_text_scale(2.0);
+        app.relayout();
+        let labels: Vec<&str> = app
+            .menu_buttons
+            .iter()
+            .map(|button| button.label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["File", "Format", "More"]);
+        assert!(
+            app.menu_buttons
+                .iter()
+                .all(|button| button.rect.x1 <= app.rect.x1)
+        );
+        app.open_menu = OpenMenu::More;
+        app.relayout_overlays();
+        assert_eq!(app.dropdown_rows.len(), 3);
+        assert!(app.dropdown_rect.x0 >= app.rect.x0 && app.dropdown_rect.x1 <= app.rect.x1);
     }
 }

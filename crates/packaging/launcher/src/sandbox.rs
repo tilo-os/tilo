@@ -11,16 +11,18 @@ use crate::manifest::{MinimalManifest, PortalPolicy};
 
 /// In-sandbox mount root for the package payload.
 pub fn payload_mount_for(package_id: &str) -> PathBuf {
-    PathBuf::from("/var/qos-apps").join(package_id)
+    PathBuf::from("/var/tilo-apps").join(package_id)
 }
 
-/// In-sandbox mount root for the runtime (qos-runtime/<version>/).
+/// In-sandbox mount root for the runtime (tilo-runtime/<version>/).
 pub fn runtime_mount_for(version: &str) -> PathBuf {
-    PathBuf::from("/usr/lib/qos-runtime").join(version)
+    PathBuf::from("/run/tilo-runtime").join(version)
 }
 
-/// Canonical absolute loader/libc paths re-exposed from the runtime
-/// bundle (safe across archs — only existing paths get re-bound).
+/// Canonical absolute ELF interpreter paths re-exposed from the runtime
+/// bundle. Ordinary shared libraries are found through the bundle's
+/// `LD_LIBRARY_PATH`; rebinding them here can target host symlinks (for
+/// example `/lib64/libgcc_s.so.1`), which bubblewrap deliberately refuses.
 pub const CANONICAL_LOADER_PATHS: &[&str] = &[
     "/lib64/ld-linux-x86-64.so.2",
     "/lib/ld-linux-x86-64.so.2",
@@ -31,55 +33,16 @@ pub const CANONICAL_LOADER_PATHS: &[&str] = &[
     "/lib64/ld-linux-aarch64.so.1",
     "/usr/lib64/ld-linux-aarch64.so.1",
     "/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1",
-    "/lib64/libc.so.6",
-    "/lib64/libgcc_s.so.1",
-    "/lib64/libm.so.6",
-    "/lib64/libdl.so.2",
-    "/lib64/libpthread.so.0",
-    "/lib64/librt.so.1",
-    "/lib64/libutil.so.1",
-    "/usr/lib64/libc.so.6",
-    "/usr/lib64/libgcc_s.so.1",
-    "/usr/lib64/libm.so.6",
-    "/usr/lib64/libdl.so.2",
-    "/usr/lib64/libpthread.so.0",
-    "/usr/lib64/librt.so.1",
-    "/usr/lib64/libutil.so.1",
-    "/lib/x86_64-linux-gnu/libc.so.6",
-    "/lib/x86_64-linux-gnu/libgcc_s.so.1",
-    "/lib/x86_64-linux-gnu/libm.so.6",
-    "/lib/x86_64-linux-gnu/libdl.so.2",
-    "/lib/x86_64-linux-gnu/libpthread.so.0",
-    "/lib/x86_64-linux-gnu/librt.so.1",
-    "/lib/x86_64-linux-gnu/libutil.so.1",
-    "/lib/aarch64-linux-gnu/libc.so.6",
-    "/lib/aarch64-linux-gnu/libgcc_s.so.1",
-    "/lib/aarch64-linux-gnu/libm.so.6",
-    "/lib/aarch64-linux-gnu/libdl.so.2",
-    "/lib/aarch64-linux-gnu/libpthread.so.0",
-    "/lib/aarch64-linux-gnu/librt.so.1",
-    "/lib/aarch64-linux-gnu/libutil.so.1",
 ];
 
-/// Plan for exposing D-Bus into the sandbox. *Proxy*: `xdg-dbus-proxy`
-/// with an allowlist. *Direct*: raw session bus (path-only). `kind` is
-/// for logging/tests.
+/// Plan for exposing a filtered D-Bus proxy into the sandbox. The production
+/// runner leaves D-Bus unavailable when that proxy cannot start; there is no
+/// raw-session-bus plan or fallback.
 #[derive(Debug, Clone)]
 pub struct DBusBindPlan {
     pub host_socket: PathBuf,
     /// In-sandbox path, read via `DBUS_SESSION_BUS_ADDRESS=unix:path=<sandbox_path>`.
     pub sandbox_path: PathBuf,
-    /// Which shape this plan carries — logging/tests only, doesn't change the argv.
-    pub kind: DBusBindKind,
-}
-
-/// Which flavour of D-Bus bind a [`DBusBindPlan`] describes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DBusBindKind {
-    /// Filtered via `xdg-dbus-proxy` — the preferred path.
-    Proxy,
-    /// Raw session-bus socket bind — fallback when `xdg-dbus-proxy` isn't installed.
-    Direct,
 }
 
 /// Where a GUI app's Wayland socket appears inside the sandbox.
@@ -164,7 +127,7 @@ pub const INHERITED_ENV: &[&str] = &[
 ///
 /// `bwrap` passes the parent's environment straight through unless
 /// told not to, and the parent here is the compositor — its Wayland
-/// socket, broker and `QOS_*` confinement variables. So the
+/// socket, broker and `TILO_*` confinement variables. So the
 /// environment is *built*: `--clearenv` first, then `PATH`, then
 /// [`INHERITED_ENV`], with everything else set beside the bind that
 /// makes it mean something.
@@ -190,13 +153,13 @@ pub fn push_clean_environment(argv: &mut Vec<String>) {
 /// Env var publishing the compositor's privileged Wayland socket.
 /// Mirrors `shell::compositor::native::PRIVILEGED_SOCKET_ENV`,
 /// duplicated since the launcher has no compositor dep.
-pub const PRIVILEGED_WAYLAND_ENV: &str = "QOS_WAYLAND_PRIVILEGED";
+pub const PRIVILEGED_WAYLAND_ENV: &str = "TILO_WAYLAND_PRIVILEGED";
 
 /// Env var naming the workspace an app launched into —
 /// `ui::collaboration` uses it as the **collaboration cluster id** CRDT
 /// deltas are addressed to, so apps in different workspaces never
 /// share traffic.
-pub const WORKSPACE_ID_ENV: &str = "QOS_WORKSPACE_ID";
+pub const WORKSPACE_ID_ENV: &str = "TILO_WORKSPACE_ID";
 
 /// Attach [`crate::hardening::RuntimeHardening`] to a sandbox: the
 /// preload library must also be bound, since an unbound `LD_PRELOAD`
@@ -290,10 +253,10 @@ fn is_drm_path(p: &Path) -> bool {
 
 /// Host-governed human identity directory exposed to Files.  Unlike the
 /// app's writable data directory, this individual mount is read-only.
-pub const SANDBOX_TRUSTED_IDENTITIES_DIR: &str = "/run/qos/identity-projection";
+pub const SANDBOX_TRUSTED_IDENTITIES_DIR: &str = "/run/tilo/identity-projection";
 /// Stable JSON path Files reloads inside that directory.
 pub const SANDBOX_TRUSTED_IDENTITIES_PATH: &str =
-    "/run/qos/identity-projection/trusted-identities.json";
+    "/run/tilo/identity-projection/trusted-identities.json";
 
 /// Bind one already-staged identity projection into Files.
 ///
@@ -345,9 +308,9 @@ pub fn build_bwrap_argv(
 
 fn push_continuity_environment(argv: &mut Vec<String>) {
     for key in [
-        "QOS_CONTINUITY_INSTANCE",
-        "QOS_CONTINUITY_RESUME_SCHEMA",
-        "QOS_CONTINUITY_RESUME_HEX",
+        "TILO_CONTINUITY_INSTANCE",
+        "TILO_CONTINUITY_RESUME_SCHEMA",
+        "TILO_CONTINUITY_RESUME_HEX",
     ] {
         let Ok(value) = std::env::var(key) else {
             continue;
@@ -355,13 +318,13 @@ fn push_continuity_environment(argv: &mut Vec<String>) {
         let allowed =
             !value.is_empty() && value.len() <= 64 * 1024 && !value.contains(['\0', '\n', '\r']);
         if allowed
-            && (key != "QOS_CONTINUITY_INSTANCE"
+            && (key != "TILO_CONTINUITY_INSTANCE"
                 || (value.len() <= 32 && value.bytes().all(|byte| byte.is_ascii_digit())))
-            && (key != "QOS_CONTINUITY_RESUME_SCHEMA"
+            && (key != "TILO_CONTINUITY_RESUME_SCHEMA"
                 || (value.len() <= 5
                     && value.bytes().all(|byte| byte.is_ascii_digit())
                     && value.parse::<u16>().is_ok_and(|version| version > 0)))
-            && (key != "QOS_CONTINUITY_RESUME_HEX"
+            && (key != "TILO_CONTINUITY_RESUME_HEX"
                 || (value.len() <= 64 * 1024 && value.bytes().all(|byte| byte.is_ascii_hexdigit())))
         {
             argv.extend(["--setenv".to_string(), key.to_string(), value]);
@@ -378,7 +341,7 @@ fn push_app_metadata(argv: &mut Vec<String>, manifest: &MinimalManifest, payload
     {
         argv.extend([
             "--setenv".to_string(),
-            "QOS_APP_NAME".to_string(),
+            "TILO_APP_NAME".to_string(),
             name.to_string(),
         ]);
     }
@@ -390,7 +353,7 @@ fn push_app_metadata(argv: &mut Vec<String>, manifest: &MinimalManifest, payload
     {
         argv.extend([
             "--setenv".to_string(),
-            "QOS_APP_ICON".to_string(),
+            "TILO_APP_ICON".to_string(),
             payload_mount
                 .join(icon.trim_start_matches('/'))
                 .display()
@@ -463,9 +426,9 @@ pub fn build_bwrap_argv_for_entry(
     let payload_mount = payload_mount_for(&manifest.package_id);
     push_bind(&mut argv, "--ro-bind", payload_root, &payload_mount);
 
-    // QOS_PACKAGE_ID picks a per-app fallback state dir in standalone mode.
+    // TILO_PACKAGE_ID picks a per-app fallback state dir in standalone mode.
     argv.push("--setenv".to_string());
-    argv.push("QOS_PACKAGE_ID".to_string());
+    argv.push("TILO_PACKAGE_ID".to_string());
     argv.push(manifest.package_id.clone());
 
     // Same-identity continuation is launcher-authored metadata. bwrap clears
@@ -485,11 +448,6 @@ pub fn build_bwrap_argv_for_entry(
         &crate::hardening::for_package(&manifest.package_id),
     );
 
-    // Runtime bind + LD_LIBRARY_PATH, plus re-binding loader/libc at their
-    // canonical absolute paths: ELFs hard-code `INTERP` and the kernel
-    // refuses to exec if unreachable, even with LD_LIBRARY_PATH set.
-    push_runtime_bundle(&mut argv, runtime);
-
     // Standard mounts, before the system profile so its device entries
     // land on top of the `--dev` tmpfs instead of under it.
     argv.push("--tmpfs".to_string());
@@ -505,6 +463,14 @@ pub fn build_bwrap_argv_for_entry(
         &mut argv,
         egress_decision(manifest, capabilities).shares_host_network(),
     );
+
+    // Keep the runtime outside the broad host `/usr` and `/usr/lib` profile.
+    // A nested mount there is either hidden when the parent is mounted later,
+    // or cannot be created after the read-only parent mount. `/run` is private
+    // to this sandbox, so the selected bundle remains visible regardless of
+    // system-profile ordering. Canonical loader/libc paths are still re-bound
+    // because ELFs hard-code `INTERP` and ignore LD_LIBRARY_PATH for it.
+    push_runtime_bundle(&mut argv, runtime);
 
     // User-granted capabilities after the system profile (read-write wins
     // over read-only). `-try` variants throughout: a stale grant (deleted
@@ -530,7 +496,7 @@ pub fn build_bwrap_argv_for_entry(
     // enforcement — the enforcement is the identity about to not be bound.
     if let Some(mode) = capabilities.participation.env_value() {
         argv.push("--setenv".to_string());
-        argv.push("QOS_PARTICIPATION".to_string());
+        argv.push("TILO_PARTICIPATION".to_string());
         argv.push(mode.to_string());
     }
 
@@ -553,7 +519,7 @@ pub fn build_bwrap_argv_for_entry(
 
     // Service sockets reach the app as inherited descriptors: dup2'd onto
     // `child_fd` in `pre_exec`, surviving exec at the same number the app
-    // reads from `QOS_SVC_<NAME>_FD`.
+    // reads from `TILO_SVC_<NAME>_FD`.
     //
     // Deliberately **no bwrap flag**: `--file FD DEST` copies the fd's
     // *contents* to a file, so pointing it at a connected socket blocks
@@ -638,7 +604,7 @@ pub fn push_net_gate(argv: &mut Vec<String>, bind: &NetGateBind) {
     // Convenience for an app that speaks to the gate directly instead of
     // via the loopback relay.
     argv.push("--setenv".to_string());
-    argv.push("QOS_NET_GATE".to_string());
+    argv.push("TILO_NET_GATE".to_string());
     argv.push(bind.sandbox_socket.display().to_string());
 }
 
@@ -655,7 +621,7 @@ pub struct ServiceBind {
 
 /// The env var name the entrypoint reads to find an opened service fd.
 pub fn svc_env_var(name: &str) -> String {
-    format!("QOS_SVC_{}_FD", name.to_uppercase())
+    format!("TILO_SVC_{}_FD", name.to_uppercase())
 }
 
 /// Render a [`CapabilityPlan`]'s paths as bwrap binds. Read grants get
@@ -694,7 +660,7 @@ pub fn push_user_home(argv: &mut Vec<String>, capabilities: &CapabilityPlan) -> 
         return None;
     }
     argv.push("--setenv".to_string());
-    argv.push("QOS_USER_HOME".to_string());
+    argv.push("TILO_USER_HOME".to_string());
     argv.push(home.display().to_string());
     Some(home)
 }
@@ -706,10 +672,10 @@ pub fn push_workspace_roots(
     argv: &mut Vec<String>,
     capabilities: &CapabilityPlan,
 ) -> Option<String> {
-    let raw = std::env::var("QOS_WORKSPACE_ROOTS").ok()?;
+    let raw = std::env::var("TILO_WORKSPACE_ROOTS").ok()?;
     let value = granted_workspace_roots(&raw, capabilities)?;
     argv.push("--setenv".to_string());
-    argv.push("QOS_WORKSPACE_ROOTS".to_string());
+    argv.push("TILO_WORKSPACE_ROOTS".to_string());
     argv.push(value.clone());
     Some(value)
 }
@@ -806,16 +772,16 @@ mod tests {
     fn only_the_granted_roots_cross() {
         let plan = CapabilityPlan {
             ro_paths: vec![PathBuf::from("/var/workspace")],
-            rw_paths: vec![PathBuf::from("/var/tmp/qos/workspace")],
+            rw_paths: vec![PathBuf::from("/var/tmp/tilo/workspace")],
             ..CapabilityPlan::default()
         };
         assert_eq!(
             granted_workspace_roots(
-                "/var/workspace:/srv/somebody-elses:/var/tmp/qos/workspace",
+                "/var/workspace:/srv/somebody-elses:/var/tmp/tilo/workspace",
                 &plan,
             )
             .as_deref(),
-            Some("/var/workspace:/var/tmp/qos/workspace"),
+            Some("/var/workspace:/var/tmp/tilo/workspace"),
             "a root nobody granted must be dropped while the granted ones stay",
         );
     }
@@ -862,6 +828,7 @@ mod tests {
             opens_ext: Vec::new(),
             opens_mime: Vec::new(),
             opens_schemes: Vec::new(),
+            continuity: crate::manifest::ContinuityContract::default(),
         }
     }
 
@@ -931,7 +898,7 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn an_unlisted_package_pays_for_neither_protection() {
-        let argv = argv_with_hardening_policy("dev.qos.browser\n");
+        let argv = argv_with_hardening_policy("dev.tilo.browser\n");
         assert!(
             !argv.iter().any(|a| a == "LD_PRELOAD"),
             "an ordinary app must not carry the hardened allocator: {argv:?}"
@@ -974,7 +941,7 @@ mod tests {
 
     /// The sandbox must bind exactly one Wayland socket — the public one
     /// — never the privileged one, which is how the clipboard-manager gate
-    /// in `shell/src/compositor/selection.rs` stays closed to a sandboxed app.
+    /// in `crates/session/shell/src/compositor/selection.rs` stays closed to a sandboxed app.
     #[test]
     fn sandbox_binds_only_the_public_wayland_socket() {
         let mut argv = Vec::new();
@@ -993,7 +960,7 @@ mod tests {
              be the public one: {argv:?}"
         );
         assert!(
-            !argv.iter().any(|a| a.contains("qos-privileged")),
+            !argv.iter().any(|a| a.contains("tilo-privileged")),
             "the privileged Wayland socket must never appear in a sandbox argv: {argv:?}"
         );
         assert!(
@@ -1043,7 +1010,7 @@ mod tests {
     }
 
     #[test]
-    fn argv_binds_payload_root_to_qos_apps_path() {
+    fn argv_binds_payload_root_to_tilo_apps_path() {
         let m = mk_manifest("off");
         let argv = build_bwrap_argv(
             &m,
@@ -1059,7 +1026,7 @@ mod tests {
             .position(|a| a == "/host/pkg")
             .expect("payload host path in argv");
         assert_eq!(argv[pos - 1], "--ro-bind");
-        assert_eq!(argv[pos + 1], "/var/qos-apps/com.example.notes");
+        assert_eq!(argv[pos + 1], "/var/tilo-apps/com.example.notes");
     }
 
     /// Value of `--setenv <key> <value>` for `key`, or `None` if absent.
@@ -1074,9 +1041,9 @@ mod tests {
     fn argv_forwards_the_complete_validated_continuation_envelope() {
         // SAFETY: serialized with every test that mutates process env.
         unsafe {
-            std::env::set_var("QOS_CONTINUITY_INSTANCE", "42");
-            std::env::set_var("QOS_CONTINUITY_RESUME_SCHEMA", "7");
-            std::env::set_var("QOS_CONTINUITY_RESUME_HEX", "7b7d");
+            std::env::set_var("TILO_CONTINUITY_INSTANCE", "42");
+            std::env::set_var("TILO_CONTINUITY_RESUME_SCHEMA", "7");
+            std::env::set_var("TILO_CONTINUITY_RESUME_HEX", "7b7d");
         }
         let argv = build_bwrap_argv(
             &mk_manifest("off"),
@@ -1089,24 +1056,24 @@ mod tests {
         );
         // SAFETY: same serialized scope as the writes above.
         unsafe {
-            std::env::remove_var("QOS_CONTINUITY_INSTANCE");
-            std::env::remove_var("QOS_CONTINUITY_RESUME_SCHEMA");
-            std::env::remove_var("QOS_CONTINUITY_RESUME_HEX");
+            std::env::remove_var("TILO_CONTINUITY_INSTANCE");
+            std::env::remove_var("TILO_CONTINUITY_RESUME_SCHEMA");
+            std::env::remove_var("TILO_CONTINUITY_RESUME_HEX");
         }
-        assert_eq!(setenv_value(&argv, "QOS_CONTINUITY_INSTANCE"), Some("42"));
+        assert_eq!(setenv_value(&argv, "TILO_CONTINUITY_INSTANCE"), Some("42"));
         assert_eq!(
-            setenv_value(&argv, "QOS_CONTINUITY_RESUME_SCHEMA"),
+            setenv_value(&argv, "TILO_CONTINUITY_RESUME_SCHEMA"),
             Some("7")
         );
         assert_eq!(
-            setenv_value(&argv, "QOS_CONTINUITY_RESUME_HEX"),
+            setenv_value(&argv, "TILO_CONTINUITY_RESUME_HEX"),
             Some("7b7d")
         );
     }
 
     #[test]
     fn argv_exports_the_app_name_from_the_manifest() {
-        // QOS_APP_NAME exported alongside QOS_PACKAGE_ID for the window title.
+        // TILO_APP_NAME exported alongside TILO_PACKAGE_ID for the window title.
         let m = mk_manifest("off");
         let argv = build_bwrap_argv(
             &m,
@@ -1117,7 +1084,7 @@ mod tests {
             None,
             &CapabilityPlan::empty(),
         );
-        assert_eq!(setenv_value(&argv, "QOS_APP_NAME"), Some("Notes"));
+        assert_eq!(setenv_value(&argv, "TILO_APP_NAME"), Some("Notes"));
     }
 
     #[test]
@@ -1134,7 +1101,7 @@ mod tests {
             None,
             &CapabilityPlan::empty(),
         );
-        assert_eq!(setenv_value(&argv, "QOS_APP_NAME"), None);
+        assert_eq!(setenv_value(&argv, "TILO_APP_NAME"), None);
     }
 
     #[test]
@@ -1153,14 +1120,14 @@ mod tests {
             &CapabilityPlan::empty(),
         );
         assert_eq!(
-            setenv_value(&argv, "QOS_APP_ICON"),
-            Some("/var/qos-apps/com.example.notes/assets/icon.png"),
+            setenv_value(&argv, "TILO_APP_ICON"),
+            Some("/var/tilo-apps/com.example.notes/assets/icon.png"),
         );
     }
 
     #[test]
     fn argv_omits_the_icon_when_the_manifest_has_none() {
-        // No icon art: no QOS_APP_ICON, so the toolkit draws its default.
+        // No icon art: no TILO_APP_ICON, so the toolkit draws its default.
         let m = mk_manifest("off");
         let argv = build_bwrap_argv(
             &m,
@@ -1171,12 +1138,13 @@ mod tests {
             None,
             &CapabilityPlan::empty(),
         );
-        assert_eq!(setenv_value(&argv, "QOS_APP_ICON"), None);
+        assert_eq!(setenv_value(&argv, "TILO_APP_ICON"), None);
     }
 
     /// The reads a launch gets are the system profile's; a manifest naming
     /// a path never reaches this builder.
     #[test]
+    #[serial_test::serial(process_env)]
     fn argv_reads_come_from_the_system_profile_not_the_manifest() {
         let m = mk_manifest("off");
         let argv = build_bwrap_argv(
@@ -1243,16 +1211,25 @@ mod tests {
         let rt_pos = argv
             .windows(3)
             .position(|w| {
-                w[0] == "--ro-bind" && w[1] == "/host/runtime" && w[2] == "/usr/lib/qos-runtime/1"
+                w[0] == "--ro-bind" && w[1] == "/host/runtime" && w[2] == "/run/tilo-runtime/1"
             })
             .expect("runtime ro-bind");
-        let _ = rt_pos;
+        let usr_lib_pos = argv
+            .windows(3)
+            .position(|w| w[0] == "--ro-bind-try" && w[1] == "/usr/lib" && w[2] == "/usr/lib")
+            .expect("system /usr/lib profile bind");
+        assert!(
+            rt_pos > usr_lib_pos,
+            "the selected runtime must be mounted after /usr/lib so the host profile cannot cover it: {argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|arg| arg.ends_with("/libgcc_s.so.1")),
+            "ordinary shared libraries must resolve through LD_LIBRARY_PATH, not symlink-hostile file rebinds: {argv:?}"
+        );
         let ld_pos = argv
             .windows(3)
             .position(|w| {
-                w[0] == "--setenv"
-                    && w[1] == "LD_LIBRARY_PATH"
-                    && w[2] == "/usr/lib/qos-runtime/1/lib"
+                w[0] == "--setenv" && w[1] == "LD_LIBRARY_PATH" && w[2] == "/run/tilo-runtime/1/lib"
             })
             .expect("LD_LIBRARY_PATH setenv");
         let _ = ld_pos;
@@ -1272,7 +1249,7 @@ mod tests {
         );
         assert_eq!(
             argv.last().map(String::as_str),
-            Some("/var/qos-apps/com.example.notes/bin/notes")
+            Some("/var/tilo-apps/com.example.notes/bin/notes")
         );
     }
 
@@ -1302,9 +1279,8 @@ mod tests {
             .portals
             .insert("notifications".to_string(), PortalPolicy::ViaHost);
         let plan = DBusBindPlan {
-            host_socket: PathBuf::from("/run/user/1234/qos/dbus-proxy/9999.sock"),
+            host_socket: PathBuf::from("/run/user/1234/tilo/dbus-proxy/9999.sock"),
             sandbox_path: PathBuf::from("/run/user/1234/bus"),
-            kind: DBusBindKind::Proxy,
         };
         let argv = build_bwrap_argv(
             &m,
@@ -1318,7 +1294,7 @@ mod tests {
         // Proxy socket bound at /run/user/1234/bus, NOT the raw bus path.
         assert!(
             argv.windows(3).any(|w| w[0] == "--ro-bind"
-                && w[1] == "/run/user/1234/qos/dbus-proxy/9999.sock"
+                && w[1] == "/run/user/1234/tilo/dbus-proxy/9999.sock"
                 && w[2] == "/run/user/1234/bus"),
             "proxy socket ro-bind missing from argv: {argv:?}"
         );
@@ -1329,36 +1305,6 @@ mod tests {
                 && w[1] == "DBUS_SESSION_BUS_ADDRESS"
                 && w[2] == "unix:path=/run/user/1234/bus"),
             "dbus setenv missing from argv: {argv:?}"
-        );
-    }
-
-    #[test]
-    fn argv_binds_dbus_directly_when_direct_plan_is_supplied() {
-        // Direct-bind fallback: proxy unavailable, so the raw bus is bound.
-        // Argv shape identical to the proxy path — only `kind` distinguishes.
-        let mut m = mk_manifest("off");
-        m.sandbox
-            .portals
-            .insert("notifications".to_string(), PortalPolicy::ViaHost);
-        let plan = DBusBindPlan {
-            host_socket: PathBuf::from("/run/user/1234/bus"),
-            sandbox_path: PathBuf::from("/run/user/1234/bus"),
-            kind: DBusBindKind::Direct,
-        };
-        let argv = build_bwrap_argv(
-            &m,
-            Path::new("/host/pkg"),
-            None,
-            &[],
-            Some(&plan),
-            None,
-            &CapabilityPlan::empty(),
-        );
-        assert!(
-            argv.windows(3).any(|w| w[0] == "--ro-bind"
-                && w[1] == "/run/user/1234/bus"
-                && w[2] == "/run/user/1234/bus"),
-            "direct bus ro-bind missing from argv: {argv:?}"
         );
     }
 
@@ -1449,7 +1395,7 @@ mod tests {
         );
         assert_eq!(
             argv.last().map(String::as_str),
-            Some("/var/qos-apps/com.example.notes/bin/notes-cli")
+            Some("/var/tilo-apps/com.example.notes/bin/notes-cli")
         );
     }
 
@@ -1462,7 +1408,7 @@ mod tests {
             None,
             &[],
             None,
-            Some(Path::new("/home/alice/.config/qos/identity/primary.json")),
+            Some(Path::new("/home/alice/.config/tilo/identity/primary.json")),
             &CapabilityPlan::empty(),
         );
         assert!(
@@ -1482,13 +1428,13 @@ mod tests {
         let mut argv = Vec::new();
         push_trusted_identities_bind(
             &mut argv,
-            Path::new("/run/user/1000/qos/identity-projections/room/trusted.json"),
+            Path::new("/run/user/1000/tilo/identity-projections/room/trusted.json"),
         );
         assert_eq!(
             argv,
             vec![
                 "--ro-bind",
-                "/run/user/1000/qos/identity-projections/room",
+                "/run/user/1000/tilo/identity-projections/room",
                 SANDBOX_TRUSTED_IDENTITIES_DIR,
             ]
         );
@@ -1501,7 +1447,7 @@ mod tests {
         use crate::capabilities::Participation;
 
         let m = mk_manifest("off");
-        let host = Path::new("/home/alice/.config/qos/identity/primary.json");
+        let host = Path::new("/home/alice/.config/tilo/identity/primary.json");
         let read_only = CapabilityPlan {
             participation: Participation::ReadOnly,
             ..CapabilityPlan::empty()
@@ -1529,7 +1475,7 @@ mod tests {
         // viewer rather than an editor whose saves vanish.
         assert!(
             argv.windows(3)
-                .any(|w| w[0] == "--setenv" && w[1] == "QOS_PARTICIPATION" && w[2] == "read-only"),
+                .any(|w| w[0] == "--setenv" && w[1] == "TILO_PARTICIPATION" && w[2] == "read-only"),
             "the app must be able to see that it is a viewer: {argv:?}"
         );
 
@@ -1554,7 +1500,7 @@ mod tests {
         );
         assert!(
             argv.windows(3)
-                .any(|w| w[0] == "--setenv" && w[1] == "QOS_PARTICIPATION" && w[2] == "author"),
+                .any(|w| w[0] == "--setenv" && w[1] == "TILO_PARTICIPATION" && w[2] == "author"),
             "and is told so: {argv:?}"
         );
     }
@@ -1564,7 +1510,7 @@ mod tests {
     #[test]
     fn an_unscoped_launch_is_unchanged() {
         let m = mk_manifest("off");
-        let host = Path::new("/home/alice/.config/qos/identity/primary.json");
+        let host = Path::new("/home/alice/.config/tilo/identity/primary.json");
         let argv = build_bwrap_argv(
             &m,
             Path::new("/host/pkg"),
@@ -1581,7 +1527,7 @@ mod tests {
             "an unscoped launch keeps brokered identity: {argv:?}"
         );
         assert!(
-            !argv.iter().any(|a| a == "QOS_PARTICIPATION"),
+            !argv.iter().any(|a| a == "TILO_PARTICIPATION"),
             "and no participation is claimed on its behalf: {argv:?}"
         );
     }
@@ -1605,7 +1551,7 @@ mod tests {
             "identity broker fd must not appear without a host identity: {argv:?}"
         );
         assert!(
-            !argv.iter().any(|a| a == "QOS_USER_IDENTITY"),
+            !argv.iter().any(|a| a == "TILO_USER_IDENTITY"),
             "legacy identity path env must never appear: {argv:?}"
         );
     }
@@ -1754,7 +1700,7 @@ mod tests {
         );
         assert!(
             argv.windows(3)
-                .any(|w| w[0] == "--setenv" && w[1] == "QOS_SVC_COLLAB_FD" && w[2] == "17"),
+                .any(|w| w[0] == "--setenv" && w[1] == "TILO_SVC_COLLAB_FD" && w[2] == "17"),
             "the app must be told which descriptor its service is on: {argv:?}"
         );
     }
@@ -1811,7 +1757,7 @@ mod tests {
         assert!(
             !argv
                 .iter()
-                .any(|a| a.ends_with("/qos/services/collab.sock")),
+                .any(|a| a.ends_with("/tilo/services/collab.sock")),
             "the service socket has no in-sandbox path any more; the app \
              gets a descriptor: {argv:?}",
         );
@@ -1869,7 +1815,7 @@ mod tests {
         let mut expected = vec![(
             "--ro-bind".to_string(),
             "/host/pkg".to_string(),
-            "/var/qos-apps/com.example.notes".to_string(),
+            "/var/tilo-apps/com.example.notes".to_string(),
         )];
         for p in crate::profile::SYSTEM_READ_PATHS {
             expected.push((
@@ -1917,11 +1863,11 @@ mod tests {
     #[test]
     fn read_capability_binds_the_path_read_only_and_never_writable() {
         let caps = vec![fs_grant(
-            "dev.qos.books",
+            "dev.tilo.books",
             "/var/workspace/books",
             Verb::Read,
         )];
-        let argv = argv_with_caps("dev.qos.books", &caps, 1_000);
+        let argv = argv_with_caps("dev.tilo.books", &caps, 1_000);
         assert!(
             argv.windows(3).any(|w| w[0] == "--ro-bind-try"
                 && w[1] == "/var/workspace/books"
@@ -1947,11 +1893,11 @@ mod tests {
     #[test]
     fn write_capability_binds_the_path_read_write() {
         let caps = vec![fs_grant(
-            "dev.qos.books",
+            "dev.tilo.books",
             "/var/workspace/books",
             Verb::Write,
         )];
-        let argv = argv_with_caps("dev.qos.books", &caps, 1_000);
+        let argv = argv_with_caps("dev.tilo.books", &caps, 1_000);
         assert!(
             argv.windows(3).any(|w| w[0] == "--bind-try"
                 && w[1] == "/var/workspace/books"
@@ -1972,18 +1918,18 @@ mod tests {
 
     #[test]
     fn camera_bind_appears_only_with_a_camera_capability() {
-        let without = argv_with_caps("dev.qos.meet", &[], 1_000);
+        let without = argv_with_caps("dev.tilo.meet", &[], 1_000);
         assert!(
             !without.iter().any(|a| a.starts_with("/dev/video")),
             "no camera capability must mean no camera device in the namespace: {without:?}"
         );
 
         let caps = vec![CapOverride::grant(
-            Subject::app("dev.qos.meet"),
+            Subject::app("dev.tilo.meet"),
             Scope::Device("camera".to_string()),
             Verb::Read,
         )];
-        let with = argv_with_caps("dev.qos.meet", &caps, 1_000);
+        let with = argv_with_caps("dev.tilo.meet", &caps, 1_000);
         assert!(
             with.windows(3).any(|w| w[0] == "--dev-bind-try"
                 && w[1] == "/dev/video0"
@@ -1995,19 +1941,19 @@ mod tests {
     #[test]
     fn a_capability_for_another_app_never_reaches_this_apps_argv() {
         let caps = vec![
-            fs_grant("dev.qos.other", "/var/workspace/secrets", Verb::Write),
+            fs_grant("dev.tilo.other", "/var/workspace/secrets", Verb::Write),
             CapOverride::grant(
-                Subject::app("dev.qos.other"),
+                Subject::app("dev.tilo.other"),
                 Scope::Device("camera".to_string()),
                 Verb::Read,
             ),
             CapOverride::grant(
-                Subject::app("dev.qos.other"),
+                Subject::app("dev.tilo.other"),
                 Scope::NetHost("*".to_string()),
                 Verb::Write,
             ),
         ];
-        let argv = argv_with_caps("dev.qos.books", &caps, 1_000);
+        let argv = argv_with_caps("dev.tilo.books", &caps, 1_000);
         assert!(
             !argv.iter().any(|a| a == "/var/workspace/secrets"),
             "another app's filesystem grant must not appear here: {argv:?}"
@@ -2022,18 +1968,19 @@ mod tests {
         );
         // Proof the fixture is capable of granting: the same list, read
         // as the app it names, does produce those binds.
-        let theirs = argv_with_caps("dev.qos.other", &caps, 1_000);
+        let theirs = argv_with_caps("dev.tilo.other", &caps, 1_000);
         assert!(theirs.iter().any(|a| a == "/var/workspace/secrets"));
         assert!(theirs.iter().any(|a| a == "--share-net"));
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn an_expired_capability_produces_no_bind() {
         let caps = vec![
-            fs_grant("dev.qos.books", "/var/workspace/books", Verb::Write)
+            fs_grant("dev.tilo.books", "/var/workspace/books", Verb::Write)
                 .expiring(Expiry::AtUnix(500)),
         ];
-        let expired = argv_with_caps("dev.qos.books", &caps, 1_000);
+        let expired = argv_with_caps("dev.tilo.books", &caps, 1_000);
         assert!(
             !expired.iter().any(|a| a == "/var/workspace/books"),
             "a capability that expired at 500 must bind nothing at now=1000: {expired:?}"
@@ -2045,7 +1992,7 @@ mod tests {
         );
         // Same capability before its deadline does bind — so the
         // emptiness above is the expiry, not a broken fixture.
-        let live = argv_with_caps("dev.qos.books", &caps, 499);
+        let live = argv_with_caps("dev.tilo.books", &caps, 499);
         assert!(
             live.windows(3).any(|w| w[0] == "--bind-try"
                 && w[1] == "/var/workspace/books"
@@ -2058,18 +2005,18 @@ mod tests {
     fn network_capability_is_what_shares_the_namespace() {
         // The manifest says net.mode = "off": without a capability the sandbox
         // keeps the empty network namespace, and no packet can leave.
-        let isolated = argv_with_caps("dev.qos.mail", &[], 1_000);
+        let isolated = argv_with_caps("dev.tilo.mail", &[], 1_000);
         assert!(
             !isolated.iter().any(|a| a == "--share-net"),
             "no network capability must leave the netns unshared: {isolated:?}"
         );
 
         let caps = vec![CapOverride::grant(
-            Subject::app("dev.qos.mail"),
+            Subject::app("dev.tilo.mail"),
             Scope::NetHost("*".to_string()),
             Verb::Write,
         )];
-        let granted = argv_with_caps("dev.qos.mail", &caps, 1_000);
+        let granted = argv_with_caps("dev.tilo.mail", &caps, 1_000);
         assert!(
             granted.iter().any(|a| a == "--share-net"),
             "a grant for `*` is unrestricted access and shares the namespace: {granted:?}"
@@ -2083,11 +2030,11 @@ mod tests {
     #[test]
     fn a_grant_naming_a_host_no_longer_shares_the_whole_network() {
         let caps = vec![CapOverride::grant(
-            Subject::app("dev.qos.mail"),
+            Subject::app("dev.tilo.mail"),
             Scope::NetHost("github.com".to_string()),
             Verb::Write,
         )];
-        let argv = argv_with_caps("dev.qos.mail", &caps, 1_000);
+        let argv = argv_with_caps("dev.tilo.mail", &caps, 1_000);
 
         assert!(
             !argv.iter().any(|a| a == "--share-net"),
@@ -2097,7 +2044,8 @@ mod tests {
 
         // And the grant does reach a mechanism now: the gate decision comes from
         // the same manifest + capability pair that built the argv above.
-        let plan = CapabilityPlan::for_app_with("dev.qos.mail", &caps, Some(1_000), |_| Vec::new());
+        let plan =
+            CapabilityPlan::for_app_with("dev.tilo.mail", &caps, Some(1_000), |_| Vec::new());
         let decision = egress_decision(&mk_manifest("off"), &plan);
         let policy = decision.policy().unwrap_or_else(|| {
             panic!("a named host must resolve to a filtered egress policy, got {decision:?}")
@@ -2112,7 +2060,7 @@ mod tests {
     #[test]
     fn the_gate_bind_is_writable_and_points_the_app_at_the_relay() {
         let bind = NetGateBind {
-            host_socket: PathBuf::from("/run/user/1000/qos/net/7.sock"),
+            host_socket: PathBuf::from("/run/user/1000/tilo/net/7.sock"),
             sandbox_socket: PathBuf::from(crate::netgate::SANDBOX_GATE_PATH),
             port: crate::netgate::RELAY_PORT,
         };
@@ -2121,7 +2069,7 @@ mod tests {
 
         assert!(
             argv.windows(3).any(|w| w[0] == "--bind"
-                && w[1] == "/run/user/1000/qos/net/7.sock"
+                && w[1] == "/run/user/1000/tilo/net/7.sock"
                 && w[2] == crate::netgate::SANDBOX_GATE_PATH),
             "the gate socket must be bound read-write: connect(2) on a pathname socket is a \
              write and a --ro-bind surfaces as EACCES: {argv:?}"

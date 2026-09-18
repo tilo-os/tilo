@@ -1,0 +1,251 @@
+//! Device-local privacy policy for personal-device Continuity.
+//!
+//! Certified-device identity and transport stay owned by the existing device
+//! fleet and relay.  This module stores only this machine's release policy:
+//! which facets may leave or control it, plus a small non-secret audit trail.
+
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+pub(crate) const AUDIT_LIMIT: usize = 24;
+
+/// A separately revocable Continuity facet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Capability {
+    Clipboard,
+    Notifications,
+    WifiSettings,
+    Media,
+    DisplayInput,
+    FileTransfer,
+    RealtimeSessions,
+    TypedGamepad,
+    AppContinuations,
+}
+
+impl Capability {
+    pub(crate) const ALL: [Self; 9] = [
+        Self::Clipboard,
+        Self::Notifications,
+        Self::WifiSettings,
+        Self::Media,
+        Self::DisplayInput,
+        Self::FileTransfer,
+        Self::RealtimeSessions,
+        Self::TypedGamepad,
+        Self::AppContinuations,
+    ];
+
+    pub(crate) const fn key(self) -> &'static str {
+        match self {
+            Self::Clipboard => "clipboard",
+            Self::Notifications => "notifications",
+            Self::WifiSettings => "wifi_settings",
+            Self::Media => "media",
+            Self::DisplayInput => "display_input",
+            Self::FileTransfer => "file_transfer",
+            Self::RealtimeSessions => "realtime_sessions",
+            Self::TypedGamepad => "typed_gamepad",
+            Self::AppContinuations => "app_continuations",
+        }
+    }
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Clipboard => "Clipboard",
+            Self::Notifications => "Notifications",
+            Self::WifiSettings => "Wi-Fi & settings",
+            Self::Media => "Media",
+            Self::DisplayInput => "Display & input",
+            Self::FileTransfer => "File transfer",
+            Self::RealtimeSessions => "Realtime sessions",
+            Self::TypedGamepad => "Typed gamepad forwarding",
+            Self::AppContinuations => "App continuations",
+        }
+    }
+
+    pub(crate) const fn description(self) -> &'static str {
+        match self {
+            Self::Clipboard => "Share copied text and images with the current certified device.",
+            Self::Notifications => "Mirror notification content and actions to the current device.",
+            Self::WifiSettings => "Offer saved network and compatible personal settings.",
+            Self::Media => "Continue playback and expose media transport controls.",
+            Self::DisplayInput => "Allow this device to extend a display or accept remote input.",
+            Self::FileTransfer => "Accept explicit file sends between your certified devices.",
+            Self::RealtimeSessions => "Hand off active calls and other live app sessions.",
+            Self::TypedGamepad => "Forward typed gamepad events, never an untyped input stream.",
+            Self::AppContinuations => {
+                "Offer app placement and bounded resume state to your certified devices."
+            }
+        }
+    }
+}
+
+/// One bounded, deliberately low-detail local record.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AuditEntry {
+    pub(crate) recorded_at_secs: u64,
+    pub(crate) capability: Option<Capability>,
+    pub(crate) enabled: bool,
+}
+
+impl AuditEntry {
+    pub(crate) fn summary(&self) -> String {
+        let subject = self.capability.map_or("All Continuity", Capability::label);
+        let verb = if self.enabled { "allowed" } else { "stopped" };
+        format!("{subject} {verb} · local record {}", self.recorded_at_secs)
+    }
+}
+
+/// The release policy stored under `qos.continuity` on this device.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independently revocable, serialized privacy capability"
+)]
+pub(crate) struct ContinuityPrivacy {
+    pub(crate) enabled: bool,
+    pub(crate) clipboard: bool,
+    pub(crate) notifications: bool,
+    pub(crate) wifi_settings: bool,
+    pub(crate) media: bool,
+    pub(crate) display_input: bool,
+    pub(crate) file_transfer: bool,
+    pub(crate) realtime_sessions: bool,
+    pub(crate) typed_gamepad: bool,
+    pub(crate) app_continuations: bool,
+    pub(crate) audit: Vec<AuditEntry>,
+}
+
+impl ContinuityPrivacy {
+    pub(crate) fn load_at(path: &Path) -> Self {
+        let mut policy: Self = settings_store::load_at(path)
+            .get("continuity")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default();
+        if policy.audit.len() > AUDIT_LIMIT {
+            policy.audit.drain(..policy.audit.len() - AUDIT_LIMIT);
+        }
+        policy
+    }
+
+    pub(crate) const fn allowed(&self, capability: Capability) -> bool {
+        match capability {
+            Capability::Clipboard => self.clipboard,
+            Capability::Notifications => self.notifications,
+            Capability::WifiSettings => self.wifi_settings,
+            Capability::Media => self.media,
+            Capability::DisplayInput => self.display_input,
+            Capability::FileTransfer => self.file_transfer,
+            Capability::RealtimeSessions => self.realtime_sessions,
+            Capability::TypedGamepad => self.typed_gamepad,
+            Capability::AppContinuations => self.app_continuations,
+        }
+    }
+
+    pub(crate) fn set_allowed(&mut self, capability: Capability, allowed: bool) {
+        let slot = match capability {
+            Capability::Clipboard => &mut self.clipboard,
+            Capability::Notifications => &mut self.notifications,
+            Capability::WifiSettings => &mut self.wifi_settings,
+            Capability::Media => &mut self.media,
+            Capability::DisplayInput => &mut self.display_input,
+            Capability::FileTransfer => &mut self.file_transfer,
+            Capability::RealtimeSessions => &mut self.realtime_sessions,
+            Capability::TypedGamepad => &mut self.typed_gamepad,
+            Capability::AppContinuations => &mut self.app_continuations,
+        };
+        *slot = allowed;
+    }
+
+    pub(crate) fn effective(&self, capability: Capability) -> bool {
+        self.enabled && self.allowed(capability)
+    }
+
+    pub(crate) fn record(&mut self, capability: Option<Capability>, enabled: bool, now_secs: u64) {
+        self.audit.push(AuditEntry {
+            recorded_at_secs: now_secs,
+            capability,
+            enabled,
+        });
+        if self.audit.len() > AUDIT_LIMIT {
+            self.audit.drain(..self.audit.len() - AUDIT_LIMIT);
+        }
+    }
+
+    pub(crate) fn save_to(&self, path: Option<&Path>) -> std::io::Result<()> {
+        let value = serde_json::to_value(self).map_err(std::io::Error::other)?;
+        let values = value
+            .as_object()
+            .cloned()
+            .ok_or_else(|| std::io::Error::other("continuity policy is not an object"))?;
+        match path {
+            Some(path) => settings_store::update_section_at(path, "continuity", values),
+            None => settings_store::update_section("continuity", values),
+        }
+    }
+}
+
+pub(crate) fn settings_path() -> Option<PathBuf> {
+    settings_store::settings_path()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn privacy_sensitive_facets_are_opt_in_and_master_kill_switch_wins() {
+        let mut policy = ContinuityPrivacy::default();
+        for capability in Capability::ALL {
+            assert!(!policy.allowed(capability));
+            assert!(!policy.effective(capability));
+        }
+        policy.set_allowed(Capability::Clipboard, true);
+        assert!(!policy.effective(Capability::Clipboard));
+        policy.enabled = true;
+        assert!(policy.effective(Capability::Clipboard));
+    }
+
+    #[test]
+    fn local_round_trip_is_bounded_and_preserves_unowned_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{"locale":{"currency":"EUR"}}"#).unwrap();
+        let mut policy = ContinuityPrivacy {
+            enabled: true,
+            ..ContinuityPrivacy::default()
+        };
+        policy.set_allowed(Capability::FileTransfer, true);
+        for second in 0..(AUDIT_LIMIT as u64 + 5) {
+            policy.record(Some(Capability::FileTransfer), second % 2 == 0, second);
+        }
+        policy.save_to(Some(&path)).unwrap();
+
+        let loaded = ContinuityPrivacy::load_at(&path);
+        assert_eq!(loaded, policy);
+        assert_eq!(loaded.audit.len(), AUDIT_LIMIT);
+        assert_eq!(loaded.audit[0].recorded_at_secs, 5);
+        assert_eq!(settings_store::load_at(&path)["locale"]["currency"], "EUR");
+    }
+
+    #[test]
+    fn audit_schema_cannot_hold_payloads_tokens_or_device_addresses() {
+        let entry = AuditEntry {
+            recorded_at_secs: 42,
+            capability: Some(Capability::Clipboard),
+            enabled: true,
+        };
+        let encoded = serde_json::to_value(entry).unwrap();
+        let object = encoded.as_object().unwrap();
+        assert_eq!(object.len(), 3);
+        assert!(object.contains_key("recorded_at_secs"));
+        assert!(object.contains_key("capability"));
+        assert!(object.contains_key("enabled"));
+    }
+}

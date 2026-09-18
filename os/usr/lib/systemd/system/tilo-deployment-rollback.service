@@ -1,0 +1,34 @@
+[Unit]
+Description=Roll back to the previous deployment
+Documentation=file:///usr/share/doc/tilo/recovery.md
+RequiresMountsFor=/boot
+After=local-fs.target
+
+[Service]
+Type=oneshot
+# --yes because there is nobody at this end to answer a prompt: the confirmation
+# happened in whatever asked for this, and the polkit rule that lets the desktop
+# start this unit is the authorisation. The caveats are printed regardless, into
+# the journal, so what was agreed to is on the record.
+ExecStart=/usr/libexec/tilo-deployment rollback --yes
+RemainAfterExit=no
+UMask=0077
+LimitCORE=0
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+PrivateIPC=yes
+ProtectHome=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+StandardOutput=journal
+StandardError=journal+console

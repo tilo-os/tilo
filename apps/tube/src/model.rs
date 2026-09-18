@@ -2,7 +2,9 @@
 //! no toolkit types, no colours, no IO. The model is device-local presentation
 //! state. Explicit collaboration boundaries live in `actions`: subscriptions
 //! and settings are structured Automerge actions, while fetched catalogues,
-//! playback, navigation and watch history stay local.
+//! playback and navigation stay local. Watch history is a private, per-user
+//! CRDT projection: it syncs between that user's devices but is not a shared
+//! collaborator feed.
 //!
 //! Colours are never stored: thumbnails derive a deterministic gradient
 //! from a seed string at draw time (`util::seed_gradient`) so the model
@@ -491,7 +493,7 @@ impl Settings {
 /// looking at real `YouTube` data or the bundled offline sample.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DataSource {
-    /// True once a live backend has actually returned real data this session.
+    /// True once a live backend has returned data this session.
     pub live: bool,
     /// Short human label for the pill (e.g. "offline — sample data",
     /// "live (rustypipe)", "connecting…").
@@ -513,6 +515,9 @@ pub enum Route {
     Home,
     Trending,
     Subscriptions,
+    /// A collaboratively shared set of videos. Membership is synchronised,
+    /// while playback order deliberately stays local to each viewer.
+    Queue,
     Watch(VideoId),
     Channel(ChannelId),
     Playlist(PlaylistId),
@@ -528,6 +533,7 @@ impl Route {
             Route::Home => "home",
             Route::Trending => "trending",
             Route::Subscriptions => "subs",
+            Route::Queue => "queue",
             Route::History => "history",
             Route::Settings => "settings",
             _ => "",
@@ -547,6 +553,9 @@ pub struct TubeModel {
     /// Playlists we've seen (from search results / opened playlist pages).
     #[serde(default)]
     pub playlists: Vec<Playlist>,
+    /// Canonical local channel ids plus normalized `YouTube` channel URLs pulled
+    /// before this device has fetched that channel's metadata. URL entries are
+    /// intentionally retained so paired-device libraries round-trip safely.
     pub subscriptions: Vec<ChannelId>,
     /// Shared watch-queue membership projected from the document. Queue order is
     /// deliberately not a collaborative presentation concern: keyed membership
@@ -554,7 +563,20 @@ pub struct TubeModel {
     /// silently reordering another client's queue.
     #[serde(default)]
     pub queue: Vec<VideoId>,
+    /// Stable signed-in profile scope for the owner-local history store. The
+    /// host supplies this from the account identity; the offline default is a
+    /// deterministic local profile for hermetic tests and screenshots.
+    #[serde(default = "default_history_owner")]
+    pub history_owner: String,
+    /// Ordered visible projection of the separate owner-local history document,
+    /// never the source of persistence or a subtree of shared collaboration.
+    /// IDs without loaded metadata remain here so a refresh
+    /// cannot erase durable history membership.
     pub history: Vec<VideoId>,
+    /// A local-only recovery banner shown when the durable owner history store
+    /// was preserved but could not be opened or written. Never synchronised.
+    #[serde(default)]
+    pub history_recovery_notice: Option<String>,
     pub settings: Settings,
     pub route: Route,
     /// Last submitted, device-local search query. The editable top-bar buffer
@@ -627,7 +649,7 @@ pub struct TubeModel {
     pub dearrow_thumb_url: BTreeMap<VideoId, String>,
     /// Whether the home/trending feed is currently being fetched from the live
     /// backend. Drives the Home skeleton so a cold, empty catalogue reads as
-    /// "loading" rather than a blank page. The real app starts `true` (it fetches
+    /// "loading" rather than a blank page. The online app starts `true` (it fetches
     /// on launch); the hermetic `--shots`/sample path leaves it `false`.
     #[serde(default)]
     pub feed_loading: bool,
@@ -654,7 +676,9 @@ impl Default for TubeModel {
             playlists: Vec::new(),
             subscriptions: Vec::new(),
             queue: Vec::new(),
+            history_owner: default_history_owner(),
             history: Vec::new(),
+            history_recovery_notice: None,
             settings: Settings::default(),
             route: Route::Home,
             search_query: String::new(),
@@ -733,12 +757,37 @@ impl TubeModel {
             .collect()
     }
 
+    /// Return the durable subscription key associated with a channel. A key
+    /// can be the local catalogue id or a normalized URL imported before this
+    /// device learned that id; callers must use this key when unsubscribing so
+    /// an imported subscription is not accidentally left active.
+    pub fn subscription_key(&self, id: &str) -> Option<&str> {
+        self.subscriptions.iter().find_map(|subscription| {
+            let matches = subscription == id
+                || self.channel(id).is_some_and(|channel| {
+                    subscription == &channel.handle
+                        || subscription
+                            .strip_prefix("https://youtube.com/")
+                            .is_some_and(|handle| handle == channel.handle.trim_start_matches('/'))
+                });
+            matches.then_some(subscription.as_str())
+        })
+    }
+
     pub fn is_subscribed(&self, id: &str) -> bool {
-        self.subscriptions.iter().any(|c| c == id)
+        self.subscription_key(id).is_some()
     }
 
     pub fn toggle_subscribe(&mut self, id: &str) {
-        if let Some(pos) = self.subscriptions.iter().position(|c| c == id) {
+        if let Some(pos) = self.subscriptions.iter().position(|subscription| {
+            subscription == id
+                || self.channel(id).is_some_and(|channel| {
+                    subscription == &channel.handle
+                        || subscription
+                            .strip_prefix("https://youtube.com/")
+                            .is_some_and(|handle| handle == channel.handle.trim_start_matches('/'))
+                })
+        }) {
             self.subscriptions.remove(pos);
         } else {
             self.subscriptions.push(id.to_string());
@@ -795,11 +844,25 @@ impl TubeModel {
         self.notices.truncate(8);
     }
 
-    /// Push a video onto the front of the watch history (dedup, cap 50).
+    /// Update the in-memory projection after an already-dispatched canonical
+    /// history action. Persistence belongs to the owner-local action store;
+    /// retaining this helper keeps the opened card responsive before the next
+    /// document reconciliation pass.
     pub fn record_watch(&mut self, id: &str) {
         self.history.retain(|h| h != id);
         self.history.insert(0, id.to_string());
         self.history.truncate(50);
+    }
+
+    /// Replace the visible ordered projection of the owner-local history document.
+    /// Entries are sorted by the authored watch timestamp (newest first) with
+    /// the stable video id as a deterministic concurrent tie-breaker.
+    pub fn set_history_projection(&mut self, entries: BTreeMap<VideoId, u64>) {
+        let mut ordered = entries.into_iter().collect::<Vec<_>>();
+        ordered.sort_by(|(left_id, left_at), (right_id, right_at)| {
+            right_at.cmp(left_at).then_with(|| left_id.cmp(right_id))
+        });
+        self.history = ordered.into_iter().map(|(id, _)| id).take(50).collect();
     }
 
     /// Videos uploaded by channels the user is subscribed to.
@@ -1055,6 +1118,10 @@ impl TubeModel {
     }
 }
 
+fn default_history_owner() -> String {
+    "profile:local".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1292,6 +1359,18 @@ mod tests {
         assert!(m.is_subscribed("c1"));
         m.toggle_subscribe("c1");
         assert!(!m.is_subscribed("c1"));
+    }
+
+    #[test]
+    fn imported_url_subscription_toggles_the_same_durable_entry() {
+        let mut m = TubeModel::default();
+        m.channels.push(chan("UC_A", "Creator", ""));
+        m.subscriptions.push("https://youtube.com/UC_A".into());
+
+        assert!(m.is_subscribed("UC_A"));
+        assert_eq!(m.subscription_key("UC_A"), Some("https://youtube.com/UC_A"));
+        m.toggle_subscribe("UC_A");
+        assert!(m.subscriptions.is_empty());
     }
 
     #[test]

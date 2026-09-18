@@ -63,6 +63,36 @@ pub struct Span {
     pub kind: TokenKind,
 }
 
+/// Reuse the snippet tokenizer in the toolkit's editable code surface.
+pub struct EditorHighlighter(pub Language);
+
+impl ui::widget::code_editor::Highlighter for EditorHighlighter {
+    fn spans(&self, line: &str, _carry: u64) -> ui::widget::code_editor::LineSpans {
+        use ui::widget::code_editor::{LineSpans, Span as EditorSpan, TokenKind as Kind};
+        let mut offset = 0;
+        let spans = highlight_line(line, self.0)
+            .into_iter()
+            .map(|span| {
+                let end = offset + span.text.len();
+                let kind = match span.kind {
+                    TokenKind::Plain => Kind::Text,
+                    TokenKind::Keyword => Kind::Keyword,
+                    TokenKind::StringLit => Kind::StringLit,
+                    TokenKind::Number => Kind::Number,
+                    TokenKind::Comment => Kind::Comment,
+                    TokenKind::Placeholder => Kind::Heading,
+                    TokenKind::Function => Kind::Function,
+                    TokenKind::Builtin => Kind::Type,
+                };
+                let result = EditorSpan::new(offset..end, kind);
+                offset = end;
+                result
+            })
+            .collect();
+        LineSpans::line_local(spans)
+    }
+}
+
 /// Highlight one line of `lang` source into colour spans. `${...}`
 /// placeholders are always recognised regardless of language so the
 /// expand-variables affordance reads the same everywhere.

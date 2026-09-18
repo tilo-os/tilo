@@ -10,8 +10,8 @@ fn child() -> Command {
     command
         .args(["--exact", "bootstrap_child", "--nocapture"])
         .env("QOS_BOOTSTRAP_TEST_CHILD", "1")
-        .env_remove("QOS_SVC_COLLAB_FD")
-        .env_remove("QOS_SVC_IDENTITY_FD")
+        .env_remove("TILO_SVC_COLLAB_FD")
+        .env_remove("TILO_SVC_IDENTITY_FD")
         .env_remove("QOS_RUNTIME_STANDALONE")
         .env_remove("QOS_RUNTIME_CONNECTION_OWNER_PID");
     command
@@ -38,7 +38,7 @@ fn bootstrap_child() {
 #[test]
 fn malformed_inherited_connection_never_starts_another_host() {
     let output = child()
-        .env("QOS_SVC_COLLAB_FD", "bad")
+        .env("TILO_SVC_COLLAB_FD", "bad")
         .env("QOS_RUNTIME_BINARY", "/must-not-run")
         .output()
         .unwrap();
@@ -62,8 +62,8 @@ fn complete_inherited_connections_take_precedence_over_profile_and_binary() {
     let fds = [a.as_raw_fd(), b.as_raw_fd()];
     let mut command = child();
     command
-        .env("QOS_SVC_COLLAB_FD", fds[0].to_string())
-        .env("QOS_SVC_IDENTITY_FD", fds[1].to_string())
+        .env("TILO_SVC_COLLAB_FD", fds[0].to_string())
+        .env("TILO_SVC_IDENTITY_FD", fds[1].to_string())
         .env("QOS_RUNTIME_PROFILE", "relative-invalid")
         .env("QOS_RUNTIME_BINARY", "/must-not-run");
     unsafe {
@@ -113,8 +113,8 @@ fn aliased_inherited_descriptors_are_rejected_before_sdk_ownership() {
     let fd = socket.as_raw_fd();
     let mut command = child();
     command
-        .env("QOS_SVC_COLLAB_FD", fd.to_string())
-        .env("QOS_SVC_IDENTITY_FD", format!("0{fd}"));
+        .env("TILO_SVC_COLLAB_FD", fd.to_string())
+        .env("TILO_SVC_IDENTITY_FD", format!("0{fd}"));
     unsafe {
         command.pre_exec(move || {
             libc::fcntl(fd, libc::F_SETFD, 0);
@@ -244,8 +244,8 @@ fn inherited_datagram_is_rejected_as_wrong_sdk_transport() {
     let fds = [socket.as_raw_fd(), stream.as_raw_fd()];
     let mut command = child();
     command
-        .env("QOS_SVC_COLLAB_FD", fds[0].to_string())
-        .env("QOS_SVC_IDENTITY_FD", fds[1].to_string());
+        .env("TILO_SVC_COLLAB_FD", fds[0].to_string())
+        .env("TILO_SVC_IDENTITY_FD", fds[1].to_string());
     unsafe {
         command.pre_exec(move || {
             for fd in fds {
@@ -286,13 +286,13 @@ fn ancestor_owned_descriptors_are_hidden_even_when_bootstrap_is_skipped() {
     let mut command = child();
     command
         .env("QOS_BOOTSTRAP_LOOKUP_ONLY", "1")
-        .env("QOS_WORKSPACE_ID", "ancestor-workspace")
+        .env("TILO_WORKSPACE_ID", "ancestor-workspace")
         .env(
             "QOS_RUNTIME_CONNECTION_OWNER_PID",
             std::process::id().to_string(),
         )
-        .env("QOS_SVC_COLLAB_FD", fds[0].to_string())
-        .env("QOS_SVC_IDENTITY_FD", fds[1].to_string());
+        .env("TILO_SVC_COLLAB_FD", fds[0].to_string())
+        .env("TILO_SVC_IDENTITY_FD", fds[1].to_string());
     unsafe {
         command.pre_exec(move || {
             for fd in fds {
@@ -311,7 +311,7 @@ fn standalone_child_ignores_ancestor_metadata_without_mutating_it() {
             "QOS_RUNTIME_CONNECTION_OWNER_PID",
             std::process::id().to_string(),
         )
-        .env("QOS_SVC_COLLAB_FD", "closed-ancestor-fd")
+        .env("TILO_SVC_COLLAB_FD", "closed-ancestor-fd")
         .env("QOS_RUNTIME_STANDALONE", "1")
         .output()
         .unwrap();
@@ -334,8 +334,8 @@ fn current_and_unknown_transfer_provenance_fail_closed() {
         .arg(std::env::current_exe().unwrap())
         .args(["--exact", "bootstrap_child", "--nocapture"])
         .env("QOS_BOOTSTRAP_TEST_CHILD", "1")
-        .env("QOS_SVC_COLLAB_FD", "bad")
-        .env_remove("QOS_SVC_IDENTITY_FD")
+        .env("TILO_SVC_COLLAB_FD", "bad")
+        .env_remove("TILO_SVC_IDENTITY_FD")
         .env("QOS_RUNTIME_STANDALONE", "1");
     assert_eq!(current.output().unwrap().status.code(), Some(21));
     for owner in ["unknown", "0"] {

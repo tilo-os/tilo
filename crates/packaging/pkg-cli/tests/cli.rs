@@ -1,8 +1,8 @@
-//! End-to-end test of the `qos-pkg` CLI binary.
+//! End-to-end test of the `tilo-pkg` CLI binary.
 //!
 //! Drives the compiled binary via `std::process::Command` (the
 //! cargo test harness exposes the binary under
-//! `target/debug/qos-pkg`).
+//! `target/debug/tilo-pkg`).
 
 #![allow(
     clippy::unwrap_used,
@@ -19,20 +19,20 @@ use std::process::Command;
 
 fn bin_path() -> PathBuf {
     // CARGO_BIN_EXE_<name> is injected by cargo at build time
-    // for integration tests. The bin name is `qos-pkg`.
-    PathBuf::from(env!("CARGO_BIN_EXE_qos-pkg"))
+    // for integration tests. The bin name is `tilo-pkg`.
+    PathBuf::from(env!("CARGO_BIN_EXE_tilo-pkg"))
 }
 
-/// Tiny manifest fixture — same shape as the qos-pkg fixtures
+/// Tiny manifest fixture — same shape as the tilo-pkg fixtures
 /// module but inlined here so the CLI test stays self-contained.
 fn sample_manifest_with(identity_hex: &str) -> String {
     format!(
         r#"
 [package]
-id          = "dev.qos.example"
+id          = "dev.tilo.example"
 version     = "0.1.0"
 kind        = "app"
-runtime     = "qos-runtime/2025.06"
+runtime     = "tilo-runtime/2025.06"
 
 [publisher]
 identity    = "ed25519:{identity_hex}"
@@ -40,7 +40,7 @@ signature   = ""
 
 [sandbox]
 namespaces  = ["user", "pid"]
-seccomp     = "qos-default"
+seccomp     = "tilo-default"
 landlock    = "strict"
 
 [sandbox.net]
@@ -81,7 +81,7 @@ fn cli_pack_then_verify() {
             qpkg.to_str().unwrap(),
         ])
         .output()
-        .expect("run qos-pkg pack");
+        .expect("run tilo-pkg pack");
     assert!(
         out.status.success(),
         "pack failed: stdout={:?} stderr={:?}",
@@ -93,7 +93,7 @@ fn cli_pack_then_verify() {
     let out = Command::new(bin_path())
         .args(["verify", qpkg.to_str().unwrap()])
         .output()
-        .expect("run qos-pkg verify");
+        .expect("run tilo-pkg verify");
     assert!(
         out.status.success(),
         "verify failed: stdout={:?} stderr={:?}",
@@ -104,6 +104,46 @@ fn cli_pack_then_verify() {
     assert!(
         stdout.contains("verifies and publisher is trusted"),
         "verify output: {stdout}"
+    );
+}
+
+#[test]
+fn cli_pack_rejects_oversized_app_atomically() {
+    let workdir = tempfile::tempdir().unwrap();
+    let payload_dir = workdir.path().join("payload");
+    std::fs::create_dir_all(payload_dir.join("bin")).unwrap();
+    std::fs::write(
+        payload_dir.join("bin/hello"),
+        vec![0x5a; usize::try_from(pkg::MAX_APP_UNPACKED_BYTES - 1024).unwrap()],
+    )
+    .unwrap();
+    let manifest_path = workdir.path().join("manifest.toml");
+    std::fs::write(&manifest_path, sample_manifest_with(&"00".repeat(32))).unwrap();
+    let qpkg = workdir.path().join("example.qpkg");
+    std::fs::write(&qpkg, b"previous valid release").unwrap();
+
+    let out = Command::new(bin_path())
+        .args([
+            "pack",
+            "--manifest",
+            manifest_path.to_str().unwrap(),
+            "--payload",
+            payload_dir.to_str().unwrap(),
+            "-o",
+            qpkg.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run tilo-pkg pack");
+    assert!(!out.status.success(), "oversized qpkg unexpectedly packed");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("application qpkg is"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read(&qpkg).unwrap(),
+        b"previous valid release",
+        "a rejected build must not replace the prior release artifact"
     );
 }
 

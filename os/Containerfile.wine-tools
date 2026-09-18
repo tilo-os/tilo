@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1.7
+# Native CI tooling only. Target dependencies are frozen separately by Mock.
+ARG BASE_REF
+FROM ${BASE_REF}
+# Import the base's Fedora trust anchor in a separate RPM transaction before
+# DNF opens the database for dependency resolution. CI reported SQLite's
+# "attempt to write a readonly database" while DNF imported this key later.
+# Keep package signature checks enabled and fail on database corruption.
+RUN test "$(uname -m)" = x86_64 \
+ && rpmkeys --import /etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-44-primary \
+ && rpmdb --verifydb \
+ && dnf5 install -y --setopt=gpgcheck=True mock mock-core-configs dnf5-plugins rpm-build gcc gcc-c++ \
+      sudo util-linux createrepo_c podman python3 tar xz cpio findutils \
+ && rpmdb --verifydb \
+ && dnf5 clean all \
+ && useradd --uid 1000 --create-home --groups mock tilo-build \
+ && printf '%s\n' 'tilo-build ALL=(root) NOPASSWD: /usr/bin/python3 /tilo/wine-mock-producer.py *' > /etc/sudoers.d/tilo-wine \
+ && chmod 0440 /etc/sudoers.d/tilo-wine \
+ && visudo -cf /etc/sudoers.d/tilo-wine \
+ && install -d /usr/lib/tilo /wine-inputs \
+ && rpm -qa --qf '%{NAME}\t%{EPOCHNUM}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\n' \
+      | LC_ALL=C sort > /usr/lib/tilo/wine-tools-rpms.tsv \
+ && runuser -u tilo-build -- mock --version > /usr/lib/tilo/wine-tools-mock-version.txt \
+ && test -f /etc/mock/fedora-44-i386.cfg \
+ && test -f /etc/mock/fedora-44-x86_64.cfg \
+ && command -v mock-hermetic-repo
+# Mock mounts bootstrap images inside the CI container. Use the supported VFS
+# backend so this does not depend on a host /dev/fuse device or nested overlay.
+RUN printf '%s\n' '[storage]' 'driver = "vfs"' \
+      'runroot = "/run/containers/storage"' \
+      'graphroot = "/var/lib/containers/storage"' > /etc/containers/storage.conf
+COPY os/dev/fetch-wine-source.py os/dev/wine_rpm_contract.py os/dev/wine-source.json os/dev/wine-mock-producer.py os/dev/merge-wine-rpms.py /tilo/

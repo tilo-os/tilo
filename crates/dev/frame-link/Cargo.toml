@@ -1,0 +1,31 @@
+[package]
+name = "frame-link"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Configurable-latency / throughput / drop shim for encoded-frame streams. The reusable primitive behind flatpak-share-demo (encode → shim → decode → side-by-side MP4) and any future test that wants to feed a real encoder/decoder pair through a synthetic-network layer."
+
+[lib]
+name = "frame_link"
+path = "src/lib.rs"
+
+[[bin]]
+name = "flatpak-share-demo"
+path = "src/bin/flatpak-share-demo.rs"
+
+[dependencies]
+# The library uses only the standard library and tracing. The demo binary also
+# depends on the shell's encoder/decoder types and a font rasteriser.
+tracing.workspace = true
+
+# Demo-only dependencies. The demo and library share this workspace crate.
+shell = { path = "../../session/shell", default-features = false }
+ab_glyph = "0.2"
+tracing-subscriber = { workspace = true, features = ["registry", "fmt", "env-filter"] }
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

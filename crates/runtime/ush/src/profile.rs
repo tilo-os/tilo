@@ -22,7 +22,7 @@ pub enum Profile {
     /// The developer profile.
     ///
     /// **`dsh` is a convenience for development, not a sandbox.** It keeps the
-    /// layer model and read-only base, but deliberately gives up the syscall
+    /// layer model and read-only base, but gives up the syscall
     /// filter that makes `ush` a boundary — nested rootless `podman` and
     /// `distrobox` need `unshare`/`mount`/`setns`. A guest that can build its
     /// own namespaces can build one without the restrictions it was given, so

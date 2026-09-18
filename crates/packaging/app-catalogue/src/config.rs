@@ -1,19 +1,16 @@
 //! The registries this machine pulls app entries from.
 //!
-//! One file, `registries.toml`, under `$XDG_CONFIG_HOME/qos-store/`.
-//! That path is not a typo and not a new invention: it is where the
-//! store app has always kept the user's registry list, and a second
-//! list somewhere else would mean the desktop and the store disagreed
-//! about what software exists. One list, two readers.
+//! One file, `registries.toml`, under `$XDG_CONFIG_HOME/tilo-store/`.
+//! The store app and desktop read this same list so they agree about
+//! which software is available.
 //!
-//! Reading is deliberately split in two:
+//! Reading is split in two:
 //!
 //! * [`load_registries`] seeds a default file when none exists — what
 //!   an app the user opened on purpose should do.
 //! * [`load_registries_no_seed`] never writes. The compositor consults
 //!   the catalogue on a timer, and a background timer that
-//!   materialises config files in `~/.config` is a side effect nobody
-//!   asked for.
+//!   materialises config files in `~/.config` as a side effect.
 
 use std::fs;
 use std::path::PathBuf;
@@ -32,7 +29,7 @@ pub enum ConfigError {
     InvalidUrl,
     #[error("a non-placeholder owner key of 64 hexadecimal characters is required")]
     InvalidOwnerKey,
-    #[error("could not determine the qOS Store config directory")]
+    #[error("could not determine the Tilo Store config directory")]
     NoConfigDir,
     #[error("could not encode the registry configuration: {0}")]
     Encode(#[from] toml::ser::Error),
@@ -42,14 +39,14 @@ pub enum ConfigError {
 
 /// Default hosted registry base URL. Overridable per-entry in the
 /// config file; this is only used to seed the default `registries.toml`.
-pub const DEFAULT_REGISTRY_BASE_URL: &str = "https://registry.qos.dev";
+pub const DEFAULT_REGISTRY_BASE_URL: &str = "https://registry.tilo.dev";
 
-/// Pinned qOS-main owner identity. Installed images can rotate the public trust
+/// Pinned Tilo-main owner identity. Installed images can rotate the public trust
 /// input without rebuilding app packages. A missing/placeholder value disables
 /// the default registry rather than substituting a developer key or TOFU.
 pub fn official_owner_pubkey() -> Option<String> {
-    let path = std::env::var_os("QOS_OFFICIAL_REGISTRY_OWNER_KEY_PATH").map_or_else(
-        || PathBuf::from("/usr/share/qos/trust/qos-main-registry-owner.pub"),
+    let path = std::env::var_os("TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH").map_or_else(
+        || PathBuf::from("/usr/share/tilo/trust/tilo-main-registry-owner.pub"),
         PathBuf::from,
     );
     let value = fs::read_to_string(path).ok()?;
@@ -102,7 +99,7 @@ impl RegistriesFile {
         Self {
             registries: official_owner_pubkey().map_or_else(Vec::new, |owner_pubkey_hex| {
                 vec![RegistryConfig {
-                    name: "qOS main".into(),
+                    name: "Tilo main".into(),
                     base_url: DEFAULT_REGISTRY_BASE_URL.into(),
                     owner_pubkey_hex,
                     enabled: true,
@@ -111,27 +108,27 @@ impl RegistriesFile {
         }
     }
 
-    /// Just the registries the user has left switched on.
+    /// The registries the user has left switched on.
     pub fn enabled(&self) -> impl Iterator<Item = &RegistryConfig> {
         self.registries.iter().filter(|r| r.enabled)
     }
 }
 
-/// Root config dir. `QOS_STORE_CONFIG_DIR` overrides for tests.
+/// Root config dir. `TILO_STORE_CONFIG_DIR` overrides for tests.
 pub fn config_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("QOS_STORE_CONFIG_DIR") {
+    if let Some(dir) = std::env::var_os("TILO_STORE_CONFIG_DIR") {
         return Some(PathBuf::from(dir));
     }
-    dirs::config_dir().map(|d| d.join("qos-store"))
+    dirs::config_dir().map(|d| d.join("tilo-store"))
 }
 
-/// Cache dir (`$XDG_CACHE_HOME/qos-store`). Downloaded `.qpkg`s are
+/// Cache dir (`$XDG_CACHE_HOME/tilo-store`). Downloaded `.qpkg`s are
 /// staged here before they are handed to the installer.
 pub fn cache_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("QOS_STORE_CACHE_DIR") {
+    if let Some(dir) = std::env::var_os("TILO_STORE_CACHE_DIR") {
         return Some(PathBuf::from(dir));
     }
-    dirs::cache_dir().map(|d| d.join("qos-store"))
+    dirs::cache_dir().map(|d| d.join("tilo-store"))
 }
 
 /// The path `registries.toml` lives at, when a config dir resolves.
@@ -141,8 +138,8 @@ pub fn registries_path() -> Option<PathBuf> {
 
 /// Read `registries.toml` without ever writing one.
 ///
-/// A missing file means "no registries configured", which is a real
-/// and correct answer, not an error: a machine that has not been
+/// A missing file means "no registries configured", which is a valid
+/// answer rather than an error: a machine that has not been
 /// pointed at a registry has nothing available to offer.
 pub fn load_registries_no_seed() -> RegistriesFile {
     let Some(path) = registries_path() else {
@@ -184,7 +181,7 @@ pub fn load_registries() -> RegistriesFile {
     seeded
 }
 
-/// Replace only the exact legacy qOS-main placeholder with the immutable OS
+/// Replace only the exact legacy Tilo-main placeholder with the immutable OS
 /// trust input. Custom registries never acquire trust implicitly.
 fn migrate_official_pin(registries: &mut RegistriesFile) -> bool {
     let Some(owner) = official_owner_pubkey() else {
@@ -192,7 +189,7 @@ fn migrate_official_pin(registries: &mut RegistriesFile) -> bool {
     };
     let mut changed = false;
     for registry in &mut registries.registries {
-        if registry.name == "qOS main"
+        if registry.name == "Tilo main"
             && registry.base_url.trim_end_matches('/') == DEFAULT_REGISTRY_BASE_URL
             && (registry.owner_pubkey_hex.is_empty()
                 || registry.owner_pubkey_hex == placeholder_owner_pubkey())
@@ -303,7 +300,7 @@ mod tests {
     use tempfile::TempDir;
 
     /// Serialises the env-var-touching tests in this module — cargo's
-    /// parallel runner otherwise races on `QOS_STORE_CONFIG_DIR`.
+    /// parallel runner otherwise races on `TILO_STORE_CONFIG_DIR`.
     fn env_lock() -> MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
@@ -319,28 +316,28 @@ mod tests {
     impl Drop for Guard<'_> {
         fn drop(&mut self) {
             match &self.prev {
-                Some(v) => unsafe { std::env::set_var("QOS_STORE_CONFIG_DIR", v) },
-                None => unsafe { std::env::remove_var("QOS_STORE_CONFIG_DIR") },
+                Some(v) => unsafe { std::env::set_var("TILO_STORE_CONFIG_DIR", v) },
+                None => unsafe { std::env::remove_var("TILO_STORE_CONFIG_DIR") },
             }
             match &self.prev_official {
-                Some(v) => unsafe { std::env::set_var("QOS_OFFICIAL_REGISTRY_OWNER_KEY_PATH", v) },
-                None => unsafe { std::env::remove_var("QOS_OFFICIAL_REGISTRY_OWNER_KEY_PATH") },
+                Some(v) => unsafe { std::env::set_var("TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH", v) },
+                None => unsafe { std::env::remove_var("TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH") },
             }
         }
     }
 
     fn scoped_dir(td: &TempDir) -> Guard<'static> {
         let lock = env_lock();
-        let prev = std::env::var_os("QOS_STORE_CONFIG_DIR");
-        let prev_official = std::env::var_os("QOS_OFFICIAL_REGISTRY_OWNER_KEY_PATH");
+        let prev = std::env::var_os("TILO_STORE_CONFIG_DIR");
+        let prev_official = std::env::var_os("TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH");
         let trust = td.path().join("registry-owner.pub");
         std::fs::write(
             &trust,
             "d5dd5851bebac876b19986485184213ead36b67595b7efedf1144c120033b0bb\n",
         )
         .unwrap();
-        unsafe { std::env::set_var("QOS_STORE_CONFIG_DIR", td.path()) };
-        unsafe { std::env::set_var("QOS_OFFICIAL_REGISTRY_OWNER_KEY_PATH", trust) };
+        unsafe { std::env::set_var("TILO_STORE_CONFIG_DIR", td.path()) };
+        unsafe { std::env::set_var("TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH", trust) };
         Guard {
             _lock: lock,
             prev,
@@ -354,7 +351,7 @@ mod tests {
         let _g = scoped_dir(&td);
         let regs = load_registries();
         assert_eq!(regs.registries.len(), 1);
-        assert_eq!(regs.registries[0].name, "qOS main");
+        assert_eq!(regs.registries[0].name, "Tilo main");
         assert_ne!(
             regs.registries[0].owner_pubkey_hex,
             placeholder_owner_pubkey()
@@ -479,7 +476,7 @@ enabled = false
         let mut registries = RegistriesFile {
             registries: vec![
                 RegistryConfig {
-                    name: "qOS main".into(),
+                    name: "Tilo main".into(),
                     base_url: DEFAULT_REGISTRY_BASE_URL.into(),
                     owner_pubkey_hex: placeholder_owner_pubkey(),
                     enabled: true,

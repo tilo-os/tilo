@@ -1,6 +1,6 @@
 use alloc::{borrow::ToOwned as _, boxed::Box, ffi::CString, string::String, sync::Arc, vec::Vec};
 use core::{
-    ffi::{c_void, CStr},
+    ffi::{CStr, c_void},
     marker::PhantomData,
     mem::ManuallyDrop,
     slice,
@@ -318,7 +318,10 @@ impl super::Instance {
     ///
     /// If `debug_utils_user_data` is `Some`, then the validation layer is
     /// available, so create a [`vk::DebugUtilsMessengerEXT`].
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+    )]
     pub unsafe fn from_raw(
         entry: ash::Entry,
         raw_instance: ash::Instance,

@@ -1,0 +1,53 @@
+[Unit]
+Description=Tilo security self-check (logs active hardening to the journal)
+Documentation=https://github.com/tilo/tilo
+# After the bits it inspects are up (SELinux, mounts, fs.service).
+After=local-fs.target fs.service
+Wants=fs.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tilo-security-audit
+TimeoutStartSec=2min
+# The audit is important but not latency-sensitive; its result remains loud
+# in the journal and failed-unit state while recurring successful runs return
+# inactive so the timer can activate them again. Scans yield to the session.
+Nice=10
+CPUWeight=20
+IOWeight=20
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+# This process observes security state; it never repairs it. Keep the host
+# filesystem immutable and expose only TPM devices needed by the verified-boot
+# preflight it invokes. Kernel diagnostics come from the journal and daemon
+# configuration comes from systemd, so this observer needs no capabilities.
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+PrivateIPC=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+DevicePolicy=closed
+DeviceAllow=/dev/tpmrm0 rw
+DeviceAllow=/dev/tpm0 rw
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@clock @cpu-emulation @debug @module @mount @obsolete @raw-io @reboot @resources @swap
+SystemCallErrorNumber=EPERM
+# WantedBy (rather than RequiredBy) keeps diagnostics from blocking boot. A
+# non-zero result intentionally remains visible as a failed health unit.

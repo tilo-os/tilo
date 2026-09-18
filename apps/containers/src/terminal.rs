@@ -1,8 +1,7 @@
-//! Spawning the qOS terminal app to run a real command.
+//! Spawning the Tilo terminal app to run a command.
 //!
-//! "Enter distrobox" (and the container Terminal tab's "Attach shell") must
-//! open a **real** terminal session, not a faux console. The standard qOS
-//! terminal is the `terminal` app, which spawns the program named by the
+//! "Enter distrobox" (and the container Terminal tab's "Attach shell") opens
+//! the standard Tilo `terminal` app, which spawns the program named by the
 //! `SHELL` environment variable in a PTY (see `apps/terminal`,
 //! `TerminalBackend::new`). The terminal treats `SHELL` as a bare program
 //! path with no arguments, so to run `distrobox enter <box>` we:
@@ -12,8 +11,7 @@
 //!      the command finishes), and
 //!   2. spawn the `terminal` binary with `SHELL` pointed at that launcher.
 //!
-//! This wires a genuine terminal emulator into the box without touching the
-//! terminal submodule. The argv/command assembly is split into pure helpers
+//! The argv/command assembly is split into pure helpers
 //! ([`distrobox_enter_command`], [`terminal_binary`], [`build_launcher`]) so
 //! the wiring is unit-testable headlessly.
 
@@ -68,7 +66,7 @@ pub fn terminal_binary() -> PathBuf {
 /// or (on Unix) its executable bit can't be set.
 pub fn build_launcher(dir: &Path, stem: &str, command: &str) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
-    let path = dir.join(format!("qos-term-{stem}.sh"));
+    let path = dir.join(format!("tilo-term-{stem}.sh"));
     // `SHELL_FALLBACK` lets the launched command's `exec "$SHELL_FALLBACK"`
     // resolve to the user's real shell even though we overrode `SHELL` to
     // point at this script. Default to bash for the interactive fallback.
@@ -92,18 +90,18 @@ fn set_executable(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Per-user runtime dir for launcher scripts: `$XDG_RUNTIME_DIR/qos-containers`
+/// Per-user runtime dir for launcher scripts: `$XDG_RUNTIME_DIR/tilo-containers`
 /// or a temp fallback.
 pub fn runtime_dir() -> PathBuf {
     if let Ok(rt) = std::env::var("XDG_RUNTIME_DIR")
         && !rt.is_empty()
     {
-        return PathBuf::from(rt).join("qos-containers");
+        return PathBuf::from(rt).join("tilo-containers");
     }
-    std::env::temp_dir().join("qos-containers")
+    std::env::temp_dir().join("tilo-containers")
 }
 
-/// Build (but do not spawn) the `Command` that launches the qOS terminal
+/// Build (but do not spawn) the `Command` that launches the Tilo terminal
 /// running `inner_command`. Exposed for testing the wiring without spawning.
 ///
 /// # Errors
@@ -121,7 +119,7 @@ pub fn terminal_command(inner_command: &str, stem: &str) -> std::io::Result<Comm
     Ok(cmd)
 }
 
-/// Spawn a qOS terminal entering the named distrobox. Returns an error if the
+/// Spawn a Tilo terminal entering the named distrobox. Returns an error if the
 /// launcher can't be written or the terminal can't be spawned.
 ///
 /// # Errors
@@ -135,7 +133,7 @@ pub fn spawn_distrobox_enter(box_name: &str) -> std::io::Result<()> {
     cmd.spawn().map(|_| ())
 }
 
-/// Spawn a qOS terminal attaching an interactive shell to a container.
+/// Spawn a Tilo terminal attaching an interactive shell to a container.
 ///
 /// # Errors
 ///
@@ -198,7 +196,7 @@ mod tests {
 
     #[test]
     fn launcher_is_written_executable_and_runs_command() {
-        let dir = std::env::temp_dir().join("qos-containers-test-launcher");
+        let dir = std::env::temp_dir().join("tilo-containers-test-launcher");
         let _ = std::fs::remove_dir_all(&dir);
         let path =
             build_launcher(&dir, "unit", "echo hi; exec \"$SHELL_FALLBACK\"").expect("write");
@@ -226,7 +224,7 @@ mod tests {
             .expect("SHELL env set");
         let shell = shell.to_string_lossy();
         assert!(
-            shell.contains("qos-term-unit-tc.sh"),
+            shell.contains("tilo-term-unit-tc.sh"),
             "SHELL points at the launcher: {shell}"
         );
         // The real shell is preserved as the fallback.

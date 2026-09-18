@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # ============================================================================
-# Frozen RPM repo snapshot — built + pushed by CI (.forgejo/workflows/
-# snapshot-rpms.yml), NOT locally. Resolves the exact install transaction
+# Frozen RPM repo snapshot — published by CI (.forgejo/workflows/
+# snapshot-rpms.yml), or built locally for unpublished preparation. Resolves the exact install transaction
 # against the digest-pinned base and packages it as a tiny FROM-scratch OCI
 # image. os/Containerfile then installs ONLY from this (pinned by digest), so
 # the OS image is reproducible across time regardless of upstream package
@@ -12,9 +12,10 @@
 # base it will be installed on.
 # ============================================================================
 ARG BASE_REF
-FROM github-assets AS external-assets
+FROM scratch AS external-assets
+COPY --from=github-assets / /
 
-FROM ${BASE_REF} AS resolve
+FROM ${BASE_REF} AS configured-base
 
 # Snapshot creation must not inherit a randomly selected, stale mirror and then
 # retry every RPM serially. Use a current Fedora HTTPS mirror and bounded
@@ -28,50 +29,78 @@ RUN sed -i \
       -e 's|/Everything/SRPMS/|/Everything/source/tree/|' \
       -e '/^metalink=.*repo=updates-/s/^/#/' \
       /etc/yum.repos.d/fedora-updates.repo \
- && printf '[main]\nmax_parallel_downloads=20\n' > /etc/dnf/dnf.conf \
- && dnf install -y createrepo_c \
+ && printf '[main]\nmax_parallel_downloads=20\n' > /etc/dnf/dnf.conf
+
+# Repository tooling must never change the RPM database used for resolution.
+FROM configured-base AS metadata-tools
+RUN dnf install -y createrepo_c \
  && dnf clean packages
 
 # Fedora's virtio-win project currently publishes this RPM unsigned. Treating
 # its moving `stable` repository as trusted would therefore be dishonest: fetch
 # the reviewed version through the shared external-input cache, whose manifest
 # pins its SHA-256, and expose only that exact byte sequence as a local repo.
-RUN --mount=type=bind,from=external-assets,source=/,target=/qos-assets,ro \
-    install -D -m 0644 /qos-assets/virtio-win-0.1.302-1.noarch.rpm \
+FROM metadata-tools AS vendor-repo
+COPY os/external-assets/github-assets.tsv /tilo-assets.tsv
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    awk -F '\t' '$2 == "virtio-win-0.1.302-1.noarch.rpm" { print $1 "  /tilo-assets/" $2; n++ } END { if (n != 1) exit 1 }' \
+      /tilo-assets.tsv > /virtio.sha256 \
+ && sha256sum --check --strict /virtio.sha256 \
+ && install -D -m 0644 /tilo-assets/virtio-win-0.1.302-1.noarch.rpm \
       /vendor/virtio-win-0.1.302-1.noarch.rpm \
- && createrepo_c --quiet /vendor \
- && printf '[virtio-win-pinned]\nname=Pinned virtio-win 0.1.302-1\nbaseurl=file:///vendor\ngpgcheck=0\nenabled=1\n' \
+ && createrepo_c --quiet /vendor
+
+FROM configured-base AS resolve
+COPY --from=vendor-repo /vendor /vendor
+RUN printf '[virtio-win-pinned]\nname=Pinned virtio-win 0.1.302-1\nbaseurl=file:///vendor\ngpgcheck=0\nenabled=1\n' \
       > /etc/yum.repos.d/virtio-win-pinned.repo
 
 # The exact package set the OS image installs (passed by the workflow, derived
 # from os/Containerfile's dnf-install blocks — single source of truth).
 ARG PACKAGES
+ARG TARGETARCH
 
-# Resolve the REAL install transaction against the base (captures rich/
+# Resolve the install transaction against the base (captures rich/
 # conditional deps like greetd-selinux and the exact non-conflicting versions),
-# download-only, then collect the cached RPMs into a repo. qemu-user-static-*
-# (foreign-arch emulators, weak Recommends qOS doesn't need) are excluded.
+# download-only, then collect the cached RPMs into a repo. Preserve the full
+# weak-dependency closure; unavailable packages must fail resolution.
 #
-# We ALSO download the Fedora kernel SRPM so os/kernel/Containerfile can
+# Download the Fedora kernel SRPM so os/kernel/Containerfile can
 # rebuild it offline against this same digest-pinned base (no live-mirror
 # fetch mid-build — required for the kernel image to be reproducible).
 # dnf5 uses --srpm; dnf4 uses --source; try dnf5 first (the base's dnf is
 # dnf5) and fall back to dnf4 semantics if the flag isn't recognised.
 # After creating the repo, prove it resolves the complete requested transaction
 # (including dependencies) with every network repository hidden.
-RUN dnf install -y --downloadonly --exclude='qemu-user-static*' ${PACKAGES} \
+RUN test -n "${PACKAGES}" \
+ && dnf install -y --downloadonly --exclude='qemu-user-static*' --setopt=install_weak_deps=True ${PACKAGES} \
  && mkdir -p /repo \
  && { find /var/cache/libdnf5 /var/cache/dnf -name '*.rpm' -exec cp -n {} /repo/ \; ; true; } 2>/dev/null \
+ && cp /vendor/virtio-win-0.1.302-1.noarch.rpm /repo/ \
  && test -n "$(ls /repo/*.rpm 2>/dev/null)" \
  && ( dnf5 download --srpm --destdir=/repo kernel 2>/dev/null \
       || dnf --enablerepo='*-source' download --source --destdir=/repo kernel ) \
  && ls -1 /repo/kernel-*.src.rpm >/dev/null \
- && createrepo_c --quiet /repo \
- && printf '[frozen]\nname=qOS frozen package snapshot\nbaseurl=file:///repo\ngpgcheck=0\nenabled=1\n' > /repo/frozen.repo \
- && printf '%s\n' ${PACKAGES} | sort -u > /repo/qos-direct-package-specs.txt \
- && dnf clean all \
- && dnf install -y --downloadonly --setopt=reposdir=/repo ${PACKAGES}
+ && printf '%s\n' ${PACKAGES} | sort -u > /repo/tilo-direct-package-specs.txt
 
-# The published artifact: just the repo, nothing else.
-FROM scratch
+FROM metadata-tools AS repository
 COPY --from=resolve /repo /repo
+COPY os/dev/verify-rpm-snapshot-signatures.sh /tilo-verify-signatures.sh
+COPY os/external-assets/github-assets.tsv /tilo-assets.tsv
+COPY --from=configured-base /etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-44-primary /tilo-fedora44-primary.key
+RUN bash /tilo-verify-signatures.sh /repo /tilo-assets.tsv /tilo-fedora44-primary.key > /repo/tilo-rpm-signatures.txt \
+ && sha256sum /repo/*.rpm > /repo/tilo-rpm-sha256.txt \
+ && createrepo_c --quiet /repo \
+ && printf '[frozen]\nname=Tilo frozen package snapshot\nbaseurl=file:///repo\ngpgcheck=0\nenabled=1\n' > /repo/frozen.repo \
+ && rpm -qa --qf '%{NAME}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\n' | sort > /repo/tilo-metadata-tools.txt
+
+# Prove closure on the ORIGINAL base, not the createrepo tooling environment.
+# The final COPY depends on this stage, so an optimizer cannot prune the check.
+FROM ${BASE_REF} AS offline-check
+ARG PACKAGES
+COPY --from=repository /repo /repo
+RUN --network=none dnf install -y --downloadonly --setopt=reposdir=/repo --setopt=install_weak_deps=True ${PACKAGES}
+
+# The published artifact contains only the repository.
+FROM scratch
+COPY --from=offline-check /repo /repo

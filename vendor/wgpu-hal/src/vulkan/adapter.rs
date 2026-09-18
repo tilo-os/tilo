@@ -4,7 +4,7 @@ use core::{ffi::CStr, marker::PhantomData};
 use ash::{ext, google, khr, vk};
 use parking_lot::Mutex;
 
-use crate::{vulkan::semaphore_list::SemaphoreList, AllocationSizes};
+use crate::{AllocationSizes, vulkan::semaphore_list::SemaphoreList};
 
 use super::semaphore_list::SemaphoreListMode;
 
@@ -2413,7 +2413,10 @@ impl super::Adapter {
     /// - `enabled_extensions` must be a superset of `required_device_extensions()`.
     /// - If `drop_callback` is [`None`], wgpu-hal will take ownership of `raw_device`. If
     ///   `drop_callback` is [`Some`], `raw_device` must be valid until the callback is called.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+    )]
     pub unsafe fn device_from_raw(
         &self,
         raw_device: ash::Device,

@@ -1,11 +1,10 @@
 //! A GeoGebra-class 2D math input field, built locally for the calculator's
 //! Graph 2D / Graph 3D function editors.
 //!
-//! This replaces the old "type into a `String`, draw a literal `|`" editors
-//! with a real structured editor: the formula is a tree of math atoms
-//! ([`model`]), the caret is a genuine insertion point in that tree
-//! ([`edit`]), it lays out as stacked 2D notation ([`layout`]) and renders a
-//! real caret bar + selection band into the Vello scene ([`render`]).
+//! The formula is a tree of math atoms ([`model`]), the caret is an insertion
+//! point in that tree ([`edit`]), it lays out as stacked 2D notation
+//! ([`layout`]) and renders a caret bar + selection band into the Vello scene
+//! ([`render`]).
 //!
 //! The field serializes to the flat ASCII string the existing
 //! [`crate::engine`] parses, so graphing keeps working unchanged, and the

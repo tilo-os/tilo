@@ -1,12 +1,12 @@
-//! `runtime-identity` — user-identity loader for qOS apps.
+//! `runtime-identity` — user-identity loader for Tilo apps.
 //!
 //! The launcher hands applications a connected signing-broker descriptor via
-//! `QOS_IDENTITY_BROKER_FD`. Apps can inspect public metadata and request a
-//! signature, but private shares stay in the host session. `QOS_USER_IDENTITY`
+//! `TILO_IDENTITY_BROKER_FD`. Apps can inspect public metadata and request a
+//! signature, but private shares stay in the host session. `TILO_USER_IDENTITY`
 //! remains a compatibility path for non-sandboxed development only.
 //!
 //! The on-disk file is the JSON emitted by the identity-flow's
-//! `IdentityRecord::to_json_bytes` (see `ui/src/widget/identity_flow`). This
+//! `IdentityRecord::to_json_bytes` (see `crates/sdk/ui-core/src/widget/identity_flow`). This
 //! crate keeps a minimal local copy of the schema (`ondisk::IdentityRecord`)
 //! rather than depending on `ui`, which is heavy and depends on this SDK
 //! layer transitively — a dep the other way would form a cycle. Both sides
@@ -78,11 +78,62 @@ pub use secure_store::{BrokerFileProvider, SecretProvider};
 
 pub use runtime_portal::NotAvailable;
 
-/// Legacy unsandboxed-development path. The qOS launcher uses
+/// True when a secured identity's Secret Service item could not be obtained.
+/// The storage provider marks this condition with `ENOKEY`; keeping the
+/// classification typed avoids making startup policy depend on localized
+/// `secret-tool` diagnostics.
+pub fn is_secret_service_unavailable(error: &NotAvailable) -> bool {
+    matches!(
+        error,
+        NotAvailable::ConnectionFailed(io_error)
+            if is_secret_service_unavailable_io(io_error)
+    )
+}
+
+/// Equivalent classifier for callers that add context while preserving the
+/// original provider error as the source of an `io::Error`.
+pub fn is_secret_service_unavailable_io(error: &io::Error) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        error.raw_os_error() == Some(libc::ENOKEY)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        error
+            .get_ref()
+            .is_some_and(|source| source.is::<SecretServiceUnavailable>())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+#[derive(Debug)]
+struct SecretServiceUnavailable;
+#[cfg(not(target_os = "linux"))]
+impl std::fmt::Display for SecretServiceUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("identity Secret Service item is unavailable")
+    }
+}
+#[cfg(not(target_os = "linux"))]
+impl std::error::Error for SecretServiceUnavailable {}
+
+/// Construct the portable marker for an unavailable Secret Service identity item.
+pub fn secret_service_unavailable_error() -> io::Error {
+    #[cfg(target_os = "linux")]
+    {
+        io::Error::from_raw_os_error(libc::ENOKEY)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        io::Error::other(SecretServiceUnavailable)
+    }
+}
+
+/// Legacy unsandboxed-development path. The Tilo launcher uses
 /// [`broker::BROKER_ENV_VAR`] and never sets this for packaged apps.
-pub const IDENTITY_ENV_VAR: &str = "QOS_USER_IDENTITY";
+pub const IDENTITY_ENV_VAR: &str = "TILO_USER_IDENTITY";
 pub const IDENTITY_SERVICE: &str = "identity";
-const COLLABORATION_JOIN_TAG: &[u8] = b"qos-collaboration-join-v1\0";
+const COLLABORATION_JOIN_TAG: &[u8] = b"tilo-collaboration-join-v1\0";
 
 /// Domain-separated bytes signed by an enrolled device when joining one
 /// collaboration workspace. The NUL-terminated domain tag and the remaining
@@ -141,7 +192,7 @@ pub mod wire {
             avatar_color: [u8; 3],
             group_public_key: [u8; 32],
             signing_public_key: [u8; 32],
-            /// JSON-encoded root-signed `qos_user_identity::DeviceCert`.
+            /// JSON-encoded root-signed `tilo_user_identity::DeviceCert`.
             device_certificate: Option<Vec<u8>>,
             threshold: u16,
             total_shares: u16,
@@ -160,7 +211,7 @@ pub enum KeyProtection {
     SecretService,
     /// Stored as a mode-0600 host file, reachable only by the signing broker.
     BrokerFile,
-    /// A real externally supplied provider has sealed this record.
+    /// An externally supplied provider has sealed this record.
     HardwareBacked,
     /// Legacy schema; migration has not completed yet.
     LegacyPlaintext,
@@ -188,8 +239,8 @@ pub struct SecretReference {
     pub locator: String,
 }
 
-/// Non-secret information Settings may show for an identity record.  The
-/// private signing share is intentionally absent and `Debug` is safe.
+/// Non-secret information Settings may show for an identity record. The
+/// private signing share is absent and `Debug` is safe.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IdentitySummary {
     pub id: String,
@@ -238,6 +289,32 @@ fn write_private_atomic(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> 
     result
 }
 
+fn compatible_identity_dir(config: &std::path::Path) -> PathBuf {
+    let current = config.join("tilo").join("identity");
+    let legacy = config.join("qos").join("identity");
+    if !current.exists() && legacy.is_dir() {
+        legacy
+    } else {
+        current
+    }
+}
+
+#[cfg(test)]
+mod identity_rename_tests {
+    use super::*;
+    #[test]
+    fn existing_identity_is_reused_without_replacing_current_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let legacy = root.path().join("qos/identity");
+        let current = root.path().join("tilo/identity");
+        assert_eq!(compatible_identity_dir(root.path()), current);
+        fs::create_dir_all(&legacy).unwrap();
+        assert_eq!(compatible_identity_dir(root.path()), legacy);
+        fs::create_dir_all(&current).unwrap();
+        assert_eq!(compatible_identity_dir(root.path()), current);
+    }
+}
+
 /// Resolve the per-login-user identity directory using XDG rules.
 ///
 /// # Errors
@@ -248,13 +325,13 @@ pub fn identity_dir_from_env() -> io::Result<PathBuf> {
     if let Some(xdg) = env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
         let xdg = PathBuf::from(xdg);
         if xdg.is_absolute() {
-            return Ok(xdg.join("qos").join("identity"));
+            return Ok(compatible_identity_dir(&xdg));
         }
     }
     if let Some(home) = env::var_os("HOME").filter(|v| !v.is_empty()) {
         let home = PathBuf::from(home);
         if home.is_absolute() {
-            return Ok(home.join(".config").join("qos").join("identity"));
+            return Ok(compatible_identity_dir(&home.join(".config")));
         }
     }
     Err(io::Error::new(
@@ -757,7 +834,6 @@ mod ondisk {
         pub display_name: String,
         pub avatar_color: [u8; 3],
         pub threshold_identity: SerializableIdentity,
-        #[allow(dead_code)]
         #[serde(default)]
         pub created_at: String,
         pub schema_version: u32,
@@ -1057,7 +1133,7 @@ impl SigningIdentity {
     }
 
     /// Aggregate a confirmed quorum's partials into the ordinary Ed25519
-    /// signature consumed by the rest of qOS.
+    /// signature consumed by the rest of Tilo.
     ///
     /// # Errors
     ///
@@ -1149,8 +1225,8 @@ impl SigningIdentity {
             SigningSource::Local(Some(sk)) => Ok(sk.sign(message).to_bytes()),
             SigningSource::Local(None) => Err(NotAvailable::ConnectionFailed(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "threshold-mode signing is not supported by qos-runtime-identity; \
-                 use qos-threshold-identity + the multi-device orchestrator instead",
+                "threshold-mode signing is not supported by tilo-runtime-identity; \
+                 use tilo-threshold-identity + the multi-device orchestrator instead",
             ))),
             SigningSource::LocalThreshold(_) => {
                 Err(NotAvailable::ConnectionFailed(io::Error::new(
@@ -1622,8 +1698,8 @@ pub fn load_from_bytes(bytes: &[u8]) -> Result<SigningIdentity, NotAvailable> {
 
 /// Serialize a public-only identity record for an enrolled member device.
 ///
-/// The result identifies the same person principal but intentionally carries
-/// no root signing share. The device authenticates through its separately
+/// The result identifies the same person principal but carries no root
+/// signing share. The device authenticates through its separately
 /// installed root-signed device certificate and signing broker.
 ///
 /// # Errors
@@ -1809,19 +1885,17 @@ fn is_public_member_projection(record: &ondisk::IdentityRecord) -> bool {
         && identity.share_index == 0
 }
 
-// Compile-time assertion that we haven't accidentally derived Clone/
-// Serialize/Debug-with-secret onto SigningIdentity's signing_key.
-#[allow(dead_code)]
-fn _static_no_serialize() {
-    // If SigningIdentity ever gains `#[derive(serde::Serialize)]`, this stops
-    // compiling — `SigningKey` doesn't want a serde derive at the outer layer.
-    fn takes<T>(_: &T) {}
-    let _ = |x: &SigningIdentity| takes(x);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secret_service_unavailability_has_a_typed_classification() {
+        let unavailable = NotAvailable::ConnectionFailed(secret_service_unavailable_error());
+        assert!(is_secret_service_unavailable(&unavailable));
+        let other = NotAvailable::ConnectionFailed(io::Error::from_raw_os_error(libc::EACCES));
+        assert!(!is_secret_service_unavailable(&other));
+    }
 
     #[cfg(unix)]
     #[test]
@@ -1856,7 +1930,7 @@ mod tests {
                 &mut writer,
                 &wire::Request::CollaborationOp {
                     workspace_id: "workspace".into(),
-                    app_id: "dev.qos.notes".into(),
+                    app_id: "dev.tilo.notes".into(),
                     record_id: "record".into(),
                     unsigned_op: sent,
                 },
@@ -1873,7 +1947,7 @@ mod tests {
     }
 
     fn clear_env() {
-        // SAFETY: tests in this module all touch QOS_USER_IDENTITY
+        // SAFETY: tests in this module all touch TILO_USER_IDENTITY
         // and are logically serial.
         unsafe {
             env::remove_var(IDENTITY_ENV_VAR);
@@ -1918,7 +1992,7 @@ mod tests {
         }
         assert_eq!(
             identity_dir_from_env().unwrap(),
-            PathBuf::from("/home/ada/.config/qos/identity")
+            PathBuf::from("/home/ada/.config/tilo/identity")
         );
         // SAFETY: restore the process environment under the same serial lock.
         unsafe {
@@ -1935,7 +2009,7 @@ mod tests {
 
     #[test]
     fn load_missing_file_surfaces_connection_failed() {
-        let err = load_from_path(PathBuf::from("/nonexistent/qos-identity.json"))
+        let err = load_from_path(PathBuf::from("/nonexistent/tilo-identity.json"))
             .expect_err("should fail");
         match err {
             NotAvailable::ConnectionFailed(io) => {
@@ -2061,7 +2135,7 @@ mod tests {
         let real = SigningKey::from_bytes(&[9u8; 32]);
         let vk = real.verifying_key();
         let mut hasher = Sha512::new();
-        hasher.update(b"qos-identity-flow-v1-placeholder-key");
+        hasher.update(b"tilo-identity-flow-v1-placeholder-key");
         hasher.update(vk.to_bytes());
         let bogus_secret = hasher.finalize()[..32].to_vec();
 
@@ -2435,5 +2509,23 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod secret_service_error_bridge_tests {
+    #[test]
+    fn only_the_secret_provider_marker_is_classified_as_unavailable() {
+        let error = super::secret_service_unavailable_error();
+        assert!(super::is_secret_service_unavailable_io(&error));
+        assert!(super::is_secret_service_unavailable(
+            &super::NotAvailable::ConnectionFailed(error)
+        ));
+        assert!(!super::is_secret_service_unavailable_io(
+            &std::io::Error::other("unrelated failure")
+        ));
+        assert!(!super::is_secret_service_unavailable_io(
+            &std::io::Error::from(std::io::ErrorKind::NotFound)
+        ));
     }
 }

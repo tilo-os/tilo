@@ -1,0 +1,41 @@
+[Unit]
+Description=Tilo per-user verified local model manager
+Documentation=file:///usr/share/doc/tilo/system-extensions.md
+PartOf=tilo-graphical-session.target
+# Started by tilo-models.socket only when an app connects. Network readiness is
+# a request concern; it must not delay daemon activation or user login.
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/tilo-model-manager serve --socket %t/tilo/services/models.sock
+Restart=on-failure
+RestartSec=2
+UMask=0077
+# Creates `%t/tilo` before the daemon binds `services/models.sock`; user
+# tmpfiles creates nested directories during the ordinary login pass.
+RuntimeDirectory=tilo
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+# Have the service manager guarantee both persistent roots without forking a
+# second tmpfiles process on every cold socket activation. The manager creates
+# its content-addressed leaves on demand.
+StateDirectory=tilo containers
+StateDirectoryMode=0700
+
+# Settings receives only the connected models@1 descriptor. This service owns
+# network transfers, the content-addressed user store, and Podman supervision.
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/tilo %h/.local/share/containers %t/tilo
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native

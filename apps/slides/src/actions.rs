@@ -40,11 +40,12 @@
 //! the payload; every enum is carried in its document string form. So
 //! [`Action::apply`] is a pure function of `(payload, base document)` — no RNG,
 //! no wall-clock, no app state. Where an operation is relative to the current
-//! deck (a z-order raise/lower, a slide reorder) it recomputes from the
-//! document's base state, reading z-values order-independently, so two replicas
-//! at the same heads land on the byte-identical result. A malformed or stale
-//! payload is refused before it changes the document, so it cannot create a
-//! successful-looking history entry that silently did nothing.
+//! deck (legacy positional actions only) it recomputes from the document's
+//! base state. Newly authored insert, reorder, and arrange operations carry
+//! absolute rank/z values, so receivers never derive placement from a
+//! concurrently changed view. A malformed or stale payload is refused before
+//! it changes the document, so it cannot create a successful-looking history
+//! entry that silently did nothing.
 
 #![allow(
     clippy::expect_used,
@@ -56,7 +57,7 @@
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
     ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
     Resource, ResourceProvider, ResultSpec, RetryPolicy,
@@ -227,8 +228,8 @@ fn file_operation(id: &str, label: &str, save: bool) -> ActionSpec {
         },
     )
     .with_contract(ActionContract {
-        risk: qos_actions::RiskLevel::Destructive,
-        confirmation: qos_actions::ConfirmationPolicy::Confirm,
+        risk: tilo_actions::RiskLevel::Destructive,
+        confirmation: tilo_actions::ConfirmationPolicy::Confirm,
         execution: ExecutionMode::Background { cancellable: true },
         result: ResultSpec::Job,
         ..ActionContract::default()
@@ -382,9 +383,11 @@ pub struct StylePatch {
 ///
 /// Determinism contract: ids and enums are carried in the payload;
 /// [`Action::apply`] never touches the RNG or the wall-clock. The two variants
-/// that are relative to the current deck ([`Self::RaiseElement`] /
-/// [`Self::LowerElement`]) recompute from the document's base state. Malformed
-/// or stale payloads are refused atomically.
+/// that are relative to the current deck ([`Self::InsertSlide`],
+/// [`Self::MoveSlide`], [`Self::RaiseElement`], and [`Self::LowerElement`])
+/// are retained only for legacy decoding. Newly-authored insert/reorder/arrange
+/// operations use absolute scalar values. Malformed or stale payloads are
+/// refused atomically.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SlidesAction {
     /// Insert a whole slide (a blank create *or* a duplicate) at index `at`.
@@ -392,12 +395,19 @@ pub enum SlidesAction {
     /// differ only in the payload their builders mint, exactly as a create and
     /// an edit are one `Upsert` elsewhere.
     InsertSlide { at: usize, slide: SlideData },
+    /// Insert an immutable slide snapshot with its author-computed absolute
+    /// rank. New creation/duplicate paths use this, never a positional slot.
+    InsertSlideWithOrder { slide: SlideData, rank: i64 },
     /// Delete the slide identified by `id` at `idx`. Refused when it is the
     /// deck's last slide or when the index no longer names that stable id.
     DeleteSlide { idx: usize, id: String },
     /// Move the slide at `from` so it lands at index `to`, carrying its whole
-    /// content. Recomputed from the document's base state.
+    /// content. Legacy decoding only; new actions use `SetSlideOrder`.
     MoveSlide { from: usize, to: usize, id: String },
+    /// Assign one stable slide its author-computed sparse order key. Unlike a
+    /// positional destination, every replica applies this exact scalar even
+    /// when concurrent inserts have changed its local list order.
+    SetSlideOrder { slide_id: String, rank: i64 },
     /// Set slide `slide`'s layout.
     SetSlideLayout {
         slide: usize,
@@ -453,6 +463,13 @@ pub enum SlidesAction {
     /// Send element `id` to the back of slide `slide` (z below every sibling).
     /// The new z is recomputed from the document's base state.
     LowerElement { slide: usize, id: String },
+    /// Set an element's author-computed absolute z value, resolving both
+    /// durable identities rather than a receiver-local slide position.
+    SetElementZ {
+        slide_id: String,
+        element_id: String,
+        z: i64,
+    },
 }
 
 const MAX_DECK_SLIDES: usize = 10_000;
@@ -582,16 +599,39 @@ fn deck_for_action(doc: &Doc) -> Result<crate::model::Deck, ActionError> {
     SlidesDoc::load(doc).ok_or_else(|| refused("the shared deck is unavailable"))
 }
 
+/// Resolve a durable element by its canonical id. The positional field in the
+/// serialized action is a backwards-compatible fast path, never identity: a
+/// collaborator can insert a slide before this action is applied.
 fn live_element<'a>(
     deck: &'a crate::model::Deck,
     slide: usize,
     id: &str,
-) -> Result<&'a Element, ActionError> {
+) -> Result<(usize, &'a Element), ActionError> {
     deck.slides
         .get(slide)
-        .ok_or_else(|| refused("the target slide no longer exists"))?
-        .element(id)
+        .and_then(|candidate| candidate.element(id))
+        .map(|element| (slide, element))
+        .or_else(|| {
+            deck.slides
+                .iter()
+                .enumerate()
+                .find_map(|(index, candidate)| {
+                    candidate.element(id).map(|element| (index, element))
+                })
+        })
         .ok_or_else(|| refused("the target element no longer exists"))
+}
+
+/// Resolve a slide by stable resource id, using its serialized index only as a
+/// fast path. This prevents a remote insert/reorder from redirecting a local
+/// mutation to whichever slide has inherited the old numeric position.
+fn live_slide(deck: &crate::model::Deck, index: usize, id: &str) -> Result<usize, ActionError> {
+    deck.slides
+        .get(index)
+        .filter(|slide| slide.id == id)
+        .map(|_| index)
+        .or_else(|| deck.slides.iter().position(|slide| slide.id == id))
+        .ok_or_else(|| refused("the target slide no longer exists"))
 }
 
 impl Action for SlidesAction {
@@ -633,49 +673,74 @@ impl Action for SlidesAction {
                 }
                 SlidesDoc::insert_slide(doc, *at, &slide.to_slide());
             }
-            SlidesAction::DeleteSlide { idx, id } => {
-                if deck.slides.len() <= 1
-                    || deck.slides.get(*idx).is_none_or(|slide| slide.id != *id)
+            SlidesAction::InsertSlideWithOrder { slide, rank } => {
+                if deck.slides.len() >= MAX_DECK_SLIDES
+                    || !valid_id(&slide.id)
+                    || !exact_layout(&slide.layout)
+                    || !exact_background(&slide.background)
+                    || slide.notes.chars().count() > MAX_TEXT_CHARS
+                    || slide.elements.len() > MAX_ELEMENTS_PER_SLIDE
+                    || deck.slides.iter().any(|existing| existing.id == slide.id)
                 {
+                    return Err(refused("new slide data is invalid or stale"));
+                }
+                let mut ids = std::collections::BTreeSet::new();
+                for element in &slide.elements {
+                    validate_element(element)?;
+                    if !ids.insert(&element.id)
+                        || deck.slides.iter().any(|existing| {
+                            existing.elements.iter().any(|live| live.id == element.id)
+                        })
+                    {
+                        return Err(refused("new element id already exists"));
+                    }
+                }
+                let mut projected = deck;
+                projected.slides.push(slide.to_slide());
+                if !deck_within_aggregate_limits(&projected) {
+                    return Err(refused("deck aggregate limit would be exceeded"));
+                }
+                SlidesDoc::insert_slide_with_order(doc, &slide.to_slide(), *rank);
+            }
+            SlidesAction::DeleteSlide { idx, id } => {
+                if deck.slides.len() <= 1 {
                     return Err(refused("the target slide cannot be deleted"));
                 }
-                SlidesDoc::remove_slide(doc, *idx);
+                let index = live_slide(&deck, *idx, id)
+                    .map_err(|_| refused("the target slide cannot be deleted"))?;
+                SlidesDoc::remove_slide(doc, index);
             }
             SlidesAction::MoveSlide { from, to, id } => {
-                if *from >= deck.slides.len()
-                    || *to >= deck.slides.len()
-                    || from == to
-                    || deck.slides.get(*from).is_none_or(|slide| slide.id != *id)
-                {
+                let source = live_slide(&deck, *from, id)?;
+                if *to >= deck.slides.len() || source == *to {
                     return Err(refused("slide move source or destination is invalid"));
                 }
-                SlidesDoc::move_slide(doc, *from, *to);
+                SlidesDoc::move_slide(doc, source, *to);
+            }
+            SlidesAction::SetSlideOrder { slide_id, rank } => {
+                if !deck.slides.iter().any(|slide| slide.id == *slide_id)
+                    || !SlidesDoc::set_slide_order(doc, slide_id, *rank)
+                {
+                    return Err(refused("the target slide no longer exists"));
+                }
             }
             SlidesAction::SetSlideLayout { slide, id, layout } => {
-                if deck
-                    .slides
-                    .get(*slide)
-                    .is_none_or(|current| current.id != *id)
-                    || !exact_layout(layout)
-                {
+                if !exact_layout(layout) {
                     return Err(refused("slide or layout is invalid"));
                 }
-                SlidesDoc::set_slide_layout(doc, *slide, Layout::from_str(layout));
+                let index = live_slide(&deck, *slide, id)?;
+                SlidesDoc::set_slide_layout(doc, index, Layout::from_str(layout));
             }
             SlidesAction::SetSlideBackground {
                 slide,
                 id,
                 background,
             } => {
-                if deck
-                    .slides
-                    .get(*slide)
-                    .is_none_or(|current| current.id != *id)
-                    || !exact_background(background)
-                {
+                if !exact_background(background) {
                     return Err(refused("slide or background is invalid"));
                 }
-                SlidesDoc::set_slide_background(doc, *slide, Background::from_str(background));
+                let index = live_slide(&deck, *slide, id)?;
+                SlidesDoc::set_slide_background(doc, index, Background::from_str(background));
             }
             SlidesAction::SetDeckPalette { palette } => {
                 if !exact_palette(palette) {
@@ -688,10 +753,10 @@ impl Action for SlidesAction {
                 slide_id,
                 element,
             } => {
+                let index = live_slide(&deck, *slide, slide_id)?;
                 let target = deck
                     .slides
-                    .get(*slide)
-                    .filter(|current| current.id == *slide_id)
+                    .get(index)
                     .ok_or_else(|| refused("the target slide no longer exists"))?;
                 if target.elements.len() >= MAX_ELEMENTS_PER_SLIDE {
                     return Err(refused("the target slide has too many elements"));
@@ -707,24 +772,24 @@ impl Action for SlidesAction {
                 let mut projected = deck;
                 let target = projected
                     .slides
-                    .get_mut(*slide)
+                    .get_mut(index)
                     .ok_or_else(|| refused("the target slide no longer exists"))?;
                 target.elements.push(element.to_element());
                 if !deck_within_aggregate_limits(&projected) {
                     return Err(refused("deck aggregate limit would be exceeded"));
                 }
-                SlidesDoc::add_element(doc, *slide, &element.to_element());
+                SlidesDoc::add_element(doc, index, &element.to_element());
             }
             SlidesAction::DeleteElement { slide, id } => {
-                live_element(&deck, *slide, id)?;
-                SlidesDoc::remove_element(doc, *slide, id);
+                let (index, _) = live_element(&deck, *slide, id)?;
+                SlidesDoc::remove_element(doc, index, id);
             }
             SlidesAction::MoveElement { slide, id, x, y } => {
-                let current = live_element(&deck, *slide, id)?;
+                let (index, current) = live_element(&deck, *slide, id)?;
                 if !valid_geometry(current.kind, *x, *y, current.w, current.h) {
                     return Err(refused("element position is invalid"));
                 }
-                SlidesDoc::set_element_pos(doc, *slide, id, *x, *y);
+                SlidesDoc::set_element_pos(doc, index, id, *x, *y);
             }
             SlidesAction::ResizeElement {
                 slide,
@@ -734,14 +799,14 @@ impl Action for SlidesAction {
                 w,
                 h,
             } => {
-                let current = live_element(&deck, *slide, id)?;
+                let (index, current) = live_element(&deck, *slide, id)?;
                 if !valid_geometry(current.kind, *x, *y, *w, *h) {
                     return Err(refused("element rectangle is invalid"));
                 }
-                SlidesDoc::set_element_rect(doc, *slide, id, *x, *y, *w, *h);
+                SlidesDoc::set_element_rect(doc, index, id, *x, *y, *w, *h);
             }
             SlidesAction::RestyleElement { slide, id, patch } => {
-                live_element(&deck, *slide, id)?;
+                let (index, _) = live_element(&deck, *slide, id)?;
                 if patch == &StylePatch::default()
                     || patch
                         .fill
@@ -769,41 +834,57 @@ impl Action for SlidesAction {
                 // Fixed field order so the emitted change is byte-identical on
                 // every replica.
                 if let Some(v) = &patch.fill {
-                    SlidesDoc::set_element_str(doc, *slide, id, "fill", v);
+                    SlidesDoc::set_element_str(doc, index, id, "fill", v);
                 }
                 if let Some(v) = &patch.stroke {
-                    SlidesDoc::set_element_str(doc, *slide, id, "stroke", v);
+                    SlidesDoc::set_element_str(doc, index, id, "stroke", v);
                 }
                 if let Some(v) = &patch.align {
-                    SlidesDoc::set_element_str(doc, *slide, id, "align", v);
+                    SlidesDoc::set_element_str(doc, index, id, "align", v);
                 }
                 if let Some(v) = patch.font_size {
-                    SlidesDoc::set_element_f64(doc, *slide, id, "font_size", v);
+                    SlidesDoc::set_element_f64(doc, index, id, "font_size", v);
                 }
                 if let Some(v) = patch.stroke_width {
-                    SlidesDoc::set_element_f64(doc, *slide, id, "stroke_width", v);
+                    SlidesDoc::set_element_f64(doc, index, id, "stroke_width", v);
                 }
                 if let Some(v) = patch.radius {
-                    SlidesDoc::set_element_f64(doc, *slide, id, "radius", v);
+                    SlidesDoc::set_element_f64(doc, index, id, "radius", v);
                 }
                 if let Some(v) = patch.bold {
-                    SlidesDoc::set_element_bool(doc, *slide, id, "bold", v);
+                    SlidesDoc::set_element_bool(doc, index, id, "bold", v);
                 }
                 if let Some(v) = patch.italic {
-                    SlidesDoc::set_element_bool(doc, *slide, id, "italic", v);
+                    SlidesDoc::set_element_bool(doc, index, id, "italic", v);
                 }
             }
             SlidesAction::RaiseElement { slide, id } => {
-                live_element(&deck, *slide, id)?;
+                let (index, _) = live_element(&deck, *slide, id)?;
                 let z =
-                    restack_z(doc, *slide, true).ok_or_else(|| refused("cannot raise element"))?;
-                SlidesDoc::set_element_z(doc, *slide, id, z);
+                    restack_z(doc, index, true).ok_or_else(|| refused("cannot raise element"))?;
+                SlidesDoc::set_element_z(doc, index, id, z);
             }
             SlidesAction::LowerElement { slide, id } => {
-                live_element(&deck, *slide, id)?;
+                let (index, _) = live_element(&deck, *slide, id)?;
                 let z =
-                    restack_z(doc, *slide, false).ok_or_else(|| refused("cannot lower element"))?;
-                SlidesDoc::set_element_z(doc, *slide, id, z);
+                    restack_z(doc, index, false).ok_or_else(|| refused("cannot lower element"))?;
+                SlidesDoc::set_element_z(doc, index, id, z);
+            }
+            SlidesAction::SetElementZ {
+                slide_id,
+                element_id,
+                z,
+            } => {
+                let Some(index) = deck.slides.iter().position(|slide| slide.id == *slide_id) else {
+                    return Err(refused("the target slide no longer exists"));
+                };
+                let Some(target_slide) = deck.slides.get(index) else {
+                    return Err(refused("the target slide no longer exists"));
+                };
+                if target_slide.element(element_id).is_none() {
+                    return Err(refused("the target element no longer exists"));
+                }
+                SlidesDoc::set_element_z(doc, index, element_id, *z);
             }
         }
         Ok(())
@@ -830,6 +911,29 @@ fn restack_z(doc: &Doc, slide: usize, front: bool) -> Option<i64> {
         zs.last().copied()?.checked_add(1)
     } else {
         zs.first().copied()?.checked_sub(1)
+    }
+}
+
+/// Compute a z scalar once at the authoring replica, resolving the durable
+/// slide and element ids before serializing the absolute arrange action.
+pub fn restack_z_for_author(
+    doc: &AutoCommit,
+    slide_id: &str,
+    element_id: &str,
+    front: bool,
+) -> Option<i64> {
+    let deck = SlidesDoc::load(doc)?;
+    let slide = deck.slides.iter().find(|slide| slide.id == slide_id)?;
+    slide.element(element_id)?;
+    let edge = if front {
+        slide.elements.iter().map(|element| element.z).max()
+    } else {
+        slide.elements.iter().map(|element| element.z).min()
+    }?;
+    if front {
+        edge.checked_add(1)
+    } else {
+        edge.checked_sub(1)
     }
 }
 
@@ -868,6 +972,16 @@ pub fn insert_slide_action(at: usize, slide: &Slide) -> SlidesAction {
     }
 }
 
+/// Build the canonical absolute insertion action after rank calculation at the
+/// authoring replica. `InsertSlide` remains available only to decode history
+/// written by earlier app versions.
+pub fn insert_slide_with_order_action(slide: &Slide, rank: i64) -> SlidesAction {
+    SlidesAction::InsertSlideWithOrder {
+        slide: SlideData::from_slide(slide),
+        rank,
+    }
+}
+
 pub fn delete_slide_action(idx: usize, id: impl Into<String>) -> SlidesAction {
     SlidesAction::DeleteSlide { idx, id: id.into() }
 }
@@ -877,6 +991,15 @@ pub fn move_slide_action(from: usize, to: usize, id: impl Into<String>) -> Slide
         from,
         to,
         id: id.into(),
+    }
+}
+
+/// Build the canonical, absolute reorder operation after the UI has computed
+/// its destination rank against the authored document snapshot.
+pub fn set_slide_order_action(slide_id: impl Into<String>, rank: i64) -> SlidesAction {
+    SlidesAction::SetSlideOrder {
+        slide_id: slide_id.into(),
+        rank,
     }
 }
 
@@ -1023,6 +1146,18 @@ pub fn lower_element_action(slide: usize, id: impl Into<String>) -> SlidesAction
     }
 }
 
+pub fn set_element_z_action(
+    slide_id: impl Into<String>,
+    element_id: impl Into<String>,
+    z: i64,
+) -> SlidesAction {
+    SlidesAction::SetElementZ {
+        slide_id: slide_id.into(),
+        element_id: element_id.into(),
+        z,
+    }
+}
+
 /// The template for a freshly-created slide, shared by the toolbar's "New slide"
 /// button and the palette's "Add slide" so both insert the byte-identical
 /// structure. Fresh ids are minted on each call (a new slide is genuinely new).
@@ -1054,6 +1189,7 @@ pub struct ElementResource {
     pub id: String,
     pub kind: ElementKind,
     pub text: String,
+    pub z: i64,
 }
 
 /// One slide surfaced as a resource: its index, a snapshot for the duplicate
@@ -1123,6 +1259,13 @@ fn element_label(kind: ElementKind, text: &str) -> String {
 /// slide one `slides.element:<id>` per element (delete / bring-front /
 /// send-back). Every operation is the same action the on-screen affordance
 /// dispatches.
+fn resource_rank_for_slot(ctx: &SlidesResourceCtx, at: usize) -> i64 {
+    // Search/resource providers hold a stable deck snapshot rather than a
+    // mutable Automerge handle. Derive one wide sparse key *here at authoring
+    // time* from that snapshot; receivers apply this scalar verbatim.
+    (at.min(ctx.slides.len()) as i64).saturating_mul(1_i64 << 32)
+}
+
 fn deck_resource(ctx: &SlidesResourceCtx) -> Resource {
     let title = ctx.deck_title.trim();
     let deck_label = if title.is_empty() { "Deck" } else { title };
@@ -1183,7 +1326,7 @@ fn deck_resource(ctx: &SlidesResourceCtx) -> Resource {
     deck = deck.with_action(immediate_spec(
         "add-slide",
         "Add slide",
-        &insert_slide_action(at, &new_slide_template()),
+        &insert_slide_with_order_action(&new_slide_template(), resource_rank_for_slot(ctx, at)),
     ));
 
     // Deck-level: set the accent theme, one row per palette.
@@ -1198,7 +1341,7 @@ fn deck_resource(ctx: &SlidesResourceCtx) -> Resource {
     deck
 }
 
-fn slide_resource(sr: &SlideResource, eager_children: bool) -> Resource {
+fn slide_resource(sr: &SlideResource, eager_children: bool, ctx: &SlidesResourceCtx) -> Resource {
     let idx = sr.idx;
     let mut slide = Resource::new(
         slide_resource_id(&sr.data.id),
@@ -1220,9 +1363,9 @@ fn slide_resource(sr: &SlideResource, eager_children: bool) -> Resource {
     .with_action(immediate_spec(
         "duplicate",
         "Duplicate slide",
-        &SlidesAction::InsertSlide {
-            at: idx + 1,
+        &SlidesAction::InsertSlideWithOrder {
             slide: sr.data.reminted(),
+            rank: resource_rank_for_slot(ctx, idx + 1),
         },
     ))
     .with_action(immediate_spec(
@@ -1256,6 +1399,20 @@ fn slide_resource(sr: &SlideResource, eager_children: bool) -> Resource {
     slide
 }
 
+fn resource_restack_z(slide: &SlideResource, front: bool) -> i64 {
+    let edge = if front {
+        slide.elements.iter().map(|element| element.z).max()
+    } else {
+        slide.elements.iter().map(|element| element.z).min()
+    }
+    .unwrap_or(0);
+    if front {
+        edge.saturating_add(1)
+    } else {
+        edge.saturating_sub(1)
+    }
+}
+
 fn element_resource(sr: &SlideResource, er: &ElementResource, eager_text: bool) -> Resource {
     let mut resource = Resource::new(
         element_resource_id(&er.id),
@@ -1280,12 +1437,20 @@ fn element_resource(sr: &SlideResource, er: &ElementResource, eager_text: bool) 
     .with_action(immediate_spec(
         "bring-front",
         "Bring to front",
-        &raise_element_action(sr.idx, er.id.clone()),
+        &set_element_z_action(
+            sr.data.id.clone(),
+            er.id.clone(),
+            resource_restack_z(sr, true),
+        ),
     ))
     .with_action(immediate_spec(
         "send-back",
         "Send to back",
-        &lower_element_action(sr.idx, er.id.clone()),
+        &set_element_z_action(
+            sr.data.id.clone(),
+            er.id.clone(),
+            resource_restack_z(sr, false),
+        ),
     ));
     if eager_text && er.kind == ElementKind::Text && !er.text.trim().is_empty() {
         resource = resource.with_child(text_resource(sr, er));
@@ -1333,7 +1498,7 @@ fn notes_resource(sr: &SlideResource) -> Resource {
 pub fn provide_resources(ctx: &SlidesResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut deck = deck_resource(ctx);
     for slide in ctx.slides.iter().take(MAX_EAGER_SLIDES) {
-        deck = deck.with_child(slide_resource(slide, true));
+        deck = deck.with_child(slide_resource(slide, true, ctx));
     }
     vec![deck]
 }
@@ -1346,7 +1511,7 @@ pub fn resolve_resource(ctx: &SlidesResourceCtx, id: &str) -> Option<Resource> {
     if id == "slides.deck" {
         let mut deck = deck_resource(ctx);
         for slide in ctx.slides.iter().take(MAX_EAGER_SLIDES) {
-            deck = deck.with_child(slide_resource(slide, true));
+            deck = deck.with_child(slide_resource(slide, true, ctx));
         }
         return Some(deck);
     }
@@ -1355,7 +1520,7 @@ pub fn resolve_resource(ctx: &SlidesResourceCtx, id: &str) -> Option<Resource> {
             .slides
             .iter()
             .find(|slide| slide.data.id == slide_id)
-            .map(|slide| slide_resource(slide, false));
+            .map(|slide| slide_resource(slide, false, ctx));
     }
     if let Some(element_id) = id.strip_prefix("slides.element:") {
         return ctx.slides.iter().find_map(|slide| {
@@ -1401,7 +1566,7 @@ mod tests {
     use crate::app::SlidesApp;
     use crate::model::seed_deck;
     use automerge::{AutoCommit, ROOT};
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -1499,7 +1664,7 @@ mod tests {
         assert_eq!(open_slide.kind, OperationKind::View);
         assert_eq!(
             open_slide_address(slide_id),
-            qos_actions::ActionAddress::new(&slide.id.0, &open_slide.id)
+            tilo_actions::ActionAddress::new(&slide.id.0, &open_slide.id)
         );
 
         let element = slide
@@ -1513,7 +1678,7 @@ mod tests {
         assert_eq!(open_text_address(element_id).resource, text.id.0);
 
         let address = open_text_address(element_id);
-        let encoded = qos_actions::door::encode(&resources, &address, None)
+        let encoded = tilo_actions::door::encode(&resources, &address, None)
             .expect("text address resolves through the published resource tree");
         assert_eq!(
             decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
@@ -1543,7 +1708,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         let after = SlidesDoc::load(&state.doc).unwrap();
@@ -1595,8 +1760,8 @@ mod tests {
         let slide_id = SlidesDoc::load(&a).unwrap().slides[1].id.clone();
         let action = set_slide_background_action(1, slide_id, Background::Deep);
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -1629,8 +1794,8 @@ mod tests {
         let id = deck.slides[1].elements[0].id.clone();
         let action = raise_element_action(1, id.clone());
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(a.get_heads(), b.get_heads(), "restack replayed identically");
         let ra = SlidesDoc::load(&a).unwrap().slides[1].clone();
@@ -1656,8 +1821,8 @@ mod tests {
         let slide_id = SlidesDoc::load(&a).unwrap().slides[0].id.clone();
         let action = add_element_action(0, slide_id, &el);
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(a.get_heads(), b.get_heads(), "add replayed identically");
         assert!(
@@ -1675,7 +1840,9 @@ mod tests {
         let element = live.slides[0].elements[0].id.clone();
 
         for action in [
-            move_element_action(99, element.clone(), 10.0, 10.0),
+            // A stale numeric index is intentionally *not* hostile: the
+            // canonical element id below resolves it after a remote insert.
+            move_element_action(99, "stale-element", 10.0, 10.0),
             move_element_action(0, element.clone(), f64::NAN, 10.0),
             delete_element_action(0, "stale-element"),
             set_slide_layout_action(99, "stale-slide", Layout::Blank),
@@ -1695,6 +1862,138 @@ mod tests {
             );
             assert_eq!(doc.get_heads(), before, "a refused action is atomic");
         }
+    }
+
+    #[test]
+    fn stable_ids_keep_an_element_action_on_its_original_slide_after_an_insert() {
+        let (_app, mut doc) = seeded();
+        let before = SlidesDoc::load(&doc).expect("seeded deck");
+        let target_slide = before.slides[1].id.clone();
+        let element = before.slides[1].elements[0].id.clone();
+        let action = move_element_action(1, element.clone(), 321.0, 222.0);
+
+        // This simulates a collaborator inserting a slide before the authored
+        // numeric position while the action is in flight.
+        SlidesDoc::insert_slide(&mut doc, 0, &crate::model::Slide::new(Layout::Blank));
+        action
+            .apply(&mut doc)
+            .expect("stable id resolves after insert");
+
+        let after = SlidesDoc::load(&doc).expect("deck remains readable");
+        let target = after
+            .slides
+            .iter()
+            .find(|slide| slide.id == target_slide)
+            .expect("same canonical slide");
+        let moved = target.element(&element).expect("same canonical element");
+        assert_eq!((moved.x, moved.y), (321.0, 222.0));
+        assert!(
+            after.slides[1].element(&element).is_none(),
+            "the stale numeric slot was not mutated"
+        );
+    }
+
+    #[test]
+    fn absolute_slide_order_replays_identically_after_divergent_inserts() {
+        let (_app, mut a) = seeded();
+        a.commit();
+        let bytes = a.save();
+        let mut b = AutoCommit::load(&bytes).expect("replica loads");
+
+        let base = SlidesDoc::load(&a).expect("seeded deck");
+        let moved = base.slides[1].id.clone();
+        let rank = SlidesDoc::rank_for_move(&a, 1, 3).expect("valid authored reorder");
+        let encoded = encode(&set_slide_order_action(moved.clone(), rank));
+        assert_eq!(encoded.type_id, SLIDES_ACTION_TYPE);
+        let action: SlidesAction =
+            serde_json::from_slice(&encoded.payload).expect("encoded action decodes");
+
+        // Each receiver has independently evolved its positional view before
+        // the same reorder arrives. The action carries the author-computed
+        // scalar rank, so neither receiver recomputes a different destination.
+        SlidesDoc::insert_slide(&mut a, 0, &crate::model::Slide::new(Layout::Blank));
+        SlidesDoc::insert_slide(&mut b, 2, &crate::model::Slide::new(Layout::Blank));
+        action.apply(&mut a).expect("absolute rank applies to a");
+        action.apply(&mut b).expect("absolute rank applies to b");
+        assert_eq!(SlidesDoc::slide_order(&a, &moved), Some(rank));
+        assert_eq!(SlidesDoc::slide_order(&b, &moved), Some(rank));
+
+        a.merge(&mut b).expect("merge into a");
+        b.merge(&mut a).expect("merge into b");
+        assert_eq!(
+            SlidesDoc::load(&a),
+            SlidesDoc::load(&b),
+            "the divergent replicas converge after replaying one encoded rank"
+        );
+        assert_eq!(SlidesDoc::slide_order(&a, &moved), Some(rank));
+    }
+
+    #[test]
+    fn absolute_slide_insert_replays_identically_after_divergent_inserts() {
+        let (_app, mut a) = seeded();
+        a.commit();
+        let bytes = a.save();
+        let mut b = AutoCommit::load(&bytes).expect("replica loads");
+
+        let inserted = crate::model::Slide::new(Layout::Blank);
+        let inserted_id = inserted.id.clone();
+        let rank = SlidesDoc::rank_for_insert(&a, 1);
+        let encoded = encode(&insert_slide_with_order_action(&inserted, rank));
+        assert_eq!(encoded.type_id, SLIDES_ACTION_TYPE);
+        let action: SlidesAction =
+            serde_json::from_slice(&encoded.payload).expect("encoded action decodes");
+
+        // The receivers disagree about their current insertion slots, but the
+        // new slide's encoded rank remains the exact authored scalar.
+        SlidesDoc::insert_slide(&mut a, 0, &crate::model::Slide::new(Layout::Blank));
+        SlidesDoc::insert_slide(&mut b, 3, &crate::model::Slide::new(Layout::Blank));
+        action
+            .apply(&mut a)
+            .expect("absolute insertion applies to a");
+        action
+            .apply(&mut b)
+            .expect("absolute insertion applies to b");
+        assert_eq!(SlidesDoc::slide_order(&a, &inserted_id), Some(rank));
+        assert_eq!(SlidesDoc::slide_order(&b, &inserted_id), Some(rank));
+
+        a.merge(&mut b).expect("merge into a");
+        b.merge(&mut a).expect("merge into b");
+        assert_eq!(SlidesDoc::load(&a), SlidesDoc::load(&b));
+        assert_eq!(SlidesDoc::slide_order(&a, &inserted_id), Some(rank));
+    }
+
+    #[test]
+    fn absolute_element_z_replays_identically_after_divergent_arrangement() {
+        let (_app, mut a) = seeded();
+        a.commit();
+        let bytes = a.save();
+        let mut b = AutoCommit::load(&bytes).expect("replica loads");
+
+        let deck = SlidesDoc::load(&a).expect("seeded deck");
+        let slide_id = deck.slides[0].id.clone();
+        let target = deck.slides[0].elements[0].id.clone();
+        let other_a = deck.slides[0].elements[1].id.clone();
+        let other_b = deck.slides[0].elements[2].id.clone();
+        let z = restack_z_for_author(&a, &slide_id, &target, true).expect("front z");
+        let encoded = encode(&set_element_z_action(slide_id, target.clone(), z));
+        let action: SlidesAction =
+            serde_json::from_slice(&encoded.payload).expect("encoded action decodes");
+
+        // Different local z extrema must not change the encoded target z.
+        SlidesDoc::set_element_z(&mut a, 0, &other_a, 80);
+        SlidesDoc::set_element_z(&mut b, 0, &other_b, -80);
+        action.apply(&mut a).expect("absolute z applies to a");
+        action.apply(&mut b).expect("absolute z applies to b");
+
+        a.merge(&mut b).expect("merge into a");
+        b.merge(&mut a).expect("merge into b");
+        let left = SlidesDoc::load(&a).expect("merged deck");
+        assert_eq!(Some(left.clone()), SlidesDoc::load(&b));
+        assert_eq!(
+            left.slides[0].element(&target).expect("target survives").z,
+            z,
+            "both replicas applied the author-computed z, not local extrema"
+        );
     }
 
     #[test]

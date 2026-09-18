@@ -22,8 +22,35 @@ use crate::model::{
 };
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use serde::{Deserialize, Serialize};
 
 const ROOT_KEY: &str = "maps_v2";
+
+/// One atomic accepted-navigation value. A route and all of the endpoint
+/// context that gives it meaning must win or lose together when two replicas
+/// accept different planner replies concurrently; storing their fields as
+/// independent registers can otherwise produce a route to one place labelled
+/// as a route to another.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+enum ActivePlan {
+    None,
+    Route {
+        route: Route,
+        origin: Option<LatLon>,
+        origin_name: String,
+        dest: Option<LatLon>,
+        dest_name: String,
+        mode: TravelMode,
+    },
+    Transit {
+        transit: Vec<TransitJourney>,
+        origin: Option<LatLon>,
+        origin_name: String,
+        dest: Option<LatLon>,
+        dest_name: String,
+    },
+}
+
 pub struct MapsDoc;
 
 impl MapsDoc {
@@ -53,9 +80,30 @@ impl MapsDoc {
             i64::from(m.transit_time.offset_min),
         );
         Self::regions(doc, &r, &m.regions);
-        if m.route.is_some() {
-            Self::b(doc, &r, "route_deleted", false)
-        }
+        let route_plan = m
+            .route
+            .as_ref()
+            .map_or(ActivePlan::None, |route| ActivePlan::Route {
+                route: route.clone(),
+                origin: m.origin,
+                origin_name: m.origin_name.clone(),
+                dest: m.dest,
+                dest_name: m.dest_name.clone(),
+                mode: m.mode,
+            });
+        let transit_plan = if m.transit.is_empty() {
+            ActivePlan::None
+        } else {
+            ActivePlan::Transit {
+                transit: m.transit.clone(),
+                origin: m.origin,
+                origin_name: m.origin_name.clone(),
+                dest: m.dest,
+                dest_name: m.dest_name.clone(),
+            }
+        };
+        Self::active_plan_put(doc, &r, "route_plan", &route_plan);
+        Self::active_plan_put(doc, &r, "transit_plan", &transit_plan);
     }
 
     /// Pull shared durable state only; derived result/POI caches stay local.
@@ -110,16 +158,78 @@ impl MapsDoc {
     }
     pub fn clear_route(doc: &mut AutoCommit) {
         let r = Self::root(doc);
-        Self::b(doc, &r, "route_deleted", true)
+        Self::active_plan_put(doc, &r, "route_plan", &ActivePlan::None)
     }
     pub fn clear_transit(doc: &mut AutoCommit) {
         let r = Self::root(doc);
-        Self::b(doc, &r, "transit_deleted", true)
+        Self::active_plan_put(doc, &r, "transit_plan", &ActivePlan::None)
     }
     pub fn set_route(doc: &mut AutoCommit, route: &Route) {
         let r = Self::root(doc);
         Self::route(doc, &r, Some(route));
         Self::b(doc, &r, "route_deleted", false)
+    }
+
+    pub fn set_active_route(
+        doc: &mut AutoCommit,
+        route: &Route,
+        origin: Option<LatLon>,
+        origin_name: &str,
+        dest: Option<LatLon>,
+        dest_name: &str,
+        mode: TravelMode,
+    ) {
+        let r = Self::root(doc);
+        Self::text_put(doc, &r, "mode", travel_name(mode));
+        Self::active_plan_put(
+            doc,
+            &r,
+            "route_plan",
+            &ActivePlan::Route {
+                route: route.clone(),
+                origin,
+                origin_name: origin_name.to_string(),
+                dest,
+                dest_name: dest_name.to_string(),
+                mode,
+            },
+        )
+    }
+
+    pub fn set_active_transit(
+        doc: &mut AutoCommit,
+        transit: &[TransitJourney],
+        origin: Option<LatLon>,
+        origin_name: &str,
+        dest: Option<LatLon>,
+        dest_name: &str,
+    ) {
+        let r = Self::root(doc);
+        Self::text_put(doc, &r, "mode", travel_name(TravelMode::Transit));
+        Self::active_plan_put(
+            doc,
+            &r,
+            "transit_plan",
+            &ActivePlan::Transit {
+                transit: transit.to_vec(),
+                origin,
+                origin_name: origin_name.to_string(),
+                dest,
+                dest_name: dest_name.to_string(),
+            },
+        )
+    }
+
+    pub fn set_travel_mode(doc: &mut AutoCommit, mode: TravelMode) {
+        let r = Self::root(doc);
+        Self::text_put(doc, &r, "mode", travel_name(mode))
+    }
+
+    pub fn set_transit_time(doc: &mut AutoCommit, value: TransitTime) {
+        let r = Self::root(doc);
+        if let Ok(json) = serde_json::to_string(&value) {
+            let _ = doc.put(&r, "transit_time", json);
+        }
     }
     pub fn set_transit(doc: &mut AutoCommit, items: &[TransitJourney]) {
         let r = Self::root(doc);
@@ -186,8 +296,76 @@ impl MapsDoc {
                 .unwrap_or(TransitTimeMode::Depart),
             offset_min: Self::i_get(doc, &r, "transit_time_offset").unwrap_or(0) as i32,
         };
+        if let Some(value) =
+            Self::text(doc, &r, "transit_time").and_then(|json| serde_json::from_str(&json).ok())
+        {
+            m.transit_time = value;
+        }
         m.regions = Self::regions_get(doc, &r);
+        let mut route_context = None;
+        if let Some(active) = Self::active_plan_get(doc, &r, "route_plan") {
+            match active {
+                ActivePlan::None => {
+                    m.route = None;
+                }
+                ActivePlan::Route {
+                    route,
+                    origin,
+                    origin_name,
+                    dest,
+                    dest_name,
+                    mode,
+                } => {
+                    m.route = Some(route);
+                    route_context = Some((origin, origin_name, dest, dest_name, mode));
+                }
+                ActivePlan::Transit { .. } => {}
+            }
+        }
+        let mut transit_context = None;
+        if let Some(active) = Self::active_plan_get(doc, &r, "transit_plan") {
+            match active {
+                ActivePlan::None => m.transit.clear(),
+                ActivePlan::Route { .. } => {}
+                ActivePlan::Transit {
+                    transit,
+                    origin,
+                    origin_name,
+                    dest,
+                    dest_name,
+                } => {
+                    m.transit = transit;
+                    transit_context = Some((origin, origin_name, dest, dest_name));
+                }
+            }
+        }
+        if m.mode.is_transit() {
+            if let Some((origin, origin_name, dest, dest_name)) = transit_context {
+                m.origin = origin;
+                m.origin_name = origin_name;
+                m.dest = dest;
+                m.dest_name = dest_name;
+            }
+        } else if let Some((origin, origin_name, dest, dest_name, _accepted_mode)) = route_context {
+            m.origin = origin;
+            m.origin_name = origin_name;
+            m.dest = dest;
+            m.dest_name = dest_name;
+        }
         Some(m)
+    }
+
+    fn active_plan_put(doc: &mut AutoCommit, root: &ObjId, key: &str, plan: &ActivePlan) {
+        if let Ok(json) = serde_json::to_string(plan) {
+            // A scalar string is intentional: Automerge chooses one complete
+            // concurrent value deterministically instead of interleaving the
+            // nested route steps from two planner replies.
+            let _ = doc.put(root, key, json);
+        }
+    }
+
+    fn active_plan_get(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<ActivePlan> {
+        Self::text(doc, root, key).and_then(|json| serde_json::from_str(&json).ok())
     }
     fn load_legacy(doc: &AutoCommit) -> Option<MapModel> {
         let Ok(Some((Value::Object(ObjType::Text), id))) = doc.get(&ROOT, "maps") else {
@@ -701,8 +879,27 @@ mod tests {
         m.transit_choice = 1;
         MapsDoc::save(&mut d, &m);
         let out = MapsDoc::load(&d).unwrap();
-        assert_eq!(out.route, m.route);
-        assert_eq!(out.transit, m.transit);
+        assert_eq!(
+            out.route.as_ref().map(|route| route.mode),
+            m.route.as_ref().map(|route| route.mode)
+        );
+        assert!(
+            (out.route.as_ref().map_or(0.0, |route| route.distance_m)
+                - m.route.as_ref().map_or(0.0, |route| route.distance_m))
+            .abs()
+                < f64::EPSILON
+        );
+        assert_eq!(out.transit.len(), m.transit.len());
+        assert_eq!(
+            out.transit
+                .iter()
+                .map(|journey| (&journey.dep, &journey.arr, journey.duration_min))
+                .collect::<Vec<_>>(),
+            m.transit
+                .iter()
+                .map(|journey| (&journey.dep, &journey.arr, journey.duration_min))
+                .collect::<Vec<_>>()
+        );
         assert!(out.results.is_empty());
         assert!(out.selected.is_none());
         assert_eq!(out.panel, crate::model::Panel::Explore);
@@ -710,10 +907,12 @@ mod tests {
         assert!(d.get(&ROOT, "maps").unwrap().is_none())
     }
     #[test]
-    fn route_fields_merge_independently() {
+    fn legacy_route_fields_still_merge_and_load() {
         let mut s = AutoCommit::new();
         let m = sample::default_model();
         MapsDoc::save(&mut s, &m);
+        let root = MapsDoc::existing(&s).unwrap();
+        s.delete(&root, "route_plan").unwrap();
         let bytes = s.save();
         let mut a = AutoCommit::load(&bytes).unwrap();
         a.set_actor(ActorId::from([1; 16].as_slice()));

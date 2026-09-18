@@ -15,49 +15,35 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
-# The real-time media engine ships on by default so a normally-built `chat` can
-# actually place voice/camera/screen-share calls. The live-vs-simulated engine
-# is a genuine RUNTIME choice: `ChatApp::new()` (the live binary) uses
-# `MediaEngine::new()`, while `--shots`, tests and any headless render go through
-# `new_ephemeral()` → `MediaEngine::simulated()`, so no iroh endpoint, tokio
-# runtime or ScreenCast portal is touched during a shot. The feature only
-# compiles the live engine in.
+# The default app includes the real-time media engine. Shots and tests use the
+# simulated engine and do not start an iroh endpoint or ScreenCast portal.
 default = ["live-media"]
-# The real-time media engine: voice + camera + screen-share over iroh QUIC,
-# GStreamer for microphone/opus capture + playback and camera capture,
-# `qos-callstream` for the H.264 camera/screen codec, and the
-# xdg-desktop-portal ScreenCast request over ashpd. OFF by default so the
-# standard build and the `--shots` headless path never need the GStreamer/portal
-# dev stack or a Tokio runtime; the call UI runs fully against simulated/local
-# participants without it. Enable on a real qOS install with
-# `--features live-media`. See `src/media.rs`, `src/audio.rs`, `src/video.rs`
-# and `src/call.rs`. (ffmpeg / ALSA / Pulse / the `opus` crate are deliberately
-# NOT direct dependencies — audio codecs are GStreamer's `opusenc`/`opusdec`
-# elements, video is the in-tree openh264 source build, transport is iroh QUIC,
-# and the screen portal is ashpd.)
+# Voice, camera, and screen sharing use iroh QUIC, GStreamer capture/playback,
+# `tilo-callstream`, and the ScreenCast portal. The feature is off by default;
+# enable it with `--features live-media`.
 live-media = [
     "dep:gstreamer",
     "dep:gstreamer-app",
     "dep:iroh",
     "dep:tokio",
     "dep:ashpd",
-    "dep:qos-callstream",
+    "dep:tilo-callstream",
 ]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
-# The qOS action model: the serializable, replayable unit of CRDT mutation
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+# The Tilo action model: the serializable, replayable unit of CRDT mutation
 # behind Ctrl+K and cross-peer collaboration. Chat's messages/channels/reactions
 # are exported as `ChatAction`s (see `src/actions.rs`) dispatched through the
 # framework's `ui::ActionHost`.
-qos-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/collab/actions" }
 # The address a message carries when it was authored by selecting something —
 # `Message::reference` — and the vocabulary an agent's own progress on a
 # summons is recorded in (`Message::work`, `ChatAction::SetAgentWork`).
-qos-reference = { path = "../../crates/collab/reference" }
+tilo-reference = { path = "../../crates/collab/reference" }
 qdoc = { path = "../../crates/doc/qdoc" }
-# The qOS runtime user-identity loader (QOS_USER_IDENTITY) — the canonical
+# The Tilo runtime user-identity loader (TILO_USER_IDENTITY) — the canonical
 # per-peer identity the collab layer signs with. Chat uses its public key +
 # display name so every running instance is a distinct participant.
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
@@ -70,30 +56,22 @@ winit.workspace = true
 taffy.workspace = true
 # XDG data-dir resolution for on-disk persistence of the workspace document.
 dirs.workspace = true
-# Reading real image headers (true width/height) for files chosen in the
-# workspace attachment picker, plus PNG-encoding the demo thumbnails the shared
-# `ui::ImageStore` decodes on its worker threads — so the offline shot exercises
-# the real fetch → decode → cache → paint image path (no gradient stand-in).
-# Live attachments are read straight off the FUSE mount.
+# Read image headers for workspace attachments and encode demo thumbnails for
+# the shared `ui::ImageStore`.
+# Attachment bytes hydrate through qdoc's content-addressed blob store; no
+# sender-local path is stored in the chat document.
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
-# Live-media-only (feature-gated; never compiled for the default build).
-# Versions pinned to match the workspace lock so no extra copies resolve:
-# gstreamer 0.24 collapses onto the copy `apps/camera` / `apps/tube` /
-# `crates/media` already resolve; iroh 1.0 matches `fs`; `qos-callstream`
-# owns the same openh264 codec used by the shared video player;
-# ashpd 0.9 matches the copy the other portal-using apps resolve.
+# Live-media dependencies. Versions match the workspace media, transport, and
+# portal stacks to avoid duplicate copies.
 gstreamer = { workspace = true, optional = true }
 gstreamer-app = { workspace = true, optional = true }
 iroh = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "sync", "time"] }
-# Inherit the workspace pin (`default-features = false, features = ["tokio"]`):
-# ashpd's defaults include `async-std`, and enabling it alongside the tokio
-# backend is a hard compile error ("can't enable both async-std & tokio"). Every
-# other ashpd user in the tree inherits the tokio-only workspace config; chat
-# must too, otherwise moving `live-media` into the default build fails to compile.
+# Use ashpd's tokio-only workspace configuration; enabling async-std alongside
+# tokio is unsupported.
 ashpd = { workspace = true, optional = true }
-qos-callstream = { path = "../../crates/collab/qos-callstream", optional = true }
+tilo-callstream = { path = "../../crates/collab/tilo-callstream", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

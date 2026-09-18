@@ -1,7 +1,7 @@
-//! Merger: qOS registry entries + Flathub records + local install
+//! Merger: Tilo registry entries + Flathub records + local install
 //! snapshot → one canonical [`StoreItem`] list.
 //!
-//! The merge rule the task calls out: **a qOS entry with the same
+//! The merge rule the task calls out: **a Tilo entry with the same
 //! `name` as a Flathub app wins.** Duplicates on the Flathub side
 //! are dropped. Case-insensitive matching, whitespace-trimmed.
 
@@ -12,7 +12,7 @@ use crate::installed::InstalledEntry;
 use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
 use crate::registry_client::VerifiedEntry;
 
-/// Convert a qOS registry entry into the unified store item shape.
+/// Convert a Tilo registry entry into the unified store item shape.
 ///
 /// `registry_name` is the human label the store card shows (from
 /// the user's `registries.toml`, not the wire — the registry
@@ -25,13 +25,14 @@ use crate::registry_client::VerifiedEntry;
     clippy::unreachable,
     reason = "VerifiedEntry is constructed only after the registry verifier rejects Untrusted; reaching this arm would violate that security boundary"
 )]
-pub fn qos_to_store_item(
+pub fn tilo_to_store_item(
     verified: &VerifiedEntry,
     registry_name: &str,
     installed_index: &[InstalledEntry],
 ) -> StoreItem {
     let entry = &verified.entry;
-    let versions: Vec<StoreItemVersion> = entry.versions.iter().map(qos_version_to_store).collect();
+    let versions: Vec<StoreItemVersion> =
+        entry.versions.iter().map(tilo_version_to_store).collect();
     let latest = versions
         .first()
         .map(|v| v.version.clone())
@@ -43,6 +44,7 @@ pub fn qos_to_store_item(
             version: e.version.clone(),
             available: latest.clone(),
             pinned: e.pinned,
+            user_managed: e.user_managed,
         });
     StoreItem {
         id: entry.package_id.clone(),
@@ -54,7 +56,7 @@ pub fn qos_to_store_item(
         homepage_url: entry.homepage.clone(),
         source_url: entry.source_url.clone(),
         install_ref_path: None,
-        source: StoreSource::Qos {
+        source: StoreSource::Tilo {
             registry_name: registry_name.to_string(),
         },
         trust: match verified.trust {
@@ -69,7 +71,7 @@ pub fn qos_to_store_item(
     }
 }
 
-/// Turn an installed qOS package into a local-only Store row.
+/// Turn an installed Tilo package into a local-only Store row.
 ///
 /// A verified catalogue entry normally supplies the richer description and
 /// update metadata. That entry is not guaranteed to be reachable forever,
@@ -77,7 +79,7 @@ pub fn qos_to_store_item(
 /// is already on their device while its registry is offline or has withdrawn
 /// it. This deliberately publishes no download URL or claimed latest version,
 /// so the UI cannot offer an update based on stale or invented metadata.
-pub fn installed_qos_to_store_item(entry: &InstalledEntry) -> StoreItem {
+pub fn installed_tilo_to_store_item(entry: &InstalledEntry) -> StoreItem {
     StoreItem {
         id: entry.id.clone(),
         // Package ids are the only durable local display metadata available
@@ -91,7 +93,7 @@ pub fn installed_qos_to_store_item(entry: &InstalledEntry) -> StoreItem {
         homepage_url: None,
         source_url: None,
         install_ref_path: None,
-        source: StoreSource::Qos {
+        source: StoreSource::Tilo {
             registry_name: "Installed on this device".into(),
         },
         // app-host accepts only packages whose signature and declared package
@@ -114,11 +116,12 @@ pub fn installed_qos_to_store_item(entry: &InstalledEntry) -> StoreItem {
             // "Update" affordance.
             available: entry.version.clone(),
             pinned: entry.pinned,
+            user_managed: entry.user_managed,
         },
     }
 }
 
-fn qos_version_to_store(v: &RegistryVersion) -> StoreItemVersion {
+fn tilo_version_to_store(v: &RegistryVersion) -> StoreItemVersion {
     StoreItemVersion {
         version: v.version.clone(),
         released_at_unix: v.released_at_unix,
@@ -145,6 +148,7 @@ pub fn flathub_placeholder_to_item(
             version: v.clone(),
             available: String::new(),
             pinned: false,
+            user_managed: true,
         });
     StoreItem {
         id: p.app_id.clone(),
@@ -171,7 +175,7 @@ pub fn flathub_placeholder_to_item(
 }
 
 /// Return a local-only row for an installed Flatpak absent from the current
-/// popular/search result. As with [`installed_qos_to_store_item`], action
+/// popular/search result. As with [`installed_tilo_to_store_item`], action
 /// availability comes from the host; update metadata remains unknown rather
 /// than being guessed from an unrelated network response.
 pub fn installed_flatpak_to_item(app_id: &str, version: &str) -> StoreItem {
@@ -199,6 +203,7 @@ pub fn installed_flatpak_to_item(app_id: &str, version: &str) -> StoreItem {
             version: version.to_string(),
             available: version.to_string(),
             pinned: false,
+            user_managed: true,
         },
     }
 }
@@ -223,6 +228,7 @@ pub fn flathub_record_to_item(
             version: v.clone(),
             available: latest.clone(),
             pinned: false,
+            user_managed: true,
         });
     let homepage_url = r
         .homepage
@@ -283,16 +289,16 @@ fn plain_text(input: &str) -> String {
     output.trim().to_string()
 }
 
-/// Merge a qOS pile and a Flathub pile into one deduped list.
-/// qOS wins on any name collision (case-insensitive).
-pub fn merge(qos_items: Vec<StoreItem>, flathub_items: Vec<StoreItem>) -> Vec<StoreItem> {
-    let mut out = qos_items;
-    let qos_names: std::collections::HashSet<String> = out
+/// Merge a Tilo pile and a Flathub pile into one deduped list.
+/// Tilo wins on any name collision (case-insensitive).
+pub fn merge(tilo_items: Vec<StoreItem>, flathub_items: Vec<StoreItem>) -> Vec<StoreItem> {
+    let mut out = tilo_items;
+    let tilo_names: std::collections::HashSet<String> = out
         .iter()
         .map(|i| i.name.trim().to_ascii_lowercase())
         .collect();
     for fh in flathub_items {
-        if !qos_names.contains(&fh.name.trim().to_ascii_lowercase()) {
+        if !tilo_names.contains(&fh.name.trim().to_ascii_lowercase()) {
             out.push(fh);
         }
     }
@@ -321,7 +327,7 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use registry_types::{RegistryEntry, sign_entry};
 
-    fn qos_entry(id: &str, name: &str, version: &str, publisher: [u8; 32]) -> RegistryEntry {
+    fn tilo_entry(id: &str, name: &str, version: &str, publisher: [u8; 32]) -> RegistryEntry {
         let mut e = RegistryEntry {
             package_id: id.into(),
             name: name.into(),
@@ -333,7 +339,7 @@ mod tests {
             publisher_pubkey_hex: hex::encode(publisher),
             versions: vec![RegistryVersion {
                 version: version.into(),
-                qpkg_url: format!("https://apps.qos.dev/{id}/{version}.qpkg"),
+                qpkg_url: format!("https://apps.tilo.dev/{id}/{version}.qpkg"),
                 qpkg_root_hash_hex: "cd".repeat(32),
                 qpkg_size_bytes: 100,
                 released_at_unix: 200,
@@ -356,48 +362,69 @@ mod tests {
     }
 
     #[test]
-    fn qos_entry_deserializes_installed_state() {
-        let entry = qos_entry("dev.qos.notes", "Notes", "0.1.0", [1u8; 32]);
+    fn tilo_entry_deserializes_installed_state() {
+        let entry = tilo_entry("dev.tilo.notes", "Notes", "0.1.0", [1u8; 32]);
         let installed = vec![InstalledEntry {
-            id: "dev.qos.notes".into(),
+            id: "dev.tilo.notes".into(),
             version: "0.1.0".into(),
             publisher_key_hex: entry.publisher_pubkey_hex.clone(),
             installed_at: 0,
             pinned: true,
+            user_managed: true,
         }];
-        let item = qos_to_store_item(&verified(entry), "qOS main", &installed);
+        let item = tilo_to_store_item(&verified(entry), "Tilo main", &installed);
         assert!(matches!(item.installed, InstalledState::Installed { .. }));
-        // The pin flag from qos-install's registry must survive the
+        // The pin flag from tilo-install's registry must survive the
         // merge so the store can show "marked installed".
         assert!(item.installed.is_pinned());
         assert_eq!(item.latest_version(), "0.1.0");
-        assert!(matches!(item.source, StoreSource::Qos { .. }));
+        assert!(matches!(item.source, StoreSource::Tilo { .. }));
     }
 
     #[test]
-    fn qos_entry_with_newer_registry_version_flags_update() {
-        let entry = qos_entry("dev.qos.notes", "Notes", "0.2.0", [1u8; 32]);
+    fn tilo_entry_with_newer_registry_version_flags_update() {
+        let entry = tilo_entry("dev.tilo.notes", "Notes", "0.2.0", [1u8; 32]);
         let installed = vec![InstalledEntry {
-            id: "dev.qos.notes".into(),
+            id: "dev.tilo.notes".into(),
             version: "0.1.0".into(),
             publisher_key_hex: entry.publisher_pubkey_hex.clone(),
             installed_at: 0,
             pinned: false,
+            user_managed: true,
         }];
-        let item = qos_to_store_item(&verified(entry), "qOS main", &installed);
+        let item = tilo_to_store_item(&verified(entry), "Tilo main", &installed);
         assert!(item.installed.update_available());
     }
 
     #[test]
-    fn locally_installed_qos_item_stays_actionable_without_catalogue_metadata() {
-        let item = installed_qos_to_store_item(&InstalledEntry {
-            id: "dev.qos.offline".into(),
+    fn immutable_system_entry_is_installed_but_not_mutable() {
+        let entry = tilo_entry("dev.tilo.settings", "Settings", "1.0.0", [2u8; 32]);
+        let installed = vec![InstalledEntry {
+            id: entry.package_id.clone(),
+            version: "1.0.0".into(),
+            publisher_key_hex: entry.publisher_pubkey_hex.clone(),
+            installed_at: 0,
+            pinned: false,
+            user_managed: false,
+        }];
+        let item = tilo_to_store_item(&verified(entry), "Tilo system", &installed);
+        assert!(item.installed.is_installed());
+        assert_eq!(item.action_kind(true), crate::model::ActionKind::Open);
+        assert!(item.pin_action().is_none());
+        assert!(item.remove_action().is_none());
+    }
+
+    #[test]
+    fn locally_installed_tilo_item_stays_actionable_without_catalogue_metadata() {
+        let item = installed_tilo_to_store_item(&InstalledEntry {
+            id: "dev.tilo.offline".into(),
             version: "1.2.3".into(),
             publisher_key_hex: "ab".repeat(32),
             installed_at: 0,
             pinned: true,
+            user_managed: true,
         });
-        assert_eq!(item.name, "dev.qos.offline");
+        assert_eq!(item.name, "dev.tilo.offline");
         assert!(item.installed.is_installed());
         assert!(item.installed.is_pinned());
         assert!(!item.installed.update_available());
@@ -423,25 +450,25 @@ mod tests {
     }
 
     #[test]
-    fn merge_dedups_by_name_qos_wins() {
-        let qos_entry = qos_entry("dev.qos.notes", "Notes", "0.1.0", [1u8; 32]);
-        let qos = qos_to_store_item(&verified(qos_entry), "qOS main", &[]);
+    fn merge_dedups_by_name_tilo_wins() {
+        let tilo_entry = tilo_entry("dev.tilo.notes", "Notes", "0.1.0", [1u8; 32]);
+        let tilo = tilo_to_store_item(&verified(tilo_entry), "Tilo main", &[]);
         // Flathub carries a same-name item; it must be dropped.
         let fh = PopularEntry {
             app_id: "com.other.Notes".into(),
             name: Some("Notes".into()),
         };
         let fh_item = flathub_placeholder_to_item(&fh, &[]);
-        let merged = merge(vec![qos], vec![fh_item]);
+        let merged = merge(vec![tilo], vec![fh_item]);
         assert_eq!(merged.len(), 1);
-        assert!(matches!(merged[0].source, StoreSource::Qos { .. }));
+        assert!(matches!(merged[0].source, StoreSource::Tilo { .. }));
     }
 
     #[test]
     fn merge_preserves_distinct_flathub_items() {
-        let q = qos_to_store_item(
-            &verified(qos_entry("dev.qos.notes", "Notes", "0.1.0", [1u8; 32])),
-            "qOS main",
+        let q = tilo_to_store_item(
+            &verified(tilo_entry("dev.tilo.notes", "Notes", "0.1.0", [1u8; 32])),
+            "Tilo main",
             &[],
         );
         let f = flathub_placeholder_to_item(
@@ -457,8 +484,9 @@ mod tests {
 
     #[test]
     fn distinct_categories_sorted_and_deduped() {
-        let a = qos_to_store_item(&verified(qos_entry("a", "A", "1", [2u8; 32])), "qOS", &[]);
-        let mut b = qos_to_store_item(&verified(qos_entry("b", "B", "1", [3u8; 32])), "qOS", &[]);
+        let a = tilo_to_store_item(&verified(tilo_entry("a", "A", "1", [2u8; 32])), "Tilo", &[]);
+        let mut b =
+            tilo_to_store_item(&verified(tilo_entry("b", "B", "1", [3u8; 32])), "Tilo", &[]);
         b.categories = vec!["Games".into(), "Productivity".into()];
         let cats = distinct_categories(&[a, b]);
         assert_eq!(cats, vec!["Games".to_string(), "Productivity".to_string()]);

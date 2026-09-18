@@ -1,8 +1,8 @@
 //! Resource + action-model status for the terminal.
 //!
-//! The qOS action-model recipe (`docs/action-model-recipe.md`) splits every
+//! The Tilo action-model recipe (`docs/action-model-recipe.md`) splits every
 //! interaction into exactly one of two buckets: a *document-mutating* operation
-//! becomes an `Action` (`qos_actions::Action`) — a serializable value that
+//! becomes an `Action` (`tilo_actions::Action`) — a serializable value that
 //! deterministically changes the shared Automerge document, so undo and
 //! multi-peer replay come for free — while presentation / view state stays plain
 //! app code. PTY input is therefore exported as an effect on the live terminal
@@ -59,7 +59,8 @@
 //!
 //! ## Presentation is never an action
 //!
-//! The scrollback offset, the current text selection, whether the context menu is
+//! The scrollback offset, the current text selection, local find-in-scrollback
+//! query/matches, whether the context menu is
 //! open, and the viewport are per-peer view state held on the widget. The recipe
 //! names "the current selection, an overlay being open" as presentation that must
 //! *never* be an action.
@@ -108,12 +109,15 @@ mod tests {
         fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
             Ok(Box::new(std::io::empty()))
         }
+        #[cfg(unix)]
         fn process_group_leader(&self) -> Option<i32> {
             None
         }
+        #[cfg(unix)]
         fn as_raw_fd(&self) -> Option<i32> {
             None
         }
+        #[cfg(unix)]
         fn tty_name(&self) -> Option<std::path::PathBuf> {
             None
         }
@@ -392,7 +396,7 @@ mod tests {
             terminal
                 .actions
                 .iter()
-                .all(|action| action.kind == ui::qos_actions::OperationKind::Effect)
+                .all(|action| action.kind == ui::tilo_actions::OperationKind::Effect)
         );
         assert!(
             widget.take_committed_action().is_none(),
@@ -402,12 +406,14 @@ mod tests {
             terminal.actions.iter().all(|action| {
                 matches!(
                     action.contract.confirmation,
-                    ui::qos_actions::ConfirmationPolicy::Confirm
-                ) && matches!(action.contract.risk, ui::qos_actions::RiskLevel::Privileged)
-                    && matches!(
-                        action.contract.retry,
-                        ui::qos_actions::RetryPolicy::AtMostOnce
-                    )
+                    ui::tilo_actions::ConfirmationPolicy::Confirm
+                ) && matches!(
+                    action.contract.risk,
+                    ui::tilo_actions::RiskLevel::Privileged
+                ) && matches!(
+                    action.contract.retry,
+                    ui::tilo_actions::RetryPolicy::AtMostOnce
+                )
             }),
             "palette and agents must explicitly confirm every operation that can affect a live shell"
         );
@@ -434,7 +440,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut widget,
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::OperationKind::Effect,
                 "terminal.run",
                 &payload,
                 &doc,
@@ -448,13 +454,36 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut widget,
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::OperationKind::Effect,
                 "terminal.run",
                 &blank,
                 &doc,
                 &ROOT,
             )
             .is_err()
+        );
+
+        // A reviewed `run` action must be exactly one command. Newlines or
+        // escape bytes would turn the promised single trailing Enter into an
+        // arbitrary sequence of shell submissions/control operations.
+        for dangerous in ["printf first\nprintf second", "printf x\x1b[200~"] {
+            let payload = serde_json::to_vec(dangerous).expect("serialize control payload");
+            assert!(
+                Widget::invoke_resource_operation(
+                    &mut widget,
+                    ui::tilo_actions::OperationKind::Effect,
+                    "terminal.run",
+                    &payload,
+                    &doc,
+                    &ROOT,
+                )
+                .is_err(),
+                "unsafe multi-effect command must be rejected: {dangerous:?}"
+            );
+        }
+        assert!(
+            drain_writes(&writes).is_empty(),
+            "a rejected reviewed command must not write a partial PTY sequence"
         );
     }
 
@@ -467,7 +496,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut widget,
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::OperationKind::Effect,
                 "terminal.send",
                 &empty,
                 &doc,
@@ -480,7 +509,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut widget,
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::OperationKind::Effect,
                 "terminal.send",
                 &too_large,
                 &doc,
@@ -492,6 +521,22 @@ mod tests {
             writes.try_recv().is_err(),
             "rejected input never reaches the PTY"
         );
+
+        for dangerous in ["one\ntwo", "one\rtwo", "one\x1b[31m"] {
+            let payload = serde_json::to_vec(dangerous).expect("serialize control payload");
+            assert!(
+                Widget::invoke_resource_operation(
+                    &mut widget,
+                    ui::tilo_actions::OperationKind::Effect,
+                    "terminal.send",
+                    &payload,
+                    &doc,
+                    &root,
+                )
+                .is_err(),
+                "send text must not smuggle a terminal control sequence: {dangerous:?}"
+            );
+        }
     }
 
     #[test]
@@ -516,7 +561,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut widget,
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::OperationKind::Effect,
                 "terminal.send",
                 &payload,
                 &doc,
@@ -537,7 +582,7 @@ mod tests {
                     resource.actions.iter().all(|action| {
                         matches!(
                             action.contract.availability,
-                            ui::qos_actions::Availability::Unavailable { .. }
+                            ui::tilo_actions::Availability::Unavailable { .. }
                         )
                     })
                 })
@@ -561,7 +606,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut widget,
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::OperationKind::Effect,
                 "terminal.control",
                 &payload,
                 &doc,
@@ -570,5 +615,41 @@ mod tests {
             .is_err()
         );
         assert!(widget.is_disconnected());
+    }
+
+    #[test]
+    fn only_public_web_osc_links_are_exported_to_agents() {
+        let (mut widget, _writes) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        widget.init_crdt(&mut doc, &ROOT);
+        widget.feed(
+            &mut doc,
+            &ROOT,
+            b"\x1b]8;;file:///home/me/.ssh/id_ed25519\x1b\\local\x1b]8;;\x1b\\ \
+              \x1b]8;;https://token@example.test/private\x1b\\credential\x1b]8;;\x1b\\ \
+              \x1b]8;;https://tilo.example/docs\x1b\\public\x1b]8;;\x1b\\",
+        );
+        widget.sync(&mut doc, &ROOT);
+
+        let transcript = Widget::resources(&widget, &doc)
+            .into_iter()
+            .next()
+            .expect("session resource")
+            .children
+            .into_iter()
+            .find(|resource| resource.kind == "terminal.transcript")
+            .expect("transcript resource");
+        assert_eq!(
+            transcript.children.len(),
+            1,
+            "local and credential-bearing process links are not agent resources"
+        );
+        assert_eq!(transcript.children[0].label, "https://tilo.example/docs");
+        assert!(
+            !crate::inner::is_public_web_link("file:///home/me/.ssh/id_ed25519")
+                && !crate::inner::is_public_web_link("https://token@example.test/private")
+                && !crate::inner::is_public_web_link("https://tilo.example/?access_token=no"),
+            "the directory rejects local paths, credentials, and query-bearing targets"
+        );
     }
 }

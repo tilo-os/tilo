@@ -1,0 +1,51 @@
+[Unit]
+Description=Grow the root filesystem to fill its partition
+Documentation=man:systemd-growfs@.service(8)
+# The stock systemd-growfs-root.service grows `/`. On this image `/` is a
+# composefs overlay, not a block device, so systemd-growfs refuses it with
+# "File system \"/\" not backed by block device". The real block-backed
+# filesystem is mounted at /sysroot, and must be grown instead.
+ConditionPathIsMountPoint=/sysroot
+After=systemd-repart.service sysroot.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Growing an already-full filesystem is idempotent, so this is safe on every
+# boot and also handles installations onto a larger-than-image partition.
+ExecStart=/usr/lib/systemd/systemd-growfs /sysroot
+TimeoutSec=infinity
+# Filesystem growth is background maintenance after the first boot. Keep its
+# metadata traffic from producing frame-time spikes or delaying app cold start.
+Nice=10
+CPUWeight=20
+IOWeight=20
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+PrivateIPC=yes
+ProtectSystem=strict
+ReadWritePaths=/sysroot
+ProtectHome=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+# Filesystem resize ioctls require CAP_SYS_ADMIN; retain no other capability.
+CapabilityBoundingSet=CAP_SYS_ADMIN
+AmbientCapabilities=
+SystemCallArchitectures=native

@@ -4,19 +4,18 @@
 //! and semantic row actions. `CalendarApp` supplies the model and translates
 //! those actions into its document mutations/navigation.
 
+use crate::draw_util::PaintContext;
+use crate::input_context::InputContext;
 use std::collections::HashSet;
-
-use automerge::{AutoCommit, ObjId};
-use chrono::{Duration, NaiveDate};
-use taffy::{NodeId, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Fill;
-use winit::event::WindowEvent;
-
-use ui::Widget;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use vello::Scene;
+
+use chrono::{Duration, NaiveDate};
+use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::Fill;
+
+use ui::Widget;
 use ui::tokens::spacing::Spacing;
 use ui::widget::Scrollable;
 
@@ -142,6 +141,25 @@ pub(crate) enum AgendaAction {
     ToggleTask(Id),
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct AgendaRenderModel<'a> {
+    pub(crate) area: Rect,
+    pub(crate) model: &'a Model,
+    pub(crate) anchor: NaiveDate,
+    pub(crate) today: NaiveDate,
+    pub(crate) hidden_calendars: &'a HashSet<String>,
+    pub(crate) calendar_filter: Option<&'a str>,
+    pub(crate) pointer: Point,
+}
+
+#[derive(Clone, Copy)]
+struct RowLayout {
+    area: Rect,
+    x0: f64,
+    pointer: Point,
+    scale: f64,
+}
+
 pub(crate) struct AgendaView {
     scroll: Scrollable,
 }
@@ -169,35 +187,19 @@ impl AgendaView {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
-        let mut handled = false;
-        let mut next_focus = *focus_target;
+    pub(crate) fn handle_event(&mut self, input: &mut InputContext<'_>) -> bool {
         self.scroll.handle_event(
-            event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            &mut handled,
-            &mut next_focus,
-            node_id,
-            taffy,
+            input.event,
+            input.scale_factor,
+            &input.modifiers,
+            input.state,
+            input.path,
+            input.handled,
+            input.focus_target,
+            input.node_id,
+            input.taffy,
         );
-        if handled {
-            *focus_target = next_focus;
-        }
-        handled
+        *input.handled
     }
 
     pub(crate) fn wants_pointer_capture(&self) -> bool {
@@ -620,6 +622,14 @@ mod tests {
             location: String::new(),
             color: Palette::Indigo,
             recurrence: Recurrence::None,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: None,
             project: None,
             calendar_id: calendar_id.map(str::to_owned),

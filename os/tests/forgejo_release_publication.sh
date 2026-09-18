@@ -2,9 +2,13 @@
 # Exercise immutable Forgejo attachment publication against a local API double.
 set -euo pipefail
 
+# Match the mock server's public repository, independently of the caller's CI
+# release configuration. Individual negative cases override this explicitly.
+export TILO_RELEASE_REPOSITORY=tilo/releases
+
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 publisher="$repo/apps/imager/packaging/publish-forgejo-release.sh"
-work="$(mktemp -d /var/tmp/qos-forgejo-publication-test.XXXXXX)"
+work="$(mktemp -d /var/tmp/tilo-forgejo-publication-test.XXXXXX)"
 server_pid=''
 cleanup() {
   if [ -n "$server_pid" ]; then
@@ -41,7 +45,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         global release
         path = urlsplit(self.path).path
-        if path.endswith("/releases/tags/imager-v1.2.3"):
+        if path == "/api/v1/repos/tilo/releases":
+            self.send_json(200, {"full_name": "tilo/releases", "private": False, "archived": False})
+        elif path == "/api/v1/repos/tilo/private-downloads":
+            self.send_json(200, {"full_name": "tilo/private-downloads", "private": True, "archived": False})
+        elif path.endswith("/releases/tags/imager-v1.2.3"):
             if release is None:
                 self.send_json(404, {"message": "not found"})
             else:
@@ -128,27 +136,39 @@ done
 [ -s "$work/port" ] || { printf 'mock Forgejo server did not start\n' >&2; exit 1; }
 server_url="http://127.0.0.1:$(<"$work/port")"
 mkdir -p "$work/assets"
-printf 'AAAAAAAAAAAAAAAA\n' >"$work/assets/qos-imager-test.bin"
+printf 'AAAAAAAAAAAAAAAA\n' >"$work/assets/tilo-imager-test.bin"
 
 publish() {
   GITHUB_SERVER_URL="$server_url" \
-  GITHUB_REPOSITORY='qos/quickdesktop' \
+  GITHUB_REPOSITORY='tilo/tilo' \
   GITHUB_REF_NAME='imager-v1.2.3' \
   FORGEJO_TOKEN='test-token' \
     "$publisher" "$work/assets"
 }
 
 first="$(publish)"
-grep -Fq 'published and verified qos-imager-test.bin' <<<"$first" \
+grep -Fq 'published and verified tilo-imager-test.bin' <<<"$first" \
   || { printf 'first publication was not uploaded and verified\n' >&2; exit 1; }
 grep -Fq 'published complete release imager-v1.2.3' <<<"$first" \
   || { printf 'verified draft was not promoted after upload\n' >&2; exit 1; }
 
+if TILO_RELEASE_REPOSITORY=tilo/tilo publish >"$work/source.out" 2>"$work/source.err"; then
+  printf 'publisher accepted the source repository as its binary target\n' >&2
+  exit 1
+fi
+grep -Fq 'must be separate from the source repository' "$work/source.err"
+if TILO_RELEASE_REPOSITORY=tilo/private-downloads publish \
+    >"$work/private.out" 2>"$work/private.err"; then
+  printf 'publisher accepted a private binary target\n' >&2
+  exit 1
+fi
+grep -Fq 'release repository must be public' "$work/private.err"
+
 second="$(publish)"
-grep -Fq 'verified existing qos-imager-test.bin' <<<"$second" \
+grep -Fq 'verified existing tilo-imager-test.bin' <<<"$second" \
   || { printf 'identical rerun did not accept the existing asset\n' >&2; exit 1; }
 
-printf 'BBBBBBBBBBBBBBBB\n' >"$work/assets/qos-imager-test.bin"
+printf 'BBBBBBBBBBBBBBBB\n' >"$work/assets/tilo-imager-test.bin"
 if publish >"$work/mismatch.out" 2>"$work/mismatch.err"; then
   printf 'mismatched rerun unexpectedly succeeded\n' >&2
   exit 1
@@ -156,9 +176,9 @@ fi
 grep -Fq 'release asset mismatch' "$work/mismatch.err" \
   || { printf 'mismatched rerun did not explain the immutable conflict\n' >&2; exit 1; }
 
-printf 'AAAAAAAAAAAAAAAA\n' >"$work/assets/qos-imager-test.bin"
+printf 'AAAAAAAAAAAAAAAA\n' >"$work/assets/tilo-imager-test.bin"
 after_conflict="$(publish)"
-grep -Fq 'verified existing qos-imager-test.bin' <<<"$after_conflict" \
+grep -Fq 'verified existing tilo-imager-test.bin' <<<"$after_conflict" \
   || { printf 'mismatched rerun changed the published asset\n' >&2; exit 1; }
 
 printf 'ok    Forgejo publication is idempotent and immutable\n'

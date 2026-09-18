@@ -1,4 +1,4 @@
-//! qos-install — the user-facing CLI to install, run, and manage qOS
+//! tilo-install — the user-facing CLI to install, run, and manage Tilo
 //! packages (.qpkg) locally, verifying the package signature and trust
 //! chain before installing.
 
@@ -16,7 +16,6 @@
 )]
 
 use std::fs;
-use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -31,19 +30,10 @@ use pkg::trust::{
 use pkg::{MemoryBlobStore, PackageId, Verification, unpack, verify_with_trust};
 use serde::{Deserialize, Serialize};
 
-/// Mirrors qos-pkg-cli's `QpkgHeader` (kept local to avoid a circular dep).
-#[derive(Debug, Deserialize)]
-struct QpkgHeader {
-    /// `qpkg:<hex>` form of the `PackageId`.
-    package_id: String,
-    #[allow(dead_code)]
-    format: u32,
-}
-
 #[derive(Debug, Parser)]
 #[command(
-    name = "qos-install",
-    about = "Install, launch, list, or remove qOS packages."
+    name = "tilo-install",
+    about = "Install, launch, list, or remove Tilo packages."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -93,7 +83,7 @@ enum Cmd {
     /// Fetch a newer version of an installed package and swap it in,
     /// keeping the user's per-room state.
     Update {
-        /// Package id (as printed by `qos-install list`); omit to update all.
+        /// Package id (as printed by `tilo-install list`); omit to update all.
         pkg_id: Option<String>,
         /// Update from a local .qpkg instead of a configured registry
         /// (requires an explicit package id).
@@ -120,7 +110,7 @@ enum Cmd {
     /// (opt-in) its saved state.
     #[command(alias = "remove")]
     Uninstall {
-        /// Package id (as printed by `qos-install list`).
+        /// Package id (as printed by `tilo-install list`).
         pkg_id: String,
         /// Also delete all saved state for this app — the user's data, not the
         /// publisher's; does not come back on reinstall.
@@ -141,27 +131,27 @@ enum Cmd {
     },
     /// Pin an installed package: kept, ranked first, never evicted under size pressure.
     Pin {
-        /// Package id (as printed by `qos-install list`).
+        /// Package id (as printed by `tilo-install list`).
         pkg_id: String,
     },
     /// Unpin an installed package (drops it back to the eviction pool).
     Unpin {
-        /// Package id (as printed by `qos-install list`).
+        /// Package id (as printed by `tilo-install list`).
         pkg_id: String,
     },
-    /// Launch an installed package via qos-launcher.
+    /// Launch an installed package via tilo-launcher.
     Run {
         /// Package id.
         pkg_id: String,
-        /// Forwarded to qos-launcher.
+        /// Forwarded to tilo-launcher.
         #[arg(long)]
         no_services: bool,
-        /// Forwarded to qos-launcher. Deprecated — apps with an installed
-        /// `qos-runtime/<v>` bundle don't need this; silently overridden when
+        /// Forwarded to tilo-launcher. Deprecated — apps with an installed
+        /// `tilo-runtime/<v>` bundle don't need this; silently overridden when
         /// a bundle resolves.
         #[arg(long, hide = true)]
         minimal_libs: bool,
-        /// Forwarded to qos-launcher; falls back to --minimal-libs if the
+        /// Forwarded to tilo-launcher; falls back to --minimal-libs if the
         /// declared runtime bundle isn't installed.
         #[arg(long)]
         allow_missing_runtime: bool,
@@ -197,7 +187,7 @@ enum Cmd {
     },
     /// Print the PATH-shim directory and a shell-rc snippet to prepend it.
     Path,
-    /// Manage installed qOS runtime bundles.
+    /// Manage installed Tilo runtime bundles.
     Runtime {
         #[command(subcommand)]
         cmd: RuntimeCmd,
@@ -254,7 +244,7 @@ enum RevokedCmd {
 #[derive(Debug, Subcommand)]
 enum RuntimeCmd {
     /// Build + install a runtime bundle into
-    /// `$XDG_DATA_HOME/qos-runtime/<version>/`, from the host root or an
+    /// `$XDG_DATA_HOME/tilo-runtime/<version>/`, from the host root or an
     /// explicit prefix.
     Install {
         /// Bundle version tag, written into bundle.toml and used to look it up at launch.
@@ -270,7 +260,7 @@ enum RuntimeCmd {
         /// cross-arch bundle from a fabricated rootfs.
         #[arg(long)]
         arch: Option<String>,
-        /// Path to a signing identity JSON (see `qos-runtime-bundle key
+        /// Path to a signing identity JSON (see `tilo-runtime-bundle key
         /// generate`); the launcher refuses unsigned bundles by default, so
         /// most installs should sign.
         #[arg(long)]
@@ -342,15 +332,15 @@ enum Error {
     Shim(String),
     #[error("runtime-bundle: {0}")]
     RuntimeBundle(String),
-    #[error("runtime bundle qos-runtime/{0} is already installed (use --force to overwrite)")]
+    #[error("runtime bundle tilo-runtime/{0} is already installed (use --force to overwrite)")]
     RuntimeBundleExists(String),
-    #[error("runtime bundle qos-runtime/{0} is not installed")]
+    #[error("runtime bundle tilo-runtime/{0} is not installed")]
     RuntimeBundleNotInstalled(String),
     #[error(
         "{package} declares runtime `{runtime}`, and no bundle for it is installed. \
          That package will not launch: the launcher refuses to start an app whose \
          declared runtime is absent.\n  \
-         Install it and retry:  qos-install runtime install --version {version} --from-host --identity <key.json>\n  \
+         Install it and retry:  tilo-install runtime install --version {version} --from-host --identity <key.json>\n  \
          Or build it as part of this install:  add --with-runtime\n  \
          Or install anyway, knowing it cannot launch yet:  add --ignore-missing-runtime"
     )]
@@ -373,6 +363,15 @@ enum Error {
     },
     #[error("the .qpkg is for {found}, but {wanted} was asked for")]
     WrongPackage { wanted: String, found: String },
+    #[error(
+        "local update for {package} changed publisher from ed25519:{installed} to ed25519:{candidate}; \
+         require the new identity explicitly with --require-publisher {candidate}"
+    )]
+    LocalUpdatePublisherChanged {
+        package: String,
+        installed: String,
+        candidate: String,
+    },
     #[error("fetching {app_id} from the configured registries: {detail}")]
     Fetch { app_id: String, detail: String },
     #[error("starting the async runtime for a registry fetch: {0}")]
@@ -411,7 +410,7 @@ struct RegistryEntry {
     /// them without re-reading the manifest); empty if no [cli] block.
     #[serde(default)]
     cli_commands: Vec<String>,
-    /// The manifest's declared `runtime = "qos-runtime/<v>"`, if any — lets
+    /// The manifest's declared `runtime = "tilo-runtime/<v>"`, if any — lets
     /// `list`/`verify` report bundle status without re-reading manifests.
     #[serde(default)]
     runtime: String,
@@ -428,12 +427,12 @@ struct Registry {
 }
 
 fn data_root() -> Result<PathBuf, Error> {
-    // Honour QOS_APPS_DATA_DIR (tests/dev installs); matches qos-launcher::registry.
-    if let Some(dir) = std::env::var_os("QOS_APPS_DATA_DIR") {
+    // Honour TILO_APPS_DATA_DIR (tests/dev installs); matches tilo-launcher::registry.
+    if let Some(dir) = std::env::var_os("TILO_APPS_DATA_DIR") {
         return Ok(PathBuf::from(dir));
     }
     let base = dirs::data_dir().ok_or(Error::NoDataDir)?;
-    Ok(base.join("qos-apps"))
+    Ok(base.join("tilo-apps"))
 }
 
 fn registry_path() -> Result<PathBuf, Error> {
@@ -444,9 +443,9 @@ fn payloads_root() -> Result<PathBuf, Error> {
     Ok(data_root()?.join("payloads"))
 }
 
-/// The user's data home (parent of `qos-rooms/`), distinct from
+/// The user's data home (parent of `tilo-rooms/`), distinct from
 /// [`data_root`]: this follows `XDG_DATA_HOME` like the launcher does,
-/// not `QOS_APPS_DATA_DIR` — using the wrong one silently loses "remove data".
+/// not `TILO_APPS_DATA_DIR` — using the wrong one silently loses "remove data".
 fn data_home_root() -> Result<PathBuf, Error> {
     if let Some(dir) = std::env::var_os("XDG_DATA_HOME")
         && !dir.is_empty()
@@ -583,13 +582,13 @@ fn verify_and_gate(
                 }
                 // fallback: --allow-self-signed permits this
                 eprintln!(
-                    "qos-install: --require-attestor {required:?} unmatched; --allow-self-signed permits self-signed publisher ed25519:{}",
+                    "tilo-install: --require-attestor {required:?} unmatched; --allow-self-signed permits self-signed publisher ed25519:{}",
                     hex_of(&identity)
                 );
             } else if !trust.allow_self_signed {
                 // Default (current) behavior: warn and proceed.
                 eprintln!(
-                    "qos-install: WARN — package self-signed by ed25519:{} (no trusted-attestor signature); use --require-attestor <id> to demand an attestation",
+                    "tilo-install: WARN — package self-signed by ed25519:{} (no trusted-attestor signature); use --require-attestor <id> to demand an attestation",
                     hex_of(&identity)
                 );
             }
@@ -597,7 +596,7 @@ fn verify_and_gate(
         }
         Verification::Revoked { reason, pubkey, .. } => {
             eprintln!(
-                "qos-install: REFUSED — publisher ed25519:{} is revoked: {reason}",
+                "tilo-install: REFUSED — publisher ed25519:{} is revoked: {reason}",
                 hex_of(&pubkey)
             );
             Err(Error::Revoked { reason })
@@ -644,7 +643,7 @@ impl Ingested {
     fn version(&self) -> &str {
         &self.manifest.package.version
     }
-    /// `qos-runtime/<v>`, when the manifest pins one.
+    /// `tilo-runtime/<v>`, when the manifest pins one.
     fn runtime_ref(&self) -> Option<&str> {
         self.manifest.package.runtime.as_deref()
     }
@@ -656,8 +655,23 @@ impl Ingested {
 /// `--allow-self-signed` decides *whose* signature is acceptable, never
 /// whether one is required.
 fn ingest(bytes: &[u8], trust: &TrustFlags) -> Result<Ingested, Error> {
-    let (pkg_id, store) = read_qpkg_bytes(bytes)?;
+    let app_registry::qpkg::QpkgMeta {
+        package_id: pkg_id,
+        store,
+        ..
+    } = app_registry::qpkg::load(bytes).map_err(|error| Error::Parse(error.to_string()))?;
     let (manifest, publisher_key_hex, attested_by) = verify_and_gate(pkg_id, &store, trust)?;
+
+    if !pkg::qpkg_size_allowed(
+        manifest.package.kind,
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+    ) {
+        return Err(Error::Policy(format!(
+            "application .qpkg is {} bytes; the {}-byte limit keeps apps instant and moves shared dependencies into runtime bundles",
+            bytes.len(),
+            pkg::MAX_APP_QPKG_BYTES
+        )));
+    }
 
     // A signature says who wrote the manifest, not that its contents are
     // reasonable — a package naming its own filesystem paths is refused
@@ -730,7 +744,7 @@ fn runtime_status(ingested: &Ingested) -> Result<Option<(String, bool)>, Error> 
 
 /// Make the declared runtime available, or refuse the install.
 ///
-/// The refusal is the point: catching a missing `qos-runtime/<v>`
+/// The refusal is the point: catching a missing `tilo-runtime/<v>`
 /// bundle here (with a fix command) beats discovering
 /// `RuntimeBundleMissing` at first launch.
 fn satisfy_runtime(ingested: &Ingested, flags: &RuntimeFlags) -> Result<(), Error> {
@@ -741,7 +755,7 @@ fn satisfy_runtime(ingested: &Ingested, flags: &RuntimeFlags) -> Result<(), Erro
         return Ok(());
     }
     if flags.with_runtime {
-        println!("  runtime  : qos-runtime/{version} is missing; building it from the host root");
+        println!("  runtime  : tilo-runtime/{version} is missing; building it from the host root");
         return runtime_install(
             &version,
             true,
@@ -753,7 +767,7 @@ fn satisfy_runtime(ingested: &Ingested, flags: &RuntimeFlags) -> Result<(), Erro
     }
     if flags.ignore_missing_runtime {
         eprintln!(
-            "qos-install: WARN — {} declares runtime `qos-runtime/{version}`, which is \
+            "tilo-install: WARN — {} declares runtime `tilo-runtime/{version}`, which is \
              not installed. The package will not launch until it is.",
             ingested.id()
         );
@@ -761,7 +775,7 @@ fn satisfy_runtime(ingested: &Ingested, flags: &RuntimeFlags) -> Result<(), Erro
     }
     Err(Error::RuntimeDependencyMissing {
         package: ingested.id().to_string(),
-        runtime: ingested.runtime_ref().unwrap_or("qos-runtime").to_string(),
+        runtime: ingested.runtime_ref().unwrap_or("tilo-runtime").to_string(),
         version,
     })
 }
@@ -781,13 +795,13 @@ fn write_cli_shims(manifest: &pkg::Manifest, id_field: &str) -> Result<Vec<Strin
     let shim_source = shim::locate_shim_source();
     if !shim_source.exists() {
         eprintln!(
-            "qos-install: WARNING — cannot find qos-cli-shim at {}. \
-             Skipping shim install. Set QOS_CLI_SHIM_PATH or install the qOS runtime first.",
+            "tilo-install: WARNING — cannot find tilo-cli-shim at {}. \
+             Skipping shim install. Set TILO_CLI_SHIM_PATH or install the Tilo runtime first.",
             shim_source.display()
         );
         return Ok(cli_commands);
     }
-    let launcher_override_owned = std::env::var_os("QOS_LAUNCHER_PATH").map(PathBuf::from);
+    let launcher_override_owned = std::env::var_os("TILO_LAUNCHER_PATH").map(PathBuf::from);
     let launcher_override = launcher_override_owned.as_deref();
     let spec = shim::ShimInstall {
         package_id: id_field,
@@ -803,7 +817,7 @@ fn write_cli_shims(manifest: &pkg::Manifest, id_field: &str) -> Result<Vec<Strin
         bin_dir.display()
     );
     println!(
-        "  PATH     : prepend {} to your shell's PATH to pick them up (see `qos-install path`).",
+        "  PATH     : prepend {} to your shell's PATH to pick them up (see `tilo-install path`).",
         bin_dir.display()
     );
     Ok(cli_commands)
@@ -847,7 +861,7 @@ fn install(
     place_payload(&ingested, &dest)?;
     let manifest_path = dest.join("manifest.toml");
 
-    // 5. The evidence a later `qos-install verify` replays.
+    // 5. The evidence a later `tilo-install verify` replays.
     let data_root = data_root()?;
     install::integrity::record(
         &data_root,
@@ -884,7 +898,7 @@ fn install(
     if let Some(rt) = ingested.runtime_ref() {
         println!("  runtime  : {rt}");
     }
-    println!("run with:  qos-install run {id_field}");
+    println!("run with:  tilo-install run {id_field}");
     Ok(())
 }
 
@@ -912,9 +926,9 @@ fn print_install_plan(
     println!("  pinned    : {pinned}");
     match runtime_status(ingested)? {
         None => println!("  runtime   : none declared"),
-        Some((v, true)) => println!("  runtime   : qos-runtime/{v} (installed)"),
+        Some((v, true)) => println!("  runtime   : tilo-runtime/{v} (installed)"),
         Some((v, false)) => println!(
-            "  runtime   : qos-runtime/{v} MISSING — install would refuse without \
+            "  runtime   : tilo-runtime/{v} MISSING — install would refuse without \
              --with-runtime or --ignore-missing-runtime"
         ),
     }
@@ -1029,6 +1043,27 @@ fn update_one(
             found: ingested.id().to_string(),
         });
     }
+    // A local file has no signed registry index authorising a publisher-key
+    // rotation. Keep the identity recorded at install time unless the user
+    // explicitly pins the candidate key on this command line. Registry-backed
+    // updates have their own owner-signed publisher authorisation chain in
+    // `resolve_and_fetch`, so legitimate rotations remain possible there.
+    if from.is_some()
+        && !entry.publisher_key_hex.is_empty()
+        && !entry
+            .publisher_key_hex
+            .eq_ignore_ascii_case(&ingested.publisher_key_hex)
+        && trust
+            .require_publisher
+            .as_deref()
+            .is_none_or(|required| !required.eq_ignore_ascii_case(&ingested.publisher_key_hex))
+    {
+        return Err(Error::LocalUpdatePublisherChanged {
+            package: entry.id.clone(),
+            installed: entry.publisher_key_hex.clone(),
+            candidate: ingested.publisher_key_hex.clone(),
+        });
+    }
 
     // 2. Is it actually newer? Non-semver versions are compared as strings
     //    for equality only — not evidence of an upgrade.
@@ -1062,8 +1097,8 @@ fn update_one(
         println!("  payload   : swap {}", entry.payload_root.display());
         match runtime_status(&ingested)? {
             None => println!("  runtime   : none declared"),
-            Some((v, true)) => println!("  runtime   : qos-runtime/{v} (installed)"),
-            Some((v, false)) => println!("  runtime   : qos-runtime/{v} MISSING"),
+            Some((v, true)) => println!("  runtime   : tilo-runtime/{v} (installed)"),
+            Some((v, false)) => println!("  runtime   : tilo-runtime/{v} MISSING"),
         }
         println!(
             "  state     : KEPT — {} room(s), {}",
@@ -1076,19 +1111,42 @@ fn update_one(
 
     satisfy_runtime(&ingested, runtime)?;
 
+    let data_root = data_root()?;
+    let layout = UpdateLayout::new(entry, &ingested, &data_root)?;
+    let journal = UpdateJournal::begin(
+        &data_root,
+        UpdateIntent {
+            package_id: entry.id.clone(),
+            owner_pid: std::process::id(),
+            new_package_id_hex: hex_of(ingested.pkg_id.as_bytes()),
+            payload_live: layout.payload_live.clone(),
+            payload_staging: layout.payload_staging.clone(),
+            payload_retired: layout.payload_retired.clone(),
+            integrity_live: layout.integrity_live.clone(),
+            integrity_retired: layout.integrity_retired.clone(),
+            old_commands: entry.cli_commands.clone(),
+            new_commands: ingested
+                .manifest
+                .cli
+                .as_ref()
+                .map(|cli| cli.commands.clone())
+                .unwrap_or_default(),
+        },
+    )?;
+
     // 3. Swap: the new payload is built beside the old one and moved into
     //    place, so a mid-failure leaves the old version working, not half-replaced.
-    swap_payload(&ingested, &entry.payload_root)?;
+    let payload_swap = swap_payload(&ingested, &layout)?;
 
     // 4. Records: integrity first, since a registry entry claiming a
     //    version whose evidence isn't written yet would fail its own `verify`.
-    let data_root = data_root()?;
-    install::integrity::record(
+    let integrity_swap = IntegritySwap::record(
         &data_root,
         &entry.id,
         &ingested.signed_root,
         &ingested.manifest_bytes,
         &ingested.collection_bytes,
+        &layout.integrity_retired,
     )?;
 
     // The new version may publish a different set of commands, so the
@@ -1097,21 +1155,52 @@ fn update_one(
         let bin_dir = bin_root()?;
         let _ = shim::remove_shims(&bin_dir, &entry.cli_commands);
     }
-    let cli_commands = write_cli_shims(&ingested.manifest, &entry.id)?;
+    let candidate_commands = ingested
+        .manifest
+        .cli
+        .as_ref()
+        .map(|cli| cli.commands.clone())
+        .unwrap_or_default();
+    let cli_commands = match write_cli_shims(&ingested.manifest, &entry.id) {
+        Ok(commands) => commands,
+        Err(error) => {
+            restore_cli_shims(&entry.id, &candidate_commands, &entry.cli_commands);
+            return Err(error);
+        }
+    };
 
-    let mut reg = load_registry()?;
-    if let Some(slot) = reg.entry.iter_mut().find(|e| e.id == entry.id) {
-        slot.version = ingested.version().to_string();
-        slot.package_id_hex = hex_of(ingested.pkg_id.as_bytes());
-        slot.publisher_key_hex
-            .clone_from(&ingested.publisher_key_hex);
-        slot.attested_by.clone_from(&ingested.attested_by);
-        slot.installed_at = now();
-        slot.cli_commands = cli_commands;
-        slot.runtime = ingested.runtime_ref().unwrap_or_default().to_string();
-        slot.source.clone_from(&source);
+    let mut reg = match load_registry() {
+        Ok(registry) => registry,
+        Err(error) => {
+            restore_cli_shims(&entry.id, &cli_commands, &entry.cli_commands);
+            return Err(error);
+        }
+    };
+    let Some(slot) = reg.entry.iter_mut().find(|e| e.id == entry.id) else {
+        restore_cli_shims(&entry.id, &cli_commands, &entry.cli_commands);
+        return Err(Error::NotInstalled(entry.id.clone()));
+    };
+    slot.version = ingested.version().to_string();
+    slot.package_id_hex = hex_of(ingested.pkg_id.as_bytes());
+    slot.publisher_key_hex
+        .clone_from(&ingested.publisher_key_hex);
+    slot.attested_by.clone_from(&ingested.attested_by);
+    slot.installed_at = now();
+    slot.cli_commands.clone_from(&cli_commands);
+    slot.runtime = ingested.runtime_ref().unwrap_or_default().to_string();
+    slot.source.clone_from(&source);
+    if let Err(error) = save_registry(&reg) {
+        restore_cli_shims(&entry.id, &cli_commands, &entry.cli_commands);
+        return Err(error);
     }
-    save_registry(&reg)?;
+
+    // The atomic registry replacement is the commit point: launchers now
+    // agree that the new payload and integrity evidence are current. Until
+    // this line, both guards restore the previous working installation on
+    // every ordinary error path.
+    integrity_swap.commit();
+    payload_swap.commit();
+    journal.finish()?;
 
     println!(
         "updated: {} {} -> {}",
@@ -1135,41 +1224,419 @@ fn update_one(
 /// directory, so the old tree moves aside first and is removed only
 /// once the new one is live — failure modes are "old still installed"
 /// or "new installed", never "neither".
-fn swap_payload(ingested: &Ingested, live: &Path) -> Result<(), Error> {
-    let parent = live
-        .parent()
-        .ok_or_else(|| Error::Swap {
-            package: ingested.id().to_string(),
-            detail: format!("{} has no parent directory", live.display()),
-        })?
-        .to_path_buf();
+#[derive(Debug)]
+struct UpdateLayout {
+    payload_live: PathBuf,
+    payload_staging: PathBuf,
+    payload_retired: PathBuf,
+    integrity_live: PathBuf,
+    integrity_retired: PathBuf,
+}
+
+impl UpdateLayout {
+    fn new(entry: &RegistryEntry, ingested: &Ingested, data_root: &Path) -> Result<Self, Error> {
+        let parent = entry.payload_root.parent().ok_or_else(|| Error::Swap {
+            package: entry.id.clone(),
+            detail: format!("{} has no parent directory", entry.payload_root.display()),
+        })?;
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let token = format!("{}-{nonce}", std::process::id());
+        let integrity_live = install::integrity::record_dir(data_root, &entry.id);
+        let integrity_parent = integrity_live
+            .parent()
+            .ok_or_else(|| Error::Swap {
+                package: entry.id.clone(),
+                detail: format!("{} has no parent directory", integrity_live.display()),
+            })?
+            .to_path_buf();
+        let integrity_leaf = integrity_live
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("package")
+            .to_string();
+        Ok(Self {
+            payload_live: entry.payload_root.clone(),
+            payload_staging: parent.join(format!(".staging-{}-{token}", ingested.id())),
+            payload_retired: parent.join(format!(".retiring-{}-{token}", ingested.id())),
+            integrity_live,
+            integrity_retired: integrity_parent
+                .join(format!(".retiring-{integrity_leaf}-integrity-{token}")),
+        })
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct UpdateIntent {
+    package_id: String,
+    owner_pid: u32,
+    new_package_id_hex: String,
+    payload_live: PathBuf,
+    payload_staging: PathBuf,
+    payload_retired: PathBuf,
+    integrity_live: PathBuf,
+    integrity_retired: PathBuf,
+    old_commands: Vec<String>,
+    new_commands: Vec<String>,
+}
+
+struct UpdateJournal {
+    path: PathBuf,
+    finished: bool,
+}
+
+impl UpdateJournal {
+    fn begin(data_root: &Path, intent: UpdateIntent) -> Result<Self, Error> {
+        let dir = data_root.join("update-journal");
+        fs::create_dir_all(&dir)?;
+        let key = hex::encode(blake3::hash(intent.package_id.as_bytes()).as_bytes());
+        let path = dir.join(format!("{key}.toml"));
+        let bytes = toml::to_string(&intent)
+            .map(String::into_bytes)
+            .map_err(|error| Error::Swap {
+                package: intent.package_id.clone(),
+                detail: format!("encoding update recovery journal: {error}"),
+            })?;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|error| Error::Swap {
+                package: intent.package_id.clone(),
+                detail: format!("creating update recovery journal: {error}"),
+            })?;
+        use std::io::Write as _;
+        if let Err(error) = file.write_all(&bytes).and_then(|()| file.sync_all()) {
+            let _ = fs::remove_file(&path);
+            return Err(Error::Swap {
+                package: intent.package_id,
+                detail: format!("persisting update recovery journal: {error}"),
+            });
+        }
+        if let Err(error) = fs::File::open(&dir).and_then(|directory| directory.sync_all()) {
+            let _ = fs::remove_file(&path);
+            return Err(Error::Swap {
+                package: intent.package_id,
+                detail: format!("persisting update recovery journal directory: {error}"),
+            });
+        }
+        Ok(Self {
+            path,
+            finished: false,
+        })
+    }
+
+    fn finish(mut self) -> Result<(), Error> {
+        fs::remove_file(&self.path)?;
+        self.finished = true;
+        Ok(())
+    }
+}
+
+impl Drop for UpdateJournal {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn update_path_is_scoped(path: &Path, root: &Path) -> bool {
+    path.starts_with(root)
+        && !path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
+}
+
+fn recover_update_directories(
+    intent: &UpdateIntent,
+    committed: bool,
+    payload_root: &Path,
+    integrity_root: &Path,
+) -> Result<(), Error> {
+    let payload_paths = [
+        &intent.payload_live,
+        &intent.payload_staging,
+        &intent.payload_retired,
+    ];
+    let integrity_paths = [&intent.integrity_live, &intent.integrity_retired];
+    if payload_paths
+        .iter()
+        .any(|path| !update_path_is_scoped(path, payload_root))
+        || integrity_paths
+            .iter()
+            .any(|path| !update_path_is_scoped(path, integrity_root))
+    {
+        return Err(Error::Swap {
+            package: intent.package_id.clone(),
+            detail: "recovery journal contains a path outside the package stores".to_string(),
+        });
+    }
+    if committed {
+        if !intent.payload_live.exists() {
+            return Err(Error::Swap {
+                package: intent.package_id.clone(),
+                detail: "registry committed the update but its payload is missing".to_string(),
+            });
+        }
+        let _ = fs::remove_dir_all(&intent.payload_staging);
+        let _ = fs::remove_dir_all(&intent.payload_retired);
+        let _ = fs::remove_dir_all(&intent.integrity_retired);
+        return Ok(());
+    }
+
+    let _ = fs::remove_dir_all(&intent.payload_staging);
+    if intent.payload_retired.exists() {
+        let _ = fs::remove_dir_all(&intent.payload_live);
+        fs::rename(&intent.payload_retired, &intent.payload_live).map_err(|error| Error::Swap {
+            package: intent.package_id.clone(),
+            detail: format!("restoring payload after interrupted update: {error}"),
+        })?;
+    }
+    if intent.integrity_retired.exists() {
+        let _ = fs::remove_dir_all(&intent.integrity_live);
+        fs::rename(&intent.integrity_retired, &intent.integrity_live).map_err(|error| {
+            Error::Swap {
+                package: intent.package_id.clone(),
+                detail: format!("restoring integrity evidence after interrupted update: {error}"),
+            }
+        })?;
+    }
+    Ok(())
+}
+
+/// Resolve journals left by process termination or power loss. The atomic
+/// registry is the commit record: if it names the candidate content hash,
+/// cleanup finishes; otherwise the retired payload and evidence are restored.
+fn recover_interrupted_updates() -> Result<(), Error> {
+    let data_root = data_root()?;
+    let journal_dir = data_root.join("update-journal");
+    if !journal_dir.exists() {
+        return Ok(());
+    }
+    let payload_root = payloads_root()?;
+    let integrity_root = data_root.join("integrity");
+    let registry = load_registry()?;
+    for entry in fs::read_dir(&journal_dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let text = fs::read_to_string(entry.path()).map_err(|error| Error::Swap {
+            package: "unknown".to_string(),
+            detail: format!("reading update recovery journal: {error}"),
+        })?;
+        let intent: UpdateIntent = toml::from_str(&text).map_err(|error| Error::Swap {
+            package: "unknown".to_string(),
+            detail: format!("decoding update recovery journal: {error}"),
+        })?;
+        if process_is_alive(intent.owner_pid) {
+            return Err(Error::Swap {
+                package: intent.package_id,
+                detail: format!(
+                    "another installer process ({}) is updating this package",
+                    intent.owner_pid
+                ),
+            });
+        }
+        let installed = registry
+            .entry
+            .iter()
+            .find(|installed| installed.id == intent.package_id);
+        let committed = installed.is_some_and(|installed| {
+            installed
+                .package_id_hex
+                .eq_ignore_ascii_case(&intent.new_package_id_hex)
+        });
+        let desired_commands = installed
+            .map(|installed| installed.cli_commands.as_slice())
+            .unwrap_or_default();
+        recover_update_directories(&intent, committed, &payload_root, &integrity_root)?;
+        if committed {
+            let mut all_commands = intent.old_commands.clone();
+            all_commands.extend(intent.new_commands.clone());
+            all_commands.sort();
+            all_commands.dedup();
+            restore_cli_shims(&intent.package_id, &all_commands, desired_commands);
+        } else {
+            let mut all_commands = intent.old_commands.clone();
+            all_commands.extend(intent.new_commands.clone());
+            all_commands.sort();
+            all_commands.dedup();
+            restore_cli_shims(&intent.package_id, &all_commands, desired_commands);
+        }
+        fs::remove_file(entry.path())?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn process_is_alive(pid: u32) -> bool {
+    Path::new("/proc").join(pid.to_string()).exists()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn process_is_alive(_pid: u32) -> bool {
+    false
+}
+
+fn swap_payload(ingested: &Ingested, layout: &UpdateLayout) -> Result<DirectorySwap, Error> {
+    let live = &layout.payload_live;
+    let parent = live.parent().ok_or_else(|| Error::Swap {
+        package: ingested.id().to_string(),
+        detail: format!("{} has no parent directory", live.display()),
+    })?;
     fs::create_dir_all(&parent)?;
-    let pid = std::process::id();
-    let staging = parent.join(format!(".staging-{}-{pid}", ingested.id()));
-    let retired = parent.join(format!(".retiring-{}-{pid}", ingested.id()));
+    let staging = &layout.payload_staging;
+    let retired = &layout.payload_retired;
 
     place_payload(ingested, &staging)?;
 
-    if live.exists() {
-        fs::rename(live, &retired).map_err(|e| Error::Swap {
+    let had_live = live.exists();
+    if had_live {
+        fs::rename(live, retired).map_err(|e| Error::Swap {
             package: ingested.id().to_string(),
             detail: format!("moving the installed payload aside: {e}"),
         })?;
     }
-    if let Err(e) = fs::rename(&staging, live) {
+    if let Err(e) = fs::rename(staging, live) {
         // Restore the working install before reporting — leaving no payload at
         // all is the one outcome this exists to prevent.
         if retired.exists() {
-            let _ = fs::rename(&retired, live);
+            let _ = fs::rename(retired, live);
         }
-        let _ = fs::remove_dir_all(&staging);
+        let _ = fs::remove_dir_all(staging);
         return Err(Error::Swap {
             package: ingested.id().to_string(),
             detail: format!("moving the new payload into place: {e}"),
         });
     }
-    let _ = fs::remove_dir_all(&retired);
-    Ok(())
+    Ok(DirectorySwap {
+        live: live.clone(),
+        retired: had_live.then(|| retired.clone()),
+        committed: false,
+    })
+}
+
+/// A directory replacement that remains reversible until the registry—the
+/// launcher's authority—has been atomically published.
+struct DirectorySwap {
+    live: PathBuf,
+    retired: Option<PathBuf>,
+    committed: bool,
+}
+
+impl DirectorySwap {
+    fn commit(mut self) {
+        if let Some(retired) = &self.retired {
+            let _ = fs::remove_dir_all(retired);
+        }
+        self.committed = true;
+    }
+
+    fn rollback(&mut self) {
+        if self.committed {
+            return;
+        }
+        let _ = fs::remove_dir_all(&self.live);
+        if let Some(retired) = &self.retired {
+            let _ = fs::rename(retired, &self.live);
+        }
+        self.committed = true;
+    }
+}
+
+impl Drop for DirectorySwap {
+    fn drop(&mut self) {
+        self.rollback();
+    }
+}
+
+/// Integrity evidence participates in the same update transaction as the
+/// payload. `integrity::record` replaces three files; moving the old record
+/// aside first means a later shim/registry error can restore the complete old
+/// chain instead of leaving old registry metadata pointed at new evidence.
+struct IntegritySwap {
+    directory: DirectorySwap,
+}
+
+impl IntegritySwap {
+    fn record(
+        data_root: &Path,
+        package_id: &str,
+        signed_root: &[u8],
+        manifest_bytes: &[u8],
+        collection_bytes: &[u8],
+        retired: &Path,
+    ) -> Result<Self, Error> {
+        let live = install::integrity::record_dir(data_root, package_id);
+        let parent = live.parent().ok_or_else(|| Error::Swap {
+            package: package_id.to_string(),
+            detail: format!("{} has no parent directory", live.display()),
+        })?;
+        fs::create_dir_all(parent)?;
+        let had_live = live.exists();
+        if had_live {
+            fs::rename(&live, retired).map_err(|error| Error::Swap {
+                package: package_id.to_string(),
+                detail: format!("moving the installed integrity record aside: {error}"),
+            })?;
+        }
+        if let Err(error) = install::integrity::record(
+            data_root,
+            package_id,
+            signed_root,
+            manifest_bytes,
+            collection_bytes,
+        ) {
+            let _ = fs::remove_dir_all(&live);
+            if had_live {
+                let _ = fs::rename(retired, &live);
+            }
+            return Err(error.into());
+        }
+        Ok(Self {
+            directory: DirectorySwap {
+                live,
+                retired: had_live.then(|| retired.to_path_buf()),
+                committed: false,
+            },
+        })
+    }
+
+    fn commit(self) {
+        self.directory.commit();
+    }
+}
+
+/// Best-effort compensation for a registry commit failure. Shims contain only
+/// the package id, so recreating the old command set restores their complete
+/// semantics; the payload and integrity guards handle the authoritative data.
+fn restore_cli_shims(package_id: &str, new: &[String], old: &[String]) {
+    let Ok(bin_dir) = bin_root() else {
+        return;
+    };
+    let _ = shim::remove_shims(&bin_dir, new);
+    if old.is_empty() {
+        return;
+    }
+    let shim_source = shim::locate_shim_source();
+    if !shim_source.exists() {
+        return;
+    }
+    let launcher_override_owned = std::env::var_os("TILO_LAUNCHER_PATH").map(PathBuf::from);
+    let spec = shim::ShimInstall {
+        package_id,
+        commands: old,
+        shim_source: &shim_source,
+        bin_dir: &bin_dir,
+        launcher_override: launcher_override_owned.as_deref(),
+    };
+    let _ = shim::write_shims(&spec);
 }
 
 /// Compare two version strings as semver; `None` when either isn't
@@ -1353,7 +1820,7 @@ fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Resu
         let (removed, failures) = install::state::remove(&rooms);
         println!("  state    : deleted in {removed} room(s)");
         for (path, e) in failures {
-            eprintln!("qos-install: could not remove {}: {e}", path.display());
+            eprintln!("tilo-install: could not remove {}: {e}", path.display());
         }
     } else if !rooms.is_empty() {
         println!(
@@ -1527,7 +1994,7 @@ fn set_pinned(pkg_id: &str, pinned: bool) -> Result<(), Error> {
 // grouping them into a struct would only move the list, not shorten it.
 #[allow(
     clippy::fn_params_excessive_bools,
-    reason = "each bool is an independent `qos-install run` flag forwarded to the launcher; \
+    reason = "each bool is an independent `tilo-install run` flag forwarded to the launcher; \
               see the comment above"
 )]
 fn run(
@@ -1572,7 +2039,7 @@ fn run(
         && let Some(rev) = revocation.find(&pk_bytes)
     {
         eprintln!(
-            "qos-install: REFUSED — installed package's publisher is revoked: {}",
+            "tilo-install: REFUSED — installed package's publisher is revoked: {}",
             rev.reason
         );
         return Err(Error::Revoked {
@@ -1595,13 +2062,13 @@ fn run(
                 });
             }
             eprintln!(
-                "qos-install: --require-attestor {required:?} unmatched; --allow-self-signed permits install-time attested-by {:?}",
+                "tilo-install: --require-attestor {required:?} unmatched; --allow-self-signed permits install-time attested-by {:?}",
                 entry.attested_by
             );
         }
     }
 
-    // Find qos-launcher on PATH; fall back to a sibling of this binary.
+    // Find tilo-launcher on PATH; fall back to a sibling of this binary.
     let launcher = which_launcher();
     let mut cmd = Command::new(&launcher);
     cmd.arg("run")
@@ -1620,7 +2087,7 @@ fn run(
     }
     if no_landlock {
         eprintln!(
-            "qos-install: WARNING — --no-landlock disables kernel-level FS/net restrictions. Only for debugging."
+            "tilo-install: WARNING — --no-landlock disables kernel-level FS/net restrictions. Only for debugging."
         );
         // Not implemented on the CLI yet — surface as a runtime flag if / when needed.
     }
@@ -1634,7 +2101,7 @@ fn print_path() -> Result<(), Error> {
     println!("{}", bin_dir.display());
     println!();
     println!("# Prepend the above to your shell's PATH so CLI commands");
-    println!("# installed via `qos-install install <pkg.qpkg>` are picked up.");
+    println!("# installed via `tilo-install install <pkg.qpkg>` are picked up.");
     println!("#");
     println!("# bash / zsh (~/.bashrc, ~/.zshrc):");
     println!("export PATH=\"{}:$PATH\"", bin_dir.display());
@@ -1691,7 +2158,7 @@ fn inspect(pkg_id: &str) -> Result<(), Error> {
     println!(
         "integrity     : {}",
         if install::integrity::has_record(&data_root, pkg_id) {
-            "recorded (run `qos-install verify` to replay it)"
+            "recorded (run `tilo-install verify` to replay it)"
         } else {
             "no record — installed before integrity records, or the record was deleted"
         }
@@ -1826,7 +2293,7 @@ fn runtime_install(
         },
     )
     .map_err(|e| Error::RuntimeBundle(e.to_string()))?;
-    println!("installed runtime bundle: qos-runtime/{version}");
+    println!("installed runtime bundle: tilo-runtime/{version}");
     println!("  path     : {}", dest.display());
     println!("  arch     : {}", manifest.arch);
     println!("  files    : {}", manifest.files.len());
@@ -1840,7 +2307,7 @@ fn runtime_install(
 fn runtime_list() -> Result<(), Error> {
     let base = dirs::data_dir()
         .ok_or(Error::NoDataDir)?
-        .join("qos-runtime");
+        .join("tilo-runtime");
     if !base.exists() {
         println!("(no runtime bundles installed)");
         return Ok(());
@@ -1879,7 +2346,7 @@ fn runtime_remove(version: &str) -> Result<(), Error> {
         return Err(Error::RuntimeBundleNotInstalled(version.to_string()));
     }
     fs::remove_dir_all(&path)?;
-    println!("removed runtime bundle: qos-runtime/{version}");
+    println!("removed runtime bundle: tilo-runtime/{version}");
     Ok(())
 }
 
@@ -1899,7 +2366,7 @@ fn runtime_verify(version: &str) -> Result<(), Error> {
         .ok_or_else(|| Error::RuntimeBundleNotInstalled(version.to_string()))?;
     let manifest =
         runtime_bundle::verify_bundle(&path).map_err(|e| Error::RuntimeBundle(e.to_string()))?;
-    println!("verified: qos-runtime/{version}");
+    println!("verified: tilo-runtime/{version}");
     println!("  path     : {}", path.display());
     println!("  files    : {}", manifest.files.len());
     println!("  root-hash: blake3:{}", manifest.root_hash);
@@ -1908,7 +2375,7 @@ fn runtime_verify(version: &str) -> Result<(), Error> {
 
 fn main() {
     let cli = Cli::parse();
-    let result = match cli.cmd {
+    let result = recover_interrupted_updates().and_then(|()| match cli.cmd {
         Cmd::Install {
             qpkg,
             pinned,
@@ -1991,63 +2458,11 @@ fn main() {
             RuntimeCmd::Path { version } => runtime_path(&version),
             RuntimeCmd::Verify { version } => runtime_verify(&version),
         },
-    };
+    });
     if let Err(e) = result {
-        eprintln!("qos-install: {e}");
+        eprintln!("tilo-install: {e}");
         std::process::exit(1);
     }
-}
-
-/// Read a .qpkg tar → [`MemoryBlobStore`] + `PackageId`. Mirrors
-/// (deliberately duplicated) qos-pkg-cli::read_qpkg so this crate
-/// stays independent.
-#[allow(dead_code)]
-fn read_qpkg(path: &Path) -> Result<(PackageId, MemoryBlobStore), Error> {
-    read_qpkg_bytes(&fs::read(path)?)
-}
-
-/// Same, from bytes already in memory — what a registry fetch returns,
-/// enabling verify-before-write.
-fn read_qpkg_bytes(bytes: &[u8]) -> Result<(PackageId, MemoryBlobStore), Error> {
-    let mut ar = tar::Archive::new(std::io::Cursor::new(bytes));
-    let mut header: Option<QpkgHeader> = None;
-    let mut store = MemoryBlobStore::new();
-    for entry in ar.entries().map_err(|e| Error::Parse(e.to_string()))? {
-        let mut entry = entry.map_err(|e| Error::Parse(e.to_string()))?;
-        let entry_path = entry.path().map(|p| p.to_path_buf()).unwrap_or_default();
-        let name = entry_path.to_string_lossy().to_string();
-        let mut buf = Vec::new();
-        entry
-            .read_to_end(&mut buf)
-            .map_err(|e| Error::Parse(e.to_string()))?;
-        match name.as_str() {
-            "qpkg.toml" => {
-                let s = String::from_utf8(buf)
-                    .map_err(|e| Error::Parse(format!("qpkg.toml not UTF-8: {e}")))?;
-                header =
-                    Some(toml::from_str(&s).map_err(|e| Error::Parse(format!("qpkg.toml: {e}")))?);
-            }
-            n if n.starts_with("blobs/") => {
-                store
-                    .put(&buf)
-                    .map_err(|e| Error::Parse(format!("blob store: {e}")))?;
-            }
-            // signed-root/manifest.toml/collection.qcl are also duplicated under
-            // blobs/<hex>; ingest defensively in case a packager omitted the duplicate.
-            "signed-root" | "manifest.toml" | "collection.qcl" => {
-                store
-                    .put(&buf)
-                    .map_err(|e| Error::Parse(format!("blob store: {e}")))?;
-            }
-            _ => {}
-        }
-    }
-    let header = header.ok_or_else(|| Error::Parse(".qpkg is missing qpkg.toml".into()))?;
-    let id: PackageId = header
-        .package_id
-        .parse()
-        .map_err(|e| Error::Parse(format!("qpkg.toml package_id: {e:?}")))?;
-    Ok((id, store))
 }
 
 /// Best-effort publisher key extraction: reads the signed-root blob by
@@ -2103,10 +2518,159 @@ fn which_launcher() -> PathBuf {
     if let Ok(exe) = std::env::current_exe()
         && let Some(parent) = exe.parent()
     {
-        let sib = parent.join("qos-launcher");
+        let sib = parent.join("tilo-launcher");
         if sib.exists() {
             return sib;
         }
     }
-    PathBuf::from("qos-launcher")
+    PathBuf::from("tilo-launcher")
+}
+
+#[cfg(test)]
+mod installer_tests {
+    use super::{DirectorySwap, UpdateIntent, UpdateJournal, recover_update_directories};
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn recovery_intent(root: &std::path::Path) -> (UpdateIntent, PathBuf, PathBuf) {
+        let payload_root = root.join("payloads");
+        let integrity_root = root.join("data/integrity");
+        let intent = UpdateIntent {
+            package_id: "dev.tilo.Test".to_string(),
+            owner_pid: 0,
+            new_package_id_hex: "ab".repeat(32),
+            payload_live: payload_root.join("dev.tilo.Test"),
+            payload_staging: payload_root.join(".staging-dev.tilo.Test-1"),
+            payload_retired: payload_root.join(".retiring-dev.tilo.Test-1"),
+            integrity_live: integrity_root.join("dev.tilo.Test"),
+            integrity_retired: integrity_root.join(".retiring-dev.tilo.Test-1"),
+            old_commands: Vec::new(),
+            new_commands: Vec::new(),
+        };
+        (intent, payload_root, integrity_root)
+    }
+
+    #[test]
+    fn local_install_uses_the_shared_thin_app_limit() {
+        assert!(pkg::qpkg_size_allowed(
+            pkg::Kind::App,
+            pkg::MAX_APP_QPKG_BYTES
+        ));
+        assert!(!pkg::qpkg_size_allowed(
+            pkg::Kind::App,
+            pkg::MAX_APP_QPKG_BYTES + 1
+        ));
+    }
+
+    #[test]
+    fn uncommitted_directory_swap_restores_the_working_payload() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let live = temp.path().join("live");
+        let retired = temp.path().join("retired");
+        fs::create_dir(&live).expect("old payload");
+        fs::write(live.join("version"), "old").expect("old marker");
+        fs::rename(&live, &retired).expect("retire old payload");
+        fs::create_dir(&live).expect("new payload");
+        fs::write(live.join("version"), "new").expect("new marker");
+
+        drop(DirectorySwap {
+            live: live.clone(),
+            retired: Some(retired.clone()),
+            committed: false,
+        });
+
+        assert_eq!(fs::read_to_string(live.join("version")).unwrap(), "old");
+        assert!(!retired.exists());
+    }
+
+    #[test]
+    fn committed_directory_swap_keeps_new_payload_and_reaps_old() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let live = temp.path().join("live");
+        let retired = temp.path().join("retired");
+        fs::create_dir(&live).expect("new payload");
+        fs::write(live.join("version"), "new").expect("new marker");
+        fs::create_dir(&retired).expect("old payload");
+        fs::write(retired.join("version"), "old").expect("old marker");
+
+        DirectorySwap {
+            live: live.clone(),
+            retired: Some(retired.clone()),
+            committed: false,
+        }
+        .commit();
+
+        assert_eq!(fs::read_to_string(live.join("version")).unwrap(), "new");
+        assert!(!retired.exists());
+    }
+
+    #[test]
+    fn restart_before_registry_commit_restores_payload_and_evidence() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (intent, payload_root, integrity_root) = recovery_intent(temp.path());
+        for (path, marker) in [
+            (&intent.payload_live, "new"),
+            (&intent.payload_retired, "old"),
+            (&intent.payload_staging, "partial"),
+            (&intent.integrity_live, "new-evidence"),
+            (&intent.integrity_retired, "old-evidence"),
+        ] {
+            fs::create_dir_all(path).unwrap();
+            fs::write(path.join("version"), marker).unwrap();
+        }
+
+        recover_update_directories(&intent, false, &payload_root, &integrity_root).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(intent.payload_live.join("version")).unwrap(),
+            "old"
+        );
+        assert_eq!(
+            fs::read_to_string(intent.integrity_live.join("version")).unwrap(),
+            "old-evidence"
+        );
+        assert!(!intent.payload_retired.exists());
+        assert!(!intent.payload_staging.exists());
+        assert!(!intent.integrity_retired.exists());
+    }
+
+    #[test]
+    fn restart_after_registry_commit_finishes_cleanup() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (intent, payload_root, integrity_root) = recovery_intent(temp.path());
+        for path in [
+            &intent.payload_live,
+            &intent.payload_retired,
+            &intent.payload_staging,
+            &intent.integrity_live,
+            &intent.integrity_retired,
+        ] {
+            fs::create_dir_all(path).unwrap();
+        }
+        fs::write(intent.payload_live.join("version"), "new").unwrap();
+
+        recover_update_directories(&intent, true, &payload_root, &integrity_root).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(intent.payload_live.join("version")).unwrap(),
+            "new"
+        );
+        assert!(!intent.payload_retired.exists());
+        assert!(!intent.payload_staging.exists());
+        assert!(!intent.integrity_retired.exists());
+    }
+
+    #[test]
+    fn durable_journal_excludes_a_second_update_of_the_same_package() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (first, _, _) = recovery_intent(temp.path());
+        let (second, _, _) = recovery_intent(temp.path());
+        let journal = UpdateJournal::begin(temp.path(), first).expect("first journal");
+
+        assert!(UpdateJournal::begin(temp.path(), second).is_err());
+
+        drop(journal);
+        let (third, _, _) = recovery_intent(temp.path());
+        assert!(UpdateJournal::begin(temp.path(), third).is_ok());
+    }
 }

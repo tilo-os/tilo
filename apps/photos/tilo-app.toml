@@ -1,0 +1,76 @@
+# Photos — Tilo application manifest.
+#
+# Opens no socket of its own and executes nothing. The only file it reads
+# outside its own sandbox is the one the user picks, which arrives through the
+# host chooser as a portal-granted handle rather than as a path this app went
+# looking for.
+#
+
+
+[package]
+id       = "dev.tilo.photos"
+name     = "Photos"
+category = "Graphics"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` is deliberately absent; the viewer has no network need.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "off"
+
+# Opening and saving both go through the host chooser, so the app never needs
+# ambient read or write access to the user's pictures.
+[sandbox.portals]
+file-chooser = "via-host"
+
+[sandbox.services]
+collab = "optional@1"
+tilo-fs = "optional@1"
+# Photos may request its fixed, local-only visual-analysis operation through
+# this broker. The app still has no network namespace or model socket.
+model-gateway = "optional@1"
+
+[entrypoint]
+bin             = "bin/photos"
+type            = "gui"
+splash-segments = ["bin/photos[0x0:0x400000]"]
+splash-budget   = 250
+
+# The installed-image acceptance client discovers these controls through the
+# real AT-SPI D-Bus endpoint. Activating Library must replace the viewer canvas
+# with the actual library surface; "All photos" is deliberately absent before
+# that transition, so a successful callback without a UI change cannot pass.
+[accessibility.atspi_acceptance]
+root = "Photos"
+required = ["Open", "Library"]
+action = "Library"
+after_action = ["All photos"]
+
+# File types offered by the decoder.
+[providers]
+mime = ["image/png", "image/jpeg", "image/webp"]
+ext  = ["png", "jpg", "jpeg", "webp"]

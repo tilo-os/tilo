@@ -12,33 +12,36 @@ use std::time::Instant;
 use bytemuck::TransparentWrapper;
 use parking_lot::Mutex;
 use windows::{
-    core::Interface as _,
     Win32::{
         Foundation,
         Graphics::{Direct3D12, Dxgi},
         System::Threading,
     },
+    core::Interface as _,
 };
 
-use super::{conv, descriptor, D3D12Lib};
+use super::{D3D12Lib, conv, descriptor};
 use crate::{
+    AccelerationStructureEntries, TlasInstance,
     auxil::{
         self,
         dxgi::{name::ObjectExt as _, result::HResult as _},
     },
     dx12::{
+        DCompLib, DynamicStorageBufferOffsets, Event, ShaderCacheKey, ShaderCacheValue,
         borrow_optional_interface_temporarily, pipeline_desc::RenderPipelineStateStreamDesc,
-        shader_compilation, suballocation, DCompLib, DynamicStorageBufferOffsets, Event,
-        ShaderCacheKey, ShaderCacheValue,
+        shader_compilation, suballocation,
     },
-    AccelerationStructureEntries, TlasInstance,
 };
 
 // this has to match Naga's HLSL backend, and also needs to be null-terminated
 const NAGA_LOCATION_SEMANTIC: &[u8] = c"LOC".to_bytes();
 
 impl super::Device {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+    )]
     pub(super) fn new(
         adapter: auxil::dxgi::factory::DxgiAdapter,
         raw: Direct3D12::ID3D12Device,
@@ -379,6 +382,13 @@ impl super::Device {
                     entry_point,
                     stage: naga_stage,
                     shader_model: naga_options.shader_model,
+                    compiler_flags: self.shader_cache_flags()
+                        | (u8::from(stage.module.raw_name.is_some()) << 2),
+                    source_name: stage
+                        .module
+                        .raw_name
+                        .as_ref()
+                        .map_or_else(Vec::new, |name| name.to_bytes().to_vec()),
                 }
             }
             super::ShaderModuleSource::HlslPassthrough(passthrough) => ShaderCacheKey {
@@ -386,11 +396,18 @@ impl super::Device {
                 entry_point: stage.entry_point.to_string(),
                 stage: naga_stage,
                 shader_model: naga_options.shader_model,
+                compiler_flags: self.shader_cache_flags()
+                    | (u8::from(stage.module.raw_name.is_some()) << 2),
+                source_name: stage
+                    .module
+                    .raw_name
+                    .as_ref()
+                    .map_or_else(Vec::new, |name| name.to_bytes().to_vec()),
             },
             super::ShaderModuleSource::DxilPassthrough(passthrough) => {
                 return Ok(super::CompiledShader::Precompiled(
                     passthrough.shader.clone(),
-                ))
+                ));
             }
         };
 
@@ -401,12 +418,29 @@ impl super::Device {
                 value.last_used = nr_of_shaders_compiled;
                 return Ok(value.shader.clone());
             }
+            if let Some(bytes) = (naga_stage == naga::ShaderStage::Compute
+                && !shader_cache.imported.is_empty())
+            .then(|| shader_cache.imported.remove(&key.persistent_key()))
+            .flatten()
+            {
+                let shader = super::CompiledShader::Cached(bytes);
+                shader_cache.entries.insert(
+                    key,
+                    ShaderCacheValue {
+                        last_used: nr_of_shaders_compiled,
+                        shader: shader.clone(),
+                    },
+                );
+                shader_cache.stats.hits += 1;
+                return Ok(shader);
+            }
         }
 
         let source_name = stage.module.raw_name.as_deref();
 
         let full_stage = format!("{}_{}", naga_stage.to_hlsl_str(), key.shader_model.to_str());
 
+        let compile_started = Instant::now();
         let compiled_shader = self.compiler_container.compile(
             self,
             &key.source,
@@ -418,6 +452,8 @@ impl super::Device {
 
         {
             let mut shader_cache = self.shader_cache.lock();
+            shader_cache.stats.compile_ns += compile_started.elapsed().as_nanos();
+            shader_cache.stats.misses += 1;
             shader_cache.nr_of_shaders_compiled += 1;
             let nr_of_shaders_compiled = shader_cache.nr_of_shaders_compiled;
             let value = ShaderCacheValue {
@@ -1350,7 +1386,10 @@ impl crate::Device for super::Device {
             // it so if we add more later, the value behaves correctly.
 
             // This is an allow as it doesn't trigger on 1.90, hal's MSRV.
-            #[allow(unused_assignments)]
+            #[allow(
+                unused_assignments,
+                reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+            )]
             {
                 bind_cbv.register += 1;
             }
@@ -2174,6 +2213,7 @@ impl crate::Device for super::Device {
         let blob_cs =
             self.load_shader(&desc.stage, desc.layout, naga::ShaderStage::Compute, None)?;
 
+        let pso_started = Instant::now();
         let pair = {
             profiling::scope!("ID3D12Device::CreateComputePipelineState");
             unsafe {
@@ -2191,6 +2231,13 @@ impl crate::Device for super::Device {
             }
         };
 
+        self.shader_cache.lock().stats.pso_ns += pso_started.elapsed().as_nanos();
+        if pair.is_err() && matches!(&blob_cs, super::CompiledShader::Cached(_)) {
+            // A driver may reject otherwise intact cached DXIL. Evict imported
+            // blobs and retry this exact validated pipeline once with DXC.
+            self.reject_imported_shader_cache();
+            return unsafe { self.create_compute_pipeline(desc) };
+        }
         let raw: Direct3D12::ID3D12PipelineState = pair.map_err(|err| {
             crate::PipelineError::Linkage(wgt::ShaderStages::COMPUTE, err.to_string())
         })?;

@@ -19,25 +19,25 @@ required.
 
 ## Persistent host
 
-Set `QOS_COLLAB_HOST` to the host's Iroh endpoint id (or the JSON representation
+Set `TILO_COLLAB_HOST` to the host's Iroh endpoint id (or the JSON representation
 of a complete `EndpointAddr`) to attach the session to a home or hosted server. The shell
 authenticates with its device certificate and sends durable collaboration
 messages to the host in addition to the direct gossip path. The host pins
 configured workspaces and store-and-forwards updates to offline devices.
 
-The home-server deployment combines `qos-relay` with the authenticated
+The home-server deployment combines `tilo-relay` with the authenticated
 filesystem replica. Pairing it in Settings transfers its certified identity,
 workspace bindings, and full-replication configuration; it then retains CRDT
 state, app checkpoints, file bytes, and thumbnails around the clock. The
-container deployment is documented in `os/containers/qos-relay/README.md`.
+container deployment is documented in `os/containers/tilo-relay/README.md`.
 
 The identity files are created together by `shell --provision-identity`:
 
 ```text
-~/.config/qos/identity/primary.json
-/var/lib/qos/user-identity/pubkey.bin
-/var/lib/qos/device/keypair.bin
-/var/lib/qos/device/cert.bin
+~/.config/tilo/identity/primary.json
+/var/lib/tilo/user-identity/pubkey.bin
+/var/lib/tilo/device-private/keypair.bin
+/var/lib/tilo/device/cert.bin
 ```
 
 The personal record is the only copy of the root private key; the shared
@@ -49,8 +49,8 @@ derive the same Iroh endpoint id from that device key.
 
 ```bash
 journalctl --user -u graphical-session.target | grep -Ei 'iroh|gossip|workspace host'
-stat -c '%a %U:%G %n' /var/lib/qos/device/keypair.bin
-systemctl --user status qos-identity.service
+stat -c '%a %U:%G %n' /var/lib/tilo/device-private/keypair.bin
+systemctl --user status tilo-identity.service
 systemctl --user status shell-peer-sync.service
 ```
 
@@ -65,15 +65,15 @@ exported manually:
 
 ```sh
 fs export-home-peer --cache-dir /var/cache/quick-fs \
-  --acl /var/lib/qos/fs-capabilities.json \
+  --acl /var/lib/tilo/fs-capabilities.json \
   --output home-peer.toml
 ```
 
-Transfer `home-peer.toml` to the host as `/etc/qos/home-peer.toml` and restart
-`qos-fs-replica.service`. The bundle's `workspaces` array is the home peer's
+Transfer `home-peer.toml` to the host as `/etc/tilo/home-peer.toml` and restart
+`tilo-fs-replica.service`. The bundle's `workspaces` array is the home peer's
 complete set: it runs a durable worker for every entry using the enrolled
 device identity, keeps each namespace plus all manifests, chunks, and
 thumbnails under its configured cache, and serves them through the bundled
-capability policy. `qos-relay status` reports `full_content_replication: true`
+capability policy. `tilo-relay status` reports `full_content_replication: true`
 only after the atomic aggregate status confirms every configured workspace is
 complete.

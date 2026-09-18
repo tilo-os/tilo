@@ -20,65 +20,88 @@ trap cleanup EXIT
 private_bus() {
     local root=$1 repo=$2 wrapper_pid
     export XDG_DATA_HOME="$root/data"
-    export QOS_SESSION_TEST_LOG="$root/log"
+    export TILO_SESSION_TEST_LOG="$root/log"
     mkdir -p "$XDG_DATA_HOME/dbus-1/services"
 
     printf '%s\n' '#!/bin/sh' 'exit 0' >"$root/systemctl"
     printf '%s\n' \
         '#!/bin/sh' \
-        'printf "qos-shell:%s:%s\\n" "$XDG_CURRENT_DESKTOP" "$XDG_SESSION_TYPE" >>"$QOS_SESSION_TEST_LOG"' \
+        'printf "tilo-shell:%s:%s\\n" "$XDG_CURRENT_DESKTOP" "$XDG_SESSION_TYPE" >>"$TILO_SESSION_TEST_LOG"' \
         'trap '\''exit 0'\'' HUP INT TERM' \
         'while :; do sleep 1; done' \
-        >"$root/qos-shell"
+        >"$root/tilo-shell"
     printf '%s\n' \
         '#!/bin/sh' \
-        'printf "dbus-activation:%s:%s\\n" "$XDG_CURRENT_DESKTOP" "$XDG_SESSION_TYPE" >>"$QOS_SESSION_TEST_LOG"' \
+        'printf "dbus-activation:%s:%s\\n" "$XDG_CURRENT_DESKTOP" "$XDG_SESSION_TYPE" >>"$TILO_SESSION_TEST_LOG"' \
         >"$root/dbus-probe"
-    chmod 0755 "$root/systemctl" "$root/qos-shell" "$root/dbus-probe"
-    for probe_name in Initial Qos Empty Gnome; do
-        printf '[D-BUS Service]\nName=org.qos.SessionProbe%s\nExec=%s\n' \
+    chmod 0755 "$root/systemctl" "$root/tilo-shell" "$root/dbus-probe"
+    for probe_name in Initial Tilo Empty EmptyLogout Gnome; do
+        printf '[D-BUS Service]\nName=org.tilo.SessionProbe%s\nExec=%s\n' \
             "$probe_name" "$root/dbus-probe" \
-            >"$XDG_DATA_HOME/dbus-1/services/org.qos.SessionProbe${probe_name}.service"
+            >"$XDG_DATA_HOME/dbus-1/services/org.tilo.SessionProbe${probe_name}.service"
     done
     sed \
-        -e "s|QOS_SHELL=/usr/bin/qos-shell|QOS_SHELL=$root/qos-shell|" \
+        -e "s|TILO_SHELL=/usr/bin/tilo-shell|TILO_SHELL=$root/tilo-shell|" \
         -e "s|SYSTEMCTL=/usr/bin/systemctl|SYSTEMCTL=$root/systemctl|" \
-        "$repo/dist/session/qos-session" >"$root/qos-session"
-    chmod 0755 "$root/qos-session"
+        "$repo/dist/session/tilo-session" >"$root/tilo-session"
+    chmod 0755 "$root/tilo-session"
 
     probe() {
         local probe_name=$1
-        dbus-send --session --dest="org.qos.SessionProbe${probe_name}" /org/qos/SessionProbe \
-            org.qos.SessionProbe.Ping >/dev/null 2>&1 || true
+        dbus-send --session --dest="org.tilo.SessionProbe${probe_name}" /org/tilo/SessionProbe \
+            org.tilo.SessionProbe.Ping >/dev/null 2>&1 || true
     }
     await_probe() {
         local value=$1
         for _ in $(seq 1 100); do
-            grep -Fq "$value" "$QOS_SESSION_TEST_LOG" 2>/dev/null && return 0
+            grep -Fq "$value" "$TILO_SESSION_TEST_LOG" 2>/dev/null && return 0
             sleep 0.02
         done
-        grep -Fqx "$value" "$QOS_SESSION_TEST_LOG"
+        grep -Fqx "$value" "$TILO_SESSION_TEST_LOG"
     }
 
     export XDG_CURRENT_DESKTOP=GNOME XDG_SESSION_TYPE=wayland
     dbus-update-activation-environment \
-        QOS_SESSION_TEST_LOG XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
+        TILO_SESSION_TEST_LOG XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
     probe Initial
     await_probe 'dbus-activation:GNOME:wayland'
 
-    "$root/qos-session" &
+    "$root/tilo-session" &
     wrapper_pid=$!
     for _ in $(seq 1 100); do
-        grep -Fq 'qos-shell:nirios:wayland' "$QOS_SESSION_TEST_LOG" 2>/dev/null && break
+        grep -Fq 'tilo-shell:tilo:wayland' "$TILO_SESSION_TEST_LOG" 2>/dev/null && break
         sleep 0.02
     done
-    grep -Fqx 'qos-shell:nirios:wayland' "$QOS_SESSION_TEST_LOG"
-    probe Qos
-    await_probe 'dbus-activation:nirios:wayland'
+    grep -Fqx 'tilo-shell:tilo:wayland' "$TILO_SESSION_TEST_LOG"
+    probe Tilo
+    await_probe 'dbus-activation:tilo:wayland'
 
     kill -TERM "$wrapper_pid"
     wait "$wrapper_pid" || [[ $? == 143 ]]
     probe Empty
+    await_probe 'dbus-activation::'
+
+    # Repeat the lifecycle through the compositor's ordinary Power → Log out
+    # channel. The first half above proves display-manager termination; this
+    # half proves a user-requested logout also clears D-Bus activation before
+    # a different desktop starts activating services.
+    printf '%s\n' \
+        '#!/bin/sh' \
+        'case "${TILO_SESSION_LOGOUT_REQUEST:-}" in /*) ;; *) exit 42 ;; esac' \
+        'printf "tilo-shell:%s:%s\\n" "$XDG_CURRENT_DESKTOP" "$XDG_SESSION_TYPE" >>"$TILO_SESSION_TEST_LOG"' \
+        'printf "%s\\n" "$TILO_SESSION_LOGOUT_REQUEST" >"$TILO_SESSION_TEST_LOG.logout-path"' \
+        'printf "logout\\n" >"$TILO_SESSION_LOGOUT_REQUEST"' \
+        'exit 19' \
+        >"$root/tilo-shell"
+    chmod 0755 "$root/tilo-shell"
+    set +e
+    "$root/tilo-session"
+    logout_status=$?
+    set -e
+    [[ $logout_status == 0 ]]
+    logout_path=$(cat "$TILO_SESSION_TEST_LOG.logout-path")
+    [[ ! -e $logout_path ]]
+    probe EmptyLogout
     await_probe 'dbus-activation::'
 
     export XDG_CURRENT_DESKTOP=GNOME XDG_SESSION_TYPE=wayland
@@ -98,7 +121,7 @@ if ! XDG_DATA_HOME="$work/data" dbus-run-session -- "$0" --private-bus "$work" "
     2>"$work/dbus.stderr"; then
     # Some minimal validation containers expose neither Linux memfd nor a
     # usable /tmp-backed stream transport to dbus-daemon.  That prevents the
-    # private test bus from activating even the initial probe, before any qOS
+    # private test bus from activating even the initial probe, before any Tilo
     # session lifecycle code runs.  Keep that host limitation distinct from a
     # real hand-off failure; Fedora package lanes and developer hosts still run
     # the complete test.

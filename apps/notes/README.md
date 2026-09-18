@@ -1,11 +1,23 @@
 # notes
 
-A native note-taking app for qOS. Pages live in a side-tree; each page
-is a stack of editable blocks (paragraphs, headings, bullets,
-checklists, code, dividers) with inline marks for bold, italic, code,
-and `[[Page]]` links. Cmd-K jumps to any page. The bottom status bar
+A native note-taking app for Tilo. Pages live in a side-tree; each page
+is a stack of editable blocks (paragraphs, headings, lists, checklists,
+quotes, code, formulas, tables, images and dividers) with inline marks for
+bold, italic, underline, strikethrough, code, external links and `[[Page]]`
+links. A standalone `![[Page]]` becomes a live, one-level
+embedded page card; its UUID target survives renames and bounded previews make
+cyclic embeds safe. Cmd-K jumps to any page. A transient status bubble
 tells you whether your edits are saved and how many words live on the
-current page.
+current page without permanently stealing editor space.
+
+Fenced code uses grammar-backed, theme-derived syntax colours and exposes its
+language plus a one-click copy control. Tables keep editable GFM source with a
+live native grid. Workspace-relative Markdown images decode off-thread; the
+page menu's **Insert image** action copies a portal-selected PNG, JPEG or WebP
+into managed workspace assets. Right-click a page to export it as Markdown;
+managed images are copied beside the exported file and references rewritten
+portably without overwriting unrelated files. Right-click empty sidebar space
+to import a `.md` file. These flows are also published as resource actions.
 
 The layout is responsive: on a narrow window the page tree collapses
 into an overlay drawer reached from a top-bar button, and the editor
@@ -30,12 +42,17 @@ flushes every change with a
 500 ms debounce; the status bar shows "Saving…" while a write is
 queued and "Saved" once it lands.
 
+Set `TILO_NOTES_ROOT` to an absolute directory to use a different notebook,
+including an isolated notebook for headless testing. Empty or relative values
+are rejected instead of opening the default notebook. The default remains
+`~/notes/` on every platform.
+
 For headless visual review, render one offscreen frame to a PNG:
 
 ```bash
 cargo run -p notes --release -- --shots out.png --viewport 800x600
 # add `--scenario drawer` to show the open page drawer on a narrow width
-# add `--text-scale 1.5` to review the real large-text layout
+# add `--text-scale 1.5` to review the large-text layout
 # add `--scenario shortcuts` to review the shared keyboard-help dialog
 ```
 
@@ -46,8 +63,10 @@ Everything lives under one workspace root (default `~/notes/`):
 ```
 ~/notes/
 ├── workspace.automerge        # automerge save of WorkspaceData (page tree, selection)
-└── pages/
-    └── {uuid}.md              # one markdown body per page
+├── pages/
+│   └── {uuid}.md              # one markdown body per page
+└── assets/
+    └── {uuid}.{png,jpg,webp}  # managed image attachments
 ```
 
 The workspace file is a local JSON snapshot of page metadata, tags and keyed
@@ -64,11 +83,15 @@ the notes binary disappears.
 | Heading 1   | `# heading`                                    |
 | Heading 2   | `## heading`                                   |
 | Heading 3   | `### heading`                                  |
+| Quote       | `> quotation`                                 |
 | Bullet      | `- item`  (indent with two leading spaces)     |
+| Numbered    | `1. item` (renumbers automatically)            |
 | Checklist   | `- [ ] open` / `- [x] done`                    |
 | Code block  | ` ```lang ` … ` ``` `                         |
 | TeX formula | ` ```tex ` / ` ```latex ` / ` ```math `       |
 | Typst math  | ` ```typst ` / ` ```typst-math `               |
+| Table       | GFM pipe table                                  |
+| Image       | `![alternative text](relative/path.png)`        |
 | Divider     | a line of exactly `---`                        |
 
 Each formula card identifies its TeX or Typst syntax and offers a direct
@@ -96,7 +119,11 @@ Inline marks inside any non-code block:
 | Bold        | `**bold**`              |
 | Italic      | `*italic*`              |
 | Inline code | `` `code` ``            |
+| Underline   | `++underline++`          |
+| Strike      | `~~strikethrough~~`      |
+| Web link    | `[label](https://…)`     |
 | Page link   | `[[Page Title]]`        |
+| Page embed  | `![[Page Title]]`       |
 
 ## Keyboard shortcuts
 
@@ -105,6 +132,8 @@ Inline marks inside any non-code block:
 | ---------------------------- | -------------------- |
 | Jump to page (palette)       | `Cmd-K` / `Ctrl-K`   |
 | Move sidebar selection       | `↑` / `↓`            |
+| Collapse / expand branch     | `←` / `→`            |
+| Move into parent / child     | `←` / `→` at branch edge |
 | Open shortcuts overlay       | `?`                  |
 | Close overlay / popover      | `Esc`                |
 
@@ -114,6 +143,9 @@ Inline marks inside any non-code block:
 | New child of selected page   | `Cmd-N` / `Ctrl-N`   |
 | Rename selected page         | double-click / `F2`  |
 | Delete selected page         | `Delete`             |
+| Indent under previous page   | `Tab`                |
+| Outdent one level            | `Shift-Tab`          |
+| Reorder among siblings       | `Alt-↑` / `Alt-↓`      |
 
 ### Editing
 | Action                       | Shortcut             |
@@ -122,6 +154,7 @@ Inline marks inside any non-code block:
 | Indent / outdent list item   | `Tab` / `Shift-Tab`  |
 | Open block menu              | `/`                  |
 | Insert page link             | `[[`                 |
+| Embed page                   | `![[`                |
 | Toggle checklist item        | click the checkbox   |
 
 ### Formatting (inline marks)
@@ -134,23 +167,6 @@ Inline marks inside any non-code block:
 
 ## Current boundaries
 
-Keep this list evidence-based. Cross-block keyboard selection and
-drag-to-reorder/re-parent are implemented and covered by the shared editor and
-sidebar tests; they are deliberately not listed as missing features.
-
-- **Link text doesn't track renames.** A `[[Welcome]]` link points at
-  the page id resolved at the time the block was parsed. If you
-  rename the target page, the link still navigates correctly but the
-  visible text in the source page stays the old title until you
-  manually re-type it.
-- **Popover anchoring is line-bottom, not caret-pixel.** The link
-  popover and slash menu open at the bottom-left of the current line
-  rather than directly under the caret. Reads as "close enough" for
-  v0.1 but a polish target.
-- **Link click hit-testing relies on the editor's zero-padding invariant.** The
-  byte→pixel reverse lookup currently supplies `Theme::dark()`, while the
-  plain-chrome editor deliberately uses zero horizontal padding in every
-  theme. Passing the active theme directly would remove that hidden coupling.
 - **No simultaneous independent carets.** A single user can make a free-form
   selection across blocks, but the editor does not expose multiple local
   carets/selections at once. Remote collaborator carets are still shown.

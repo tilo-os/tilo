@@ -1,7 +1,7 @@
 # Format providers (file-format codecs)
 
-A qOS format provider is a WASM Component Model binary that implements
-the `qos:format-provider` interface. The `qos-format-host` daemon loads
+A Tilo format provider is a WASM Component Model binary that implements
+the `tilo:format-provider` interface. The `tilo-format-host` daemon loads
 providers via wasmtime, exposes a Cap'n Proto socket, and the editor / FS
 layer routes `detect / import / export` calls through it.
 
@@ -10,10 +10,10 @@ Same packaging pipeline: your provider is a `.qpkg` with
 
 ## The WIT interface
 
-Straight from `crates/format/format-provider-wit/wit/format-provider.wit`:
+Straight from `crates/doc/format-provider-wit/wit/format-provider.wit`:
 
 ```wit
-package qos:format-provider@1.0.0;
+package tilo:format-provider@1.0.0;
 
 interface format-provider {
     record confidence { tier: u32, score: f32 }
@@ -36,18 +36,18 @@ Three functions:
   score)` confidence plus an optional MIME the provider claims. Called on
   disagreement between multiple providers claiming the same extension.
 - **`import-doc`** — given the file bytes, return the **canonical CRDT
-  bytes** the qOS document layer speaks. For qdoc that is the
+  bytes** the Tilo document layer speaks. For qdoc that is the
   `automerge::save()` output of a `qdoc::Document`.
 - **`export-doc`** — the inverse: canonical CRDT bytes back to the
   provider's on-disk format.
 
 ## The host
 
-The `qos-format-host` daemon is a system service — not something a
+The `tilo-format-host` daemon is a system service — not something a
 publisher runs. It:
 
-- Listens on `$XDG_RUNTIME_DIR/qos/services/format-router.sock`.
-- Reads `~/.config/qos/extensions/format-providers.toml` for the
+- Listens on `$XDG_RUNTIME_DIR/tilo/services/format-router.sock`.
+- Reads `~/.config/tilo/extensions/format-providers.toml` for the
   installed provider list, hot-reloaded via inotify.
 - Loads each provider's `.wasm` via `wasmtime 46`, in the Component
   Model, with a 256 MiB linear-memory ceiling per call and a 10 s wall-
@@ -69,16 +69,16 @@ outside its native codec) call these.
 ## The registry file
 
 The host reads its provider list from
-`~/.config/qos/extensions/format-providers.toml`:
+`~/.config/tilo/extensions/format-providers.toml`:
 
 ```toml
 [[provider]]
 mime     = "text/markdown"
-package  = "dev.qos.qdoc-md"
-wasm     = "/home/user/.local/share/qos-format-providers/dev.qos.qdoc-md/component.wasm"
+package  = "dev.tilo.qdoc-md"
+wasm     = "/home/user/.local/share/tilo-format-providers/dev.tilo.qdoc-md/component.wasm"
 version  = "0.1.0"
 priority = "installed"
-trust    = ["qos-curated/2026.07"]
+trust    = ["tilo-curated/2026.07"]
 ```
 
 Fields:
@@ -96,7 +96,7 @@ Fields:
   provider. Free-form strings, stored verbatim.
 
 Installers writing new provider `.qpkg`s should append a row here (the
-`qos-install` integration for provider packages is scoped to future
+`tilo-install` integration for provider packages is scoped to future
 work; today registration is a hand-edit of this file).
 
 ## The manifest side
@@ -105,7 +105,7 @@ Your provider's `manifest.toml`:
 
 ```toml
 [package]
-id      = "dev.qos.qdoc-md"
+id      = "dev.tilo.qdoc-md"
 version = "0.1.0"
 kind    = "format-provider"
 
@@ -115,7 +115,7 @@ signature = ""
 
 [sandbox]
 namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
-seccomp    = "qos-default"
+seccomp    = "tilo-default"
 landlock   = "strict"
 
 [sandbox.net]
@@ -180,11 +180,11 @@ mod guest {
     use qdoc::{Document, FormatProvider, MarkdownCodec};
 
     wit_bindgen::generate!({
-        path: "../../format/format-provider-wit/wit",
+        path: "../format-provider-wit/wit",
         world: "provider",
     });
 
-    use exports::qos::format_provider::format_provider::{
+    use exports::tilo::format_provider::format_provider::{
         Confidence, Detected, CodecError, Guest,
     };
 
@@ -238,7 +238,7 @@ Output at `target/wasm32-wasip2/release/qdoc_codec_markdown_wasm.wasm`.
 
 ### Package
 
-Same `qos-pkg pack` flow as any other package. The `component.wasm` file
+Same `tilo-pkg pack` flow as any other package. The `component.wasm` file
 must sit at the payload root (a top-level file, not nested).
 
 ```
@@ -249,7 +249,7 @@ payload/
 Then:
 
 ```bash
-qos-pkg pack \
+tilo-pkg pack \
     --manifest manifest.toml \
     --payload  payload \
     --output   qdoc-md.qpkg
@@ -257,15 +257,15 @@ qos-pkg pack \
 
 ### Registration
 
-Install via `qos-install install` (registers the package in `registry.toml`),
+Install via `tilo-install install` (registers the package in `registry.toml`),
 then append the provider row to
-`~/.config/qos/extensions/format-providers.toml` pointing at the payload:
+`~/.config/tilo/extensions/format-providers.toml` pointing at the payload:
 
 ```toml
 [[provider]]
 mime     = "text/markdown"
-package  = "dev.qos.qdoc-md"
-wasm     = "~/.local/share/qos-apps/payloads/dev.qos.qdoc-md/component.wasm"
+package  = "dev.tilo.qdoc-md"
+wasm     = "~/.local/share/tilo-apps/payloads/dev.tilo.qdoc-md/component.wasm"
 version  = "0.1.0"
 priority = "installed"
 trust    = []
@@ -276,11 +276,11 @@ The format-host picks up the change via inotify — no restart needed.
 ## Canonical bytes
 
 The "canonical CRDT bytes" contract is central. For qdoc-backed formats,
-the canonical form IS the `automerge::save()` output of a
+the canonical form is the `automerge::save()` output of a
 `qdoc::Document`. The host round-trips those bytes opaquely; the editor
 and FS reload them via `qdoc::Document::load` to get a live CRDT back.
 Providers for non-qdoc content models will have their own canonical
-form; the interface just says "bytes" and stays out of the way.
+form; the interface represents each canonical form as bytes.
 
 ## Resource limits
 
@@ -294,5 +294,5 @@ An infinite-loop guest is trapped and the host returns a
 Trust tier and per-provider limits are governed by the registry — future
 work; today all installed providers get the same limits.
 
-Next: [`installation.md`](./installation.md) — `qos-install` verbs and the
+Next: [`installation.md`](./installation.md) — `tilo-install` verbs and the
 install tree.

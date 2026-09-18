@@ -1,0 +1,677 @@
+#!/usr/bin/bash
+# tilo-deployment — what a Tilo machine can do about the image it booted.
+#
+#   tilo-deployment list [--json]     the deployments on this disk, and which boots
+#   tilo-deployment rollback [--yes]  boot the previous deployment from now on
+#   tilo-deployment boot ENTRY        boot ENTRY once, then go back to normal
+#   tilo-deployment update [--yes]    fetch and stage the current image again
+#   tilo-deployment entries           maintain the boot counters and repair entry
+#   tilo-deployment repair-entry      just the repair entry
+#
+# Root only, and deliberately not a D-Bus service: everything here is a handful of
+# renames on the ESP and one EFI variable write, and a daemon would be a larger
+# attack surface than the thing it fronts. The desktop reaches it through
+# tilo-deployment-rollback.service, which polkit authorises for the local active
+# user (os/etc/polkit-1/rules.d/49-tilo-updates.rules).
+#
+# ## Why this exists next to `bootc rollback`
+#
+# `bootc rollback` is the right command and it is not reliable on the backend Tilo
+# chose: bootc#2208 has a series of updates leaving rollback broken, and broken
+# *through reboots*. So every path here verifies that the command it ran actually
+# changed what the next boot will be, and falls back to writing the boot loader's
+# own default entry when it did not. The bootloader is the thing that decides;
+# going straight to it is the shorter, more dependable statement of the same
+# intent.
+#
+# ## What a rollback does NOT undo
+#
+# /usr reverts. /var does not — the workspace tree, every app's documents, the
+# identity keys and the blob store are all on the stateroot and are shared by
+# every deployment. Neither do user-installed packages: the runtime bundle under
+# /usr/lib/tilo-runtime reverts with /usr, and a .qpkg installed against a newer
+# one stays installed and can stop launching. Both are printed before anything is
+# changed, because finding out afterwards is the failure this is meant to prevent.
+set -uo pipefail
+
+log()  { printf 'tilo-deployment: %s\n' "$*"; }
+warn() { printf 'tilo-deployment: WARNING: %s\n' "$*" >&2; }
+die()  { printf 'tilo-deployment: %s\n' "$*" >&2; exit 1; }
+
+# How many times a never-yet-confirmed deployment may be tried before the boot
+# loader stops offering it first. Three is the smallest number that survives one
+# unlucky boot (a power cut mid-boot spends a try) while still reaching the
+# fallback in under a minute of the user's patience.
+BOOT_TRIES="${TILO_BOOT_TRIES:-3}"
+
+# The repair entry's sort key. It has to sort AFTER every bootc entry so that a
+# healthy deployment always wins, and BEFORE the exhausted ones so that a machine
+# with nothing bootable left lands here instead of at a boot loader prompt. sd-boot
+# sorts by sort-key ascending, puts entries with no tries left at the very end, and
+# takes the first as the default — verified on a booted guest, not assumed.
+# bootc emits `bootc-<stateroot>-<n>`, so anything past `bootc-z…` will do.
+REPAIR_SORT_KEY="zz-tilo-repair"
+REPAIR_TITLE="Tilo Repair Mode"
+
+# The repair image is a **Type #2** boot entry: a bare `.efi` at the top level of
+# EFI/Linux, which systemd-boot discovers on its own, with no `.conf` anywhere.
+#
+# That is not a preference. bootc's composefs backend parses every file in
+# /boot/loader/entries as one of its own, and a foreign entry makes `bootc status`
+# fail outright — "efi does not start with custom prefix" — taking `bootc upgrade`
+# and everything that reads it down with it. Moving the image under bootc's own
+# prefix does not help either; it then fails with "Could not determine boot type"
+# and bootc rewrites the ESP around the entry it cannot understand. Both were
+# established on a booted machine.
+#
+# Type #2 costs one thing: the menu title and sort order come from the image's own
+# .osrel rather than from a text file, so they have to be written into the PE. See
+# tilo-uki-cmdline set-osrel.
+REPAIR_EFI_NAME="tilo-repair.efi"
+
+# The PE-editing tool. Overridable because /usr is read-only on this system, so
+# trying a change to either of these on a running machine means running them from
+# somewhere else — and a hard-coded path makes that impossible without a rebuild.
+UKI_CMDLINE="${TILO_UKI_CMDLINE:-/usr/libexec/tilo-uki-cmdline}"
+
+# --- the ESP -----------------------------------------------------------------
+# Two layouts, both real. On the sealed composefs layout /boot IS the ESP and the
+# UKIs live beside the loader entries; on the ostree layout the ESP hangs off
+# /boot/efi. Detect rather than assume — acting on the wrong directory silently
+# does nothing.
+esp_path() {
+  if [ -n "${TILO_ESP:-}" ]; then printf '%s\n' "$TILO_ESP"; return; fi
+  if [ -d /boot/loader/entries ]; then printf '%s\n' /boot; return; fi
+  if [ -d /boot/efi/loader/entries ]; then printf '%s\n' /boot/efi; return; fi
+  return 1
+}
+
+# The loader entry sd-boot booted this time. `bootctl` reads it out of the
+# LoaderEntrySelected EFI variable, which is the boot loader's own report rather
+# than an inference from /proc/cmdline.
+current_entry() {
+  bootctl 2>/dev/null | sed -n 's/^ *Current Entry: *//p' | head -1
+}
+
+# Strip a boot counter off an entry file name: `name+2-1.conf` -> `name.conf`.
+entry_id_of() {
+  local base="${1##*/}"
+  base="${base%.conf}"
+  printf '%s.conf\n' "${base%%+*}"
+}
+
+# --- listing ------------------------------------------------------------------
+bootc_status_json() { bootc status --format json 2>/dev/null; }
+
+# Fixed selectors are parsed from a bounded stream by the Rust identity tool.
+# This path supplies staged composefs identity to TPM rollback enrollment, so a
+# general interpreter/eval belongs nowhere on the authority boundary.
+bootc_field() {  # $1 = bootc-status-field selector
+  bootc_status_json | tilo-image-trust bootc-status-field "$1" 2>/dev/null
+}
+
+cmd_list() {
+  local json=0
+  [ "${1:-}" = "--json" ] && json=1
+  if [ "$json" = 1 ]; then
+    bootc_status_json
+    return
+  fi
+
+  local esp cur
+  esp="$(esp_path)" || die "no systemd-boot layout found under /boot — this machine
+  does not boot from loader entries, so there is nothing here to list."
+  cur="$(current_entry)"
+
+  printf 'Deployments (from bootc):\n'
+  local booted staged rollback
+  booted="$(bootc_field booted-image)"
+  staged="$(bootc_field staged-image)"
+  rollback="$(bootc_field rollback-image)"
+  printf '  booted   : %s\n' "${booted:-<unknown>}"
+  printf '             generation %s, composefs %.16s\n' \
+    "$(tilo_running_generation)" "$(bootc_field booted-composefs)"
+  printf '  staged   : %s\n' "${staged:-<none>}"
+  printf '  rollback : %s\n' "${rollback:-<none>}"
+
+  printf '\nBoot loader entries (what the firmware will actually offer):\n'
+  # From the boot loader, not from a directory listing. The repair image is a
+  # Type #2 entry — a bare .efi with no .conf — so a listing of loader/entries
+  # would leave the one entry a person in trouble is looking for out of the list.
+  if ! bootctl list 2>/dev/null | awk -v cur="$cur" '
+      /^[[:space:]]*id:/ { sub(/^[[:space:]]*id:[[:space:]]*/, ""); id = $0 }
+      /^[[:space:]]*title:/ { t = $0; sub(/^[[:space:]]*title:[[:space:]]*/, "", t) }
+      /^[[:space:]]*sort-key:/ {
+        printf "  %-24s %s%s\n", id, t, (id == cur ? "  (booted now)" : "")
+      }' | grep .; then
+    printf '  (the boot loader could not be asked; from the ESP:)\n'
+    local f
+    for f in "$esp"/loader/entries/*.conf "$esp"/EFI/Linux/*.efi; do
+      [ -e "$f" ] || continue
+      printf '    %s\n' "${f##*/}"
+    done
+  fi
+  # The try counters live in the file names, and nothing bootctl prints shows
+  # them, so they are read where they are.
+  local f name tries
+  for f in "$esp"/loader/entries/*.conf; do
+    [ -e "$f" ] || continue
+    name="${f##*/}"
+    case "$name" in
+      *+*) tries="${name#*+}"; tries="${tries%.conf}"
+           printf '  %-24s tries left %s\n' "$(entry_id_of "$f")" "${tries%%-*}" ;;
+    esac
+  done
+}
+
+tilo_running_generation() {
+  # Read the generation from the UKI selected by the boot loader. This remains
+  # available to the boot-entry maintenance service under ProcSubset=pid, while
+  # preserving the trust property of the former /proc/cmdline source: the value
+  # comes from the signed UKI's sealed .cmdline section.
+  local esp entry conf uki_rel cmdline
+  esp="$(esp_path)" || return 0
+  entry="$(current_entry)"
+  [ -n "$entry" ] || return 0
+  conf="$esp/loader/entries/$entry"
+  [ -f "$conf" ] && [ ! -L "$conf" ] || return 0
+  uki_rel="$(sed -n 's/^uki *//p' "$conf" | head -1)"
+  [ -n "$uki_rel" ] || return 0
+  cmdline="$($UKI_CMDLINE show "$esp/${uki_rel#/}" 2>/dev/null || true)"
+  printf '%s\n' "$cmdline" | tr ' \t' '\n\n' \
+    | sed -n 's/^tilo\.generation=\([0-9][0-9]*\)$/\1/p' | head -1
+}
+
+# --- the warning every rollback path prints -----------------------------------
+print_rollback_caveats() {
+  cat <<'EOT'
+
+What rolling back does and does not undo
+  /usr reverts        the system image, its binaries, the compositor, the apps
+                      that ship with it, and the runtime bundle under
+                      /usr/lib/tilo-runtime.
+  /var does NOT       your workspaces (~/.config/tilo/state.json), every app's
+                      documents, the identity keys and the content store are
+                      shared by all deployments. A rollback does not restore
+                      them, and anything a newer version wrote to them stays
+                      written.
+  packages do NOT     a .qpkg you installed yourself is under /var and survives.
+                      If it was built against a newer runtime bundle than the
+                      deployment you are going back to, it can stop launching.
+                      Reinstall it, or roll forward again.
+EOT
+}
+
+# --- did the next boot actually change? ---------------------------------------
+# `bootc rollback` reports success and, on the composefs backend, does not always
+# leave a machine that boots anything different (bootc#2208). So the intent is
+# checked against the boot loader, which is the component that decides.
+next_boot_entry() {
+  local esp="$1" best="" f id
+  # sd-boot takes the first entry in its sort order and skips ones with no tries
+  # left. bootctl's own listing applies exactly that logic, so read it rather than
+  # reimplementing it: `(default)` is the entry the next boot will take.
+  #
+  # Parsed as blocks, not with one regex over the title line. `bootctl` appends
+  # the entry id to a title only when two entries would otherwise read the same,
+  # so a pattern that expects `title: … (name.conf) (default)` finds nothing on
+  # the ordinary machine where every title is distinct — and "no default" is
+  # indistinguishable from "could not tell", which is the failure this whole
+  # file is careful about.
+  best="$(bootctl list 2>/dev/null | awk '
+    /^[[:space:]]*title:/ { want = ($0 ~ /\(default\)/) }
+    /^[[:space:]]*id:/    { if (want) { sub(/^[[:space:]]*id:[[:space:]]*/, ""); print; exit } }
+  ')"
+  if [ -z "$best" ]; then
+    # No EFI variables (a container, or a machine booted some other way). Fall
+    # back to the file order, and say that is what happened.
+    for f in "$esp"/loader/entries/*.conf; do
+      [ -e "$f" ] || continue
+      id="$(entry_id_of "$f")"
+      case "${f##*/}" in *+0-*) continue ;; esac
+      [ -z "$best" ] && best="$id"
+    done
+  fi
+  printf '%s\n' "$best"
+}
+
+cmd_rollback() {
+  local yes=0
+  while [ $# -gt 0 ]; do case "$1" in --yes|-y) yes=1 ;; *) die "rollback: unknown argument $1" ;; esac; shift; done
+  [ "$(id -u)" = 0 ] || die "rollback needs root"
+
+  local esp; esp="$(esp_path)" || die "no boot loader entries under /boot"
+  local before after cur
+  cur="$(current_entry)"
+  before="$(next_boot_entry "$esp")"
+
+  local target
+  target="$(bootc_field rollback-image)"
+  if [ -z "$target" ]; then
+    # No bootc rollback deployment. There may still be another loader entry —
+    # which is the case that matters after an automatic rollback has already
+    # happened — so say what is available instead of refusing blindly.
+    warn "bootc reports no rollback deployment."
+    cmd_list
+    die "nothing to roll back to. If a previous deployment is listed above, boot it
+  for one boot with: tilo-deployment boot <entry>"
+  fi
+
+  printf 'Rolling back to: %s\n' "$target"
+  print_rollback_caveats
+  if [ "$yes" != 1 ]; then
+    printf '\nProceed? [y/N] '
+    local a; read -r a || a=""
+    case "$a" in y|Y|yes|YES) ;; *) die "cancelled" ;; esac
+  fi
+
+  if bootc rollback; then
+    log "bootc rollback accepted"
+  else
+    warn "bootc rollback failed (bootc#2208 is the known one on this backend);
+  falling back to setting the boot loader's default entry directly"
+  fi
+
+  cmd_entries >/dev/null 2>&1 || true
+  after="$(next_boot_entry "$esp")"
+
+  if [ -n "$after" ] && [ "$after" != "$cur" ]; then
+    log "next boot: $after (was booting $cur)"
+    print_success_footer
+    return 0
+  fi
+
+  # bootc did not move the needle. Pick the newest entry that is not the one
+  # running now and pin it in the boot loader itself.
+  local f id pick=""
+  for f in "$esp"/loader/entries/*.conf; do
+    [ -e "$f" ] || continue
+    id="$(entry_id_of "$f")"
+    [ "$id" = "$cur" ] && continue
+    # The repair image is not a .conf at all (it is a Type #2 entry), so it
+    # cannot appear here — but an old install may still carry the .conf this
+    # once wrote, and rolling back onto it is not what was asked for.
+    [ "$id" = "tilo-repair.conf" ] && continue
+    pick="$id"
+  done
+  [ -n "$pick" ] || die "no other deployment has a boot loader entry, so there is
+  nothing to roll back to on this disk. \`tilo-deployment list\` shows what there is."
+
+  if bootctl set-default "$pick" 2>/dev/null; then
+    log "the boot loader's default entry is now $pick"
+    log "(bootc's own ordering did not change; this is the boot loader's default,"
+    log " which sd-boot honours until something sets it again)"
+    print_success_footer
+    return 0
+  fi
+  die "could not set the boot loader default either. Boot the previous deployment
+  by hand from the firmware's boot menu, or from repair mode."
+}
+
+print_success_footer() {
+  cat <<'EOT'
+
+Reboot to take it. Nothing has been removed: the deployment you are on now stays
+on the disk and stays in the boot menu, so this is reversible from either side.
+EOT
+}
+
+cmd_boot() {
+  local entry="${1:-}"
+  [ -n "$entry" ] || die "boot needs an entry id (see \`tilo-deployment list\`)"
+  [ "$(id -u)" = 0 ] || die "boot needs root"
+  local esp; esp="$(esp_path)" || die "no boot loader entries under /boot"
+  # Checked against what the boot loader lists, not against a directory: the
+  # repair image is a Type #2 entry with no .conf, so a file-based check would
+  # refuse the one entry most worth booting once. And an id sd-boot does not know
+  # is silently ignored, so the machine would boot exactly as before while this
+  # reported success.
+  local known
+  known="$(bootctl list 2>/dev/null | sed -n 's/^[[:space:]]*id:[[:space:]]*//p')"
+  if [ -z "$known" ]; then
+    die "the boot loader could not be asked what entries exist, so an id cannot be
+  checked before it is written. Select the entry from the firmware's boot menu."
+  fi
+  if ! printf '%s\n' "$known" | grep -qx -- "$entry"; then
+    # One forgiving retry: `.conf` is easy to leave off a Type #1 id.
+    if printf '%s\n' "$known" | grep -qx -- "$entry.conf"; then
+      entry="$entry.conf"
+    else
+      die "no boot entry called $entry. The boot loader offers:
+$(printf '%s\n' "$known" | sed 's/^/  /')"
+    fi
+  fi
+  bootctl set-oneshot "$entry" \
+    || die "could not write LoaderEntryOneShot — the firmware may not expose EFI
+  variables read-write. Select $entry from the firmware's own boot menu instead."
+  log "next boot only: $entry"
+}
+
+cmd_update() {
+  local yes=0
+  while [ $# -gt 0 ]; do case "$1" in --yes|-y) yes=1 ;; *) die "update: unknown argument $1" ;; esac; shift; done
+  [ "$(id -u)" = 0 ] || die "update needs root"
+  if [ "$yes" != 1 ]; then
+    printf 'Fetch and stage the current image? [y/N] '
+    local a; read -r a || a=""
+    case "$a" in y|Y|yes|YES) ;; *) die "cancelled" ;; esac
+  fi
+  /usr/libexec/tilo-verified-update || die "bootc upgrade failed — see the output above. If the registry
+  is unreachable this machine keeps running what it has."
+  stage_rollback_generation || {
+    bootc rollback >/dev/null 2>&1 || true
+    die "the update was fetched but cannot become the next boot until its signed measured-boot keyslot is enrolled; the current deployment remains selected"
+  }
+  # The staged deployment's entry has to carry a boot counter BEFORE the reboot
+  # into it, or the first boot of a broken update is also the last chance to
+  # notice. Doing it here rather than at next boot is the whole difference.
+  cmd_entries
+}
+
+stage_rollback_generation() {
+  local device="$(cat /run/tilo-root/source 2>/dev/null || true)"
+  [ -b "$device" ] || return 0
+  local has=0 id token
+  for id in $(seq 0 31); do
+    token="$(cryptsetup token export --token-id "$id" "$device" 2>/dev/null || true)"
+    printf '%s' "$token" | grep -q '"type"[[:space:]]*:[[:space:]]*"tilo-rollback"' \
+      && { has=1; break; }
+  done
+  [ "$has" = 1 ] || return 0
+
+  local staged_digest incoming="" incoming_uki="" uki cmd gen uki_digest predictions pin
+  local -a prediction_matches=()
+  staged_digest="$(bootc_field staged-composefs)"
+  [ -n "$staged_digest" ] || return 1
+  staged_digest="${staged_digest#sha512:}"
+  predictions="$(esp_path)/EFI/tilo/pcr-predictions"
+  for uki in "$(esp_path)"/EFI/Linux/bootc/*.efi; do
+    [ -f "$uki" ] || continue
+    cmd="$($UKI_CMDLINE show "$uki" 2>/dev/null || true)"
+    gen="$(printf '%s\n' "$cmd" | tr ' ' '\n' | sed -n 's/^tilo\.generation=//p' | head -1)"
+    case "$gen" in ''|*[!0-9]*) continue ;; esac
+    uki_digest="$(printf '%s\n' "$cmd" | tr ' ' '\n' | sed -n 's/^composefs=//p' | head -1)"
+    uki_digest="${uki_digest#sha512:}"
+    [ "$uki_digest" = "$staged_digest" ] || continue
+    [ -z "$incoming" ] || return 1
+    incoming="$gen"
+    incoming_uki="$uki"
+  done
+  [ -n "$incoming" ] || return 1
+  mapfile -t prediction_matches < <(find "$predictions" -maxdepth 1 -type f \
+    -name "generation-$incoming*.json" -print 2>/dev/null)
+  [ "${#prediction_matches[@]}" -eq 1 ] || return 1
+  /usr/libexec/tilo-verified-boot-install-preflight \
+    --uki "$incoming_uki" --prediction "${prediction_matches[0]}" \
+    --generation "$incoming" || return 1
+  [ -s /run/tilo-rollback/proof.key ] || return 1
+  pin="$(mktemp /run/tilo-update-pin.XXXXXX)" || return 1
+  chmod 0600 "$pin"
+  if ! systemd-ask-password -n --echo=masked --id=tilo-update-pin \
+      "Enter the startup PIN to secure Tilo generation $incoming" >"$pin"; then
+    rm -f "$pin"; return 1
+  fi
+  if ! tilo-rollback --predictions "$predictions" enroll --device "$device" \
+      --generation "$incoming" --recovery-key-file /run/tilo-rollback/proof.key \
+      --pin-file "$pin"; then
+    rm -f "$pin"; return 1
+  fi
+  rm -f "$pin"
+}
+
+# --- boot counters and the repair entry ---------------------------------------
+#
+# sd-boot decrements the counter in an entry's FILE NAME on each attempt and
+# systemd-bless-boot removes it once boot-complete.target is reached. Nothing
+# inside the UKI changes, so a counter costs no signature and no measurement —
+# which is why this is a rename and not a rebuild.
+cmd_entries() {
+  [ "$(id -u)" = 0 ] || die "entries needs root"
+  local esp; esp="$(esp_path)" || { log "no systemd-boot layout — nothing to maintain"; return 0; }
+  command -v flock >/dev/null 2>&1 || die "entries needs flock"
+  [ -d "$esp" ] && [ ! -L "$esp" ] || die "ESP is not a real directory: $esp"
+  exec 6<"$esp"
+  flock -x 6
+  local cur; cur="$(current_entry)"
+
+  local f name id changed=0
+  for f in "$esp"/loader/entries/*.conf; do
+    [ -e "$f" ] || continue
+    name="${f##*/}"
+    id="$(entry_id_of "$f")"
+    # Only bootc's own entries. The repair entry must never expire, and an entry
+    # some other tool put there is not ours to count down.
+    case "$id" in bootc*) ;; *) continue ;; esac
+    case "$name" in *+*) continue ;; esac
+    # The entry this boot came from is already proven as far as anything here can
+    # tell. Counting it down would spend tries on a working system.
+    [ "$id" = "$cur" ] && continue
+    mv -f "$f" "${f%.conf}+${BOOT_TRIES}.conf" \
+      && { log "boot counter: $id gets $BOOT_TRIES tries"; changed=1; }
+  done
+  [ "$changed" = 0 ] && log "boot counters: nothing to add"
+
+  # cmd_repair_entry takes the same ESP lock and may hand it to the sealed-key
+  # signer. Release this phase's descriptor before entering that operation.
+  flock -u 6
+
+  cmd_repair_entry
+}
+
+# Derive the repair-mode boot entry from whichever UKI the running deployment
+# actually boots.
+#
+# Not built at image-build time, for a reason that is structural rather than
+# convenient: a UKI's sealed command line carries `composefs=<digest of the
+# rootfs>`, and a second UKI shipped inside that rootfs would change the digest it
+# has to name. Deriving it here from the installed artefact sidesteps the
+# circularity entirely, and has the better property besides — the repair entry is
+# always sealed against the deployment that is really on the disk, including after
+# the two-pass digest reseal bootc#2334 forces.
+cmd_repair_entry() {
+  [ "$(id -u)" = 0 ] || die "repair-entry needs root"
+  local esp; esp="$(esp_path)" || { log "no systemd-boot layout — no repair entry to make"; return 0; }
+  command -v flock >/dev/null 2>&1 || die "repair-entry needs flock"
+  [ -d "$esp" ] && [ ! -L "$esp" ] || die "ESP is not a real directory: $esp"
+  # One repair derivation remains in flight across the sealed-key service call.
+  # Locking the stable ESP directory separately coordinates the actual mutation
+  # with tilo-secureboot without trusting a replaceable lock-file pathname.
+  local repair_lock_dir="$esp/EFI/tilo"
+  mkdir -p "$repair_lock_dir" || die "cannot create the repair metadata directory"
+  [ -d "$repair_lock_dir" ] && [ ! -L "$repair_lock_dir" ] \
+    || die "repair metadata path is not a real directory"
+  exec 7<"$repair_lock_dir"
+  flock -x 7
+  exec 8<"$esp"
+  flock -x 8
+  local entries="$esp/loader/entries"
+  local cur; cur="$(current_entry)"
+
+  local src_conf=""
+  if [ -n "$cur" ] && [ -e "$entries/$cur" ]; then
+    src_conf="$entries/$cur"
+  else
+    local f
+    for f in "$entries"/*.conf; do
+      [ -e "$f" ] || continue
+      case "$(entry_id_of "$f")" in bootc*) src_conf="$f"; break ;; esac
+    done
+  fi
+  [ -n "$src_conf" ] || { warn "no bootc loader entry to derive a repair entry from"; return 0; }
+
+  local uki_rel uki_abs
+  uki_rel="$(sed -n 's/^uki *//p' "$src_conf" | head -1)"
+  [ -n "$uki_rel" ] || {
+    log "$src_conf is not a UKI entry — repair mode needs a sealed command line to
+  rewrite, so there is nothing to derive here"
+    return 0
+  }
+  uki_abs="$esp/${uki_rel#/}"
+  [ -f "$uki_abs" ] || { warn "the entry names a UKI that is not on the ESP: $uki_abs"; return 0; }
+
+  # Top level of EFI/Linux, beside (not inside) bootc's own directory.
+  local dest_dir="$esp/EFI/Linux"
+  local dest="$dest_dir/$REPAIR_EFI_NAME"
+  # The provenance stamp does NOT live in EFI/Linux: anything ending in .efi there
+  # becomes a boot menu entry, and a stray file in that directory is a stray entry.
+  local stamp="$esp/EFI/tilo/repair.source"
+
+  # Already derived from this exact UKI? Then there is nothing to do, and doing it
+  # anyway would rewrite ~134 MB of an SD card on every boot.
+  if [ -f "$dest" ] && [ -f "$stamp" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$uki_rel" ]; then
+    log "repair entry is current (derived from $uki_rel)"
+    remove_stale_repair_entry "$entries" "$esp"
+    return 0
+  fi
+
+  # Space. The ESP is sized for the retention window plus one repair image
+  # (os/tests/esp_capacity.sh asserts that arithmetic); check anyway, because a
+  # half-written UKI on the ESP is worse than no repair entry at all.
+  local need avail
+  need="$(( ( $(stat -c %s "$uki_abs") / 1024 ) + 2048 ))"
+  avail="$(df -Pk "$esp" | awk 'NR==2{print $4}')"
+  if [ -n "$avail" ] && [ "$avail" -lt "$need" ]; then
+    warn "not enough room on the ESP for a repair image: need ${need} KiB, have ${avail} KiB.
+  The machine still boots and still rolls back; it just has no repair entry."
+    return 0
+  fi
+
+  mkdir -p "$dest_dir" "$(dirname "$stamp")" || { warn "could not create $dest_dir"; return 0; }
+  # The scratch copy is built OUTSIDE EFI/Linux. A half-written *.efi in there is
+  # a boot menu entry that does not boot, and it would be offered the moment the
+  # machine restarted mid-write.
+  local tmp; tmp="$(dirname "$stamp")/.repair.efi.new"
+  rm -f "$tmp"
+  cp -f "$uki_abs" "$tmp" || { warn "could not copy $uki_abs"; rm -f "$tmp"; return 0; }
+
+  # The one edit: tilo.mode=normal -> tilo.mode=repair, in place, same length. It
+  # refuses a length-changing replacement, so a future rename of either value
+  # fails here instead of producing a UKI that will not load.
+  if ! "$UKI_CMDLINE" set tilo.mode=repair "$tmp" >/dev/null; then
+    rm -f "$tmp"
+    warn "could not set tilo.mode=repair on a copy of $uki_rel.
+  Either this image predates the tilo.mode karg, or the two values are no longer
+  the same length (os/usr/lib/bootc/kargs.d/04-mode.toml). No repair entry made."
+    return 0
+  fi
+  # Read it back out of the PE rather than trusting the writer's exit code: the
+  # bytes are what boots.
+  "$UKI_CMDLINE" show "$tmp" | grep -q 'tilo\.mode=repair' || {
+    rm -f "$tmp"
+    warn "the rewritten command line does not carry tilo.mode=repair; refusing to
+  install a repair entry that would boot the desktop instead."
+    return 0
+  }
+
+  # A Type #2 entry takes its menu title and its ordering from the image's own
+  # .osrel, so without this the repair image appears in the boot menu under the
+  # deployment's name — indistinguishable from the thing it exists to repair —
+  # and sorts wherever the deployment sorts.
+  #
+  # Both SORT_KEY and IMAGE_ID, because the two halves of systemd do not agree
+  # about which one orders a Type #2 entry. `bootctl list` (bootspec.c) uses
+  # `IMAGE_ID ?: ID` and ignores SORT_KEY entirely — checked on a booted machine,
+  # where SORT_KEY was set and bootctl still reported `fedora`. Setting both means
+  # the entry sorts last under either reading, rather than depending on which one
+  # this systemd happens to be.
+  if ! "$UKI_CMDLINE" set-osrel \
+        "PRETTY_NAME=$REPAIR_TITLE" \
+        "SORT_KEY=$REPAIR_SORT_KEY" \
+        "IMAGE_ID=$REPAIR_SORT_KEY" \
+        "VERSION_ID=repair" \
+        "$tmp" >/dev/null; then
+    rm -f "$tmp"
+    warn "could not name the repair image in its .osrel. An entry the person
+  cannot tell apart from their system is not one, so none was installed."
+    return 0
+  fi
+  "$UKI_CMDLINE" osrel "$tmp" | grep -q "^PRETTY_NAME=$REPAIR_TITLE\$" || {
+    rm -f "$tmp"
+    warn "the repair image's .osrel does not read back with the expected title"
+    return 0
+  }
+
+  # Sign it if this machine has enrolled its own Secure Boot key. Unsigned is fine
+  # on a machine that has not — and on one that has, an unsigned repair image is a
+  # menu entry the firmware refuses, which is worse than none.
+  local sealed_sign=0
+  if [ -f /var/lib/tilo/secureboot/db.key ] && command -v tilo-crypto >/dev/null 2>&1; then
+    if tilo-crypto sign-efi /var/lib/tilo/secureboot/db.key \
+              /var/lib/tilo/secureboot/db.crt "$tmp" "$tmp.signed" >/dev/null 2>&1 \
+       && tilo-crypto verify-efi /var/lib/tilo/secureboot/db.crt \
+              "$tmp.signed" >/dev/null 2>&1 \
+       && mv -f "$tmp.signed" "$tmp"; then
+      log "repair image signed with this machine's Secure Boot key"
+    else
+      rm -f "$tmp.signed" "$tmp"
+      warn "this machine has an enrolled Secure Boot key but the repair image could
+  not be signed, and the firmware would refuse it. No repair entry made."
+      return 0
+    fi
+  elif [ -f /var/lib/tilo/secureboot/db.key.cred ]; then
+    # The TPM credential is deliberately not unsealed into this broad
+    # deployment process. Publish the complete candidate, then synchronously
+    # invoke the narrow credential-bearing signer and retain the entry only if
+    # its owner signature reads back successfully.
+    sealed_sign=1
+  fi
+
+  # The rename into EFI/Linux is the moment the entry exists. Everything before
+  # it happened somewhere the boot loader does not look.
+  mv -f "$tmp" "$dest" || { warn "could not install $dest"; rm -f "$tmp"; return 0; }
+  if [ "$sealed_sign" -eq 1 ]; then
+    # The credential-bearing service takes the ESP lock itself.  Retain the
+    # repair-operation lock, hand it the ESP lock, then reacquire before
+    # inspecting or publishing provenance for the result.
+    flock -u 8
+    if ! systemctl start --wait tilo-secureboot-sign.service \
+       || ! flock -x 8 \
+       || ! tilo-crypto verify-efi /var/lib/tilo/secureboot/db.crt "$dest" \
+              >/dev/null 2>&1 \
+       || ! "$UKI_CMDLINE" show "$dest" | grep -q 'tilo\.mode=repair' \
+       || ! "$UKI_CMDLINE" osrel "$dest" \
+              | grep -q "^PRETTY_NAME=$REPAIR_TITLE\$"; then
+      # Ensure cleanup also happens under the ESP mutation lock when service
+      # activation itself failed before the reacquire expression ran.
+      flock -x 8
+      rm -f "$dest"
+      warn "TPM-sealed Secure Boot signing failed; removed the unsigned repair entry"
+      return 0
+    fi
+    log "repair image signed by the TPM-credential service"
+  fi
+  printf '%s\n' "$uki_rel" > "$stamp"
+  sync
+  log "repair image: $dest (from $uki_rel)"
+  remove_stale_repair_entry "$entries" "$esp"
+}
+
+# Clear away anything an older version of this script left behind.
+#
+# The first shape of this was a Type #1 `.conf` plus an image under EFI/tilo.
+# Left in place after an update, the `.conf` breaks `bootc status` on every
+# subsequent boot — so removing it is not tidiness, it is the upgrade path.
+remove_stale_repair_entry() {
+  local entries="$1" esp="$2"
+  local old_conf="$entries/tilo-repair.conf"
+  local old_efi="$esp/EFI/tilo/repair.efi"
+  if [ -e "$old_conf" ]; then
+    rm -f "$old_conf"
+    log "removed the old repair loader entry (bootc cannot parse a foreign one)"
+  fi
+  [ -e "$old_efi" ] && rm -f "$old_efi"
+  sync
+  return 0
+}
+
+case "${1:-}" in
+  list)         shift; cmd_list "$@" ;;
+  rollback)     shift; cmd_rollback "$@" ;;
+  boot)         shift; cmd_boot "$@" ;;
+  update)       shift; cmd_update "$@" ;;
+  entries)      shift; cmd_entries "$@" ;;
+  repair-entry) shift; cmd_repair_entry "$@" ;;
+  caveats)      print_rollback_caveats ;;
+  -h|--help|"") sed -n '2,10p' "$0" ;;
+  *)            die "unknown subcommand: $1 (try --help)" ;;
+esac

@@ -48,8 +48,8 @@ pub fn map_texture_usage(format: wgt::TextureFormat, usage: wgt::TextureUses) ->
 }
 
 pub fn map_texture_view_dimension(dim: wgt::TextureViewDimension) -> MTLTextureType {
-    use wgt::TextureViewDimension as Tvd;
     use MTLTextureType as MTL;
+    use wgt::TextureViewDimension as Tvd;
     match dim {
         Tvd::D1 => MTL::Type1D,
         Tvd::D2 => MTL::Type2D,
@@ -61,8 +61,8 @@ pub fn map_texture_view_dimension(dim: wgt::TextureViewDimension) -> MTLTextureT
 }
 
 pub fn map_compare_function(fun: wgt::CompareFunction) -> MTLCompareFunction {
-    use wgt::CompareFunction as Cf;
     use MTLCompareFunction as MTL;
+    use wgt::CompareFunction as Cf;
     match fun {
         Cf::Never => MTL::Never,
         Cf::Less => MTL::Less,
@@ -84,8 +84,8 @@ pub fn map_filter_mode(filter: wgt::FilterMode) -> MTLSamplerMinMagFilter {
 }
 
 pub fn map_address_mode(address: wgt::AddressMode) -> MTLSamplerAddressMode {
-    use wgt::AddressMode as Fm;
     use MTLSamplerAddressMode as MTL;
+    use wgt::AddressMode as Fm;
     match address {
         Fm::Repeat => MTL::Repeat,
         Fm::MirrorRepeat => MTL::MirrorRepeat,
@@ -144,8 +144,8 @@ pub fn map_color_write(mask: wgt::ColorWrites) -> MTLColorWriteMask {
 }
 
 pub fn map_blend_factor(factor: wgt::BlendFactor) -> MTLBlendFactor {
-    use wgt::BlendFactor as Bf;
     use MTLBlendFactor as MTL;
+    use wgt::BlendFactor as Bf;
 
     match factor {
         Bf::Zero => MTL::Zero,
@@ -169,8 +169,8 @@ pub fn map_blend_factor(factor: wgt::BlendFactor) -> MTLBlendFactor {
 }
 
 pub fn map_blend_op(operation: wgt::BlendOperation) -> MTLBlendOperation {
-    use wgt::BlendOperation as Bo;
     use MTLBlendOperation as MTL;
+    use wgt::BlendOperation as Bo;
 
     match operation {
         Bo::Add => MTL::Add,
@@ -192,8 +192,8 @@ pub fn map_blend_component(
 }
 
 pub fn map_vertex_format(format: wgt::VertexFormat) -> MTLVertexFormat {
-    use wgt::VertexFormat as Vf;
     use MTLVertexFormat as MTL;
+    use wgt::VertexFormat as Vf;
 
     match format {
         Vf::Unorm8 => MTL::UCharNormalized,
@@ -256,8 +256,8 @@ pub fn map_step_mode(mode: wgt::VertexStepMode) -> MTLVertexStepFunction {
 }
 
 pub fn map_stencil_op(op: wgt::StencilOperation) -> MTLStencilOperation {
-    use wgt::StencilOperation as So;
     use MTLStencilOperation as MTL;
+    use wgt::StencilOperation as So;
 
     match op {
         So::Keep => MTL::Keep,
@@ -355,7 +355,10 @@ pub fn map_render_stages(stage: wgt::ShaderStages) -> MTLRenderStages {
 
 pub fn map_resource_usage(ty: &wgt::BindingType) -> MTLResourceUsage {
     match ty {
-        #[allow(deprecated)]
+        #[allow(
+            deprecated,
+            reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+        )]
         wgt::BindingType::Texture { .. } => MTLResourceUsage::Sample,
         wgt::BindingType::StorageTexture { access, .. } => match access {
             wgt::StorageTextureAccess::WriteOnly => MTLResourceUsage::Write,

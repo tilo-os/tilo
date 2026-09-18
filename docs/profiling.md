@@ -1,14 +1,14 @@
 # Profiling & performance testing `ui` apps
 
-Every qOS app is built on the `ui` toolkit and runs the same five-pass frame —
+Every Tilo app is built on the `ui` toolkit and runs the same five-pass frame —
 `sync`, `build_layout`, `apply_layout`, `draw`, `handle_event` (see
-`ui/src/widget/mod.rs`). The profiler measures each of those passes so an app's
+`crates/sdk/ui-core/src/widget/mod.rs`). The profiler measures each of those passes so an app's
 frame cost can be **read off, not guessed**, and the headless harness guards
 against a regression by driving a scripted interaction and reporting frame-time
 statistics.
 
-It lives in one place — `ui/src/profiling.rs` — and is wired into `ui::App`, so
-**every app gets it for free**. There is no per-app code: an environment
+It lives in one place — `crates/sdk/ui-core/src/profiling.rs` — and is wired into `ui::App`, so
+every app can use it. There is no per-app code: an environment
 variable turns it on, and when it's off nothing on the hot path reads a clock or
 allocates.
 
@@ -22,8 +22,8 @@ microseconds + frame index + a monotonic timestamp).
 Turn on the on-screen profiler for any app:
 
 ```bash
-QOS_PROFILE=1 <app>            # e.g. QOS_PROFILE=1 cargo run -p ui --example ui-lab -- gallery
-QOS_PROFILE=1 terminal
+TILO_PROFILE=1 <app>            # e.g. TILO_PROFILE=1 cargo run -p ui --example ui-lab -- gallery
+TILO_PROFILE=1 terminal
 ```
 
 A panel appears top-right with:
@@ -35,7 +35,7 @@ A panel appears top-right with:
   budget line** drawn across it and **over-budget bars painted red**.
 
 The HUD is painted *after* the frame's timing is committed, so it never inflates
-the numbers it reports. Unlike the debug overlay (`QUICK_UI_DEBUG`), `QOS_PROFILE`
+the numbers it reports. Unlike the debug overlay (`QUICK_UI_DEBUG`), `TILO_PROFILE`
 is **not** gated on `debug_assertions` — you profile release builds, because
 that is where frame cost matters.
 
@@ -46,11 +46,11 @@ that is where frame cost matters.
 Append one record per frame to a file for offline analysis:
 
 ```bash
-QOS_PROFILE_OUT=/var/home/you/frames.jsonl <app>   # JSON-lines (default)
-QOS_PROFILE_OUT=/var/home/you/frames.csv    <app>   # CSV (by extension)
+TILO_PROFILE_OUT=/var/home/you/frames.jsonl <app>   # JSON-lines (default)
+TILO_PROFILE_OUT=/var/home/you/frames.csv    <app>   # CSV (by extension)
 ```
 
-`QOS_PROFILE_OUT` enables profiling on its own; combine it with `QOS_PROFILE=1`
+`TILO_PROFILE_OUT` enables profiling on its own; combine it with `TILO_PROFILE=1`
 to also show the HUD. Each line/row carries:
 
 ```
@@ -60,12 +60,12 @@ frame, t_us, sync_us, build_layout_us, apply_layout_us, draw_us, handle_event_us
 `t_us` is a monotonic counter (microseconds since the profiler started), not a
 wall clock, so it is immune to clock steps.
 
-Every committed frame also emits a `tracing` event under the **`qos::profile`**
+Every committed frame also emits a `tracing` event under the **`tilo::profile`**
 target with the same fields, so an external tracer can consume the numbers with
 no file:
 
 ```bash
-RUST_LOG=qos::profile=debug QOS_PROFILE=1 <app>
+RUST_LOG=tilo::profile=debug TILO_PROFILE=1 <app>
 ```
 
 (A single structured event per frame is used rather than a span per pass — one
@@ -85,7 +85,7 @@ jq -s 'map(select(.total_us > 16667)) | length' frames.jsonl
 ## 3. Headless perf-scenario harness (the "performance testing")
 
 This is what lets you measure a fix objectively and fail a test if a later
-change slows a pass down. It drives the app's **real** widget passes with no GPU
+change slows a pass down. It drives the app's widget passes with no GPU
 or display, using the same `ui::headless::Driver` the persistence harness uses.
 
 ### Write a scenario
@@ -119,7 +119,7 @@ doesn't skew the numbers.
 
 ### Run it against any app
 
-One call, over the app's real root widget + `State`:
+One call, over the app's root widget + `State`:
 
 ```rust
 let report = ui::profiling::run_scenario_on(state, app_root(), &scenario);
@@ -192,7 +192,7 @@ layout from input cleanly.
 
 ## Zero cost when off
 
-When neither `QOS_PROFILE` nor `QOS_PROFILE_OUT` is set, `App` holds no profiler
+When neither `TILO_PROFILE` nor `TILO_PROFILE_OUT` is set, `App` holds no profiler
 and every render-loop hook is an `Option::map` over `None`: no clock is read and
 nothing is allocated on the hot path. The same is true of the headless `Driver`
 until `begin_profiling` installs a capture profiler.
@@ -201,6 +201,6 @@ until `begin_profiling` installs a capture profiler.
 
 This measures a single app's `ui` frame passes. To drive and observe the whole
 compositor headlessly (multiple windows, the shell, remote input injection), see
-`docs/headless-testing.md` — the `QOS_TEST_CONTROL` socket, `--backend headless`,
+`docs/headless-testing.md` — the `TILO_TEST_CONTROL` socket, `--backend headless`,
 and the `shots` binary. The perf harness here is the app-frame layer; that is the
 system layer.

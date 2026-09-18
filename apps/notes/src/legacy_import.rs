@@ -119,24 +119,19 @@ pub fn source_key(root: &Path) -> Result<LegacySourceKey, ImportError> {
         return Err(source_error(root, "source is not a directory"));
     }
     let mut hash = blake3::Hasher::new();
-    hash.update(b"qos-notes-legacy-source-v1\0");
+    hash.update(b"tilo-notes-legacy-source-v1\0");
     hash.update(canonical.as_os_str().as_encoded_bytes());
     Ok(LegacySourceKey::from_bytes(*hash.finalize().as_bytes()))
 }
 
 /// The fixed destination for a source identity, independent of source content.
-/// # Panics
-/// Only if `RecordId` stops accepting a locally generated, nonempty 64-character
-/// hexadecimal string. Its current parser rejects only empty strings; no source
-/// data or fallback identity enters this checked invariant.
-#[allow(
-    clippy::unreachable,
-    reason = "RecordId::parse rejects only empty; fixed 32-byte lowercase hex is always nonempty"
-)]
+/// The full 256-bit key is encoded in two bounded, alphabetic derived roles
+/// over a fixed typed anchor. A bare hex digest is not a valid record ID.
 pub fn destination(key: LegacySourceKey) -> RecordCheckout {
-    let Some(source) = RecordId::parse(&hex(&key.0)) else {
-        unreachable!("fixed source-key hex cannot be empty");
-    };
+    let digest = hex(&key.0);
+    let (first, second) = digest.split_at(32);
+    let tail = RecordId::derived(&format!("key-{second}"), &RecordId::for_tab(0));
+    let source = RecordId::derived(&format!("key-{first}"), &tail);
     RecordCheckout::new(
         RecordId::derived("notes-legacy-v1", &source),
         RecordKind::new("notes.notebook"),
@@ -281,7 +276,7 @@ fn snapshot_with_hook(
         }
     }
     let mut digest = blake3::Hasher::new();
-    digest.update(b"qos-notes-legacy-snapshot-v1\0");
+    digest.update(b"tilo-notes-legacy-snapshot-v1\0");
     for (path, bytes) in &files {
         let relative = path.strip_prefix(root).map_err(|e| source_error(path, e))?;
         let name = relative.as_os_str().as_encoded_bytes();
@@ -319,7 +314,7 @@ fn snapshot_with_hook(
 
 fn block_id(key: LegacySourceKey, page: PageId, index: usize) -> String {
     let mut hash = blake3::Hasher::new();
-    hash.update(b"qos-notes-legacy-block-v1\0");
+    hash.update(b"tilo-notes-legacy-block-v1\0");
     hash.update(&key.0);
     hash.update(page.as_bytes());
     hash.update(&(index as u64).to_le_bytes());
@@ -609,7 +604,7 @@ mod tests {
         let before = f.source_bytes();
         let checkout = destination(f.key);
         let other = RecordCheckout::new(
-            RecordId::parse("notes-fixture-unrelated").unwrap(),
+            RecordId::derived("notes-fixture-unrelated", &RecordId::for_tab(0)),
             RecordKind::new("notes.notebook"),
         );
         f.records

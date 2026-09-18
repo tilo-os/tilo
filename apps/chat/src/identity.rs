@@ -6,12 +6,12 @@
 //! per-user reactions/read-watermarks collide in the shared CRDT. This module
 //! resolves that identity once at startup:
 //!
-//! 1. The qOS runtime identity (an inherited signing broker, loaded via
+//! 1. The Tilo runtime identity (an inherited signing broker, loaded via
 //!    [`runtime_identity`]) — the same identity the collaboration layer uses
 //!    with. Its 32-byte group public key gives a stable unique id and its
 //!    display name / avatar colour come straight from first-boot setup.
 //! 2. A persisted per-install UUID under the chat data dir, so a peer keeps
-//!    the same id across restarts even outside a full qOS session.
+//!    the same id across restarts even outside a full Tilo session.
 //! 3. A deterministic `user@host` fallback, then a random id — so the app is
 //!    always usable, never two peers colliding by accident.
 //!
@@ -56,7 +56,7 @@ impl LocalIdentity {
         Self::from_user_host()
     }
 
-    /// The qOS runtime identity — the canonical per-user identity the launcher
+    /// The Tilo runtime identity — the canonical per-user identity the launcher
     /// provisions and the collab layer signs with.
     fn from_runtime_identity() -> Option<Self> {
         let si = runtime_identity::load().ok()?;
@@ -77,8 +77,8 @@ impl LocalIdentity {
         })
     }
 
-    /// A UUID persisted under the chat data dir, so a peer outside a full qOS
-    /// session (no `QOS_USER_IDENTITY`) still keeps one stable id across runs.
+    /// A UUID persisted under the chat data dir, so a peer outside a full Tilo
+    /// session (no `TILO_USER_IDENTITY`) still keeps one stable id across runs.
     fn from_persisted_uuid() -> Option<Self> {
         let dir = crate::storage::data_dir()?;
         let path = dir.join("peer-id");
@@ -247,7 +247,6 @@ mod tests {
     fn hex8_and_color_are_stable() {
         let pk = [0xABu8; 32];
         assert_eq!(hex8(&pk), "abababababababab");
-        assert_eq!(color_from_bytes(&pk), color_from_bytes(&pk));
-        assert!(color_from_bytes(&pk) < 8);
+        assert_eq!(color_from_bytes(&pk), 5);
     }
 }

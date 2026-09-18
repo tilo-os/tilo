@@ -1,6 +1,6 @@
 //! Encrypted portable backups of a single-device identity.
 //!
-//! Runtime identity metadata intentionally omits the signing secret after it
+//! Runtime identity metadata omits the signing secret after it
 //! is secured in Secret Service or the broker-file fallback.  A portable
 //! backup therefore has to run inside this crate: it can authenticate the
 //! metadata, retrieve the provider-held secret, and immediately seal the
@@ -23,7 +23,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use super::{IdentityLock, MAX_RECORD_BYTES, identity_from_record};
 
-const MAGIC: &[u8; 8] = b"QOSIBK\0\x01";
+const MAGIC: &[u8; 8] = b"TLOIBK\0\x01";
 const FORMAT_VERSION: u8 = 1;
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
@@ -118,7 +118,7 @@ pub fn verify_portable_backup(
 /// straight to [`super::import_identity`], which validates and moves its key
 /// back into the configured secret provider.
 ///
-/// This is intentionally the only restoration API: callers can restore an
+/// This is the only restoration API: callers can restore an
 /// identity but cannot ask this crate to hand them a raw signing share.
 ///
 /// # Errors
@@ -588,7 +588,7 @@ fn new_temp_path(parent: &Path) -> io::Result<PathBuf> {
     for _ in 0..16 {
         let mut nonce = [0_u8; 16];
         getrandom::getrandom(&mut nonce).map_err(random_error)?;
-        let candidate = parent.join(format!(".qos-identity-backup-{}.tmp", hex::encode(nonce)));
+        let candidate = parent.join(format!(".tilo-identity-backup-{}.tmp", hex::encode(nonce)));
         if !candidate.exists() {
             return Ok(candidate);
         }
@@ -760,7 +760,7 @@ mod tests {
         let source = tempfile::tempdir().expect("source");
         let identity = secured_identity(source.path(), "personal", 71);
         let backup_dir = tempfile::tempdir().expect("backup dir");
-        let backup = backup_dir.path().join("ada.qos-identity-backup");
+        let backup = backup_dir.path().join("ada.tilo-identity-backup");
         let passphrase = b"correct horse battery staple";
 
         let info = export_portable_backup(&identity, &backup, passphrase).expect("export");
@@ -779,7 +779,7 @@ mod tests {
         let source = tempfile::tempdir().expect("source");
         let identity = secured_identity(source.path(), "personal", 72);
         let backup_dir = tempfile::tempdir().expect("backup dir");
-        let backup = backup_dir.path().join("ada.qos-identity-backup");
+        let backup = backup_dir.path().join("ada.tilo-identity-backup");
         export_portable_backup(&identity, &backup, b"the passphrase").expect("export");
 
         let bytes = fs::read(&backup).expect("read envelope");
@@ -823,7 +823,7 @@ mod tests {
         let source = tempfile::tempdir().expect("source");
         let identity = secured_identity(source.path(), "personal", 73);
         let backup_dir = tempfile::tempdir().expect("backup dir");
-        let backup = backup_dir.path().join("ada.qos-identity-backup");
+        let backup = backup_dir.path().join("ada.tilo-identity-backup");
         export_portable_backup(&identity, &backup, b"the passphrase").expect("export");
 
         let mut bytes = fs::read(&backup).expect("read");
@@ -933,7 +933,7 @@ mod tests {
         let source = tempfile::tempdir().expect("source");
         let identity = secured_identity(source.path(), "personal", 75);
         let backup_dir = tempfile::tempdir().expect("backup dir");
-        let backup = backup_dir.path().join("ada.qos-identity-backup");
+        let backup = backup_dir.path().join("ada.tilo-identity-backup");
         let passphrase = b"a sufficient passphrase";
         export_portable_backup(&identity, &backup, passphrase).expect("export");
 

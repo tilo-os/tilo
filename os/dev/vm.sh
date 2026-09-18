@@ -1,5 +1,5 @@
 #!/bin/bash
-# Drive a qOS qcow2 headlessly: boot, automate the greeter login, take
+# Drive a Tilo qcow2 headlessly: boot, automate the greeter login, take
 # screenshots, pull logs, and shut down. Designed for machines where qemu lives
 # in a distrobox and the host is immutable (see os/dev/_common.sh for config).
 #
@@ -7,7 +7,7 @@
 #                                              start the VM (detached)
 #   ./os/dev/vm.sh boot-installer [--gl]       boot the custom installer + blank /dev/vdb
 #   ./os/dev/vm.sh boot-target [--gl]          boot the installed result (target.qcow2)
-#   QOS_VM_CYCLE=NAME ./os/dev/vm.sh init-cycle
+#   TILO_VM_CYCLE=NAME ./os/dev/vm.sh init-cycle
 #                                             clear and initialize isolated mutable state
 #
 # --tpm attaches a software TPM 2.0 (swtpm), started, state persisted across boots
@@ -19,17 +19,22 @@
 # The variable store is PRISTINE by default: no keys, Secure Boot in setup mode,
 # re-seeded every boot, which is the state that both measures and accepts an
 # owner-signed image. --secboot keeps that store across boots instead, so that
-# enrolling keys in the guest (`/usr/libexec/qos-secureboot enroll`) sticks —
+# enrolling keys in the guest (`/usr/libexec/tilo-secureboot enroll`) sticks —
 # enrolment is an explicit step, never something the template arrives with.
-# QOS_SECBOOT_KEYS=microsoft boots the vendor-key store on purpose.
+# TILO_SECBOOT_KEYS=microsoft boots the vendor-key store on purpose.
 #   ./os/dev/vm.sh wait                        block until the greeter is up
 #   ./os/dev/vm.sh firmware [--tpm] [--secboot]  which OVMF/varstore/format, and
 #                                              whether it can measure
 #   ./os/dev/vm.sh login [USER PASS]           type both greeter fields
 #   ./os/dev/vm.sh login --passcode-only [PASS] type the installed one-user form
-#   ./os/dev/vm.sh shot NAME                   framebuffer -> $QOS_RUN/NAME.png
+#   ./os/dev/vm.sh shot NAME                   framebuffer -> $TILO_RUN/NAME.png
 #   ./os/dev/vm.sh type STRING                 type a string (sendkey)
 #   ./os/dev/vm.sh keys KEY...                 send named keys (ret tab esc f2..)
+#   ./os/dev/vm.sh pointer X Y                 move the absolute USB tablet in guest pixels
+#   ./os/dev/vm.sh click X Y [left|right|middle]
+#                                             move, press and release a pointer button
+#   ./os/dev/vm.sh wait-greeter-return         prove UI logout returned to greetd
+#   ./os/dev/vm.sh shutdown                    request a clean guest shutdown over SSH
 #   ./os/dev/vm.sh cmd "HMP"                   raw QEMU monitor command
 #   ./os/dev/vm.sh serial [GREP]               dump the boot serial console log
 #   ./os/dev/vm.sh journal [GREP]             offline journal extract (VM stopped)
@@ -48,30 +53,30 @@
 #   GL compositor; pick per task. Serial logging (below) works in both.
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-mkdir -p "$QOS_RUN"
+mkdir -p "$TILO_RUN"
 
 # Start one installation cycle from provably empty mutable state. The path is
-# derived and validated by _common.sh; the same QOS_VM_CYCLE value must be used
+# derived and validated by _common.sh; the same TILO_VM_CYCLE value must be used
 # for boot-installer and boot-target so disk, TPM and firmware state persist
 # across that reboot and nowhere else.
 cmd_init_cycle() {
-  local expected_run="${XDG_RUNTIME_DIR:-/tmp}/qos-vm-$QOS_VM_CYCLE"
-  [ -n "$QOS_VM_CYCLE" ] && [ -n "$QOS_CYCLE_DIR" ] \
-    || die "set a unique QOS_VM_CYCLE before init-cycle"
-  case "$QOS_CYCLE_DIR" in
-    "$QOS_INSTALLER_OUTPUT"/vm-cycles/"$QOS_VM_CYCLE") ;;
-    *) die "refusing to clear cycle state outside $QOS_INSTALLER_OUTPUT/vm-cycles" ;;
+  local expected_run="${XDG_RUNTIME_DIR:-/tmp}/tilo-vm-$TILO_VM_CYCLE"
+  [ -n "$TILO_VM_CYCLE" ] && [ -n "$TILO_CYCLE_DIR" ] \
+    || die "set a unique TILO_VM_CYCLE before init-cycle"
+  case "$TILO_CYCLE_DIR" in
+    "$TILO_INSTALLER_OUTPUT"/vm-cycles/"$TILO_VM_CYCLE") ;;
+    *) die "refusing to clear cycle state outside $TILO_INSTALLER_OUTPUT/vm-cycles" ;;
   esac
-  [ "$QOS_RUN" = "$expected_run" ] \
-    || die "refusing to clear non-cycle runtime $QOS_RUN (expected $expected_run)"
-  [ ! -L "$QOS_CYCLE_DIR" ] || die "refusing to clear symlinked cycle state: $QOS_CYCLE_DIR"
-  [ ! -L "$QOS_RUN" ] || die "refusing to clear symlinked cycle runtime: $QOS_RUN"
-  vm_running && die "VM is still running in cycle $QOS_VM_CYCLE"
+  [ "$TILO_RUN" = "$expected_run" ] \
+    || die "refusing to clear non-cycle runtime $TILO_RUN (expected $expected_run)"
+  [ ! -L "$TILO_CYCLE_DIR" ] || die "refusing to clear symlinked cycle state: $TILO_CYCLE_DIR"
+  [ ! -L "$TILO_RUN" ] || die "refusing to clear symlinked cycle runtime: $TILO_RUN"
+  vm_running && die "VM is still running in cycle $TILO_VM_CYCLE"
   swtpm_stop
-  [ ! -e "$QOS_CYCLE_DIR" ] || rm -r "$QOS_CYCLE_DIR"
-  [ ! -e "$QOS_RUN" ] || rm -r "$QOS_RUN"
-  install -d -m 0700 "$QOS_CYCLE_DIR" "$QOS_RUN"
-  msg "fresh VM cycle: $QOS_VM_CYCLE ($QOS_CYCLE_DIR)"
+  [ ! -e "$TILO_CYCLE_DIR" ] || rm -r "$TILO_CYCLE_DIR"
+  [ ! -e "$TILO_RUN" ] || rm -r "$TILO_RUN"
+  install -d -m 0700 "$TILO_CYCLE_DIR" "$TILO_RUN"
+  msg "fresh VM cycle: $TILO_VM_CYCLE ($TILO_CYCLE_DIR)"
 }
 
 # map a single character to a QEMU sendkey keyname
@@ -90,50 +95,50 @@ char_key() {
   esac
 }
 
-vm_running() { [ -f "$QOS_PIDFILE" ] && inenv "kill -0 \$(cat '$QOS_PIDFILE') 2>/dev/null"; }
+vm_running() { [ -f "$TILO_PIDFILE" ] && inenv "kill -0 \$(cat '$TILO_PIDFILE') 2>/dev/null"; }
 
 cmd_boot() {
-  local mode=2d disk="$QOS_DISK" attach=""
+  local mode=2d disk="$TILO_DISK" attach=""
   while [ $# -gt 0 ]; do case "$1" in
     --gl) mode=gl;; --2d) mode=2d;; --window) mode=window;; --disk) disk="$2"; shift;;
-    --tpm) QOS_TPM=1;; --no-tpm) QOS_TPM=0;;
-    --secboot) QOS_SECBOOT=1;;
+    --tpm) TILO_TPM=1;; --no-tpm) TILO_TPM=0;;
+    --secboot) TILO_SECBOOT=1;;
     # Attach a SECOND virtio disk (/dev/vdb), creating it blank if absent. Lets a
     # booted image install onto a fresh disk (encryption tests) without building
     # the installer medium.
     --attach) attach="$2"; shift;;
     *) die "boot: unknown arg $1";; esac; shift; done
   [ -f "$disk" ] || die "disk not found: $disk (run os/dev/build-image.sh)"
-  vm_running && die "VM already running (pid $(cat "$QOS_PIDFILE")); stop it first"
+  vm_running && die "VM already running (pid $(cat "$TILO_PIDFILE")); stop it first"
   local attach_arg=""
   if [ -n "$attach" ]; then
-    inenv "test -f '$attach' || qemu-img create -f qcow2 '$attach' '$QOS_TARGET_SIZE'" >/dev/null
-    attach_arg="-drive file=$attach,format=qcow2,if=virtio,serial=qos-install-target"
+    inenv "test -f '$attach' || qemu-img create -f qcow2 '$attach' '$TILO_TARGET_SIZE'" >/dev/null
+    attach_arg="-drive file=$attach,format=qcow2,if=virtio,serial=tilo-install-target"
     msg "attaching $attach as /dev/vdb"
   fi
 
   local varstore display
   firmware_setup
   varstore="$(firmware_varstore)"
-  rm -f "$QOS_SERIAL" "$QOS_MON" "$QOS_PIDFILE"
+  rm -f "$TILO_SERIAL" "$TILO_MON" "$TILO_PIDFILE"
   display="$(display_qemu_args "$mode")"
-  msg "boot ($mode, $QOS_VM_ARCH, ${QOS_XRES}x${QOS_YRES}) disk=$disk"
+  msg "boot ($mode, $TILO_VM_ARCH, ${TILO_XRES}x${TILO_YRES}) disk=$disk"
 
-  local args="$(machine_args) $(qemu_accel_args) -m $QOS_MEM -smp $QOS_SMP \
+  local args="$(machine_args) $(qemu_accel_args) -m $TILO_MEM -smp $TILO_SMP \
     $(pflash_args "$varstore") \
     -drive file=$disk,format=qcow2,if=virtio $attach_arg \
-    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 $(input_qemu_args) \
-    -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
-    -pidfile $QOS_PIDFILE -name qos"
+    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) \
+    -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
+    -pidfile $TILO_PIDFILE -name tilo"
   swtpm_start
   start_qemu "$args $(tpm_qemu_args) $(secboot_qemu_args)" \
-    || { warn "monitor socket not up; qemu.log:"; cat "$QOS_QEMU_LOG" >&2; die "boot failed"; }
-  msg "up. monitor=$QOS_MON serial=$QOS_SERIAL"
+    || { warn "monitor socket not up; qemu.log:"; cat "$TILO_QEMU_LOG" >&2; die "boot failed"; }
+  msg "up. monitor=$TILO_MON serial=$TILO_SERIAL"
 }
 
 # Boot the installer ISO (CD-ROM) against a fresh blank target disk, so Anaconda
-# can install qOS onto it. After the install completes + reboots, boot the
-# installed system with:  vm.sh boot --gl --disk $QOS_RUN/target.qcow2
+# can install Tilo onto it. After the install completes + reboots, boot the
+# installed system with:  vm.sh boot --gl --disk $TILO_RUN/target.qcow2
 
 # Boot the CUSTOM installer live qcow2 (build-custom-installer.sh) with a blank
 # target disk attached as a SECOND virtio disk (/dev/vdb). The installer
@@ -143,84 +148,84 @@ cmd_boot_installer() {
   local mode=2d
   while [ $# -gt 0 ]; do case "$1" in
     --gl) mode=gl;; --2d) mode=2d;; --window) mode=window;;
-    --tpm) QOS_TPM=1;; --no-tpm) QOS_TPM=0;;
-    --secboot) QOS_SECBOOT=1;;
+    --tpm) TILO_TPM=1;; --no-tpm) TILO_TPM=0;;
+    --secboot) TILO_SECBOOT=1;;
     *) die "boot-installer: unknown arg $1";; esac; shift; done
-  local disk="$QOS_INSTALLER_DISK"
+  local disk="$TILO_INSTALLER_DISK"
   [ -f "$disk" ] || die "installer disk not found: $disk (run ./os/dev/build-custom-installer.sh)"
   vm_running && die "VM already running; stop it first"
-  local work_disk="$QOS_INSTALLER_WORK_DISK"
+  local work_disk="$TILO_INSTALLER_WORK_DISK"
   if [ ! -f "$work_disk" ]; then
     inenv "qemu-img create -f qcow2 -F qcow2 -b '$disk' '$work_disk'" >/dev/null
   fi
   local varstore display
   firmware_setup
   varstore="$(firmware_varstore)"
-  rm -f "$QOS_SERIAL" "$QOS_MON" "$QOS_PIDFILE"
-  local target="$QOS_TARGET_DISK"
-  inenv "test -f '$target' || qemu-img create -f qcow2 '$target' '$QOS_TARGET_SIZE'" >/dev/null
+  rm -f "$TILO_SERIAL" "$TILO_MON" "$TILO_PIDFILE"
+  local target="$TILO_TARGET_DISK"
+  inenv "test -f '$target' || qemu-img create -f qcow2 '$target' '$TILO_TARGET_SIZE'" >/dev/null
   display="$(display_qemu_args "$mode")"
-  msg "boot-installer ($mode, ${QOS_XRES}x${QOS_YRES}) medium=$disk work-overlay=$work_disk target=$target (/dev/vdb)"
+  msg "boot-installer ($mode, ${TILO_XRES}x${TILO_YRES}) medium=$disk work-overlay=$work_disk target=$target (/dev/vdb)"
   # First virtio disk = installer (/dev/vda); second = blank target (/dev/vdb).
-  local args="$(machine_args) $(qemu_accel_args) -m $QOS_MEM -smp $QOS_SMP \
+  local args="$(machine_args) $(qemu_accel_args) -m $TILO_MEM -smp $TILO_SMP \
     $(pflash_args "$varstore") \
-    -drive file=$work_disk,format=qcow2,if=virtio,serial=qos-installer-medium \
-    -drive file=$target,format=qcow2,if=virtio,serial=qos-install-target \
-    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 $(input_qemu_args) \
-    -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
-    -pidfile $QOS_PIDFILE -name qos-custom-installer"
+    -drive file=$work_disk,format=qcow2,if=virtio,serial=tilo-installer-medium \
+    -drive file=$target,format=qcow2,if=virtio,serial=tilo-install-target \
+    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) \
+    -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
+    -pidfile $TILO_PIDFILE -name tilo-custom-installer"
   swtpm_start
   start_qemu "$args $(tpm_qemu_args) $(secboot_qemu_args)" \
-    || { warn "monitor not up; qemu.log:"; cat "$QOS_QEMU_LOG" >&2; die "boot-installer failed"; }
-  msg "installer up. monitor=$QOS_MON serial=$QOS_SERIAL  (installs onto $target as /dev/vdb)"
+    || { warn "monitor not up; qemu.log:"; cat "$TILO_QEMU_LOG" >&2; die "boot-installer failed"; }
+  msg "installer up. monitor=$TILO_MON serial=$TILO_SERIAL  (installs onto $target as /dev/vdb)"
 }
 
 # Boot the installed system — the target disk the custom installer wrote
-# (default $QOS_RUN/target.qcow2). This is the post-install result.
+# (default $TILO_RUN/target.qcow2). This is the post-install result.
 cmd_boot_target() {
-  local mode=2d disk="$QOS_TARGET_DISK"
+  local mode=2d disk="$TILO_TARGET_DISK"
   while [ $# -gt 0 ]; do case "$1" in
     --gl) mode=gl;; --2d) mode=2d;; --window) mode=window;; --disk) disk="$2"; shift;;
-    --tpm) QOS_TPM=1;; --no-tpm) QOS_TPM=0;;
-    --secboot) QOS_SECBOOT=1;;
+    --tpm) TILO_TPM=1;; --no-tpm) TILO_TPM=0;;
+    --secboot) TILO_SECBOOT=1;;
     *) die "boot-target: unknown arg $1";; esac; shift; done
   [ -f "$disk" ] || die "target disk not found: $disk (run vm.sh boot-installer and install first)"
   vm_running && die "VM already running; stop it first"
   local varstore display
   firmware_setup
   varstore="$(firmware_varstore)"
-  rm -f "$QOS_SERIAL" "$QOS_MON" "$QOS_PIDFILE"
+  rm -f "$TILO_SERIAL" "$TILO_MON" "$TILO_PIDFILE"
   display="$(display_qemu_args "$mode")"
-  msg "boot-target ($mode, ${QOS_XRES}x${QOS_YRES}) disk=$disk (installed system)"
+  msg "boot-target ($mode, ${TILO_XRES}x${TILO_YRES}) disk=$disk (installed system)"
   if [ "$mode" = 2d ]; then
-    warn "2D proves the boot/unlock path, but the non-GL virtio display exposes no virgl GPU to the qOS compositor."
+    warn "2D proves the boot/unlock path, but the non-GL virtio display exposes no virgl GPU to the Tilo compositor."
     warn "The framebuffer can go black after Plymouth even when greetd and the session are healthy; use --gl to validate the desktop."
   fi
-  local args="$(machine_args) $(qemu_accel_args) -m $QOS_MEM -smp $QOS_SMP \
+  local args="$(machine_args) $(qemu_accel_args) -m $TILO_MEM -smp $TILO_SMP \
     $(pflash_args "$varstore") \
-    -drive file=$disk,format=qcow2,if=virtio,serial=qos-install-target \
-    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 $(input_qemu_args) \
-    -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
-    -pidfile $QOS_PIDFILE -name qos-target"
+    -drive file=$disk,format=qcow2,if=virtio,serial=tilo-install-target \
+    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) \
+    -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
+    -pidfile $TILO_PIDFILE -name tilo-target"
   swtpm_start
   start_qemu "$args $(tpm_qemu_args) $(secboot_qemu_args)" \
-    || { warn "monitor not up; qemu.log:"; cat "$QOS_QEMU_LOG" >&2; die "boot-target failed"; }
-  msg "target up. monitor=$QOS_MON serial=$QOS_SERIAL"
+    || { warn "monitor not up; qemu.log:"; cat "$TILO_QEMU_LOG" >&2; die "boot-target failed"; }
+  msg "target up. monitor=$TILO_MON serial=$TILO_SERIAL"
 }
 
 cmd_wait() {
   msg "waiting for greeter (greetd) ..."
   local i
-  for i in $(seq 1 "$QOS_BOOT_WAIT_ATTEMPTS"); do
-    if tr -d '\000' < "$QOS_SERIAL" 2>/dev/null | grep -aq 'Started.*greetd.service\|session-c1.scope'; then
+  for i in $(seq 1 "$TILO_BOOT_WAIT_ATTEMPTS"); do
+    if tr -d '\000' < "$TILO_SERIAL" 2>/dev/null | grep -aq 'Started.*greetd.service\|session-c1.scope'; then
       msg "greeter up (~$((i*2))s)"; return 0
     fi
-    vm_running || { boot_diagnose "$QOS_SERIAL" || true
-      die "qemu exited during boot; see $QOS_QEMU_LOG / $QOS_SERIAL"; }
+    vm_running || { boot_diagnose "$TILO_SERIAL" || true
+      die "qemu exited during boot; see $TILO_QEMU_LOG / $TILO_SERIAL"; }
     sleep 2
   done
-  boot_diagnose "$QOS_SERIAL" || true
-  die "timed out waiting for greeter (see $QOS_SERIAL)"
+  boot_diagnose "$TILO_SERIAL" || true
+  die "timed out waiting for greeter (see $TILO_SERIAL)"
 }
 
 # Print the firmware this configuration resolves to, and why. The selection
@@ -228,21 +233,21 @@ cmd_wait() {
 # without booting.
 cmd_firmware() {
   while [ $# -gt 0 ]; do case "$1" in
-    --tpm) QOS_TPM=1;; --no-tpm) QOS_TPM=0;; --secboot) QOS_SECBOOT=1;;
+    --tpm) TILO_TPM=1;; --no-tpm) TILO_TPM=0;; --secboot) TILO_SECBOOT=1;;
     *) die "firmware: unknown arg $1";; esac; shift; done
   firmware_setup
-  printf 'code       %s\n' "$QOS_FW_CODE"
-  printf 'vars       %s\n' "$QOS_FW_VARS"
-  printf 'format     %s\n' "$QOS_FW_FMT"
-  printf 'keys       %s\n' "$QOS_SECBOOT_KEYS"
-  printf 'measures   %s\n' "$QOS_FW_MEASURES"
-  printf 'smm        %s\n' "$QOS_FW_SMM"
-  printf 'tpm        %s\n' "$QOS_TPM"
+  printf 'code       %s\n' "$TILO_FW_CODE"
+  printf 'vars       %s\n' "$TILO_FW_VARS"
+  printf 'format     %s\n' "$TILO_FW_FMT"
+  printf 'keys       %s\n' "$TILO_SECBOOT_KEYS"
+  printf 'measures   %s\n' "$TILO_FW_MEASURES"
+  printf 'smm        %s\n' "$TILO_FW_SMM"
+  printf 'tpm        %s\n' "$TILO_TPM"
 }
 
 cmd_shot() {
   local name="${1:?usage: shot NAME}"
-  local out="$QOS_RUN/$name"
+  local out="$TILO_RUN/$name"
   local reply; reply="$(hmp "screendump $out.ppm" 2>&1 || true)"
   if printf '%s' "$reply" | grep -qi 'no surface'; then
     warn "no surface — in GL mode the 2D console isn't capturable; in 2D mode nothing is drawing yet"
@@ -272,12 +277,42 @@ cmd_type() {
 
 cmd_keys() { local k; for k in "$@"; do hmp "sendkey $k" >/dev/null; sleep 0.12; done; }
 
+# QEMU's USB tablet reports absolute coordinates in the inclusive 0..32767
+# range. Accept guest logical pixels so an acceptance script can use the same
+# coordinates as screenshots and the compositor's configured mode.
+cmd_pointer() {
+  local x="${1:?usage: pointer X Y}" y="${2:?usage: pointer X Y}"
+  [ "$TILO_XRES" -gt 1 ] && [ "$TILO_YRES" -gt 1 ] \
+    || die "pointer injection requires a guest mode larger than 1x1"
+  [[ "$x" =~ ^[0-9]+$ && "$y" =~ ^[0-9]+$ ]] \
+    || die "pointer coordinates must be non-negative integers"
+  [ "$x" -lt "$TILO_XRES" ] && [ "$y" -lt "$TILO_YRES" ] \
+    || die "pointer coordinate ($x,$y) is outside ${TILO_XRES}x${TILO_YRES}"
+  local qx=$((x * 32767 / (TILO_XRES - 1)))
+  local qy=$((y * 32767 / (TILO_YRES - 1)))
+  hmp "mouse_move $qx $qy 1" >/dev/null
+}
+
+cmd_click() {
+  local x="${1:?usage: click X Y [left|right|middle]}"
+  local y="${2:?usage: click X Y [left|right|middle]}"
+  local button="${3:-left}" mask
+  case "$button" in
+    left) mask=1;; right) mask=2;; middle) mask=4;;
+    *) die "click button must be left, right, or middle";;
+  esac
+  cmd_pointer "$x" "$y"
+  hmp "mouse_button $mask" >/dev/null
+  sleep 0.08
+  hmp "mouse_button 0" >/dev/null
+}
+
 cmd_login() {
   local passcode_only=0
   if [ "${1:-}" = "--passcode-only" ]; then passcode_only=1; shift; fi
-  local u="${1:-$QOS_USER}" p="${2:-$QOS_PASS}"
+  local u="${1:-$TILO_USER}" p="${2:-$TILO_PASS}"
   if [ "$passcode_only" -eq 1 ]; then
-    p="${1:-$QOS_PASS}"
+    p="${1:-$TILO_PASS}"
     msg "logging in with the installed user's passcode"
     local i
     for i in $(seq 1 64); do hmp "sendkey backspace 20" >/dev/null; sleep 0.03; done
@@ -287,7 +322,7 @@ cmd_login() {
     return
   fi
   msg "logging in as $u"
-  # qos-greeter is a single form: Enter submits the whole form, it does not
+  # tilo-greeter is a single form: Enter submits the whole form, it does not
   # advance from username to password. The old tuigreet sequence pressed Enter
   # between fields, which repeatedly submitted an empty password and never
   # started the desktop. Follow the widget's actual focus order instead.
@@ -302,17 +337,52 @@ cmd_login() {
 }
 
 cmd_serial() {
-  [ -f "$QOS_SERIAL" ] || die "no serial log yet ($QOS_SERIAL)"
-  if [ -n "${1:-}" ]; then tr -d '\000' < "$QOS_SERIAL" | sed 's/\r//g' | grep -aiE "$1"; else
-    tr -d '\000' < "$QOS_SERIAL" | sed 's/\r//g'; fi
+  [ -f "$TILO_SERIAL" ] || die "no serial log yet ($TILO_SERIAL)"
+  if [ -n "${1:-}" ]; then tr -d '\000' < "$TILO_SERIAL" | sed 's/\r//g' | grep -aiE "$1"; else
+    tr -d '\000' < "$TILO_SERIAL" | sed 's/\r//g'; fi
 }
 
-cmd_status() { if vm_running; then echo "running (pid $(cat "$QOS_PIDFILE"))"; else echo "stopped"; fi; }
+cmd_status() { if vm_running; then echo "running (pid $(cat "$TILO_PIDFILE"))"; else echo "stopped"; fi; }
+
+# Evidence barrier for a logout driven through Tilo's visible power menu. The
+# compositor must be gone and greetd must own a fresh login session; checking
+# only one side can mistake a crashed desktop or a still-running shell for a
+# successful logout. This intentionally performs no logout action itself.
+cmd_wait_greeter_return() {
+  local attempts="${TILO_GREETER_RETURN_ATTEMPTS:-120}" i
+  msg "waiting for Tilo logout to return to the greeter ..."
+  for i in $(seq 1 "$attempts"); do
+    if gssh "! pgrep -f '^/usr/bin/shell --backend drm( |$)' >/dev/null && systemctl is-active --quiet greetd.service" >/dev/null 2>&1; then
+      msg "greeter returned after logout (~$i s)"
+      return 0
+    fi
+    vm_running || die "qemu exited while waiting for the greeter to return"
+    sleep 1
+  done
+  cmd_serial 'greetd|shell|session-c[0-9]+.scope' | tail -120 >&2 || true
+  die "timed out waiting for logout to stop Tilo and return to greetd"
+}
+
+cmd_shutdown() {
+  msg "requesting clean guest shutdown"
+  gssh "sudo systemctl poweroff" >/dev/null 2>&1 || true
+  local attempts="${TILO_SHUTDOWN_ATTEMPTS:-60}" i
+  for i in $(seq 1 "$attempts"); do
+    if ! vm_running; then
+      rm -f "$TILO_PIDFILE"
+      swtpm_stop
+      msg "guest powered off cleanly (~$i s)"
+      return 0
+    fi
+    sleep 1
+  done
+  die "guest did not power off within ${attempts}s; VM left running for diagnosis"
+}
 
 cmd_stop() {
   if vm_running; then hmp "quit" >/dev/null 2>&1 || true; sleep 1; fi
-  if vm_running; then inenv "kill \$(cat '$QOS_PIDFILE') 2>/dev/null" || true; fi
-  rm -f "$QOS_PIDFILE"
+  if vm_running; then inenv "kill \$(cat '$TILO_PIDFILE') 2>/dev/null" || true; fi
+  rm -f "$TILO_PIDFILE"
   swtpm_stop
   msg "stopped"
 }
@@ -323,10 +393,10 @@ cmd_stop() {
 # (/var/log/journal); otherwise use serial logging + StandardError=console.
 cmd_journal() {
   vm_running && die "stop the VM first (journal extraction needs the disk offline)"
-  local grep_pat="${1:-}" mnt="$QOS_RUN/mnt"
-  msg "attaching $QOS_DISK via qemu-nbd"
+  local grep_pat="${1:-}" mnt="$TILO_RUN/mnt"
+  msg "attaching $TILO_DISK via qemu-nbd"
   sudo modprobe nbd max_part=8
-  inenv "sudo qemu-nbd --read-only --connect=/dev/nbd0 '$QOS_DISK'"
+  inenv "sudo qemu-nbd --read-only --connect=/dev/nbd0 '$TILO_DISK'"
   sudo partprobe /dev/nbd0 2>/dev/null || true; sleep 1
   mkdir -p "$mnt"
   local part rootpart=""
@@ -350,8 +420,8 @@ cmd_journal() {
 
 # One-shot demo: boot 2D, screenshot the greeter, log in, screenshot the result.
 cmd_capture_boot() {
-  local dir="${1:-$QOS_RUN/capture}"; mkdir -p "$dir"
-  QOS_RUN_SAVE="$QOS_RUN"
+  local dir="${1:-$TILO_RUN/capture}"; mkdir -p "$dir"
+  TILO_RUN_SAVE="$TILO_RUN"
   cmd_boot --2d
   cmd_wait
   sleep 3
@@ -375,6 +445,10 @@ case "$sub" in
   shot) cmd_shot "$@";;
   type) cmd_type "$@";;
   keys) cmd_keys "$@";;
+  pointer) cmd_pointer "$@";;
+  click) cmd_click "$@";;
+  wait-greeter-return) cmd_wait_greeter_return "$@";;
+  shutdown) cmd_shutdown "$@";;
   cmd) hmp "$*";;
   ssh) gssh "$@";;
   serial) cmd_serial "$@";;

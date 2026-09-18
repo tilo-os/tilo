@@ -1,10 +1,8 @@
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
+// Apps run in isolated processes, so app-local arithmetic checks are relaxed.
+// Panic-producing lints remain denied; shared crates retain the full lint set
+// because a fault there can affect the session or every app.
+
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -34,8 +32,9 @@
     )
 )]
 
+use file_explorer::filesystem_metadata as xattr;
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 
 use file_explorer::FileExplorerWidget;
 use taffy::prelude::*;
@@ -87,7 +86,7 @@ fn distinct_actor(prefix: &str, have: &automerge::ActorId) -> String {
 /// The name this replica is given, if anything has named it.
 ///
 /// `QUICK_APP_ID` is how a dev run points two instances at one shell and gets
-/// a history it can read. `QOS_USER_ID` is the session's own identity and
+/// a history it can read. `TILO_USER_ID` is the session's own identity and
 /// would be the best of both — it does not reach a sandboxed app, because the
 /// launcher builds an app's environment from an allowlist and it is not on
 /// it, so in the product neither of these answers and the actor comes from
@@ -98,7 +97,7 @@ fn named_actor(prefix: &str) -> Option<String> {
     {
         return Some(id);
     }
-    match std::env::var("QOS_USER_ID") {
+    match std::env::var("TILO_USER_ID") {
         Ok(user) if !user.is_empty() => Some(format!("{prefix}-{user}")),
         _ => None,
     }
@@ -114,7 +113,7 @@ extern crate runtime_dylib;
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
     ui::launch::run(
-        &LaunchSpec::new_with_args("dev.qos.file-explorer", live_root)
+        &LaunchSpec::new_with_args("dev.tilo.file-explorer", live_root)
             .history(&file_explorer::framework_history::HISTORY)
             .open_state(open_state)
             .shot_handler(shot_handler)
@@ -122,6 +121,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             .allowed_live_flags(&["--open-share-stdin"])
             .max_positionals(1)
             .scenarios(&[
+                "archive",
+                "archive-menu",
                 "context-menu",
                 "dropmove",
                 "error",
@@ -139,6 +140,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "sync",
                 "thumbnails",
                 "thumbnails-fs",
+                "undo-trash",
             ]),
     )?;
     Ok(())
@@ -149,6 +151,12 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
     let size = args.value("--size").and_then(parse_size);
     let viewport = shot_viewport(args.viewport, size);
     let scenario = args.scenario.as_deref();
+    #[cfg(not(unix))]
+    if matches!(scenario, Some("sync" | "thumbnails-fs" | "history")) {
+        return Err(LaunchError::Operation(
+            "this scenario requires the Tilo filesystem projection".into(),
+        ));
+    }
     // Some scenarios seed a demo directory that must exist BEFORE the widget
     // is built (so the sidebar / workspace roots pick it up), so seed here.
     let demo_dir = match scenario {
@@ -156,9 +164,13 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("thumbnails") => Some(seed_thumbnails_demo()),
         Some("thumbnails-fs") => Some(seed_thumbnails_fs_demo()),
         Some("history") => Some(seed_history_demo()),
+        Some("archive" | "archive-menu") => {
+            Some(seed_archive_demo().map_err(|error| LaunchError::Operation(error.to_string()))?)
+        }
         _ => None,
     };
-    let mut widget = FileExplorerWidget::new();
+    // Keep screenshot state independent of persisted zoom and Places ordering.
+    let mut widget = FileExplorerWidget::with_persistence(None, dirs::home_dir());
     // Optional `--path <dir>` starts the shot in a specific directory
     // (e.g. to capture a deep breadcrumb trail), else the default
     // cold-start location is used.
@@ -208,6 +220,7 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         }
         Some("loading") => widget.debug_show_loading_state(),
         Some("error") => widget.debug_show_error_state(),
+        Some("undo-trash") => widget.debug_arm_trash_undo(),
         _ => {}
     }
     render_shot_to_png(
@@ -231,13 +244,9 @@ fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         .map(|result| result.and_then(file_explorer::received_shares::admit_link));
     let mut widget = FileExplorerWidget::new();
     if received_share.is_none()
-        && let Some(path) = args
-            .positionals()
-            .first()
-            .map(std::path::PathBuf::from)
-            .filter(|path| path.is_absolute() && path.is_dir())
+        && let Some(path) = args.positionals().first()
     {
-        widget.navigate(path);
+        navigate_launch_directory(&mut widget, std::path::Path::new(path))?;
     }
     if let Some(result) = received_share {
         match result {
@@ -259,13 +268,26 @@ fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     Ok(Box::new(widget))
 }
 
+/// Resolve against the launcher's working directory before changing the Files
+/// location. Missing or inaccessible directories go through the normal visible
+/// navigation error instead of silently opening Home.
+fn navigate_launch_directory(
+    widget: &mut FileExplorerWidget,
+    path: &std::path::Path,
+) -> Result<(), LaunchError> {
+    let path =
+        std::path::absolute(path).map_err(|error| LaunchError::Operation(error.to_string()))?;
+    widget.navigate(path);
+    Ok(())
+}
+
 /// Open persisted state while preserving the file manager's per-replica actor
 /// naming. The shared runner still owns autosave, headless driving, and exit.
 fn open_state(app_id: &'static str) -> (ui::State, ui::persist::Autosave) {
     let (mut state, autosave) = ui::persist::open(app_id);
     // Keep each window's actor stable and distinct for the host-owned
     // collaborative document, even though Files itself stores no UI state in
-    // it. `QUICK_APP_ID`/`QOS_USER_ID` name a known replica; a sandboxed
+    // it. `QUICK_APP_ID`/`TILO_USER_ID` name a known replica; a sandboxed
     // launch has neither, so the fallback has to be sound on its own — see
     // [`distinct_actor`].
     let app_id =
@@ -307,12 +329,12 @@ fn read_received_share_stdin(args: &[String]) -> Option<Result<String, String>> 
     })
 }
 
-/// Seed a demo workspace directory whose files carry real `user.qos.sync`
-/// extended attributes, and point `QOS_WORKSPACE_ROOTS` at it, so a `--shots
+/// Seed a demo workspace directory whose files carry real `user.tilo.sync`
+/// extended attributes, and point `TILO_WORKSPACE_ROOTS` at it, so a `--shots
 /// --scenario sync` frame exercises the genuine badge path (`read_dir_sync` →
 /// `getxattr` → `Entry.sync_state`) rather than any mock. Returns the dir.
 fn seed_sync_demo() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join("qos-files-sync-demo");
+    let dir = std::env::temp_dir().join("tilo-files-sync-demo");
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::create_dir_all(&dir);
     // A believable spread across the three hydration states + a subfolder.
@@ -327,17 +349,17 @@ fn seed_sync_demo() -> std::path::PathBuf {
     for (name, state) in files {
         let p = dir.join(name);
         let _ = std::fs::write(&p, b"");
-        let _ = xattr::set(&p, "user.qos.sync", state.as_bytes());
+        let _ = xattr::set(&p, "user.tilo.sync", state.as_bytes());
     }
     let _ = std::fs::create_dir_all(dir.join("shared-assets"));
     // SAFETY: called once at process startup on the main thread, before any
     // other thread exists, so there is no concurrent environment access.
-    unsafe { std::env::set_var("QOS_WORKSPACE_ROOTS", &dir) };
+    unsafe { std::env::set_var("TILO_WORKSPACE_ROOTS", &dir) };
     dir
 }
 
 fn seed_history_demo() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join("qos-files-history-demo");
+    let dir = std::env::temp_dir().join("tilo-files-history-demo");
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("Launch brief.md");
@@ -365,10 +387,32 @@ fn seed_history_demo() -> std::path::PathBuf {
     }))
     .unwrap_or_default();
     let _ = xattr::set(&path, file_explorer::model::HISTORY_XATTR, &history);
-    let _ = xattr::set(&path, "user.qos.sync", b"local");
+    let _ = xattr::set(&path, "user.tilo.sync", b"local");
     // SAFETY: shots seed before the app or any worker thread is constructed.
-    unsafe { std::env::set_var("QOS_WORKSPACE_ROOTS", &dir) };
+    unsafe { std::env::set_var("TILO_WORKSPACE_ROOTS", &dir) };
     dir
+}
+
+/// Build a believable archive hierarchy for permanent responsive screenshots.
+/// The shot navigates the actual ZIP reader rather than injecting sample rows.
+fn seed_archive_demo() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    let path = std::env::temp_dir().join("tilo-files-archive-demo.zip");
+    let file = std::fs::File::create(&path)?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for (name, content) in [
+        ("Photos/Coast/IMG_2048.jpg", b"photo".as_slice()),
+        ("Photos/Coast/IMG_2051.jpg", b"photo".as_slice()),
+        ("Documents/Itinerary.pdf", b"document".as_slice()),
+        ("Documents/Packing list.txt", b"list".as_slice()),
+        ("Read me.txt", b"A trip archive".as_slice()),
+    ] {
+        zip.start_file(name, options)?;
+        zip.write_all(content)?;
+    }
+    zip.finish()?;
+    Ok(path)
 }
 
 /// Seed a demo directory of **real** sample files — gradient images, a genuine
@@ -378,7 +422,7 @@ fn seed_history_demo() -> std::path::PathBuf {
 /// mock. A plain local directory (not a workspace root), so previews are
 /// generated client-side by the shared service. Returns the dir.
 fn seed_thumbnails_demo() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join("qos-files-thumbnails-demo");
+    let dir = std::env::temp_dir().join("tilo-files-thumbnails-demo");
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::create_dir_all(&dir);
 
@@ -443,18 +487,18 @@ fn seed_thumbnails_demo() -> std::path::PathBuf {
     dir
 }
 
-/// Seed a demo **workspace** directory whose files carry real `user.qos.thumb`
-/// (host-generated preview PNG) and `user.qos.sync` extended attributes — so a
+/// Seed a demo **workspace** directory whose files carry real `user.tilo.thumb`
+/// (host-generated preview PNG) and `user.tilo.sync` extended attributes — so a
 /// `--shots --scenario thumbnails-fs` grid exercises the FS-metadata path: the
 /// file manager paints the host's gossiped preview (via the xattr), even for a
-/// file whose content is only *projected*. Sets `QOS_WORKSPACE_ROOTS`.
+/// file whose content is only *projected*. Sets `TILO_WORKSPACE_ROOTS`.
 fn seed_thumbnails_fs_demo() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join("qos-files-thumbnails-fs-demo");
+    let dir = std::env::temp_dir().join("tilo-files-thumbnails-fs-demo");
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::create_dir_all(&dir);
 
     // Files whose *content* stays empty here — the preview rides entirely on the
-    // host-provided `user.qos.thumb` metadata, exactly as a peer would see a file
+    // host-provided `user.tilo.thumb` metadata, exactly as a peer would see a file
     // it has not yet downloaded. Each carries a real preview PNG + a sync state.
     let previews: [(&str, u8, &str); 5] = [
         ("Sunset over bay.png", 0, "local"),
@@ -470,17 +514,17 @@ fn seed_thumbnails_fs_demo() -> std::path::PathBuf {
         // it. Kept tiny here so it also fits the demo temp filesystem's per-xattr
         // cap (btrfs bounds a single xattr to its ~16 KiB node size; the real
         // in-memory FUSE mount allows the full 64 KiB, which HOST_EDGE targets).
-        let _ = xattr::set(&p, "user.qos.thumb", &gradient_png(112, 84, kind));
-        let _ = xattr::set(&p, "user.qos.sync", sync.as_bytes());
+        let _ = xattr::set(&p, "user.tilo.thumb", &gradient_png(112, 84, kind));
+        let _ = xattr::set(&p, "user.tilo.sync", sync.as_bytes());
     }
     // A couple of files with no host preview → sync badge + type badge.
     for (name, sync) in [("dataset.parquet", "projected"), ("notes.md", "local")] {
         let p = dir.join(name);
         let _ = std::fs::write(&p, b"");
-        let _ = xattr::set(&p, "user.qos.sync", sync.as_bytes());
+        let _ = xattr::set(&p, "user.tilo.sync", sync.as_bytes());
     }
     // SAFETY: process startup, main thread, before any other thread exists.
-    unsafe { std::env::set_var("QOS_WORKSPACE_ROOTS", &dir) };
+    unsafe { std::env::set_var("TILO_WORKSPACE_ROOTS", &dir) };
     dir
 }
 
@@ -773,6 +817,12 @@ fn apply_post_layout_scenario(
         Some("history") => {
             widget.debug_open_history_demo();
         }
+        Some("archive-menu") => {
+            widget.debug_open_view_menu();
+        }
+        Some("undo-trash") => {
+            widget.debug_open_view_menu();
+        }
         _ => {}
     }
 }
@@ -936,7 +986,25 @@ fn render_shot_to_png(
 
 #[cfg(test)]
 mod actor_tests {
-    use super::{distinct_actor, shot_viewport};
+    use super::{distinct_actor, navigate_launch_directory, shot_viewport};
+
+    #[test]
+    fn launch_directory_uses_relative_paths_and_surfaces_missing_directories() {
+        let cwd = std::env::current_dir().unwrap();
+        let fixture = tempfile::tempdir_in(&cwd).unwrap();
+        let relative = fixture.path().strip_prefix(&cwd).unwrap();
+        let mut widget = file_explorer::FileExplorerWidget::with_persistence(
+            None,
+            Some(fixture.path().to_path_buf()),
+        );
+        navigate_launch_directory(&mut widget, relative).unwrap();
+        assert_eq!(widget.current_path(), fixture.path());
+        assert!(widget.error().is_none());
+        let missing = fixture.path().join("missing-folder");
+        navigate_launch_directory(&mut widget, &missing).unwrap();
+        assert_eq!(widget.current_path(), missing);
+        assert!(widget.error().is_some());
+    }
 
     #[test]
     fn screenshot_viewport_honors_standard_value_unless_size_overrides_it() {

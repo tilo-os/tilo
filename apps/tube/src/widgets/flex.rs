@@ -31,7 +31,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{ActionEmitter, ControlBindingMetadata, Widget};
 
 use crate::action::{self, Action, ActionBus};
 
@@ -141,6 +141,11 @@ pub struct Flex {
     // Click support.
     bus: Option<ActionBus>,
     action: Option<Action>,
+    /// A canonical resource/action binding for a custom-painted control.  This
+    /// is deliberately distinct from the local presentation bus above: an
+    /// action-bound control emits an inert host-routable invocation instead of
+    /// mutating Tube's model through a private callback.
+    action_emitter: Option<ActionEmitter<()>>,
     accessible_name: Option<String>,
     tooltip: Option<String>,
 
@@ -183,6 +188,7 @@ impl Flex {
             hover_surface: None,
             bus: None,
             action: None,
+            action_emitter: None,
             accessible_name: None,
             tooltip: None,
             rect: Rect::ZERO,
@@ -365,6 +371,32 @@ impl Flex {
         self.accessible_name = Some(fallback.to_string());
         self.tooltip = Some(fallback.to_string());
         self
+    }
+
+    /// Bind this custom-painted control to an advertised zero-argument action.
+    /// Pointer, keyboard and accessibility activation all emit the exact same
+    /// inert control invocation consumed by the host action door.
+    #[must_use]
+    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
+        self.bus = None;
+        self.action = None;
+        self.action_emitter = Some(ActionEmitter::new(binding));
+        self
+    }
+
+    fn is_actionable(&self) -> bool {
+        self.action.is_some() || self.action_emitter.is_some()
+    }
+
+    fn activate(&mut self) -> bool {
+        if let Some(emitter) = &mut self.action_emitter {
+            return emitter.emit(()).is_ok();
+        }
+        if let (Some(bus), Some(action)) = (&self.bus, &self.action) {
+            action::push(bus, action.clone());
+            return true;
+        }
+        false
     }
 
     /// Override the action-derived fallback with the visible control's exact
@@ -757,7 +789,7 @@ impl Widget for Flex {
             }
         }
 
-        if self.action.is_none() {
+        if !self.is_actionable() {
             return;
         }
         match event {
@@ -770,8 +802,7 @@ impl Widget for Flex {
                     },
                 ..
             } if self.focused && !*handled => {
-                if let (Some(bus), Some(act)) = (&self.bus, &self.action) {
-                    action::push(bus, act.clone());
+                if self.activate() {
                     *handled = true;
                 }
             }
@@ -799,10 +830,7 @@ impl Widget for Flex {
                 ..
             } => {
                 if self.pressed && self.hovered && !*handled {
-                    if let (Some(bus), Some(act)) = (&self.bus, &self.action) {
-                        action::push(bus, act.clone());
-                    }
-                    *handled = true;
+                    *handled = self.activate();
                 }
                 self.pressed = false;
                 self.dirty = true;
@@ -825,7 +853,7 @@ impl Widget for Flex {
     }
 
     fn is_focusable(&self) -> bool {
-        self.action.is_some()
+        self.is_actionable()
     }
 
     fn set_focus(&mut self, focused: bool) {
@@ -840,7 +868,7 @@ impl Widget for Flex {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        self.action.as_ref().map(|_| {
+        self.is_actionable().then(|| {
             ui::a11y::AccessNode::new(ui::a11y::Role::Button)
                 .with_name(
                     self.accessible_name
@@ -863,30 +891,61 @@ impl Widget for Flex {
         _path: &ObjId,
     ) -> bool {
         match action_kind {
-            ui::a11y::Action::Focus if self.action.is_some() => {
+            ui::a11y::Action::Focus if self.is_actionable() => {
                 self.set_focus(true);
                 true
             }
-            ui::a11y::Action::Activate if self.action.is_some() => {
-                if let (Some(bus), Some(action)) = (&self.bus, &self.action) {
-                    crate::action::push(bus, action.clone());
-                    true
-                } else {
-                    false
-                }
-            }
+            ui::a11y::Action::Activate if self.is_actionable() => self.activate(),
             _ => false,
         }
     }
 
     fn tooltip(&self) -> Option<&str> {
-        self.action.as_ref()?;
+        self.is_actionable().then_some(())?;
         self.tooltip.as_deref()
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        (self.action.is_some() && self.rect.contains(point))
+        (self.is_actionable() && self.rect.contains(point))
             .then_some(winit::window::CursorIcon::Pointer)
+    }
+
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.action_emitter
+            .as_mut()
+            .and_then(ActionEmitter::take)
+            .or_else(|| {
+                self.children
+                    .iter_mut()
+                    .find_map(|child| child.take_control_invocation())
+            })
+    }
+
+    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        let mut bindings = self
+            .action_emitter
+            .as_ref()
+            .map(|emitter| {
+                emitter.metadata(self.test_id.as_deref().unwrap_or("tube.custom-control"))
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+        for child in &self.children {
+            bindings.extend(child.control_action_bindings());
+        }
+        bindings
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(emitter) = &mut self.action_emitter {
+            emitter.refresh_availability(allowed);
+        }
+        for child in &mut self.children {
+            child.refresh_control_action_availability(allowed);
+        }
     }
 
     fn wants_pointer_capture(&self) -> bool {

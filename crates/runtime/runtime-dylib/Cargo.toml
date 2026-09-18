@@ -4,29 +4,12 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Opt-in dynamic-library build of the qOS runtime SDK and UI toolkit. Produces libruntime_dylib.so so thin apps can link the toolkit (and libstd) dynamically via -C prefer-dynamic instead of baking it into every binary."
+description = "Opt-in dynamic-library build of the Tilo runtime SDK and UI toolkit. Produces libruntime_dylib.so so thin apps can link the toolkit (and libstd) dynamically via -C prefer-dynamic instead of baking it into every binary."
 
-# ── Why this crate exists ───────────────────────────────────────────
-# A Rust `dylib` crate-type demands `panic = "unwind"` and is
-# incompatible with fat LTO. The workspace's default `[profile.release]`
-# is `panic = "abort"` + `lto = "fat"` (see the root Cargo.toml), so we
-# CANNOT hang the dylib crate-type off `runtime` / `cli` directly — that
-# would break every normal `cargo build --release`.
-#
-# Instead this is a standalone wrapper crate whose ONLY job is to pull
-# the whole runtime SDK (`runtime` umbrella + `cli` helpers + every
-# sub-crate they reach) into one `dylib` artifact. It is:
-#   * NOT in the workspace's `default-members`, so a bare
-#     `cargo build --release` / `cargo build --release -p <app>` never
-#     touches it (proof: those builds stay `panic = "abort"`-clean).
-#   * built only under `--profile thin-app` (`panic = "unwind"`,
-#     `lto = false`), the profile thin apps compile against.
-#
-# A thin app adds `runtime-dylib` as a dependency and builds with
-# `-C prefer-dynamic --profile thin-app`. rustc then satisfies the app's
-# `runtime` / `cli` crate references out of this dylib (same SVH, same
-# build unit) and links libstd dynamically too — so the app binary holds
-# only its own code. The shared libs ship once in the runtime bundle.
+# A Rust `dylib` requires `panic = "unwind"` and is incompatible with fat LTO,
+# unlike the workspace's normal release profile. This standalone wrapper pulls
+# the runtime SDK into one dylib and is built only with the opt-in `thin-app`
+# profile; thin apps link it with `-C prefer-dynamic`.
 [lib]
 name = "runtime_dylib"
 path = "src/lib.rs"
@@ -35,34 +18,59 @@ crate-type = ["dylib"]
 [dependencies]
 runtime = { path = "../runtime" }
 cli = { path = "../cli" }
-# The UI toolkit. This is the dependency that makes the dylib worth
-# shipping: `runtime` + `cli` are a couple of hundred KB, whereas `ui`
-# drags in wgpu (Vulkan/GL backends + the naga shader compiler), vello,
-# cosmic-text (rustybuzz / swash / Unicode tables), automerge, taffy,
-# fluent and winit. Statically linked, that graph is the ~18 MB of
-# `.text` every graphical qOS app was carrying its own copy of.
-#
-# `portal` is enabled here so the shipped `.so` covers the apps that
-# open host files through the XDG portal (the word processor among
-# them). Features unify across a single cargo invocation, so an app
-# asking for a superset still resolves to this one copy; enabling it
-# here is what makes the standalone-built dylib useful on its own.
-ui = { path = "../../../ui", features = ["portal", "webview-adblock"] }
-# Heavy document engines used by shipped apps belong in the versioned runtime,
-# not in one qpkg. Re-exporting them gives rustc one ABI-matched provider for
-# Typst Editor's compile/render graph.
+# The UI toolkit and its rendering graph are included in the shared dylib.
+# `portal` covers apps that open host files through the XDG portal.
+# This must be the superset used by every thin app in the default collection.
+# A Rust dylib's exported symbol names contain the dependency crate hash; if an
+# app enables a UI feature absent here, Cargo builds a second `ui` instance and
+# the app can link successfully but fail at runtime with undefined symbols.
+ui = { path = "../../sdk/ui-core", features = ["portal", "webview-adblock", "dmabuf-import", "gpu-video", "mpris"] }
+# Heavy document engines belong in the versioned runtime rather than each qpkg.
 typst = "0.14"
 typst-render = "0.14"
 typst-pdf = "0.14"
 typst-assets = { version = "0.14", features = ["fonts"] }
 tiny-skia = "0.11"
 comemo = "0.5"
-# Versioned live-service engines used by shipped apps. Keeping the codec and
-# stream resolver here avoids making Chat and Music carry private copies while
-# still loading them only when those apps call their feature-gated paths.
-qos-callstream = { path = "../../collab/qos-callstream" }
+# Versioned live-service engines shared by shipped apps and loaded only for
+# their feature-gated paths.
+tilo-callstream = { path = "../../collab/tilo-callstream" }
 rustypipe.workspace = true
 iroh.workspace = true
+# Desktop-owned service implementations are shared runtime code, not app
+# payload. Settings composes all of these control surfaces and would otherwise
+# statically repeat several megabytes of the same implementations in its qpkg.
+settings-store = { path = "../../system/settings-store" }
+desktop-policy = { path = "../../system/desktop-policy" }
+launcher = { path = "../../packaging/launcher" }
+tilo-desktop-entry = { path = "../../system/desktop-entry" }
+collab-types = { path = "../../collab/collab-types" }
+tilo-actions = { path = "../../collab/actions" }
+os-actions = { path = "../../system/os-actions" }
+runtime-identity = { path = "../runtime-identity" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+runtime-fs = { path = "../runtime-fs" }
+tilo-relay = { path = "../../hosting/tilo-relay" }
+tilo-bluez = { path = "../../system/tilo-bluez" }
+runtime-portal-xdg = { path = "../runtime-portal-xdg" }
+accounts = { path = "../../system/accounts" }
+agent-provider-config = { path = "../../agent/provider-config" }
+tilo-model-gateway = { path = "../../agent/model-gateway" }
+media = { path = "../../media/core" }
+atomic-file = { path = "../../system/atomic-file" }
+# Versioned format/network engines used by system apps. Keeping these in the
+# runtime bundle lets qpkgs contain policy and UI while the replaceable engine
+# implementations are stored once per runtime generation.
+chrono-tz = "0.10.4"
+vte = "0.15.0"
+pdfium-render = "0.8.37"
+thumbnail = { path = "../../media/thumbnail", features = ["pdf"] }
+roxmltree = "0.20"
+xattr = "1.6.1"
+mime_guess = "2.0.5"
+app-catalogue = { path = "../../packaging/app-catalogue" }
+app-host = { path = "../../packaging/app-host" }
+registry-types = { path = "../../packaging/registry-types" }
 
 [lints]
 workspace = true

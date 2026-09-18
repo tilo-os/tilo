@@ -4,12 +4,11 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "RTF (Rich Text Format) export for qdoc DocSnapshot documents (qOS)"
+description = "RTF (Rich Text Format) export for qdoc DocSnapshot documents (Tilo)"
 
 [dependencies]
 qdoc = { path = "../qdoc" }
-# No new deps: RTF is a plain-text control-word format we emit by hand, matching
-# qdoc-html/qdoc-pdf's "stay lockfile-stable" stance.
+# RTF is emitted directly as a plain-text control-word format.
 
 [lints]
 workspace = true

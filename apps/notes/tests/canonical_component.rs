@@ -28,7 +28,7 @@ fn new_is_empty_schema_ready_and_instances_have_distinct_records() {
 // Catches mount/sync writes, empty-list seeding, or using disk data instead of the record.
 #[test]
 fn existing_rich_record_projects_real_resources_without_writing() {
-    fn collect(widget: &dyn Widget, doc: &AutoCommit, resources: &mut Vec<qos_actions::Resource>) {
+    fn collect(widget: &dyn Widget, doc: &AutoCommit, resources: &mut Vec<tilo_actions::Resource>) {
         resources.extend(widget.resources(doc));
         for child in widget.children() { collect(child, doc, resources); }
     }
@@ -92,7 +92,7 @@ fn reopening_an_emptied_import_never_resurrects_legacy_pages() {
     let mut live = driver(&f, 11, &checkout);
     let address = ui::bound_dispatch::BoundActionAddress {
         instance_id: 11,
-        address: qos_actions::ActionAddress::new(
+        address: tilo_actions::ActionAddress::new(
             notes::actions::page_resource_id(f.root),
             "delete",
         ),
@@ -103,7 +103,7 @@ fn reopening_an_emptied_import_never_resurrects_legacy_pages() {
         .unwrap();
     assert!(matches!(
         live.invoke_bound_action(&address, &serde_json::Map::new()),
-        Err(qos_actions::DoorError::ConfirmationRequired)
+        Err(tilo_actions::DoorError::ConfirmationRequired)
     ));
     assert_eq!(
         f.records
@@ -233,13 +233,13 @@ fn canonical_binding_hydrates_and_clears_marks_and_reconciles_empty_selection_re
             .all(|(_, marks)| marks.is_empty())
     );
     assert_eq!((doc.base_heads(), doc.pending_ops()), cleared);
-    qos_actions::Action::apply(&notes::actions::delete_page_action(f.root), &mut doc).unwrap();
+    tilo_actions::Action::apply(&notes::actions::delete_page_action(f.root), &mut doc).unwrap();
     doc.commit();
     let deleted = (doc.base_heads(), doc.pending_ops());
     app.sync(&mut doc, &ROOT);
     assert_eq!(app.selected_for_test(), Some(f.empty));
     assert_eq!((doc.base_heads(), doc.pending_ops()), deleted);
-    qos_actions::Action::apply(&notes::actions::delete_page_action(f.empty), &mut doc).unwrap();
+    tilo_actions::Action::apply(&notes::actions::delete_page_action(f.empty), &mut doc).unwrap();
     NotesDoc::delete_tag(&mut doc, f.tag);
     doc.commit();
     let emptied = (doc.base_heads(), doc.pending_ops());

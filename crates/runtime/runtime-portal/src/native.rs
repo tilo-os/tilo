@@ -75,8 +75,8 @@ mod unix {
         if owner.is_some_and(|pid| pid != std::process::id()) {
             return Ok(false);
         }
-        let collab = env::var_os("QOS_SVC_COLLAB_FD");
-        let identity = env::var_os("QOS_SVC_IDENTITY_FD");
+        let collab = env::var_os("TILO_SVC_COLLAB_FD");
+        let identity = env::var_os("TILO_SVC_IDENTITY_FD");
         if collab.is_none() && identity.is_none() && owner.is_none() {
             return Ok(false);
         }

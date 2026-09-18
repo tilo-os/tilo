@@ -1,4 +1,4 @@
-//! Workspace capabilities → real sandbox restrictions.
+//! Workspace capabilities → sandbox restrictions.
 //!
 //! The package manifest says what an app asks for *at install time*.
 //! This module carries the other half: what the **user** granted it at
@@ -10,7 +10,7 @@
 //!
 //! A capability is a [`CapOverride`] from `collab-types` — the same
 //! record the compositor stores and shows in the permissions UI.
-//! Deliberately no launcher-local permission type, or the recorded and
+//! No launcher-local permission type is used, or the recorded and
 //! enforced grants could drift apart.
 //!
 //! ## How a capability becomes a kernel restriction
@@ -47,7 +47,7 @@
 //!
 //! A read-only participant gets no writable path. The launcher still gives
 //! it the public identity projection for attribution; no app receives root
-//! signing material. `QOS_PARTICIPATION=read-only` tells the app which shape
+//! signing material. `TILO_PARTICIPATION=read-only` tells the app which shape
 //! it is in. At launch, an unscoped app inside a workspace is resolved to
 //! read-only so missing policy fails closed.
 //!
@@ -90,7 +90,7 @@ impl Participation {
         !matches!(self, Participation::ReadOnly)
     }
 
-    /// The value of `QOS_PARTICIPATION` inside the sandbox, if the mode is
+    /// The value of `TILO_PARTICIPATION` inside the sandbox, if the mode is
     /// one worth telling the app about.
     pub fn env_value(self) -> Option<&'static str> {
         match self {
@@ -440,7 +440,7 @@ mod tests {
     #[test]
     fn no_capabilities_plans_nothing() {
         let plan =
-            CapabilityPlan::for_app_with("dev.qos.books", &[], Some(1000), fake_device_paths);
+            CapabilityPlan::for_app_with("dev.tilo.books", &[], Some(1000), fake_device_paths);
         assert_eq!(plan, CapabilityPlan::empty());
         assert!(plan.is_empty());
     }
@@ -448,12 +448,12 @@ mod tests {
     #[test]
     fn read_capability_plans_a_read_only_path_only() {
         let caps = vec![fs_grant(
-            "dev.qos.books",
+            "dev.tilo.books",
             "/var/workspace/books",
             Verb::Read,
         )];
         let plan =
-            CapabilityPlan::for_app_with("dev.qos.books", &caps, Some(1000), fake_device_paths);
+            CapabilityPlan::for_app_with("dev.tilo.books", &caps, Some(1000), fake_device_paths);
         assert_eq!(plan.ro_paths, vec![PathBuf::from("/var/workspace/books")]);
         assert!(
             plan.rw_paths.is_empty(),
@@ -464,12 +464,12 @@ mod tests {
     #[test]
     fn write_capability_plans_a_read_write_path() {
         let caps = vec![fs_grant(
-            "dev.qos.books",
+            "dev.tilo.books",
             "/var/workspace/books",
             Verb::Write,
         )];
         let plan =
-            CapabilityPlan::for_app_with("dev.qos.books", &caps, Some(1000), fake_device_paths);
+            CapabilityPlan::for_app_with("dev.tilo.books", &caps, Some(1000), fake_device_paths);
         assert_eq!(plan.rw_paths, vec![PathBuf::from("/var/workspace/books")]);
         assert!(plan.ro_paths.is_empty());
     }
@@ -477,12 +477,12 @@ mod tests {
     #[test]
     fn another_apps_capability_is_not_planned() {
         let caps = vec![fs_grant(
-            "dev.qos.other",
+            "dev.tilo.other",
             "/var/workspace/secrets",
             Verb::Write,
         )];
         let plan =
-            CapabilityPlan::for_app_with("dev.qos.books", &caps, Some(1000), fake_device_paths);
+            CapabilityPlan::for_app_with("dev.tilo.books", &caps, Some(1000), fake_device_paths);
         assert_eq!(
             plan,
             CapabilityPlan::empty(),
@@ -493,32 +493,32 @@ mod tests {
     #[test]
     fn expired_capability_is_not_planned() {
         let caps = vec![
-            fs_grant("dev.qos.books", "/var/workspace/books", Verb::Write)
+            fs_grant("dev.tilo.books", "/var/workspace/books", Verb::Write)
                 .expiring(Expiry::AtUnix(500)),
         ];
         let plan =
-            CapabilityPlan::for_app_with("dev.qos.books", &caps, Some(1000), fake_device_paths);
+            CapabilityPlan::for_app_with("dev.tilo.books", &caps, Some(1000), fake_device_paths);
         assert_eq!(plan, CapabilityPlan::empty());
         // Same capability, evaluated before it expires, does plan a bind
         // — proving the emptiness above is the expiry and not a typo.
         let live =
-            CapabilityPlan::for_app_with("dev.qos.books", &caps, Some(499), fake_device_paths);
+            CapabilityPlan::for_app_with("dev.tilo.books", &caps, Some(499), fake_device_paths);
         assert_eq!(live.rw_paths, vec![PathBuf::from("/var/workspace/books")]);
     }
 
     #[test]
     fn restriction_removes_a_granted_path() {
         let caps = vec![
-            fs_grant("dev.qos.books", "/var/workspace/books", Verb::Write),
+            fs_grant("dev.tilo.books", "/var/workspace/books", Verb::Write),
             CapOverride::new(
-                Subject::app("dev.qos.books"),
+                Subject::app("dev.tilo.books"),
                 Scope::FsPath("/var/workspace/books".to_string()),
                 Effect::Restrict,
                 Verb::Read,
             ),
         ];
         let plan =
-            CapabilityPlan::for_app_with("dev.qos.books", &caps, Some(1000), fake_device_paths);
+            CapabilityPlan::for_app_with("dev.tilo.books", &caps, Some(1000), fake_device_paths);
         assert!(
             plan.rw_paths.is_empty(),
             "a Restrict capped at Read must remove the writable bind: {plan:?}"
@@ -529,15 +529,16 @@ mod tests {
     #[test]
     fn camera_capability_plans_device_nodes_and_absence_plans_none() {
         let caps = vec![CapOverride::grant(
-            Subject::app("dev.qos.meet"),
+            Subject::app("dev.tilo.meet"),
             Scope::Device("camera".to_string()),
             Verb::Read,
         )];
-        let plan = CapabilityPlan::for_app_with("dev.qos.meet", &caps, Some(1), fake_device_paths);
+        let plan = CapabilityPlan::for_app_with("dev.tilo.meet", &caps, Some(1), fake_device_paths);
         assert_eq!(plan.devices, vec!["camera".to_string()]);
         assert_eq!(plan.rw_paths, vec![PathBuf::from("/dev/video0")]);
 
-        let without = CapabilityPlan::for_app_with("dev.qos.meet", &[], Some(1), fake_device_paths);
+        let without =
+            CapabilityPlan::for_app_with("dev.tilo.meet", &[], Some(1), fake_device_paths);
         assert!(
             without.rw_paths.is_empty() && without.devices.is_empty(),
             "no camera capability means no device node at all: {without:?}"
@@ -547,11 +548,11 @@ mod tests {
     #[test]
     fn screencast_capability_binds_nothing() {
         let caps = vec![CapOverride::grant(
-            Subject::app("dev.qos.meet"),
+            Subject::app("dev.tilo.meet"),
             Scope::Device("screencast".to_string()),
             Verb::Read,
         )];
-        let plan = CapabilityPlan::for_app_with("dev.qos.meet", &caps, Some(1), fake_device_paths);
+        let plan = CapabilityPlan::for_app_with("dev.tilo.meet", &caps, Some(1), fake_device_paths);
         assert_eq!(plan.devices, vec!["screencast".to_string()]);
         assert!(
             plan.rw_paths.is_empty() && plan.ro_paths.is_empty(),
@@ -562,15 +563,16 @@ mod tests {
     #[test]
     fn net_host_capability_opens_the_namespace_and_records_the_host() {
         let caps = vec![CapOverride::grant(
-            Subject::app("dev.qos.mail"),
+            Subject::app("dev.tilo.mail"),
             Scope::NetHost("mail.example.com".to_string()),
             Verb::Write,
         )];
-        let plan = CapabilityPlan::for_app_with("dev.qos.mail", &caps, Some(1), fake_device_paths);
+        let plan = CapabilityPlan::for_app_with("dev.tilo.mail", &caps, Some(1), fake_device_paths);
         assert!(plan.allow_network);
         assert_eq!(plan.net_hosts, vec!["mail.example.com".to_string()]);
 
-        let without = CapabilityPlan::for_app_with("dev.qos.mail", &[], Some(1), fake_device_paths);
+        let without =
+            CapabilityPlan::for_app_with("dev.tilo.mail", &[], Some(1), fake_device_paths);
         assert!(
             !without.allow_network,
             "without a network capability the namespace stays isolated"
@@ -580,13 +582,14 @@ mod tests {
     #[test]
     fn relative_root_and_lexical_escape_paths_are_refused() {
         let caps = vec![
-            fs_grant("dev.qos.books", "relative/path", Verb::Write),
-            fs_grant("dev.qos.books", "/", Verb::Write),
-            fs_grant("dev.qos.books", "//", Verb::Write),
-            fs_grant("dev.qos.books", "/tmp/..", Verb::Write),
-            fs_grant("dev.qos.books", "/var/./workspace", Verb::Write),
+            fs_grant("dev.tilo.books", "relative/path", Verb::Write),
+            fs_grant("dev.tilo.books", "/", Verb::Write),
+            fs_grant("dev.tilo.books", "//", Verb::Write),
+            fs_grant("dev.tilo.books", "/tmp/..", Verb::Write),
+            fs_grant("dev.tilo.books", "/var/./workspace", Verb::Write),
         ];
-        let plan = CapabilityPlan::for_app_with("dev.qos.books", &caps, Some(1), fake_device_paths);
+        let plan =
+            CapabilityPlan::for_app_with("dev.tilo.books", &caps, Some(1), fake_device_paths);
         assert_eq!(
             plan,
             CapabilityPlan::empty(),
@@ -625,9 +628,9 @@ mod tests {
 
     #[test]
     fn a_read_only_grant_resolves_to_read_only_participation() {
-        let caps = read_only_participation("dev.qos.viewer");
+        let caps = read_only_participation("dev.tilo.viewer");
         let plan =
-            CapabilityPlan::for_app_with("dev.qos.viewer", &caps, Some(1_000), fake_device_paths);
+            CapabilityPlan::for_app_with("dev.tilo.viewer", &caps, Some(1_000), fake_device_paths);
         assert_eq!(plan.participation, Participation::ReadOnly);
         assert!(
             !plan.participation.carries_identity(),
@@ -640,12 +643,12 @@ mod tests {
     #[test]
     fn a_write_grant_resolves_to_authorship() {
         let caps = vec![CapOverride::grant(
-            Subject::app("dev.qos.editor"),
+            Subject::app("dev.tilo.editor"),
             Scope::Workspace,
             Verb::Write,
         )];
         let plan =
-            CapabilityPlan::for_app_with("dev.qos.editor", &caps, Some(1_000), fake_device_paths);
+            CapabilityPlan::for_app_with("dev.tilo.editor", &caps, Some(1_000), fake_device_paths);
         assert_eq!(plan.participation, Participation::Author);
         assert!(plan.participation.carries_identity());
     }
@@ -655,18 +658,18 @@ mod tests {
     #[test]
     fn no_workspace_capability_leaves_participation_unscoped() {
         let caps = vec![fs_grant(
-            "dev.qos.books",
+            "dev.tilo.books",
             "/var/workspace/books",
             Verb::Write,
         )];
         let plan =
-            CapabilityPlan::for_app_with("dev.qos.books", &caps, Some(1_000), fake_device_paths);
+            CapabilityPlan::for_app_with("dev.tilo.books", &caps, Some(1_000), fake_device_paths);
         assert_eq!(plan.participation, Participation::Unscoped);
         assert!(plan.participation.carries_identity());
         assert_eq!(plan.participation.env_value(), None);
 
         let none =
-            CapabilityPlan::for_app_with("dev.qos.books", &[], Some(1_000), fake_device_paths);
+            CapabilityPlan::for_app_with("dev.tilo.books", &[], Some(1_000), fake_device_paths);
         assert_eq!(none.participation, Participation::Unscoped);
     }
 
@@ -675,14 +678,14 @@ mod tests {
     // not two rules that could disagree.
     #[test]
     fn read_only_participation_leaves_no_writable_bind() {
-        let mut caps = read_only_participation("dev.qos.viewer");
+        let mut caps = read_only_participation("dev.tilo.viewer");
         caps.push(fs_grant(
-            "dev.qos.viewer",
+            "dev.tilo.viewer",
             "/var/workspace/shared",
             Verb::Write,
         ));
         let plan =
-            CapabilityPlan::for_app_with("dev.qos.viewer", &caps, Some(1_000), fake_device_paths);
+            CapabilityPlan::for_app_with("dev.tilo.viewer", &caps, Some(1_000), fake_device_paths);
         assert_eq!(plan.participation, Participation::ReadOnly);
         assert!(
             plan.rw_paths.is_empty(),
@@ -698,9 +701,9 @@ mod tests {
     // Participation is another app's business only if it names that app.
     #[test]
     fn another_apps_read_only_grant_does_not_apply() {
-        let caps = read_only_participation("dev.qos.viewer");
+        let caps = read_only_participation("dev.tilo.viewer");
         let plan =
-            CapabilityPlan::for_app_with("dev.qos.editor", &caps, Some(1_000), fake_device_paths);
+            CapabilityPlan::for_app_with("dev.tilo.editor", &caps, Some(1_000), fake_device_paths);
         assert_eq!(plan.participation, Participation::Unscoped);
     }
 
@@ -708,15 +711,15 @@ mod tests {
     // authorship — identity returns only because nothing scopes it.
     #[test]
     fn an_expired_participation_grant_says_nothing() {
-        let caps: Vec<CapOverride> = read_only_participation("dev.qos.viewer")
+        let caps: Vec<CapOverride> = read_only_participation("dev.tilo.viewer")
             .into_iter()
             .map(|c| c.expiring(Expiry::AtUnix(500)))
             .collect();
         let live =
-            CapabilityPlan::for_app_with("dev.qos.viewer", &caps, Some(499), fake_device_paths);
+            CapabilityPlan::for_app_with("dev.tilo.viewer", &caps, Some(499), fake_device_paths);
         assert_eq!(live.participation, Participation::ReadOnly);
         let lapsed =
-            CapabilityPlan::for_app_with("dev.qos.viewer", &caps, Some(501), fake_device_paths);
+            CapabilityPlan::for_app_with("dev.tilo.viewer", &caps, Some(501), fake_device_paths);
         assert_eq!(lapsed.participation, Participation::Unscoped);
     }
 
@@ -725,7 +728,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("caps.json");
         let caps = vec![fs_grant(
-            "dev.qos.books",
+            "dev.tilo.books",
             "/var/workspace/books",
             Verb::Read,
         )];

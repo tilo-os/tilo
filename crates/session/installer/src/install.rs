@@ -3,7 +3,7 @@
 //! ## Install contract (the backend ships separately, in `os/`)
 //!
 //! ```text
-//! /usr/libexec/qos-install \
+//! /usr/libexec/tilo-install \
 //!     --disk <dev> --confirm-erase <dev> --user <name> \
 //!     --filesystem <btrfs|ext4|xfs> \
 //!     --hostname <name> [--timezone <tz>] \
@@ -11,7 +11,7 @@
 //!     --encrypt --pin [--fido2] --yes
 //! ```
 //!
-//! Native qOS always uses full-disk encryption. The backend builds the LUKS2
+//! Native Tilo always uses full-disk encryption. The backend builds the LUKS2
 //! layout itself and installs `bootc ... to-filesystem` into the opened
 //! mapping, because `--block-setup tpm2-luks` can only produce a volume whose
 //! single keyslot is sealed to a TPM:
@@ -21,7 +21,7 @@
 //!   is layered on top of it;
 //! * with `--pin` (a legacy transport flag name), the strong secret on the
 //!   **second stdin line** becomes an ordinary LUKS passphrase keyslot. TPM
-//!   unlock remains disabled until it is bound to signed, measured qOS boot
+//!   unlock remains disabled until it is bound to signed, measured Tilo boot
 //!   artifacts;
 //! * with `--fido2`, a **FIDO2 security key** is enrolled if a token is
 //!   present (its absence does not abort the install).
@@ -49,7 +49,7 @@
 //! The Finish screen's Reboot / Power-off buttons shell out to:
 //!
 //! ```text
-//! /usr/libexec/qos-power [--reboot|--poweroff]
+//! /usr/libexec/tilo-power [--reboot|--poweroff]
 //! ```
 //!
 //! a tiny self-escalating script allowed by the same live-medium sudoers
@@ -62,19 +62,97 @@
 //! The UI drives it from a **worker thread** (see
 //! [`crate::installer_app`]), pumping each line back through the winit
 //! `EventLoopProxy` as a `ui::UserEvent::External`, so the event loop stays
-//! responsive and the status log animates live. [`stream_command`] is the
-//! reusable seam both the real backend and test stubs run through.
+//! responsive and the status log updates live. [`stream_command`] is the
+//! reusable seam shared by the backend and test stubs.
 
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::process::CommandExt as _;
 use std::process::{Command, Stdio};
 use zeroize::Zeroizing;
+
+const MAX_INSTALL_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_INSTALL_OUTPUT_LINE_BYTES: usize = 64 * 1024;
+const MAX_INSTALL_OUTPUT_LINES: usize = 8192;
+
+fn read_bounded_lines(
+    reader: &mut impl BufRead,
+    mut on_line: impl FnMut(String),
+) -> std::io::Result<()> {
+    let mut pending = Vec::new();
+    let mut total = 0usize;
+    let mut lines = 0usize;
+    loop {
+        let (consumed, complete) = {
+            let available = reader.fill_buf()?;
+            if available.is_empty() {
+                break;
+            }
+            let consumed = available
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .and_then(|index| index.checked_add(1))
+                .unwrap_or(available.len());
+            total = total.checked_add(consumed).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "installer output overflow")
+            })?;
+            if total > MAX_INSTALL_OUTPUT_BYTES
+                || pending.len().saturating_add(consumed) > MAX_INSTALL_OUTPUT_LINE_BYTES
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "installer output exceeded its allocation bound",
+                ));
+            }
+            let chunk = available.get(..consumed).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid output buffer")
+            })?;
+            pending.extend_from_slice(chunk);
+            (consumed, chunk.last() == Some(&b'\n'))
+        };
+        reader.consume(consumed);
+        if complete {
+            lines = lines.checked_add(1).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "installer line overflow")
+            })?;
+            if lines > MAX_INSTALL_OUTPUT_LINES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "installer output exceeded its line-count bound",
+                ));
+            }
+            while pending
+                .last()
+                .is_some_and(|byte| matches!(byte, b'\n' | b'\r'))
+            {
+                pending.pop();
+            }
+            on_line(String::from_utf8_lossy(&pending).into_owned());
+            pending.clear();
+        }
+    }
+    if !pending.is_empty() {
+        on_line(String::from_utf8_lossy(&pending).into_owned());
+    }
+    Ok(())
+}
+
+fn kill_process_group(child: &mut std::process::Child) {
+    if let Ok(pid) = i32::try_from(child.id())
+        && let Some(group) = pid.checked_neg()
+    {
+        // SAFETY: stream_command places the child in a fresh pid-named process
+        // group, so the negative pid cannot target the installer itself.
+        unsafe { libc::kill(group, libc::SIGKILL) };
+    }
+    let _ = child.kill();
+}
 
 use crate::disks::PartitionExtent;
 
 /// Path to the privileged install backend installed on the live medium.
-pub const INSTALL_BIN: &str = "/usr/libexec/qos-install";
+pub const INSTALL_BIN: &str = "/usr/libexec/tilo-install";
 /// Path to the privileged power backend (reboot / poweroff).
-pub const POWER_BIN: &str = "/usr/libexec/qos-power";
+pub const POWER_BIN: &str = "/usr/libexec/tilo-power";
 
 /// User-selected install options threaded through to the backend.
 #[derive(Clone, PartialEq, Eq)]
@@ -87,7 +165,7 @@ pub struct InstallOptions {
     pub disk_wwn: String,
     pub disk_serial: String,
     /// Empty for a whole-disk erase. Otherwise the pre-created, empty Linux
-    /// partition that becomes the qOS root while every sibling partition is
+    /// partition that becomes the Tilo root while every sibling partition is
     /// preserved.
     pub alongside_root: String,
     pub alongside_root_partuuid: String,
@@ -164,7 +242,7 @@ impl Default for InstallOptions {
             guided_root_partuuid: String::new(),
             expected_partitions: Vec::new(),
             filesystem: "btrfs".to_string(),
-            hostname: "qos".to_string(),
+            hostname: "tilo".to_string(),
             full_name: String::new(),
             locale: String::new(),
             timezone: String::new(),
@@ -288,7 +366,7 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
             cmd.arg("--keyvariant").arg(opts.keyvariant.trim());
         }
     }
-    // Encryption is a native-qOS invariant, not a user option. Keep the flag
+    // Encryption is a native-Tilo invariant, not a user option. Keep the flag
     // explicit as defense in depth even though the backend defaults to LUKS.
     cmd.arg("--encrypt");
     if !opts.pin.is_empty() {
@@ -375,12 +453,7 @@ pub fn run_alongside_preflight<F: FnMut(String)>(
 /// the argv or a tty.
 ///
 /// Separated from [`run_install`] so tests can drive it with a stub
-/// command (e.g. `sh -c`) without the real backend present.
-///
-/// NOTE: stderr is drained only after stdout reaches EOF. A backend that
-/// emits more than a pipe buffer (~64 KiB) of stderr *before* finishing
-/// stdout could deadlock; the real `qos-install` writes progress to
-/// stdout and only short errors to stderr, so this is safe in practice.
+/// command (e.g. `sh -c`) without the backend present.
 ///
 /// # Errors
 ///
@@ -396,7 +469,8 @@ pub fn stream_command<F: FnMut(String)>(
 ) -> std::io::Result<bool> {
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .process_group(0);
     let mut child = cmd.spawn()?;
 
     // Feed the password, then any extra secret lines (the disk passphrase),
@@ -417,35 +491,64 @@ pub fn stream_command<F: FnMut(String)>(
             if let Err(e) = feed()
                 && e.kind() != std::io::ErrorKind::BrokenPipe
             {
+                kill_process_group(&mut child);
+                let _ = child.wait();
                 return Err(e);
             }
         }
     }
 
-    if let Some(stdout) = child.stdout.take() {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            on_line(line?);
-        }
+    // Drain stderr concurrently with stdout. Helpers such as bootc, podman,
+    // mkfs and cryptsetup do not share one output convention; a failure can
+    // legitimately fill stderr before closing stdout. Reading the pipes in
+    // sequence would then deadlock the installer and hide the actionable
+    // error from the UI. Preserve the existing contract by relaying captured
+    // stderr only when the command ultimately fails.
+    let stderr_reader = child.stderr.take().map(|stderr| {
+        std::thread::spawn(move || {
+            let mut lines = Vec::new();
+            read_bounded_lines(&mut BufReader::new(stderr), |line| {
+                if !line.trim().is_empty() {
+                    lines.push(line);
+                }
+            })?;
+            Ok::<_, std::io::Error>(lines)
+        })
+    });
+
+    let stdout_result = if let Some(stdout) = child.stdout.take() {
+        read_bounded_lines(&mut BufReader::new(stdout), &mut on_line)
+    } else {
+        Ok(())
+    };
+    if stdout_result.is_err() {
+        kill_process_group(&mut child);
     }
+    let status = child.wait();
+    // A backend must not daemonize children which retain the install pipes.
+    // Close that escape before joining the concurrent stderr reader.
+    kill_process_group(&mut child);
+    let stderr_lines = stderr_reader
+        .map(|reader| {
+            reader
+                .join()
+                .map_err(|_| std::io::Error::other("stderr reader thread panicked"))
+        })
+        .transpose()?
+        .unwrap_or(Ok(Vec::new()))?;
+    stdout_result?;
+    let status = status?;
 
-    let status = child.wait()?;
-
-    if !status.success()
-        && let Some(stderr) = child.stderr.take()
-    {
-        let reader = BufReader::new(stderr);
-        for line in reader.lines().map_while(Result::ok) {
-            if !line.trim().is_empty() {
-                on_line(format!("error: {line}"));
-            }
+    if !status.success() {
+        for line in stderr_lines {
+            on_line(format!("error: {line}"));
         }
     }
 
     Ok(status.success())
 }
 
-/// Run the real `qos-install` backend for `disk` + `user` + `opts`, feeding
+/// Run the `tilo-install` backend for `disk` + `user` + `opts`, feeding
 /// `password` (and, when a disk passphrase is set, that secret as a second
 /// stdin line) and relaying every output line to `on_line`.
 ///
@@ -495,7 +598,7 @@ mod tests {
             disk_size_bytes: 500_000_000_000,
             disk_major_minor: "259:0".into(),
             disk_wwn: "eui.0011223344556677".into(),
-            disk_serial: "QOS-NVME".into(),
+            disk_serial: "TILO-NVME".into(),
             alongside_root: "/dev/nvme0n1p3".into(),
             alongside_root_partuuid: "00000000-0000-0000-0000-000000000003".into(),
             alongside_root_size_bytes: 64_000_000_000,
@@ -514,7 +617,7 @@ mod tests {
             "/dev/nvme0n1",
             "259:0",
             "eui.0011223344556677",
-            "QOS-NVME",
+            "TILO-NVME",
             "/dev/nvme0n1p3",
             "00000000-0000-0000-0000-000000000003",
             "/dev/nvme0n1p4",
@@ -577,7 +680,7 @@ mod tests {
         // Dvorak = xkb layout "us" + variant "dvorak".
         let opts = InstallOptions {
             filesystem: "btrfs".to_string(),
-            hostname: "qos".to_string(),
+            hostname: "tilo".to_string(),
             timezone: String::new(),
             keymap: "us".to_string(),
             keyvariant: "dvorak".to_string(),
@@ -597,7 +700,7 @@ mod tests {
                 "--filesystem",
                 "btrfs",
                 "--hostname",
-                "qos",
+                "tilo",
                 "--confirm-erase",
                 "/dev/vda",
                 "--keymap",
@@ -616,7 +719,7 @@ mod tests {
             disk_size_bytes: 1_000_000_000_000,
             disk_major_minor: "259:0".into(),
             disk_wwn: "eui.0011223344556677".into(),
-            disk_serial: "QOS-NVME".into(),
+            disk_serial: "TILO-NVME".into(),
             alongside_root: "/dev/nvme0n1p4".into(),
             alongside_root_partuuid: "00000000-0000-0000-0000-000000000004".into(),
             alongside_root_size_bytes: 68_719_476_736,
@@ -640,7 +743,7 @@ mod tests {
             ["--expect-disk-size-bytes", "1000000000000"],
             ["--expect-disk-devnum", "259:0"],
             ["--expect-disk-wwn", "eui.0011223344556677"],
-            ["--expect-disk-serial", "QOS-NVME"],
+            ["--expect-disk-serial", "TILO-NVME"],
             [
                 "--expect-root-partuuid",
                 "00000000-0000-0000-0000-000000000004",
@@ -669,7 +772,7 @@ mod tests {
         let opts = InstallOptions {
             disk_size_bytes: 200 * 1024 * 1024 * 1024,
             disk_major_minor: "259:0".into(),
-            disk_serial: "QOS-NVME".into(),
+            disk_serial: "TILO-NVME".into(),
             guided_free_start_bytes: 100 * 1024 * 1024 * 1024,
             guided_free_size_bytes: 100 * 1024 * 1024 * 1024 - 1024 * 1024,
             guided_efi_start_bytes: 100 * 1024 * 1024 * 1024,
@@ -735,7 +838,7 @@ mod tests {
     fn install_command_omits_empty_timezone_and_keymap() {
         let opts = InstallOptions {
             filesystem: "btrfs".to_string(),
-            hostname: "qos".to_string(),
+            hostname: "tilo".to_string(),
             timezone: String::new(),
             keymap: String::new(),
             keyvariant: String::new(),
@@ -755,7 +858,7 @@ mod tests {
                 "--filesystem",
                 "btrfs",
                 "--hostname",
-                "qos",
+                "tilo",
                 "--confirm-erase",
                 "/dev/vda",
                 "--encrypt",
@@ -772,7 +875,7 @@ mod tests {
         // A stray variant without a layout must not be emitted alone.
         let opts = InstallOptions {
             filesystem: "btrfs".to_string(),
-            hostname: "qos".to_string(),
+            hostname: "tilo".to_string(),
             timezone: String::new(),
             keymap: String::new(),
             keyvariant: "dvorak".to_string(),
@@ -790,7 +893,7 @@ mod tests {
     fn install_command_always_appends_encrypt() {
         let opts = InstallOptions {
             filesystem: "btrfs".to_string(),
-            hostname: "qos".to_string(),
+            hostname: "tilo".to_string(),
             timezone: String::new(),
             keymap: "us".to_string(),
             keyvariant: String::new(),
@@ -810,7 +913,7 @@ mod tests {
                 "--filesystem",
                 "btrfs",
                 "--hostname",
-                "qos",
+                "tilo",
                 "--confirm-erase",
                 "/dev/vda",
                 "--keymap",
@@ -836,7 +939,7 @@ mod tests {
         // `run_install_sends_pin_on_second_stdin_line`).
         let opts = InstallOptions {
             filesystem: "btrfs".to_string(),
-            hostname: "qos".to_string(),
+            hostname: "tilo".to_string(),
             timezone: String::new(),
             keymap: "us".to_string(),
             keyvariant: String::new(),
@@ -856,7 +959,7 @@ mod tests {
                 "--filesystem",
                 "btrfs",
                 "--hostname",
-                "qos",
+                "tilo",
                 "--confirm-erase",
                 "/dev/vda",
                 "--keymap",
@@ -878,7 +981,7 @@ mod tests {
     fn install_command_keeps_encryption_with_additional_factors() {
         let opts = InstallOptions {
             filesystem: "btrfs".to_string(),
-            hostname: "qos".to_string(),
+            hostname: "tilo".to_string(),
             timezone: String::new(),
             keymap: "us".to_string(),
             keyvariant: String::new(),
@@ -898,7 +1001,7 @@ mod tests {
         // Encryption + FIDO2 but no PIN: `--fido2` is present, `--pin` is not.
         let opts = InstallOptions {
             filesystem: "btrfs".to_string(),
-            hostname: "qos".to_string(),
+            hostname: "tilo".to_string(),
             timezone: String::new(),
             keymap: "us".to_string(),
             keyvariant: String::new(),
@@ -922,10 +1025,10 @@ mod tests {
     }
 
     #[test]
-    fn default_options_are_btrfs_qos_us() {
+    fn default_options_are_btrfs_tilo_us() {
         let o = InstallOptions::default();
         assert_eq!(o.filesystem, "btrfs");
-        assert_eq!(o.hostname, "qos");
+        assert_eq!(o.hostname, "tilo");
         assert!(o.timezone.is_empty());
         assert_eq!(o.keymap, "us");
         assert!(o.keyvariant.is_empty());
@@ -1026,5 +1129,38 @@ mod tests {
             lines.iter().any(|l| l.contains("boom")),
             "stderr relayed on failure"
         );
+    }
+
+    #[test]
+    fn stream_command_drains_large_stderr_without_deadlocking() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(
+            "i=0; while [ \"$i\" -lt 4096 ]; do \
+             echo \"installer diagnostic $i fills the error pipe\" >&2; \
+             i=$((i + 1)); done; echo reached-stdout; exit 9",
+        );
+        let mut lines = Vec::new();
+        let ok = stream_command(cmd, "x", &[], |line| lines.push(line)).unwrap();
+        assert!(!ok);
+        assert!(lines.iter().any(|line| line == "reached-stdout"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "error: installer diagnostic 4095 fills the error pipe"),
+            "the tail of stderr was drained and relayed"
+        );
+    }
+
+    #[test]
+    fn stream_command_rejects_oversized_output_on_either_stream() {
+        for redirect in ["", " >&2"] {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c")
+                .arg(format!("head -c 70000 /dev/zero{redirect}"));
+            let started = std::time::Instant::now();
+            let error = stream_command(cmd, "x", &[], |_| {}).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+            assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        }
     }
 }

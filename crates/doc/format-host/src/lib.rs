@@ -1,0 +1,50 @@
+//! Tilo format-router daemon: provider registry, sandboxed component runner,
+//! Cap'n Proto service, and registry hot reload.
+
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
+/// Generated Cap'n Proto bindings for `format-router.capnp`. Lives at the
+/// crate root because the capnpc output references `crate::format_router_capnp::*`.
+#[allow(
+    clippy::all,
+    clippy::nursery,
+    clippy::pedantic,
+    clippy::restriction,
+    dead_code,
+    unused,
+    reason = "generated Cap'n Proto bindings do not follow repository lint policy"
+)]
+pub mod format_router_capnp {
+    include!(concat!(env!("OUT_DIR"), "/format_router_capnp.rs"));
+}
+pub mod registry;
+pub mod router;
+pub mod runner;
+pub mod service;
+pub mod transport;
+pub mod watch;
+
+pub use registry::{ProviderEntry, Registry};
+pub use router::{ActiveProvider, Router};
+pub use runner::{LoadedComponent, MAX_MEMORY_BYTES, MAX_WALLCLOCK};
+
+use std::path::PathBuf;
+
+/// Default on-disk registry path: `~/.config/tilo/extensions/format-providers.toml`.
+pub fn default_registry_path() -> PathBuf {
+    let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    base.join("tilo")
+        .join("extensions")
+        .join("format-providers.toml")
+}

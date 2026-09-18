@@ -1,8 +1,8 @@
-//! Policy data for launching Windows applications on qOS.
+//! Policy data for launching Windows applications on Tilo.
 //!
 //! This crate deliberately does not launch a process, create a prefix, or
 //! implement permissions.  It produces a fully specified launch plan for the
-//! existing qOS security/launcher services.  In particular, a
+//! existing Tilo security/launcher services.  In particular, a
 //! [`SecurityProfileRef`] is only a reference to that service's profile; it is
 //! not a second capability or sandbox language.
 //!
@@ -23,10 +23,10 @@ use thiserror::Error;
 pub const CATALOGUE_SCHEMA_VERSION: u16 = 1;
 /// Current per-record schema.
 pub const RECORD_VERSION: u32 = 1;
-/// There is exactly one managed Windows guest per qOS installation.
+/// There is exactly one managed Windows guest per Tilo installation.
 pub const WINDOWS_VM_RUNTIME_ID: &str = "windows-vm";
 
-/// Stable reference into qOS's existing security policy registry.
+/// Stable reference into Tilo's existing security policy registry.
 ///
 /// The catalogue stores this name so UI and launcher can show the effective
 /// policy. It never interprets the name or grants access itself.
@@ -56,7 +56,7 @@ impl SecurityProfileRef {
         Ok(Self(value))
     }
 
-    /// Return the registry key used by qOS's security broker.
+    /// Return the registry key used by Tilo's security broker.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -66,7 +66,7 @@ impl SecurityProfileRef {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Layer {
-    /// A normal Wine prefix, managed as an isolated qOS capsule.
+    /// A normal Wine prefix, managed as an isolated Tilo capsule.
     Wine,
     /// Proton through UMU/Steam Runtime. Never inferred for arbitrary apps.
     Proton,
@@ -139,7 +139,7 @@ pub struct RunnerSettings {
     /// DXVK/VKD3D and related graphics switches, interpreted by the runner.
     #[serde(default)]
     pub graphics: BTreeMap<String, String>,
-    /// Optional qOS runner feature names (for example `dotnet48`).
+    /// Optional Tilo runner feature names (for example `dotnet48`).
     #[serde(default)]
     pub components: BTreeSet<String>,
 }
@@ -156,7 +156,7 @@ impl Default for RunnerSettings {
     }
 }
 
-/// A reference to the qOS-owned capsule or the single managed VM.
+/// A reference to the Tilo-owned capsule or the single managed VM.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct Runtime {
     /// Stable local ID, not a filesystem path.
@@ -177,7 +177,7 @@ impl Runtime {
 /// Metadata used to identify an installed application.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ApplicationQuery {
-    /// qOS package/store identity, when known.
+    /// Tilo package/store identity, when known.
     #[serde(default)]
     pub package_id: Option<String>,
     /// Windows `AppUserModelId` or other stable application ID.
@@ -265,7 +265,7 @@ pub struct MatchKey {
 }
 
 impl MatchKey {
-    /// Match the key after applying qOS's case/whitespace/path normalization.
+    /// Match the key after applying Tilo's case/whitespace/path normalization.
     pub fn matches(&self, query: &ApplicationQuery) -> bool {
         let key = self.normalized();
         key.has_identity() && key.matches(&query.normalized())
@@ -294,7 +294,7 @@ pub struct Recipe {
     pub runner: Runner,
     #[serde(default)]
     pub settings: RunnerSettings,
-    /// Existing qOS security profile; no permissions are defined here.
+    /// Existing Tilo security profile; no permissions are defined here.
     pub security_profile: SecurityProfileRef,
     /// Proton requires a recipe so arbitrary apps cannot drift into Proton.
     #[serde(default)]
@@ -340,7 +340,7 @@ impl Recipe {
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Provenance {
-    /// Shipped by qOS and reviewed as part of the OS image.
+    /// Shipped by Tilo and reviewed as part of the OS image.
     #[default]
     BuiltIn,
     /// Supplied by a runner/vendor integration.
@@ -735,7 +735,7 @@ pub fn parse_umu_csv(input: &str) -> Result<Vec<UmuCsvRow>, CatalogueError> {
     Ok(result)
 }
 
-/// Turn UMU rows into Proton records using the qOS runner/security references
+/// Turn UMU rows into Proton records using the Tilo runner/security references
 /// supplied by the caller. The records are marked vendor provenance and remain
 /// unsigned until a trusted catalogue loader authenticates the source.
 ///
@@ -829,7 +829,7 @@ impl BottlesProgram {
 
 /// Parse the bounded, metadata-only subset of a Bottles recipe/index entry.
 ///
-/// This is a deliberately small YAML reader for the stable public fields used
+/// This is a bounded YAML reader for the stable public fields used
 /// by Bottles recipes. It does not attempt to interpret YAML tags, anchors, or
 /// installer instructions; unknown fields are ignored.
 ///

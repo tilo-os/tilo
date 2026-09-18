@@ -1,0 +1,1565 @@
+//! Narrow cryptographic operations needed by privileged OS tooling.
+//!
+//! Keeping these operations in Rust removes password material from subprocess
+//! pipes and prevents general-purpose OpenSSL parsing from becoming part of an
+//! application's privilege boundary.
+
+use sha_crypt::{PasswordHasher, ShaCrypt};
+use sha2::{Digest, Sha256};
+use zeroize::Zeroize;
+
+/// Display metadata extracted from a bounded X.509 certificate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CertificateInfo {
+    pub subject: String,
+    pub expires: String,
+    pub sha256_fingerprint: String,
+}
+
+/// A PEM-encoded RSA key and self-signed certificate suitable for UEFI image
+/// signing and owner enrollment.
+pub struct RsaCertificate {
+    pub private_key_pem: String,
+    pub certificate_pem: String,
+}
+
+/// Ephemeral CA and server credentials for a loopback TLS fixture.
+pub struct TlsFixture {
+    pub ca_certificate_pem: String,
+    pub server_private_key_pem: String,
+    pub server_certificate_pem: String,
+}
+
+impl Drop for TlsFixture {
+    fn drop(&mut self) {
+        self.server_private_key_pem.zeroize();
+    }
+}
+
+impl Drop for RsaCertificate {
+    fn drop(&mut self) {
+        self.private_key_pem.zeroize();
+    }
+}
+
+/// Perform an RSA PKCS#1 signature with ring's blinded private-key operation.
+///
+/// `RustCrypto`'s RSA parser remains useful for accepting both PKCS#1 and PKCS#8
+/// keys, but its private operation is affected by RUSTSEC-2023-0071. Keep key
+/// parsing separate and hand canonical PKCS#8 to ring for every Tilo-owned
+/// signing path that does not require Picky's Authenticode encoder.
+fn sign_rsa_pkcs1_ring(
+    private_key_pem: &str,
+    message: &[u8],
+    algorithm: &'static dyn ring::signature::RsaEncoding,
+) -> Result<Vec<u8>, String> {
+    use ring::{rand::SystemRandom, signature::RsaKeyPair};
+    use rsa::pkcs8::EncodePrivateKey;
+    use rsa::{RsaPrivateKey, pkcs1::DecodeRsaPrivateKey, pkcs8::DecodePrivateKey};
+
+    let key = RsaPrivateKey::from_pkcs8_pem(private_key_pem)
+        .or_else(|_| RsaPrivateKey::from_pkcs1_pem(private_key_pem))
+        .map_err(|_| "invalid RSA private key")?;
+    let pkcs8 = key
+        .to_pkcs8_der()
+        .map_err(|_| "cannot normalize RSA private key")?;
+    let pair =
+        RsaKeyPair::from_pkcs8(pkcs8.as_bytes()).map_err(|_| "ring rejected RSA private key")?;
+    let mut signature = vec![0_u8; pair.public().modulus_len()];
+    pair.sign(algorithm, &SystemRandom::new(), message, &mut signature)
+        .map_err(|_| "RSA signing failed")?;
+    Ok(signature)
+}
+
+/// Create a salted SHA-512-crypt record accepted by Linux account tooling.
+///
+/// The caller's buffer is scrubbed on every return path.
+///
+/// # Errors
+///
+/// Returns an error when the password is outside the account-policy bounds or
+/// the operating system cannot provide cryptographic randomness.
+pub fn hash_account_password(password: &mut [u8]) -> Result<String, String> {
+    if password.len() < 10 || password.len() > 1024 || password.contains(&b'\n') {
+        password.zeroize();
+        return Err("password must contain 10–1024 bytes and no newline".into());
+    }
+
+    let result = ShaCrypt::default()
+        .hash_password(password)
+        .map(|hash| hash.to_string())
+        .map_err(|error| format!("cannot hash account password: {error}"));
+    password.zeroize();
+    result
+}
+
+/// Parse PEM or DER certificate bytes without invoking a general-purpose CLI.
+///
+/// # Errors
+///
+/// Returns an error for malformed, trailing, non-certificate, or expired data.
+pub fn inspect_certificate(bytes: &[u8]) -> Result<CertificateInfo, String> {
+    use x509_parser::{parse_x509_certificate, pem::parse_x509_pem};
+
+    let der = if bytes.starts_with(b"-----BEGIN") {
+        let (rest, pem) = parse_x509_pem(bytes).map_err(|_| "invalid PEM certificate")?;
+        if !rest.iter().all(u8::is_ascii_whitespace) || pem.label != "CERTIFICATE" {
+            return Err("certificate contains trailing data or has the wrong PEM label".into());
+        }
+        pem.contents
+    } else {
+        bytes.to_vec()
+    };
+    let (rest, certificate) =
+        parse_x509_certificate(&der).map_err(|_| "invalid X.509 certificate")?;
+    if !rest.is_empty() {
+        return Err("certificate contains trailing DER data".into());
+    }
+    if certificate.validity().not_after.timestamp()
+        <= x509_parser::time::ASN1Time::now().timestamp()
+    {
+        return Err(format!(
+            "certificate expired at {}",
+            certificate.validity().not_after
+        ));
+    }
+
+    let fingerprint = Sha256::digest(&der)
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<Vec<_>>()
+        .join(":");
+    Ok(CertificateInfo {
+        subject: certificate.subject().to_string(),
+        expires: certificate.validity().not_after.to_string(),
+        sha256_fingerprint: fingerprint,
+    })
+}
+
+/// Return the lowercase SHA-256 digest of a certificate's canonical DER.
+///
+/// # Errors
+///
+/// Returns an error for malformed, trailing, or non-certificate input.
+pub fn certificate_sha256(bytes: &[u8]) -> Result<String, String> {
+    use x509_parser::{parse_x509_certificate, pem::parse_x509_pem};
+
+    let der = if bytes.starts_with(b"-----BEGIN") {
+        let (rest, pem) = parse_x509_pem(bytes).map_err(|_| "invalid PEM certificate")?;
+        if !rest.iter().all(u8::is_ascii_whitespace) || pem.label != "CERTIFICATE" {
+            return Err("certificate contains trailing data or has the wrong PEM label".into());
+        }
+        pem.contents
+    } else {
+        bytes.to_vec()
+    };
+    let (rest, _) = parse_x509_certificate(&der).map_err(|_| "invalid X.509 certificate")?;
+    if !rest.is_empty() {
+        return Err("certificate contains trailing DER data".into());
+    }
+    Ok(hex::encode(Sha256::digest(&der)))
+}
+
+/// Decode one PEM or DER X.509 certificate to its canonical DER form.
+///
+/// # Errors
+///
+/// Returns an error for malformed input, the wrong PEM label, or trailing data.
+pub fn certificate_der(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    use x509_cert::der::{Decode, DecodePem, Encode};
+
+    let certificate = if bytes.starts_with(b"-----BEGIN") {
+        x509_cert::Certificate::from_pem(bytes)
+            .map_err(|error| format!("invalid PEM certificate: {error}"))?
+    } else {
+        x509_cert::Certificate::from_der(bytes)
+            .map_err(|error| format!("invalid DER certificate: {error}"))?
+    };
+    certificate
+        .to_der()
+        .map_err(|error| format!("cannot encode certificate DER: {error}"))
+}
+
+/// Verify that an EFI Signature List contains one exact X.509 certificate.
+///
+/// Signature owners and list ordering are deliberately ignored; firmware may
+/// rewrite either while the certificate DER remains the trust identity.
+///
+/// # Errors
+///
+/// Returns an error for malformed/truncated ESL data or when the certificate
+/// is absent.
+pub fn verify_efi_signature_list_contains_certificate(
+    certificate_bytes: &[u8],
+    signature_list: &[u8],
+) -> Result<(), String> {
+    let (found, _) = inspect_efi_signature_list(Some(certificate_bytes), signature_list)?;
+    if found {
+        Ok(())
+    } else {
+        Err("EFI signature list does not contain the supplied certificate".into())
+    }
+}
+
+/// Verify that an EFI Signature List trusts exactly one entry: this certificate.
+///
+/// This is used before sealing an online signing key to PCR 7. Merely finding
+/// the owner certificate is insufficient: any additional certificate or image
+/// hash could boot another OS under the same PCR 7 value and expose that key.
+///
+/// # Errors
+///
+/// Returns an error for malformed/truncated ESL data, a missing certificate,
+/// or any additional trusted entry.
+pub fn verify_efi_signature_list_exclusively_contains_certificate(
+    certificate_bytes: &[u8],
+    signature_list: &[u8],
+) -> Result<(), String> {
+    let (found, entries) = inspect_efi_signature_list(Some(certificate_bytes), signature_list)?;
+    if found && entries == 1 {
+        Ok(())
+    } else {
+        Err(format!(
+            "EFI signature list must contain only the supplied certificate; found {entries} entries"
+        ))
+    }
+}
+
+/// Validate the framing and dimensions of every list and entry in an EFI
+/// Signature List blob.
+///
+/// # Errors
+///
+/// Returns an error for empty, malformed, truncated, or partially framed data.
+pub fn validate_efi_signature_list(signature_list: &[u8]) -> Result<usize, String> {
+    let (_, entries) = inspect_efi_signature_list(None, signature_list)?;
+    if entries == 0 {
+        Err("EFI signature list contains no entries".into())
+    } else {
+        Ok(entries)
+    }
+}
+
+fn inspect_efi_signature_list(
+    certificate_bytes: Option<&[u8]>,
+    signature_list: &[u8],
+) -> Result<(bool, usize), String> {
+    const LIST_HEADER_BYTES: usize = 16 + 4 + 4 + 4;
+    const SIGNATURE_OWNER_BYTES: usize = 16;
+    // EFI_CERT_X509_GUID, encoded using EFI GUID byte order.
+    const EFI_CERT_X509_GUID: [u8; 16] = [
+        0xa1, 0x59, 0xc0, 0xa5, 0xe4, 0x94, 0xa7, 0x4a, 0x87, 0xb5, 0xab, 0x15, 0x5c, 0x2b, 0xf0,
+        0x72,
+    ];
+
+    let certificate = certificate_bytes.map(certificate_der).transpose()?;
+    let mut offset = 0_usize;
+    let mut found = false;
+    let mut entry_count = 0_usize;
+    while offset < signature_list.len() {
+        let header_end = offset
+            .checked_add(LIST_HEADER_BYTES)
+            .ok_or("EFI signature-list offset overflow")?;
+        let header = signature_list
+            .get(offset..header_end)
+            .ok_or("truncated EFI signature-list header")?;
+        let is_x509_list = header.get(..16) == Some(EFI_CERT_X509_GUID.as_slice());
+        let read_size = |start: usize, name: &str| -> Result<usize, String> {
+            let end = start
+                .checked_add(4)
+                .ok_or_else(|| format!("{name} offset overflow"))?;
+            let encoded: [u8; 4] = header
+                .get(start..end)
+                .ok_or_else(|| format!("invalid {name}"))?
+                .try_into()
+                .map_err(|_| format!("invalid {name}"))?;
+            Ok(u32::from_le_bytes(encoded) as usize)
+        };
+        let list_size = read_size(16, "EFI signature-list size")?;
+        let signature_header_size = read_size(20, "EFI signature header size")?;
+        let signature_size = read_size(24, "EFI signature size")?;
+        if list_size < LIST_HEADER_BYTES
+            || signature_size < SIGNATURE_OWNER_BYTES
+            || LIST_HEADER_BYTES
+                .checked_add(signature_header_size)
+                .is_none_or(|minimum| list_size < minimum)
+        {
+            return Err("invalid EFI signature-list dimensions".into());
+        }
+        let list_end = offset
+            .checked_add(list_size)
+            .filter(|end| *end <= signature_list.len())
+            .ok_or("truncated EFI signature list")?;
+        let entries_start = header_end
+            .checked_add(signature_header_size)
+            .ok_or("EFI signature-list header overflow")?;
+        let entries_bytes = list_end
+            .checked_sub(entries_start)
+            .ok_or("EFI signature entries precede their header")?;
+        if entries_bytes == 0 || entries_bytes.checked_rem(signature_size) != Some(0) {
+            return Err("EFI signature list has partial or no entries".into());
+        }
+        let entries = signature_list
+            .get(entries_start..list_end)
+            .ok_or("invalid EFI signature entry range")?;
+        for entry in entries.chunks_exact(signature_size) {
+            entry_count = entry_count
+                .checked_add(1)
+                .ok_or("EFI signature entry count overflow")?;
+            if is_x509_list
+                && certificate.as_deref().is_some_and(|certificate| {
+                    entry.get(SIGNATURE_OWNER_BYTES..) == Some(certificate)
+                })
+            {
+                found = true;
+            }
+        }
+        offset = list_end;
+    }
+    Ok((found, entry_count))
+}
+
+/// Encode one X.509 certificate as an EFI Signature List suitable for db,
+/// KEK, or PK enrollment. The signature-owner value is an opaque random GUID;
+/// firmware uses the X.509 signature-type GUID to interpret the payload.
+///
+/// # Errors
+///
+/// Returns an error when the certificate is invalid or too large for the EFI
+/// structure's 32-bit length fields.
+pub fn certificate_efi_signature_list(certificate: &[u8]) -> Result<Vec<u8>, String> {
+    let der = certificate_der(certificate)?;
+    let signature_size = 16_usize
+        .checked_add(der.len())
+        .ok_or("EFI signature entry size overflow")?;
+    let list_size = 28_usize
+        .checked_add(signature_size)
+        .ok_or("EFI signature list size overflow")?;
+    let signature_size = u32::try_from(signature_size)
+        .map_err(|_| "certificate is too large for an EFI signature entry")?;
+    let list_size = u32::try_from(list_size)
+        .map_err(|_| "certificate is too large for an EFI signature list")?;
+
+    let mut output = Vec::with_capacity(list_size as usize);
+    // EFI_CERT_X509_GUID, encoded using EFI GUID byte order.
+    output.extend_from_slice(&[
+        0xa1, 0x59, 0xc0, 0xa5, 0xe4, 0x94, 0xa7, 0x4a, 0x87, 0xb5, 0xab, 0x15, 0x5c, 0x2b, 0xf0,
+        0x72,
+    ]);
+    output.extend_from_slice(&list_size.to_le_bytes());
+    output.extend_from_slice(&0_u32.to_le_bytes());
+    output.extend_from_slice(&signature_size.to_le_bytes());
+    output.extend_from_slice(&rand::random::<[u8; 16]>());
+    output.extend_from_slice(&der);
+    Ok(output)
+}
+
+/// Generate a 4096-bit RSA/SHA-256 self-signed certificate valid for 20 years.
+///
+/// # Errors
+///
+/// Returns an error if the OS random source or certificate encoder fails.
+pub fn generate_secure_boot_certificate(common_name: &str) -> Result<RsaCertificate, String> {
+    use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, PKCS_RSA_SHA256};
+    use rsa::{RsaPrivateKey, pkcs8::EncodePrivateKey};
+
+    if common_name.is_empty()
+        || common_name.len() > 200
+        || common_name.chars().any(char::is_control)
+    {
+        return Err("certificate common name must be 1–200 printable characters".into());
+    }
+    let generated_key = RsaPrivateKey::new(&mut rand10::rng(), 4096)
+        .map_err(|error| format!("cannot generate RSA key: {error}"))?;
+    let private_key_pem = generated_key
+        .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
+        .map_err(|error| format!("cannot encode RSA key: {error}"))?;
+    let key = KeyPair::from_pkcs8_pem_and_sign_algo(&private_key_pem, &PKCS_RSA_SHA256)
+        .map_err(|error| format!("cannot load generated RSA key: {error}"))?;
+    let now = time::OffsetDateTime::now_utc();
+    let mut params = CertificateParams::default();
+    params.not_before = now
+        .checked_sub(time::Duration::days(1))
+        .ok_or("certificate start date overflow")?;
+    params.not_after = now
+        .checked_add(time::Duration::days(7300))
+        .ok_or("certificate expiry date overflow")?;
+    params.distinguished_name = DistinguishedName::new();
+    params
+        .distinguished_name
+        .push(DnType::CommonName, common_name);
+    let certificate = params
+        .self_signed(&key)
+        .map_err(|error| format!("cannot create certificate: {error}"))?;
+    Ok(RsaCertificate {
+        private_key_pem: private_key_pem.to_string(),
+        certificate_pem: certificate.pem(),
+    })
+}
+
+/// Generate a constrained ephemeral CA and an IP-SAN server certificate.
+///
+/// # Errors
+///
+/// Returns an error if certificate validity bounds overflow, key generation
+/// fails, or either certificate cannot be encoded or signed.
+pub fn generate_tls_fixture(server_ip: std::net::IpAddr) -> Result<TlsFixture, String> {
+    use rcgen::{
+        BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose,
+        IsCa, Issuer, KeyPair, KeyUsagePurpose,
+    };
+
+    let now = time::OffsetDateTime::now_utc();
+    let not_before = now
+        .checked_sub(time::Duration::hours(1))
+        .ok_or("TLS certificate start date overflow")?;
+    let not_after = now
+        .checked_add(time::Duration::days(2))
+        .ok_or("TLS certificate expiry date overflow")?;
+    let mut ca_params = CertificateParams::default();
+    ca_params.not_before = not_before;
+    ca_params.not_after = not_after;
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    ca_params.distinguished_name = DistinguishedName::new();
+    ca_params
+        .distinguished_name
+        .push(DnType::CommonName, "Tilo Disposable Registry CA");
+    let ca_key =
+        KeyPair::generate().map_err(|error| format!("cannot generate TLS CA key: {error}"))?;
+    let ca_certificate = ca_params
+        .self_signed(&ca_key)
+        .map_err(|error| format!("cannot generate TLS CA certificate: {error}"))?;
+    let issuer = Issuer::new(ca_params, ca_key);
+
+    let mut server_params = CertificateParams::new(vec![server_ip.to_string()])
+        .map_err(|error| format!("cannot encode TLS server IP: {error}"))?;
+    server_params.not_before = not_before;
+    server_params.not_after = not_after;
+    server_params.is_ca = IsCa::NoCa;
+    // Strict RFC 5280 verification requires non-self-signed certificates to
+    // identify their issuer's key. Python's default TLS context enforces this.
+    server_params.use_authority_key_identifier_extension = true;
+    server_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    server_params.distinguished_name = DistinguishedName::new();
+    server_params
+        .distinguished_name
+        .push(DnType::CommonName, "Tilo Loopback Registry");
+    let server_key =
+        KeyPair::generate().map_err(|error| format!("cannot generate TLS server key: {error}"))?;
+    let server_certificate = server_params
+        .signed_by(&server_key, &issuer)
+        .map_err(|error| format!("cannot sign TLS server certificate: {error}"))?;
+    Ok(TlsFixture {
+        ca_certificate_pem: ca_certificate.pem(),
+        server_private_key_pem: server_key.serialize_pem(),
+        server_certificate_pem: server_certificate.pem(),
+    })
+}
+
+/// Create an RSA PKCS#1 v1.5 SHA-256 signature from a PEM private key.
+///
+/// # Errors
+///
+/// Returns an error if the key is malformed or signing fails.
+pub fn sign_rsa_sha256(private_key_pem: &str, message: &[u8]) -> Result<Vec<u8>, String> {
+    sign_rsa_pkcs1_ring(private_key_pem, message, &ring::signature::RSA_PKCS1_SHA256)
+}
+
+/// Derive a PKCS#8 PEM public key from a PKCS#1 or PKCS#8 RSA private key.
+///
+/// # Errors
+///
+/// Returns an error if the private key is malformed or encoding fails.
+pub fn rsa_public_key_pem(private_key_pem: &str) -> Result<String, String> {
+    use rsa::{
+        RsaPrivateKey, RsaPublicKey, pkcs1::DecodeRsaPrivateKey, pkcs8::DecodePrivateKey,
+        pkcs8::EncodePublicKey,
+    };
+
+    let private = RsaPrivateKey::from_pkcs8_pem(private_key_pem)
+        .or_else(|_| RsaPrivateKey::from_pkcs1_pem(private_key_pem))
+        .map_err(|_| "invalid RSA private key")?;
+    RsaPublicKey::from(&private)
+        .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
+        .map_err(|error| format!("cannot encode RSA public key: {error}"))
+}
+
+/// Verify that an RSA private key is the private half of an X.509 certificate.
+///
+/// # Errors
+///
+/// Returns an error for malformed inputs, a non-RSA certificate, or a mismatch.
+pub fn rsa_private_key_matches_certificate(
+    private_key_pem: &str,
+    certificate_bytes: &[u8],
+) -> Result<(), String> {
+    use der::{Decode, Encode};
+    use rsa::{
+        RsaPrivateKey, RsaPublicKey, pkcs1::DecodeRsaPrivateKey, pkcs8::DecodePrivateKey,
+        pkcs8::DecodePublicKey,
+    };
+
+    let private = RsaPrivateKey::from_pkcs8_pem(private_key_pem)
+        .or_else(|_| RsaPrivateKey::from_pkcs1_pem(private_key_pem))
+        .map_err(|_| "invalid RSA private key")?;
+    let certificate = x509_cert::Certificate::from_der(&certificate_der(certificate_bytes)?)
+        .map_err(|error| format!("invalid X.509 certificate: {error}"))?;
+    let public_der = certificate
+        .tbs_certificate
+        .subject_public_key_info
+        .to_der()
+        .map_err(|error| format!("cannot encode certificate public key: {error}"))?;
+    let certificate_public = RsaPublicKey::from_public_key_der(&public_der)
+        .map_err(|_| "certificate does not contain a supported RSA key")?;
+    if certificate_public != RsaPublicKey::from(&private) {
+        return Err("private key does not match certificate".into());
+    }
+    Ok(())
+}
+
+/// Verify an RSA PKCS#1 v1.5 SHA-256 signature using a PEM public key.
+///
+/// # Errors
+///
+/// Returns an error if the key/signature is malformed or verification fails.
+pub fn verify_rsa_sha256(
+    public_key_pem: &str,
+    message: &[u8],
+    signature_bytes: &[u8],
+) -> Result<(), String> {
+    use rsa::{
+        RsaPublicKey,
+        pkcs1::DecodeRsaPublicKey,
+        pkcs1v15::{Signature, VerifyingKey},
+        pkcs8::DecodePublicKey,
+        sha2::Sha256,
+        signature::Verifier,
+    };
+
+    let key = RsaPublicKey::from_public_key_pem(public_key_pem)
+        .or_else(|_| RsaPublicKey::from_pkcs1_pem(public_key_pem))
+        .map_err(|_| "invalid RSA public key")?;
+    let signature = Signature::try_from(signature_bytes).map_err(|_| "invalid RSA signature")?;
+    VerifyingKey::<Sha256>::new(key)
+        .verify(message, &signature)
+        .map_err(|_| "RSA signature verification failed".into())
+}
+
+/// Validate an RSA `SubjectPublicKeyInfo` PEM and return its modulus size and
+/// canonical DER SHA-256 identity.
+///
+/// # Errors
+///
+/// Returns an error if the PEM is not a valid RSA `SubjectPublicKeyInfo` or
+/// the parsed key cannot be re-encoded canonically.
+pub fn rsa_public_key_info(public_key_pem: &str) -> Result<(u32, String), String> {
+    use rsa::{
+        RsaPublicKey,
+        pkcs8::{DecodePublicKey, EncodePublicKey},
+        traits::PublicKeyParts,
+    };
+    use sha2::{Digest as _, Sha256};
+
+    let key = RsaPublicKey::from_public_key_pem(public_key_pem)
+        .map_err(|_| "invalid RSA SubjectPublicKeyInfo")?;
+    let der = key
+        .to_public_key_der()
+        .map_err(|_| "cannot canonicalize RSA public key")?;
+    Ok((key.n().bits(), hex::encode(Sha256::digest(der.as_bytes()))))
+}
+
+/// Validate a P-256 `SubjectPublicKeyInfo` PEM and return its canonical DER
+/// SHA-256 identity.
+///
+/// # Errors
+///
+/// Returns an error if the PEM is not a valid P-256 `SubjectPublicKeyInfo` or
+/// the parsed key cannot be re-encoded canonically.
+pub fn p256_public_key_sha256(public_key_pem: &str) -> Result<String, String> {
+    use p256::{
+        ecdsa::VerifyingKey,
+        pkcs8::{DecodePublicKey, EncodePublicKey},
+    };
+    use sha2::{Digest as _, Sha256};
+
+    let key = VerifyingKey::from_public_key_pem(public_key_pem)
+        .map_err(|_| "invalid P-256 SubjectPublicKeyInfo")?;
+    let der = key
+        .to_public_key_der()
+        .map_err(|_| "cannot canonicalize P-256 public key")?;
+    Ok(hex::encode(Sha256::digest(der.as_bytes())))
+}
+
+/// Append a Linux kernel PKCS#7 module signature made with RSA/SHA-512.
+///
+/// The envelope intentionally omits certificates, content, and signed
+/// attributes, matching `scripts/sign-file` with `CMS_NOCERTS`,
+/// `CMS_DETACHED`, and `CMS_NOATTR`.  The kernel resolves the signer from its
+/// built-in trusted keyring using the certificate issuer and serial number.
+///
+/// # Errors
+///
+/// Returns an error for malformed key/certificate material or DER encoding
+/// failure, and refuses input that is already module-signed.
+pub fn sign_kernel_module(
+    private_key_pem: &str,
+    certificate_bytes: &[u8],
+    module: &[u8],
+) -> Result<Vec<u8>, String> {
+    use cms::{
+        cert::IssuerAndSerialNumber,
+        content_info::{CmsVersion, ContentInfo},
+        signed_data::{
+            EncapsulatedContentInfo, SignatureValue, SignedData, SignerIdentifier, SignerInfo,
+            SignerInfos,
+        },
+    };
+    use der::{Any, AnyRef, Decode, Encode, asn1::SetOfVec};
+    use spki::AlgorithmIdentifierOwned;
+
+    const MODULE_SIGNATURE_MAGIC: &[u8] = b"~Module signature appended~\n";
+    if module.ends_with(MODULE_SIGNATURE_MAGIC) {
+        return Err("kernel module is already signed".into());
+    }
+    let certificate_der = certificate_der(certificate_bytes)?;
+    let certificate = x509_cert::Certificate::from_der(&certificate_der)
+        .map_err(|error| format!("invalid X.509 certificate: {error}"))?;
+    let digest_algorithm = AlgorithmIdentifierOwned {
+        oid: const_oid::db::rfc5912::ID_SHA_512,
+        parameters: None,
+    };
+    let signature_algorithm = AlgorithmIdentifierOwned {
+        oid: const_oid::db::rfc5912::RSA_ENCRYPTION,
+        parameters: Some(Any::null()),
+    };
+    let signature =
+        sign_rsa_pkcs1_ring(private_key_pem, module, &ring::signature::RSA_PKCS1_SHA512)?;
+    let issuer = certificate.tbs_certificate.issuer;
+    let serial_number = certificate.tbs_certificate.serial_number;
+    let signer_info = SignerInfo {
+        version: CmsVersion::V1,
+        sid: SignerIdentifier::IssuerAndSerialNumber(IssuerAndSerialNumber {
+            issuer,
+            serial_number,
+        }),
+        digest_alg: digest_algorithm.clone(),
+        signed_attrs: None,
+        signature_algorithm,
+        signature: SignatureValue::new(signature)
+            .map_err(|error| format!("cannot encode module signature: {error}"))?,
+        unsigned_attrs: None,
+    };
+    let signed_data = SignedData {
+        version: CmsVersion::V1,
+        digest_algorithms: SetOfVec::try_from(vec![digest_algorithm])
+            .map_err(|error| format!("cannot encode digest set: {error}"))?,
+        encap_content_info: EncapsulatedContentInfo {
+            econtent_type: const_oid::db::rfc5911::ID_DATA,
+            econtent: None,
+        },
+        certificates: None,
+        crls: None,
+        signer_infos: SignerInfos(
+            SetOfVec::try_from(vec![signer_info])
+                .map_err(|error| format!("cannot encode signer set: {error}"))?,
+        ),
+    };
+    let signed_data_der = signed_data
+        .to_der()
+        .map_err(|error| format!("cannot encode signed data: {error}"))?;
+    let content = AnyRef::try_from(signed_data_der.as_slice())
+        .map_err(|error| format!("cannot wrap signed data: {error}"))?;
+    let envelope = ContentInfo {
+        content_type: const_oid::db::rfc5911::ID_SIGNED_DATA,
+        content: Any::from(content),
+    }
+    .to_der()
+    .map_err(|error| format!("cannot encode PKCS#7 envelope: {error}"))?;
+    let signature_len =
+        u32::try_from(envelope.len()).map_err(|_| "module signature exceeds kernel format")?;
+
+    let capacity = module
+        .len()
+        .checked_add(envelope.len())
+        .and_then(|size| size.checked_add(40))
+        .ok_or("signed module size overflow")?;
+    let mut output = Vec::with_capacity(capacity);
+    output.extend_from_slice(module);
+    output.extend_from_slice(&envelope);
+    output.extend_from_slice(&[0, 0, 2, 0, 0, 0, 0, 0]);
+    output.extend_from_slice(&signature_len.to_be_bytes());
+    output.extend_from_slice(MODULE_SIGNATURE_MAGIC);
+    Ok(output)
+}
+
+/// Create the detached PKCS#7 `SignedData` used by authenticated UEFI variable updates.
+///
+/// # Errors
+///
+/// Returns an error if the key or certificate is malformed, if they do not
+/// match, or if the signature or CMS structure cannot be encoded.
+pub fn sign_efi_variable_payload(
+    private_key_pem: &str,
+    certificate_bytes: &[u8],
+    payload: &[u8],
+) -> Result<Vec<u8>, String> {
+    use cms::{
+        cert::{CertificateChoices, IssuerAndSerialNumber},
+        content_info::CmsVersion,
+        signed_data::{
+            CertificateSet, EncapsulatedContentInfo, SignatureValue, SignedData, SignerIdentifier,
+            SignerInfo, SignerInfos,
+        },
+    };
+    use der::{Any, Decode, Encode, asn1::SetOfVec};
+    use spki::AlgorithmIdentifierOwned;
+
+    rsa_private_key_matches_certificate(private_key_pem, certificate_bytes)?;
+    let certificate_der = certificate_der(certificate_bytes)?;
+    let certificate = x509_cert::Certificate::from_der(&certificate_der)
+        .map_err(|error| format!("invalid X.509 certificate: {error}"))?;
+    let digest_algorithm = AlgorithmIdentifierOwned {
+        oid: const_oid::db::rfc5912::ID_SHA_256,
+        parameters: None,
+    };
+    let signature_algorithm = AlgorithmIdentifierOwned {
+        oid: const_oid::db::rfc5912::RSA_ENCRYPTION,
+        parameters: Some(Any::null()),
+    };
+    let signature =
+        sign_rsa_pkcs1_ring(private_key_pem, payload, &ring::signature::RSA_PKCS1_SHA256)?;
+    let signer_info = SignerInfo {
+        version: CmsVersion::V1,
+        sid: SignerIdentifier::IssuerAndSerialNumber(IssuerAndSerialNumber {
+            issuer: certificate.tbs_certificate.issuer.clone(),
+            serial_number: certificate.tbs_certificate.serial_number.clone(),
+        }),
+        digest_alg: digest_algorithm.clone(),
+        signed_attrs: None,
+        signature_algorithm,
+        signature: SignatureValue::new(signature)
+            .map_err(|error| format!("cannot encode EFI variable signature: {error}"))?,
+        unsigned_attrs: None,
+    };
+    let signed_data = SignedData {
+        version: CmsVersion::V1,
+        digest_algorithms: SetOfVec::try_from(vec![digest_algorithm])
+            .map_err(|error| format!("cannot encode digest set: {error}"))?,
+        encap_content_info: EncapsulatedContentInfo {
+            econtent_type: const_oid::db::rfc5911::ID_DATA,
+            econtent: None,
+        },
+        certificates: Some(CertificateSet(
+            SetOfVec::try_from(vec![CertificateChoices::Certificate(certificate)])
+                .map_err(|error| format!("cannot encode certificate set: {error}"))?,
+        )),
+        crls: None,
+        signer_infos: SignerInfos(
+            SetOfVec::try_from(vec![signer_info])
+                .map_err(|error| format!("cannot encode signer set: {error}"))?,
+        ),
+    };
+    signed_data
+        .to_der()
+        .map_err(|error| format!("cannot encode EFI variable SignedData: {error}"))
+}
+
+/// Verify the exact Linux module-signature envelope emitted by
+/// [`sign_kernel_module`] against the supplied X.509 certificate.
+///
+/// # Errors
+///
+/// Returns an error for malformed trailers/CMS, unexpected algorithms or
+/// attributes, a mismatched signer identity, or an invalid signature.
+pub fn verify_kernel_module(certificate_bytes: &[u8], signed_module: &[u8]) -> Result<(), String> {
+    use cms::{
+        content_info::ContentInfo,
+        signed_data::{SignedData, SignerIdentifier},
+    };
+    use der::{Decode, Encode};
+    use rsa::{RsaPublicKey, pkcs1v15, pkcs8::DecodePublicKey, sha2::Sha512, signature::Verifier};
+
+    const MAGIC: &[u8] = b"~Module signature appended~\n";
+    const HEADER_LEN: usize = 12;
+    if !signed_module.ends_with(MAGIC) {
+        return Err("kernel module signature trailer is missing".into());
+    }
+    let header_start = signed_module
+        .len()
+        .checked_sub(MAGIC.len())
+        .and_then(|offset| offset.checked_sub(HEADER_LEN))
+        .ok_or("kernel module signature trailer is truncated")?;
+    let header_end = header_start
+        .checked_add(HEADER_LEN)
+        .ok_or("module signature header overflow")?;
+    let header = signed_module
+        .get(header_start..header_end)
+        .ok_or("kernel module signature header is truncated")?;
+    if header.get(..8) != Some(&[0, 0, 2, 0, 0, 0, 0, 0]) {
+        return Err("kernel module signature header is unsupported".into());
+    }
+    let envelope_len = u32::from_be_bytes(
+        header
+            .get(8..12)
+            .ok_or("invalid module signature length")?
+            .try_into()
+            .map_err(|_| "invalid module signature length")?,
+    ) as usize;
+    let envelope_start = header_start
+        .checked_sub(envelope_len)
+        .ok_or("module signature length exceeds input")?;
+    let module = signed_module
+        .get(..envelope_start)
+        .ok_or("module signature offset exceeds input")?;
+    let envelope = signed_module
+        .get(envelope_start..header_start)
+        .ok_or("module signature envelope exceeds input")?;
+    let content_info = ContentInfo::from_der(envelope)
+        .map_err(|error| format!("invalid PKCS#7 envelope: {error}"))?;
+    if content_info.content_type != const_oid::db::rfc5911::ID_SIGNED_DATA {
+        return Err("module signature is not CMS SignedData".into());
+    }
+    let signed_data: SignedData = content_info
+        .content
+        .decode_as()
+        .map_err(|error| format!("invalid CMS SignedData: {error}"))?;
+    if signed_data.encap_content_info.econtent_type != const_oid::db::rfc5911::ID_DATA
+        || signed_data.encap_content_info.econtent.is_some()
+        || signed_data.certificates.is_some()
+        || signed_data.crls.is_some()
+        || signed_data.signer_infos.0.len() != 1
+    {
+        return Err("module signature has an unexpected CMS shape".into());
+    }
+    let signer = signed_data
+        .signer_infos
+        .0
+        .get(0)
+        .ok_or("module signature has no signer")?;
+    if signer.digest_alg.oid != const_oid::db::rfc5912::ID_SHA_512
+        || signer.signature_algorithm.oid != const_oid::db::rfc5912::RSA_ENCRYPTION
+        || signer.signed_attrs.is_some()
+        || signer.unsigned_attrs.is_some()
+    {
+        return Err("module signature algorithms or attributes are unsupported".into());
+    }
+    let certificate = x509_cert::Certificate::from_der(&certificate_der(certificate_bytes)?)
+        .map_err(|error| format!("invalid X.509 certificate: {error}"))?;
+    let SignerIdentifier::IssuerAndSerialNumber(identity) = &signer.sid else {
+        return Err("module signature does not use issuer/serial identity".into());
+    };
+    if identity.issuer != certificate.tbs_certificate.issuer
+        || identity.serial_number != certificate.tbs_certificate.serial_number
+    {
+        return Err("module signature names a different certificate".into());
+    }
+    let public_der = certificate
+        .tbs_certificate
+        .subject_public_key_info
+        .to_der()
+        .map_err(|error| format!("cannot encode certificate public key: {error}"))?;
+    let public = RsaPublicKey::from_public_key_der(&public_der)
+        .map_err(|_| "certificate does not contain a supported RSA key")?;
+    let signature = pkcs1v15::Signature::try_from(signer.signature.as_bytes())
+        .map_err(|_| "invalid RSA module signature length")?;
+    pkcs1v15::VerifyingKey::<Sha512>::new(public)
+        .verify(module, &signature)
+        .map_err(|_| "kernel module signature verification failed".into())
+}
+
+fn with_pe<T>(
+    image: &[u8],
+    mut operation: impl FnMut(&dyn authenticode::PeTrait) -> Result<T, String>,
+) -> Result<T, String> {
+    use object::read::pe::{PeFile32, PeFile64};
+
+    if let Ok(pe) = PeFile64::parse(image) {
+        return operation(&pe);
+    }
+    if let Ok(pe) = PeFile32::parse(image) {
+        return operation(&pe);
+    }
+    Err("input is not a valid PE32/PE32+ image".into())
+}
+
+fn pe_checksum(image: &[u8], checksum_offset: usize) -> Result<u32, String> {
+    let checksum_end = checksum_offset
+        .checked_add(4)
+        .ok_or("PE checksum offset overflow")?;
+    if checksum_end > image.len() {
+        return Err("PE checksum field is outside the image".into());
+    }
+    let mut checksum = 0u64;
+    for (index, chunk) in image.chunks(2).enumerate() {
+        let offset = index.checked_mul(2).ok_or("PE checksum offset overflow")?;
+        if (checksum_offset..checksum_end).contains(&offset) {
+            continue;
+        }
+        let first = chunk.first().copied().ok_or("empty PE checksum chunk")?;
+        let word = u16::from_le_bytes([first, chunk.get(1).copied().unwrap_or(0)]);
+        checksum = (checksum & 0xffff)
+            .wrapping_add(checksum >> 16)
+            .wrapping_add(u64::from(word));
+    }
+    checksum = (checksum & 0xffff).wrapping_add(checksum >> 16);
+    checksum = (checksum & 0xffff).wrapping_add(checksum >> 16);
+    let folded = u32::try_from(checksum & 0xffff).map_err(|_| "PE checksum overflow")?;
+    let image_len = u32::try_from(image.len()).map_err(|_| "PE image exceeds 4 GiB")?;
+    Ok(folded.wrapping_add(image_len))
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep Authenticode DER field construction beside the exact attributes signed by ring"
+)]
+fn efi_authenticode_entry(
+    private_key_pem: &str,
+    certificate_pem: &str,
+    digest: Vec<u8>,
+) -> Result<Vec<u8>, String> {
+    use picky::x509::{
+        pkcs7::{
+            Pkcs7,
+            authenticode::{AuthenticodeSignature, ShaVariant},
+        },
+        wincert::{CertificateType, WinCertificate},
+    };
+    use picky_asn1::{
+        tag::Tag,
+        wrapper::{Asn1SetOf, ExplicitContextTag0, ExplicitContextTag1, Optional},
+    };
+    use picky_asn1_der::Asn1RawDer;
+    use picky_asn1_x509::{
+        Attribute, AttributeValues, Certificate, DigestInfo,
+        algorithm_identifier::AlgorithmIdentifier,
+        cmsversion::CmsVersion,
+        oids,
+        pkcs7::{
+            Pkcs7Certificate,
+            content_info::{
+                ContentValue, EncapsulatedContentInfo, SpcAttributeAndOptionalValue,
+                SpcAttributeAndOptionalValueValue, SpcIndirectDataContent, SpcLink, SpcPeImageData,
+                SpcPeImageFlags, SpcSpOpusInfo,
+            },
+            crls::RevocationInfoChoices,
+            signed_data::{
+                CertificateChoices, CertificateSet, DigestAlgorithmIdentifiers, SignedData,
+                SignersInfos,
+            },
+            signer_info::{
+                Attributes, CertificateSerialNumber, DigestAlgorithmIdentifier,
+                IssuerAndSerialNumber, SignatureAlgorithmIdentifier, SignatureValue,
+                SignerIdentifier, SignerInfo, UnsignedAttributes,
+            },
+        },
+    };
+    // Build the small Authenticode CMS envelope here so the real db key never
+    // enters Picky's RustCrypto RSA private operation (RUSTSEC-2023-0071).
+    // Picky remains the bounded parser/verifier; ring performs the signature.
+    let certificate_der = certificate_der(certificate_pem.as_bytes())?;
+    let certificate: Certificate = picky_asn1_der::from_bytes(&certificate_der)
+        .map_err(|error| format!("invalid EFI certificate: {error}"))?;
+    let digest_algorithm = AlgorithmIdentifier::new_sha(ShaVariant::SHA2_256);
+    let data = SpcAttributeAndOptionalValue {
+        ty: oids::spc_pe_image_dataobj().into(),
+        value: SpcAttributeAndOptionalValueValue::SpcPeImageData(SpcPeImageData {
+            flags: SpcPeImageFlags::default(),
+            file: ExplicitContextTag0::default(),
+        }),
+    };
+    let message_digest = DigestInfo {
+        oid: digest_algorithm.clone(),
+        digest: digest.into(),
+    };
+    let mut signed_content = picky_asn1_der::to_vec(&data)
+        .map_err(|error| format!("cannot encode Authenticode content: {error}"))?;
+    signed_content.extend(
+        picky_asn1_der::to_vec(&message_digest)
+            .map_err(|error| format!("cannot encode Authenticode digest: {error}"))?,
+    );
+    let authenticated_attributes = vec![
+        Attribute {
+            ty: oids::content_type().into(),
+            value: AttributeValues::ContentType(Asn1SetOf(vec![
+                oids::spc_indirect_data_objid().into(),
+            ])),
+        },
+        Attribute {
+            ty: oids::spc_sp_opus_info_objid().into(),
+            value: AttributeValues::SpcSpOpusInfo(Asn1SetOf(vec![SpcSpOpusInfo {
+                program_name: None,
+                more_info: Some(ExplicitContextTag1(SpcLink::default())),
+            }])),
+        },
+        Attribute {
+            ty: oids::message_digest().into(),
+            value: AttributeValues::MessageDigest(Asn1SetOf(vec![
+                Sha256::digest(&signed_content).to_vec().into(),
+            ])),
+        },
+    ];
+    let mut attributes_der = picky_asn1_der::to_vec(&authenticated_attributes)
+        .map_err(|error| format!("cannot encode Authenticode attributes: {error}"))?;
+    let first = attributes_der
+        .first_mut()
+        .ok_or("empty Authenticode attributes")?;
+    *first = Tag::SET.inner();
+    let rsa_signature = sign_rsa_pkcs1_ring(
+        private_key_pem,
+        &attributes_der,
+        &ring::signature::RSA_PKCS1_SHA256,
+    )?;
+    let signed_data = SignedData {
+        version: CmsVersion::V1,
+        digest_algorithms: DigestAlgorithmIdentifiers(Asn1SetOf(vec![digest_algorithm.clone()])),
+        content_info: EncapsulatedContentInfo {
+            content_type: oids::spc_indirect_data_objid().into(),
+            content: Some(
+                ContentValue::SpcIndirectDataContent(SpcIndirectDataContent {
+                    data,
+                    message_digest,
+                })
+                .into(),
+            ),
+        },
+        certificates: Optional(CertificateSet(vec![CertificateChoices::Certificate(
+            Asn1RawDer(certificate_der),
+        )])),
+        crls: Some(RevocationInfoChoices::default()),
+        signers_infos: SignersInfos(Asn1SetOf(vec![SignerInfo {
+            version: CmsVersion::V1,
+            sid: SignerIdentifier::IssuerAndSerialNumber(IssuerAndSerialNumber {
+                issuer: certificate.tbs_certificate.issuer,
+                serial_number: CertificateSerialNumber(certificate.tbs_certificate.serial_number),
+            }),
+            digest_algorithm: DigestAlgorithmIdentifier(digest_algorithm),
+            signed_attrs: Optional(Attributes(authenticated_attributes.into())),
+            signature_algorithm: SignatureAlgorithmIdentifier(
+                AlgorithmIdentifier::new_rsa_encryption(),
+            ),
+            signature: SignatureValue(rsa_signature.into()),
+            unsigned_attrs: Optional(UnsignedAttributes::default()),
+        }])),
+    };
+    let signature = AuthenticodeSignature(Pkcs7::from(Pkcs7Certificate {
+        oid: oids::signed_data().into(),
+        signed_data: ExplicitContextTag0(signed_data),
+    }));
+    let signature_der = signature
+        .to_der()
+        .map_err(|error| format!("cannot encode EFI Authenticode signature: {error}"))?;
+    WinCertificate::from_certificate(signature_der, CertificateType::WinCertTypePkcsSignedData)
+        .encode()
+        .map_err(|error| format!("cannot encode EFI certificate table entry: {error}"))
+}
+
+/// Add an RSA/SHA-256 Authenticode signature to a PE/COFF EFI image.
+///
+/// Existing signatures are retained. The certificate table must be at the end
+/// of the image, as required for an unambiguous Authenticode digest.
+///
+/// # Errors
+///
+/// Returns an error for malformed keys, certificates, PE images, certificate
+/// tables, or signing/encoding failures.
+pub fn sign_efi_image(
+    private_key_pem: &str,
+    certificate_pem: &str,
+    image: &[u8],
+) -> Result<Vec<u8>, String> {
+    use authenticode::authenticode_digest;
+    use sha2::Digest as _;
+
+    let mut prepared = image.to_vec();
+    let (security_dir_offset, checksum_offset, certificate_offset, old_size) =
+        with_pe(&prepared, |pe| {
+            let offsets = pe.offsets().map_err(|error| error.to_string())?;
+            let range = pe
+                .certificate_table_range()
+                .map_err(|error| error.to_string())?;
+            let (certificate_offset, old_size) = match range {
+                Some(range) if !range.is_empty() => {
+                    if range.end != pe.data().len() {
+                        return Err("PE certificate table is not at the end of the image".into());
+                    }
+                    let size = range
+                        .end
+                        .checked_sub(range.start)
+                        .ok_or("invalid PE certificate table range")?;
+                    (range.start, size)
+                }
+                _ => (pe.data().len(), 0),
+            };
+            Ok((
+                offsets.security_data_dir,
+                offsets.check_sum,
+                certificate_offset,
+                old_size,
+            ))
+        })?;
+
+    if old_size == 0 {
+        prepared.resize(prepared.len().next_multiple_of(8), 0);
+    }
+    let certificate_offset = if old_size == 0 {
+        prepared.len()
+    } else {
+        certificate_offset
+    };
+
+    let mut hasher = sha2::Sha256::new();
+    with_pe(&prepared, |pe| {
+        authenticode_digest(pe, &mut hasher).map_err(|error| error.to_string())
+    })?;
+    let encoded =
+        efi_authenticode_entry(private_key_pem, certificate_pem, hasher.finalize().to_vec())?;
+
+    let new_size = old_size
+        .checked_add(encoded.len())
+        .ok_or("EFI certificate table size overflow")?;
+    let certificate_offset_u32 = u32::try_from(certificate_offset)
+        .map_err(|_| "EFI certificate table offset exceeds PE format")?;
+    let new_size_u32 =
+        u32::try_from(new_size).map_err(|_| "EFI certificate table exceeds PE format")?;
+    prepared.extend_from_slice(&encoded);
+    let security_dir_end = security_dir_offset
+        .checked_add(8)
+        .ok_or("PE security directory offset overflow")?;
+    prepared
+        .get_mut(security_dir_offset..security_dir_end)
+        .ok_or("PE security directory is outside the image")?
+        .copy_from_slice(
+            &[
+                certificate_offset_u32.to_le_bytes(),
+                new_size_u32.to_le_bytes(),
+            ]
+            .concat(),
+        );
+    let checksum = pe_checksum(&prepared, checksum_offset)?;
+    let checksum_end = checksum_offset
+        .checked_add(4)
+        .ok_or("PE checksum offset overflow")?;
+    prepared
+        .get_mut(checksum_offset..checksum_end)
+        .ok_or("PE checksum field is outside the image")?
+        .copy_from_slice(&checksum.to_le_bytes());
+    verify_efi_image(certificate_pem, &prepared)
+        .map_err(|error| format!("new EFI signature failed self-verification: {error}"))?;
+    Ok(prepared)
+}
+
+/// Verify that a PE/COFF EFI image has a valid Authenticode signature made by
+/// the exact certificate supplied by the caller.
+///
+/// # Errors
+///
+/// Returns an error for malformed input, when the image digest or signature is
+/// invalid, or when no signature is bound to the supplied certificate.
+pub fn verify_efi_image(certificate_pem: &str, image: &[u8]) -> Result<(), String> {
+    use authenticode::{AttributeCertificateIterator, authenticode_digest};
+    use picky::x509::{Cert, date::UtcDate, pkcs7::authenticode::AuthenticodeSignature};
+    use sha2::Digest as _;
+
+    let expected = Cert::from_pem_str(certificate_pem)
+        .map_err(|error| format!("invalid EFI certificate: {error}"))?;
+    let expected_der = expected
+        .to_der()
+        .map_err(|error| format!("cannot encode EFI certificate: {error}"))?;
+
+    with_pe(image, |pe| {
+        let mut hasher = sha2::Sha256::new();
+        authenticode_digest(pe, &mut hasher).map_err(|error| error.to_string())?;
+        let digest = hasher.finalize().to_vec();
+        let certificates = AttributeCertificateIterator::new(pe)
+            .map_err(|error| format!("invalid EFI certificate table: {error}"))?
+            .ok_or("EFI image is unsigned")?;
+        for entry in certificates {
+            let entry = entry.map_err(|error| format!("invalid EFI signature entry: {error}"))?;
+            let Ok(signature) = AuthenticodeSignature::from_der(&entry.data) else {
+                continue;
+            };
+            let embedded = signature.0.decode_certificates();
+            let Ok(signer) = signature.signing_certificate(&embedded) else {
+                continue;
+            };
+            let signer_der = signer
+                .to_der()
+                .map_err(|error| format!("cannot encode embedded EFI certificate: {error}"))?;
+            if signer_der != expected_der {
+                continue;
+            }
+            let now = UtcDate::now();
+            signature
+                .authenticode_verifier()
+                .exact_date(&now)
+                .require_basic_authenticode_validation(digest)
+                .verify()
+                .map_err(|error| format!("EFI Authenticode verification failed: {error}"))?;
+            return Ok(());
+        }
+        Err("EFI image has no signature from the supplied certificate".into())
+    })
+}
+
+/// Count structurally valid Authenticode entries in a PE/COFF EFI image.
+///
+/// This proves only that signature envelopes exist. Call [`verify_efi_image`]
+/// when a particular signing identity must be authenticated.
+///
+/// # Errors
+///
+/// Returns an error for malformed PE images or certificate tables.
+pub fn efi_signature_count(image: &[u8]) -> Result<usize, String> {
+    use authenticode::AttributeCertificateIterator;
+    use picky::x509::pkcs7::authenticode::AuthenticodeSignature;
+
+    with_pe(image, |pe| {
+        let Some(certificates) = AttributeCertificateIterator::new(pe)
+            .map_err(|error| format!("invalid EFI certificate table: {error}"))?
+        else {
+            return Ok(0);
+        };
+        let mut count = 0usize;
+        for entry in certificates {
+            let entry = entry.map_err(|error| format!("invalid EFI signature entry: {error}"))?;
+            if AuthenticodeSignature::from_der(&entry.data).is_ok() {
+                count = count.saturating_add(1);
+            }
+        }
+        Ok(count)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha_crypt::{PasswordHashRef, PasswordVerifier};
+
+    #[test]
+    fn account_hash_is_compatible_and_scrubs_input() {
+        let original = b"correct horse battery staple";
+        let mut password = original.to_vec();
+        let hash = hash_account_password(&mut password).expect("hash password");
+
+        assert!(hash.starts_with("$6$"));
+        assert!(password.iter().all(|byte| *byte == 0));
+        let parsed = PasswordHashRef::new(&hash).expect("parse generated hash");
+        ShaCrypt::default()
+            .verify_password(original, parsed)
+            .expect("verify generated hash");
+    }
+
+    #[test]
+    fn invalid_input_is_also_scrubbed() {
+        let mut password = b"short".to_vec();
+        assert!(hash_account_password(&mut password).is_err());
+        assert!(password.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn rejects_non_certificates() {
+        assert!(inspect_certificate(b"not a certificate").is_err());
+    }
+
+    #[test]
+    fn generated_secure_boot_certificate_round_trips() {
+        let generated =
+            generate_secure_boot_certificate("Tilo test db").expect("generate RSA cert");
+        assert!(generated.private_key_pem.contains("PRIVATE KEY"));
+        let info = inspect_certificate(generated.certificate_pem.as_bytes()).expect("inspect cert");
+        assert!(info.subject.contains("Tilo test db"));
+        assert_eq!(
+            certificate_sha256(generated.certificate_pem.as_bytes())
+                .unwrap()
+                .len(),
+            64
+        );
+        rsa_private_key_matches_certificate(
+            &generated.private_key_pem,
+            generated.certificate_pem.as_bytes(),
+        )
+        .expect("generated key matches certificate");
+        let other = generate_secure_boot_certificate("other key").expect("second certificate");
+        assert!(
+            rsa_private_key_matches_certificate(
+                &generated.private_key_pem,
+                other.certificate_pem.as_bytes()
+            )
+            .is_err()
+        );
+
+        let mut esl = certificate_efi_signature_list(generated.certificate_pem.as_bytes())
+            .expect("encode certificate as ESL");
+        assert_eq!(
+            &esl[..16],
+            &[
+                0xa1, 0x59, 0xc0, 0xa5, 0xe4, 0x94, 0xa7, 0x4a, 0x87, 0xb5, 0xab, 0x15, 0x5c, 0x2b,
+                0xf0, 0x72,
+            ]
+        );
+        verify_efi_signature_list_contains_certificate(generated.certificate_pem.as_bytes(), &esl)
+            .expect("ESL contains generated certificate");
+        verify_efi_signature_list_exclusively_contains_certificate(
+            generated.certificate_pem.as_bytes(),
+            &esl,
+        )
+        .expect("single-entry ESL is owner-exclusive");
+        assert_eq!(validate_efi_signature_list(&esl), Ok(1));
+        let mut wrong_signature_type = esl.clone();
+        wrong_signature_type[..16].fill(0x5a);
+        assert!(
+            verify_efi_signature_list_contains_certificate(
+                generated.certificate_pem.as_bytes(),
+                &wrong_signature_type
+            )
+            .is_err(),
+            "certificate bytes under a non-X.509 signature type must not establish trust"
+        );
+        assert!(
+            verify_efi_signature_list_exclusively_contains_certificate(
+                generated.certificate_pem.as_bytes(),
+                &wrong_signature_type
+            )
+            .is_err(),
+            "a wrong-type entry must not satisfy owner-exclusive db verification"
+        );
+        let mut combined = esl.clone();
+        combined.extend(
+            certificate_efi_signature_list(other.certificate_pem.as_bytes())
+                .expect("encode second certificate"),
+        );
+        verify_efi_signature_list_contains_certificate(
+            generated.certificate_pem.as_bytes(),
+            &combined,
+        )
+        .expect("combined ESL still contains owner");
+        assert_eq!(validate_efi_signature_list(&combined), Ok(2));
+        assert!(
+            verify_efi_signature_list_exclusively_contains_certificate(
+                generated.certificate_pem.as_bytes(),
+                &combined,
+            )
+            .is_err(),
+            "additional boot authority must defeat owner-exclusive verification"
+        );
+        assert!(
+            verify_efi_signature_list_contains_certificate(other.certificate_pem.as_bytes(), &esl)
+                .is_err()
+        );
+        let mut trailing_corruption = esl.clone();
+        trailing_corruption.push(0);
+        assert!(validate_efi_signature_list(&trailing_corruption).is_err());
+        assert!(
+            verify_efi_signature_list_contains_certificate(
+                generated.certificate_pem.as_bytes(),
+                &trailing_corruption
+            )
+            .is_err()
+        );
+        esl.pop();
+        assert!(
+            verify_efi_signature_list_contains_certificate(
+                generated.certificate_pem.as_bytes(),
+                &esl
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn generated_tls_fixture_has_constrained_ca_and_loopback_san() {
+        use x509_parser::{
+            extensions::{GeneralName, ParsedExtension},
+            pem::parse_x509_pem,
+        };
+
+        let fixture = generate_tls_fixture("127.0.0.1".parse().unwrap()).expect("TLS fixture");
+        assert!(fixture.server_private_key_pem.contains("PRIVATE KEY"));
+
+        let (_, ca_pem) = parse_x509_pem(fixture.ca_certificate_pem.as_bytes()).unwrap();
+        let ca = ca_pem.parse_x509().unwrap();
+        assert!(ca.basic_constraints().unwrap().unwrap().value.ca);
+
+        let (_, server_pem) = parse_x509_pem(fixture.server_certificate_pem.as_bytes()).unwrap();
+        let server = server_pem.parse_x509().unwrap();
+        let ca_key_id = ca
+            .extensions()
+            .iter()
+            .find_map(|extension| {
+                if let ParsedExtension::SubjectKeyIdentifier(identifier) =
+                    extension.parsed_extension()
+                {
+                    Some(identifier.0)
+                } else {
+                    None
+                }
+            })
+            .expect("CA subject key identifier");
+        let issuer_key_id = server
+            .extensions()
+            .iter()
+            .find_map(|extension| {
+                if let ParsedExtension::AuthorityKeyIdentifier(identifier) =
+                    extension.parsed_extension()
+                {
+                    identifier.key_identifier.as_ref().map(|key| key.0)
+                } else {
+                    None
+                }
+            })
+            .expect("server authority key identifier");
+        assert_eq!(
+            issuer_key_id, ca_key_id,
+            "server identifies the signing CA key"
+        );
+        assert!(
+            !server
+                .basic_constraints()
+                .unwrap()
+                .is_some_and(|constraints| constraints.value.ca)
+        );
+        let san = server.subject_alternative_name().unwrap().unwrap();
+        assert!(
+            san.value.general_names.iter().any(
+                |name| matches!(name, GeneralName::IPAddress(bytes) if *bytes == [127, 0, 0, 1])
+            )
+        );
+    }
+
+    #[test]
+    fn rsa_signature_round_trips_and_rejects_tampering() {
+        let generated = generate_secure_boot_certificate("Tilo signer").expect("generate RSA cert");
+        let public = rsa_public_key_pem(&generated.private_key_pem).expect("derive public key");
+        let (bits, identity) = rsa_public_key_info(&public).expect("inspect public key");
+        assert!(bits >= 2048);
+        assert_eq!(identity.len(), 64);
+        let signature =
+            sign_rsa_sha256(&generated.private_key_pem, b"measured image").expect("sign message");
+        verify_rsa_sha256(&public, b"measured image", &signature).expect("verify signature");
+        assert!(verify_rsa_sha256(&public, b"tampered image", &signature).is_err());
+    }
+
+    #[test]
+    fn p256_public_identity_validates_curve_point_and_is_stable() {
+        use p256::pkcs8::{EncodePublicKey as _, LineEnding};
+        let signing = p256::ecdsa::SigningKey::from_slice(&[7_u8; 32]).expect("P-256 key");
+        let public = signing
+            .verifying_key()
+            .to_public_key_pem(LineEnding::LF)
+            .expect("public PEM");
+        let identity = p256_public_key_sha256(&public).expect("P-256 identity");
+        assert_eq!(identity.len(), 64);
+        assert!(
+            p256_public_key_sha256("-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn pure_rust_kernel_module_signature_round_trips() {
+        let certificate = generate_secure_boot_certificate("Tilo kernel test").expect("signer");
+        let module = b"synthetic kernel module bytes";
+        let signed_module = sign_kernel_module(
+            &certificate.private_key_pem,
+            certificate.certificate_pem.as_bytes(),
+            module,
+        )
+        .expect("sign module");
+        verify_kernel_module(certificate.certificate_pem.as_bytes(), &signed_module)
+            .expect("verify module");
+
+        let mut tampered = signed_module.clone();
+        *tampered.first_mut().expect("nonempty signed module") ^= 1;
+        assert!(verify_kernel_module(certificate.certificate_pem.as_bytes(), &tampered).is_err());
+        assert!(
+            sign_kernel_module(
+                &certificate.private_key_pem,
+                certificate.certificate_pem.as_bytes(),
+                &signed_module,
+            )
+            .is_err()
+        );
+    }
+
+    #[allow(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        reason = "fixed offsets construct a bounded synthetic PE fixture"
+    )]
+    fn minimal_efi_image() -> Vec<u8> {
+        let mut image = vec![0u8; 1024];
+        image[0..2].copy_from_slice(b"MZ");
+        image[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        image[0x80..0x84].copy_from_slice(b"PE\0\0");
+        let coff = 0x84;
+        image[coff..coff + 2].copy_from_slice(&0x8664u16.to_le_bytes());
+        image[coff + 2..coff + 4].copy_from_slice(&1u16.to_le_bytes());
+        image[coff + 16..coff + 18].copy_from_slice(&240u16.to_le_bytes());
+        image[coff + 18..coff + 20].copy_from_slice(&0x2022u16.to_le_bytes());
+        let optional = coff + 20;
+        image[optional..optional + 2].copy_from_slice(&0x20bu16.to_le_bytes());
+        image[optional + 16..optional + 20].copy_from_slice(&0x1000u32.to_le_bytes());
+        image[optional + 20..optional + 24].copy_from_slice(&0x1000u32.to_le_bytes());
+        image[optional + 24..optional + 32].copy_from_slice(&0x0040_0000_u64.to_le_bytes());
+        image[optional + 32..optional + 36].copy_from_slice(&0x1000u32.to_le_bytes());
+        image[optional + 36..optional + 40].copy_from_slice(&0x200u32.to_le_bytes());
+        image[optional + 56..optional + 60].copy_from_slice(&0x2000u32.to_le_bytes());
+        image[optional + 60..optional + 64].copy_from_slice(&0x200u32.to_le_bytes());
+        image[optional + 68..optional + 70].copy_from_slice(&10u16.to_le_bytes());
+        image[optional + 108..optional + 112].copy_from_slice(&16u32.to_le_bytes());
+        let section = optional + 240;
+        image[section..section + 8].copy_from_slice(b".text\0\0\0");
+        image[section + 8..section + 12].copy_from_slice(&0x200u32.to_le_bytes());
+        image[section + 12..section + 16].copy_from_slice(&0x1000u32.to_le_bytes());
+        image[section + 16..section + 20].copy_from_slice(&0x200u32.to_le_bytes());
+        image[section + 20..section + 24].copy_from_slice(&0x200u32.to_le_bytes());
+        image[section + 36..section + 40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
+        image[0x200..0x209].copy_from_slice(b"Tilo EFI\0");
+        image
+    }
+
+    #[test]
+    fn pure_rust_efi_signing_verifies_and_rejects_tampering() {
+        let signer = generate_secure_boot_certificate("Tilo EFI signer").expect("signer");
+        let wrong = generate_secure_boot_certificate("wrong EFI signer").expect("wrong signer");
+        let image = minimal_efi_image();
+        assert_eq!(efi_signature_count(&image).expect("unsigned count"), 0);
+        let signed_image = sign_efi_image(&signer.private_key_pem, &signer.certificate_pem, &image)
+            .expect("sign EFI image");
+        assert_eq!(efi_signature_count(&signed_image).expect("signed count"), 1);
+        verify_efi_image(&signer.certificate_pem, &signed_image).expect("verify EFI image");
+        assert!(verify_efi_image(&wrong.certificate_pem, &signed_image).is_err());
+        assert!(sign_efi_image(&wrong.private_key_pem, &signer.certificate_pem, &image).is_err());
+        let variable_signature = sign_efi_variable_payload(
+            &signer.private_key_pem,
+            signer.certificate_pem.as_bytes(),
+            b"authenticated EFI variable payload",
+        )
+        .expect("sign EFI variable payload");
+        assert!(!variable_signature.is_empty());
+        assert!(
+            sign_efi_variable_payload(
+                &wrong.private_key_pem,
+                signer.certificate_pem.as_bytes(),
+                b"authenticated EFI variable payload",
+            )
+            .is_err()
+        );
+
+        let mut tampered = signed_image.clone();
+        tampered[0x200] ^= 1;
+        assert!(verify_efi_image(&signer.certificate_pem, &tampered).is_err());
+
+        let dual_signed = sign_efi_image(
+            &wrong.private_key_pem,
+            &wrong.certificate_pem,
+            &signed_image,
+        )
+        .expect("append second EFI signature");
+        assert_eq!(efi_signature_count(&dual_signed).expect("dual count"), 2);
+        verify_efi_image(&signer.certificate_pem, &dual_signed).expect("verify first signer");
+        verify_efi_image(&wrong.certificate_pem, &dual_signed).expect("verify second signer");
+    }
+}

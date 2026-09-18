@@ -1,5 +1,5 @@
-//! Remote — a qOS native app for reaching other machines: SSH terminals,
-//! VNC/RDP remote desktops, and qOS-to-qOS relay sessions.
+//! Remote — a Tilo native app for reaching other machines: SSH terminals,
+//! VNC/RDP remote desktops, and Tilo-to-Tilo relay sessions.
 //!
 //! The app is built on the CRDT-native `ui` toolkit. Its durable state —
 //! the list of saved connections — lives in the shared Automerge document
@@ -15,16 +15,16 @@
 //!   online status, last-used, favorites, search, and per-row Connect /
 //!   Edit actions.
 //! * **Form** — add or edit a connection: protocol selector
-//!   (SSH / VNC / RDP / qOS), host/port/user/auth fields, validation,
-//!   and a discovered-qOS-device picker.
+//!   (SSH / VNC / RDP / Tilo), host/port/user/auth fields, validation,
+//!   and a discovered-Tilo-device picker.
 //! * **Session** — the live surface. SSH opens an embedded terminal grid;
 //!   VNC/RDP open a remote-framebuffer canvas with a toolbar (fullscreen,
 //!   scaling, disconnect). Clipboard synchronization is not advertised until
 //!   the transports provide a real consent-aware channel.
 //!
-//! ## qOS relay
+//! ## Tilo relay
 //!
-//! A qOS device is modelled as a distinct connection [`kind`] because it
+//! A Tilo device is modelled as a distinct connection [`kind`] because it
 //! does not create an app-owned remote-desktop protocol. It asks the session
 //! broker for an authenticated exact-target device-mesh route, then consumes
 //! the compositor's existing consented workspace-surface stream and sends
@@ -65,11 +65,11 @@ pub mod actions;
 pub mod app;
 pub mod doc;
 pub mod model;
-pub mod qos_route;
 pub mod rfb;
 pub mod session;
 pub mod ssh;
 mod theme_ext;
+pub mod tilo_route;
 pub mod vnc;
 pub mod vt;
 

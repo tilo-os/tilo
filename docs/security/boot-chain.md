@@ -1,6 +1,6 @@
-# Secure Boot and disk encryption on qOS
+# Secure Boot and disk encryption on Tilo
 
-qOS boots UEFI → systemd-boot → a **unified kernel image** → systemd. There is no
+Tilo boots UEFI → systemd-boot → a **unified kernel image** → systemd. There is no
 shim and no GRUB: the image removes both, and the kernel is built here rather
 than taken from Fedora. Every one of those facts changes what Secure Boot can
 mean, so this document describes the chain as it is, not as a stock Fedora bootc
@@ -15,7 +15,7 @@ things that matter:
 - **The command line is inside the signature.** It used to sit beside the kernel
   as an editable file on the EFI system partition, so any hardening option could
   be stripped by anything that could write there. Sealing it into the UKI is what
-  makes `qos.generation=` trustworthy enough to bind an unlock policy to — see
+  makes `tilo.generation=` trustworthy enough to bind an unlock policy to — see
   [rollback.md](rollback.md).
 - **The initramfs is inside the signature too.** Previously it was a plain archive
   the loader handed to the kernel *after* verification, and it is where the
@@ -24,7 +24,7 @@ things that matter:
   That gap is closed: secure boot here now buys a verified *boot*, not merely a
   verified kernel.
 - **There is no bootupd.** A sealed image must not carry it, and it is not needed:
-  signing is `sbsign` over one artefact.
+  signing is the narrow Rust-native `tilo-crypto sign-efi` operation over one artefact.
 
 Why composefs rather than ostree at all is recorded in
 [composefs-decision.md](composefs-decision.md).
@@ -33,13 +33,13 @@ Why composefs rather than ostree at all is recorded in
 
 A stock Fedora bootc image inherits a chain that verifies out of the box on a
 factory machine: shim is signed by the Microsoft UEFI CA, GRUB by Fedora, the
-kernel by Fedora. qOS ships none of those three. `systemd-boot-unsigned` is, as
+kernel by Fedora. Tilo ships none of those three. `systemd-boot-unsigned` is, as
 the name says, unsigned, and the kernel is a local rebuild
 (`os/kernel/Containerfile`) that no distribution key has ever touched.
 
-So on a machine with the factory keys enrolled and Secure Boot on, qOS does not
+So on a machine with the factory keys enrolled and Secure Boot on, Tilo does not
 boot. That is not a packaging oversight to be fixed by re-adding shim — a
-qOS-signed chain would only move the problem. A vendor key means images *we*
+Tilo-signed chain would only move the problem. A vendor key means images *we*
 signed are attestable and an image the owner built is not, which is the property
 this system is specifically designed to keep.
 
@@ -48,29 +48,31 @@ factory keys, enrols a Platform Key generated on that machine, and signs the boo
 artefacts with it. A collaborator who chooses to trust that key gets an
 attestable machine, whether the image came from CI or from a laptop.
 
-`/usr/libexec/qos-secureboot` implements this. Nothing about it runs during the
+`/usr/libexec/tilo-secureboot` implements this. Nothing about it runs during the
 image build or automatically on a running machine.
 
-### The order, which is the whole safety story
+### Enrollment order
 
 Enrolling keys before anything signs the kernel produces a machine whose firmware
-refuses its own boot artefacts. `qos-secureboot enroll` therefore refuses unless
+refuses its own boot artefacts. `tilo-secureboot enroll` therefore refuses unless
 
 1. the keys exist,
 2. **every** artefact the firmware will check already verifies against `db`,
-3. `qos-secureboot-sign.path` and `.service` are enabled, so the next OS update
+3. `tilo-secureboot-sign.path` and `.service` are enabled, so the next OS update
    cannot stage a kernel that nothing signs, and
 4. the firmware is in **setup mode** — which is the only state that accepts these
    writes, and a state the owner has to reach deliberately.
 
 `sign` is safe at any time: a signature on an artefact the firmware is not
 checking is inert. That asymmetry is why the signing side ships enabled and the
-enrolling side does not.
+enrolling side does not. A signing pass also requires at least one managed
+loader, UKI, or deployment kernel; an absent/unmounted ESP or unknown layout is
+a hard failure, never a successful zero-artifact pass.
 
 Three things keep the artefacts signed, in decreasing order of how much they are
 relied on:
 
-- **`qos-secureboot-sign.path`** watches `/boot/EFI/Linux`, where a `bootc upgrade`
+- **`tilo-secureboot-sign.path`** watches `/boot/EFI/Linux`, where a `bootc upgrade`
   writes the incoming generation's UKI, so it gets signed immediately rather than at
   the next boot — which would be the boot the firmware refuses. It also watches
   `/boot/EFI/systemd` and `/boot/EFI/BOOT` for whatever replaces the loaders there,
@@ -78,32 +80,103 @@ relied on:
   (`/boot/EFI/…` and `/boot/efi/EFI/…`) because the ESP is at `/boot` on the sealed
   layout and under `/boot/efi` on the ostree one, and `/boot/ostree` still is too,
   for a machine that predates the move.
-- **`qos-secureboot-sign-shutdown.service`** signs once more on the way down.
+- **`tilo-secureboot-sign-shutdown.service`** signs once more on the way down.
   The path unit depends on inotify firing and on the change happening somewhere
   we thought to watch; this one needs neither. Whatever touched the boot
   artefacts and however it did it, the last thing before the machine goes down
-  is a signing pass — while there is still a running system to do it with.
-- **`qos-secureboot-sign.service`** at `multi-user.target`, which cannot rescue
-  the boot it runs in but does converge a machine that got here some other way.
+  is a signing pass — while there is still a running system to do it with. A
+  TPM-sealed db key is unsealed only inside this `ExecStop` pass and deleted
+  immediately afterward; it is not a long-lived systemd credential.
+- **`tilo-secureboot-sign.timer`** schedules a fallback scan 30 seconds after
+  boot, keeping PE parsing and writes out of the login I/O burst. The path and
+  update hooks still react promptly to changed artefacts. It cannot rescue the
+  boot it runs in but does converge a machine that got here some other way.
 
 `enroll` requires all three.
 
 ```bash
 # On the machine, before touching firmware setup:
-sudo qos-secureboot capture-vendor-keys   # save the factory db/KEK while readable
-sudo qos-secureboot generate-keys         # PK, KEK, db -> /var/lib/qos/secureboot
-sudo qos-secureboot sign                  # loaders + every deployment's kernel
-sudo qos-secureboot status                # read this before going further
+sudo tilo-secureboot capture-vendor-keys   # save the factory db/KEK while readable
+sudo tilo-secureboot generate-keys         # PK, KEK, db -> /var/lib/tilo/secureboot
+sudo tilo-secureboot sign                  # loaders + every deployment's kernel
+sudo tilo-secureboot status                # read this before going further
+# Copy PK.key and KEK.key to encrypted offline recovery media now.
 
 # Reboot into firmware setup, CLEAR the Secure Boot keys, boot back, then:
-sudo qos-secureboot enroll --yes
+sudo tilo-secureboot enroll --yes --owner-only-db
 # Reboot into firmware setup, turn Secure Boot ON.
+# After that verified Secure Boot boot:
+sudo tilo-secureboot retire-enrollment-keys --yes
+sudo tilo-secureboot seal-db-key --yes
 ```
 
-`capture-vendor-keys` matters: `enroll` carries the factory `db`/`KEK` alongside
-the owner's, so firmware capsule updates and signed option ROMs keep verifying.
+`capture-vendor-keys` matters: ordinary `enroll` carries the factory `db`/`KEK`
+alongside the owner's, so firmware capsule updates and signed option ROMs keep
+verifying. The hardened `--owner-only-db` profile keeps the captured vendor KEK
+but excludes vendor boot certificates from `db`; the capture remains available
+offline for recovery. Signed option ROMs may no longer verify under that profile.
 Once cleared, those keys cannot be read back, and proceeding without them takes
-`--no-vendor-keys`.
+`--no-vendor-keys`. A capture containing only one of `db` or `KEK` is not
+reported as complete; enrollment requires the same explicit override for that
+partial-backup case and preserves the list that was available.
+
+Enrollment does not trust a successful efivarfs write alone. It
+reads `db`, `KEK`, and `PK` back from firmware, parses their bounded EFI
+Signature Lists with `tilo-crypto`, and requires the exact owner certificate in
+each variable. Read-back also requires the exact nonvolatile, boot-service,
+runtime-service, and time-based-authenticated attribute set (`0x27`); an ESL
+stored as an unauthenticated variable is not accepted as firmware trust.
+`db` is addressed through the EFI image-security database GUID;
+`KEK` and `PK` use the EFI global-variable GUID. Each update carries an
+`EFI_VARIABLE_AUTHENTICATION_2` timestamp using current UTC, never a
+future-dated replay floor. Installing `PK` uses a Rust-native detached
+RSA/SHA-256 PKCS#7 self-signature and must make firmware leave Setup Mode.
+Enrollment durably records the current kernel boot ID. Only after Secure Boot
+is enabled and a later boot ID is observed does `retire-enrollment-keys`
+durably unlink the online PK and KEK private keys. Their certificates and ESLs
+remain for inspection and the db key remains available for routine kernel/UKI
+signing. The retirement
+step refuses while firmware is still in Setup Mode, if the enrolled PK/KEK do
+not read back, or if db signing authority is missing or mismatched. It is also
+available later as `tilo-secureboot retire-enrollment-keys --yes`; the explicit
+confirmation exists because offline recovery copies are the only way to change
+the enrolled hierarchy without clearing it in firmware setup again.
+
+The delayed boot security audit repeats the public half of this proof on every
+boot. It validates the retained db/KEK/PK certificates and exclusive local ESLs,
+reads the bounded live firmware variables through `tilo-crypto`, and requires
+each variable to still contain its corresponding owner certificate. It also
+rejects unsafe, partial, hard-linked, or ambiguous plaintext/sealed/retired key
+state. Firmware reset or replacement therefore becomes a failed health
+invariant instead of being inferred only when the next signing operation fails.
+
+The remaining db key can be removed from persistent plaintext storage with
+`seal-db-key`. The command requires a TPM2 character device, binds a systemd
+encrypted credential to PCR 7, immediately unseals it and checks it against
+`db.crt`, publishes credential-loading drop-ins durably, reloads PID 1, and
+only then durably unlinks `db.key`. Ordinary signing activations receive the
+plaintext only as a kernel-managed credential under `/run` and have no TPM
+device access. The always-active shutdown hook deliberately receives no such
+credential: its `ExecStop` gets access only to `/dev/tpmrm0` or `/dev/tpm0`,
+unseals into its private mode-0700 runtime directory, verifies the key against
+`db.crt`, signs, and durably removes the plaintext before returning. The
+runtime directory is not preserved by systemd, so abnormal termination or a
+timeout also removes transient plaintext when the last signing unit releases
+it. Manual
+`tilo-secureboot sign` delegates to the ordinary credential-bearing service.
+
+Because PCR 7 identifies the enrolled policy rather than the selected UKI,
+`seal-db-key` also reads firmware `db` back and requires the owner certificate
+to be its only entry. Otherwise any vendor-signed alternate OS admitted by the
+same `db` could reproduce PCR 7 and decrypt Tilo's signing key. Machines that
+must preserve vendor boot certificates may keep `db.key` offline, but they
+cannot label a PCR7-only credential as isolated to Tilo.
+
+Seal only after booting with the final owner Secure Boot policy. PCR 7 changes
+when that policy changes, deliberately making unattended signing unavailable;
+the encrypted offline db recovery copy is then required to reseal. The command
+refuses until PK/KEK have already been retired, preventing the more powerful
+enrollment authority from being mistaken for routine signing state.
 
 If an enrolled machine does not boot, clearing the Secure Boot keys in firmware
 setup returns it to setup mode and it boots exactly as before. That is the escape
@@ -112,41 +185,117 @@ displace a live Platform Key.
 
 ### Prerequisite: the signing tools
 
-`qos-secureboot` needs `sbsign`/`sbverify` (`sbsigntools`) and
-`cert-to-efi-sig-list`/`efi-updatevar`/`efi-readvar` (`efitools`). Both are now in
-the image and in the frozen package snapshot, along with `systemd-ukify` for
-building the UKI. Each subcommand still refuses with the exact remedy if a tool is
-missing, rather than half-signing a boot chain.
+`tilo-secureboot` uses Rust-native `tilo-crypto` for Authenticode signing and
+verification, signature-list creation, and bounded no-follow efivarfs writes
+and read-back. It is in the image and in the frozen package snapshot.
+`systemd-ukify` exists only in the throwaway UKI builder stage and is explicitly
+removed from the runtime rootfs; each runtime subcommand still refuses with the
+exact remedy if a required tool is missing, rather than half-signing a boot chain.
 
-Worth knowing how they were absent for so long: they were *named* in
-`os/Containerfile` but not present in the digest-pinned snapshot, and they live in
-a deliberately tolerant `dnf install` — so it installed nothing, silently, while
-every build stayed green. The snapshot's package set is scraped from those
-`dnf install` blocks, so adding a package means re-running the `snapshot-rpms`
-workflow and committing the new `RPMS_REF`; naming it alone does nothing. The
-tolerance is right (the tool fails closed), but it means a missing package is
-invisible unless something checks.
+The online db key is not a general EFI signing oracle. The signer considers only
+the fixed systemd-boot, bootc UKI, and OSTree kernel layouts; every candidate must
+be a nonempty, bounded, caller-owned, single-link file that is not writable by
+another account. Every directory between that file and the locked boot-store
+root must satisfy the same ownership and non-writability boundary. Signing and
+pre-enrollment verification both fail closed if those metadata checks do not
+hold, preventing a writable parent directory from rename-swapping arbitrary PE
+content into the managed set.
+PK, KEK, and db signature lists are also verified as exact, owner-exclusive
+encodings of their corresponding certificates before any firmware write;
+captured vendor authorities are merged only by the explicit enrollment policy.
+The complete merged db and KEK lists are then size-bounded and structurally
+parsed again, with the owner certificate required, before the first firmware
+variable is changed. The Rust `firmware-write-esl` primitive independently
+rejects empty, truncated, dimensionally invalid, or partially framed ESL data,
+so this boundary also holds for callers outside the enrollment script.
+
+The final image explicitly removes inherited `openssl`, `sbsigntools`,
+`efitools`, and `mokutil` command-line packages. It also removes the redundant
+OpenSSL-linked `systemd-resolved` subpackage; NetworkManager exclusively owns
+Tilo DNS state. Fedora core components including the remaining systemd binaries,
+cryptsetup, kmod, composefs, and the TPM stack still link the distribution's
+`libcrypto`; removing that ABI requires rebuilding those foundational packages.
+The finished-rootfs build enumerates every installed RPM's direct `libssl.so`
+and `libcrypto.so` requirements. It accepts only the reviewed compatibility
+sets in `os/scripts/verify-runtime-crypto-packages.sh` and fails when any new
+consumer appears; the verifier itself is deleted before the image is sealed.
+Tilo-owned ELF outputs are independently rejected for either ABI, and Tilo-owned
+TLS and signing remain Rust-native. The sealed root also deletes OpenSSL's
+optional legacy-provider DSO and loadable ENGINE modules, plus GStreamer's
+OpenSSL-backed DTLS, curl, and Icecast/Shoutcast plugins (Tilo has none of
+those network media paths), the now-unusable WebRTC/ICE/SRTP companion
+plugins, and the offline ARM compatibility frontend's Qt OpenSSL TLS backend.
+The orphaned `libshout` package is erased after its plugin is removed, so its
+unused direct `libssl` dependency is absent from the finished RPM database too.
+The projector's required RTP/H.264 and HLS plugins remain installed.
+Foundational Fedora consumers retain only the built-in provider surface they
+require; the recurring security audit fails if any removed module reappears.
+
+The immutable host also excludes the Git CLI and NetworkManager's OpenVPN
+plugin. Both add avoidable OpenSSL-linked client stacks: Tilo's sandboxed Git
+application supplies repository workflows, development containers may install
+their own CLI, and the kernel/NetworkManager WireGuard path remains available
+without OpenVPN's general-purpose TLS implementation.
+The OpenSSH server remains forbidden. Fedora's `virt-viewer` package has a
+strong dependency on `openssh-clients` and its `openssh` base package. Those two
+packages are admitted only while `virt-viewer` is installed; Tilo's viewer uses
+`--connect qemu:///system --attach`, and its Remote application still uses Rust
+SSH. The retained client binaries are a documented distribution dependency,
+not evidence that Tilo uses SSH to display its local Windows VM.
+
+Fedora's `swtpm-tools` requires `gnutls-utils`. Normal fresh libvirt TPM 2.0
+provisioning requests endorsement and platform certificates; the shipped
+`swtpm_setup` configuration invokes `swtpm_localca`, whose initial CA setup uses
+`certtool`. Removing that package breaks provisioning. It is admitted only with
+`swtpm-tools`, including the companion GnuTLS utilities packaged alongside
+`certtool`. The runtime audit reports this residual surface explicitly.
+These are third-party VM dependencies; Tilo application TLS and all Tilo-owned
+signing paths remain Rust-native. General OpenSSL, EFI signing and NSS tools
+remain forbidden, as do Git, OpenVPN, and the OpenSSH server.
+
+The named ABI sets also cover the pinned Fedora base's bootc/OSTree/container
+transport, initramfs, authentication, storage, networking and TPM libraries,
+and the rootfs requests' desktop/VM dependency closure (including Fedora
+recommendations): Qt, Wi-Fi, PipeWire, GStreamer, FreeRDP/SPICE, software TPM, Xwayland, and the Fedora libvirt/QEMU
+storage backends, mobile-device access and archive/DNS helpers. The review used
+base digest
+`69944835958dda565f8d613587535a3d90e3256cf0a0f0e29bca5ca3d2360d06`
+and RPM snapshot digest
+`912255637bab849ee5c3f62a963481f0b994576ef08cec8ff4fe4bc4cfb9e02f`.
+Build-only compiler, Cargo and signing packages are not admitted by copying the
+snapshot inventory. Package metadata can conservatively retain an ABI edge even
+when an unused plugin was removed; the separate ELF gate continues to check the
+actual Tilo outputs. The final installed inventory must still pass the build
+gate: dependency-graph review alone does not prove a finished image or a boot.
+
+The workspace also patches `rustls-native-certs` with the small
+`tilo-native-certs` loader: on Tilo it reads only
+`/etc/pki/tls/certs/ca-bundle.crt`, ignores `SSL_CERT_FILE` and certificate
+directory overrides, and therefore removes the final `openssl-probe` crate as
+well as its heuristic trust-path discovery.
 
 ### What owner-enrolled Secure Boot buys
 
 `lockdown=integrity` (`os/usr/lib/bootc/kargs.d/01-hardening.toml`) only engages
 when the kernel is told by firmware that it booted verified. Without Secure Boot
-that karg is inert, so root can still load unsigned modules, read `/dev/mem` and
-kexec.
+that lockdown policy is inert. Tilo independently enforces module signatures,
+strict `/dev/mem`, and compiles kexec out entirely, but Secure Boot remains what
+authenticates the kernel containing those controls and closes the pre-kernel
+replacement boundary.
 
 PCR 7 measures the Secure Boot policy. A former LUKS TPM design bound only to
 that register; it has been removed because PCR 7 does not identify the selected
-qOS UKI. With Secure Boot off, such a binding would merely record "Secure Boot
+Tilo UKI. With Secure Boot off, such a binding would merely record "Secure Boot
 is off" — a consistent measurement, but not a meaningful verified-boot boundary.
 
 ### The gap this used to have, and what closing it changed
 
 **Everything from here to the end of this section describes the *ostree* backend,
-which qOS has left.** It is kept because it is the clearest account of why the UKI
+which Tilo has left.** It is kept because it is the clearest account of why the UKI
 matters, and because the reasoning is what justified moving backends at all — but
 read it as history, not as a description of the current image. On composefs with a
 UKI: the initramfs and the command line are both inside the signature, `PCR 11`
-carries `qos.generation=`, and `os/tests/rollback-boot-check.sh` passes on a VM
+carries `tilo.generation=`, and `os/tests/rollback-boot-check.sh` passes on a VM
 booted from an image `os/dev/build-image.sh` built.
 
 `os/Containerfile` builds that UKI. It used to install `systemd-ukify` and never
@@ -158,7 +307,7 @@ UKI](#building-the-uki) below.
 
 The firmware verifies what it `LoadImage()`s. On this backend that is
 systemd-boot, and then the kernel — both PE binaries, both signable, both signed
-by `qos-secureboot sign`. What it does **not** cover:
+by `tilo-secureboot sign`. What it does **not** cover:
 
 - **The initramfs.** ostree deploys it as a plain cpio blob beside the kernel and
   the loader hands it to the kernel after the verification step, so it is not
@@ -224,18 +373,17 @@ Evidence from bootc 1.15.2 as shipped, rather than from upstream's roadmap:
 - `bootc upgrade` has no composefs flag, consistent with the backend being
   recorded at install time and detected afterwards.
 
-So it is a real implementation with a complete-looking lifecycle, not a stub. What
-that evidence cannot tell you is whether upstream considers it stable, and the
+The implementation includes the lifecycle above. This evidence cannot establish
+whether upstream considers it stable, and the
 switch is not additive: it replaces the root filesystem model with a
 content-addressed, fs-verity-backed one, so it cannot be trialled on the side of
 an existing install. It also changes what `--allow-missing-verity` has to be set
 to depending on the filesystem underneath.
 
-My view: it is the only path to a signature-covered initramfs and command line on
-this stack, the UKI work should be planned against it rather than against
-anything bolted onto ostree, and it needs its own verified-boot campaign with the
-recovery path proven before anything depends on it. What it should **not** do is
-block generation-bound unlock, because PCR 4 gives that today.
+It is the only path to a signature-covered initramfs and command line on this
+stack. UKI work should target this backend and include a verified-boot campaign
+with the recovery path proven before anything depends on it. It should not block
+generation-bound unlock, because PCR 4 provides that today.
 
 ## Building the UKI
 
@@ -252,26 +400,31 @@ rootfs ──▶ split ──▶ uki ──▶ final
 
 The order is forced. bootc refuses to seal a rootfs that still carries
 `vmlinuz`/`initramfs.img` under `/usr/lib/modules/<kver>`, and the digest ukify
-seals has to be the digest of what will actually be mounted — so the split comes
+seals has to be the digest of what will be mounted — so the split comes
 first and nothing may be added to the rootfs afterwards. `/boot` is the one tree
 excluded from the digest, which is what lets the UKI live inside the image it
 describes.
 
 `bootc container ukify` is the piece that makes this cheap: it computes the
 composefs digest itself and reads `/usr/lib/bootc/kargs.d`, so the hardening set
-and `qos.generation=` reach the sealed command line through the same mechanism
+and `tilo.generation=` reach the sealed command line through the same mechanism
 that already existed for the unsealed one. `os/dev/uki.sh` is the script it runs,
 and it fails the build if the generation did not make it into the seal.
 
-Two things the build does *not* do:
+Two details matter at the release boundary:
 
-- **It does not sign the UKI.** There is no key at image-build time that a target
-  machine's firmware would accept — the root of trust is a Platform Key that
-  machine generates for itself. `qos-secureboot` signs the UKI on the installed
-  system, and `qos-secureboot-sign.path` watches `/boot/EFI/Linux` so a staged
-  update gets signed before the reboot that would otherwise be refused.
-  Measurement does not wait for any of that: `systemd-stub` extends PCR 11 with
-  the command line whether or not anyone signed the PE.
+- **An ordinary development build does not sign the UKI.** Tagged release media
+  instead requires the protected `TILO_PCR_PREDICTION_SIGNER`: it appends an
+  industry/OEM-trusted EFI signature to both the live and deterministic target
+  UKIs and signs the target's PCR 11 prediction without exporting either private
+  key. The release fails closed if the signer, certificate pin, or returned
+  signature is missing or wrong. Development/custom media keeps the strong
+  passphrase fallback. Measurement itself does not depend on PE signing:
+  `systemd-stub` extends PCR 11 with the command line in either case.
+  The build helpers ignore a merely present signer path: CI must set
+  `TILO_REQUIRE_PCR_PREDICTION=1`. A developer who intentionally exercises a
+  root-owned local broker can instead set `TILO_ALLOW_LOCAL_PCR_SIGNING=1`; this
+  explicit opt-in is never set by CI rehearsals.
 - **It does not get the digest right first time.** `bootc container ukify` and
   `bootc install` compute different composefs digests for the same image, so
   install refuses the UKI:
@@ -291,12 +444,13 @@ Two things the build does *not* do:
 
 ## Interface for generation-bound unlock
 
-`crates/system/qos-rollback` wants four things from the boot chain, and the sealed
+`crates/system/tilo-rollback` wants four things from the boot chain, and the sealed
 layout supplies all four.
 
 **PCR 7.** The firmware measures the Secure Boot policy into it on every boot,
-UKI or not. A future TPM policy must combine it with the artifact/generation
-binding below; the current release deliberately enrolls no TPM slot.
+UKI or not. A verified tagged release combines that device-specific platform
+state directly with the authorized artifact/generation binding below. Media
+without the complete release chain deliberately enrolls no TPM slot.
 
 **PCR 11.** Extended by `systemd-stub`, which runs because the firmware loads a
 UKI. It carries the command line, so it distinguishes one generation from another
@@ -309,16 +463,16 @@ measurements plus systemd's four runtime phases, reproducing the live register
 exactly. Reading a non-zero PCR 11 is not evidence that a *particular* string was
 measured into it.
 
-**`qos.generation=<N>` inside the signature.** Written into
+**`tilo.generation=<N>` inside the signature.** Written into
 `/usr/lib/bootc/kargs.d/02-generation.toml` at image build from the
-`QOS_GENERATION` build argument, which is where `bootc container ukify` reads it.
+`TILO_GENERATION` build argument, which is where `bootc container ukify` reads it.
 The alternative — a Boot Loader Specification entry under `/boot`, assembled by the
 bootloader — was available all along and deliberately not taken: a file on the ESP,
 outside any signature, editable by anything that can write there, would look like
 compliance and provide none of it.
 
 **The unlock hook.** An encrypted
-install made by `qos-disk-encrypt` names the volume `luks-<LUKS-UUID>`, because
+install made by `tilo-disk-encrypt` names the volume `luks-<LUKS-UUID>`, because
 that is what dracut derives from the `rd.luks.uuid=` karg. So the key file the
 hook must write is:
 
@@ -327,53 +481,33 @@ hook must write is:
 ```
 
 `systemd-cryptsetup` consults that path before it tries any token. The
-`qos-rollback` dracut module installs the binary, its TPM tools and public policy
+`tilo-rollback` dracut module installs the binary, its TPM tools and public policy
 key, plus a systemd generator that orders a per-volume unlock service after the
 LUKS device appears and before its cryptsetup unit. It asks for the PIN only when
-the LUKS header actually contains a `qos-rollback` token. A cancelled or failed
+the LUKS header actually contains a `tilo-rollback` token. A cancelled or failed
 unseal removes partial key material and returns control to the independent
 recovery-key, passphrase, or FIDO2 prompt instead of making boot an emergency.
 
-The rollback crate, early-unlock consumer, and late-boot confirmation services
-are now shipped, but the generation-bound unlock path is deliberately **not
-enrolled by the installer**. The remaining target-prediction prerequisites have
-to land as one tested change before that is safe:
+The rollback crate, early-unlock consumer, late-boot confirmation services, and
+target-independent installer integration ship together. The graphical installer
+offers the short PIN only after `tilo-verified-boot-install-preflight` verifies the
+exact deterministic target UKI, its EFI certificate, its generation-bound PCR 11
+prediction, and the prediction authority. The privileged backend repeats that
+proof immediately before enrollment. Otherwise it requires the strong
+passphrase, mandatory recovery key, and optional FIDO2 slot; TPM presence alone
+never enables the PIN.
 
-1. The installer rewrites the installed UKI's measured `.cmdline` with the new
-   root filesystem UUID, LUKS UUID, token-discovery options, and live-media marker
-   removal. Consequently PCR 11 is unique to that installed UKI. A prediction
-   made for the release UKI before those rewrites does not describe the target.
-2. The production image intentionally contains only the prediction authority's
-   public key and an empty `/usr/share/qos/pcr-predictions`. Its private key must
-   not be copied to installation media. There is therefore no authority present
-   that can sign the target-specific PCR 11 prediction during an offline install.
-Calling `qos-rollback enroll` despite those facts would not add rollback
-protection: sealing against the live installer's PCRs produces an unusable target,
-while omitting PCR 11 silently reduces the policy to the rejected PCR 7-only
-boundary. The current release therefore retains the strong passphrase, mandatory
-recovery key, and optional FIDO2 slot and offers no short-PIN TPM path.
+### Target-independent enrollment
 
-A complete enrollment integration must either make the installed UKI independent of
-per-device command-line values, so a release-signed prediction remains valid, or
-introduce a machine authority whose public half and predictions are available at
-enrollment and whose update-time custody is no weaker than the owner Secure Boot
-key. It must enroll every staged generation before reboot. The installer
-invariant test rejects a lone rollback enrollment call until those prerequisites
-exist; this prevents an apparently enabled but non-bootable partial deployment.
+The implementation does not put a prediction private key on the machine. It
+makes the target measurement a release artefact while keeping the platform
+measurement device-bound. These pieces form one atomic security boundary:
 
-### Target-independent enrollment: required atomic change
-
-The preferred completion does not put a prediction private key on the machine.
-It makes the target measurement a release artefact while keeping the platform
-measurement device-bound. All of the following pieces have to land together;
-landing only the installer call is an unbootable or weaker-than-advertised
-configuration.
-
-1. **Discover the target without a UUID in the UKI.** Give the qOS root an
-   architecture-neutral, qOS-owned GPT type GUID. An initramfs generator must
+1. **Discover the target without a UUID in the UKI.** Give the Tilo root an
+   architecture-neutral, Tilo-owned GPT type GUID. An initramfs generator must
    resolve `LoaderDevicePartUUID` to the ESP from which systemd-stub booted,
    inspect only that ESP's physical disk, and require exactly one partition of
-   the qOS type. Zero or multiple matches are a recovery-key failure, never a
+   the Tilo type. Zero or multiple matches are a recovery-key failure, never a
    guess. This is deliberately not generic `root=gpt-auto` or a filesystem/GPT
    label: a dual-boot Linux root or a removable disk can legitimately collide
    with either. The generator creates the fixed `root` crypt mapping and
@@ -382,17 +516,17 @@ configuration.
    discovery options.
 2. **Build a target UKI, do not edit one on the target.** The installer image
    needs two deterministic UKIs over the same installer composefs tree: the live
-   one containing `qos.install`, and an installed-target variant containing the
+   one containing `tilo.install`, and an installed-target variant containing the
    fixed discovery command line. The latter stays outside bootc's scan path
    while the live medium boots, and installation atomically promotes its bytes
    into `EFI/Linux`. Owner Secure Boot signing may append an Authenticode
    certificate; that certificate table is excluded from PCR 11, so it must not
    alter the predicted section measurements.
 3. **Keep predictions outside the composefs digest.** Populating
-   `/usr/share/qos/pcr-predictions` after calculating PCR 11 changes the root
+   `/usr/share/tilo/pcr-predictions` after calculating PCR 11 changes the root
    digest, which changes the UKI command line, which changes PCR 11 again. There
    is no usable hash fixed point. Release-signed prediction sidecars therefore
-   belong under the ESP's qOS-owned directory (or in a UKI section explicitly
+   belong under the ESP's Tilo-owned directory (or in a UKI section explicitly
    excluded from its own measurement), are copied into the LUKS token at
    enrollment, and are verified by the public prediction key already in the
    image.
@@ -418,9 +552,9 @@ The release gate for enabling the installer's short-PIN choice is correspondingl
 end-to-end, not a source grep:
 
 - an encrypted full-disk VM installs without any target UKI byte rewrite, boots
-  by the boot-ESP/same-disk qOS-type discovery path, and unlocks with the PIN;
-- Windows+qOS and Linux+qOS layouts with other root-like partitions prove that
-  only the qOS type on the boot ESP's disk is selected, while duplicate qOS
+  by the boot-ESP/same-disk Tilo-type discovery path, and unlocks with the PIN;
+- Windows+Tilo and Linux+Tilo layouts with other root-like partitions prove that
+  only the Tilo type on the boot ESP's disk is selected, while duplicate Tilo
   types and a spoofed removable disk fail closed;
 - changing a measured target-UKI section, PCR 7, the generation-bound
   prediction signature, or the rollback floor independently refuses TPM
@@ -434,13 +568,13 @@ end-to-end, not a source grep:
 
 ## Disk encryption
 
-`qos-install --encrypt` produces a LUKS2 root. The block work is
-`/usr/libexec/qos-disk-encrypt`.
+`tilo-install --encrypt` produces a LUKS2 root. The block work is
+`/usr/libexec/tilo-disk-encrypt`.
 
 **It does not require a TPM.** `bootc install --block-setup tpm2-luks` seals the
 one and only key slot to a TPM and refuses to run without one, which turns
 hardware absence into no encryption at all — the opposite of what absence should
-do. So qOS builds the layout itself (ESP + `/boot` + LUKS2 root) and installs
+do. So Tilo builds the layout itself (ESP + `/boot` + LUKS2 root) and installs
 `bootc ... to-filesystem` into the opened mapping.
 
 The volume is always created with a **recovery key**, shown once during install
@@ -451,7 +585,8 @@ of it:
 
 | Machine | Slots after install | Boot experience |
 |---|---|---|
-| TPM (current release) | recovery key, passphrase | type the passphrase |
+| Verified release chain + TPM2 | recovery key, TPM2+PIN generation slots | type the short PIN |
+| TPM without verified release chain | recovery key, passphrase | type the passphrase |
 | No TPM | recovery key, passphrase | type the passphrase |
 
 An optional FIDO2 security key adds another slot to any row. Selecting it is a
@@ -462,19 +597,21 @@ per-volume `rd.luks.options=` token. LUKS2 metadata tells systemd-cryptsetup
 which of those handlers has enrolled material; without the FIDO2 boot option a
 security key could be successfully enrolled yet never tried by the initramfs.
 
-The installer and privileged backend both require a startup secret. This
-release always uses a strong passphrase. The former target preflight verified
-signatures and UKI contents, but its LUKS token was sealed only to PCR 7. PCR 7
-authenticates the firmware Secure Boot policy/database; it does not bind unlock
-to the selected qOS UKI or initramfs. That is not sufficient evidence for a
-short-PIN boundary, so the preflight and TPM enrollment are not shipped.
+The installer and privileged backend both require a startup secret. Verified
+tagged release media uses a nontrivial short PIN only after proving the exact
+signed target UKI and its authorized PCR 11 prediction, then binds that policy
+to the machine's current PCR 7 and rollback floor. Development/custom media, or
+any failed prerequisite, uses the strong-passphrase path. The removed older TPM
+design sealed only to PCR 7; it is not shipped because PCR 7 authenticates the
+firmware Secure Boot policy/database but does not bind unlock to the selected Tilo
+UKI or initramfs.
 
 This means a stock machine that has not completed owner/OEM Secure Boot
 enrollment uses the strong-passphrase path even when it has a TPM. Software
 cannot truthfully manufacture firmware trust without the owner's physical
 ceremony. Even an OEM-provisioned machine remains on the strong-passphrase path
-until qOS additionally ships signed measured-artifact policies and update-safe
-prediction consumption.
+unless the media also carries the signed measured-artifact policy for its exact
+target UKI.
 
 The privileged installer enforces the same startup-secret policy shown by the
 graphical installer. It requires at least fifteen characters (the NIST
@@ -493,9 +630,9 @@ PIN and must not be presented as hardware-backed protection.
 ### Fresh-machine provisioning is a trust-model decision, not an installer retry
 
 The common factory-machine case cannot be turned into the short-PIN row by
-remembering installer state across a reboot. The first qOS executable has no
-signature accepted by the factory firmware: qOS intentionally has neither a
-Microsoft/OEM-trusted bootloader nor a qOS certificate in the factory `db`.
+remembering installer state across a reboot. The first Tilo executable has no
+signature accepted by the factory firmware: Tilo intentionally has neither a
+Microsoft/OEM-trusted bootloader nor a Tilo certificate in the factory `db`.
 Consequently the live medium has to start with Secure Boot disabled (or with the
 firmware already in setup mode). PCR 7 and kernel lockdown from that boot cannot
 authenticate the installer, and a TPM slot sealed there would protect a PIN from
@@ -503,13 +640,13 @@ neither a replaced installer nor a replaced target UKI.
 
 Nor can the installer portably fix that state itself. While a factory Platform
 Key is active, changing `db`, `KEK`, or `PK` requires an authenticated update
-authorised by a private key qOS does not and must not possess. UEFI provides a
+authorised by a private key Tilo does not and must not possess. UEFI provides a
 standard request to enter firmware setup, but no standard, unattended operation
 for clearing the owner's keys, importing a new certificate, or enabling Secure
 Boot. Those controls, confirmation screens, and even support for appending a
 certificate from the ESP vary by firmware.
 
-That leaves two genuinely secure product choices:
+That leaves two secure product choices:
 
 1. **Keep owner-first trust.** Installation uses a strong LUKS passphrase. A
    later guided ceremony may generate the owner keys in the encrypted target,
@@ -521,7 +658,7 @@ That leaves two genuinely secure product choices:
    lockdown, and recovery-key access rather than trusting a progress marker.
    This is necessarily interactive and firmware-specific, so it cannot be the
    default nearly-headless path on arbitrary PCs.
-2. **Add a factory-trusted qOS release chain.** This is the prerequisite for a
+2. **Add a factory-trusted Tilo release chain.** This is the prerequisite for a
    normal fresh PC to boot both installer and target under verified boot and use
    one TPM-throttled PIN from its first installed boot. It changes the current
    owner-only trust policy. The release bootloader and every bootable UKI need PE
@@ -534,10 +671,14 @@ That leaves two genuinely secure product choices:
    update, firmware-revocation, BitLocker-coexistence and TPM dictionary-attack
    paths then need a physical hardware matrix before this becomes the default.
 
-Until one of those choices is deliberately made and delivered end to end, the
-secure product behaviour is the one enforced above: every machine gets a
-strong startup passphrase. `target_verified_boot_ready` must not be enabled by
-TPM presence, an EFI flag, signed files alone, or a resumable-install marker.
+Tagged release media implements the second choice only when its protected
+`TILO_PCR_PREDICTION_SIGNER` obtains both an industry/OEM-trusted EFI signature
+and PCR-authority signatures without exporting either private key. CI measures
+the exact resealed target with that image's `systemd-measure`, verifies every
+returned signature, and fails the release when the signer is absent. Development
+or custom media without that chain keeps the secure fallback: a strong startup
+passphrase. `target_verified_boot_ready` is never enabled by TPM presence, an
+EFI flag, signed files alone, or a resumable-install marker.
 
 The removed TPM slot bound to **PCR 7 only**, set explicitly rather than inherited.
 PCR 7 is the Secure Boot policy, so the seal would break if the boot policy changed.
@@ -550,11 +691,12 @@ why the generation has to be on a measured command line: without it, a predictio
 the authority signed for one generation would be satisfied by any other.
 
 There is consequently no supported `--reseal` procedure in this release.
-`qos-disk-encrypt enrol --reseal` fails closed until signed measured-boot
-predictions and their initramfs consumer ship together. A replaced motherboard
-or cleared TPM therefore does not alter the current passphrase/recovery-key boot
-path. The recovery key remains mandatory because passphrases and optional
-hardware factors can still be lost.
+`tilo-disk-encrypt enrol --reseal` fails closed until a recovery ceremony can
+re-prove the replacement TPM's PCR7 state, exact authorized generation, and a
+working recovery factor before replacing the stale slot. A replaced motherboard
+or cleared TPM therefore falls back to the recovery key instead of creating a
+weaker slot. The recovery key remains mandatory because hardware factors can
+still be lost.
 
 ### An initramfs is required
 
@@ -567,6 +709,11 @@ device-mapper setup, a TPM unseal or a passphrase prompt, `systemd-cryptsetup`.
 because the base's `layout=ostree` kernel-install config deliberately leaves
 initrd generation to the image build.
 
+Tilo supports local roots only. The signed initramfs therefore explicitly omits
+Dracut's network, NetworkManager, NFS, iSCSI, Clevis/NBDE, and crypt-SSH modules.
+Passphrase, TPM2, FIDO2, Plymouth, and rollback recovery remain mandatory. This
+cuts boot-time archive I/O and removes unused pre-root network and TLS parsers.
+
 ## Testing it in a VM
 
 `os/dev/vm.sh` always boots the 4 MB Secure-Boot OVMF build with SMM on and the
@@ -577,21 +724,35 @@ zero. `vm.sh firmware` prints what was selected and whether it can measure; a
 against a firmware that cannot measure into it.
 
 ```bash
-./os/dev/vm.sh boot --tpm --attach /tmp/qos-vm/enc.qcow2   # TPM 2.0 via swtpm
+./os/dev/vm.sh boot --tpm --attach /tmp/tilo-vm/enc.qcow2   # TPM 2.0 via swtpm
 ./os/dev/vm.sh boot --secboot                              # keep the variable store
 ```
 
 Enforcement is a property of the **variable store**, not of a qemu flag. By
 default the store is pristine — no keys, Secure Boot in setup mode, re-seeded
 every boot — which still measures into PCR 7 and is exactly the state
-`qos-secureboot enroll` expects. `--secboot` keeps that store across boots so the
+`tilo-secureboot enroll` expects. `--secboot` keeps that store across boots so the
 enrolment done inside the guest survives a restart of qemu, making enrolment an
 explicit step rather than something the firmware template arrived with.
-`QOS_SECBOOT_KEYS=microsoft` boots the vendor-key store on purpose; note that it
+`TILO_SECBOOT_KEYS=microsoft` boots the vendor-key store on purpose; note that it
 rejects an owner-signed UKI outright, so nothing boots.
 
+`os/tests/secureboot_vm_probe.sh` is the lower-level enforcement probe used
+while developing the kernel and signing stack. It boots the compiled Tilo kernel
+against a fresh Secure-Boot-capable OVMF variable store, enrolls Rust-generated
+`db`, `KEK`, and self-signed `PK` updates through efivarfs, then reboots twice
+with that persisted store. The negative boot must contain OVMF's explicit
+`Access Denied -- rejected probably by Secure Boot`; the byte-identical EFI test
+application signed with the enrolled `db` must execute and emit
+`TILO_SECURE_BOOT_SIGNED_EFI_PASS` through the debug port. Absence of an unsigned
+marker alone is not accepted as proof.
+Kernel CI exports the exact freshly built x86 kernel, `gen_init_cpio`, and
+native Rust signer through a CI-only build target and runs this probe as a
+mandatory step. Kernel or signing changes therefore cannot pass on static
+format tests alone.
+
 `--tpm` attaches a software TPM, **started** (`--flags
-not-need-init,startup-clear`), whose state persists in `$QOS_TPM_DIR`, so a disk
+not-need-init,startup-clear`), whose state persists in `$TILO_TPM_DIR`, so a disk
 enrolled in one boot can be unlock-tested in the next. Without that flag the
 emulator answers `TPM_RC_INITIALIZE` to every command and the boot is not measured
 at all, which looks exactly like a UKI that failed to measure.

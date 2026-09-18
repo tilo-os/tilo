@@ -7,6 +7,248 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Bounded, explainable intelligence derived on a device from a photograph.
+///
+/// This record contains no pixels, embeddings, face geometry, machine-local
+/// file names, or opaque model output.  A local analysis is private until a
+/// user or trusted caller explicitly publishes it through `SetImageAnalysis`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageAnalysis {
+    /// The text read from the pixels. Line layout is intentionally flattened:
+    /// the shared search layer needs words, not page coordinates.
+    #[serde(default)]
+    pub ocr_text: String,
+    /// A concise, local description suitable for finding a photograph later.
+    #[serde(default)]
+    pub description: String,
+    /// Recognized non-person subjects, for example "bicycle" or "beach".
+    #[serde(default)]
+    pub objects: Vec<String>,
+    /// Pet labels are separate from generic objects because people browse
+    /// their animals differently from everything else in a scene.
+    #[serde(default)]
+    pub pets: Vec<String>,
+    /// Non-biometric, user-visible person labels. These are names only when a
+    /// person deliberately supplied a name; recognition never invents one.
+    #[serde(default)]
+    pub people: Vec<String>,
+    /// How the result was made. It gives collaborators enough context to
+    /// decide whether to trust or refresh it without leaking local paths.
+    #[serde(default)]
+    pub provenance: AnalysisProvenance,
+    /// Provenance for the text currently stored in `ocr_text`. Kept separate
+    /// from visual analysis so a later OCR or vision job cannot erase the
+    /// other component's audit trail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ocr_provenance: Option<AnalysisProvenance>,
+    /// Provenance for `description`, `objects`, and `pets`. Older records use
+    /// `provenance`; newly produced records populate this field explicitly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision_provenance: Option<AnalysisProvenance>,
+}
+
+/// The bounded provenance attached to an analysis result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnalysisProvenance {
+    /// `local-ocr`, `local-vision`, `local-description` (legacy), or `user`.
+    #[serde(default = "default_analysis_source")]
+    pub source: String,
+    /// Stable engine/model family identifier, never an error or command line.
+    #[serde(default)]
+    pub engine: String,
+    /// Signed local model identifier when a vision result was produced. Empty
+    /// for OCR, user-authored, and older records.
+    #[serde(default)]
+    pub model_id: String,
+    /// Immutable signed model revision when a vision result was produced.
+    /// Empty preserves backwards compatibility with pre-provenance records.
+    #[serde(default)]
+    pub model_revision: String,
+    /// OCR language when text recognition was used.
+    #[serde(default)]
+    pub language: String,
+    /// The content hash this result describes. Empty means a legacy/path-only
+    /// image and makes the result deliberately refreshable, not transferable.
+    #[serde(default)]
+    pub content: String,
+    /// Explicit sharing semantics: `shared` records were accepted through the
+    /// document action; `local` records must never be written to the CRDT.
+    #[serde(default = "default_analysis_scope")]
+    pub scope: String,
+}
+
+fn default_analysis_source() -> String {
+    "user".to_owned()
+}
+fn default_analysis_scope() -> String {
+    "shared".to_owned()
+}
+
+impl Default for AnalysisProvenance {
+    fn default() -> Self {
+        Self {
+            source: default_analysis_source(),
+            engine: String::new(),
+            model_id: String::new(),
+            model_revision: String::new(),
+            language: String::new(),
+            content: String::new(),
+            scope: default_analysis_scope(),
+        }
+    }
+}
+
+impl ImageAnalysis {
+    /// Join every human-searchable field without exposing provenance internals.
+    #[must_use]
+    pub fn searchable_text(&self) -> String {
+        [
+            self.ocr_text.as_str(),
+            self.description.as_str(),
+            &self.objects.join(" "),
+            &self.pets.join(" "),
+            &self.people.join(" "),
+        ]
+        .into_iter()
+        .filter(|value| !value.trim().is_empty())
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join(" ")
+    }
+
+    /// Whether the record has any useful result to retain.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ocr_text.is_empty()
+            && self.description.is_empty()
+            && self.objects.is_empty()
+            && self.pets.is_empty()
+            && self.people.is_empty()
+    }
+
+    /// The vision component that belongs to `content`, if one has been
+    /// completed. Empty model output still counts: completion provenance is
+    /// what prevents a whole-library scan from retrying a blank scene forever.
+    #[must_use]
+    pub fn vision_provenance_for_content(
+        &self,
+        content: Option<&str>,
+    ) -> Option<&AnalysisProvenance> {
+        let provenance = self.vision_provenance.as_ref().or_else(|| {
+            matches!(
+                self.provenance.source.as_str(),
+                "local-vision" | "local-description"
+            )
+            .then_some(&self.provenance)
+        })?;
+        match content {
+            Some(content) => (provenance.content == content).then_some(provenance),
+            None => provenance.content.is_empty().then_some(provenance),
+        }
+    }
+
+    /// Whether the current bytes have already been processed by this exact
+    /// signed model revision.
+    #[must_use]
+    pub fn has_vision_component(&self, content: Option<&str>, model_revision: &str) -> bool {
+        self.vision_provenance_for_content(content)
+            .is_some_and(|provenance| provenance.model_revision == model_revision)
+    }
+}
+
+/// A deliberately small, explicitly shared location attached to one photo.
+///
+/// Coordinates are useful for browsing a personal library, but are sensitive:
+/// this is never inferred from an IP address, uploaded for reverse geocoding,
+/// or copied from a machine-local file path.  A location reaches the shared
+/// document only through `SetPhotoLocation`; clearing it removes the complete
+/// shared record.  The label is a collaborator-visible convenience, not an
+/// authority over the coordinates.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PhotoLocation {
+    /// WGS-84 latitude in decimal degrees.
+    pub latitude: f64,
+    /// WGS-84 longitude in decimal degrees.
+    pub longitude: f64,
+    /// Optional user-facing place name, e.g. "Golden Gate Park".
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Why this location exists and whether it was deliberately shared.
+    #[serde(default)]
+    pub provenance: LocationProvenance,
+}
+
+/// Compact, inspectable provenance for photo location metadata.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocationProvenance {
+    /// `user`, `map`, `exif`, or `device`.  `map` records a deliberate
+    /// placement on Photos' bundled offline reference map. No network-derived source is silently
+    /// accepted: hosted geocoding would be a privacy boundary, not metadata.
+    #[serde(default = "default_location_source")]
+    pub source: String,
+    /// `shared` is required for durable locations. `local` is reserved for
+    /// an app-private draft and must never be persisted in the CRDT.
+    #[serde(default = "default_location_scope")]
+    pub scope: String,
+}
+
+fn default_location_source() -> String {
+    "user".to_owned()
+}
+fn default_location_scope() -> String {
+    "shared".to_owned()
+}
+
+impl Default for LocationProvenance {
+    fn default() -> Self {
+        Self {
+            source: default_location_source(),
+            scope: default_location_scope(),
+        }
+    }
+}
+
+impl PhotoLocation {
+    /// Coordinates must be finite WGS-84 degrees and the optional label must
+    /// be short enough to remain safe in collaboration/search projections.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.latitude.is_finite()
+            && self.longitude.is_finite()
+            && (-90.0..=90.0).contains(&self.latitude)
+            && (-180.0..=180.0).contains(&self.longitude)
+            && self.label.as_ref().is_none_or(|label| {
+                !label.trim().is_empty()
+                    && label.chars().count() <= 256
+                    && !label.chars().any(char::is_control)
+            })
+            && matches!(
+                self.provenance.source.as_str(),
+                "user" | "map" | "exif" | "device"
+            )
+            && self.provenance.scope == "shared"
+    }
+
+    /// Stable resource identity for a named place.  Coordinates are rounded
+    /// to ~11m so two metadata records in the same small place cluster rather
+    /// than producing an unhelpful resource for every camera jitter sample.
+    #[must_use]
+    pub fn place_key(&self) -> String {
+        let lat = (self.latitude * 10_000.0).round() as i32;
+        let lon = (self.longitude * 10_000.0).round() as i32;
+        format!("{lat}:{lon}:{}", self.label.as_deref().unwrap_or_default())
+    }
+
+    /// Human-safe detail, deliberately excluding exact coordinates from card
+    /// summaries where accidental shoulder-surfing is more likely.
+    #[must_use]
+    pub fn display_name(&self) -> String {
+        self.label
+            .clone()
+            .unwrap_or_else(|| "Shared location".to_owned())
+    }
+}
+
 /// A durable entry in Photos' shared library. Pixel bytes remain in the
 /// content store; this is intentionally only addressable metadata.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -31,6 +273,15 @@ pub struct LibraryPhoto {
     /// string avoids silently changing a collaborator's timezone or precision.
     #[serde(default)]
     pub captured_at: Option<String>,
+    /// Optional explicit location. Absence means no location was shared — it
+    /// is not a failed lookup and never triggers a network request.
+    #[serde(default)]
+    pub location: Option<PhotoLocation>,
+    /// Explicitly shared intelligence. Device-local analysis belongs in the
+    /// caller's ephemeral cache until this compact record is intentionally
+    /// accepted through a canonical action.
+    #[serde(default)]
+    pub analysis: Option<ImageAnalysis>,
 }
 
 impl LibraryPhoto {
@@ -48,6 +299,8 @@ impl LibraryPhoto {
             people: Vec::new(),
             tags: Vec::new(),
             captured_at: None,
+            location: None,
+            analysis: None,
         }
     }
 
@@ -68,6 +321,43 @@ impl LibraryPhoto {
         }
         if let Some(captured_at) = &self.captured_at {
             parts.push(format!("Captured: {captured_at}"));
+        }
+        if let Some(location) = &self.location {
+            parts.push(format!("Place: {}", location.display_name()));
+        }
+        if let Some(analysis) = &self.analysis
+            && !analysis.description.is_empty()
+        {
+            parts.push(format!("Description: {}", analysis.description));
+        }
+        parts.join(" · ")
+    }
+
+    /// A short provenance line for a gallery card. The details
+    /// sheet retains every field and its labels; a shelf should let a person
+    /// distinguish photographs before it starts truncating at "People:".
+    #[must_use]
+    pub fn metadata_card_summary(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(folder) = &self.folder {
+            parts.push(folder.clone());
+        }
+        if let Some(person) = self.people.first() {
+            parts.push(person.clone());
+        }
+        if let Some(tag) = self.tags.first() {
+            parts.push(tag.clone());
+        }
+        if let Some(captured_at) = &self.captured_at {
+            parts.push(captured_at.clone());
+        }
+        if let Some(location) = &self.location {
+            parts.push(location.display_name());
+        }
+        if let Some(analysis) = &self.analysis
+            && !analysis.description.is_empty()
+        {
+            parts.push(analysis.description.clone());
         }
         parts.join(" · ")
     }
@@ -373,6 +663,68 @@ mod tests {
     use super::*;
 
     #[test]
+    fn empty_analysis_has_no_searchable_whitespace() {
+        assert_eq!(ImageAnalysis::default().searchable_text(), "");
+    }
+
+    #[test]
+    fn searchable_analysis_joins_only_meaningful_fields() {
+        let analysis = ImageAnalysis {
+            ocr_text: "  MARKET  ".to_owned(),
+            objects: vec!["sign".to_owned()],
+            pets: vec!["  ".to_owned()],
+            ..ImageAnalysis::default()
+        };
+        assert_eq!(analysis.searchable_text(), "MARKET sign");
+    }
+
+    #[test]
+    fn vision_eligibility_requires_matching_content_and_model_revision() {
+        let analysis = ImageAnalysis {
+            ocr_text: "receipt".into(),
+            provenance: AnalysisProvenance {
+                source: "local-ocr".into(),
+                content: "a".repeat(64),
+                ..Default::default()
+            },
+            ocr_provenance: Some(AnalysisProvenance {
+                source: "local-ocr".into(),
+                content: "a".repeat(64),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(!analysis.has_vision_component(Some(&"a".repeat(64)), &"b".repeat(64)));
+
+        let analysis = ImageAnalysis {
+            vision_provenance: Some(AnalysisProvenance {
+                source: "local-vision".into(),
+                model_revision: "b".repeat(64),
+                content: "a".repeat(64),
+                ..Default::default()
+            }),
+            ..analysis
+        };
+        assert!(analysis.has_vision_component(Some(&"a".repeat(64)), &"b".repeat(64)));
+        assert!(!analysis.has_vision_component(Some(&"c".repeat(64)), &"b".repeat(64)));
+        assert!(!analysis.has_vision_component(Some(&"a".repeat(64)), &"d".repeat(64)));
+    }
+
+    #[test]
+    fn legacy_analysis_provenance_deserializes_without_model_identity() {
+        let legacy = r#"{
+            "source":"local-ocr",
+            "engine":"tilo-ocr",
+            "language":"eng",
+            "content":"abc",
+            "scope":"shared"
+        }"#;
+        let provenance: AnalysisProvenance = serde_json::from_str(legacy).unwrap();
+        assert!(provenance.model_id.is_empty());
+        assert!(provenance.model_revision.is_empty());
+    }
+
+    #[test]
     fn a_fresh_edit_set_is_the_identity() {
         assert!(Edits::default().is_identity());
     }
@@ -465,7 +817,7 @@ mod tests {
 
     #[test]
     fn a_name_is_derived_from_the_path() {
-        let img = OpenImage::from_path("/var/tmp/qos/home/quinten/harbour.png", 1, 1);
+        let img = OpenImage::from_path("/var/tmp/tilo/home/quinten/harbour.png", 1, 1);
         assert_eq!(img.name, "harbour.png");
     }
 }

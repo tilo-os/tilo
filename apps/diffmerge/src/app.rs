@@ -115,13 +115,13 @@ pub struct DiffMergeApp {
     /// A human-readable reason the last host-portal open failed, surfaced in
     /// the status bar. `None` in the normal (success / cancel) case.
     load_error: Option<String>,
-    resource_invocation: Option<qos_actions::InvocationId>,
+    resource_invocation: Option<tilo_actions::InvocationId>,
     pending_resource_paths: Option<(
-        qos_actions::InvocationId,
+        tilo_actions::InvocationId,
         std::path::PathBuf,
         std::path::PathBuf,
     )>,
-    resource_result: Option<qos_actions::InvocationUpdate>,
+    resource_result: Option<tilo_actions::InvocationUpdate>,
     dirty: bool,
     /// One-shot flag: set when the active mode changed so the host rebuilds the
     /// taffy tree (the flex content child swaps between the two views).
@@ -354,7 +354,7 @@ impl DiffMergeApp {
 
     /// Dispatch one [`DiffmergeAction`](crate::actions::DiffmergeAction) — the
     /// single CRDT-mutation path shared with the Ctrl+K palette. The action is
-    /// applied through the qOS action executor (a pinned actor + committed
+    /// applied through the Tilo action executor (a pinned actor + committed
     /// change, so it replays byte-identically on peers), exactly as the palette
     /// does. The document heads captured just before the first action of the
     /// event are stashed so the host records **one** undo boundary bracketing it
@@ -363,12 +363,14 @@ impl DiffMergeApp {
     /// the document on the next `sync`.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::DiffmergeAction) {
         self.merge.reconcile_content(doc);
-        if !self.merge.context_matches(doc) { return; }
+        if !self.merge.context_matches(doc) {
+            return;
+        }
         self.actions.dispatch_with_context(
             doc,
             crate::actions::DIFFMERGE_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Diff", "Diff", action),
+            tilo_actions::ActionContext::for_action("org.tilo.Diff", "Diff", action),
         );
         self.merge.acknowledge_content(doc);
     }
@@ -376,16 +378,23 @@ impl DiffMergeApp {
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
     /// test.
     #[cfg(test)]
-    fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+    fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
     /// The presentation context Ctrl+K needs to build the merge resource tree.
     /// `None` unless a three-way merge with at least one change hunk is the
     /// active mode — the diff mode is read-only and mutates nothing.
-    pub(crate) fn merge_resource_ctx(&self, doc: &AutoCommit) -> Option<crate::actions::MergeResourceCtx> {
-        if self.mode != Mode::Merge { return None; }
-        if self.merge.context_matches(doc) { return self.merge.resource_ctx(); }
+    pub(crate) fn merge_resource_ctx(
+        &self,
+        doc: &AutoCommit,
+    ) -> Option<crate::actions::MergeResourceCtx> {
+        if self.mode != Mode::Merge {
+            return None;
+        }
+        if self.merge.context_matches(doc) {
+            return self.merge.resource_ctx();
+        }
         crate::doc::MergeDoc::has_merged(doc).then(|| crate::actions::MergeResourceCtx {
             title: "Saved merge output · original inputs unavailable".into(),
             model: crate::model::MergeModel::default(),
@@ -435,9 +444,9 @@ impl DiffMergeApp {
                             Ok(false) => {
                                 if let Some(invocation) = self.resource_invocation.take() {
                                     self.resource_result =
-                                        Some(qos_actions::InvocationUpdate::Succeeded {
+                                        Some(tilo_actions::InvocationUpdate::Succeeded {
                                             invocation,
-                                            output: qos_actions::ActionOutput::default(),
+                                            output: tilo_actions::ActionOutput::default(),
                                         });
                                 }
                             }
@@ -445,9 +454,9 @@ impl DiffMergeApp {
                                 self.load_error = Some(reason.clone());
                                 if let Some(invocation) = self.resource_invocation.take() {
                                     self.resource_result =
-                                        Some(qos_actions::InvocationUpdate::Failed {
+                                        Some(tilo_actions::InvocationUpdate::Failed {
                                             invocation,
-                                            error: qos_actions::ActionFailure {
+                                            error: tilo_actions::ActionFailure {
                                                 code: "diffmerge.open_failed".into(),
                                                 message: reason,
                                                 details: None,
@@ -463,10 +472,11 @@ impl DiffMergeApp {
                     PortalOutcome::Cancelled => {
                         self.pending_left = None;
                         if let Some(invocation) = self.resource_invocation.take() {
-                            self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
-                                invocation,
-                                message: Some("file selection cancelled".into()),
-                            });
+                            self.resource_result =
+                                Some(tilo_actions::InvocationUpdate::Cancelled {
+                                    invocation,
+                                    message: Some("file selection cancelled".into()),
+                                });
                         }
                         self.dirty = true;
                     }
@@ -474,9 +484,9 @@ impl DiffMergeApp {
                         self.pending_left = None;
                         self.load_error = Some(format!("Couldn't open the file chooser: {reason}"));
                         if let Some(invocation) = self.resource_invocation.take() {
-                            self.resource_result = Some(qos_actions::InvocationUpdate::Failed {
+                            self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
                                 invocation,
-                                error: qos_actions::ActionFailure {
+                                error: tilo_actions::ActionFailure {
                                     code: "diffmerge.open_failed".into(),
                                     message: reason,
                                     details: None,
@@ -493,9 +503,9 @@ impl DiffMergeApp {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.portal_rx = None;
                 if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(qos_actions::InvocationUpdate::Failed {
+                    self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "diffmerge.portal_disconnected".into(),
                             message: "file picker disconnected".into(),
                             details: None,
@@ -606,7 +616,8 @@ impl DiffMergeApp {
         };
         let mut x = r.x0 + if compact { 8.0 } else { 16.0 };
         for label in mode_labels {
-            let (lw, _) = tr.measure_weighted(label, TOOLBAR_SEGMENT_FONT, None, TextWeight::Medium);
+            let (lw, _) =
+                tr.measure_weighted(label, TOOLBAR_SEGMENT_FONT, None, TextWeight::Medium);
             let w = f64::from(lw) + 2.0 * seg_pad;
             mode_rects.push(Rect::new(x, seg_y, x + w, seg_y + seg_h));
             x += w + if compact { 4.0 } else { 6.0 };
@@ -671,7 +682,8 @@ impl DiffMergeApp {
             BUTTON_PAD_X
         };
         for (label, action) in actions {
-            let (lw, _) = tr.measure_weighted(label, TOOLBAR_BUTTON_FONT, None, TextWeight::Regular);
+            let (lw, _) =
+                tr.measure_weighted(label, TOOLBAR_BUTTON_FONT, None, TextWeight::Regular);
             let w = f64::from(lw) + 2.0 * btn_pad;
             let btn = Rect::new(rx - w, seg_y, rx, seg_y + seg_h);
             Button::paint(
@@ -980,17 +992,29 @@ impl Default for DiffMergeApp {
 }
 
 impl Widget for DiffMergeApp {
-    fn document_action_applied(&mut self, action: &qos_actions::EncodedAction, before: &[ChangeHash], doc: &AutoCommit, _path: &ObjId) {
+    fn document_action_applied(
+        &mut self,
+        action: &tilo_actions::EncodedAction,
+        before: &[ChangeHash],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) {
         if action.type_id == crate::actions::DIFFMERGE_ACTION_TYPE
-            && doc.clone().fork_at(before).ok().is_some_and(|prior| self.merge.context_matches(&prior)) {
+            && doc
+                .clone()
+                .fork_at(before)
+                .ok()
+                .is_some_and(|prior| self.merge.context_matches(&prior))
+        {
             self.merge.acknowledge_content(doc);
         } else {
             self.merge.reconcile_content(doc);
         }
     }
 
-
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> { Some(&crate::framework_history::HISTORY) }
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::DIFFMERGE_OPERATION_TYPE]
@@ -998,13 +1022,13 @@ impl Widget for DiffMergeApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -1036,8 +1060,8 @@ impl Widget for DiffMergeApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -1070,11 +1094,11 @@ impl Widget for DiffMergeApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if cancellation_requested
             && self
                 .pending_resource_paths
@@ -1082,7 +1106,7 @@ impl Widget for DiffMergeApp {
                 .is_some_and(|(id, _, _)| *id == invocation)
         {
             self.pending_resource_paths = None;
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("cancelled before files were read".into()),
             });
@@ -1091,7 +1115,7 @@ impl Widget for DiffMergeApp {
             self.resource_invocation = None;
             self.portal_rx = None;
             self.pending_left = None;
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("file selection cancelled".into()),
             });
@@ -1107,13 +1131,13 @@ impl Widget for DiffMergeApp {
         if let Some((invocation, left, right)) = self.pending_resource_paths.take() {
             let result = self.load_paths(&left, &right);
             self.resource_result = Some(match result {
-                Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 },
-                Err(message) => qos_actions::InvocationUpdate::Failed {
+                Err(message) => tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "diffmerge.open_failed".into(),
                         message,
                         details: None,
@@ -1255,7 +1279,8 @@ impl Widget for DiffMergeApp {
             self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
 
-        if self.handle_keyboard_shortcut(event, *modifiers) {
+        let merge_editor_focused = self.mode == Mode::Merge && self.merge.merged_editor_focused();
+        if !merge_editor_focused && self.handle_keyboard_shortcut(event, *modifiers) {
             *handled = true;
             return;
         }
@@ -1313,7 +1338,7 @@ impl Widget for DiffMergeApp {
 
     // The toolbar is immediate-mode chrome, while the active comparison view
     // owns its own semantic controls. Exposing that live child is what lets the
-    // compact source switcher reach the actual qOS accessibility tree rather
+    // compact source switcher reach the actual Tilo accessibility tree rather
     // than only being available to pointer users.
     fn children(&self) -> Vec<&dyn Widget> {
         match self.mode {
@@ -1500,10 +1525,10 @@ impl Widget for DiffMergeApp {
 
     /// Publish the open merge + its hunks so the host's Ctrl+K action palette
     /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     /// Hand the host the heads captured before an on-panel chip dispatched its
@@ -1580,9 +1605,9 @@ mod tests {
     #[test]
     fn direct_pair_is_accepted_then_succeeds() {
         let (mut app, mut state) = app_with_state();
-        let left = write_temp("direct-left.txt", "left\n");
-        let right = write_temp("direct-right.txt", "right\n");
-        let invocation = qos_actions::InvocationId::new();
+        let left = write_temp("Grün links.txt", "Grün\nshared\n");
+        let right = write_temp("Blau rechts.txt", "Blau\nshared\nadded\n");
+        let invocation = tilo_actions::InvocationId::new();
         let payload = serde_json::to_vec(&crate::actions::DiffmergeOperation::OpenFiles {
             left: Some(left.display().to_string()),
             right: Some(right.display().to_string()),
@@ -1591,7 +1616,7 @@ mod tests {
         let started = Widget::start_resource_operation(
             &mut app,
             invocation,
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             crate::actions::DIFFMERGE_OPERATION_TYPE,
             &payload,
             &state.doc,
@@ -1603,8 +1628,12 @@ mod tests {
         app.sync(&mut state.doc, &state.root);
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &state.doc, &state.root),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
+        let model = app.diff.model();
+        assert_eq!(model.left_lines, 2);
+        assert_eq!(model.right_lines, 3);
+        assert!(model.modified + model.added > 0);
         std::fs::remove_dir_all(left.parent().unwrap()).ok();
         std::fs::remove_dir_all(right.parent().unwrap()).ok();
     }
@@ -1811,7 +1840,7 @@ mod tests {
             .children
             .iter()
             .find(|r| r.actions.iter().find(|a| a.id == "take-theirs").is_some_and(|spec| {
-                let qos_actions::ActionInput::Immediate(encoded) = &spec.input else { return false };
+                let tilo_actions::ActionInput::Immediate(encoded) = &spec.input else { return false };
                 matches!(serde_json::from_slice::<crate::actions::DiffmergeAction>(&encoded.payload), Ok(crate::actions::DiffmergeAction::ResolveHunk { hunk: target, .. }) if target == hunk as u64)
             }))
             .expect("the conflict resource");
@@ -1821,8 +1850,8 @@ mod tests {
             .find(|a| a.id == "take-theirs")
             .unwrap();
         let from_spec = match &spec.input {
-            qos_actions::ActionInput::Immediate(e) => e.clone(),
-            qos_actions::ActionInput::Prompted { .. } => panic!("take-theirs is immediate"),
+            tilo_actions::ActionInput::Immediate(e) => e.clone(),
+            tilo_actions::ActionInput::Prompted { .. } => panic!("take-theirs is immediate"),
         };
 
         // Chip path: `resolve` queues the action a click builds.
@@ -2014,7 +2043,11 @@ mod tests {
             app.sync(&mut state.doc, &state.root);
             draw_frame_scaled(&mut app, (800.0, 700.0), scale);
 
-            assert_eq!(app.tool_hits.len(), 6, "{scale}x: two modes and four actions");
+            assert_eq!(
+                app.tool_hits.len(),
+                6,
+                "{scale}x: two modes and four actions"
+            );
             let mut rects: Vec<_> = app.tool_hits.iter().map(|hit| hit.rect).collect();
             rects.sort_by(|a, b| a.x0.total_cmp(&b.x0));
             for rect in &rects {
@@ -2026,7 +2059,10 @@ mod tests {
                     (rect.center().y - app.toolbar_h / 2.0).abs() < 0.01,
                     "{scale}x: control {rect:?} is off the bar's centre line"
                 );
-                assert!(rect.y1 <= app.toolbar_h + 0.01, "{scale}x: control escapes the bar");
+                assert!(
+                    rect.y1 <= app.toolbar_h + 0.01,
+                    "{scale}x: control escapes the bar"
+                );
             }
             assert!(
                 rects.windows(2).all(|pair| pair[0].x1 <= pair[1].x0),
@@ -2041,7 +2077,10 @@ mod tests {
                 "{scale}x: content {active:?} does not start below the painted bar {}",
                 app.toolbar_h
             );
-            assert!((active.y1 - 700.0).abs() < 0.01, "{scale}x: content ends at the window");
+            assert!(
+                (active.y1 - 700.0).abs() < 0.01,
+                "{scale}x: content ends at the window"
+            );
 
             let widths: Vec<f64> = app.tool_hits.iter().map(|hit| hit.rect.width()).collect();
             if scale == 1.0 {
@@ -2072,7 +2111,10 @@ mod tests {
             draw_frame_scaled(&mut app, (w, h), scale);
             let pane = app.merge.get_rect();
             let hits = app.merge.chip_hits();
-            assert!(!hits.is_empty(), "{w}x{h}@{scale}: the demo merge has chips");
+            assert!(
+                !hits.is_empty(),
+                "{w}x{h}@{scale}: the demo merge has chips"
+            );
             let (_, _, chip_h) = app.merge.metrics_for_test();
             let compact = pane.width() < 640.0;
             let pane_x0 = if compact {
@@ -2115,7 +2157,10 @@ mod tests {
         let mut tr = TextRenderer::new();
         tr.set_text_scale(2.0);
         let line_2 = f64::from(tr.measure("Ag", 12.5, None).1);
-        assert!(row_2 >= line_2, "row pitch {row_2} shorter than the 2x line {line_2}");
+        assert!(
+            row_2 >= line_2,
+            "row pitch {row_2} shorter than the 2x line {line_2}"
+        );
         assert!(row_2 > row_1 * 1.5 && header_2 > header_1 && chip_2 > chip_1);
         assert!(content_2 > content_1 * 1.5, "spans grow with the rows");
     }
@@ -2380,7 +2425,7 @@ mod tests {
 
         let error = Widget::invoke_resource_operation(
             &mut app,
-            qos_actions::OperationKind::View,
+            tilo_actions::OperationKind::View,
             crate::actions::DIFFMERGE_OPERATION_TYPE,
             &payload,
             &state.doc,
@@ -2558,14 +2603,33 @@ mod history_input_tests {
         let hunk = app.merge.model().change_indices()[0];
         app.merge.resolve(hunk, crate::actions::HunkChoice::Theirs);
         let pending = app.merge.take_pending_action().unwrap();
-        MergeDoc::set_merged(&mut doc, "Restored output without matching original inputs\n");
+        MergeDoc::set_merged(
+            &mut doc,
+            "Restored output without matching original inputs\n",
+        );
         let heads = doc.get_heads();
-        assert!(Widget::resources(&app, &doc).iter().flat_map(|r| &r.children).all(|r| r.kind != "diffmerge.conflict"));
+        assert!(
+            Widget::resources(&app, &doc)
+                .iter()
+                .flat_map(|r| &r.children)
+                .all(|r| r.kind != "diffmerge.conflict")
+        );
         app.perform_action(&mut doc, &pending);
         assert_eq!(doc.get_heads(), heads);
-        assert_eq!(MergeDoc::merged_text(&doc), "Restored output without matching original inputs\n");
-        assert!(!app.perform_semantic_action(&format!("diffmerge.merge.resolve:{hunk}:ours"), &ui::a11y::Action::Activate, &mut doc, &automerge::ROOT));
+        assert_eq!(
+            MergeDoc::merged_text(&doc),
+            "Restored output without matching original inputs\n"
+        );
+        assert!(!app.perform_semantic_action(
+            &format!("diffmerge.merge.resolve:{hunk}:ours"),
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT
+        ));
         app.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(MergeDoc::merged_text(&doc), "Restored output without matching original inputs\n");
+        assert_eq!(
+            MergeDoc::merged_text(&doc),
+            "Restored output without matching original inputs\n"
+        );
     }
 }

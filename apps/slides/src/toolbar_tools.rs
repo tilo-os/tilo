@@ -170,7 +170,13 @@ impl ToolbarTools {
         let Some(bg) = layout.menu_bg else { return };
         // The overflow menu is a floating panel (HIG §9.1): panel ground,
         // panel border, elevation.
-        chrome::panel(scene, transform, theme, bg, f64::from(theme.tokens.radii.md));
+        chrome::panel(
+            scene,
+            transform,
+            theme,
+            bg,
+            f64::from(theme.tokens.radii.md),
+        );
         for button in &layout.menu_buttons {
             draw_button(scene, button);
         }

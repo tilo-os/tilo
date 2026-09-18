@@ -3,7 +3,7 @@
 //! Modes:
 //!   * default — run the live winit event loop via `ui::App`, starting blank
 //!     with a real `lsblk` drive probe.
-//!   * `--demo` — run live but seed sample content (drives, a qOS image,
+//!   * `--demo` — run live but seed sample content (drives, a Tilo image,
 //!     recent history) for a walkthrough / review.
 //!   * `--setup` — run the capability-gated guided setup screens.
 //!   * `--import-folders` — run the durable later-folder import surface.
@@ -13,13 +13,9 @@
 //!   * `--shots-dir DIR` — render *every* wizard scenario into `DIR` as
 //!     `NN-name.png` (the screenshot gallery).
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
+// Apps run in isolated processes, so app-local arithmetic checks are relaxed.
+// Panic-producing lints remain denied; shared crates retain the full lint set
+// because a fault there can affect the session or every app.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -83,12 +79,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Packaging smoke probe: reaching this point proves the executable and
     // all runtime-linked libraries load without starting graphics, portals,
     // device discovery, or a privileged path.
-    if args.iter().any(|arg| arg == "--qos-package-smoke") {
+    if args.iter().any(|arg| arg == "--tilo-package-smoke") {
         return Ok(());
     }
-    if args.iter().any(|arg| arg == "--qos-flatpak-probe-smoke") {
+    if args.iter().any(|arg| arg == "--tilo-flatpak-probe-smoke") {
         if !cfg!(feature = "flatpak-media-writer")
-            || std::env::var("QOS_IMAGER_FLATPAK").as_deref() != Ok("1")
+            || std::env::var("TILO_IMAGER_FLATPAK").as_deref() != Ok("1")
         {
             return Err("the Flatpak probe smoke test is outside its sandbox".into());
         }
@@ -109,7 +105,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let text_scale = parse_value_arg(&args, "--text-scale")
             .as_deref()
             .and_then(parse_text_scale);
-        let environment_text_scale = std::env::var("QOS_SHOTS_TEXT_SCALE").ok();
+        let environment_text_scale = std::env::var("TILO_SHOTS_TEXT_SCALE").ok();
         let theme = standalone_shot_theme(text_scale, environment_text_scale.as_deref());
         std::fs::create_dir_all(&dir).ok();
         for (i, scenario) in imager::SHOT_SCENARIOS.iter().enumerate() {
@@ -120,7 +116,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     ui::launch::run(
-        &LaunchSpec::new_with_args("dev.qos.imager", live_root)
+        &LaunchSpec::new_with_args("dev.tilo.imager", live_root)
             .runtime_attachment(|_| !cfg!(target_os = "windows"))
             .shot_handler(render_shot)
             .shot_root(shot_root)
@@ -296,7 +292,7 @@ fn render_scenario(
 }
 
 fn standalone_shot_theme(text_scale: Option<f32>, environment_text_scale: Option<&str>) -> Theme {
-    let theme = std::env::var("QOS_SHOTS_THEME")
+    let theme = std::env::var("TILO_SHOTS_THEME")
         .ok()
         .and_then(|name| Theme::named(&name))
         .unwrap_or_else(Theme::dark)
@@ -305,7 +301,7 @@ fn standalone_shot_theme(text_scale: Option<f32>, environment_text_scale: Option
             environment_text_scale,
         ));
     let reduced = [
-        "QOS_SHOTS_REDUCE_MOTION",
+        "TILO_SHOTS_REDUCE_MOTION",
         "QOS_A11Y_REDUCE_MOTION",
         "QOS_REDUCE_MOTION",
     ]

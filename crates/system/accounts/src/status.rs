@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::os::fd::AsRawFd;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
@@ -141,28 +141,27 @@ impl StatusLock {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let file = OpenOptions::new()
+        let mut options = OpenOptions::new();
+        options
             .read(true)
             .write(true)
             .create(true)
             // This file holds no content, only the flock itself; state that
             // explicitly rather than leaving `create`'s truncation implicit.
-            .truncate(false)
-            .mode(0o600)
-            .open(path)?;
-        // SAFETY: flock only observes the valid fd owned by `file`; the file
-        // remains alive in StatusLock until the guard drops.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
+            .truncate(false);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let file = options.open(path)?;
+        // std uses flock on Unix and LockFileEx on Windows. Both serialize
+        // other processes, and closing the guard releases its exclusive lock.
+        file.lock()?;
         Ok(Self(file))
     }
 }
 
 impl Drop for StatusLock {
     fn drop(&mut self) {
-        // SAFETY: the fd remains valid for the duration of this Drop call.
-        let _ = unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+        let _ = self.0.unlock();
     }
 }
 
@@ -295,7 +294,7 @@ mod tests {
     #[test]
     fn status_round_trips_and_messages_are_bounded_one_line() {
         let root =
-            std::env::temp_dir().join(format!("qos-account-status-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("tilo-account-status-{}", uuid::Uuid::new_v4()));
         let id = AccountId::from("mail@example.test");
         let mut store = AccountSyncStatusStore::default();
         store.report(
@@ -318,7 +317,7 @@ mod tests {
     #[test]
     fn reporter_preserves_last_success_across_auth_failure() {
         let root =
-            std::env::temp_dir().join(format!("qos-account-reporter-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("tilo-account-reporter-{}", uuid::Uuid::new_v4()));
         let id = AccountId::from("calendar@example.test");
         let reporter = AccountSyncReporter::in_root(id.clone(), &root);
         reporter.started().unwrap();
@@ -341,7 +340,7 @@ mod tests {
     #[test]
     fn reporters_serialize_cross_thread_updates() {
         let root = std::env::temp_dir().join(format!(
-            "qos-account-reporter-lock-{}",
+            "tilo-account-reporter-lock-{}",
             uuid::Uuid::new_v4()
         ));
         let first = AccountId::from("first");

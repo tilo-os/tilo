@@ -1,0 +1,26 @@
+#!/bin/sh
+# Tilo session entry point, as installed on a host that is not the Tilo image.
+#
+# The display manager execs this; it supervises the compositor. There is nothing
+# configurable here on purpose: the path below is the one the package owns,
+# and no environment variable, config file or argument can redirect it. The
+# developer counterpart that *can* be redirected is `tilo-session-dev`, in the
+# separate `-devel` subpackage, so a machine that never installed that
+# subpackage has no way to start a session from a binary of someone's
+# choosing.
+set -eu
+
+TILO_SHELL=/usr/bin/tilo-shell
+SESSION_RUNNER=/usr/libexec/tilo-session-runner
+
+if [ ! -x "$TILO_SHELL" ]; then
+    echo "tilo-session: $TILO_SHELL is missing or not executable" >&2
+    exit 1
+fi
+
+if [ ! -x "$SESSION_RUNNER" ]; then
+    echo "tilo-session: $SESSION_RUNNER is missing or not executable" >&2
+    exit 1
+fi
+
+exec "$SESSION_RUNNER" "$TILO_SHELL" "$@"

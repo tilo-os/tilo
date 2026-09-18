@@ -47,27 +47,33 @@ restore_browser() {
 trap restore_browser EXIT
 tmp_exclude_browser
 
-# Everywhere we invoke cargo, go through distrobox — the host doesn't
-# have the build deps. See CLAUDE.md.
-#
-# Prefer my-distrobox-44 when it exists: its ffmpeg SONAMEs match the
-# host (Fedora 44 both sides), so the NVENC test binary runs bare on
-# the host without an LD_LIBRARY_PATH shim. Fall back to the older
-# my-distrobox (fedora-toolbox:latest / F42) — that build still works
-# but the on-host run needs the ffmpeg-lib staging shim below.
-if podman container exists my-distrobox-44 2>/dev/null; then
-    DISTROBOX="${QOS_DISTROBOX:-my-distrobox-44}"
-    HOST_ABI_MATCHES=1
+# Use the host by default, or set TILO_DISTROBOX when the build dependencies
+# live in a development container. Auto-detect the conventional containers
+# only when neither choice was explicit.
+if [ -n "${TILO_DISTROBOX+x}" ]; then
+    DISTROBOX="$TILO_DISTROBOX"
+elif podman container exists my-distrobox-44 2>/dev/null; then
+    DISTROBOX="my-distrobox-44"
+elif podman container exists my-distrobox 2>/dev/null; then
+    DISTROBOX="my-distrobox"
 else
-    DISTROBOX="${QOS_DISTROBOX:-my-distrobox}"
-    HOST_ABI_MATCHES=0
+    DISTROBOX=""
 fi
+
+# Matching the host's ffmpeg ABI avoids the library staging shim. A custom
+# container is conservatively treated as unmatched unless the caller opts out
+# with an empty TILO_DISTROBOX.
+HOST_ABI_MATCHES=$([ "$DISTROBOX" = "my-distrobox-44" ] && echo 1 || echo 0)
 cargo_in_distrobox() {
-    distrobox enter "$DISTROBOX" -- bash -c "cd $REPO && $*"
+    if [ -n "$DISTROBOX" ]; then
+        distrobox enter "$DISTROBOX" -- bash -c "cd $REPO && $*"
+    else
+        bash -c "cd $REPO && $*"
+    fi
 }
 
 # Root the on-host scratch dir here so subsequent runs are cheap.
-SCRATCH="${QOS_TEST_SCRATCH:-$REPO/.claude/test-scratch/flatpak-share}"
+SCRATCH="${TILO_TEST_SCRATCH:-$REPO/.claude/test-scratch/flatpak-share}"
 FF_LIBS="$SCRATCH/ff-libs"
 NV_LIBS="$SCRATCH/nvidia-libs"
 
@@ -107,7 +113,11 @@ stage_host_libs() {
 
     # ffmpeg libs from distrobox — the host's `ffmpeg-free` (Fedora
     # default) usually lacks NVENC linkage, so we prefer the container's.
-    distrobox enter my-distrobox -- bash -c "
+    if [ -z "$DISTROBOX" ]; then
+        echo "TILO_DISTROBOX is required to stage codec libraries" >&2
+        return 1
+    fi
+    distrobox enter "$DISTROBOX" -- bash -c "
         for so in libavcodec.so.61 libavutil.so.59 libswscale.so.8 \
                   libavformat.so.61 libswresample.so.5; do
             path=\$(ldconfig -p | grep -E \"^\\s*\$so \" | head -1 | awk '{print \$NF}')
@@ -132,7 +142,7 @@ stage_host_libs() {
         LD_LIBRARY_PATH="$FF_LIBS:$NV_LIBS:/lib64" \
             ldd "$TEST_BIN" 2>&1 | awk '/not found/ {print $1}' | sort -u > "$missing_file"
         [ -s "$missing_file" ] || break
-        distrobox enter my-distrobox -- bash -c "
+        distrobox enter "$DISTROBOX" -- bash -c "
             while read so; do
                 path=\$(ldconfig -p | grep -E \"^\\s*\$so \" | head -1 | awk '{print \$NF}')
                 if [ -n \"\$path\" ] && [ -f \"\$path\" ]; then
@@ -197,9 +207,12 @@ run_e2e() {
     echo "=== end-to-end pipeline ==="
     cargo_in_distrobox \
         "cargo test -p shell \
-            --test flatpak_share_e2e \
-            --test two_netns_share \
-            --release -- --include-ignored"
+            --test it --release --locked flatpak_share_e2e:: \
+            -- --include-ignored && \
+         cargo test -p shell \
+            --test it --release --locked \
+            two_netns_share::in_process_udp_pipeline_sustains_10_fps_and_bounded_latency \
+            -- --exact --nocapture"
 }
 
 run_shim() {

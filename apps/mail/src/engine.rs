@@ -375,7 +375,7 @@ impl MailEngine for StubEngine {
                             request_id,
                             kind,
                             context: "send".into(),
-                            message: e.to_string(),
+                            message: e,
                         });
                     }
                 }
@@ -450,8 +450,8 @@ pub mod live {
     use futures::TryStreamExt;
 
     use super::{
-        AccountConfig, Draft, EngineEvent, EngineRequest, Folder, MailEngine, Message, Sender,
-        build_mime,
+        AccountConfig, Draft, EngineEvent, EngineRequest, EngineRequestId, EngineRequestKind,
+        Folder, MailEngine, Message, Sender, build_mime,
     };
     // AccountConfig / Draft / Folder / Message / Sender / build_mime come via
     // `super::*`; these are the names the parent doesn't already bring in.
@@ -530,60 +530,117 @@ pub mod live {
         fn handle_send(&self, account: &AccountConfig, draft: &Draft) -> Result<usize, String> {
             let creds = resolve_auth(account)?;
             let from = Addr::new(account.display_name.clone(), account.email.clone());
-            let bytes = build_mime(&from, draft).map_err(|e| e.to_string())?;
+            let bytes = build_mime(&from, draft)?;
             self.rt
                 .block_on(smtp_send(account, draft, &creds, &bytes))?;
             Ok(bytes.len())
         }
+
+        fn process_connect(
+            &self,
+            request_id: EngineRequestId,
+            kind: EngineRequestKind,
+            account: AccountConfig,
+            out: &Sender<EngineEvent>,
+        ) {
+            let creds = match resolve_auth(&account) {
+                Ok(credentials) => credentials,
+                Err(message) => {
+                    let _ = out.send(EngineEvent::Error {
+                        request_id,
+                        kind,
+                        context: "connect".into(),
+                        message,
+                    });
+                    return;
+                }
+            };
+            match self
+                .rt
+                .block_on(list_folders(&account, &creds, self.tls.clone()))
+            {
+                Ok(folders) => {
+                    let _ = out.send(EngineEvent::Connected {
+                        request_id,
+                        account_id: account.email.clone(),
+                    });
+                    let _ = out.send(EngineEvent::Folders {
+                        request_id,
+                        account_id: account.email,
+                        folders,
+                    });
+                }
+                Err(message) => {
+                    let _ = out.send(EngineEvent::Error {
+                        request_id,
+                        kind,
+                        context: "connect".into(),
+                        message,
+                    });
+                }
+            }
+        }
+
+        fn process_send(
+            &self,
+            request_id: EngineRequestId,
+            kind: EngineRequestKind,
+            account: &AccountConfig,
+            draft: &Draft,
+            out: &Sender<EngineEvent>,
+        ) {
+            match self.handle_send(account, draft) {
+                Ok(wire_bytes) => {
+                    let _ = out.send(EngineEvent::Sent {
+                        request_id,
+                        wire_bytes,
+                    });
+                }
+                Err(message) => {
+                    let _ = out.send(EngineEvent::Error {
+                        request_id,
+                        kind,
+                        context: "smtp".into(),
+                        message,
+                    });
+                }
+            }
+        }
+
+        fn process_oauth(
+            request_id: EngineRequestId,
+            kind: EngineRequestKind,
+            account_id: String,
+            provider: oauth::OAuthProvider,
+            login_hint: &str,
+            out: &Sender<EngineEvent>,
+        ) {
+            match authorize_oauth(&account_id, provider, login_hint) {
+                Ok(()) => {
+                    let _ = out.send(EngineEvent::Authorized {
+                        request_id,
+                        account_id,
+                    });
+                }
+                Err(message) => {
+                    let _ = out.send(EngineEvent::Error {
+                        request_id,
+                        kind,
+                        context: "oauth".into(),
+                        message,
+                    });
+                }
+            }
+        }
     }
 
     impl MailEngine for LiveEngine {
-        #[allow(
-            clippy::too_many_lines,
-            reason = "one match keeps each correlated request/result pair adjacent; splitting it would obscure the worker protocol boundary"
-        )]
         fn handle(&mut self, req: EngineRequest, out: &Sender<EngineEvent>) {
             let request_id = req.request_id();
             let kind = req.kind();
             match req {
                 EngineRequest::Connect { account, .. } => {
-                    // A connect verifies auth by opening a session and listing
-                    // folders, so a bad credential surfaces immediately rather
-                    // than as a silently-empty inbox.
-                    let creds = match resolve_auth(&account) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            let _ = out.send(EngineEvent::Error {
-                                request_id,
-                                kind,
-                                context: "connect".into(),
-                                message: e,
-                            });
-                            return;
-                        }
-                    };
-                    let tls = self.tls.clone();
-                    match self.rt.block_on(list_folders(&account, &creds, tls)) {
-                        Ok(folders) => {
-                            let _ = out.send(EngineEvent::Connected {
-                                request_id,
-                                account_id: account.email.clone(),
-                            });
-                            let _ = out.send(EngineEvent::Folders {
-                                request_id,
-                                account_id: account.email,
-                                folders,
-                            });
-                        }
-                        Err(e) => {
-                            let _ = out.send(EngineEvent::Error {
-                                request_id,
-                                kind,
-                                context: "connect".into(),
-                                message: e,
-                            });
-                        }
-                    }
+                    self.process_connect(request_id, kind, account, out);
                 }
                 EngineRequest::Fetch {
                     account, folder, ..
@@ -644,44 +701,14 @@ pub mod live {
                     );
                 }
                 EngineRequest::Send { account, draft, .. } => {
-                    match self.handle_send(&account, &draft) {
-                        Ok(wire_bytes) => {
-                            let _ = out.send(EngineEvent::Sent {
-                                request_id,
-                                wire_bytes,
-                            });
-                        }
-                        Err(e) => {
-                            let _ = out.send(EngineEvent::Error {
-                                request_id,
-                                kind,
-                                context: "smtp".into(),
-                                message: e,
-                            });
-                        }
-                    }
+                    self.process_send(request_id, kind, &account, &draft, out);
                 }
                 EngineRequest::OAuthAuthorize {
                     account_id,
                     provider,
                     login_hint,
                     ..
-                } => match authorize_oauth(&account_id, provider, &login_hint) {
-                    Ok(()) => {
-                        let _ = out.send(EngineEvent::Authorized {
-                            request_id,
-                            account_id,
-                        });
-                    }
-                    Err(e) => {
-                        let _ = out.send(EngineEvent::Error {
-                            request_id,
-                            kind,
-                            context: "oauth".into(),
-                            message: e,
-                        });
-                    }
-                },
+                } => Self::process_oauth(request_id, kind, account_id, provider, &login_hint, out),
             }
         }
     }
@@ -762,7 +789,9 @@ pub mod live {
             }
             tokens = oauth::refresh_tokens(provider, &client_id, &tokens.refresh_token)?;
             vault.put(&id, &oauth::tokens_to_secret(&tokens));
-            vault.save();
+            vault.try_save().map_err(|error| {
+                format!("could not save refreshed sign-in credentials: {error}")
+            })?;
         }
         Ok(tokens.access_token)
     }
@@ -780,9 +809,7 @@ pub mod live {
             provider,
             &client_id,
             login_hint,
-            |url| {
-                let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-            },
+            |url| ui::widget::try_open_external_url(url).map_err(|error| error.to_string()),
             std::time::Duration::from_secs(300),
         )?;
         let mut vault = SecretVault::open();
@@ -790,8 +817,9 @@ pub mod live {
             &AccountId::from(account_id.to_string()),
             &oauth::tokens_to_secret(&tokens),
         );
-        vault.save();
-        Ok(())
+        vault
+            .try_save()
+            .map_err(|error| format!("could not save sign-in credentials: {error}"))
     }
 
     /// A connected + authenticated IMAP session over rustls.
@@ -1456,7 +1484,7 @@ pub mod live {
         #[test]
         fn imap_fetch_over_a_real_socket_parses_a_message() {
             let eml = b"From: Ada Lovelace <ada@analytical.example>\r\n\
-To: you@qos.example\r\n\
+To: you@tilo.example\r\n\
 Subject: Live inbox works\r\n\
 Date: Fri, 01 Jan 2021 09:30:00 +0000\r\n\
 Message-ID: <live-1@analytical.example>\r\n\
@@ -1593,7 +1621,7 @@ mod tests {
         let (tx, rx) = spawn_with(Box::new(StubEngine));
         let account = AccountConfig {
             display_name: "Me".into(),
-            email: "me@qos.example".into(),
+            email: "me@tilo.example".into(),
             ..Default::default()
         };
         let draft = Draft {

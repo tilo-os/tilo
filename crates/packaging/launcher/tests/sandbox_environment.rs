@@ -1,4 +1,4 @@
-//! What a sandboxed app's environment actually contains.
+//! The environment visible to a sandboxed app.
 //!
 //! The app's environment is meant to be a closed set — a list of
 //! variables the launcher puts there, beside the binds that make each
@@ -6,16 +6,15 @@
 //! child whatever the parent was carrying, the compositor's own
 //! environment.
 //!
-//! These tests start the real thing under `bwrap`, through the same
-//! `run_with_captured` path the launcher uses, and read the answer out
-//! of the process's own `environ` after `exec`. **They deliberately do
+//! These tests start the app under `bwrap`, through the same
+//! `run_with_captured` path the launcher uses, and read the result from the
+//! process's own `environ` after `exec`. **They do
 //! not assert on the argv** — a `--setenv` spliced ahead of
 //! `--clearenv` leaves the intention intact and the environment full.
 //! The environment the process has is the boundary.
 //!
-//! Not `#[ignore]`d, for the reason `room_confinement.rs` gives: bwrap
-//! is how a qOS app runs at all, so a machine that can't run these
-//! can't run the product.
+//! These tests are not `#[ignore]`d because bwrap is required to run a Tilo
+//! app; a machine that cannot run them cannot run a Tilo app.
 
 #![allow(
     clippy::unwrap_used,
@@ -33,23 +32,22 @@ use std::path::{Path, PathBuf};
 use launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox};
 use launcher::run::{RunOptions, run_with_captured};
 
-const PACKAGE: &str = "dev.qos.envtest";
+const PACKAGE: &str = "dev.tilo.envtest";
 
-/// A variable name no part of qOS sets, so its presence inside the
+/// A variable name no part of Tilo sets, so its presence inside the
 /// sandbox can only mean one thing: it walked in from the parent.
-const MARKER: &str = "QOS_ENV_LEAK_MARKER";
+const MARKER: &str = "TILO_ENV_LEAK_MARKER";
 
-/// Stand-ins for the compositor's own wiring: the privileged clipboard
-/// socket, the local collaboration broker, and the user's identity
-/// file — real names an app genuinely must not be handed.
+/// Stand-ins for compositor wiring that an app must not receive: the
+/// privileged clipboard socket, collaboration broker, and user identity file.
 const SESSION_PRIVATE: &[(&str, &str)] = &[
-    ("QOS_WAYLAND_PRIVILEGED", "wayland-priv-9"),
-    ("QUICK_COLLAB_SOCK", "/run/user/1000/qos-collab.sock"),
+    ("TILO_WAYLAND_PRIVILEGED", "wayland-priv-9"),
+    ("QUICK_COLLAB_SOCK", "/run/user/1000/tilo-collab.sock"),
     (
-        "QOS_USER_IDENTITY",
-        "/home/somebody/.config/qos/identity/primary.json",
+        "TILO_USER_IDENTITY",
+        "/home/somebody/.config/tilo/identity/primary.json",
     ),
-    ("QOS_IDENTITY_BROKER_FD", "42"),
+    ("TILO_IDENTITY_BROKER_FD", "42"),
 ];
 
 fn build_fixture(out_dir: &Path) -> PathBuf {
@@ -97,6 +95,7 @@ fn manifest() -> MinimalManifest {
         opens_ext: Vec::new(),
         opens_mime: Vec::new(),
         opens_schemes: Vec::new(),
+        continuity: launcher::manifest::ContinuityContract::default(),
     }
 }
 
@@ -109,7 +108,7 @@ fn bwrap() -> PathBuf {
         .find(|candidate| candidate.is_file())
         .unwrap_or_else(|| {
             panic!(
-                "bwrap is not on PATH ({}). It is how a qOS app runs, so \
+                "bwrap is not on PATH ({}). It is how a Tilo app runs, so \
                  this is a broken environment rather than a reason to skip the \
                  test.",
                 path.to_string_lossy()
@@ -247,20 +246,20 @@ fn every_variable_in_the_sandbox_is_one_the_launcher_set() {
         // `--clearenv` keeps `PWD`, which is a path inside the sandbox rather
         // than anything of the session's.
         "PWD".to_string(),
-        "QOS_PACKAGE_ID".to_string(),
-        "QOS_APP_NAME".to_string(),
-        "QOS_APP_ICON".to_string(),
-        "QOS_APP_DIR".to_string(),
-        "QOS_USER_HOME".to_string(),
-        "QOS_USER_IDENTITY".to_string(),
-        "QOS_IDENTITY_BROKER_FD".to_string(),
-        "QOS_WORKSPACE_ID".to_string(),
-        "QOS_WORKSPACE_ROOTS".to_string(),
-        "QOS_PARTICIPATION".to_string(),
-        "QOS_CLI_COMMAND".to_string(),
+        "TILO_PACKAGE_ID".to_string(),
+        "TILO_APP_NAME".to_string(),
+        "TILO_APP_ICON".to_string(),
+        "TILO_APP_DIR".to_string(),
+        "TILO_USER_HOME".to_string(),
+        "TILO_USER_IDENTITY".to_string(),
+        "TILO_IDENTITY_BROKER_FD".to_string(),
+        "TILO_WORKSPACE_ID".to_string(),
+        "TILO_WORKSPACE_ROOTS".to_string(),
+        "TILO_PARTICIPATION".to_string(),
+        "TILO_CLI_COMMAND".to_string(),
         // The egress gate and proxy variables naming it. Absent here (this
         // fixture declares `net = "off"`), but part of the set.
-        "QOS_NET_GATE".to_string(),
+        "TILO_NET_GATE".to_string(),
         "HTTPS_PROXY".to_string(),
         "HTTP_PROXY".to_string(),
         "ALL_PROXY".to_string(),
@@ -297,7 +296,7 @@ fn every_variable_in_the_sandbox_is_one_the_launcher_set() {
     let unexpected: Vec<&String> = inside
         .iter()
         // Service-socket descriptors are named per service.
-        .filter(|k| !allowed.contains(k) && !k.starts_with("QOS_SVC_"))
+        .filter(|k| !allowed.contains(k) && !k.starts_with("TILO_SVC_"))
         .collect();
     assert!(
         unexpected.is_empty(),

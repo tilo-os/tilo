@@ -1,4 +1,6 @@
-//! Independent retained per-character reference for the mark-boundary optimization.
+use super::text_runs::{BlockRuns, char_baseline, char_color, char_has, mark_style_segments};
+use qdoc::document::MarkSpan;
+// Independent retained per-character reference for the mark-boundary optimization.
 use super::*;
 use qdoc::document::MarkValue;
 
@@ -69,9 +71,9 @@ fn reference_block_runs_markup(block: &BlockView, show_markup: bool) -> BlockRun
     let len = chars.len();
     // An `ins` run is green, a `del` run red.
     let track_color = |i: usize| -> Option<[u8; 3]> {
-        if char_in_mark(i, &block.marks, qdoc::schema::MARK_INS) {
+        if char_has(i, &block.marks, qdoc::schema::MARK_INS) {
             Some(INSERTION_RGB)
-        } else if char_in_mark(i, &block.marks, qdoc::schema::MARK_DEL) {
+        } else if char_has(i, &block.marks, qdoc::schema::MARK_DEL) {
             Some(DELETION_RGB)
         } else {
             None

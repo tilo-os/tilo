@@ -1,0 +1,76 @@
+# Files — Tilo application manifest.
+#
+# The file manager has no ambient access; it reaches only user-granted paths.
+#
+# Beyond the system read profile it needs, as consented capabilities:
+# read+write on the directories the user opens — `$HOME`,
+# `/var/workspace` (override `TILO_WORKSPACE_ROOTS`), the freedesktop
+# trash dir — and read+exec on the host bin dirs, because it hands
+# files off to `terminal`, `word-processor` and the host opener.
+#
+
+
+[package]
+id       = "dev.tilo.file-explorer"
+name     = "Files"
+category = "System"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# Files only uses HTTPS to the user-configured WebDAV/Nextcloud origins. The
+# client disables automatic redirects and refuses to send credentials across
+# an origin boundary; this declaration is required for those file actions.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+    "net",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "host"
+
+[sandbox.portals]
+open-uri = "via-host"
+
+[sandbox.services]
+collab = "optional@1"
+tilo-fs = "optional@1"
+spellcheck = "optional@1"
+
+[entrypoint]
+bin             = "bin/file-explorer"
+type            = "gui"
+splash-segments = ["bin/file-explorer[0x0:0x400000]"]
+splash-budget   = 250
+
+# External-client certification for the installed-image release gate. The
+# generic harness finds this signed manifest in the app store, launches this
+# payload, and performs the named action through the real AT-SPI D-Bus bus.
+[accessibility.atspi_acceptance]
+root         = "Files activity"
+required     = ["Breadcrumbs", "View options"]
+action       = "View options"
+after_action = ["New Folder"]
+
+[providers]
+mime = []
+ext  = []

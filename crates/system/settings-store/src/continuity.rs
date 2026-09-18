@@ -1,0 +1,444 @@
+//! Canonical continuity policy for leaves in the shared settings document.
+//!
+//! This registry is deliberately exhaustive for settings owned by Tilo. A new
+//! user-facing preference must be classified here as personal, device-local,
+//! secret, or derived. Consumers must never infer portability from a section
+//! name: display connectors, audio nodes, credentials, and generated state can
+//! sit beside genuinely personal preferences.
+
+/// Where durable intent is allowed to live.
+///
+/// This is intentionally broader than “does it roam?”.  A caller reviewing a
+/// new key has to choose the owning boundary, rather than getting portability
+/// accidentally from a section name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingScope {
+    /// A preference that describes the person and may converge across their
+    /// authenticated devices.
+    Personal,
+    /// Shared workspace policy. It belongs in the workspace record plane and
+    /// must never be copied through a person's settings fabric.
+    Workspace,
+    /// Intent tied to this machine's hardware or operating environment.
+    DeviceLocal,
+    /// Credential material. Secrets use a purpose-built encrypted transfer,
+    /// never the ordinary settings channel.
+    Secret,
+    /// Observed/generated state rather than durable user intent.
+    Derived,
+}
+
+/// Backwards-compatible name for consumers that only ask the continuity
+/// question. New code should use [`SettingScope`].
+pub type ContinuityClass = SettingScope;
+
+/// One reviewed leaf in the shared settings schema.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContinuityPolicy {
+    pub key: &'static str,
+    pub class: SettingScope,
+}
+
+macro_rules! policies {
+    ($( $class:ident => [ $( $key:literal ),* $(,)? ] ),* $(,)?) => {
+        /// Every reviewed settings-store leaf.
+        pub const POLICIES: &[ContinuityPolicy] = &[
+            $($(ContinuityPolicy { key: $key, class: SettingScope::$class },)*)*
+        ];
+    };
+}
+
+policies! {
+    Personal => [
+        "tilo.accessibility.large_cursor",
+        "tilo.accessibility.cursor_size",
+        "tilo.accessibility.screen_reader",
+        "tilo.accessibility.on_screen_keyboard",
+        "tilo.accessibility.sticky_keys",
+        "tilo.accessibility.slow_keys",
+        "tilo.accessibility.visual_alerts",
+        "tilo.accessibility.color_filter",
+        "tilo.accessibility.magnifier_zoom",
+        "tilo.accessibility.cursor_crosshair",
+        "tilo.accessibility.thick_text_caret",
+        "tilo.accessibility.switch_control",
+        "tilo.accessibility.switch_key_pair",
+        "tilo.accessibility.switch_scan_ms",
+        "tilo.accessibility.screen_reader_rate",
+        "tilo.accessibility.screen_reader_voice",
+        "tilo.appearance.theme",
+        "tilo.appearance.high_contrast",
+        "tilo.appearance.reduce_motion",
+        "tilo.appearance.text_scale",
+        "tilo.appearance.ui_scale",
+        "tilo.appearance.studio",
+        "tilo.locale.currency",
+        "tilo.locale.date_format",
+        "tilo.locale.time_format",
+        "tilo.locale.measurement",
+        "tilo.locale.number_style",
+        "tilo.locale.first_day_of_week",
+        "tilo.notifications.do_not_disturb",
+        "tilo.notifications.show_banners",
+        "tilo.notifications.show_previews",
+        "tilo.notifications.play_sounds",
+        "tilo.notifications.show_on_lock_screen",
+        "tilo.notifications.show_badges",
+        "tilo.notifications.focus",
+        "tilo.notifications.per_app",
+        "tilo.input.natural_scroll",
+        "tilo.input.touchpad_natural_scroll",
+        "tilo.input.mouse_natural_scroll",
+        "tilo.input.tap_to_click",
+        "tilo.input.pointer_speed",
+        "tilo.input.touchpad_pointer_speed",
+        "tilo.input.mouse_pointer_speed",
+        "tilo.input.key_repeat",
+        "tilo.input.key_repeat_delay_ms",
+        "tilo.input.key_repeat_rate_hz",
+        "tilo.input.keyboard_layout",
+        "tilo.input.tap_drag",
+        "tilo.input.disable_while_typing",
+        "tilo.input.middle_emulation",
+        "tilo.input.left_handed",
+        "tilo.input.accel_profile",
+        "tilo.input.touchpad_gestures",
+        "tilo.input.compose_key",
+        "tilo.input.keyboard_layouts",
+        "tilo.audio.event_sounds",
+        "tilo.audio.chat_join",
+        "tilo.audio.chat_leave",
+        "tilo.audio.balance",
+        "tilo.audio.mono_output",
+        "tilo.display.night_light",
+        "tilo.display.night_light_temperature",
+        "tilo.shortcuts.bindings",
+        "tilo.desktop_controls.vim_mode",
+        "tilo.quick_settings.controls",
+        "tilo.text_assistance.check_spelling",
+        "tilo.text_assistance.auto_correct",
+    ],
+    DeviceLocal => [
+        "tilo.audio.output_device",
+        "tilo.audio.input_device",
+        "tilo.display.auto_brightness",
+        "tilo.display.scale",
+        "tilo.input.pen_output",
+        "tilo.input.host_input_migration_version",
+        "tilo.power.auto_suspend",
+        "tilo.power.suspend_minutes",
+        "tilo.power.saver_suspend_minutes",
+        "tilo.power.balanced_suspend_minutes",
+        "tilo.power.performance_suspend_minutes",
+        "tilo.power.blank_minutes",
+        "tilo.power.lock_minutes",
+        "tilo.power.lid_close_action",
+        "tilo.power.power_key_action",
+        "tilo.power.low_battery_percent",
+        "tilo.power.critical_battery_percent",
+        "tilo.power.critical_action",
+        "tilo.updates.auto",
+        "tilo.updates.channel",
+        "tilo.appearance.wallpaper_path",
+        "tilo.device.name",
+        "tilo.display.hardware.edid",
+        "tilo.network.interface.mac",
+        "tilo.storage.mount.usb",
+        "tilo.continuity.enabled",
+        "tilo.continuity.clipboard",
+        "tilo.continuity.notifications",
+        "tilo.continuity.wifi_settings",
+        "tilo.continuity.media",
+        "tilo.continuity.display_input",
+        "tilo.continuity.file_transfer",
+        "tilo.continuity.realtime_sessions",
+        "tilo.continuity.typed_gamepad",
+        "tilo.continuity.app_continuations",
+        // Connector identities, modes, calibration and staged apply state
+        // are meaningful only on the machine that owns the hardware.
+        "tilo.display_outputs.outputs",
+        "tilo.display_transaction.id",
+        "tilo.display_transaction.state",
+        "tilo.display_transaction.previous",
+        "tilo.display_transaction.candidate",
+        "tilo.display_transaction.deadline_unix_ms",
+        "tilo.display_transaction.message",
+        // Local portal grants and physical-key bindings must not escape the
+        // device on which they were granted/configured.
+        "tilo.ebook_local_library.books",
+        "tilo.ebook_local_library.watched_folders",
+        "tilo.ebook_local_library.shortcuts",
+        "tilo.video_player.autoplay",
+        "tilo.video_player.loop_enabled",
+        "tilo.video_player.recent_history",
+        // Provider records can name loopback endpoints and device-vault
+        // locators. The secret bytes live elsewhere, but this aggregate
+        // cannot safely roam until it is split into portable/local records.
+        "tilo.agent_providers.config",
+        "tilo.collaboration.status_sharing",
+        "tilo.collaboration.manual_status",
+    ],
+    Secret => [
+        "tilo.agent_providers.api_key",
+        "tilo.security.local_credential",
+        "tilo.security.local_credential.pin",
+    ],
+    Derived => [
+        "tilo.version",
+        "tilo.updates.last_checked",
+        "tilo.continuity.audit",
+        "tilo.history.seen_frontiers",
+    ],
+}
+
+/// A reviewed, typed settings leaf. Construction succeeds only for registry
+/// entries, so an unknown future key cannot silently acquire roaming policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SettingKey(&'static ContinuityPolicy);
+
+impl SettingKey {
+    #[must_use]
+    pub const fn canonical(self) -> &'static str {
+        self.0.key
+    }
+
+    #[must_use]
+    pub const fn scope(self) -> SettingScope {
+        self.0.class
+    }
+}
+
+/// Look up a canonical key in the reviewed registry.
+#[must_use]
+pub fn registered(key: &str) -> Option<SettingKey> {
+    POLICIES
+        .iter()
+        .find(|policy| policy.key == key)
+        .map(SettingKey)
+}
+
+/// Return the reviewed continuity class for an exact settings leaf.
+#[must_use]
+pub fn classify(key: &str) -> Option<SettingScope> {
+    registered(key).map(SettingKey::scope)
+}
+
+/// Whether an exact settings leaf may use the ordinary roaming channel.
+#[must_use]
+pub fn is_personal(key: &str) -> bool {
+    classify(key) == Some(SettingScope::Personal)
+}
+
+/// Project only reviewed personal leaves from the shared settings document.
+///
+/// This is the sole projection used by personal-device continuity. Unknown,
+/// workspace-owned, local, secret, and derived leaves fail closed.
+#[must_use]
+pub fn personal_values(
+    document: &serde_json::Map<String, serde_json::Value>,
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    let mut projected = std::collections::BTreeMap::new();
+    for (section, value) in document {
+        let serde_json::Value::Object(leaves) = value else {
+            continue;
+        };
+        for (leaf, value) in leaves {
+            let canonical = format!("tilo.{section}.{leaf}");
+            if registered(&canonical).is_some_and(|key| key.scope() == SettingScope::Personal) {
+                projected.insert(canonical, value.clone());
+            }
+        }
+    }
+    projected
+}
+
+/// Enumerate unreviewed top-level section leaves from a settings document.
+///
+/// Objects below a leaf remain one value (for example notification per-app
+/// rules and shortcut bindings), matching the device-fabric wire format.
+#[must_use]
+pub fn unclassified_leaves(document: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+    let mut missing = Vec::new();
+    for (section, value) in document {
+        if section == "version" {
+            let key = "tilo.version";
+            if classify(key).is_none() {
+                missing.push(key.to_string());
+            }
+            continue;
+        }
+        let serde_json::Value::Object(leaves) = value else {
+            missing.push(format!("tilo.{section}"));
+            continue;
+        };
+        for leaf in leaves.keys() {
+            let key = format!("tilo.{section}.{leaf}");
+            if classify(&key).is_none() {
+                missing.push(key);
+            }
+        }
+    }
+    missing.sort();
+    missing
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn policy_keys_are_unique_and_canonical() {
+        let mut keys = BTreeSet::new();
+        for policy in POLICIES {
+            assert!(policy.key.starts_with("tilo."), "{}", policy.key);
+            assert!(
+                keys.insert(policy.key),
+                "duplicate policy for {}",
+                policy.key
+            );
+        }
+    }
+
+    #[test]
+    fn credentials_and_hardware_are_never_personal() {
+        for key in [
+            "tilo.agent_providers.api_key",
+            "tilo.security.local_credential.pin",
+            "tilo.audio.output_device",
+            "tilo.display.scale",
+            "tilo.input.pen_output",
+            "tilo.continuity.clipboard",
+            "tilo.continuity.typed_gamepad",
+            "tilo.continuity.app_continuations",
+            "tilo.continuity.audit",
+        ] {
+            assert!(classify(key).is_some(), "{key} must be reviewed");
+            assert!(!is_personal(key), "{key} must not roam");
+        }
+    }
+
+    #[test]
+    fn continuity_privacy_choices_are_device_local_and_audit_is_derived() {
+        for key in [
+            "tilo.continuity.enabled",
+            "tilo.continuity.clipboard",
+            "tilo.continuity.notifications",
+            "tilo.continuity.wifi_settings",
+            "tilo.continuity.media",
+            "tilo.continuity.display_input",
+            "tilo.continuity.file_transfer",
+            "tilo.continuity.realtime_sessions",
+            "tilo.continuity.typed_gamepad",
+            "tilo.continuity.app_continuations",
+        ] {
+            assert_eq!(classify(key), Some(ContinuityClass::DeviceLocal), "{key}");
+        }
+        assert_eq!(
+            classify("tilo.continuity.audit"),
+            Some(ContinuityClass::Derived)
+        );
+    }
+
+    #[test]
+    fn unknown_settings_fail_closed() {
+        assert_eq!(classify("tilo.input.future_preference"), None);
+        assert!(!is_personal("tilo.input.future_preference"));
+    }
+
+    #[test]
+    fn typed_registry_projects_only_reviewed_personal_values() {
+        let document = serde_json::json!({
+            "appearance": {
+                "theme": "Nord",
+                "wallpaper_path": "/home/me/private.png",
+                "future_value": "must stay local"
+            },
+            "display_outputs": {"outputs": {"DP-1": {"scale": 2.0}}},
+            "agent_providers": {"config": {"profiles": [{"endpoint": "http://127.0.0.1:8000"}]}},
+            "security": {"local_credential": {"pin": "never"}}
+        });
+        let projected = personal_values(document.as_object().unwrap());
+        assert_eq!(
+            projected,
+            std::collections::BTreeMap::from([(
+                "tilo.appearance.theme".to_string(),
+                serde_json::json!("Nord")
+            )])
+        );
+    }
+
+    #[test]
+    fn every_cross_crate_settings_writer_has_reviewed_leaves() {
+        // These are the non-core writers of settings.json. Core Settings
+        // structs have their own schema-derived coverage test in
+        // apps/settings/src/prefs.rs. Keeping the other writer shapes here
+        // makes a new cross-crate leaf fail until its ownership is reviewed.
+        let document = serde_json::json!({
+            "display_outputs": {"outputs": {}},
+            "display_transaction": {
+                "id": 1,
+                "state": "requested",
+                "previous": {},
+                "candidate": {},
+                "deadline_unix_ms": null,
+                "message": null
+            },
+            "shortcuts": {"bindings": {}},
+            "desktop_controls": {"vim_mode": false},
+            "quick_settings": {"controls": ["wifi"]},
+            "text_assistance": {"check_spelling": true, "auto_correct": true},
+            "continuity": {
+                "enabled": false,
+                "clipboard": false,
+                "notifications": false,
+                "wifi_settings": false,
+                "media": false,
+                "display_input": false,
+                "file_transfer": false,
+                "realtime_sessions": false,
+                "typed_gamepad": false,
+                "app_continuations": false,
+                "audit": []
+            },
+            "agent_providers": {"config": {}},
+            "collaboration": {"status_sharing": "automatic", "manual_status": null},
+            "history": {"seen_frontiers": {}},
+            "ebook_local_library": {"books": {}, "watched_folders": [], "shortcuts": {}},
+            "video_player": {"autoplay": true, "loop_enabled": false, "recent_history": []}
+        });
+        assert_eq!(
+            unclassified_leaves(document.as_object().unwrap()),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn registry_names_all_ownership_boundaries() {
+        assert!(
+            POLICIES
+                .iter()
+                .any(|entry| entry.class == SettingScope::Personal)
+        );
+        assert!(
+            POLICIES
+                .iter()
+                .any(|entry| entry.class == SettingScope::DeviceLocal)
+        );
+        assert!(
+            POLICIES
+                .iter()
+                .any(|entry| entry.class == SettingScope::Secret)
+        );
+        assert!(
+            POLICIES
+                .iter()
+                .any(|entry| entry.class == SettingScope::Derived)
+        );
+        // Workspace policy intentionally has no settings.json leaf: it is
+        // stored in the workspace record plane. Keeping the variant in the
+        // type system prevents callers from treating “not personal” as
+        // synonymous with “device-local”.
+        assert_ne!(SettingScope::Workspace, SettingScope::DeviceLocal);
+    }
+}

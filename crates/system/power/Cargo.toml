@@ -1,18 +1,19 @@
 [package]
-name = "qos-power-mgmt"
+name = "tilo-power-mgmt"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
 
 [lib]
-name = "qos_power_mgmt"
+name = "tilo_power_mgmt"
 path = "src/lib.rs"
 
 [features]
 default = ["service"]
 service = [
     "dep:atomic-file",
+    "dep:bounded-command",
     "dep:futures-util",
     "dep:serde",
     "dep:serde_json",
@@ -25,14 +26,15 @@ service = [
 # Power management for the compositor: suspend-on-idle, lid / power-key
 # policy, suspend inhibitors, and battery thresholds, over systemd-logind +
 # UPower. Split into a pure policy core (unit-testable without a bus) and a
-# thin real zbus actuator. Depended on by `shell`; the Settings pane shares
+# thin zbus actuator. Depended on by `shell`; the Settings pane shares
 # only the on-disk JSON contract, not a code dependency.
 
 [dependencies]
+bounded-command = { path = "../../../crates/system/bounded-command", optional = true }
 tracing = { version = "0.1", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
-# One owner for ~/.config/qos/settings.json — path resolution, forgiving reads
+# One owner for ~/.config/tilo/settings.json — path resolution, forgiving reads
 # and non-destructive writes, shared with every other reader of that file.
 settings-store = { path = "../../../crates/system/settings-store", optional = true }
 atomic-file = { path = "../../../crates/system/atomic-file", optional = true }
@@ -45,7 +47,7 @@ futures-util = { version = "0.3", optional = true }
 [dev-dependencies]
 tokio = { version = "1.52.3", features = ["full"] }
 # Fixture power-supply trees for the sysfs battery reader, so its parsing
-# is tested against real directory layouts rather than a mocked reader.
+# is tested against representative directory layouts.
 tempfile = { workspace = true }
 
 [lints]

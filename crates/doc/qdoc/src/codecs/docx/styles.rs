@@ -1,5 +1,5 @@
 //! Parse OOXML styles (`word/styles.xml`) and list numbering (`word/numbering.xml`) into
-//! a registry the body parser resolves against — real `.docx` files keep most formatting
+//! a registry the body parser resolves against — `.docx` files keep most formatting
 //! in named styles and list ordering in numbering definitions.
 
 use crate::document::MarkValue;

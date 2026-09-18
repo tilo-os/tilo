@@ -1,10 +1,10 @@
-// Thin binary entry point for the qOS graphical greeter — all logic
+// Thin binary entry point for the Tilo graphical greeter — all logic
 // lives in the library (mirrors apps/file-explorer/src/main.rs).
 //
 // Modes:
 //   * default — build a `GreeterApp`, hand it to `ui::App`, run the live
 //     winit event loop. Launched at the greetd VT under `cage`:
-//         cage -s -- /usr/bin/qos-greeter
+//         cage -s -- /usr/bin/tilo-greeter
 //     The event-loop proxy is captured via `run_with_setup` so the
 //     background auth worker can pump prompts/results back into the UI.
 //   * `--shots <PATH> [--scenario <name>] [--viewport <WIDTH>x<HEIGHT>]`
@@ -63,13 +63,17 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let scenario = parse_scenario_arg(&args).unwrap_or(AuthScenario::Form);
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let text_scale = parse_text_scale_arg(&args);
-        let widget = GreeterApp::for_shot(scenario);
+        let mut widget = GreeterApp::for_shot(scenario);
+        let credentials = shot_credentials(scenario);
+        if let Some((_, password)) = credentials {
+            widget.seed_shot_password(password);
+        }
         render_shot_to_png(
             Box::new(widget),
             viewport,
             text_scale,
             &out,
-            shot_credentials(scenario),
+            credentials.map(|(username, _)| username),
         )?;
         return Ok(());
     }
@@ -210,8 +214,9 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
 /// resulting RGBA to `out` as a PNG. Mirrors `ui::App`'s
 /// `sync → build_layout → compute_layout → apply_layout → draw` cycle.
 ///
-/// `seed` pre-populates the username/password CRDT objects so the
-/// non-form screens render representative text. Because the composed
+/// `username` pre-populates the non-secret username CRDT object. The caller
+/// seeds representative passcode text through `GreeterApp`'s process-local
+/// buffer, never the document. Because the composed
 /// children are only created *inside* `build_layout`, we sync a second time
 /// afterwards so those children (the `TextInputs`) pull their values from the
 /// document — the live App achieves the same via its per-frame sync.
@@ -220,7 +225,7 @@ fn render_shot_to_png(
     viewport: (u32, u32),
     text_scale: Option<f32>,
     out: &std::path::Path,
-    seed: Option<(&str, &str)>,
+    username: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use automerge::{ObjType, transaction::Transactable};
 
@@ -241,15 +246,11 @@ fn render_shot_to_png(
 
     let mut state = ui::State::new();
 
-    if let Some((username, password)) = seed {
+    if let Some(username) = username {
         let uobj = state
             .doc
             .put_object(&state.root, "greeter.username", ObjType::Text)?;
         let _ = state.doc.splice_text(&uobj, 0, 0, username);
-        let pobj = state
-            .doc
-            .put_object(&state.root, "greeter.password", ObjType::Text)?;
-        let _ = state.doc.splice_text(&pobj, 0, 0, password);
     }
 
     widget.sync(&mut state.doc, &state.root);
@@ -305,7 +306,7 @@ fn render_shot_to_png(
     }
     let mut renderer = OffscreenRenderer::new(w, h);
     renderer.render_png(&scene, Color::TRANSPARENT, out);
-    println!("qos-greeter: wrote shot to {}", out.display());
+    println!("tilo-greeter: wrote shot to {}", out.display());
     Ok(())
 }
 
@@ -320,11 +321,11 @@ mod tests {
     #[test]
     fn viewport_accepts_separate_and_equals_forms() {
         assert_eq!(
-            parse_viewport_arg(&args(&["qos-greeter", "--viewport", "640x480"])),
+            parse_viewport_arg(&args(&["tilo-greeter", "--viewport", "640x480"])),
             Some((640, 480))
         );
         assert_eq!(
-            parse_viewport_arg(&args(&["qos-greeter", "--viewport=360X640"])),
+            parse_viewport_arg(&args(&["tilo-greeter", "--viewport=360X640"])),
             Some((360, 640))
         );
     }
@@ -333,7 +334,7 @@ mod tests {
     fn viewport_rejects_malformed_or_empty_dimensions() {
         for raw in ["", "640", "x480", "640x", "0x480", "640x0", "-1x480"] {
             assert_eq!(
-                parse_viewport_arg(&args(&["qos-greeter", "--viewport", raw])),
+                parse_viewport_arg(&args(&["tilo-greeter", "--viewport", raw])),
                 None,
                 "accepted malformed viewport {raw:?}"
             );
@@ -343,12 +344,12 @@ mod tests {
     #[test]
     fn shot_text_scale_accepts_only_bounded_finite_values() {
         assert_eq!(
-            parse_text_scale_arg(&args(&["qos-greeter", "--text-scale=1.3"])),
+            parse_text_scale_arg(&args(&["tilo-greeter", "--text-scale=1.3"])),
             Some(1.3)
         );
         for value in ["NaN", "0.5", "2.1", "not-a-number"] {
             assert_eq!(
-                parse_text_scale_arg(&args(&["qos-greeter", "--text-scale", value])),
+                parse_text_scale_arg(&args(&["tilo-greeter", "--text-scale", value])),
                 None
             );
         }
@@ -367,7 +368,7 @@ mod tests {
             ("personal-starting", AuthScenario::PersonalStarting),
         ] {
             assert_eq!(
-                parse_scenario_arg(&args(&["qos-greeter", "--scenario", name])),
+                parse_scenario_arg(&args(&["tilo-greeter", "--scenario", name])),
                 Some(expected)
             );
         }

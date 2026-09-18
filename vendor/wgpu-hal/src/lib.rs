@@ -281,7 +281,7 @@ mod dynamic;
 mod validation_canary;
 
 #[cfg(feature = "validation_canary")]
-pub use validation_canary::{ValidationCanary, VALIDATION_CANARY};
+pub use validation_canary::{VALIDATION_CANARY, ValidationCanary};
 
 pub(crate) use dynamic::impl_dyn_resource;
 pub use dynamic::{
@@ -292,7 +292,10 @@ pub use dynamic::{
     DynShaderModule, DynSurface, DynSurfaceTexture, DynTexture, DynTextureView,
 };
 
-#[allow(unused)]
+#[allow(
+    unused,
+    reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+)]
 use alloc::boxed::Box;
 use alloc::{borrow::Cow, string::String, vec::Vec};
 use core::{
@@ -430,7 +433,10 @@ pub(crate) struct AllocationSizes {
 }
 
 impl AllocationSizes {
-    #[allow(dead_code)] // may be unused on some platforms
+    #[allow(
+        dead_code,
+        reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+    )] // may be unused on some platforms
     pub(crate) fn from_memory_hints(memory_hints: &wgt::MemoryHints) -> Self {
         // TODO: the allocator's configuration should take hardware capability into
         // account.
@@ -483,13 +489,19 @@ impl From<AllocationSizes> for gpu_allocator::AllocationSizes {
     }
 }
 
-#[allow(dead_code)] // may be unused on some platforms
+#[allow(
+    dead_code,
+    reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+)] // may be unused on some platforms
 #[cold]
 fn hal_usage_error<T: fmt::Display>(txt: T) -> ! {
     panic!("wgpu-hal invariant was violated (usage error): {txt}")
 }
 
-#[allow(dead_code)] // may be unused on some platforms
+#[allow(
+    dead_code,
+    reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+)] // may be unused on some platforms
 #[cold]
 fn hal_internal_error<T: fmt::Display>(txt: T) -> ! {
     panic!("wgpu-hal ran into a preventable internal error: {txt}")
@@ -529,7 +541,9 @@ pub enum SurfaceError {
     Outdated,
     #[error("Timed out waiting for a surface texture")]
     Timeout,
-    #[error("The window is occluded (e.g. minimized or behind another window). Try again once the window is no longer occluded.")]
+    #[error(
+        "The window is occluded (e.g. minimized or behind another window). Try again once the window is no longer occluded."
+    )]
     Occluded,
     #[error(transparent)]
     Device(#[from] DeviceError),
@@ -555,14 +569,20 @@ pub struct InstanceError {
 }
 
 impl InstanceError {
-    #[allow(dead_code)] // may be unused on some platforms
+    #[allow(
+        dead_code,
+        reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+    )] // may be unused on some platforms
     pub(crate) fn new(message: String) -> Self {
         Self {
             message,
             source: None,
         }
     }
-    #[allow(dead_code)] // may be unused on some platforms
+    #[allow(
+        dead_code,
+        reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+    )] // may be unused on some platforms
     pub(crate) fn with_source(message: String, source: impl Error + Send + Sync + 'static) -> Self {
         cfg_if::cfg_if! {
             if #[cfg(supports_ptr_atomics)] {
@@ -1022,7 +1042,10 @@ pub trait Device: WasmNotSendSync {
     ) -> Result<<Self::A as Api>::PipelineLayout, DeviceError>;
     unsafe fn destroy_pipeline_layout(&self, pipeline_layout: <Self::A as Api>::PipelineLayout);
 
-    #[allow(clippy::type_complexity)]
+    #[allow(
+        clippy::type_complexity,
+        reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+    )]
     unsafe fn create_bind_group(
         &self,
         desc: &BindGroupDescriptor<
@@ -1042,7 +1065,10 @@ pub trait Device: WasmNotSendSync {
     ) -> Result<<Self::A as Api>::ShaderModule, ShaderError>;
     unsafe fn destroy_shader_module(&self, module: <Self::A as Api>::ShaderModule);
 
-    #[allow(clippy::type_complexity)]
+    #[allow(
+        clippy::type_complexity,
+        reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+    )]
     unsafe fn create_render_pipeline(
         &self,
         desc: &RenderPipelineDescriptor<
@@ -1053,7 +1079,10 @@ pub trait Device: WasmNotSendSync {
     ) -> Result<<Self::A as Api>::RenderPipeline, PipelineError>;
     unsafe fn destroy_render_pipeline(&self, pipeline: <Self::A as Api>::RenderPipeline);
 
-    #[allow(clippy::type_complexity)]
+    #[allow(
+        clippy::type_complexity,
+        reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+    )]
     unsafe fn create_compute_pipeline(
         &self,
         desc: &ComputePipelineDescriptor<
@@ -1133,7 +1162,10 @@ pub trait Device: WasmNotSendSync {
     /// [api]: ../wgpu/struct.Device.html#method.stop_graphics_debugger_capture
     unsafe fn stop_graphics_debugger_capture(&self);
 
-    #[allow(unused_variables)]
+    #[allow(
+        unused_variables,
+        reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+    )]
     unsafe fn pipeline_cache_get_data(
         &self,
         cache: &<Self::A as Api>::PipelineCache,

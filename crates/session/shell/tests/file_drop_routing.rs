@@ -1,0 +1,405 @@
+//! Cursor-targeted file-drop routing.
+//!
+//! `WindowEvent::DroppedFile` carries a path but NO coordinate, so the
+//! compositor tracks the pointer from `CursorMoved` and routes the drop
+//! to the window group under the last-known position. The test builds two
+//! side-by-side groups with laid-out rects, then sends `CursorMoved` +
+//! `DroppedFile` through
+//! `ShellOverlayHost::handle_event` — winit's own entry point in the
+//! live binary.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
+use std::collections::HashMap;
+
+use shell::shell::build_tilo_overlay_host_with_chrome;
+use shell::shell::chrome_state::Chrome;
+use shell::shell::overlay_host::ShellOverlayHost;
+use shell::shell::state::{
+    AppKind, Capability, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
+    Workspace, WorkspaceId, WorkspaceTree,
+};
+use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use ui::theme::Theme;
+use ui::widget::Widget;
+use vello::kurbo::Point;
+use winit::dpi::PhysicalPosition;
+use winit::event::WindowEvent;
+
+const W: f32 = 1280.0;
+const H: f32 = 800.0;
+
+/// Two `WindowGroup`s at `Narrow` width (400px each) so both fit inside
+/// the 1280px viewport with distinct, non-overlapping rects, letting the
+/// cursor's x-coordinate tell them apart.
+fn two_group_one_strip_tree() -> (WorkspaceTree, StripId, GroupId, GroupId) {
+    let ws_id = WorkspaceId::new();
+    let strip_id = StripId::new();
+    let g_left: GroupId = 1001;
+    let g_right: GroupId = 2001;
+
+    let mk_tab = |id: u64, label: &str| Tab {
+        id,
+        title: label.into(),
+        tile: TileContent::Stub {
+            kind: AppKind::Other("Test".into()),
+            label: label.into(),
+        },
+    };
+
+    let strip = Strip {
+        id: strip_id,
+        name: "Main".into(),
+        window_groups: vec![
+            WindowGroup {
+                id: g_left,
+                tabs: vec![mk_tab(11, "L1")],
+                active_tab: 11,
+                width: WindowWidth::Narrow,
+                maximized: false,
+            },
+            WindowGroup {
+                id: g_right,
+                tabs: vec![mk_tab(21, "R1")],
+                active_tab: 21,
+                width: WindowWidth::Narrow,
+                maximized: false,
+            },
+        ],
+    };
+    let ws = Workspace {
+        strips: vec![strip],
+        // Everything else, including the workspace's durable collaboration room,
+        // comes from the builder, so a field added to `Workspace` does not break
+        // this fixture.
+        ..Workspace::test_default(ws_id, "Test")
+    };
+
+    let mut active_strip = HashMap::new();
+    active_strip.insert(ws_id, strip_id);
+    let mut active_group = HashMap::new();
+    active_group.insert(strip_id, g_left);
+
+    let tree = WorkspaceTree {
+        workspaces: vec![ws],
+        active: ws_id,
+        active_strip,
+        active_group,
+        collaborators: vec![],
+        ..Default::default()
+    };
+
+    (tree, strip_id, g_left, g_right)
+}
+
+/// `build_layout -> compute_layout -> apply_layout`, mirroring
+/// `App::layout`. Without it `pick_group_at` compares against
+/// `Rect::ZERO` and never matches.
+struct Layout {
+    taffy: TaffyTree<()>,
+    root_node: NodeId,
+    child_node: NodeId,
+}
+
+fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
+    let theme = Theme::dark();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let child = host.build_layout(&mut taffy, &theme, &mut node_map);
+    let root_node = taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(W),
+                    height: Dimension::length(H),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )
+        .unwrap();
+
+    let mut tr = ui::text_render::TextRenderer::new();
+    let measure_map = node_map.clone();
+    taffy
+        .compute_layout_with_measure(
+            root_node,
+            Size {
+                width: AvailableSpace::Definite(W),
+                height: AvailableSpace::Definite(H),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, &mut tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )
+        .expect("compute_layout");
+    host.apply_layout(&taffy, child, Point::ORIGIN);
+    Layout {
+        taffy,
+        root_node,
+        child_node: child,
+    }
+}
+
+fn pump(host: &mut ShellOverlayHost, layout: &Layout, event: &WindowEvent) {
+    let mut doc = automerge::AutoCommit::new();
+    let doc_root = automerge::ROOT.clone();
+    let modifiers = winit::event::Modifiers::default();
+    let mut handled = false;
+    let mut focus: Option<NodeId> = None;
+    host.handle_event(
+        event,
+        1.0,
+        &modifiers,
+        &mut doc,
+        &doc_root,
+        &mut handled,
+        &mut focus,
+        layout.child_node,
+        &layout.taffy,
+    );
+    let _ = layout.root_node;
+}
+
+/// Move the pointer to `p` (seeds `last_cursor`), then drop `path` —
+/// exactly the two-event sequence winit delivers for a drag-and-drop
+/// ending over the window.
+fn hover_and_drop(host: &mut ShellOverlayHost, layout: &Layout, p: Point, path: &str) {
+    pump(
+        host,
+        layout,
+        &WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(p.x, p.y),
+        },
+    );
+    pump(
+        host,
+        layout,
+        &WindowEvent::DroppedFile(std::path::PathBuf::from(path)),
+    );
+}
+
+fn tab_count(chrome: &Chrome, group_id: GroupId) -> usize {
+    let st = chrome.borrow();
+    let tree = st.tree();
+    tree.workspaces[0]
+        .strips
+        .iter()
+        .flat_map(|s| s.window_groups.iter())
+        .find(|g| g.id == group_id)
+        .map_or_else(
+            || panic!("group {group_id} must exist in the persisted tree"),
+            |g| g.tabs.len(),
+        )
+}
+
+fn group_center(host: &mut ShellOverlayHost, strip_id: StripId, group_idx: usize) -> Point {
+    host.group_at_for_tests(strip_id, group_idx)
+        .expect("group must exist after layout")
+        .get_rect()
+        .center()
+}
+
+#[test]
+fn drop_over_left_group_routes_to_left_group_only() {
+    let (tree, strip_id, g_left, g_right) = two_group_one_strip_tree();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let layout = lay_out_host(&mut host);
+
+    let left_before = tab_count(&chrome, g_left);
+    let right_before = tab_count(&chrome, g_right);
+    let center = group_center(&mut host, strip_id, 0);
+
+    hover_and_drop(&mut host, &layout, center, "/drop/component.ts");
+
+    assert_eq!(
+        tab_count(&chrome, g_left),
+        left_before + 1,
+        "the group under the cursor must gain the dropped file's tab"
+    );
+    assert_eq!(
+        tab_count(&chrome, g_right),
+        right_before,
+        "the neighbouring group must NOT receive the drop"
+    );
+}
+
+#[test]
+fn drop_over_right_group_routes_to_right_group_only() {
+    let (tree, strip_id, g_left, g_right) = two_group_one_strip_tree();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let layout = lay_out_host(&mut host);
+
+    let left_before = tab_count(&chrome, g_left);
+    let right_before = tab_count(&chrome, g_right);
+    let center = group_center(&mut host, strip_id, 1);
+
+    hover_and_drop(&mut host, &layout, center, "/drop/component.ts");
+
+    assert_eq!(
+        tab_count(&chrome, g_right),
+        right_before + 1,
+        "the group under the cursor must gain the dropped file's tab"
+    );
+    assert_eq!(
+        tab_count(&chrome, g_left),
+        left_before,
+        "the neighbouring group must NOT receive the drop"
+    );
+}
+
+#[test]
+fn two_drops_route_to_the_two_distinct_groups_they_land_on() {
+    let (tree, strip_id, g_left, g_right) = two_group_one_strip_tree();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let layout = lay_out_host(&mut host);
+
+    let left_before = tab_count(&chrome, g_left);
+    let right_before = tab_count(&chrome, g_right);
+
+    // An extension no app claims, as everywhere else in this file. A claimed
+    // type takes the document-open path instead of the placeholder-tab one,
+    // and that path needs a file that exists — which is a different test than
+    // this one, whose subject is which group a drop lands on.
+    let left_center = group_center(&mut host, strip_id, 0);
+    hover_and_drop(&mut host, &layout, left_center, "/drop/left.ts");
+
+    let right_center = group_center(&mut host, strip_id, 1);
+    hover_and_drop(&mut host, &layout, right_center, "/drop/right.ts");
+
+    assert_eq!(
+        tab_count(&chrome, g_left),
+        left_before + 1,
+        "the first drop must stay on the left group"
+    );
+    assert_eq!(
+        tab_count(&chrome, g_right),
+        right_before + 1,
+        "the second drop must land on the right group, not the left"
+    );
+}
+
+#[test]
+fn drop_over_empty_desktop_space_is_a_graceful_noop() {
+    let (tree, _strip_id, g_left, g_right) = two_group_one_strip_tree();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let layout = lay_out_host(&mut host);
+
+    let left_before = tab_count(&chrome, g_left);
+    let right_before = tab_count(&chrome, g_right);
+
+    // (5, 5) is the top-left desktop corner, above/left of every group rect.
+    hover_and_drop(&mut host, &layout, Point::new(5.0, 5.0), "/drop/stray.ts");
+
+    assert_eq!(
+        tab_count(&chrome, g_left),
+        left_before,
+        "an empty-area drop must not add a tab to any group"
+    );
+    assert_eq!(
+        tab_count(&chrome, g_right),
+        right_before,
+        "an empty-area drop must not add a tab to any group"
+    );
+}
+
+#[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "st's only use is producing tree via tree(), read through to the end of the \
+              function via ws/view/editor_caps; nothing to drop earlier"
+)]
+fn drop_records_filesystem_grant_for_target_app_on_the_workspace() {
+    let (tree, strip_id, _g_left, _g_right) = two_group_one_strip_tree();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let layout = lay_out_host(&mut host);
+
+    let dropped = "/drop/notes.ts"; // .ts → Editor app
+    let center = group_center(&mut host, strip_id, 0);
+    hover_and_drop(&mut host, &layout, center, dropped);
+
+    let st = chrome.borrow();
+    let tree = st.tree();
+    let ws = &tree.workspaces[0];
+    // The drop must record a per-app filesystem capability on the target
+    // workspace — the same grants map the portal/permission-prompt path
+    // writes into — keyed by the built-in Editor's canonical app-id (what
+    // it advertises via `xdg_toplevel::set_app_id`), not the display label.
+    let editor_key = AppKind::Other("Editor".into()).app_id();
+    assert_eq!(
+        editor_key, "org.tilo.Editor",
+        "the Editor app-id must be a real reverse-DNS app-id, not the \
+         display label 'Editor'"
+    );
+    // `grants()` derives the per-app view from the capability list, so it is
+    // bound before borrowing out of it.
+    let view = ws.app_grants_snapshot();
+    let editor_caps = view
+        .get(&editor_key)
+        .unwrap_or_else(|| panic!("a .ts drop must record a grant under {editor_key}"));
+    let granted_path = editor_caps.iter().any(|cap| {
+        matches!(
+            cap,
+            Capability::Filesystem { path, .. } if path == std::path::Path::new(dropped)
+        )
+    });
+    assert!(
+        granted_path,
+        "the dropped path must appear as a Filesystem capability; got {editor_caps:?}"
+    );
+}
+
+/// The second drop must see the path is already granted and skip the
+/// insert rather than stacking a duplicate capability.
+#[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "st's only use is producing tree via tree(), read through to the end of the \
+              function via view/editor_caps/count; nothing to drop earlier"
+)]
+fn repeated_drop_of_same_file_does_not_duplicate_the_grant() {
+    let (tree, strip_id, _g_left, _g_right) = two_group_one_strip_tree();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let layout = lay_out_host(&mut host);
+
+    let dropped = "/drop/dup.ts";
+    let center = group_center(&mut host, strip_id, 0);
+    hover_and_drop(&mut host, &layout, center, dropped);
+    // Re-fetch the centre: the first drop added a tab, so the group must be
+    // re-laid-out before the second drop.
+    let layout = lay_out_host(&mut host);
+    let center = group_center(&mut host, strip_id, 0);
+    hover_and_drop(&mut host, &layout, center, dropped);
+
+    let st = chrome.borrow();
+    let tree = st.tree();
+    let editor_key = AppKind::Other("Editor".into()).app_id();
+    let view = tree.workspaces[0].app_grants_snapshot();
+    let editor_caps = view.get(&editor_key).expect("grant present");
+    let count = editor_caps
+        .iter()
+        .filter(|cap| {
+            matches!(
+                cap,
+                Capability::Filesystem { path, .. } if path == std::path::Path::new(dropped)
+            )
+        })
+        .count();
+    assert_eq!(
+        count, 1,
+        "dropping the same file twice must record exactly one grant, got {count}"
+    );
+}

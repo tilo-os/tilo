@@ -3,12 +3,12 @@
 
 Files was showing up in its own tab as `app`, and the word processor as
 `word-processor`. Both are machine identifiers the user never chose:
-`app` is the trailing component of the generic `org.qos.app` every
+`app` is the trailing component of the generic `org.tilo.app` every
 toolkit app used to announce when it had no package id, and
 `word-processor` is a package id's last segment printed raw.
 
-So this launches both apps through the real palette, into a real
-sandbox, and reads the tab titles the compositor built — plus the
+This launches both apps through the palette, into a sandbox, and reads
+the tab titles the compositor built — plus the
 wayland app-id each client actually announced, because that is where
 the failure came from and asserting only on the label would not say
 which half was fixed.
@@ -23,9 +23,8 @@ Usage
 
     cargo build -p shell -p launcher
 
-Runs against the machine's own app store
-(`~/.local/share/qos-apps`) — those are the packages the demo opens, and
-a synthesised fixture would prove nothing about them.
+Runs against the machine's app store (`~/.local/share/tilo-apps`), which
+contains the packages under test.
 
 Exits non-zero if any claim fails.
 """
@@ -48,8 +47,8 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 
 # (package id, what the manifest calls it, what it must never read as)
 APPS = [
-    ("dev.qos.file-explorer", "Files", ("app", "file-explorer")),
-    ("dev.qos.word-processor", "Word Processor", ("app", "word-processor")),
+    ("dev.tilo.file-explorer", "Files", ("app", "file-explorer")),
+    ("dev.tilo.word-processor", "Word Processor", ("app", "word-processor")),
 ]
 
 SCRUB = ("DISPLAY", "WAYLAND_DISPLAY", "VK_DRIVER_FILES", "VK_ICD_FILENAMES",
@@ -106,18 +105,18 @@ class Session:
 
         env = {k: v for k, v in os.environ.items() if k not in SCRUB}
         env.update({
-            "QOS_TEST_CONTROL": self.sock,
-            "QOS_STATE_PATH": str(self.dir / "config" / "state.json"),
+            "TILO_TEST_CONTROL": self.sock,
+            "TILO_STATE_PATH": str(self.dir / "config" / "state.json"),
             "HOME": str(home),
             "XDG_DATA_HOME": str(self.dir / "data"),
             "XDG_CACHE_HOME": str(self.dir / "cache"),
             "XDG_STATE_HOME": str(self.dir / "state"),
             "XDG_CONFIG_HOME": str(self.dir / "config"),
             "XDG_RUNTIME_DIR": str(runtime),
-            "QOS_PEER_KEY_PATH": str(self.dir / "keys" / "peer-key"),
-            "QOS_APPS_DATA_DIR": str(apps_dir),
-            "QOS_RUNTIME_BUNDLE_DIR": str(runtime_bundles),
-            "NIRIOS_HEADLESS_SIZE": "2000x1000",
+            "TILO_PEER_KEY_PATH": str(self.dir / "keys" / "peer-key"),
+            "TILO_APPS_DATA_DIR": str(apps_dir),
+            "TILO_RUNTIME_BUNDLE_DIR": str(runtime_bundles),
+            "TILO_HEADLESS_SIZE": "2000x1000",
             # de_DE host, and bwrap does not clear the environment.
             "LC_ALL": "en_US.UTF-8",
             "LANG": "en_US.UTF-8",
@@ -256,10 +255,10 @@ def main() -> int:
         return None
 
     shell = args.shell or tool("shell")
-    apps_dir = args.apps_dir or (pathlib.Path.home() / ".local/share/qos-apps")
-    runtime_bundles = pathlib.Path.home() / ".local/share/qos-runtime"
+    apps_dir = args.apps_dir or (pathlib.Path.home() / ".local/share/tilo-apps")
+    runtime_bundles = pathlib.Path.home() / ".local/share/tilo-runtime"
     tools = {}
-    for var, name in (("QOS_LAUNCHER_BIN", "qos-launcher"),):
+    for var, name in (("TILO_LAUNCHER_BIN", "tilo-launcher"),):
         found = tool(name)
         if found:
             tools[var] = str(found)
@@ -267,8 +266,8 @@ def main() -> int:
     missing = []
     if not shell or not shell.exists():
         missing.append("shell")
-    if "QOS_LAUNCHER_BIN" not in tools:
-        missing.append("qos-launcher")
+    if "TILO_LAUNCHER_BIN" not in tools:
+        missing.append("tilo-launcher")
     if not (apps_dir / "registry.toml").exists():
         missing.append(f"an app store at {apps_dir}")
     if not runtime_bundles.exists():
@@ -278,10 +277,10 @@ def main() -> int:
         print("\n  cargo build -p shell -p launcher", file=sys.stderr)
         return 2
 
-    src = REPO / "shell" / "src"
+    src = REPO / "crates" / "session" / "shell" / "src"
     newest = max((f.stat().st_mtime for f in src.rglob("*.rs")), default=0)
     if shell.stat().st_mtime < newest:
-        print(f"REFUSING: {shell} predates shell/src. Build first.",
+        print(f"REFUSING: {shell} predates crates/session/shell/src. Build first.",
               file=sys.stderr)
         return 2
 

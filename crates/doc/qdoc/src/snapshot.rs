@@ -46,7 +46,8 @@ pub struct DocSnapshot {
     pub comments: Vec<CommentView>,
     /// Tracked changes / revision marks, each anchored to a body text range (recovered from the
     /// `ins`/`del` mark) carrying the change id, with author/date/kind held in the `changes`
-    /// container. An insertion flags real inserted text; a deletion flags retained-but-struck text.
+    /// container. An insertion marks inserted text; a deletion marks retained-
+    /// but-struck text.
     /// Round-trips through `text:tracked-changes` + inline change markers in `.odt` and `<w:ins>`/`<w:del>` run wrappers in `.docx`.
     #[serde(default)]
     pub changes: Vec<ChangeView>,

@@ -94,6 +94,7 @@ impl WeatherDoc {
             .ok()?;
         Some(SavedLocation {
             id,
+            order_rank: Self::f64_field(doc, m, "order_rank"),
             name: Self::str_field(doc, m, "name"),
             region: Self::str_field(doc, m, "region"),
             country: Self::str_field(doc, m, "country"),
@@ -179,6 +180,12 @@ impl WeatherDoc {
         ui::doc::put_if_changed(doc, &entry, "lat", location.latitude);
         ui::doc::put_if_changed(doc, &entry, "lon", location.longitude);
         ui::doc::put_if_changed(doc, &entry, "tz", location.timezone.as_str());
+        let rank = if location.order_rank.is_finite() && location.order_rank != 0.0 {
+            location.order_rank
+        } else {
+            Self::next_order_rank(doc)
+        };
+        ui::doc::put_if_changed(doc, &entry, "order_rank", rank);
         Self::append_location_order(doc, location.id);
     }
 
@@ -223,6 +230,41 @@ impl WeatherDoc {
         ui::doc::put_if_changed(doc, &ROOT, "selected_location", id.to_string().as_str());
     }
 
+    /// Set one entry's absolute sparse rank. Unlike replacing an order list,
+    /// this operation touches only the moved stable resource, so unrelated
+    /// concurrent moves remain independent Automerge changes.
+    pub fn set_location_rank(doc: &mut AutoCommit, id: crate::model::LocationId, rank: f64) {
+        if !rank.is_finite() || Self::is_tombstoned(doc, &id.to_string()) {
+            return;
+        }
+        let Ok(Some((Value::Object(ObjType::Map), locations))) = doc.get(&ROOT, "saved_locations")
+        else {
+            return;
+        };
+        if let Ok(Some((Value::Object(ObjType::Map), location))) =
+            doc.get(&locations, id.to_string())
+        {
+            ui::doc::put_if_changed(doc, &location, "order_rank", rank);
+        }
+    }
+
+    fn next_order_rank(doc: &AutoCommit) -> f64 {
+        let Ok(Some((Value::Object(ObjType::Map), locations))) = doc.get(&ROOT, "saved_locations")
+        else {
+            return 1024.0;
+        };
+        doc.keys(&locations)
+            .filter_map(|id| match doc.get(&locations, id).ok().flatten() {
+                Some((Value::Object(ObjType::Map), location)) => {
+                    Some(Self::f64_field(doc, &location, "order_rank"))
+                }
+                _ => None,
+            })
+            .filter(|rank| rank.is_finite())
+            .fold(0.0, f64::max)
+            + 1024.0
+    }
+
     fn str_at(doc: &AutoCommit, list: &ObjId, index: usize) -> Option<String> {
         match doc.get(list, index).ok().flatten().map(|(value, _)| value) {
             Some(Value::Scalar(value)) => match value.as_ref() {
@@ -253,6 +295,7 @@ impl WeatherDoc {
         }
         for (index, id) in ids.iter().enumerate() {
             let _ = doc.insert(&order, index, id.to_string());
+            Self::set_location_rank(doc, *id, (index + 1) as f64 * 1024.0);
         }
     }
 
@@ -342,7 +385,10 @@ impl WeatherDoc {
                     else {
                         continue;
                     };
-                    if let Some(location) = Self::location_from_map(doc, &location, &id) {
+                    if let Some(mut location) = Self::location_from_map(doc, &location, &id) {
+                        if location.order_rank == 0.0 {
+                            location.order_rank = (model.locations.len() + 1) as f64 * 1024.0;
+                        }
                         remaining.retain(|candidate| candidate != &id);
                         model.locations.push(location);
                     }
@@ -355,11 +401,19 @@ impl WeatherDoc {
                 }
                 if let Ok(Some((Value::Object(ObjType::Map), location))) =
                     doc.get(&locations, id.as_str())
-                    && let Some(location) = Self::location_from_map(doc, &location, &id)
+                    && let Some(mut location) = Self::location_from_map(doc, &location, &id)
                 {
+                    if location.order_rank == 0.0 {
+                        location.order_rank = (model.locations.len() + 1) as f64 * 1024.0;
+                    }
                     model.locations.push(location);
                 }
             }
+            model.locations.sort_by(|left, right| {
+                left.order_rank
+                    .total_cmp(&right.order_rank)
+                    .then_with(|| left.id.cmp(&right.id))
+            });
         } else {
             model.locations = Self::read_legacy_locations(doc);
         }

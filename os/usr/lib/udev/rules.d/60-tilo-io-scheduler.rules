@@ -1,0 +1,6 @@
+# Use BFQ where Tilo game-process I/O priorities can improve interactive
+# latency under shader compilation, asset streaming, or background updates.
+# Physical NVMe namespaces and SCSI/SATA disks only: do not perturb virtio
+# release VMs, loop images, device-mapper stacks, optical drives, or partitions.
+ACTION=="add|change", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", KERNEL=="sd*", ATTR{queue/scheduler}=="*bfq*", ATTR{queue/scheduler}="bfq"
+ACTION=="add|change", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", KERNEL=="nvme[0-9]*n[0-9]*", ATTR{queue/scheduler}=="*bfq*", ATTR{queue/scheduler}="bfq"

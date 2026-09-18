@@ -3,23 +3,63 @@
 Settings is a client of system authorities; it is not a second implementation
 of them.
 
+## Ownership and roaming
+
+Every leaf in the shared `settings.json` contract has an explicit entry in
+`settings_store::continuity`. The registry is the boundary, not a section-name
+convention. A new leaf that has not been reviewed is readable by its owner but
+is excluded from personal-device continuity.
+
+The scopes are deliberately distinct:
+
+| Scope | Owner and transport |
+| --- | --- |
+| Personal | Converges only between devices certified to the same identity. |
+| Workspace | Lives in the workspace record plane and follows its collaborators and permissions, never the personal settings file. |
+| Device-local | Remains on the machine whose hardware or local environment gives it meaning. |
+| Secret | Uses a purpose-built sealed transport or local credential vault; never ordinary settings sync. |
+| Derived | Recomputed/runtime history and never treated as durable personal intent. |
+
+Examples matter more than the section name. Theme, locale, accessibility,
+shortcuts, text assistance, and Quick Settings arrangement are personal.
+Connector layout/scale, audio node selections, tablet mapping, calibration,
+power policy, update channel, portal-granted paths, loopback model endpoints,
+and Continuity privacy toggles are device-local. Workspace roles, default-app
+policy, and permissions remain workspace state. API keys, local credentials,
+Wi-Fi passwords, and NetworkManager secrets are secret.
+
+The device fabric projects settings through the typed registry and resolves a
+key by `(counter, device identity)`, giving the same winner regardless of
+arrival order. The shell writes a bounded mode-`0600`
+`continuity-provenance.json` projection for Settings. It contains canonical
+keys, certified device labels/ids and revisions. Wi-Fi rows contain only keyed
+network id, SSID, security kind, and origin. Ciphertext envelopes and plaintext
+passwords are not representable in the projection.
+
+Settings presents the winner and any devices still advertising a different
+value. This is explanatory UI, not a second merge engine. Editing the ordinary
+setting creates a new local revision through the existing owner. A malformed
+or future-version provenance file is refused rather than partially displayed.
+Version 1 provenance (settings origins only) migrates on read to version 2;
+version 2 adds conflict alternatives and sealed Wi-Fi profile provenance.
+
 ## Updates
 
 - `bootc` owns image deployments and rollback targets. The update pane starts
-  `qos-deployment-update.service`, then reads `bootc status --format json`.
+  `tilo-deployment-update.service`, then reads `bootc status --format json`.
 - `fwupd` owns firmware discovery, signature verification and installation.
   OS and firmware state are presented together, but their transactions remain
   independent.
 - systemd owns update timing. The narrowly authorized
-  `qos-update-policy@.service` accepts five fixed instances and writes only the
-  bootc timer override and `/var/lib/qos/update-policy`.
-- `qos-update-policy-check` is an `ExecCondition` on the bootc service. It asks
+  `tilo-update-policy@.service` accepts five fixed instances and writes only the
+  bootc timer override and `/var/lib/tilo/update-policy`.
+- `tilo-update-policy-check` is an `ExecCondition` on the bootc service. It asks
   NetworkManager whether an active link is explicitly metered. Unknown state
   does not postpone security updates; an explicit metered link does when the
   policy is `avoid`.
 - history comes from the bootc service journal. Release-note links are accepted
   only from HTTPS OCI image metadata. Rollback health reports the retained
-  deployment and qOS boot-confirmation timer independently.
+  deployment and Tilo boot-confirmation timer independently.
 
 ## Region and time
 
@@ -56,7 +96,7 @@ the lifecycle writer for `started`, `succeeded`, `offline`, authentication
 required, and bounded generic failures, and it preserves the previous
 successful-sync timestamp. Consumers keep protocol errors in private logs and
 never persist URLs, credentials, response bodies, or raw transport errors as UI
-status. Calendar uses it around the real background CalDAV pass. Files status
+status. Calendar uses it around the background CalDAV pass. Files status
 must be emitted by the eventual WebDAV/Nextcloud network worker, not inferred
 from Files' read-only hydration badges; this repository does not yet contain
 that worker.
@@ -98,4 +138,4 @@ printer which answered but omitted supplies. Settings says "not reported" or
 - live captions remain a read-only unavailable capability until the image ships a
   local speech-to-text engine and model lifecycle. No caption preference is
   persisted today. Arbitrary Wayland-client caret/focus highlighting likewise
-  awaits a trusted geometry protocol; qOS toolkit text carets already work.
+  awaits a trusted geometry protocol; Tilo toolkit text carets already work.

@@ -17,7 +17,10 @@ end of the VS buffer table.
 // However, `MTLGpuFamily` is only supported starting MacOS 10.15, whereas our minimum target is MacOS 10.13,
 // See https://github.com/gpuweb/gpuweb/issues/1069 for minimum spec.
 // TODO: Eventually all deprecated features should be abstracted and use new api when available.
-#[allow(deprecated)]
+#[allow(
+    deprecated,
+    reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+)]
 mod adapter;
 mod command;
 mod conv;
@@ -38,7 +41,7 @@ use hashbrown::HashMap;
 use naga::FastHashMap;
 use objc2::{
     available,
-    rc::{autoreleasepool, Retained},
+    rc::{Retained, autoreleasepool},
     runtime::ProtocolObject,
 };
 use objc2_foundation::ns_string;
@@ -166,7 +169,7 @@ impl crate::Instance for Instance {
             _ => {
                 return Err(crate::InstanceError::new(format!(
                     "window handle {window_handle:?} is not a Metal-compatible handle"
-                )))
+                )));
             }
         };
 
@@ -214,7 +217,10 @@ bitflags!(
     }
 );
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+)]
 struct CapabilitiesQuery {
     msl_version: MTLLanguageVersion,
     fragment_rw_storage: bool,
@@ -372,7 +378,10 @@ struct PrivateDisabilities {
     /// Near depth is not respected properly on some Intel GPUs.
     broken_viewport_near_depth: bool,
     /// Multi-target clears don't appear to work properly on Intel GPUs.
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+    )]
     broken_layered_clear_image: bool,
 }
 
@@ -608,11 +617,17 @@ impl crate::Queue for Queue {
             if let Some(observer) = _surface.next_present_observer.lock().take() {
                 // The block owns reporting state, never the drawable itself.
                 // Metal retains/copies this block for asynchronous invocation.
-                let block = block2::RcBlock::new(move |drawable: NonNull<ProtocolObject<dyn MTLDrawable>>| {
-                    let drawable = unsafe { drawable.as_ref() };
-                    observer(drawable.presentedTime(), drawable.drawableID() as u64);
-                });
-                unsafe { texture.drawable.addPresentedHandler(block2::RcBlock::as_ptr(&block)) };
+                let block = block2::RcBlock::new(
+                    move |drawable: NonNull<ProtocolObject<dyn MTLDrawable>>| {
+                        let drawable = unsafe { drawable.as_ref() };
+                        observer(drawable.presentedTime(), drawable.drawableID() as u64);
+                    },
+                );
+                unsafe {
+                    texture
+                        .drawable
+                        .addPresentedHandler(block2::RcBlock::as_ptr(&block))
+                };
             }
             // We do not bother adjusting `command_buffer_created_not_submitted`
             // because we immediately commit this buffer.
@@ -908,7 +923,10 @@ impl crate::DynShaderModule for ShaderModule {}
 
 #[derive(Debug)]
 struct PipelineStageInfo {
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+    )]
     library: Option<Retained<ProtocolObject<dyn MTLLibrary>>>,
     immediates: Option<ImmediateDataInfo>,
 

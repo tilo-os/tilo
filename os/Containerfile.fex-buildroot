@@ -1,0 +1,50 @@
+# syntax=docker/dockerfile:1.7
+# Resolve native FEX build tools once; consumers must use an immutable image.
+# FEX is built on ARM64. NASM runs natively and emits its x86 instruction tests.
+ARG BASE_REF
+FROM ${BASE_REF}
+RUN dnf install -y git cmake ninja-build pkgconf-pkg-config ccache clang lld \
+      llvm llvm-devel clang-devel python3-clang python3-setuptools \
+      alsa-lib-devel libdrm-devel libglvnd-devel libX11-devel libXrandr-devel \
+      libXrender-devel libxcb-devel wayland-devel libxshmfence-devel \
+      squashfs-tools squashfuse erofs-fuse erofs-utils \
+      qt6-qtdeclarative-devel gcc-c++ glibc-devel make perl xz \
+ && dnf clean all
+
+# NASM 3.02 changes SMSW operand-size encodings and breaks six upstream FEX
+# tests. Pin the assembler, not the expected CPU results. Verify the byte-level
+# contract as well so a future toolchain update fails before the expensive build.
+COPY os/external-assets/github-assets.tsv /tmp/external-assets.tsv
+COPY os/tests/fex-assembler.sh /usr/libexec/tilo/test-fex-assembler
+ARG BUILD_JOBS=2
+RUN --mount=type=bind,from=github-assets,source=/,target=/tilo-assets,ro \
+    set -eu; \
+    case "$BUILD_JOBS" in ''|*[!0-9]*|0) echo 'BUILD_JOBS must be positive' >&2; exit 1;; esac; \
+    test "$BUILD_JOBS" -gt 0; \
+    cd /tilo-assets; \
+    awk -F '\t' '$2 == "nasm-2.16.03.tar.xz" { print $1 "  " $2; found++ } END { if (found != 1) exit 1 }' \
+      /tmp/external-assets.tsv > /tmp/nasm.sha256; \
+    sha256sum --check --strict /tmp/nasm.sha256; \
+    mkdir /tmp/nasm-source; \
+    tar -xJf nasm-2.16.03.tar.xz -C /tmp/nasm-source --strip-components=1; \
+    cd /tmp/nasm-source; \
+    ./configure --prefix=/usr/local; \
+    make -j"$BUILD_JOBS"; \
+    make install; \
+    install -D -m 0644 LICENSE /usr/share/licenses/tilo-fex-nasm/LICENSE; \
+    bash /usr/libexec/tilo/test-fex-assembler /usr/local/bin/nasm; \
+    install -d /usr/lib/tilo; \
+    cp /tmp/nasm.sha256 /usr/lib/tilo/fex-nasm-source.sha256; \
+    rpm -qa --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n' \
+      | LC_ALL=C sort > /usr/lib/tilo/fex-buildroot-packages.txt; \
+    uname -m > /usr/lib/tilo/fex-buildroot-arch; \
+    rm -rf /tmp/nasm-source /tmp/nasm.sha256 /tmp/external-assets.tsv
+
+# The pinned thunk generator emits Clang 22's internal __size_t spelling into
+# generated C++, where it is undeclared. Use the validated Clang/LLVM 21 API
+# and compiler explicitly; keep the default compiler for the guest SDK tools.
+RUN dnf install -y clang21 clang21-devel llvm21-devel \
+ && dnf clean all \
+ && /usr/lib64/llvm21/bin/clang --version > /usr/lib/tilo/fex-generator-compiler-version \
+ && rpm -qa --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n' \
+      | LC_ALL=C sort > /usr/lib/tilo/fex-buildroot-packages.txt

@@ -325,7 +325,13 @@ fn draw_column_marks(
 
         // Curve dot.
         if p.is_now {
-            scene.fill(Fill::NonZero, t, accent, None, &Circle::new(pt, geo.now_dot_r));
+            scene.fill(
+                Fill::NonZero,
+                t,
+                accent,
+                None,
+                &Circle::new(pt, geo.now_dot_r),
+            );
             scene.fill(
                 Fill::NonZero,
                 t,
@@ -427,10 +433,16 @@ mod strip_row_tests {
                 rows.precip_y + small_h
             );
             assert!(rows.curve_top - rows.now_dot_r - (rows.value_y + value_h) >= s1 - 1e-9);
-            assert!(rows.icon_cy - rows.icon_edge / 2.0 - (rows.curve_bottom + rows.now_dot_r) >= s1 - 1e-9);
+            assert!(
+                rows.icon_cy - rows.icon_edge / 2.0 - (rows.curve_bottom + rows.now_dot_r)
+                    >= s1 - 1e-9
+            );
             assert!(rows.precip_y - (rows.icon_cy + rows.icon_edge / 2.0) >= s1 - 1e-9);
             assert!((rows.height - (rows.label_y + small_h)).abs() < 1e-9);
-            assert!(rows.height > previous, "{scale}×: the stack must grow with the type");
+            assert!(
+                rows.height > previous,
+                "{scale}×: the stack must grow with the type"
+            );
             previous = rows.height;
         }
     }
@@ -464,4 +476,56 @@ fn catmull_rom_path(pts: &[Point]) -> BezPath {
         path.curve_to(c1, c2, p2);
     }
     path
+}
+
+#[cfg(test)]
+mod incoming_geometry_tests {
+    use super::{HourColumn, StripGeometry};
+    use vello::kurbo::Rect;
+
+    fn column(temp: f64) -> HourColumn {
+        HourColumn {
+            hour: "12".to_string(),
+            temp,
+            precip: 0.0,
+            code: 0,
+            is_day: true,
+            is_now: false,
+        }
+    }
+
+    #[test]
+    fn geometry_applies_horizontal_scroll_to_every_column() {
+        let columns = [column(10.0), column(20.0)];
+        let geometry = StripGeometry::new(
+            Rect::new(100.0, 0.0, 300.0, 180.0),
+            &columns,
+            80.0,
+            30.0,
+            &ui::tokens::Spacing::BASE,
+            1.0,
+        );
+
+        assert!((geometry.x_center(0) - 110.0).abs() < f64::EPSILON);
+        assert!((geometry.x_center(1) - 190.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn flat_temperature_series_still_has_a_finite_curve_range() {
+        let columns = [column(12.0), column(12.0)];
+        let geometry = StripGeometry::new(
+            Rect::new(0.0, 0.0, 200.0, 180.0),
+            &columns,
+            80.0,
+            0.0,
+            &ui::tokens::Spacing::BASE,
+            1.0,
+        );
+
+        let y = geometry.y_at(12.0);
+        assert!(y.is_finite());
+        assert!(
+            (y - f64::midpoint(geometry.curve_top, geometry.curve_bottom)).abs() < f64::EPSILON
+        );
+    }
 }

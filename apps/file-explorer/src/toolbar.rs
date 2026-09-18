@@ -3,8 +3,8 @@
 //! One row, no banding:
 //!
 //! ```text
-//! [ ← → ↑ ]   [ Home › Projects › qos ················· ]   [ List | Grid ]  ( Sort by )  [ ⋯ ]
-//! [ ← ↑ ]     [ Home › Projects › qos ················· ]                         [ ⋯ ]
+//! [ ← → ↑ ]   [ Home › Projects › tilo ················· ]   [ List | Grid ]  ( Sort by )  [ ⋯ ]
+//! [ ← ↑ ]     [ Home › Projects › tilo ················· ]                         [ ⋯ ]
 //! ```
 //!
 //! * a nav cluster (back / forward / up) — the only icon-only controls, and
@@ -17,7 +17,7 @@
 //! * a **⋯** overflow that opens the labelled "View options" menu (new folder /
 //!   file, show-hidden toggle, terminal).
 //!
-//! There is **no search field** (search is OS-owned, `ui/HIG.md` §5), **no
+//! There is **no search field** (search is OS-owned, `crates/sdk/ui-core/HIG.md` §5), **no
 //! reload button**, and **no unlabelled state-toggle icons** — the two cryptic
 //! symbolic controls and the mystery show-hidden toggle are gone; show-hidden
 //! now lives, clearly labelled with a check, inside the View menu.
@@ -77,6 +77,7 @@ pub struct FileToolbar {
     can_forward: bool,
     can_up: bool,
     view_mode: ViewMode,
+    archive_read_only: bool,
     // Stateless children, rebuilt each `build_layout`.
     left: Vec<Box<dyn Widget>>,
     right: Vec<Box<dyn Widget>>,
@@ -96,6 +97,7 @@ impl FileToolbar {
             can_forward: false,
             can_up: false,
             view_mode: ViewMode::List,
+            archive_read_only: false,
             left: Vec::new(),
             right: Vec::new(),
             rect: Rect::ZERO,
@@ -108,7 +110,11 @@ impl FileToolbar {
     }
 
     /// Refresh the live context (called before each rebuild).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::fn_params_excessive_bools,
+        reason = "navigation availability and archive mode are independent facts supplied by the owning Files state"
+    )]
     pub fn set_context(
         &mut self,
         current: std::path::PathBuf,
@@ -118,11 +124,13 @@ impl FileToolbar {
         can_forward: bool,
         can_up: bool,
         view_mode: ViewMode,
+        archive_read_only: bool,
     ) {
         self.can_back = can_back;
         self.can_forward = can_forward;
         self.can_up = can_up;
         self.view_mode = view_mode;
+        self.archive_read_only = archive_read_only;
         self.path_bar.set_path(current, home, workspace_roots);
     }
 
@@ -226,18 +234,42 @@ impl FileToolbar {
             }
         }
 
-        // Overflow: the labelled View-options menu (new folder/file, show
-        // hidden, terminal). The trigger is the conventional ⋯ affordance; every
-        // action it reveals is spelled out in words.
-        let sink = self.sink.clone();
-        out.push(Box::new(
-            Button::new("files.view_menu", "", None)
-                .with_icon(Icon::MoreHorizontal)
-                .with_size(NAV_W, NAV_H)
-                .with_accessible_name(&t("files-view-options"))
-                .tooltip(t("files-view-options"))
-                .on_effect(move || push(&sink, FileCommand::OpenViewMenu)),
-        ));
+        // Archives browse like folders, but extraction is their primary
+        // mutation. Keep it directly reachable rather than burying it in an
+        // overflow; compact layouts retain the same 36px control with a
+        // spoken/hover label so the location field still has room.
+        if self.archive_read_only {
+            let sink = self.sink.clone();
+            let extract_label = t("files-archive-extract");
+            let button = Button::new(
+                "files.archive.extract",
+                if self.compact { "" } else { &extract_label },
+                None,
+            )
+            .with_icon(Icon::Download)
+            .with_size(if self.compact { NAV_W } else { 104.0 }, NAV_H)
+            .with_accessible_name(&extract_label)
+            .tooltip(extract_label)
+            .on_effect(move || push(&sink, FileCommand::ExtractCurrentArchive));
+            out.push(Box::new(button));
+        }
+
+        // Archive browsing is read-only and already has a direct Extract
+        // control. Its overflow would contain only a duplicate Extract row,
+        // so omit the no-choice menu entirely.
+        if !self.archive_read_only {
+            // Overflow: the labelled View-options menu (new folder/file, show
+            // hidden, terminal). Every action it reveals is spelled out.
+            let sink = self.sink.clone();
+            out.push(Box::new(
+                Button::new("files.view_menu", "", None)
+                    .with_icon(Icon::MoreHorizontal)
+                    .with_size(NAV_W, NAV_H)
+                    .with_accessible_name(&t("files-view-options"))
+                    .tooltip(t("files-view-options"))
+                    .on_effect(move || push(&sink, FileCommand::OpenViewMenu)),
+            ));
+        }
         out
     }
 
@@ -255,7 +287,9 @@ impl FileToolbar {
     /// flip a tall menu above the trigger when a constrained viewport cannot
     /// fit the normal below-trigger placement.
     pub fn view_menu_rect(&self) -> Option<Rect> {
-        self.right.last().map(|button| button.get_rect())
+        (!self.archive_read_only)
+            .then(|| self.right.last().map(|button| button.get_rect()))
+            .flatten()
     }
 
     /// Bottom-right anchor of the "Sort by" button (present only in grid mode,

@@ -1,0 +1,53 @@
+[Unit]
+Description=Decide whether this boot reached a usable session
+Documentation=file:///usr/share/doc/tilo/recovery.md
+# The same shape systemd's own systemd-boot-check-no-failures.service uses:
+# after the boot has settled, before the point at which the entry is blessed.
+# boot-complete.target is only pulled in when sd-boot passed a boot counter, so on
+# an entry that has already proven itself this never runs at all.
+After=default.target graphical.target multi-user.target
+Before=boot-complete.target
+# Never in repair mode: repair mode does not start a session, so a health check
+# that asks for one would condemn the very boot that is trying to fix things.
+ConditionKernelCommandLine=!tilo.mode=repair
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/tilo-boot-health
+# The verdict has to be readable from the serial console of a machine whose
+# session never came up, which is precisely the machine this is about.
+StandardOutput=journal+console
+StandardError=journal+console
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+PrivateIPC=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+RequiredBy=boot-complete.target

@@ -117,6 +117,22 @@ const PAD_Y: f64 = 10.0;
 const LIST_INDENT: f64 = 22.0;
 const QUOTE_INDENT: f64 = 16.0;
 
+struct DrawContext<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
+struct BlockDrawArgs<'a> {
+    index: usize,
+    content_width: f64,
+    y: f64,
+    list_number: &'a mut i32,
+    selection: Option<(Caret, Caret)>,
+    link_rgb: [u8; 3],
+}
+
 /// The editor. Owns its document, caret, selection, focus, scroll, and the
 /// laid-out per-block rects used for hit-testing.
 pub struct Wysiwyg {
@@ -681,16 +697,20 @@ impl Wysiwyg {
         let link_rgb = [link_rgba.r, link_rgba.g, link_rgba.b];
         for bi in 0..self.blocks.len() {
             y = self.draw_block(
-                scene,
-                t,
-                tr,
-                theme,
-                bi,
-                content_w,
-                y,
-                &mut list_num,
-                selection,
-                link_rgb,
+                &mut DrawContext {
+                    scene,
+                    transform: t,
+                    text: tr,
+                    theme,
+                },
+                &mut BlockDrawArgs {
+                    index: bi,
+                    content_width: content_w,
+                    y,
+                    list_number: &mut list_num,
+                    selection,
+                    link_rgb,
+                },
             );
         }
     }
@@ -699,23 +719,14 @@ impl Wysiwyg {
     /// and caret — and push its rect + layout for later hit-testing. Returns
     /// the y past it. A no-op returning `y` unchanged if `bi` is out of
     /// range. Part of [`Self::draw`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the per-block draw state `draw` already resolved; bundling them would just move the same count into a field list"
-    )]
-    fn draw_block(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        bi: usize,
-        content_w: f64,
-        mut y: f64,
-        list_num: &mut i32,
-        selection: Option<(Caret, Caret)>,
-        link_rgb: [u8; 3],
-    ) -> f64 {
+    fn draw_block(&mut self, ctx: &mut DrawContext<'_>, args: &mut BlockDrawArgs<'_>) -> f64 {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
+        let bi = args.index;
+        let content_w = args.content_width;
+        let mut y = args.y;
         let c = &theme.tokens.colors;
         let Some(blk) = self.blocks.get(bi) else {
             return y;
@@ -742,7 +753,7 @@ impl Wysiwyg {
         let bx = self.rect.x0 + PAD_X + indent;
         let available = (content_w - indent).max(1.0) as f32;
 
-        let (spans, underlines) = Self::build_block_spans(&blk.glyphs, link_rgb);
+        let (spans, underlines) = Self::build_block_spans(&blk.glyphs, args.link_rgb);
         let layout = RichTextLayout::shape_styled(
             &mut tr.font_system,
             &spans,
@@ -755,20 +766,22 @@ impl Wysiwyg {
         let layout_h = f64::from(layout.height());
 
         Self::draw_block_marker(
-            scene,
-            t,
-            tr,
-            c,
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
             &style,
             blk.kind,
             self.rect.x0 + PAD_X,
             y,
             layout_h,
-            list_num,
+            args.list_number,
         );
 
         let origin = t * Affine::translate((bx, y));
-        if let Some((sa, sb)) = selection
+        if let Some((sa, sb)) = args.selection
             && bi >= sa.block
             && bi <= sb.block
         {
@@ -834,15 +847,8 @@ impl Wysiwyg {
     /// [`BlockKind::Quote`], or the bullet / number marker for a list item —
     /// advancing `list_num` for consecutive numbered items and resetting it
     /// for any other kind. Part of [`Self::draw_block`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the block layout draw_block already resolved; bundling them would just move the same count into a field list"
-    )]
     fn draw_block_marker(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &Colors,
+        ctx: &mut DrawContext<'_>,
         style: &TextStyle,
         kind: BlockKind,
         left_x: f64,
@@ -850,6 +856,10 @@ impl Wysiwyg {
         layout_h: f64,
         list_num: &mut i32,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let t = ctx.transform;
+        let c = &ctx.theme.tokens.colors;
         // Quote bar.
         if matches!(kind, BlockKind::Quote) {
             let bar = Rect::new(left_x, y, left_x + 3.0, y + layout_h);
@@ -1297,10 +1307,10 @@ mod tests {
             ed.insert_char(ch);
         }
         ed.select_all();
-        ed.set_link("https://qos.example");
+        ed.set_link("https://tilo.example");
         let html = ed.to_html();
         assert!(
-            html.contains("<a href=\"https://qos.example\">"),
+            html.contains("<a href=\"https://tilo.example\">"),
             "got: {html}"
         );
     }

@@ -6,11 +6,11 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "qOS on-screen keyboard — data-driven layouts, responsive sizing, customizable toolbar."
+description = "Tilo on-screen keyboard — data-driven layouts, responsive sizing, customizable toolbar."
 
 # The app uses the protocol types through ui's canonical re-export.
 [package.metadata.cargo-machete]
-ignored = ["qos-actions"]
+ignored = ["tilo-actions"]
 
 [lib]
 name = "osk"
@@ -25,11 +25,10 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
-qos-actions = { path = "../../crates/collab/actions" }
-# Real FUTO swipe decoder (ExecuTorch over FFI). Builds a stub reporting
-# "unavailable" when the FUTO libs aren't linked, so the OSK falls back to
-# its geometric decoder — see src/futo.rs.
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+tilo-actions = { path = "../../crates/collab/actions" }
+# FUTO swipe decoder (ExecuTorch over FFI); builds an unavailable stub when
+# the FUTO libraries are not linked.
 swipe = { path = "../../crates/system/swipe" }
 # Same render/event crate set the other `ui` apps pull in so the `Widget`
 # impl can build a taffy node, draw into a vello `Scene`, react to winit
@@ -50,9 +49,8 @@ libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-# Compile the synthetic keymap with the *same* library a real compositor uses
-# (libxkbcommon), so the unit tests prove the generated keymap actually parses
-# and that each symbol resolves to the intended keysym.
+# Compile the synthetic keymap with libxkbcommon so tests validate generated
+# keymaps and symbol resolution.
 xkbcommon = "0.8"
 
 [[test]]

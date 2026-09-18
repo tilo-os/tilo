@@ -1,6 +1,6 @@
 //! Photos — view a photograph, adjust it, and get the result out.
 //!
-//! A viewer with a small, honest set of edits:
+//! A viewer with a small set of edits:
 //!
 //!   * **Open** an image through the host XDG portal chooser (never a bespoke
 //!     dialog), or from a path on the command line.
@@ -61,25 +61,101 @@
 )]
 
 pub mod actions;
+pub mod analysis;
 pub mod app;
 pub mod doc;
 pub mod framework_history;
+/// Bounded, cancellation-aware real-file discovery and metadata ingestion.
+pub mod import;
+pub mod library_analysis;
 pub mod model;
+pub mod people;
 pub mod pixels;
+/// Offline-capable place grouping and map projection shared by the timeline
+/// surface and resource/action routing. This module deliberately has no tile
+/// client, so opening a Photos location never leaks it to a network provider.
+pub mod places;
 mod presentation;
 pub mod reference;
 pub mod search;
 pub mod strings;
+mod timeline_projection;
 
 pub use app::PhotosApp;
-pub use model::{Edits, OpenImage, Rect01};
+pub use model::{Edits, LocationProvenance, OpenImage, PhotoLocation, Rect01};
+
+/// Import a Camera portable-media reference into Photos without ever trusting
+/// a machine-local path.  The content hash is verified in qdoc first; missing
+/// bytes are an actionable refusal rather than a phantom library entry.
+///
+/// # Errors
+///
+/// Returns an error when the Camera identity is malformed, the verified bytes
+/// have not arrived on this device, exceed the import budget, fail integrity
+/// validation, or are not a safely decodable still image.
+pub fn camera_import_photo(media_id: &str, name: &str) -> Result<model::LibraryPhoto, String> {
+    let hash = media_id
+        .strip_prefix("media:blake3:")
+        .filter(|hash| {
+            hash.len() == 64
+                && hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+        .ok_or_else(|| "invalid Camera media identity".to_owned())?;
+    let bytes = qdoc::blobstore::get(hash).ok_or_else(|| {
+        "Camera media bytes are not available on this device; retry after they sync".to_owned()
+    })?;
+    if bytes.is_empty() || bytes.len() > 64 * 1024 * 1024 || !qdoc::blobstore::verify(hash, &bytes)
+    {
+        return Err("Camera media bytes failed integrity validation".to_owned());
+    }
+    let image = pixels::decode(&bytes).ok_or_else(|| {
+        "Camera media is not a supported, safely decodable still image".to_owned()
+    })?;
+    let open = OpenImage {
+        path: name.to_owned(),
+        name: name.to_owned(),
+        width: image.w,
+        height: image.h,
+        content: Some(hash.to_owned()),
+    }
+    .portable();
+    Ok(model::LibraryPhoto::from_image(open))
+}
+
+/// Validate and import a Camera portable-media reference. This convenience
+/// boundary is useful to callers that already own a mutable Photos document;
+/// brokered callers use the same validation then dispatch `ImportPhoto` so
+/// history and collaboration observe the canonical action.
+///
+/// # Errors
+///
+/// Returns the same validation errors as [`camera_import_photo`], or an error
+/// if the validated import cannot be selected in the shared library.
+pub fn import_camera_media(
+    doc: &mut automerge::AutoCommit,
+    media_id: &str,
+    name: &str,
+) -> Result<String, String> {
+    let photo = camera_import_photo(media_id, name)?;
+    let id = photo.id.clone();
+    let mut library = doc::PhotosDoc::library(doc);
+    library.add_photo(photo);
+    doc::PhotosDoc::set_library(doc, &library);
+    let selected = library
+        .photo(&id)
+        .ok_or_else(|| "Camera import did not produce a library photograph".to_owned())?;
+    doc::PhotosDoc::set_image(doc, Some(&selected.image));
+    Ok(id)
+}
 
 use ui::widget::Widget;
 
 /// Build and return the app's root widget tree.
 pub fn app_root() -> Box<dyn Widget> {
     strings::install();
-    Box::new(PhotosApp::new())
+    Box::new(PhotosApp::new_persistent())
 }
 
 /// The ordered `--shots` scenarios, named so the offscreen renderer can walk
@@ -90,19 +166,26 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "error",
     "opened",
     "library",
+    "albums",
+    "people",
+    "people-detail",
+    "places",
+    "analysis",
+    "import-progress",
+    "import-errors",
+    "selection",
+    "selection-many-albums",
     "album-manage",
     "metadata-edit",
+    "metadata-batch",
     "cropping",
     "edited",
 ];
 
 /// A generated test pattern, used **only** by `--shots`.
 ///
-/// Deliberately not a photograph and deliberately not shipped as a file: it is
-/// drawn here so a screenshot is deterministic offline and so no sample image
-/// can leak into the live app. Wide (3:2) and asymmetric, so a shot proves
-/// letterboxing, orientation and crop rather than looking plausible either way
-/// round.
+/// Generated in memory for deterministic offscreen screenshots. Wide (3:2) and
+/// asymmetric to exercise letterboxing, orientation and crop.
 ///
 /// # Panics
 ///
@@ -157,6 +240,47 @@ pub fn shots_pattern(w: u32, h: u32) -> pixels::Rgba {
     pixels::Rgba::new(w, h, bytes).expect("generated pattern is well formed")
 }
 
+/// Deterministic, hermetic gallery fixtures. They are deliberately derived
+/// from the same small procedural scene rather than bundled stock imagery,
+/// but each has a distinct light and colour story so an offscreen library
+/// reads as a collection instead of four copies of one placeholder.
+#[allow(
+    clippy::many_single_char_names,
+    clippy::indexing_slicing,
+    reason = "chunks_exact_mut(4) proves each RGBA pixel has the indexed channels"
+)]
+pub fn shots_pattern_variant(w: u32, h: u32, variant: u8) -> pixels::Rgba {
+    let mut image = shots_pattern(w, h);
+    for pixel in image.bytes.chunks_exact_mut(4) {
+        let (r, g, b) = (pixel[0], pixel[1], pixel[2]);
+        match variant % 5 {
+            // Warm trail, cool gallery lights, and rain respectively.
+            0 => {}
+            1 => {
+                pixel[0] = r.saturating_add(32);
+                pixel[1] = g.saturating_add(14);
+                pixel[2] = b.saturating_sub(30);
+            }
+            2 => {
+                pixel[0] = b.saturating_sub(18);
+                pixel[1] = r.saturating_add(12);
+                pixel[2] = g.saturating_add(28);
+            }
+            3 => {
+                pixel[0] = ((u16::from(r) + u16::from(g)) / 3) as u8;
+                pixel[1] = ((u16::from(g) + u16::from(b)) / 3) as u8;
+                pixel[2] = b.saturating_add(18);
+            }
+            _ => {
+                pixel[0] = r.saturating_sub(20);
+                pixel[1] = g.saturating_add(25);
+                pixel[2] = b.saturating_add(35);
+            }
+        }
+    }
+    image
+}
+
 /// Pose the app for one named `--shots` scenario.
 ///
 /// The generated pattern is written to `dir` and opened through the ordinary
@@ -179,10 +303,10 @@ pub fn seed_scenario(
         return;
     }
 
-    // These two poses exercise the honest states a collaborator can see
+    // These two poses exercise the states a collaborator can see
     // before their content arrives, and after bytes turn out not to be an
     // image.  They intentionally write only tiny document metadata: neither
-    // state fabricates picture bytes merely to make a screenshot attractive.
+    // state adds picture bytes solely for a screenshot.
     if scenario == "loading" {
         let open = OpenImage::from_path("/photos-shots/not-here-yet.png", 1200, 800)
             .with_content("0".repeat(64));
@@ -200,7 +324,7 @@ pub fn seed_scenario(
     }
 
     let path = dir.join("harbour.png");
-    let pattern = shots_pattern(1200, 800);
+    let pattern = shots_pattern_variant(1200, 800, 4);
     if let Some(png) = pixels::encode_png(&pattern) {
         std::fs::create_dir_all(dir).ok();
         if std::fs::write(&path, png).is_err() {
@@ -208,61 +332,193 @@ pub fn seed_scenario(
         }
     }
     app.open_path(doc, &path.to_string_lossy());
+    // The first imported photograph is part of the timeline fixture too.
+    // Give it an honest capture day so it joins the newest group instead of
+    // producing an orphaned "Undated" hero tile ahead of the collection.
+    let mut seeded_library = PhotosDoc::library(doc);
+    if let Some(active) = PhotosDoc::image(doc)
+        && let Some(photo) =
+            seeded_library.photo_mut(&crate::model::LibraryPhoto::from_image(active).id)
+    {
+        photo.captured_at = Some("2026-07-12 18:16".into());
+        photo.folder = Some("Travel 2026".into());
+        photo.people = vec!["Élodie".into(), "Sam".into()];
+        photo.tags = vec!["golden hour".into()];
+        PhotosDoc::set_library(doc, &seeded_library);
+    }
 
     match scenario {
         // A library has useful context only when it contains more than the
-        // active image.  These rows intentionally share the generated image
-        // bytes: the gallery exercises the card layout and bounded
-        // materialisation without smuggling sample assets into the live app.
-        "library" | "album-manage" | "metadata-edit" => {
+        // active image. The fixtures are procedural and hermetic, while their
+        // different light treatments make thumbnail, selection and metadata
+        // hierarchy legible in the gallery instead of simulating a library
+        // with repeated placeholder art.
+        "library"
+        | "albums"
+        | "people"
+        | "people-detail"
+        | "places"
+        | "analysis"
+        | "import-progress"
+        | "import-errors"
+        | "selection"
+        | "selection-many-albums"
+        | "album-manage"
+        | "metadata-edit"
+        | "metadata-batch" => {
             let mut library = PhotosDoc::library(doc);
             let mut travel = Vec::new();
-            for name in [
-                "Harbour dusk",
-                "Summer trail",
-                "Museum light",
-                "Rainy market",
-            ] {
+            for (variant, (name, captured_at)) in [
+                ("Harbour dusk", "2026-07-12 20:24"),
+                ("Summer trail", "2026-06-15 09:18"),
+                ("Museum light", "2026-06-15 14:42"),
+                ("Rainy market", "2026-06-16 10:06"),
+                ("Dog at the lake", "2026-07-12 17:30"),
+                ("Window cat", "2026-07-12 08:11"),
+                ("Sunset ferry", "2026-07-12 21:02"),
+                ("Garden supper", "2026-07-12 19:14"),
+                ("Paper lanterns", "2026-07-12 22:09"),
+                ("Mountain lookout", "2026-07-12 11:28"),
+                ("Studio morning", "2026-07-12 07:51"),
+                ("First swim", "2026-07-12 15:45"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
                 let sample_path = dir.join(format!("{name}.png"));
-                if let Some(bytes) = pixels::encode_png(&pattern) {
+                // Exercise the real justified chronology with the landscape,
+                // portrait, square and panoramic shapes a photo library
+                // actually contains. Keeping acceptance fixtures all 3:2
+                // made serious row-packing regressions visually invisible.
+                let (width, height) = match variant % 5 {
+                    0 => (900, 600),
+                    1 => (600, 900),
+                    2 => (800, 800),
+                    3 => (1_200, 675),
+                    _ => (720, 960),
+                };
+                let fixture = shots_pattern_variant(width, height, variant as u8);
+                if let Some(bytes) = pixels::encode_png(&fixture) {
                     let _ = std::fs::write(&sample_path, bytes);
                 }
-                let image = OpenImage::from_path(&sample_path.to_string_lossy(), 1200, 800);
+                let image = OpenImage::from_path(&sample_path.to_string_lossy(), width, height);
                 let mut photo = crate::model::LibraryPhoto::from_image(image);
-                photo.favorite = name == "Summer trail";
-                photo.folder = Some(if name.contains("Museum") {
+                photo.favorite =
+                    matches!(name, "Summer trail" | "Dog at the lake" | "Sunset ferry");
+                photo.folder = Some(if name.contains("Museum") || name.contains("Studio") {
                     "City walks".into()
                 } else {
                     "Travel 2026".into()
                 });
-                photo.people = if name.contains("Summer") {
+                photo.people = if name.contains("Summer") || name.contains("Dog") {
                     vec!["Élodie".into(), "Sam".into()]
+                } else if name.contains("cat") {
+                    vec!["Noor".into()]
                 } else {
                     vec!["Élodie".into()]
                 };
                 photo.tags = vec![if name.contains("Rainy") {
                     "rain".into()
+                } else if name.contains("Dog") || name.contains("cat") {
+                    "pets".into()
                 } else {
                     "golden hour".into()
                 }];
-                photo.captured_at = Some(if name.contains("Harbour") {
-                    "2026-06-14 20:24".into()
-                } else {
-                    "2026-06-15".into()
-                });
+                photo.captured_at = Some(captured_at.into());
+                if scenario == "places" {
+                    let locations = [
+                        (37.7749, -122.4194, "San Francisco"),
+                        (48.8566, 2.3522, "Paris"),
+                        (35.6762, 139.6503, "Tokyo"),
+                    ];
+                    let (latitude, longitude, label) = locations[variant % locations.len()];
+                    photo.location = Some(crate::model::PhotoLocation {
+                        latitude,
+                        longitude,
+                        label: Some(label.into()),
+                        provenance: crate::model::LocationProvenance {
+                            source: "user".into(),
+                            scope: "shared".into(),
+                        },
+                    });
+                }
                 travel.push(photo.id.clone());
                 library.add_photo(photo);
             }
             library.albums.push(crate::model::Album {
                 id: "photos.album:travel".into(),
                 name: "Travel".into(),
-                photo_ids: travel,
+                photo_ids: travel.clone(),
             });
+            if scenario == "albums" {
+                library.albums.extend([
+                    crate::model::Album {
+                        id: "photos.album:summer-weekends".into(),
+                        name: "Summer weekends".into(),
+                        photo_ids: travel.iter().skip(1).take(6).cloned().collect(),
+                    },
+                    crate::model::Album {
+                        id: "photos.album:family-favourites".into(),
+                        name: "Family favourites".into(),
+                        photo_ids: travel.iter().step_by(2).take(5).cloned().collect(),
+                    },
+                    crate::model::Album {
+                        id: "photos.album:ideas".into(),
+                        name: "Ideas for next time".into(),
+                        photo_ids: travel.iter().rev().take(3).cloned().collect(),
+                    },
+                    crate::model::Album {
+                        id: "photos.album:new-home".into(),
+                        name: "New home".into(),
+                        photo_ids: Vec::new(),
+                    },
+                ]);
+            }
+            if scenario == "selection-many-albums" {
+                for number in 1..=17 {
+                    library.albums.push(crate::model::Album {
+                        id: format!("photos.album:destination-{number}"),
+                        name: format!("Destination album {number}"),
+                        photo_ids: Vec::new(),
+                    });
+                }
+            }
             PhotosDoc::set_library(doc, &library);
-            if scenario == "album-manage" {
+            if scenario == "albums" {
+                app.show_albums_for_shot();
+            } else if matches!(scenario, "selection" | "selection-many-albums") {
+                app.show_selection_for_shot(doc);
+                if scenario == "selection-many-albums" {
+                    app.show_selection_destination_chooser_for_shot(doc);
+                }
+            } else if scenario == "album-manage" {
                 app.show_album_editor_for_shot(doc);
             } else if scenario == "metadata-edit" {
                 app.show_metadata_editor_for_shot(doc);
+            } else if scenario == "metadata-batch" {
+                app.show_batch_metadata_editor_for_shot(doc);
+            } else if matches!(scenario, "people" | "people-detail") {
+                // A manual, explicitly labelled fixture exercises the review
+                // layout without pretending that a face model recognized
+                // anyone. Live launches never seed People data.
+                let _ = app.people_controller_mut().add_cluster(
+                    "shots-imported-suggestion",
+                    travel.into_iter().take(4),
+                    crate::people::ProposalOrigin::ImportedOrManual,
+                );
+                if scenario == "people-detail" {
+                    app.show_people_suggestion_for_shot("shots-imported-suggestion");
+                } else {
+                    app.show_people();
+                }
+            } else if scenario == "places" {
+                app.show_places_for_shot();
+            } else if scenario == "analysis" {
+                app.show_library_analysis();
+            } else if scenario == "import-progress" {
+                app.show_directory_import_progress_for_shot();
+            } else if scenario == "import-errors" {
+                app.show_directory_import_errors_for_shot();
             } else {
                 app.show_library();
             }
@@ -300,3 +556,50 @@ pub fn seed_scenario(
 
 #[cfg(test)]
 mod framework_history_tests;
+
+#[cfg(test)]
+mod camera_import_tests {
+    use automerge::AutoCommit;
+
+    use super::{camera_import_photo, import_camera_media, pixels, shots_pattern_variant};
+    use crate::doc::PhotosDoc;
+
+    #[test]
+    fn camera_import_verifies_bytes_and_selects_one_content_addressed_photo() {
+        let rgba = pixels::Rgba::new(1, 1, vec![12, 34, 56, 255]).expect("fixture rgba");
+        let bytes = pixels::encode_png(&rgba).expect("fixture png");
+        let hash = qdoc::blobstore::put(&bytes).expect("fixture blob");
+        let media_id = format!("media:blake3:{hash}");
+        let mut doc = AutoCommit::new();
+
+        let id =
+            import_camera_media(&mut doc, &media_id, "Camera photo.png").expect("verified import");
+        let again =
+            import_camera_media(&mut doc, &media_id, "renamed.png").expect("idempotent import");
+
+        assert_eq!(id, again);
+        let library = PhotosDoc::library(&doc);
+        assert_eq!(library.photos.len(), 1);
+        assert_eq!(
+            PhotosDoc::image(&doc).map(|image| image.content),
+            Some(Some(hash))
+        );
+    }
+
+    #[test]
+    fn camera_import_refuses_missing_or_invalid_portable_bytes() {
+        assert!(camera_import_photo("media:blake3:not-a-hash", "x.png").is_err());
+        let missing = format!("media:blake3:{}", "0".repeat(64));
+        assert!(camera_import_photo(&missing, "x.png").is_err());
+    }
+
+    #[test]
+    fn gallery_fixtures_are_distinct_but_deterministic() {
+        let harbour = shots_pattern_variant(32, 20, 0);
+        let trail = shots_pattern_variant(32, 20, 1);
+        assert_eq!(harbour.w, 32);
+        assert_eq!(harbour.h, 20);
+        assert_ne!(harbour.bytes, trail.bytes);
+        assert_eq!(trail, shots_pattern_variant(32, 20, 1));
+    }
+}

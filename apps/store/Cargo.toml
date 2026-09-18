@@ -4,11 +4,11 @@ version = "0.1.2"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "qOS app store — surfaces qOS registry entries and legacy Flatpak apps in one list."
+description = "Tilo app store — surfaces Tilo registry entries and legacy Flatpak apps in one list."
 
 # The app uses the protocol types through ui's canonical re-export.
 [package.metadata.cargo-machete]
-ignored = ["qos-actions"]
+ignored = ["tilo-actions"]
 
 [lib]
 name = "store"
@@ -22,8 +22,10 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
-qos-actions = { path = "../../crates/collab/actions" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+tilo-actions = { path = "../../crates/collab/actions" }
+atomic-file = { path = "../../crates/system/atomic-file" }
+bounded-command = { path = "../../crates/system/bounded-command" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The registry list, its client and its trust classification. Shared
 # with the desktop's search box, which offers the same registries' apps
@@ -48,8 +50,7 @@ thiserror.workspace = true
 hex.workspace = true
 ed25519-dalek.workspace = true
 reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
-# Explicit rustls provider — the tree carries both ring + aws-lc-rs and
-# rustls 0.23 won't auto-disambiguate. Matches the sibling maps / feeds apps.
+# Explicitly install the workspace-standard ring provider at startup.
 rustls.workspace = true
 
 [dev-dependencies]

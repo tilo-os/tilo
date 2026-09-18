@@ -25,19 +25,22 @@
 //! **no-op** rather than an error, so a bad replay can't wedge a peer.
 
 use automerge::AutoCommit;
-use chrono::{NaiveDate, NaiveDateTime};
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use serde::{Deserialize, Serialize};
 use ui::widget::BlockEditOp;
 use uuid::Uuid;
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, OperationKind, ParamType, Resource, ResourceProvider,
-    RetryPolicy,
+    EncodedAction, ExecutionLocus, OperationKind, ParamType, PermissionRequirement, Resource,
+    ResourceProvider, ResultSpec, RetryPolicy,
 };
 
 use crate::doc::CalDoc;
-use crate::model::{Event, Id, Palette, Priority, Project, Recurrence, Task};
+use crate::model::{
+    Attendee, Event, Id, InviteStatus, OccurrenceOverride, Palette, Priority, Project, Recurrence,
+    Task,
+};
 
 /// Registry `type_id` for every calendar action.
 pub const CALENDAR_ACTION_TYPE: &str = "calendar.action";
@@ -46,7 +49,11 @@ pub const CALENDAR_OPERATION_TYPE: &str = "calendar.operation";
 /// The root resource is intentionally a contextual snapshot, not a second
 /// unbounded copy of Calendar's data. Search and direct invocation resolve any
 /// omitted stable id through [`ResourceProvider::resource`] below.
-const EAGER_RESOURCE_SNAPSHOT_LIMIT: usize = 96;
+pub(crate) const EAGER_RESOURCE_SNAPSHOT_LIMIT: usize = 96;
+/// A task delete action carries every child id it will tombstone, so cap that
+/// payload independently from directory paging. Larger child sets remain
+/// addressable one-by-one but require their children to be handled first.
+pub(crate) const TASK_DELETE_FANOUT_LIMIT: usize = 96;
 
 /// Stable resource id for one event. Search, the palette, accessibility and
 /// agents all address this same resource.
@@ -67,6 +74,28 @@ pub fn project_resource_id(id: Id) -> String {
 /// Stable resource id for a local or configured remote calendar collection.
 pub fn calendar_resource_id(id: &str) -> String {
     format!("calendar.collection:{id}")
+}
+
+fn project_id_from_resource(address: &str) -> Option<Id> {
+    address.strip_prefix("calendar.project:")?.parse().ok()
+}
+
+fn calendar_id_from_resource(address: &str) -> Option<&str> {
+    address
+        .strip_prefix("calendar.collection:")
+        .filter(|id| !id.is_empty())
+}
+
+pub fn attendee_resource_id(event_id: Id, attendee_id: Id) -> String {
+    format!("calendar.attendee:{event_id}:{attendee_id}")
+}
+
+pub fn occurrence_resource_id(event_id: Id, original_date: NaiveDate) -> String {
+    format!("calendar.occurrence:{event_id}:{original_date}")
+}
+
+pub fn reminder_resource_id(event_id: Id) -> String {
+    format!("calendar.reminder:{event_id}:primary")
 }
 
 /// Canonical view action that reveals one event in the calendar.
@@ -94,6 +123,10 @@ pub enum CalendarOperation {
     OpenEvent {
         id: String,
     },
+    OpenOccurrence {
+        event_id: String,
+        original_date: String,
+    },
     OpenTask {
         id: String,
     },
@@ -108,12 +141,28 @@ pub enum CalendarOperation {
     ShowWeek,
     ShowDay,
     ShowAgenda,
+    /// Device-private visibility policy for one configured remote collection.
+    /// This deliberately lives outside the shared event CRDT: hiding a work
+    /// calendar is a per-person display choice, never a collaborative edit.
+    SetCalendarVisible {
+        id: String,
+        visible: bool,
+    },
     Sync,
     ExportIcs,
     /// Import the newest `.ics` file from the transfer directory. The effect
     /// captures parsed records into one [`CalendarAction`] before it reports
     /// success; its retry contract is therefore at-most-once.
     ImportIcs,
+    /// Complete an explicitly queued local launch import after host admission.
+    /// No path or source contents are carried in the operation envelope.
+    FinalizeLaunchImport,
+    /// Produce the exact typed invocation accepted by Mail's invitation-draft
+    /// action. This prepares a reviewable draft; it never claims SMTP delivery.
+    PrepareInvitationInMail {
+        event_id: String,
+        attendee_id: String,
+    },
 }
 
 fn calendar_operation(
@@ -133,6 +182,7 @@ fn calendar_operation(
         });
     match operation {
         CalendarOperation::OpenEvent { .. }
+        | CalendarOperation::OpenOccurrence { .. }
         | CalendarOperation::OpenTask { .. }
         | CalendarOperation::OpenProject { .. }
         | CalendarOperation::OpenCalendar { .. }
@@ -140,17 +190,34 @@ fn calendar_operation(
         | CalendarOperation::ShowMonth
         | CalendarOperation::ShowWeek
         | CalendarOperation::ShowDay
-        | CalendarOperation::ShowAgenda => spec.retry_policy(RetryPolicy::Idempotent),
+        | CalendarOperation::ShowAgenda
+        | CalendarOperation::SetCalendarVisible { .. } => {
+            spec.retry_policy(RetryPolicy::Idempotent)
+        }
         CalendarOperation::Sync => spec
             .retry_policy(RetryPolicy::Idempotent)
-            .execution(qos_actions::ExecutionMode::Background { cancellable: false }),
-        CalendarOperation::ExportIcs | CalendarOperation::ImportIcs => {
-            spec.retry_policy(RetryPolicy::AtMostOnce)
-        }
+            .execution(tilo_actions::ExecutionMode::Background { cancellable: false }),
+        CalendarOperation::ExportIcs
+        | CalendarOperation::ImportIcs
+        | CalendarOperation::FinalizeLaunchImport => spec.retry_policy(RetryPolicy::AtMostOnce),
+        CalendarOperation::PrepareInvitationInMail { .. } => spec
+            .retry_policy(RetryPolicy::Idempotent)
+            .requiring(PermissionRequirement::Invite)
+            .returns(ResultSpec::Json {
+                schema: serde_json::json!({
+                    "type": "object",
+                    "required": ["delivery", "target", "arguments"],
+                    "properties": {
+                        "delivery": {"const": "not_sent"},
+                        "target": {"type": "object"},
+                        "arguments": {"type": "object"}
+                    }
+                }),
+            }),
     }
 }
 
-fn calendar_collection_resource(calendar: &CalendarCollectionResource) -> Resource {
+pub(crate) fn calendar_collection_resource(calendar: &CalendarCollectionResource) -> Resource {
     let open = calendar_operation(
         "open",
         "Open calendar",
@@ -165,6 +232,78 @@ fn calendar_collection_resource(calendar: &CalendarCollectionResource) -> Resour
         calendar.label.clone(),
     )
     .with_action(open)
+    .with_action(calendar_operation(
+        "set-visibility",
+        if calendar.visible {
+            "Hide calendar"
+        } else {
+            "Show calendar"
+        },
+        OperationKind::Effect,
+        &CalendarOperation::SetCalendarVisible {
+            id: calendar.id.clone(),
+            visible: !calendar.visible,
+        },
+    ))
+}
+
+/// Minimal, exact event resource used by the retained global-search provider.
+/// It deliberately materialises only the action named by a search result, so a
+/// late search hit never has to construct the root resource tree (or an
+/// event's attendees, notes, reminders and recurrence children) just to open
+/// its stable address.
+pub(crate) fn search_event_resource(event: &Event) -> Resource {
+    Resource::new(
+        event_resource_id(event.id),
+        "calendar.event",
+        event.display_title(),
+    )
+    .with_action(calendar_operation(
+        "open",
+        "Open event",
+        OperationKind::View,
+        &CalendarOperation::OpenEvent {
+            id: event.id.to_string(),
+        },
+    ))
+}
+
+/// Minimal, exact task resource used by the retained global-search provider.
+pub(crate) fn search_task_resource(task: &Task) -> Resource {
+    Resource::new(
+        task_resource_id(task.id),
+        "calendar.task",
+        if task.title.trim().is_empty() {
+            "Untitled task".to_string()
+        } else {
+            task.title.clone()
+        },
+    )
+    .with_action(calendar_operation(
+        "open",
+        "Open task",
+        OperationKind::View,
+        &CalendarOperation::OpenTask {
+            id: task.id.to_string(),
+        },
+    ))
+}
+
+/// Minimal, exact project resource used by the retained global-search provider.
+pub(crate) fn search_project_resource(project: &Project) -> Resource {
+    Resource::new(
+        project_resource_id(project.id),
+        "calendar.project",
+        project.name.clone(),
+    )
+    .with_action(calendar_operation(
+        "open",
+        "Open project tasks",
+        OperationKind::View,
+        &CalendarOperation::OpenProject {
+            id: project.id.to_string(),
+        },
+    ))
 }
 
 /// Encode an app-local operation without allowing a serialization fault to
@@ -174,7 +313,7 @@ fn calendar_collection_resource(calendar: &CalendarCollectionResource) -> Resour
 fn encode_operation(operation: &CalendarOperation) -> EncodedAction {
     EncodedAction::encode_operation(CALENDAR_OPERATION_TYPE, operation).unwrap_or_else(|_| {
         EncodedAction {
-            type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
             payload: b"Calendar operation could not be encoded".to_vec(),
         }
     })
@@ -201,12 +340,56 @@ pub struct EventData {
     pub location: String,
     pub color: usize,
     pub rrule: String,
+    #[serde(default = "default_recurrence_interval")]
+    pub recurrence_interval: u32,
+    #[serde(default)]
+    pub recurrence_until: String,
+    #[serde(default)]
+    pub recurrence_count: u32,
+    #[serde(default)]
+    pub recurrence_exdates: Vec<String>,
+    #[serde(default)]
+    pub occurrence_overrides: Vec<OccurrenceOverrideData>,
+    #[serde(default = "default_timezone")]
+    pub timezone: String,
+    #[serde(default)]
+    pub organizer: String,
+    #[serde(default)]
+    pub attendees: Vec<AttendeeData>,
     /// Minutes before start for a reminder, or `-1` for none.
     pub reminder: i64,
     /// Owning project id (string form), or `""` for none.
     pub project: String,
     /// Source calendar id, or `""` for the local on-device calendar.
     pub calendar_id: String,
+}
+
+fn default_recurrence_interval() -> u32 {
+    1
+}
+
+fn default_timezone() -> String {
+    "floating".into()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttendeeData {
+    pub id: String,
+    pub name: String,
+    pub email: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OccurrenceOverrideData {
+    pub original_date: String,
+    #[serde(default)]
+    pub original_time: String,
+    pub cancelled: bool,
+    pub start: String,
+    pub end: String,
+    pub title: String,
+    pub location: String,
 }
 
 impl EventData {
@@ -220,6 +403,28 @@ impl EventData {
             location: e.location.clone(),
             color: e.color.index(),
             rrule: e.recurrence.to_rrule(),
+            recurrence_interval: e.recurrence_interval,
+            recurrence_until: e
+                .recurrence_until
+                .map_or_else(String::new, |date| date.to_string()),
+            recurrence_count: e.recurrence_count.unwrap_or(0),
+            recurrence_exdates: e
+                .recurrence_exdates
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            occurrence_overrides: e
+                .occurrence_overrides
+                .iter()
+                .map(OccurrenceOverrideData::from_override)
+                .collect(),
+            timezone: e.timezone.clone(),
+            organizer: e.organizer.map_or_else(String::new, |id| id.to_string()),
+            attendees: e
+                .attendees
+                .iter()
+                .map(AttendeeData::from_attendee)
+                .collect(),
             // External imports may carry an alarm interval Calendar does not
             // offer in its closed editing domain. Normalize at the action
             // authoring boundary so replay never persists an unsupported
@@ -238,13 +443,26 @@ impl EventData {
     /// wall-clock value, which would break replay determinism.
     fn to_event(&self) -> Option<Event> {
         let id = self.id.parse::<Id>().ok()?;
-        let start = NaiveDateTime::parse_from_str(&self.start, DT_FMT).ok()?;
-        let end = NaiveDateTime::parse_from_str(&self.end, DT_FMT).ok()?;
+        let mut start = NaiveDateTime::parse_from_str(&self.start, DT_FMT).ok()?;
+        let mut end = NaiveDateTime::parse_from_str(&self.end, DT_FMT).ok()?;
+        let timezone = normalize_timezone(&self.timezone)?;
+        if timezone != "floating" {
+            start = crate::timezone::normalize_wall(&timezone, start)?.0;
+            end = crate::timezone::normalize_wall(&timezone, end)?.0;
+        }
+        let attendees = self
+            .attendees
+            .iter()
+            .map(AttendeeData::to_attendee)
+            .collect::<Option<Vec<_>>>()?;
+        let organizer = parse_optional_id(&self.organizer)?;
         if start > end
             || self.color >= Palette::ALL.len()
             || !matches!(self.reminder, -1 | 10 | 30 | 60)
             || Recurrence::from_rrule(&self.rrule).to_rrule() != self.rrule
             || (!self.project.is_empty() && self.project.parse::<Id>().is_err())
+            || organizer
+                .is_some_and(|organizer| !attendees.iter().any(|attendee| attendee.id == organizer))
         {
             return None;
         }
@@ -257,6 +475,23 @@ impl EventData {
             location: self.location.clone(),
             color: Palette::from_index(self.color),
             recurrence: Recurrence::from_rrule(&self.rrule),
+            recurrence_interval: self.recurrence_interval.max(1),
+            recurrence_until: parse_optional_date(&self.recurrence_until)?,
+            recurrence_count: (self.recurrence_count != 0).then_some(self.recurrence_count),
+            recurrence_exdates: self
+                .recurrence_exdates
+                .iter()
+                .map(|date| NaiveDate::parse_from_str(date, DATE_FMT))
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?,
+            occurrence_overrides: self
+                .occurrence_overrides
+                .iter()
+                .map(OccurrenceOverrideData::to_override)
+                .collect::<Option<Vec<_>>>()?,
+            timezone,
+            organizer,
+            attendees,
             reminder_min: (self.reminder != -1).then_some(self.reminder),
             project: parse_opt_id(&self.project),
             calendar_id: if self.calendar_id.is_empty() {
@@ -264,6 +499,112 @@ impl EventData {
             } else {
                 Some(self.calendar_id.clone())
             },
+        })
+    }
+}
+
+#[allow(
+    clippy::option_option,
+    reason = "outer option rejects malformed input; inner option represents an explicit empty value"
+)]
+fn parse_optional_date(value: &str) -> Option<Option<NaiveDate>> {
+    if value.is_empty() {
+        Some(None)
+    } else {
+        NaiveDate::parse_from_str(value, DATE_FMT).ok().map(Some)
+    }
+}
+
+#[allow(
+    clippy::option_option,
+    reason = "outer option rejects malformed input; inner option represents an explicit empty value"
+)]
+fn parse_optional_id(value: &str) -> Option<Option<Id>> {
+    if value.is_empty() {
+        Some(None)
+    } else {
+        value.parse::<Id>().ok().map(Some)
+    }
+}
+
+fn normalize_timezone(value: &str) -> Option<String> {
+    (value.len() <= 128)
+        .then(|| crate::timezone::canonical_zone(value))
+        .flatten()
+}
+
+impl AttendeeData {
+    fn from_attendee(value: &Attendee) -> Self {
+        Self {
+            id: value.id.to_string(),
+            name: value.name.clone(),
+            email: value.email.clone(),
+            status: value.status.as_ical().into(),
+        }
+    }
+
+    fn to_attendee(&self) -> Option<Attendee> {
+        let email = self.email.trim();
+        Some(Attendee {
+            id: self.id.parse().ok()?,
+            name: self.name.trim().to_string(),
+            email: email_address(email)?.to_string(),
+            status: InviteStatus::from_ical(&self.status),
+        })
+    }
+}
+
+fn email_address(value: &str) -> Option<&str> {
+    let (local, domain) = value.split_once('@')?;
+    (!local.is_empty() && domain.contains('.') && !domain.contains(char::is_whitespace))
+        .then_some(value)
+}
+
+impl OccurrenceOverrideData {
+    fn from_override(value: &OccurrenceOverride) -> Self {
+        Self {
+            original_date: value.original_date.to_string(),
+            original_time: value
+                .original_time
+                .map_or_else(String::new, |time| time.format("%H:%M:%S").to_string()),
+            cancelled: value.cancelled,
+            start: value
+                .start
+                .map_or_else(String::new, |date| date.format(DT_FMT).to_string()),
+            end: value
+                .end
+                .map_or_else(String::new, |date| date.format(DT_FMT).to_string()),
+            title: value.title.clone().unwrap_or_default(),
+            location: value.location.clone().unwrap_or_default(),
+        }
+    }
+
+    fn to_override(&self) -> Option<OccurrenceOverride> {
+        let start = if self.start.is_empty() {
+            None
+        } else {
+            Some(NaiveDateTime::parse_from_str(&self.start, DT_FMT).ok()?)
+        };
+        let end = if self.end.is_empty() {
+            None
+        } else {
+            Some(NaiveDateTime::parse_from_str(&self.end, DT_FMT).ok()?)
+        };
+        if start.zip(end).is_some_and(|(start, end)| start > end) {
+            return None;
+        }
+        Some(OccurrenceOverride {
+            original_date: NaiveDate::parse_from_str(&self.original_date, DATE_FMT).ok()?,
+            original_time: if self.original_time.is_empty() {
+                None
+            } else {
+                Some(NaiveTime::parse_from_str(&self.original_time, "%H:%M:%S").ok()?)
+            },
+            cancelled: self.cancelled,
+            start,
+            end,
+            title: (!self.title.is_empty()).then(|| self.title.clone()),
+            location: (!self.location.is_empty()).then(|| self.location.clone()),
         })
     }
 }
@@ -328,6 +669,14 @@ pub struct EventPatch {
     pub location: Option<String>,
     pub color: Option<usize>,
     pub rrule: Option<String>,
+    pub recurrence_interval: Option<u32>,
+    /// `""` clears the inclusive recurrence end date.
+    pub recurrence_until: Option<String>,
+    /// `0` clears the occurrence limit.
+    pub recurrence_count: Option<u32>,
+    pub timezone: Option<String>,
+    /// `""` clears the organizer.
+    pub organizer: Option<String>,
     pub reminder: Option<i64>,
     /// Project id, or an empty string to remove the project association.
     pub project: Option<String>,
@@ -335,6 +684,23 @@ pub struct EventPatch {
     /// Only calendar moves affect the remote outbox. `Some(true)` queues a
     /// remote upload; `Some(false)` removes a now-local event from it.
     pub enqueue_remote: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttendeePatch {
+    pub name: Option<String>,
+    pub email: Option<String>,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OccurrencePatch {
+    pub cancelled: Option<bool>,
+    /// Empty strings clear an override and inherit the series value.
+    pub start: Option<String>,
+    pub end: Option<String>,
+    pub title: Option<String>,
+    pub location: Option<String>,
 }
 
 /// A sparse, field-level change to one task. Keeping task edits as patches is
@@ -380,6 +746,21 @@ impl EventPatch {
             location: (before.location != after.location).then(|| after.location.clone()),
             color: (before.color != after.color).then_some(after.color.index()),
             rrule: (before.recurrence != after.recurrence).then(|| after.recurrence.to_rrule()),
+            recurrence_interval: (before.recurrence_interval != after.recurrence_interval)
+                .then_some(after.recurrence_interval),
+            recurrence_until: (before.recurrence_until != after.recurrence_until).then(|| {
+                after
+                    .recurrence_until
+                    .map_or_else(String::new, |date| date.to_string())
+            }),
+            recurrence_count: (before.recurrence_count != after.recurrence_count)
+                .then_some(after.recurrence_count.unwrap_or(0)),
+            timezone: (before.timezone != after.timezone).then(|| after.timezone.clone()),
+            organizer: (before.organizer != after.organizer).then(|| {
+                after
+                    .organizer
+                    .map_or_else(String::new, |id| id.to_string())
+            }),
             reminder: (before.reminder_min != after.reminder_min)
                 .then_some(after.reminder_min.unwrap_or(-1)),
             project: (before.project != after.project).then(|| {
@@ -462,6 +843,34 @@ pub enum CalendarAction {
     /// Update only named event registers. This is what all ordinary editor and
     /// agent field edits use; `UpsertEvent` is reserved for creation/import.
     PatchEvent { id: String, patch: EventPatch },
+    /// Add one stable invitation participant. Ordinary participant edits use
+    /// `PatchAttendee` so independent RSVP/name changes do not overwrite each
+    /// other or the event.
+    UpsertAttendee {
+        event_id: String,
+        attendee: AttendeeData,
+    },
+    PatchAttendee {
+        event_id: String,
+        attendee_id: String,
+        patch: AttendeePatch,
+    },
+    DeleteAttendee {
+        event_id: String,
+        attendee_id: String,
+    },
+    /// Include/exclude one original recurrence date by absolute identity.
+    SetRecurrenceException {
+        event_id: String,
+        date: String,
+        excluded: bool,
+    },
+    /// Change one generated occurrence, keyed by its immutable original date.
+    PatchOccurrence {
+        event_id: String,
+        original_date: String,
+        patch: OccurrencePatch,
+    },
     /// Delete an event, clearing any queued upload. When the event was synced
     /// from a still-configured remote calendar, `remote_delete` carries that
     /// calendar id so `apply` also queues a `CalDAV` delete of the server copy.
@@ -505,9 +914,13 @@ pub enum NoteOwner {
 }
 
 /// Durable, browseable history metadata for a calendar mutation.
-pub fn history_context(action: &CalendarAction) -> qos_actions::ActionContext {
+#[allow(
+    clippy::too_many_lines,
+    reason = "exhaustive action-to-history metadata table is clearer kept beside the action enum"
+)]
+pub fn history_context(action: &CalendarAction) -> tilo_actions::ActionContext {
     let mut context =
-        qos_actions::ActionContext::for_action("org.qos.Calendar", "Calendar", action);
+        tilo_actions::ActionContext::for_action("org.tilo.Calendar", "Calendar", action);
     let (label, id, kind, title) = match action {
         CalendarAction::UpsertProject(project) => (
             "Update project",
@@ -535,6 +948,38 @@ pub fn history_context(action: &CalendarAction) -> qos_actions::ActionContext {
             };
             (label, id.clone(), "calendar.event", id.clone())
         }
+        CalendarAction::UpsertAttendee {
+            event_id: _,
+            attendee,
+        } => (
+            "Invite attendee",
+            attendee.id.clone(),
+            "calendar.attendee",
+            attendee.email.clone(),
+        ),
+        CalendarAction::PatchAttendee { attendee_id, .. } => (
+            "Update attendee",
+            attendee_id.clone(),
+            "calendar.attendee",
+            attendee_id.clone(),
+        ),
+        CalendarAction::DeleteAttendee { attendee_id, .. } => (
+            "Remove attendee",
+            attendee_id.clone(),
+            "calendar.attendee",
+            attendee_id.clone(),
+        ),
+        CalendarAction::SetRecurrenceException { event_id, date, .. }
+        | CalendarAction::PatchOccurrence {
+            event_id,
+            original_date: date,
+            ..
+        } => (
+            "Update occurrence",
+            format!("{event_id}:{date}"),
+            "calendar.occurrence",
+            date.clone(),
+        ),
         CalendarAction::DeleteEvent { id, .. } => {
             ("Delete event", id.clone(), "calendar.event", id.clone())
         }
@@ -574,7 +1019,7 @@ pub fn history_context(action: &CalendarAction) -> qos_actions::ActionContext {
         ),
     };
     context.action_label = label.to_string();
-    context.resource = Some(qos_actions::ActionResource {
+    context.resource = Some(tilo_actions::ActionResource {
         id: if kind == "calendar.calendar" {
             kind.to_string()
         } else {
@@ -679,6 +1124,29 @@ fn validate_event_patch(doc: &Doc, id: Id, patch: &EventPatch) -> Result<(), Act
     {
         return Err(refused("event recurrence is unsupported"));
     }
+    if patch.recurrence_interval == Some(0) {
+        return Err(refused("recurrence interval must be positive"));
+    }
+    if let Some(until) = &patch.recurrence_until
+        && !until.is_empty()
+        && NaiveDate::parse_from_str(until, DATE_FMT).is_err()
+    {
+        return Err(refused("recurrence end date is invalid"));
+    }
+    if let Some(timezone) = &patch.timezone
+        && normalize_timezone(timezone).is_none()
+    {
+        return Err(refused("event timezone is invalid"));
+    }
+    if let Some(organizer) = &patch.organizer
+        && !organizer.is_empty()
+        && organizer
+            .parse::<Id>()
+            .ok()
+            .is_none_or(|id| !event.attendees.iter().any(|attendee| attendee.id == id))
+    {
+        return Err(refused("organizer must be an event attendee"));
+    }
     if let Some(project) = &patch.project {
         let project = (!project.is_empty())
             .then(|| project.parse::<Id>().ok())
@@ -698,6 +1166,145 @@ fn validate_event_patch(doc: &Doc, id: Id, patch: &EventPatch) -> Result<(), Act
     {
         return Err(refused("a local event cannot be queued for remote sync"));
     }
+    Ok(())
+}
+
+fn event_and_attendee(
+    doc: &Doc,
+    event_id: &str,
+    attendee_id: &str,
+) -> Result<(Id, Id, Event), ActionError> {
+    let event_id = event_id
+        .parse::<Id>()
+        .map_err(|_| refused("event id is invalid"))?;
+    let attendee_id = attendee_id
+        .parse::<Id>()
+        .map_err(|_| refused("attendee id is invalid"))?;
+    let event = CalDoc::read_model(doc)
+        .event(event_id)
+        .cloned()
+        .ok_or_else(|| refused("event no longer exists"))?;
+    Ok((event_id, attendee_id, event))
+}
+
+fn apply_upsert_attendee(
+    doc: &mut Doc,
+    event_id: &str,
+    data: &AttendeeData,
+) -> Result<(), ActionError> {
+    let event_id = event_id
+        .parse::<Id>()
+        .map_err(|_| refused("event id is invalid"))?;
+    if CalDoc::read_model(doc).event(event_id).is_none() {
+        return Err(refused("event no longer exists"));
+    }
+    let attendee = data
+        .to_attendee()
+        .ok_or_else(|| refused("attendee is invalid"))?;
+    CalDoc::upsert_attendee(doc, event_id, &attendee);
+    Ok(())
+}
+
+fn apply_patch_attendee(
+    doc: &mut Doc,
+    event_id: &str,
+    attendee_id: &str,
+    patch: &AttendeePatch,
+) -> Result<(), ActionError> {
+    let (event_id, attendee_id, event) = event_and_attendee(doc, event_id, attendee_id)?;
+    if !event
+        .attendees
+        .iter()
+        .any(|attendee| attendee.id == attendee_id)
+    {
+        return Err(refused("attendee no longer exists"));
+    }
+    if patch
+        .email
+        .as_deref()
+        .is_some_and(|email| email_address(email.trim()).is_none())
+    {
+        return Err(refused("attendee email is invalid"));
+    }
+    if patch.status.as_deref().is_some_and(|status| {
+        !matches!(
+            status,
+            "NEEDS-ACTION" | "ACCEPTED" | "TENTATIVE" | "DECLINED"
+        )
+    }) {
+        return Err(refused("attendee response is invalid"));
+    }
+    CalDoc::patch_attendee(doc, event_id, attendee_id, patch);
+    Ok(())
+}
+
+fn apply_delete_attendee(
+    doc: &mut Doc,
+    event_id: &str,
+    attendee_id: &str,
+) -> Result<(), ActionError> {
+    let (event_id, attendee_id, event) = event_and_attendee(doc, event_id, attendee_id)?;
+    if !event
+        .attendees
+        .iter()
+        .any(|attendee| attendee.id == attendee_id)
+    {
+        return Err(refused("attendee no longer exists"));
+    }
+    CalDoc::delete_attendee(doc, event_id, attendee_id);
+    Ok(())
+}
+
+fn apply_recurrence_exception(
+    doc: &mut Doc,
+    event_id: &str,
+    date: &str,
+    excluded: bool,
+) -> Result<(), ActionError> {
+    let event_id = event_id
+        .parse::<Id>()
+        .map_err(|_| refused("event id is invalid"))?;
+    let date = NaiveDate::parse_from_str(date, DATE_FMT)
+        .map_err(|_| refused("occurrence date is invalid"))?;
+    if CalDoc::read_model(doc).event(event_id).is_none() {
+        return Err(refused("event no longer exists"));
+    }
+    CalDoc::set_exception(doc, event_id, date, excluded);
+    Ok(())
+}
+
+fn apply_occurrence_patch(
+    doc: &mut Doc,
+    event_id: &str,
+    original_date: &str,
+    patch: &OccurrencePatch,
+) -> Result<(), ActionError> {
+    let event_id = event_id
+        .parse::<Id>()
+        .map_err(|_| refused("event id is invalid"))?;
+    let original_date = NaiveDate::parse_from_str(original_date, DATE_FMT)
+        .map_err(|_| refused("occurrence date is invalid"))?;
+    if CalDoc::read_model(doc).event(event_id).is_none() {
+        return Err(refused("event no longer exists"));
+    }
+    let start = patch
+        .start
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(|value| NaiveDateTime::parse_from_str(value, DT_FMT))
+        .transpose()
+        .map_err(|_| refused("occurrence start is invalid"))?;
+    let end = patch
+        .end
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(|value| NaiveDateTime::parse_from_str(value, DT_FMT))
+        .transpose()
+        .map_err(|_| refused("occurrence end is invalid"))?;
+    if start.zip(end).is_some_and(|(start, end)| start > end) {
+        return Err(refused("occurrence end must not precede start"));
+    }
+    CalDoc::patch_occurrence_override(doc, event_id, original_date, patch);
     Ok(())
 }
 
@@ -840,20 +1447,48 @@ fn apply_delete_task(doc: &mut Doc, id: &str, subtasks: &[String]) -> Result<(),
     Ok(())
 }
 
-fn apply_import_ics(doc: &mut Doc, events: &[EventData], tasks: &[TaskData]) {
-    for data in events {
-        if let Some(event) = data.to_event()
-            && CalDoc::project_exists(doc, event.project)
-        {
-            CalDoc::update_event(doc, &event);
-            if let Some(notes) = CalDoc::event_notes(doc, event.id) {
-                CalDoc::seed_notes_if_empty(doc, &notes, &["Imported from .ics"]);
+fn apply_import_ics(
+    doc: &mut Doc,
+    events: &[EventData],
+    tasks: &[TaskData],
+) -> Result<(), ActionError> {
+    // Decode and validate the whole batch before the first write. A replayed
+    // payload or a project removed since staging must not produce a partial
+    // import that nevertheless reports success.
+    let events = events
+        .iter()
+        .map(|data| {
+            let event = data
+                .to_event()
+                .ok_or_else(|| refused("imported event is invalid"))?;
+            if !CalDoc::project_exists(doc, event.project) {
+                return Err(refused("imported event project is unavailable"));
             }
+            Ok(event)
+        })
+        .collect::<Result<Vec<_>, ActionError>>()?;
+    let tasks = tasks
+        .iter()
+        .map(|data| {
+            let task = data
+                .to_task()
+                .ok_or_else(|| refused("imported task is invalid"))?;
+            if !CalDoc::project_exists(doc, task.project) {
+                return Err(refused("imported task project is unavailable"));
+            }
+            Ok(task)
+        })
+        .collect::<Result<Vec<_>, ActionError>>()?;
+    for event in events {
+        CalDoc::update_event(doc, &event);
+        if let Some(notes) = CalDoc::event_notes(doc, event.id) {
+            CalDoc::seed_notes_if_empty(doc, &notes, &["Imported from .ics"]);
         }
     }
-    for data in tasks {
-        apply_upsert_task(doc, data);
+    for task in tasks {
+        CalDoc::update_task(doc, &task);
     }
+    Ok(())
 }
 
 fn apply_note_ops(
@@ -879,6 +1514,28 @@ impl Action for CalendarAction {
             CalendarAction::DeleteProject { id } => apply_delete_project(doc, id)?,
             CalendarAction::UpsertEvent(data) => apply_upsert_event(doc, data),
             CalendarAction::PatchEvent { id, patch } => apply_patch_event(doc, id, patch)?,
+            CalendarAction::UpsertAttendee { event_id, attendee } => {
+                apply_upsert_attendee(doc, event_id, attendee)?;
+            }
+            CalendarAction::PatchAttendee {
+                event_id,
+                attendee_id,
+                patch,
+            } => apply_patch_attendee(doc, event_id, attendee_id, patch)?,
+            CalendarAction::DeleteAttendee {
+                event_id,
+                attendee_id,
+            } => apply_delete_attendee(doc, event_id, attendee_id)?,
+            CalendarAction::SetRecurrenceException {
+                event_id,
+                date,
+                excluded,
+            } => apply_recurrence_exception(doc, event_id, date, *excluded)?,
+            CalendarAction::PatchOccurrence {
+                event_id,
+                original_date,
+                patch,
+            } => apply_occurrence_patch(doc, event_id, original_date, patch)?,
             CalendarAction::DeleteEvent { id, remote_delete } => {
                 apply_delete_event(doc, id, remote_delete.as_ref())?;
             }
@@ -887,7 +1544,7 @@ impl Action for CalendarAction {
             CalendarAction::SetTaskDone { id, done } => apply_set_task_done(doc, id, *done)?,
             CalendarAction::DeleteTask { id, subtasks } => apply_delete_task(doc, id, subtasks)?,
             CalendarAction::ApplyNoteOps { owner, ops } => apply_note_ops(doc, owner, ops)?,
-            CalendarAction::ImportIcs { events, tasks } => apply_import_ics(doc, events, tasks),
+            CalendarAction::ImportIcs { events, tasks } => apply_import_ics(doc, events, tasks)?,
         }
         Ok(())
     }
@@ -1000,13 +1657,16 @@ pub struct EventResource {
     pub remote_delete: Option<String>,
 }
 
-/// One task surfaced as a resource, with its subtask ids resolved so deleting a
-/// parent removes the whole subtree. Subtasks are resources too: search and
-/// agents must be able to address every task the app presents.
+/// One task surfaced as a resource. Its delete fanout is bounded; when the
+/// parent has more children, the delete action explicitly remains unavailable
+/// until children are handled through their own stable resources.
 #[derive(Debug, Clone)]
 pub struct TaskResource {
     pub data: TaskData,
     pub subtasks: Vec<String>,
+    /// Children omitted from `subtasks` to keep exact resource/action
+    /// materialisation bounded.
+    pub subtask_overflow: usize,
 }
 
 /// One durable task project plus whether deleting it would strand linked
@@ -1016,20 +1676,6 @@ pub struct TaskResource {
 pub struct ProjectResource {
     pub data: ProjectData,
     pub in_use: bool,
-}
-
-/// A destination that an event may be filed under. This is projected from the
-/// shared account store at resource-publication time, so an agent gets the
-/// same real target list as the editor's calendar picker.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CalendarTargetResource {
-    /// `local` for the on-device calendar, otherwise the stable remote
-    /// collection id carried by Calendar accounts.
-    pub id: String,
-    pub label: String,
-    /// The selected remote calendar's palette index. Local does not impose a
-    /// colour, matching the visible editor behaviour.
-    pub color: Option<usize>,
 }
 
 /// A local or remote event collection that owns event resources. Calendar
@@ -1042,14 +1688,6 @@ pub struct CalendarCollectionResource {
     pub label: String,
     pub color: Option<usize>,
     pub visible: bool,
-}
-
-/// A real local project that a task may be filed under. Projects live in the
-/// shared calendar document, so their ids are safe collaboration targets.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskProjectTarget {
-    pub id: String,
-    pub label: String,
 }
 
 /// The presentation context the calendar hands [`provide_resources`]: a template
@@ -1065,8 +1703,6 @@ pub struct CalendarResourceCtx {
     pub tasks: Vec<TaskResource>,
     pub projects: Vec<ProjectResource>,
     pub calendars: Vec<CalendarCollectionResource>,
-    pub calendar_targets: Vec<CalendarTargetResource>,
-    pub task_project_targets: Vec<TaskProjectTarget>,
     pub can_sync: bool,
     pub syncing: bool,
     pub can_export: bool,
@@ -1075,11 +1711,105 @@ pub struct CalendarResourceCtx {
     pub next_project_order: u32,
 }
 
+impl CalendarResourceCtx {
+    pub(crate) fn new(
+        new_event: EventData,
+        can_sync: bool,
+        syncing: bool,
+        can_export: bool,
+        next_project_order: u32,
+    ) -> Self {
+        Self {
+            new_event,
+            events: Vec::new(),
+            tasks: Vec::new(),
+            projects: Vec::new(),
+            calendars: Vec::new(),
+            can_sync,
+            syncing,
+            can_export,
+            next_project_order,
+        }
+    }
+
+    fn empty_scoped(&self) -> Self {
+        Self {
+            new_event: self.new_event.clone(),
+            events: Vec::new(),
+            tasks: Vec::new(),
+            projects: Vec::new(),
+            calendars: self.calendars.clone(),
+            can_sync: self.can_sync,
+            syncing: self.syncing,
+            can_export: self.can_export,
+            next_project_order: self.next_project_order,
+        }
+    }
+    fn event(&self, id: &str) -> Option<&EventResource> {
+        self.events.iter().find(|event| event.data.id == id)
+    }
+    fn task(&self, id: &str) -> Option<&TaskResource> {
+        self.tasks.iter().find(|task| task.data.id == id)
+    }
+    fn project(&self, id: &str) -> Option<&ProjectResource> {
+        self.projects.iter().find(|project| project.data.id == id)
+    }
+    fn calendar(&self, id: &str) -> Option<&CalendarCollectionResource> {
+        self.calendars.iter().find(|calendar| calendar.id == id)
+    }
+}
+
+/// Whether an event may be exposed to the global resource/action surface.
+///
+/// Calendar visibility is a Settings-owned policy, so it is deliberately
+/// evaluated from the current context rather than persisted into a replicated
+/// event. Unknown owners remain available: an imported local record can
+/// outlive its account configuration. A known hidden collection, however,
+/// suppresses every descendant resource so its title, attendees, reminder and
+/// notes cannot be discovered by search, agents, or action history.
+fn event_visible_to_resource_surface(ctx: &CalendarResourceCtx, event: &EventResource) -> bool {
+    let owner = if event.data.calendar_id.is_empty() {
+        "local"
+    } else {
+        event.data.calendar_id.as_str()
+    };
+    ctx.calendar(owner).is_none_or(|calendar| calendar.visible)
+}
+
+/// Retain exactly the event's owning collection when materialising a nested
+/// resource. Dropping it would make `provide_resources` correctly refuse to
+/// attach a remote event to an unrelated calendar, but would also make a valid
+/// reminder/attendee/occurrence address disappear.
+fn scope_event_owner(
+    ctx: &CalendarResourceCtx,
+    scoped: &mut CalendarResourceCtx,
+    event: &EventResource,
+) {
+    let owner = if event.data.calendar_id.is_empty() {
+        "local"
+    } else {
+        event.data.calendar_id.as_str()
+    };
+    scoped.calendars = ctx
+        .calendar(owner)
+        .cloned()
+        .or_else(|| {
+            Some(CalendarCollectionResource {
+                id: owner.to_string(),
+                label: owner.to_string(),
+                color: None,
+                visible: true,
+            })
+        })
+        .into_iter()
+        .collect();
+}
+
 /// Return an explicit invalid-arguments envelope rather than silently turning
 /// a malformed agent request into a no-op document action.
 fn invalid_arguments(reason: impl Into<String>) -> EncodedAction {
     EncodedAction {
-        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
         payload: reason.into().into_bytes(),
     }
 }
@@ -1467,7 +2197,11 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
         root = root.with_child(child);
     }
 
-    for ev in &ctx.events {
+    for ev in ctx
+        .events
+        .iter()
+        .filter(|event| event_visible_to_resource_surface(ctx, event))
+    {
         if eager_remaining == 0 {
             break;
         }
@@ -1642,6 +2376,148 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
             },
         ));
         child = child.with_action(event_update_spec(
+            "set-repeat-interval",
+            "Set repeat interval",
+            "positive interval",
+            vec![
+                ActionParam::required("interval", ParamType::Integer, "Repeat every N periods")
+                    .with_schema(serde_json::json!({"minimum": 1, "maximum": 999})),
+            ],
+            ev.data.clone(),
+            |data, args| {
+                let interval = u32::try_from(args.integer("interval").unwrap_or(0))
+                    .map_err(|_| "interval must be a positive integer")?;
+                if !(1..=999).contains(&interval) {
+                    return Err("interval must be between 1 and 999".into());
+                }
+                Ok(patch_event_action(
+                    data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
+                    EventPatch {
+                        recurrence_interval: Some(interval),
+                        ..EventPatch::default()
+                    },
+                ))
+            },
+        ));
+        child = child.with_action(event_update_spec(
+            "set-repeat-until",
+            "Set repeat end date",
+            "YYYY-MM-DD, or empty",
+            vec![ActionParam::required(
+                "until",
+                ParamType::Text,
+                "Inclusive recurrence end date, or empty to clear",
+            )],
+            ev.data.clone(),
+            |data, args| {
+                let until = args.text("until").unwrap_or_default().trim();
+                if !until.is_empty() && NaiveDate::parse_from_str(until, DATE_FMT).is_err() {
+                    return Err("until must be YYYY-MM-DD or empty".into());
+                }
+                Ok(patch_event_action(
+                    data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
+                    EventPatch {
+                        recurrence_until: Some(until.to_string()),
+                        ..EventPatch::default()
+                    },
+                ))
+            },
+        ));
+        child = child.with_action(event_update_spec(
+            "set-repeat-count",
+            "Set occurrence count",
+            "0 clears the limit",
+            vec![
+                ActionParam::required("count", ParamType::Integer, "Maximum occurrences")
+                    .with_schema(serde_json::json!({"minimum": 0, "maximum": 100_000})),
+            ],
+            ev.data.clone(),
+            |data, args| {
+                let count = u32::try_from(args.integer("count").unwrap_or(-1))
+                    .map_err(|_| "count must be zero or positive")?;
+                if count > 100_000 {
+                    return Err("count must not exceed 100000".into());
+                }
+                Ok(patch_event_action(
+                    data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
+                    EventPatch {
+                        recurrence_count: Some(count),
+                        ..EventPatch::default()
+                    },
+                ))
+            },
+        ));
+        child = child.with_action(event_update_spec(
+            "set-timezone",
+            "Set time zone",
+            "IANA time zone or floating",
+            vec![ActionParam::required(
+                "timezone",
+                ParamType::Text,
+                "IANA time-zone id such as Europe/Berlin, UTC, or floating",
+            )],
+            ev.data.clone(),
+            |data, args| {
+                let timezone = normalize_timezone(args.text("timezone").unwrap_or_default())
+                    .ok_or_else(|| "timezone is invalid".to_string())?;
+                Ok(patch_event_action(
+                    data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
+                    EventPatch {
+                        timezone: Some(timezone),
+                        ..EventPatch::default()
+                    },
+                ))
+            },
+        ));
+        let event_id_for_invite = id.clone();
+        child = child.with_action(ActionSpec::typed(
+            "invite",
+            "Invite attendee",
+            "name and email",
+            ExecutionLocus::ClientLocal,
+            vec![
+                ActionParam::optional("name", ParamType::Text, "Display name"),
+                ActionParam::required("email", ParamType::Text, "Email address"),
+            ],
+            move |args| {
+                let email = args.text("email").unwrap_or_default().trim();
+                if email_address(email).is_none() {
+                    return invalid_arguments("attendee email is invalid");
+                }
+                encode(&CalendarAction::UpsertAttendee {
+                    event_id: event_id_for_invite.clone(),
+                    attendee: AttendeeData {
+                        id: Uuid::new_v4().to_string(),
+                        name: args.text("name").unwrap_or_default().trim().to_string(),
+                        email: email.to_string(),
+                        status: "NEEDS-ACTION".into(),
+                    },
+                })
+            },
+        ));
+        let event_id_for_exception = id.clone();
+        child = child.with_action(ActionSpec::typed(
+            "set-exception",
+            "Include or exclude occurrence",
+            "original date and excluded state",
+            ExecutionLocus::ClientLocal,
+            vec![
+                ActionParam::required("date", ParamType::Text, "Original date (YYYY-MM-DD)"),
+                ActionParam::required("excluded", ParamType::Boolean, "Whether to skip it"),
+            ],
+            move |args| {
+                let date = args.text("date").unwrap_or_default();
+                if NaiveDate::parse_from_str(date, DATE_FMT).is_err() {
+                    return invalid_arguments("date must be YYYY-MM-DD");
+                }
+                encode(&CalendarAction::SetRecurrenceException {
+                    event_id: event_id_for_exception.clone(),
+                    date: date.to_string(),
+                    excluded: args.boolean("excluded").unwrap_or(false),
+                })
+            },
+        ));
+        child = child.with_action(event_update_spec(
             "set-reminder",
             "Set reminder",
             "none / 10 / 30 / 60",
@@ -1693,27 +2569,22 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
                 ))
             },
         ));
-        let projects = ctx.task_project_targets.clone();
         child = child.with_action(event_update_spec(
             "move-to-project",
             "Move to project",
             "project destination",
-            vec![
-                ActionParam::required("project", ParamType::Text, "A Calendar project or none")
-                    .with_choices(
-                        std::iter::once("none".to_string())
-                            .chain(projects.iter().map(|project| project.id.clone())),
-                    ),
-            ],
+            vec![ActionParam::optional(
+                "project",
+                ParamType::Resource,
+                "calendar.project resource address; omit to unfile",
+            )],
             ev.data.clone(),
             move |data, args| {
-                let selected = args.text("project").unwrap_or_default();
-                let project = if selected == "none" {
-                    String::new()
-                } else if projects.iter().any(|project| project.id == selected) {
-                    selected.to_string()
-                } else {
-                    return Err("project is no longer available".into());
+                let project = match args.text("project") {
+                    None => String::new(),
+                    Some(resource) => project_id_from_resource(resource)
+                        .ok_or_else(|| "project must be a calendar.project resource".to_string())?
+                        .to_string(),
                 };
                 Ok(patch_event_action(
                     data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
@@ -1724,27 +2595,22 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
                 ))
             },
         ));
-        let targets = ctx.calendar_targets.clone();
         child = child.with_action(event_update_spec(
             "move-to-calendar",
             "Move to calendar",
             "calendar destination",
-            vec![
-                ActionParam::required(
-                    "calendar",
-                    ParamType::Text,
-                    "The local or configured remote calendar that should own this event",
-                )
-                .with_choices(targets.iter().map(|target| target.id.clone())),
-            ],
+            vec![ActionParam::required(
+                "calendar",
+                ParamType::Resource,
+                "calendar.collection resource address (calendar.collection:local is on-device)",
+            )],
             ev.data.clone(),
             move |data, args| {
-                let id = args.text("calendar").unwrap_or_default();
-                let target = targets
-                    .iter()
-                    .find(|target| target.id == id)
-                    .ok_or_else(|| "calendar is no longer configured".to_string())?;
-                if target.id == "local" {
+                let target = args
+                    .text("calendar")
+                    .and_then(calendar_id_from_resource)
+                    .ok_or_else(|| "calendar must be a calendar.collection resource".to_string())?;
+                if target == "local" {
                     Ok(patch_event_action(
                         data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
                         EventPatch {
@@ -1757,8 +2623,7 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
                     Ok(patch_event_action(
                         data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
                         EventPatch {
-                            calendar_id: Some(target.id.clone()),
-                            color: target.color,
+                            calendar_id: Some(target.to_string()),
                             enqueue_remote: Some(true),
                             ..EventPatch::default()
                         },
@@ -1775,6 +2640,175 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
             &event_resource_id(parsed_id),
             NoteOwner::Event { id: id.clone() },
         ));
+        if ev.data.reminder >= 0 {
+            let event_id_s = ev.data.id.clone();
+            let event_id = parsed_id;
+            let reminder = Resource::new(
+                reminder_resource_id(event_id),
+                "calendar.reminder",
+                format!("{} minutes before", ev.data.reminder),
+            )
+            .with_action(event_update_spec(
+                "set-minutes-before",
+                "Set reminder time",
+                "10 / 30 / 60",
+                vec![
+                    ActionParam::required(
+                        "minutes_before",
+                        ParamType::Integer,
+                        "Minutes before the event",
+                    )
+                    .with_schema(serde_json::json!({"enum": [10, 30, 60]})),
+                ],
+                ev.data.clone(),
+                |data, args| {
+                    let value = args.integer("minutes_before").unwrap_or(-1);
+                    if !matches!(value, 10 | 30 | 60) {
+                        return Err("reminder must be 10, 30, or 60 minutes".into());
+                    }
+                    Ok(CalendarAction::PatchEvent {
+                        id: data.id.clone(),
+                        patch: EventPatch {
+                            reminder: Some(value),
+                            ..EventPatch::default()
+                        },
+                    })
+                },
+            ))
+            .with_action(immediate_spec(
+                "remove",
+                "Remove reminder",
+                &CalendarAction::PatchEvent {
+                    id: event_id_s,
+                    patch: EventPatch {
+                        reminder: Some(-1),
+                        ..EventPatch::default()
+                    },
+                },
+            ));
+            child = child.with_child(reminder);
+        }
+        for attendee in ev.data.attendees.iter().take(24) {
+            let Ok(event_id) = ev.data.id.parse::<Id>() else {
+                continue;
+            };
+            let Ok(attendee_id) = attendee.id.parse::<Id>() else {
+                continue;
+            };
+            let event_id_s = ev.data.id.clone();
+            let attendee_id_s = attendee.id.clone();
+            let mut attendee_resource = Resource::new(
+                attendee_resource_id(event_id, attendee_id),
+                "calendar.attendee",
+                if attendee.name.is_empty() {
+                    attendee.email.clone()
+                } else {
+                    attendee.name.clone()
+                },
+            );
+            let patch_event_id = event_id_s.clone();
+            let patch_attendee_id = attendee_id_s.clone();
+            attendee_resource =
+                attendee_resource.with_action(ActionSpec::typed(
+                    "respond",
+                    "Set invitation response",
+                    "accepted / tentative / declined / needs-action",
+                    ExecutionLocus::ClientLocal,
+                    vec![
+                        ActionParam::required("status", ParamType::Text, "Response")
+                            .with_choices(["ACCEPTED", "TENTATIVE", "DECLINED", "NEEDS-ACTION"]),
+                    ],
+                    move |args| {
+                        encode(&CalendarAction::PatchAttendee {
+                            event_id: patch_event_id.clone(),
+                            attendee_id: patch_attendee_id.clone(),
+                            patch: AttendeePatch {
+                                status: Some(args.text("status").unwrap_or("NEEDS-ACTION").into()),
+                                ..AttendeePatch::default()
+                            },
+                        })
+                    },
+                ));
+            attendee_resource = attendee_resource.with_action(immediate_spec(
+                "make-organizer",
+                "Make organizer",
+                &CalendarAction::PatchEvent {
+                    id: event_id_s.clone(),
+                    patch: EventPatch {
+                        organizer: Some(attendee_id_s.clone()),
+                        ..EventPatch::default()
+                    },
+                },
+            ));
+            attendee_resource = attendee_resource.with_action(calendar_operation(
+                "prepare-in-mail",
+                "Prepare invitation in Mail",
+                OperationKind::Effect,
+                &CalendarOperation::PrepareInvitationInMail {
+                    event_id: event_id_s.clone(),
+                    attendee_id: attendee_id_s.clone(),
+                },
+            ));
+            attendee_resource = attendee_resource.with_action(immediate_spec(
+                "remove",
+                "Remove attendee",
+                &CalendarAction::DeleteAttendee {
+                    event_id: event_id_s,
+                    attendee_id: attendee_id_s,
+                },
+            ));
+            child = child.with_child(attendee_resource);
+        }
+        let occurrence_dates = ev
+            .data
+            .recurrence_exdates
+            .iter()
+            .chain(
+                ev.data
+                    .occurrence_overrides
+                    .iter()
+                    .map(|edit| &edit.original_date),
+            )
+            .filter_map(|date| NaiveDate::parse_from_str(date, DATE_FMT).ok())
+            .collect::<std::collections::BTreeSet<_>>();
+        for original_date in occurrence_dates.into_iter().take(24) {
+            let Ok(event_id) = ev.data.id.parse::<Id>() else {
+                continue;
+            };
+            let mut occurrence = Resource::new(
+                occurrence_resource_id(event_id, original_date),
+                "calendar.occurrence",
+                format!("{} · {original_date}", event_label(&ev.data)),
+            )
+            .with_action(calendar_operation(
+                "open",
+                "Open occurrence",
+                OperationKind::View,
+                &CalendarOperation::OpenOccurrence {
+                    event_id: ev.data.id.clone(),
+                    original_date: original_date.to_string(),
+                },
+            ));
+            occurrence = occurrence.with_action(immediate_spec(
+                "exclude",
+                "Skip occurrence",
+                &CalendarAction::SetRecurrenceException {
+                    event_id: ev.data.id.clone(),
+                    date: original_date.to_string(),
+                    excluded: true,
+                },
+            ));
+            occurrence = occurrence.with_action(immediate_spec(
+                "restore",
+                "Restore occurrence",
+                &CalendarAction::SetRecurrenceException {
+                    event_id: ev.data.id.clone(),
+                    date: original_date.to_string(),
+                    excluded: false,
+                },
+            ));
+            child = child.with_child(occurrence);
+        }
         root = root.with_child(child);
     }
 
@@ -1792,7 +2826,6 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
         } else {
             "Mark done"
         };
-        let projects = ctx.task_project_targets.clone();
         let mut child = Resource::new(
             task_resource_id(parsed_id),
             "calendar.task",
@@ -1889,22 +2922,18 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
             "move-to-project",
             "Move to project",
             "project destination",
-            vec![
-                ActionParam::required("project", ParamType::Text, "A Calendar project or none")
-                    .with_choices(
-                        std::iter::once("none".to_string())
-                            .chain(projects.iter().map(|project| project.id.clone())),
-                    ),
-            ],
+            vec![ActionParam::optional(
+                "project",
+                ParamType::Resource,
+                "calendar.project resource address; omit to unfile",
+            )],
             tk.data.clone(),
             move |data, args| {
-                let selected = args.text("project").unwrap_or_default();
-                let project = if selected == "none" {
-                    String::new()
-                } else if projects.iter().any(|project| project.id == selected) {
-                    selected.to_string()
-                } else {
-                    return Err("project is no longer available".into());
+                let project = match args.text("project") {
+                    None => String::new(),
+                    Some(resource) => project_id_from_resource(resource)
+                        .ok_or_else(|| "project must be a calendar.project resource".to_string())?
+                        .to_string(),
                 };
                 Ok(patch_task_action(
                     data.id.parse::<Id>().map_err(|_| "task id is invalid")?,
@@ -1915,11 +2944,21 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
                 ))
             },
         ));
-        child = child.with_action(immediate_spec(
+        let mut delete = immediate_spec(
             "delete",
             "Delete task",
             &delete_task_action(id.clone(), tk.subtasks.clone()),
-        ));
+        );
+        if tk.subtask_overflow > 0 {
+            delete = delete.unavailable(
+                "task_children_overflow",
+                format!(
+                    "This task has {} additional children; handle them first before deleting the parent",
+                    tk.subtask_overflow
+                ),
+            );
+        }
+        child = child.with_action(delete);
         child = child.with_child(note_resource(
             &task_resource_id(parsed_id),
             NoteOwner::Task { id: id.clone() },
@@ -2017,10 +3056,7 @@ fn find_resource(resources: Vec<Resource>, id: &str) -> Option<Resource> {
     reason = "stable-id routing keeps every ownership/staleness branch adjacent for auditability"
 )]
 fn resource_from_ctx(ctx: &CalendarResourceCtx, doc: &AutoCommit, id: &str) -> Option<Resource> {
-    let mut scoped = ctx.clone();
-    scoped.events.clear();
-    scoped.tasks.clear();
-    scoped.projects.clear();
+    let mut scoped = ctx.empty_scoped();
 
     if id == "calendar.calendar" {
         return find_resource(provide_resources(&scoped, doc), id);
@@ -2028,41 +3064,100 @@ fn resource_from_ctx(ctx: &CalendarResourceCtx, doc: &AutoCommit, id: &str) -> O
 
     if let Some(raw) = id.strip_prefix("calendar.collection:") {
         let calendar = ctx
-            .calendars
-            .iter()
-            .find(|calendar| calendar.id == raw && calendar_resource_id(raw) == id)?;
+            .calendar(raw)
+            .filter(|_| calendar_resource_id(raw) == id)?;
         scoped.calendars = vec![calendar.clone()];
-        scoped.events = ctx
-            .events
-            .iter()
-            .filter(|event| {
-                if raw == "local" {
-                    event.data.calendar_id.is_empty()
-                } else {
-                    event.data.calendar_id == raw
-                }
-            })
-            .take(EAGER_RESOURCE_SNAPSHOT_LIMIT.saturating_sub(2))
-            .cloned()
-            .collect();
+        // Resolve only the addressed container. Its potentially unbounded
+        // event history remains independently addressable by stable id.
         return find_resource(provide_resources(&scoped, doc), id);
     }
 
     if let Some(raw) = id.strip_prefix("calendar.project:") {
         let parsed = raw.parse::<Id>().ok()?;
         let project = ctx
-            .projects
-            .iter()
-            .find(|project| project.data.id == raw && project_resource_id(parsed) == id)?;
+            .project(raw)
+            .filter(|_| project_resource_id(parsed) == id)?;
         scoped.calendars.clear();
         scoped.projects.push(project.clone());
-        scoped.tasks = ctx
-            .tasks
+        // Do not materialise/scan an unbounded project task history merely to
+        // resolve the project container; tasks resolve by their own ids.
+        return find_resource(provide_resources(&scoped, doc), id);
+    }
+
+    if let Some(raw) = id.strip_prefix("calendar.attendee:") {
+        let (event_raw, attendee_raw) = raw.split_once(':')?;
+        let event_id = event_raw.parse::<Id>().ok()?;
+        let attendee_id = attendee_raw.parse::<Id>().ok()?;
+        if attendee_resource_id(event_id, attendee_id) != id {
+            return None;
+        }
+        let mut event = ctx.event(event_raw)?.clone();
+        if !event_visible_to_resource_surface(ctx, &event) {
+            return None;
+        }
+        let attendee = event
+            .data
+            .attendees
             .iter()
-            .filter(|task| task.data.project == raw)
-            .take(EAGER_RESOURCE_SNAPSHOT_LIMIT.saturating_sub(2))
-            .cloned()
-            .collect();
+            .find(|attendee| attendee.id == attendee_raw)?
+            .clone();
+        event.data.attendees = vec![attendee];
+        event.data.recurrence_exdates.clear();
+        event.data.occurrence_overrides.clear();
+        scope_event_owner(ctx, &mut scoped, &event);
+        scoped.events.push(event);
+        return find_resource(provide_resources(&scoped, doc), id);
+    }
+
+    if let Some(raw) = id.strip_prefix("calendar.reminder:") {
+        let event_raw = raw.strip_suffix(":primary")?;
+        let event_id = event_raw.parse::<Id>().ok()?;
+        if reminder_resource_id(event_id) != id {
+            return None;
+        }
+        let event = ctx
+            .event(event_raw)
+            .filter(|event| event.data.reminder >= 0)?
+            .clone();
+        if !event_visible_to_resource_surface(ctx, &event) {
+            return None;
+        }
+        scope_event_owner(ctx, &mut scoped, &event);
+        scoped.events.push(event);
+        return find_resource(provide_resources(&scoped, doc), id);
+    }
+
+    if let Some(raw) = id.strip_prefix("calendar.occurrence:") {
+        let (event_raw, date_raw) = raw.split_once(':')?;
+        let event_id = event_raw.parse::<Id>().ok()?;
+        let original_date = NaiveDate::parse_from_str(date_raw, DATE_FMT).ok()?;
+        if occurrence_resource_id(event_id, original_date) != id {
+            return None;
+        }
+        let mut event = ctx.event(event_raw)?.clone();
+        if !event_visible_to_resource_surface(ctx, &event) {
+            return None;
+        }
+        let mut base = event.data.to_event()?;
+        base.recurrence_exdates.clear();
+        base.occurrence_overrides.clear();
+        if !base.occurs_on(original_date) {
+            return None;
+        }
+        event
+            .data
+            .recurrence_exdates
+            .retain(|date| date == date_raw);
+        event
+            .data
+            .occurrence_overrides
+            .retain(|edit| edit.original_date == date_raw);
+        if event.data.recurrence_exdates.is_empty() && event.data.occurrence_overrides.is_empty() {
+            event.data.recurrence_exdates.push(date_raw.to_string());
+        }
+        event.data.attendees.clear();
+        scope_event_owner(ctx, &mut scoped, &event);
+        scoped.events.push(event);
         return find_resource(provide_resources(&scoped, doc), id);
     }
 
@@ -2075,27 +3170,11 @@ fn resource_from_ctx(ctx: &CalendarResourceCtx, doc: &AutoCommit, id: &str) -> O
         if id != resource_id && (!notes || id != format!("{resource_id}:notes")) {
             return None;
         }
-        let event = ctx.events.iter().find(|event| event.data.id == raw)?;
-        let owner = if event.data.calendar_id.is_empty() {
-            "local"
-        } else {
-            event.data.calendar_id.as_str()
-        };
-        scoped.calendars = ctx
-            .calendars
-            .iter()
-            .find(|calendar| calendar.id == owner)
-            .cloned()
-            .or_else(|| {
-                Some(CalendarCollectionResource {
-                    id: owner.to_string(),
-                    label: owner.to_string(),
-                    color: None,
-                    visible: true,
-                })
-            })
-            .into_iter()
-            .collect();
+        let event = ctx.event(raw)?;
+        if !event_visible_to_resource_surface(ctx, event) {
+            return None;
+        }
+        scope_event_owner(ctx, &mut scoped, event);
         scoped.events.push(event.clone());
         return find_resource(provide_resources(&scoped, doc), id);
     }
@@ -2109,15 +3188,12 @@ fn resource_from_ctx(ctx: &CalendarResourceCtx, doc: &AutoCommit, id: &str) -> O
         if id != resource_id && (!notes || id != format!("{resource_id}:notes")) {
             return None;
         }
-        let task = ctx.tasks.iter().find(|task| task.data.id == raw)?;
+        let task = ctx.task(raw)?;
         scoped.calendars.clear();
-        if !task.data.project.is_empty() {
-            scoped.projects.extend(
-                ctx.projects
-                    .iter()
-                    .filter(|project| project.data.id == task.data.project)
-                    .cloned(),
-            );
+        if !task.data.project.is_empty()
+            && let Some(project) = ctx.project(&task.data.project)
+        {
+            scoped.projects.push(project.clone());
         }
         scoped.tasks.push(task.clone());
         return find_resource(provide_resources(&scoped, doc), id);
@@ -2132,7 +3208,8 @@ impl ResourceProvider for crate::app::CalendarApp {
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        resource_from_ctx(&self.calendar_resource_ctx(), doc, id)
+        self.exact_resource_ctx(id)
+            .and_then(|ctx| resource_from_ctx(&ctx, doc, id))
     }
 }
 
@@ -2141,7 +3218,7 @@ mod tests {
     use super::*;
     use crate::app::CalendarApp;
     use automerge::ROOT;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -2232,7 +3309,7 @@ mod tests {
         // toggle/delete that sort after the events. The palette's Actions group
         // is display-capped, so reachability is asserted on the flatten and only
         // the leading rows on the palette itself.
-        let flat: Vec<&str> = qos_actions::flatten(&resources)
+        let flat: Vec<&str> = tilo_actions::flatten(&resources)
             .iter()
             .map(|f| f.action.label.as_str())
             .collect();
@@ -2335,14 +3412,14 @@ mod tests {
         let resolved = resource_from_ctx(&ctx, &doc, &calendar_id)
             .expect("an omitted current calendar resolves directly");
         assert_eq!(resolved.id.as_str(), calendar_id);
-        assert_eq!(
-            resolved.children.len(),
-            1,
-            "direct context has only its owner event"
+        assert!(
+            resolved.children.is_empty(),
+            "exact container lookup must not expand an unbounded event history"
         );
-        assert_eq!(
-            resolved.children[0].id.as_str(),
-            format!("calendar.event:{}", event.data.id)
+        let event_id = format!("calendar.event:{}", event.data.id);
+        assert!(
+            resource_from_ctx(&ctx, &doc, &event_id).is_some(),
+            "the omitted collection's event remains independently addressable"
         );
 
         ctx.calendars
@@ -2365,24 +3442,101 @@ mod tests {
             &project_resource_id(project_id.parse().unwrap()),
         )
         .expect("current project resolves lazily");
-        assert!(resource.children.iter().all(|child| {
-            let raw = child
-                .id
-                .as_str()
-                .strip_prefix("calendar.task:")
-                .expect("project direct children are tasks");
-            ctx.tasks
-                .iter()
-                .any(|task| task.data.id == raw && task.data.project == project_id)
-        }));
-        assert_eq!(
-            resource.children.len(),
-            ctx.tasks
-                .iter()
-                .filter(|task| task.data.project == project_id)
-                .count()
-                .min(EAGER_RESOURCE_SNAPSHOT_LIMIT.saturating_sub(2))
+        assert!(
+            resource.children.is_empty(),
+            "exact project lookup must not expand an unbounded task history"
         );
+    }
+
+    #[test]
+    fn deep_resource_actions_resolve_from_the_bounded_directory_by_exact_id() {
+        fn collect_deep<'a>(resource: &'a Resource, found: &mut Vec<&'a Resource>) {
+            if matches!(
+                resource.kind.as_str(),
+                "calendar.note" | "calendar.reminder" | "calendar.attendee" | "calendar.occurrence"
+            ) {
+                found.push(resource);
+            }
+            for child in &resource.children {
+                collect_deep(child, found);
+            }
+        }
+
+        let (app, doc) = seeded();
+        let ctx = app.calendar_resource_ctx();
+        let root = provide_resources(&ctx, &doc).remove(0);
+        let mut deep = Vec::new();
+        collect_deep(&root, &mut deep);
+        assert!(
+            !deep.is_empty(),
+            "the demo contains note/reminder/attendee/occurrence resources"
+        );
+
+        for resource in deep {
+            let Some(resolved) = resource_from_ctx(&ctx, &doc, resource.id.as_str()) else {
+                panic!(
+                    "a deep canonical resource resolves without expanding the root tree: {}",
+                    resource.id.as_str()
+                );
+            };
+            assert_eq!(resolved.id, resource.id);
+            for action in &resource.actions {
+                assert!(
+                    resolved
+                        .actions
+                        .iter()
+                        .any(|candidate| candidate.id == action.id),
+                    "{} action {} stays reachable by exact resource id",
+                    resource.id.as_str(),
+                    action.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hidden_collection_withholds_event_resources_and_all_descendants() {
+        let (app, doc) = seeded();
+        let mut ctx = app.calendar_resource_ctx();
+        let event = &mut ctx.events[0];
+        let event_id = event.data.id.parse::<Id>().unwrap();
+        event.data.title = "Private planning session".into();
+        event.data.calendar_id = "work/private".into();
+        event.data.reminder = 30;
+        let attendee = AttendeeData {
+            id: Uuid::new_v4().to_string(),
+            name: "Private guest".into(),
+            email: "guest@example.test".into(),
+            status: "NEEDS-ACTION".into(),
+        };
+        let attendee_id = attendee.id.parse::<Id>().unwrap();
+        event.data.attendees = vec![attendee];
+        ctx.calendars = vec![CalendarCollectionResource {
+            id: "work/private".into(),
+            label: "Private work".into(),
+            color: None,
+            visible: false,
+        }];
+
+        let root = provide_resources(&ctx, &doc).remove(0);
+        let private_collection = root
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == calendar_resource_id("work/private"))
+            .expect("the collection remains available to re-enable");
+        assert!(private_collection.children.is_empty());
+
+        for resource_id in [
+            event_resource_id(event_id),
+            format!("{}:notes", event_resource_id(event_id)),
+            reminder_resource_id(event_id),
+            attendee_resource_id(event_id, attendee_id),
+        ] {
+            assert!(
+                resource_from_ctx(&ctx, &doc, &resource_id).is_none(),
+                "hidden collection leaked {resource_id}"
+            );
+        }
     }
 
     /// Search activation stays entirely inside the resource/action door for
@@ -2394,9 +3548,11 @@ mod tests {
         let resources = Widget::resources(&app, &doc);
         let all_hits = Widget::search_providers(&app)[0].search("");
         assert!(
-            all_hits.iter().all(|hit| hit
-                .action_address()
-                .is_some_and(|address| qos_actions::door::resolve(&resources, &address).is_some())),
+            all_hits.iter().all(|hit| {
+                hit.action_address().is_some_and(|address| {
+                    tilo_actions::door::resolve(&resources, &address).is_some()
+                })
+            }),
             "every event, task and subtask hit resolves in the live resource tree"
         );
 
@@ -2499,7 +3655,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -2557,9 +3713,9 @@ mod tests {
         let decoded = registry().decode(&encoded).expect("calendar note action");
         let mut transport = LocalTransport::new();
         let envelope =
-            qos_actions::dispatch(&mut author, decoded.as_ref(), encoded, &mut transport)
+            tilo_actions::dispatch(&mut author, decoded.as_ref(), encoded, &mut transport)
                 .expect("note action dispatches");
-        qos_actions::replay(&mut peer, envelope.envelope(), &registry())
+        tilo_actions::replay(&mut peer, envelope.envelope(), &registry())
             .expect("note action replays");
 
         assert_eq!(
@@ -2600,8 +3756,8 @@ mod tests {
         let action = set_task_done_action(task.id.to_string(), true);
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -2630,8 +3786,8 @@ mod tests {
         let action = upsert_event_action(&ev);
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(a.get_heads(), b.get_heads(), "edit replayed identically");
         assert_eq!(
@@ -2686,7 +3842,7 @@ mod tests {
         let blank = prompted_encode(edit_spec, "   ");
         assert_eq!(
             blank.type_id,
-            qos_actions::resource::INVALID_ARGUMENTS_TYPE,
+            tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
             "rename refuses a whitespace-only title"
         );
     }
@@ -2780,7 +3936,7 @@ mod tests {
         let encoded = prompted_encode(spec, "Coffee with Dana");
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         let model = CalDoc::read_model(&doc);
         assert_eq!(model.events.len(), before + 1, "the action added an event");
@@ -2813,12 +3969,12 @@ mod tests {
         let encoded = location
             .build_args([(
                 "location".to_string(),
-                qos_actions::ArgValue::Text("Studio 3 · https://meet.example".to_string()),
+                tilo_actions::ArgValue::Text("Studio 3 · https://meet.example".to_string()),
             )])
             .expect("well-typed location request");
         let decoded = registry().decode(&encoded).expect("calendar action");
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
             .expect("location action dispatches");
         assert_eq!(
             CalDoc::read_model(&doc).event(id).expect("event").location,
@@ -2834,7 +3990,7 @@ mod tests {
             repeat
                 .build_args([(
                     "repeat".to_string(),
-                    qos_actions::ArgValue::Text("every-other-tuesday".to_string()),
+                    tilo_actions::ArgValue::Text("every-other-tuesday".to_string()),
                 )])
                 .is_err(),
             "the declared choices reject an invented recurrence rather than silently defaulting"
@@ -2842,17 +3998,59 @@ mod tests {
         let encoded = repeat
             .build_args([(
                 "repeat".to_string(),
-                qos_actions::ArgValue::Text("weekly".to_string()),
+                tilo_actions::ArgValue::Text("weekly".to_string()),
             )])
             .expect("declared recurrence is accepted");
         let decoded = registry().decode(&encoded).expect("calendar action");
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
             .expect("repeat action dispatches");
         let updated = CalDoc::read_model(&doc).event(id).expect("event").clone();
         assert_eq!(updated.recurrence, Recurrence::Weekly);
         assert_eq!(
             updated.location, "Studio 3 · https://meet.example",
             "a recurrence patch did not rewrite an independently-authored location"
+        );
+
+        let project = CalDoc::read_model(&doc).projects[0].id;
+        let move_project = event
+            .actions
+            .iter()
+            .find(|action| action.id == "move-to-project")
+            .expect("typed project resource action");
+        let encoded = move_project
+            .build_args([(
+                "project".to_string(),
+                tilo_actions::ArgValue::Resource(project_resource_id(project)),
+            )])
+            .expect("canonical project resource address is accepted");
+        let decoded = registry().decode(&encoded).expect("calendar action");
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+            .expect("current project remains authoritatively valid");
+        assert_eq!(
+            CalDoc::read_model(&doc).event(id).unwrap().project,
+            Some(project)
+        );
+
+        let move_calendar = event
+            .actions
+            .iter()
+            .find(|action| action.id == "move-to-calendar")
+            .expect("typed calendar resource action");
+        let encoded = move_calendar
+            .build_args([(
+                "calendar".to_string(),
+                tilo_actions::ArgValue::Resource(calendar_resource_id("local")),
+            )])
+            .expect("canonical local collection is accepted");
+        let decoded = registry().decode(&encoded).expect("calendar action");
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+            .expect("local calendar move dispatches");
+        assert!(
+            CalDoc::read_model(&doc)
+                .event(id)
+                .unwrap()
+                .calendar_id
+                .is_none()
         );
     }
 
@@ -2869,7 +4067,7 @@ mod tests {
         let encoded = prompted_encode(spec, "Book dentist appointment");
         let decoded = registry().decode(&encoded).expect("calendar action");
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
             .expect("new task dispatches");
         let model = CalDoc::read_model(&doc);
         assert_eq!(model.tasks.len(), before + 1);
@@ -2882,7 +4080,7 @@ mod tests {
         let blank = prompted_encode(spec, "\t ");
         assert_eq!(
             blank.type_id,
-            qos_actions::resource::INVALID_ARGUMENTS_TYPE,
+            tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
             "new task refuses a whitespace-only title"
         );
     }
@@ -2933,12 +4131,12 @@ mod tests {
         let encoded = rename
             .build_args([(
                 "name".to_string(),
-                qos_actions::ArgValue::Text("Critical path".to_string()),
+                tilo_actions::ArgValue::Text("Critical path".to_string()),
             )])
             .expect("typed project rename");
         let decoded = registry().decode(&encoded).expect("calendar action");
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
             .expect("project rename dispatches");
         assert_eq!(
             CalDoc::read_model(&doc).project(id).expect("project").name,
@@ -3003,6 +4201,124 @@ mod tests {
     }
 
     #[test]
+    fn invite_recurrence_and_timezone_actions_converge_across_divergent_replicas() {
+        let (_app, mut first) = seeded();
+        let event_id = CalDoc::read_model(&first).events[0].id;
+        let attendee_id = Uuid::new_v4();
+        CalendarAction::UpsertAttendee {
+            event_id: event_id.to_string(),
+            attendee: AttendeeData {
+                id: attendee_id.to_string(),
+                name: "Sam".into(),
+                email: "sam@example.com".into(),
+                status: "NEEDS-ACTION".into(),
+            },
+        }
+        .apply(&mut first)
+        .expect("invite applies");
+        first.commit();
+        let bytes = first.save();
+        let mut second = AutoCommit::load(&bytes).expect("second replica");
+
+        CalendarAction::PatchAttendee {
+            event_id: event_id.to_string(),
+            attendee_id: attendee_id.to_string(),
+            patch: AttendeePatch {
+                status: Some("ACCEPTED".into()),
+                ..AttendeePatch::default()
+            },
+        }
+        .apply(&mut first)
+        .expect("response applies");
+        CalendarAction::PatchEvent {
+            id: event_id.to_string(),
+            patch: EventPatch {
+                timezone: Some("Europe/Berlin".into()),
+                recurrence_interval: Some(2),
+                recurrence_count: Some(7),
+                ..EventPatch::default()
+            },
+        }
+        .apply(&mut second)
+        .expect("series edit applies");
+        CalendarAction::SetRecurrenceException {
+            event_id: event_id.to_string(),
+            date: "2026-06-17".into(),
+            excluded: true,
+        }
+        .apply(&mut second)
+        .expect("exception applies");
+        first.commit();
+        second.commit();
+        let mut first_peer = AutoCommit::load(&first.save()).expect("first peer");
+        let mut second_peer = AutoCommit::load(&second.save()).expect("second peer");
+        first
+            .merge(&mut second_peer)
+            .expect("merge second into first");
+        second
+            .merge(&mut first_peer)
+            .expect("merge first into second");
+
+        let left = CalDoc::read_model(&first).event(event_id).cloned().unwrap();
+        let right = CalDoc::read_model(&second)
+            .event(event_id)
+            .cloned()
+            .unwrap();
+        assert_eq!(left.timezone, right.timezone);
+        assert_eq!(left.recurrence_interval, 2);
+        assert_eq!(left.recurrence_count, Some(7));
+        assert_eq!(left.recurrence_exdates, right.recurrence_exdates);
+        assert_eq!(left.attendees, right.attendees);
+        assert_eq!(left.attendees[0].status, InviteStatus::Accepted);
+    }
+
+    #[test]
+    fn attendee_delete_tombstone_wins_over_stale_update() {
+        let (_app, mut first) = seeded();
+        let event_id = CalDoc::read_model(&first).events[0].id;
+        let attendee_id = Uuid::new_v4();
+        CalendarAction::UpsertAttendee {
+            event_id: event_id.to_string(),
+            attendee: AttendeeData {
+                id: attendee_id.to_string(),
+                name: "Sam".into(),
+                email: "sam@example.com".into(),
+                status: "NEEDS-ACTION".into(),
+            },
+        }
+        .apply(&mut first)
+        .unwrap();
+        first.commit();
+        let mut second = AutoCommit::load(&first.save()).unwrap();
+        CalendarAction::DeleteAttendee {
+            event_id: event_id.to_string(),
+            attendee_id: attendee_id.to_string(),
+        }
+        .apply(&mut first)
+        .unwrap();
+        CalendarAction::PatchAttendee {
+            event_id: event_id.to_string(),
+            attendee_id: attendee_id.to_string(),
+            patch: AttendeePatch {
+                status: Some("ACCEPTED".into()),
+                ..AttendeePatch::default()
+            },
+        }
+        .apply(&mut second)
+        .unwrap();
+        first.commit();
+        second.commit();
+        first.merge(&mut second).unwrap();
+        assert!(
+            CalDoc::read_model(&first)
+                .event(event_id)
+                .unwrap()
+                .attendees
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn task_field_actions_are_sparse_and_reject_hostile_priority_values() {
         let (app, mut doc) = seeded();
         let resources = Widget::resources(&app, &doc);
@@ -3026,12 +4342,12 @@ mod tests {
         let encoded = priority
             .build_args([(
                 "priority".to_string(),
-                qos_actions::ArgValue::Text("p1".to_string()),
+                tilo_actions::ArgValue::Text("p1".to_string()),
             )])
             .expect("declared priority is accepted");
         let decoded = registry().decode(&encoded).expect("calendar action");
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
             .expect("priority action dispatches");
         let changed = CalDoc::read_model(&doc).task(id).expect("task").clone();
         assert_eq!(changed.priority, Priority::High);
@@ -3071,6 +4387,14 @@ mod tests {
             location: String::new(),
             color: Palette::Indigo.index(),
             rrule: String::new(),
+            recurrence_interval: 1,
+            recurrence_until: String::new(),
+            recurrence_count: 0,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: String::new(),
+            attendees: Vec::new(),
             reminder: -1,
             project: String::new(),
             calendar_id: String::new(),
@@ -3080,8 +4404,8 @@ mod tests {
             tasks: Vec::new(),
         };
         let encoded = encode(&action);
-        let envelope = qos_actions::apply_local(&mut a, &action, encoded).expect("apply import");
-        qos_actions::replay(&mut b, &envelope, &registry()).expect("replay import");
+        let envelope = tilo_actions::apply_local(&mut a, &action, encoded).expect("apply import");
+        tilo_actions::replay(&mut b, &envelope, &registry()).expect("replay import");
         assert_eq!(
             a.get_heads(),
             b.get_heads(),

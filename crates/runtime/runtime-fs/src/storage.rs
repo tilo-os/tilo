@@ -9,12 +9,11 @@ use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
-pub const DEFAULT_STORAGE_SOCKET: &str = "/run/qos/fs-storage.sock";
+pub const DEFAULT_STORAGE_SOCKET: &str = "/run/tilo/fs-storage.sock";
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 
-// Five independent on/off facts about a synced file (not a mode select), and
-// this struct mirrors the storage daemon's wire protocol verbatim — grouping
-// them into a bitflag-style type would just move the sprawl into callers.
+// Five independent on/off facts about a synced file. The struct mirrors the
+// storage daemon's wire protocol; callers use each fact separately.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "wire-protocol struct: each bool is an independent daemon-reported fact, not a state machine"

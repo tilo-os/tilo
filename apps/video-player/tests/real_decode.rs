@@ -6,11 +6,9 @@
 //! the app uses, and asserts that genuine RGBA frames are produced and their
 //! presentation timestamps advance — i.e. the file actually plays.
 //!
-//! Honest gate, matching the engine's own `is_real_decode` fallback: if the host
-//! has no usable encoder/muxer (so no sample can be made) or `GStreamer` can't
-//! initialise at runtime, the test prints why and returns instead of asserting.
-//! It never weakens a check and is never `#[ignore]`d — when a real decode stack
-//! is present (the CI/host that runs `--features decode`) the assertions bite.
+//! These tests require a working GStreamer runtime, `gst-launch-1.0`, and an
+//! encoder/muxer from the candidates below. Missing prerequisites fail the test;
+//! synthesized frames or an unobserved decoder cannot establish real playback.
 
 #![cfg(feature = "decode")]
 #![allow(
@@ -37,22 +35,45 @@ fn try_encode(sample: &Path, encoder_muxer: &str) -> bool {
     let desc = format!(
         "videotestsrc num-buffers=25 ! \
          video/x-raw,width=160,height=120,framerate=25/1 ! \
-         videoconvert ! {encoder_muxer} ! filesink location={}",
-        sample.display()
+         videoconvert ! {encoder_muxer} ! filesink"
     );
     // `-e` sends EOS on finish so muxers finalize their headers; `-q` quiets it.
-    let mut cmd = std::process::Command::new("gst-launch-1.0");
+    let mut cmd = std::process::Command::new(if cfg!(windows) {
+        "gst-launch-1.0.exe"
+    } else {
+        "gst-launch-1.0"
+    });
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: this is a headless fixture.
+    }
     cmd.arg("-e").arg("-q");
     for tok in desc.split_whitespace() {
         cmd.arg(tok);
     }
-    let ok = matches!(cmd.status(), Ok(s) if s.success());
+    // Keep the filename one argument and quote it for GStreamer's own parser.
+    // Otherwise whitespace splits the path and Windows backslashes are eaten
+    // as parser escapes even though no command shell is involved.
+    let location = sample
+        .to_str()
+        .expect("UTF-8 scratch path")
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    cmd.arg(format!("location=\"{location}\""));
+    let ok = match cmd.status() {
+        Ok(status) => status.success(),
+        Err(error) => {
+            eprintln!("could not launch GStreamer fixture encoder: {error}");
+            false
+        }
+    };
     ok && sample.metadata().is_ok_and(|m| m.len() > 0)
 }
 
 /// Produce a small real media file, trying formats in order of how ubiquitous
-/// their `GStreamer` plugins are. `None` when the host has no usable encoder —
-/// the honest skip path. The file we make is decodable by the same host (having
+/// their `GStreamer` plugins are. `None` when the host has no usable encoder.
+/// The file we make is decodable by the same host (having
 /// an encoder for a format essentially guarantees the matching decoder), so a
 /// produced sample is a fair test of the real decode path.
 fn write_sample_media(dir: &Path) -> Option<PathBuf> {
@@ -81,7 +102,7 @@ fn scratch_dir() -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
     let dir = std::env::temp_dir().join(format!(
-        "qos-vp-real-decode-{}-{}-{}",
+        "tilo-vp-real-decode 日本語 #%-{}-{}-{}",
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed),
         nanos
@@ -93,24 +114,11 @@ fn scratch_dir() -> PathBuf {
 #[test]
 fn engine_decodes_a_real_file_and_the_pts_advances() {
     let dir = scratch_dir();
-    let Some(sample) = write_sample_media(&dir) else {
-        eprintln!(
-            "real_decode: no usable GStreamer encoder/muxer on this host — \
-             cannot synthesize a sample; skipping real-decode assertions"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-        return;
-    };
+    let sample = write_sample_media(&dir)
+        .expect("real decode requires gst-launch-1.0 and a working encoder/muxer");
 
-    let mut engine = MediaEngine::new();
-    if !engine.is_real_decode() {
-        eprintln!(
-            "real_decode: GStreamer runtime unavailable — engine fell back to the \
-             synthesized backend; skipping real-decode assertions"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-        return;
-    }
+    let mut engine = MediaEngine::with_config(media::EngineConfig::default().silent());
+    assert!(engine.is_real_decode(), "real GStreamer decoder required");
 
     engine.open(Source::LocalFile(sample.clone()));
     engine.play();
@@ -148,7 +156,8 @@ fn engine_decodes_a_real_file_and_the_pts_advances() {
         std::thread::sleep(Duration::from_millis(25));
     }
 
-    let _ = std::fs::remove_dir_all(&dir);
+    drop(engine);
+    std::fs::remove_dir_all(&dir).expect("release and remove decoded sample");
 
     assert!(
         ptss.len() >= 2,
@@ -178,20 +187,18 @@ fn engine_decodes_a_real_file_and_the_pts_advances() {
 #[test]
 fn player_app_pulls_a_real_decoded_frame_onto_its_surface() {
     let dir = scratch_dir();
-    let Some(sample) = write_sample_media(&dir) else {
-        eprintln!("real_decode: no encoder available; skipping the end-to-end app decode");
-        let _ = std::fs::remove_dir_all(&dir);
-        return;
-    };
-    if !MediaEngine::new().is_real_decode() {
-        eprintln!("real_decode: GStreamer runtime unavailable; skipping the end-to-end app decode");
-        let _ = std::fs::remove_dir_all(&dir);
-        return;
-    }
+    let sample = write_sample_media(&dir)
+        .expect("real decode requires gst-launch-1.0 and a working encoder/muxer");
 
     // Drive the real app entry path: open the file, then pump `sync` (the live
     // event loop's per-frame call) until a decoded picture lands on the surface.
     let mut app = PlayerApp::new().with_open_path(&sample);
+    assert!(
+        app.player()
+            .engine()
+            .is_some_and(MediaEngine::is_real_decode),
+        "the app must use the real decoder"
+    );
     let mut doc = automerge::AutoCommit::new();
     let root = automerge::ROOT;
 
@@ -203,8 +210,6 @@ fn player_app_pulls_a_real_decoded_frame_onto_its_surface() {
         }
         std::thread::sleep(Duration::from_millis(25));
     }
-
-    let _ = std::fs::remove_dir_all(&dir);
 
     assert!(
         app.player().latest_frame().is_some(),
@@ -219,4 +224,6 @@ fn player_app_pulls_a_real_decoded_frame_onto_its_surface() {
         app.player().duration_ms() > 0,
         "the app learned the stream duration"
     );
+    drop(app);
+    std::fs::remove_dir_all(&dir).expect("release and remove decoded sample");
 }

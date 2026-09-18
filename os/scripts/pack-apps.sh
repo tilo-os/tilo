@@ -1,36 +1,35 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# Pack every app that ships a `qos-app.toml` into a signed `.qpkg` and install
+# Pack every app that ships a `tilo-app.toml` into a signed `.qpkg` and install
 # it into the image-wide app store, so a fresh boot has a populated launcher
 # without the user running anything.
 #
 # The point of doing it this way, rather than by copying binaries into
-# /usr/bin: a preinstalled app goes through the *same* `qos-pkg pack` +
-# `qos-install install` path a user's own package goes through, and ends up
+# /usr/bin: a preinstalled app goes through the *same* `tilo-pkg pack` +
+# `tilo-install install` path a user's own package goes through, and ends up
 # described by the same registry rows. Being preinstalled changes where the
 # payload lives and nothing else — no extra grants, no trust bypass, no
 # first-party branch anywhere in the launcher. The one difference the store
 # has at all is that it is read-only, being inside the image.
 #
 # Envs:
-#   REPO           repo root, holding apps/*/qos-app.toml   [default: /build]
+#   REPO           repo root, holding apps/*/tilo-app.toml   [default: /build]
 #   BIN_DIR        directory of built release binaries      [default: /out]
 #   QPKG_DIR       install these already-verified release qpkgs instead of
 #                  packing BIN_DIR (optional)
 #   EXPECTED_PUBKEY require every prebuilt qpkg to use this publisher (64 hex)
-#   STORE          app store root; becomes QOS_APPS_DATA_DIR
-#                                          [default: /usr/share/qos-apps]
+#   STORE          app store root; becomes TILO_APPS_DATA_DIR
+#                                          [default: /usr/share/tilo-apps]
 #   STAGE          scratch for payload trees + .qpkg files  [default: mktemp]
 #   IDENTITY_JSON  signing key; generated if absent    [default: $STAGE/id.json]
 #   PUBKEY_OUT     write the signing pubkey here (optional)
 #   PKG_BIN / INSTALL_BIN / BUNDLE_BIN / SHIM_BIN
 #                  tool paths                        [default: $BIN_DIR/<name>]
 #   REQUIRE_MIN    fail unless at least this many packages install [default: 1]
-#   MAX_QPKG_BYTES refuse a larger archive; decimal 10 MB by default
-#   RECOVERY_MAX_QPKG_BYTES
-#                  ceiling for the trusted Files recovery package [default: 50 MB]
+#   MAX_QPKG_BYTES refuse a larger archive; defaults to the canonical 5 MiB
+#                  application-format ceiling and may only be made stricter
 #
-# STORE is written at its *final* path on purpose: `qos-install` records
+# STORE is written at its *final* path on purpose: `tilo-install` records
 # absolute payload paths in registry.toml, so staging it elsewhere and moving
 # it afterwards would leave every row pointing at a directory that does not
 # exist on the booted system.
@@ -44,22 +43,40 @@ set -euo pipefail
 
 REPO="${REPO:-/build}"
 BIN_DIR="${BIN_DIR:-/out}"
-STORE="${STORE:-/usr/share/qos-apps}"
-STAGE="${STAGE:-$(mktemp -d)}"
+STORE="${STORE:-/usr/share/tilo-apps}"
+owned_stage=0
+if [ -z "${STAGE:-}" ]; then
+    STAGE=$(mktemp -d)
+    owned_stage=1
+fi
+# The default stage contains an ephemeral private publisher key. Remove it
+# before this RUN commits a layer, including on failure. Explicit caller-owned
+# stages remain the caller's responsibility and must never be deleted here.
+cleanup_stage() {
+    local status=$?
+    if [ "$owned_stage" = 1 ]; then rm -rf -- "$STAGE"; fi
+    exit "$status"
+}
+trap cleanup_stage EXIT
 IDENTITY_JSON="${IDENTITY_JSON:-$STAGE/publisher.json}"
 PUBKEY_OUT="${PUBKEY_OUT:-}"
-PKG_BIN="${PKG_BIN:-$BIN_DIR/qos-pkg}"
-INSTALL_BIN="${INSTALL_BIN:-$BIN_DIR/qos-install}"
-BUNDLE_BIN="${BUNDLE_BIN:-$BIN_DIR/qos-runtime-bundle}"
-SHIM_BIN="${SHIM_BIN:-$BIN_DIR/qos-cli-shim}"
+PKG_BIN="${PKG_BIN:-$BIN_DIR/tilo-pkg}"
+INSTALL_BIN="${INSTALL_BIN:-$BIN_DIR/tilo-install}"
+BUNDLE_BIN="${BUNDLE_BIN:-$BIN_DIR/tilo-runtime-bundle}"
+SHIM_BIN="${SHIM_BIN:-$BIN_DIR/tilo-cli-shim}"
 QPKG_DIR="${QPKG_DIR:-}"
 EXPECTED_PUBKEY="${EXPECTED_PUBKEY:-}"
 REQUIRE_MIN="${REQUIRE_MIN:-1}"
-MAX_QPKG_BYTES="${MAX_QPKG_BYTES:-10000000}"
-RECOVERY_MAX_QPKG_BYTES="${RECOVERY_MAX_QPKG_BYTES:-50000000}"
+POLICY_MAX_QPKG_BYTES=5242880
+MAX_QPKG_BYTES="${MAX_QPKG_BYTES:-$POLICY_MAX_QPKG_BYTES}"
 
 msg() { printf '[pack-apps] %s\n' "$*" >&2; }
 die() { printf '[pack-apps] ERROR: %s\n' "$*" >&2; exit 1; }
+
+[[ "$MAX_QPKG_BYTES" =~ ^[0-9]+$ ]] \
+    || die "MAX_QPKG_BYTES must be an integer"
+(( MAX_QPKG_BYTES <= POLICY_MAX_QPKG_BYTES )) \
+    || die "MAX_QPKG_BYTES cannot exceed the 5 MiB application policy"
 
 for t in "$PKG_BIN" "$INSTALL_BIN" "$BUNDLE_BIN"; do
     [ -x "$t" ] || die "$t not found or not executable"
@@ -88,19 +105,19 @@ else
     msg "signing as ed25519:$PUBKEY"
 fi
 
-# `qos-install` writes a PATH shim per declared CLI command and needs the
+# `tilo-install` writes a PATH shim per declared CLI command and needs the
 # shim binary to copy. Without it a CLI package installs but its commands
 # do not resolve, so point at it when it was built.
-[ ! -x "$SHIM_BIN" ] || export QOS_CLI_SHIM_PATH="$SHIM_BIN"
+[ ! -x "$SHIM_BIN" ] || export TILO_CLI_SHIM_PATH="$SHIM_BIN"
 
 # Each shim records the launcher to exec. Left to resolve on its own it
-# would find the sibling of the `qos-install` running here — a build-time
-# path like /out/qos-launcher that does not exist on the booted system, so
+# would find the sibling of the `tilo-install` running here — a build-time
+# path like /out/tilo-launcher that does not exist on the booted system, so
 # every shimmed command would fail with "no such file". Name where the
 # launcher will actually be.
-export QOS_LAUNCHER_PATH="${QOS_LAUNCHER_PATH:-/usr/bin/qos-launcher}"
+export TILO_LAUNCHER_PATH="${TILO_LAUNCHER_PATH:-/usr/bin/tilo-launcher}"
 
-export QOS_APPS_DATA_DIR="$STORE"
+export TILO_APPS_DATA_DIR="$STORE"
 
 # --- pack + install every manifest -----------------------------------------
 shipped=(); missing=(); failed=()
@@ -108,7 +125,7 @@ shipped=(); missing=(); failed=()
 if [ "$prebuilt" = 1 ]; then
     for qpkg in "$QPKG_DIR"/*.qpkg; do
         qpkg_bytes=$(wc -c < "$qpkg")
-        if [ "$qpkg_bytes" -ge "$MAX_QPKG_BYTES" ]; then
+        if [ "$qpkg_bytes" -gt "$MAX_QPKG_BYTES" ]; then
             failed+=("$(basename "$qpkg"): $qpkg_bytes bytes exceeds $MAX_QPKG_BYTES")
             continue
         fi
@@ -140,7 +157,7 @@ if [ "$prebuilt" = 1 ]; then
     fi
 else
 
-for manifest in "$REPO"/apps/*/qos-app.toml; do
+for manifest in "$REPO"/apps/*/tilo-app.toml; do
     [ -e "$manifest" ] || continue
     app="$(basename "$(dirname "$manifest")")"
 
@@ -163,7 +180,7 @@ for manifest in "$REPO"/apps/*/qos-app.toml; do
     cp "$built" "$payload/$entry_bin"
     chmod 755 "$payload/$entry_bin"
 
-    # `qos-pkg pack` refuses a manifest whose publisher.identity disagrees
+    # `tilo-pkg pack` refuses a manifest whose publisher.identity disagrees
     # with the signing key, so stamp this build's pubkey into a copy. The
     # committed manifest is never modified.
     staged_manifest="$STAGE/manifest-$id.toml"
@@ -183,10 +200,8 @@ for manifest in "$REPO"/apps/*/qos-app.toml; do
     fi
 
     qpkg_bytes="$(stat -c %s "$qpkg")"
-    qpkg_limit="$MAX_QPKG_BYTES"
-    [ "$id" != "dev.qos.file-explorer" ] || qpkg_limit="$RECOVERY_MAX_QPKG_BYTES"
-    if [ "$qpkg_bytes" -ge "$qpkg_limit" ]; then
-        failed+=("$app ($id): package is $qpkg_bytes bytes; limit is strictly below $qpkg_limit")
+    if [ "$qpkg_bytes" -gt "$MAX_QPKG_BYTES" ]; then
+        failed+=("$app ($id): package is $qpkg_bytes bytes; limit is $MAX_QPKG_BYTES")
         continue
     fi
 

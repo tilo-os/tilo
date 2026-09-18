@@ -4,12 +4,12 @@
 #   ./os/dev/composefs/build.sh [GENERATION]      # default 1
 #
 # Produces:
-#   localhost/qos-composefs:gen<N>     the image (rootless podman)
-#   $QOS_CFS_RUN/gen<N>.cmdline        the command line sealed into the UKI
-#   $QOS_CFS_RUN/gen<N>.ukify.json     ukify's --measure report (expected PCR 11)
+#   localhost/tilo-composefs:gen<N>     the image (rootless podman)
+#   $TILO_CFS_RUN/gen<N>.cmdline        the command line sealed into the UKI
+#   $TILO_CFS_RUN/gen<N>.ukify.json     ukify's --measure report (expected PCR 11)
 #
 # Signing is on by default against a throwaway key pair generated once into
-# $QOS_CFS_RUN/sb. That answers "what does signing look like without bootupd"
+# $TILO_CFS_RUN/sb. That answers "what does signing look like without bootupd"
 # without touching the machine-owner enrolment story: with a UKI there is
 # exactly one PE binary to sign and it is signed at build time, not on the
 # installed machine.
@@ -19,17 +19,17 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/common.sh"
 
 GEN="${1:-1}"
-IMAGE="$QOS_CFS_IMAGE:gen$GEN"
+IMAGE="$TILO_CFS_IMAGE:gen$GEN"
 
-mkdir -p "$QOS_CFS_RUN"
+mkdir -p "$TILO_CFS_RUN"
 
-# Everything the probe shares with the real image is copied in at build time, not
-# duplicated in this directory, so the probe cannot drift from what qOS ships.
-cp -f "$QOS_OS_DIR/usr/lib/bootc/kargs.d/01-hardening.toml" "$HERE/01-hardening.toml"
+# Everything the probe shares with the desktop image is copied in at build time, not
+# duplicated in this directory, so the probe cannot drift from what Tilo ships.
+cp -f "$TILO_OS_DIR/usr/lib/bootc/kargs.d/01-hardening.toml" "$HERE/01-hardening.toml"
 # The mode karg is what makes repair mode selectable at all, and the probe is
 # where that gets booted. Copied rather than restated for the same reason as the
 # hardening set: a probe that carries its own copy proves nothing about the image.
-cp -f "$QOS_OS_DIR/usr/lib/bootc/kargs.d/04-mode.toml" "$HERE/04-mode.toml"
+cp -f "$TILO_OS_DIR/usr/lib/bootc/kargs.d/04-mode.toml" "$HERE/04-mode.toml"
 
 # Assembled at the paths they occupy in the image, so the Containerfile needs one
 # COPY rather than one per file: a layer commit over this rootfs takes minutes.
@@ -37,55 +37,60 @@ TREE="$HERE/stage/tree"
 rm -rf "$TREE"
 mkdir -p "$TREE/usr/bin" "$TREE/usr/libexec" "$TREE/usr/lib/systemd/system" \
          "$TREE/usr/lib/systemd/system-generators"
-for f in usr/libexec/qos-rollback-common \
-         usr/libexec/qos-rollback-confirm \
-         usr/libexec/qos-rollback-harden \
-         usr/libexec/qos-deployment \
-         usr/libexec/qos-boot-health \
-         usr/libexec/qos-repair \
-         usr/lib/systemd/system/qos-rollback-confirm.service \
-         usr/lib/systemd/system/qos-rollback-confirm.timer \
-         usr/lib/systemd/system/qos-rollback-harden.service \
-         usr/lib/systemd/system/qos-boot-entries.service \
-         usr/lib/systemd/system/qos-boot-health.service \
-         usr/lib/systemd/system/qos-repair.target \
-         usr/lib/systemd/system/qos-repair@.service \
-         usr/lib/systemd/system/qos-deployment-rollback.service \
-         usr/lib/systemd/system-generators/qos-boot-mode-generator; do
-  cp -f "$QOS_OS_DIR/$f" "$TREE/$f"
+for f in usr/libexec/tilo-rollback-common \
+         usr/libexec/tilo-rollback-confirm \
+         usr/libexec/tilo-rollback-harden \
+         usr/libexec/tilo-deployment \
+         usr/libexec/tilo-boot-health \
+         usr/libexec/tilo-repair \
+         usr/lib/systemd/system/tilo-rollback-confirm.service \
+         usr/lib/systemd/system/tilo-rollback-confirm.timer \
+         usr/lib/systemd/system/tilo-rollback-harden.service \
+         usr/lib/systemd/system/tilo-rollback-harden.timer \
+         usr/lib/systemd/system/tilo-boot-entries.service \
+         usr/lib/systemd/system/tilo-boot-entries.timer \
+         usr/lib/systemd/system/tilo-boot-health.service \
+         usr/lib/systemd/system/tilo-repair.target \
+         usr/lib/systemd/system/tilo-repair@.service \
+         usr/lib/systemd/system/tilo-deployment-rollback.service \
+         usr/lib/systemd/system-generators/tilo-boot-mode-generator; do
+  cp -f "$TILO_OS_DIR/$f" "$TREE/$f"
 done
-cp -f "$QOS_OS_DIR/tests/rollback-boot-check.sh" "$TREE/usr/libexec/qos-rollback-boot-check"
-cp -f "$QOS_OS_DIR/tests/recovery-boot-check.sh" "$TREE/usr/libexec/qos-recovery-boot-check"
+cp -f "$TILO_OS_DIR/tests/rollback-boot-check.sh" "$TREE/usr/libexec/tilo-rollback-boot-check"
+cp -f "$TILO_OS_DIR/tests/recovery-boot-check.sh" "$TREE/usr/libexec/tilo-recovery-boot-check"
 # The repair entry is derived from the installed UKI by rewriting its sealed
 # command line in place, so the tool that does that has to be on the machine.
-cp -f "$QOS_OS_DIR/dev/uki-cmdline.py" "$TREE/usr/libexec/qos-uki-cmdline"
+cp -f "$TILO_OS_DIR/dev/uki-cmdline.py" "$TREE/usr/libexec/tilo-uki-cmdline"
 
 # The rollback binary. Built here rather than shipped, because the boot-side check
 # asserts the tool the image carries — a stale copy would pass a check about a
 # version nobody is running.
-ROLLBACK_BIN="${ROLLBACK_BIN:-$QOS_REPO/target/release/qos-rollback}"
-[ -x "$ROLLBACK_BIN" ] || die "no qos-rollback binary at $ROLLBACK_BIN
-  Remedy: cargo build -p qos-rollback --release"
-cp -f "$ROLLBACK_BIN" "$TREE/usr/bin/qos-rollback"
+ROLLBACK_BIN="${ROLLBACK_BIN:-$TILO_REPO/target/release/tilo-rollback}"
+[ -x "$ROLLBACK_BIN" ] || die "no tilo-rollback binary at $ROLLBACK_BIN
+  Remedy: cargo build -p tilo-rollback --release"
+cp -f "$ROLLBACK_BIN" "$TREE/usr/bin/tilo-rollback"
+CRYPTO_BIN="${CRYPTO_BIN:-$TILO_REPO/target/release/tilo-crypto}"
+[ -x "$CRYPTO_BIN" ] || die "no tilo-crypto binary at $CRYPTO_BIN
+  Remedy: cargo build -p tilo-crypto --release"
+cp -f "$CRYPTO_BIN" "$TREE/usr/bin/tilo-crypto"
 
-sb_key="$QOS_CFS_RUN/sb/db.key"
-sb_crt="$QOS_CFS_RUN/sb/db.crt"
-if [ "$QOS_CFS_SIGN" = "1" ] && [ ! -f "$sb_key" ]; then
+sb_key="$TILO_CFS_RUN/sb/db.key"
+sb_crt="$TILO_CFS_RUN/sb/db.crt"
+if [ "$TILO_CFS_SIGN" = "1" ] && [ ! -f "$sb_key" ]; then
   msg "generating a throwaway Secure Boot signing key"
-  mkdir -p "$QOS_CFS_RUN/sb"
-  openssl req -new -x509 -newkey rsa:2048 -nodes -days 3650 \
-    -subj "/CN=qOS composefs spike/" -keyout "$sb_key" -out "$sb_crt" 2>/dev/null
+  mkdir -p "$TILO_CFS_RUN/sb"
+  tilo-crypto generate-secure-boot-cert "Tilo composefs spike" "$sb_key" "$sb_crt"
 fi
 
-msg "building $IMAGE (generation $GEN, sign=$QOS_CFS_SIGN)"
+msg "building $IMAGE (generation $GEN, sign=$TILO_CFS_SIGN)"
 podman build \
-  --build-arg "BASE_REF=$QOS_CFS_BASE_REF" \
-  --build-arg "RPMS_REF=$QOS_CFS_RPMS_REF" \
+  --build-arg "BASE_REF=$TILO_CFS_BASE_REF" \
+  --build-arg "RPMS_REF=$TILO_CFS_RPMS_REF" \
   --build-arg "GENERATION=$GEN" \
-  --build-arg "SEAL_GENERATION=${QOS_CFS_SEAL_GENERATION:-1}" \
-  --build-arg "SESSION_OK=${QOS_CFS_SESSION_OK:-1}" \
-  --build-arg "SIGN=$QOS_CFS_SIGN" \
-  --build-arg "CFS_DIGEST=${QOS_CFS_DIGEST:-}" \
+  --build-arg "SEAL_GENERATION=${TILO_CFS_SEAL_GENERATION:-1}" \
+  --build-arg "SESSION_OK=${TILO_CFS_SESSION_OK:-1}" \
+  --build-arg "SIGN=$TILO_CFS_SIGN" \
+  --build-arg "CFS_DIGEST=${TILO_CFS_DIGEST:-}" \
   --secret "id=secureboot_key,src=$sb_key" \
   --secret "id=secureboot_cert,src=$sb_crt" \
   --target final \
@@ -100,7 +105,7 @@ podman run --rm --entrypoint /bin/bash "$IMAGE" -c '
   efi=$(ls /boot/EFI/Linux/*.efi | head -1)
   echo "UKI: $efi ($(stat -c %s "$efi") bytes)"
   objcopy -O binary --only-section=.cmdline "$efi" /dev/stdout 2>/dev/null || true
-' > "$QOS_CFS_RUN/gen$GEN.uki-info" 2>&1 || true
+' > "$TILO_CFS_RUN/gen$GEN.uki-info" 2>&1 || true
 
 # objcopy is not in the final image; read the section out with python instead.
 podman run --rm --entrypoint /usr/bin/python3 "$IMAGE" -c '
@@ -120,8 +125,8 @@ for i in range(nsec):
     rsz = struct.unpack_from("<I", d, o + 16)[0]
     out[name] = d[raw:raw+min(vsz, rsz)]
 sys.stdout.write(out[".cmdline"].rstrip(b"\0").decode())
-' > "$QOS_CFS_RUN/gen$GEN.cmdline"
+' > "$TILO_CFS_RUN/gen$GEN.cmdline"
 
 msg "sealed command line (generation $GEN):"
-sed 's/^/    /' "$QOS_CFS_RUN/gen$GEN.cmdline" >&2; echo >&2
+sed 's/^/    /' "$TILO_CFS_RUN/gen$GEN.cmdline" >&2; echo >&2
 msg "image: $IMAGE"

@@ -1,3 +1,0 @@
-Traceback (most recent call last):
-  File "<stdin>", line 25, in <module>
-AssertionError: (1, 'qos-runtime-mcp: path must be shorter than SUN_LEN\n')

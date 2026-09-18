@@ -4,12 +4,11 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Semantic HTML export/preview for qdoc DocSnapshot documents (qOS)"
+description = "Semantic HTML export/preview for qdoc DocSnapshot documents (Tilo)"
 
 [dependencies]
 qdoc = { path = "../qdoc" }
-# No base64 crate: data-URI encoding is hand-rolled in `base64.rs` (~30 LOC) so
-# adding qdoc-html stays lockfile-stable, matching qdoc-pdf's "no new deps" stance.
+# Data-URI encoding is implemented in `base64.rs` to avoid another dependency.
 
 [lints]
 workspace = true

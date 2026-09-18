@@ -1,19 +1,19 @@
 //! Bounded Camera file/blob work. The UI only admits a job; `CameraApp::sync`
 //! owns the resulting document mutation and operation settlement.
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 
-use qos_actions::InvocationId;
+use tilo_actions::InvocationId;
 
 use crate::frame::FrameBuf;
-use crate::model::{Capture, ScannedCode};
+use crate::model::ScannedCode;
 use crate::model::{Facing, PhotoFormat};
 
 /// A bounded thumbnail request. `media_id` is a verified qdoc identity; local
-/// paths are admitted only from Camera's own indexed library projection.
+/// paths are admitted only from a portal-selected scan image or the single
+/// recent capture projection.
 pub enum ThumbnailSource {
     Path(PathBuf),
     Media(String),
@@ -31,19 +31,6 @@ pub struct ThumbnailResult {
     pub generation: u64,
     pub id: String,
     pub result: Option<(Vec<u8>, u32, u32)>,
-}
-
-/// A filesystem-index refresh. The only path comes from Camera's configured
-/// capture directory; worker results are projections, never document input.
-pub struct LibraryJob {
-    pub generation: u64,
-    pub dir: PathBuf,
-    pub favorites: HashSet<String>,
-}
-
-pub struct LibraryResult {
-    pub generation: u64,
-    pub result: Result<Vec<Capture>, String>,
 }
 
 /// Decode an existing local or qdoc-backed image for the offline scanner.
@@ -95,7 +82,7 @@ pub struct PhotoSaved {
 pub struct VideoJob {
     pub invocation: Option<InvocationId>,
     pub generation: u64,
-    /// `Some` writes a local library copy after verification. `None` is the
+    /// `Some` writes an optional local projection after verification. `None` is the
     /// hermetic sample path: it still produces/validates qdoc media bytes but
     /// intentionally has no filesystem projection.
     pub dir: Option<PathBuf>,
@@ -146,7 +133,6 @@ pub struct CameraWorker {
     video_rx: Receiver<VideoResult>,
     recording: Arc<Mutex<RecordingControl>>,
     thumb_rx: Receiver<ThumbnailResult>,
-    library_rx: Receiver<LibraryResult>,
     scan_rx: Receiver<ScanResult>,
 }
 
@@ -154,7 +140,6 @@ enum WorkerJob {
     Photo(PhotoJob),
     RecordingWake,
     Thumbnail(ThumbnailJob),
-    Library(LibraryJob),
     Scan(ScanJob),
 }
 
@@ -164,7 +149,6 @@ struct WorkerLoop {
     photo_results: SyncSender<PhotoResult>,
     video_results: SyncSender<VideoResult>,
     thumbnail_results: SyncSender<ThumbnailResult>,
-    library_results: SyncSender<LibraryResult>,
     scan_results: SyncSender<ScanResult>,
 }
 
@@ -275,13 +259,6 @@ impl WorkerLoop {
                     })
                     .is_ok()
             }
-            WorkerJob::Library(job) => self
-                .library_results
-                .send(LibraryResult {
-                    generation: job.generation,
-                    result: Ok(crate::library::scan(&job.dir, &job.favorites)),
-                })
-                .is_ok(),
             WorkerJob::Scan(job) => {
                 let luma = match job.source {
                     ScanSource::Path(path) => crate::library::load_luma(&path, 1024),
@@ -316,7 +293,6 @@ impl CameraWorker {
         let (photo_results, rx) = std::sync::mpsc::sync_channel::<PhotoResult>(1);
         let (video_results, video_rx) = std::sync::mpsc::sync_channel::<VideoResult>(1);
         let (thumbnail_results, thumb_rx) = std::sync::mpsc::sync_channel::<ThumbnailResult>(1);
-        let (library_results, library_rx) = std::sync::mpsc::sync_channel::<LibraryResult>(1);
         let (scan_results, scan_rx) = std::sync::mpsc::sync_channel::<ScanResult>(1);
         let recording = Arc::new(Mutex::new(RecordingControl {
             start: false,
@@ -333,7 +309,6 @@ impl CameraWorker {
                     photo_results,
                     video_results,
                     thumbnail_results,
-                    library_results,
                     scan_results,
                 };
                 // Inspect recording state before blocking and after all jobs.
@@ -355,7 +330,6 @@ impl CameraWorker {
             video_rx,
             recording,
             thumb_rx,
-            library_rx,
             scan_rx,
         }
     }
@@ -478,26 +452,6 @@ impl CameraWorker {
 
     pub fn try_recv_thumbnail(&self) -> Option<ThumbnailResult> {
         self.thumb_rx.try_recv().ok()
-    }
-
-    /// # Errors
-    ///
-    /// Returns a visible error if the bounded queue is full or its worker ended.
-    pub fn submit_library(&self, job: LibraryJob) -> Result<(), String> {
-        match self
-            .tx
-            .as_ref()
-            .ok_or_else(|| "Camera library worker couldn't start".to_string())?
-            .try_send(WorkerJob::Library(job))
-        {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => Err("Camera library is already refreshing".into()),
-            Err(TrySendError::Disconnected(_)) => Err("Camera library worker disconnected".into()),
-        }
-    }
-
-    pub fn try_recv_library(&self) -> Option<LibraryResult> {
-        self.library_rx.try_recv().ok()
     }
 
     /// # Errors

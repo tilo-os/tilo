@@ -2,22 +2,21 @@
 //!
 //! The argument vector is built as data and rendered separately from being
 //! executed, so the exact confinement of a session is a testable value rather
-//! than something you can only observe by running it. `tinker shell --explain`
-//! prints it verbatim; that is the discoverability half of the design, and it
-//! only stays honest if the printed vector is the one that runs.
+//! than something observable only by running it. `tinker shell --explain`
+//! prints the same vector used for the session.
 //!
 //! Defaults, all of which are deliberate:
 //!
 //! * uid 0 inside, mapped to the invoking user outside;
 //! * the host root filesystem is not visible at all — the layer's root is the
 //!   base image plus its own overlay;
-//! * `$HOME` is the layer's own home, not the user's. Sharing the real home
+//! * `$HOME` is the layer's own home, not the user's. Sharing the host home
 //!   directory into a sandbox, as the common container wrappers do, hands
 //!   anything running inside it every file, key and shell profile the user owns
 //!   and makes the sandbox decorative;
 //! * host paths appear only when named one at a time, and read-only unless asked
 //!   for otherwise;
-//! * the network is on, because a package manager without a network is a prop.
+//! * the network is on, because package managers need network access.
 
 use std::ffi::OsString;
 // `write!` into a `String` cannot fail; the discarded `Result` is the
@@ -171,7 +170,7 @@ impl SessionSpec {
         // layer and which one. Being able to see where you are is the difference
         // between confinement and disorientation.
         push!("--setenv");
-        push!("QOS_LAYER");
+        push!("TILO_LAYER");
         a.push(OsString::from(&self.layer_name));
         push!("--chdir");
         push!("/root");
@@ -369,7 +368,7 @@ mod tests {
     #[test]
     fn the_layer_name_is_visible_inside() {
         let v = strs(&spec());
-        let i = pos(&v, "QOS_LAYER");
+        let i = pos(&v, "TILO_LAYER");
         assert_eq!(v[i + 1], "a");
         let h = pos(&v, "--hostname");
         assert_eq!(v[h + 1], "a");

@@ -1,26 +1,53 @@
-//! qOS hosted-model gateway protocol.
+//! Tilo hosted-model gateway protocol.
 //!
 //! The API key is accepted only by the per-user gateway and is never part of
 //! Settings' CRDT/settings payload or an agent process. Sandboxed callers use
-//! one launcher-passed connected Unix descriptor (`QOS_SVC_MODEL_GATEWAY_FD`).
+//! one launcher-passed connected Unix descriptor (`TILO_SVC_MODEL_GATEWAY_FD`).
 
+#[cfg(unix)]
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::fd::{FromRawFd, RawFd};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+#[cfg(unix)]
 use zeroize::Zeroizing;
 
 pub const SERVICE_NAME: &str = "model-gateway";
-pub const SERVICE_FD_ENV: &str = "QOS_SVC_MODEL_GATEWAY_FD";
-pub const RPC_VERSION: u16 = 2;
+pub const SERVICE_FD_ENV: &str = "TILO_SVC_MODEL_GATEWAY_FD";
+pub const RPC_VERSION: u16 = 3;
 pub const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
+/// The only encoded-preview media types accepted by the local vision RPC.
+/// Keeping this vocabulary closed means a caller cannot ask the trusted
+/// gateway to fetch a URL or interpret an arbitrary document as an image.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct VisionImage {
+    /// `image/jpeg`, `image/png`, or `image/webp`.
+    pub media_type: String,
+    /// Standard base64 of a caller-decoded, downscaled preview.
+    pub data_base64: String,
+    /// SHA-256 of the original photo bytes, not of `data_base64`.
+    pub source_content_hash: String,
+}
+
+/// One deliberately small photograph reference supplied to the dedicated
+/// local face runtime.  `photo_id` is an app address, not a pathname; the
+/// runtime never receives an identity label or an instruction from Photos.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct FaceImage {
+    pub photo_id: String,
+    pub media_type: String,
+    pub data_base64: String,
+    pub source_content_hash: String,
+}
 
 /// A request that can cross the sandbox boundary. `SetApiKey` is only sent by
 /// Settings; a server also authenticates the launcher-provided app preamble.
-/// It is deliberately not serializable by caller-owned settings types.
+/// Caller-owned settings types cannot serialize it.
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "verb", rename_all = "snake_case")]
 pub enum Request {
@@ -29,6 +56,23 @@ pub enum Request {
         model_id: String,
         body: serde_json::Value,
         timeout_ms: u64,
+    },
+    /// Fixed-shape, device-local visual analysis for Photos. The gateway
+    /// owns the prompt and refuses hosted, unpinned, or non-vision profiles;
+    /// a sandboxed caller never obtains direct network access.
+    AnalyzeImage {
+        profile_id: String,
+        model_id: String,
+        image: VisionImage,
+    },
+    /// Fixed, consent-gated face detection and clustering.  The gateway owns
+    /// the request schema and admits it only for the signed local face model.
+    /// It returns opaque cluster/photo membership; no embedding, crop, face
+    /// rectangle, identity name, or raw path can cross this boundary.
+    ClusterFaces {
+        profile_id: String,
+        model_id: String,
+        images: Vec<FaceImage>,
     },
     SecretStatus {
         profile_id: String,
@@ -62,7 +106,7 @@ pub struct Response {
 
 #[derive(Debug, Error)]
 pub enum ClientError {
-    #[error("qOS model gateway is unavailable")]
+    #[error("Tilo model gateway is unavailable")]
     Unavailable,
     #[error("model gateway protocol error: {0}")]
     Protocol(String),
@@ -73,11 +117,19 @@ pub enum ClientError {
 /// Whether this process has the launcher-issued service descriptor. This does
 /// not probe or connect to a pathname socket, so the sandbox cannot substitute
 /// a different same-UID service.
+#[cfg(unix)]
 pub fn available() -> bool {
     std::env::var(SERVICE_FD_ENV)
         .ok()
         .and_then(|value| value.parse::<RawFd>().ok())
         .is_some_and(|fd| fd >= 3 && unsafe { libc::fcntl(fd, libc::F_GETFD) } != -1)
+}
+
+/// No launcher-issued gateway transport is implemented on this platform.
+/// Environment variables cannot manufacture a supported capability.
+#[cfg(not(unix))]
+pub fn available() -> bool {
+    false
 }
 
 /// Send a request over the launcher-provided service fd. The fd is duplicated
@@ -88,6 +140,7 @@ pub fn available() -> bool {
 /// Returns [`ClientError::Unavailable`] when the launcher service descriptor or
 /// gateway connection is unavailable, [`ClientError::Protocol`] for malformed
 /// frames, and [`ClientError::Rejected`] when the gateway refuses the request.
+#[cfg(unix)]
 pub fn request(request: Request) -> Result<Response, ClientError> {
     let fd = std::env::var(SERVICE_FD_ENV)
         .ok()
@@ -120,6 +173,17 @@ pub fn request(request: Request) -> Result<Response, ClientError> {
     }
 }
 
+/// Refuse gateway operations when the launcher capability transport is absent.
+///
+/// # Errors
+///
+/// Always returns [`ClientError::Unavailable`]. There is no direct-network or
+/// pathname-socket fallback for an unsupported host.
+#[cfg(not(unix))]
+pub fn request(_request: Request) -> Result<Response, ClientError> {
+    Err(ClientError::Unavailable)
+}
+
 /// Ask the isolated model gateway to plan against one configured provider.
 ///
 /// # Errors
@@ -142,6 +206,51 @@ pub fn plan(
     response
         .output
         .ok_or_else(|| ClientError::Protocol("gateway returned no provider response".into()))
+}
+
+/// Request a fixed-schema visual analysis through the launcher-issued gateway
+/// descriptor. This operation can only be authorized for Photos by the
+/// gateway; callers cannot provide a URL, arbitrary prompt, or timeout.
+///
+/// # Errors
+///
+/// Returns [`ClientError`] if the capability is not passed by the launcher,
+/// the gateway rejects the request, or the provider is unavailable.
+pub fn analyze_image(
+    profile_id: &str,
+    model_id: &str,
+    image: VisionImage,
+) -> Result<String, ClientError> {
+    let response = request(Request::AnalyzeImage {
+        profile_id: profile_id.to_string(),
+        model_id: model_id.to_string(),
+        image,
+    })?;
+    response
+        .output
+        .ok_or_else(|| ClientError::Protocol("gateway returned no image analysis".into()))
+}
+
+/// Run the dedicated local face model against one bounded batch.  This is not
+/// a generic multimodal request and cannot be redirected to a hosted model.
+///
+/// # Errors
+///
+/// Returns [`ClientError`] if the launcher gateway is absent, the local model
+/// refuses the fixed protocol, or its response is unavailable.
+pub fn cluster_faces(
+    profile_id: &str,
+    model_id: &str,
+    images: Vec<FaceImage>,
+) -> Result<String, ClientError> {
+    let response = request(Request::ClusterFaces {
+        profile_id: profile_id.to_string(),
+        model_id: model_id.to_string(),
+        images,
+    })?;
+    response
+        .output
+        .ok_or_else(|| ClientError::Protocol("gateway returned no face clusters".into()))
 }
 
 /// Query whether the profile has a secret stored by the isolated gateway.
@@ -191,6 +300,7 @@ pub fn remove_api_key(profile_id: &str) -> Result<(), ClientError> {
 ///
 /// Returns [`ClientError::Protocol`] when serialization fails or the frame is
 /// too large, and [`ClientError::Unavailable`] when writing fails.
+#[cfg(unix)]
 pub fn write_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<(), ClientError> {
     let body = Zeroizing::new(
         serde_json::to_vec(value).map_err(|error| ClientError::Protocol(error.to_string()))?,
@@ -217,6 +327,7 @@ pub fn write_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<(
 ///
 /// Returns [`ClientError::Unavailable`] when reading fails and
 /// [`ClientError::Protocol`] for an invalid length or payload.
+#[cfg(unix)]
 pub fn read_frame<T: for<'a> Deserialize<'a>>(stream: &mut UnixStream) -> Result<T, ClientError> {
     let mut length = [0_u8; 4];
     stream
@@ -233,4 +344,51 @@ pub fn read_frame<T: for<'a> Deserialize<'a>>(stream: &mut UnixStream) -> Result
         .map_err(|_| ClientError::Unavailable)?;
     serde_json::from_slice(&body)
         .map_err(|_| ClientError::Protocol("invalid gateway response".into()))
+}
+
+#[cfg(all(test, not(unix)))]
+mod unsupported_platform_tests {
+    use super::*;
+
+    #[test]
+    fn photos_and_secret_operations_require_a_supported_gateway_capability() {
+        assert!(!available());
+        assert!(matches!(
+            analyze_image(
+                "local",
+                "vision",
+                VisionImage {
+                    media_type: "image/png".into(),
+                    data_base64: String::new(),
+                    source_content_hash: String::new(),
+                }
+            ),
+            Err(ClientError::Unavailable)
+        ));
+        assert!(matches!(
+            cluster_faces("local", "faces", Vec::new()),
+            Err(ClientError::Unavailable)
+        ));
+        assert!(matches!(
+            plan(
+                "hosted",
+                "model",
+                serde_json::Value::Null,
+                Duration::from_secs(1)
+            ),
+            Err(ClientError::Unavailable)
+        ));
+        assert!(matches!(
+            secret_configured("hosted"),
+            Err(ClientError::Unavailable)
+        ));
+        assert!(matches!(
+            set_api_key("hosted", "owned fixture".into()),
+            Err(ClientError::Unavailable)
+        ));
+        assert!(matches!(
+            remove_api_key("hosted"),
+            Err(ClientError::Unavailable)
+        ));
+    }
 }

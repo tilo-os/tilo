@@ -1,5 +1,5 @@
 #!/bin/bash
-# Shared config + helpers for the qOS headless VM dev toolkit (os/dev/*).
+# Shared config + helpers for the Tilo headless VM dev toolkit (os/dev/*).
 #
 # Everything here is overridable via environment variables so the toolkit works
 # on other machines / in CI without edits. The defaults match the reference
@@ -8,27 +8,27 @@
 #   - qemu/OVMF/virglrenderer/socat/ImageMagick are installed *in that distrobox*
 #   - the host has /dev/kvm and a Mesa iGPU render node for GL
 #
-# If your host has qemu+tools natively, set QOS_DISTROBOX="" to run directly.
+# If your host has qemu+tools natively, set TILO_DISTROBOX="" to run directly.
 
 set -euo pipefail
 
 # --- paths -------------------------------------------------------------------
 _COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-QOS_OS_DIR="$(cd "$_COMMON_DIR/.." && pwd)"          # the os/ submodule dir
-QOS_REPO="$(cd "$QOS_OS_DIR/.." && pwd)"             # cargo workspace root
+TILO_OS_DIR="$(cd "$_COMMON_DIR/.." && pwd)"          # the os/ submodule dir
+TILO_REPO="$(cd "$TILO_OS_DIR/.." && pwd)"             # cargo workspace root
 
 # --- tunables ----------------------------------------------------------------
-QOS_DISTROBOX="${QOS_DISTROBOX-my-distrobox}"        # "" => run tools on host
-QOS_IMAGE="${QOS_IMAGE:-localhost/qos:latest}"
-QOS_OUTPUT="${QOS_OUTPUT:-$QOS_OS_DIR/output}"
-QOS_DISK="${QOS_DISK:-$QOS_OUTPUT/qcow2/disk.qcow2}"
+TILO_DISTROBOX="${TILO_DISTROBOX-my-distrobox}"        # "" => run tools on host
+TILO_IMAGE="${TILO_IMAGE:-localhost/tilo:latest}"
+TILO_OUTPUT="${TILO_OUTPUT:-$TILO_OS_DIR/output}"
+TILO_DISK="${TILO_DISK:-$TILO_OUTPUT/qcow2/disk.qcow2}"
 
-# Custom (self-install) installer: a bootable live qcow2 that runs the qOS
-# graphical installer (installer/, binary qos-installer). Built by
+# Custom (self-install) installer: a bootable live qcow2 that runs the Tilo
+# graphical installer (installer/, binary tilo-installer). Built by
 # os/dev/build-custom-installer.sh; booted by vm.sh boot-installer.
-QOS_INSTALLER_IMAGE="${QOS_INSTALLER_IMAGE:-localhost/qos-installer:latest}"
-QOS_INSTALLER_OUTPUT="${QOS_INSTALLER_OUTPUT:-$QOS_OUTPUT/installer}"   # distinct subdir
-QOS_INSTALLER_DISK="${QOS_INSTALLER_DISK:-$QOS_INSTALLER_OUTPUT/qcow2/disk.qcow2}"
+TILO_INSTALLER_IMAGE="${TILO_INSTALLER_IMAGE:-localhost/tilo-installer:latest}"
+TILO_INSTALLER_OUTPUT="${TILO_INSTALLER_OUTPUT:-$TILO_OUTPUT/installer}"   # distinct subdir
+TILO_INSTALLER_DISK="${TILO_INSTALLER_DISK:-$TILO_INSTALLER_OUTPUT/qcow2/disk.qcow2}"
 # Writable overlay used by VM install cycles. The live installer needs scratch
 # space for its offline image copy, but a test must never mutate the pristine
 # release artifact it is validating.
@@ -36,117 +36,117 @@ QOS_INSTALLER_DISK="${QOS_INSTALLER_DISK:-$QOS_INSTALLER_OUTPUT/qcow2/disk.qcow2
 # boot-installer and boot-target. CI must use a unique value (run id + arch) and
 # remove that exact directory before starting the cycle; stale target, TPM or
 # firmware state must never make a release test pass.
-QOS_VM_CYCLE="${QOS_VM_CYCLE:-}"
-if [ -n "$QOS_VM_CYCLE" ]; then
-  case "$QOS_VM_CYCLE" in
+TILO_VM_CYCLE="${TILO_VM_CYCLE:-}"
+if [ -n "$TILO_VM_CYCLE" ]; then
+  case "$TILO_VM_CYCLE" in
     *[!a-zA-Z0-9._-]*|.|..)
-      printf 'QOS_VM_CYCLE must contain only letters, digits, dot, underscore or dash\n' >&2
+      printf 'TILO_VM_CYCLE must contain only letters, digits, dot, underscore or dash\n' >&2
       exit 1
       ;;
   esac
-  QOS_CYCLE_DIR="${QOS_CYCLE_DIR:-$QOS_INSTALLER_OUTPUT/vm-cycles/$QOS_VM_CYCLE}"
+  TILO_CYCLE_DIR="${TILO_CYCLE_DIR:-$TILO_INSTALLER_OUTPUT/vm-cycles/$TILO_VM_CYCLE}"
 else
-  QOS_CYCLE_DIR="${QOS_CYCLE_DIR:-}"
+  TILO_CYCLE_DIR="${TILO_CYCLE_DIR:-}"
 fi
-if [ -n "$QOS_CYCLE_DIR" ]; then
-  QOS_INSTALLER_WORK_DISK="${QOS_INSTALLER_WORK_DISK:-$QOS_CYCLE_DIR/installer-work.qcow2}"
+if [ -n "$TILO_CYCLE_DIR" ]; then
+  TILO_INSTALLER_WORK_DISK="${TILO_INSTALLER_WORK_DISK:-$TILO_CYCLE_DIR/installer-work.qcow2}"
 else
-  QOS_INSTALLER_WORK_DISK="${QOS_INSTALLER_WORK_DISK:-$QOS_INSTALLER_OUTPUT/test-installer-work.qcow2}"
+  TILO_INSTALLER_WORK_DISK="${TILO_INSTALLER_WORK_DISK:-$TILO_INSTALLER_OUTPUT/test-installer-work.qcow2}"
 fi
 
 # Runtime/scratch dir for the VM. MUST be short: AF_UNIX socket paths are capped
 # at 108 bytes, and a deep scratch path overflows it. Prefer the per-user runtime
 # directory: unlike shared /tmp it is private and cannot consume or inherit an
 # unrelated per-user quota. Fall back to /tmp for non-desktop/CI sessions.
-if [ -n "$QOS_VM_CYCLE" ]; then
-  QOS_RUN="${QOS_RUN:-${XDG_RUNTIME_DIR:-/tmp}/qos-vm-$QOS_VM_CYCLE}"
+if [ -n "$TILO_VM_CYCLE" ]; then
+  TILO_RUN="${TILO_RUN:-${XDG_RUNTIME_DIR:-/tmp}/tilo-vm-$TILO_VM_CYCLE}"
 else
-  QOS_RUN="${QOS_RUN:-${XDG_RUNTIME_DIR:-/tmp}/qos-vm}"
+  TILO_RUN="${TILO_RUN:-${XDG_RUNTIME_DIR:-/tmp}/tilo-vm}"
 fi
-QOS_MON="$QOS_RUN/mon.sock"
-QOS_SERIAL="$QOS_RUN/serial.log"
-QOS_QEMU_LOG="$QOS_RUN/qemu.log"
-QOS_PIDFILE="$QOS_RUN/qemu.pid"
+TILO_MON="$TILO_RUN/mon.sock"
+TILO_SERIAL="$TILO_RUN/serial.log"
+TILO_QEMU_LOG="$TILO_RUN/qemu.log"
+TILO_PIDFILE="$TILO_RUN/qemu.pid"
 
 # The blank disk the custom installer writes onto (becomes the installed
 # system), attached as a SECOND virtio disk (/dev/vdb) by vm.sh boot-installer
 # and booted on its own by vm.sh boot-target.
 # OS targets are multi-gigabyte even when qcow2-sparse. Keep them on the build
-# filesystem, not QOS_RUN's commonly-tmpfs /tmp directory, or a realistic
+# filesystem, not TILO_RUN's commonly-tmpfs /tmp directory, or a realistic
 # encrypted install can exhaust RAM-backed storage and surface as guest I/O
 # errors. 40 GiB also matches the installer's supported whole-disk envelope.
-if [ -n "$QOS_CYCLE_DIR" ]; then
-  QOS_TARGET_DISK="${QOS_TARGET_DISK:-$QOS_CYCLE_DIR/target.qcow2}"
+if [ -n "$TILO_CYCLE_DIR" ]; then
+  TILO_TARGET_DISK="${TILO_TARGET_DISK:-$TILO_CYCLE_DIR/target.qcow2}"
 else
-  QOS_TARGET_DISK="${QOS_TARGET_DISK:-$QOS_INSTALLER_OUTPUT/test-target.qcow2}"
+  TILO_TARGET_DISK="${TILO_TARGET_DISK:-$TILO_INSTALLER_OUTPUT/test-target.qcow2}"
 fi
-QOS_TARGET_SIZE="${QOS_TARGET_SIZE:-40G}"
+TILO_TARGET_SIZE="${TILO_TARGET_SIZE:-40G}"
 
 # Software TPM 2.0 (swtpm) so encrypted/TPM-bound installs can be booted and
 # unlock-tested, and so a measured boot can be observed at all. Off by default;
-# enable with `--tpm` on a boot subcommand or QOS_TPM=1. State persists in
-# QOS_TPM_DIR so boot-installer (enroll) and boot-target (unlock) share the same
+# enable with `--tpm` on a boot subcommand or TILO_TPM=1. State persists in
+# TILO_TPM_DIR so boot-installer (enroll) and boot-target (unlock) share the same
 # emulated TPM across a reboot. Attaching a TPM also pins the firmware choice —
 # see the OVMF section below.
-QOS_TPM="${QOS_TPM:-0}"
-QOS_TPM_DIR="${QOS_TPM_DIR:-$QOS_RUN/tpm}"
-QOS_TPM_SOCK="$QOS_TPM_DIR/swtpm-ctrl.sock"
+TILO_TPM="${TILO_TPM:-0}"
+TILO_TPM_DIR="${TILO_TPM_DIR:-$TILO_RUN/tpm}"
+TILO_TPM_SOCK="$TILO_TPM_DIR/swtpm-ctrl.sock"
 
 # Guest login (from os/account.env — the account disk-image.sh creates).
-QOS_USER="${QOS_USER:-quickuser}"
-QOS_PASS="${QOS_PASS:-quickdesktop}"
+TILO_USER="${TILO_USER:-quickuser}"
+TILO_PASS="${TILO_PASS:-tilo}"
 
-QOS_MEM="${QOS_MEM:-4096}"
-QOS_SMP="${QOS_SMP:-4}"
+TILO_MEM="${TILO_MEM:-4096}"
+TILO_SMP="${TILO_SMP:-4}"
 # `auto` uses hardware acceleration when this environment owns a usable KVM
 # device, and otherwise falls back to QEMU's multithreaded software emulator.
 # The fallback is intentionally slower, but lets the release gate run inside a
 # Kata-isolated CI runner without exposing the Kubernetes node's /dev/kvm.
-QOS_ACCEL="${QOS_ACCEL:-auto}"
-QOS_BOOT_WAIT_ATTEMPTS="${QOS_BOOT_WAIT_ATTEMPTS:-90}"
-QOS_QEMU_START_ATTEMPTS="${QOS_QEMU_START_ATTEMPTS:-100}"
+TILO_ACCEL="${TILO_ACCEL:-auto}"
+TILO_BOOT_WAIT_ATTEMPTS="${TILO_BOOT_WAIT_ATTEMPTS:-90}"
+TILO_QEMU_START_ATTEMPTS="${TILO_QEMU_START_ATTEMPTS:-100}"
 
 # Architecture of the guest and its release medium. Native runners leave this
 # unset; cross-architecture diagnostic boots may select a guest explicitly and
 # will naturally fall back to TCG. Keep the normalized value in one place so a
 # lane cannot build an aarch64 medium and accidentally exercise x86 firmware.
-QOS_VM_ARCH="${QOS_VM_ARCH:-$(uname -m)}"
-case "$QOS_VM_ARCH" in
-  x86_64|amd64) QOS_VM_ARCH=x86_64 ;;
-  aarch64|arm64) QOS_VM_ARCH=aarch64 ;;
-  *) die "QOS_VM_ARCH must be x86_64 or aarch64 (got $QOS_VM_ARCH)" ;;
+TILO_VM_ARCH="${TILO_VM_ARCH:-$(uname -m)}"
+case "$TILO_VM_ARCH" in
+  x86_64|amd64) TILO_VM_ARCH=x86_64 ;;
+  aarch64|arm64) TILO_VM_ARCH=aarch64 ;;
+  *) die "TILO_VM_ARCH must be x86_64 or aarch64 (got $TILO_VM_ARCH)" ;;
 esac
-QOS_QEMU_SYSTEM="${QOS_QEMU_SYSTEM:-qemu-system-$QOS_VM_ARCH}"
+TILO_QEMU_SYSTEM="${TILO_QEMU_SYSTEM:-qemu-system-$TILO_VM_ARCH}"
 
 # virtio-gpu resolution (the compositor modesets the connector's preferred
 # mode, which these set). Bigger = more software-render cost.
-QOS_XRES="${QOS_XRES:-1280}"
-QOS_YRES="${QOS_YRES:-800}"
+TILO_XRES="${TILO_XRES:-1280}"
+TILO_YRES="${TILO_YRES:-800}"
 
-# SSH: the VM forwards guest :22 to host 127.0.0.1:$QOS_SSH_PORT. Needs
+# SSH: the VM forwards guest :22 to host 127.0.0.1:$TILO_SSH_PORT. Needs
 # `sshpass` on the host (or swap in a key). Clean shell access beats the
 # VT/serial/screendump dance for logs and diagnosis.
-QOS_SSH_PORT="${QOS_SSH_PORT:-2222}"
+TILO_SSH_PORT="${TILO_SSH_PORT:-2222}"
 
 # --- logging -----------------------------------------------------------------
-msg() { printf '\033[1;36m[qos]\033[0m %s\n' "$*" >&2; }
-warn() { printf '\033[1;33m[qos] WARN:\033[0m %s\n' "$*" >&2; }
-die() { printf '\033[1;31m[qos] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+msg() { printf '\033[1;36m[tilo]\033[0m %s\n' "$*" >&2; }
+warn() { printf '\033[1;33m[tilo] WARN:\033[0m %s\n' "$*" >&2; }
+die() { printf '\033[1;31m[tilo] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # --- run a command in the build/VM environment (distrobox or host) ------------
 # Usage: inenv 'shell command string'
 # Runs with the *current working directory preserved* (distrobox does this), so
 # relative paths and the cargo workspace resolve correctly.
 inenv() {
-  if [ -n "$QOS_DISTROBOX" ]; then
-    distrobox enter "$QOS_DISTROBOX" -- bash -lc "$1"
+  if [ -n "$TILO_DISTROBOX" ]; then
+    distrobox enter "$TILO_DISTROBOX" -- bash -lc "$1"
   else
     bash -lc "$1"
   fi
 }
 
 qemu_accel_args() {
-  case "$QOS_ACCEL" in
+  case "$TILO_ACCEL" in
     auto)
       if inenv "test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm"; then
         echo "-enable-kvm -cpu host"
@@ -156,19 +156,19 @@ qemu_accel_args() {
       ;;
     kvm) echo "-enable-kvm -cpu host" ;;
     tcg) echo "-accel tcg,thread=multi -cpu max" ;;
-    *) die "QOS_ACCEL must be auto, kvm, or tcg (got $QOS_ACCEL)" ;;
+    *) die "TILO_ACCEL must be auto, kvm, or tcg (got $TILO_ACCEL)" ;;
   esac
 }
 
 # Send one HMP monitor command to the running VM, print its reply.
 hmp() {
-  # The monitor socket is on the host-visible QOS_RUN mount. Prefer the host's
+  # The monitor socket is on the host-visible TILO_RUN mount. Prefer the host's
   # socat even when QEMU itself lives in a distrobox; entering the container for
   # every individual key made a login take minutes instead of seconds.
   if command -v socat >/dev/null 2>&1; then
-    printf '%s\n' "$1" | socat - "unix:$QOS_MON"
+    printf '%s\n' "$1" | socat - "unix:$TILO_MON"
   else
-    inenv "printf '%s\n' \"$1\" | socat - 'unix:$QOS_MON'"
+    inenv "printf '%s\n' \"$1\" | socat - 'unix:$TILO_MON'"
   fi
 }
 
@@ -178,10 +178,10 @@ hmp() {
 # QEMU before the caller's separate one-second probe sees it.
 start_qemu() {
   local args="$1"
-  inenv "setsid nohup '$QOS_QEMU_SYSTEM' $args >'$QOS_QEMU_LOG' 2>&1 &
+  inenv "setsid nohup '$TILO_QEMU_SYSTEM' $args >'$TILO_QEMU_LOG' 2>&1 &
     qemu_pid=\$!
-    for _ in \$(seq 1 '$QOS_QEMU_START_ATTEMPTS'); do
-      test -S '$QOS_MON' && exit 0
+    for _ in \$(seq 1 '$TILO_QEMU_START_ATTEMPTS'); do
+      test -S '$TILO_MON' && exit 0
       kill -0 \$qemu_pid 2>/dev/null || break
       sleep 0.1
     done
@@ -192,17 +192,17 @@ start_qemu() {
 # Run a command in the guest over SSH (password auth via sshpass, on the host
 # since that's where the forwarded port binds). Returns the command's output.
 gssh() {
-  sshpass -p "$QOS_PASS" ssh -p "$QOS_SSH_PORT" \
+  sshpass -p "$TILO_PASS" ssh -p "$TILO_SSH_PORT" \
     -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o ConnectTimeout=5 -o LogLevel=ERROR \
-    "$QOS_USER@127.0.0.1" "$@"
+    "$TILO_USER@127.0.0.1" "$@"
 }
 
 # Pick a GL render node for virglrenderer. NVIDIA (0x10de) is skipped: its
 # proprietary/open EGL stack works poorly with virglrenderer; a Mesa iGPU
-# (AMD/Intel) is strongly preferred. Override with QOS_RENDERNODE.
+# (AMD/Intel) is strongly preferred. Override with TILO_RENDERNODE.
 detect_rendernode() {
-  if [ -n "${QOS_RENDERNODE:-}" ]; then echo "$QOS_RENDERNODE"; return; fi
+  if [ -n "${TILO_RENDERNODE:-}" ]; then echo "$TILO_RENDERNODE"; return; fi
   local n v
   for n in /dev/dri/renderD*; do
     [ -e "$n" ] || continue
@@ -238,10 +238,10 @@ detect_rendernode() {
 #
 # The secboot flavour is chosen for its measurement support, not to enforce
 # anything: Secure Boot enforcement is not a qemu flag, it is a property of the
-# variable store (see QOS_SECBOOT_KEYS). SMM and a write-protected pflash go with
+# variable store (see TILO_SECBOOT_KEYS). SMM and a write-protected pflash go with
 # the secboot build unconditionally, because that firmware expects them and a
 # variable store the guest can rewrite makes enforcement theatre.
-QOS_SECBOOT="${QOS_SECBOOT:-0}"
+TILO_SECBOOT="${TILO_SECBOOT:-0}"
 
 # Which keys the variable store starts with. This decides whether an owner-signed
 # image is bootable at all, so it is a deliberate choice rather than whichever
@@ -254,24 +254,24 @@ QOS_SECBOOT="${QOS_SECBOOT:-0}"
 #   persist    the same pristine template, but kept across boots so that an
 #              enrolment performed in the guest survives a restart of qemu. This
 #              is what `--secboot` selects: enrolment is then an explicit act
-#              (`/usr/libexec/qos-secureboot enroll` in the guest), not something
+#              (`/usr/libexec/tilo-secureboot enroll` in the guest), not something
 #              the template did for us.
 #   microsoft  OVMF_VARS_4M.secboot.qcow2 — Microsoft's KEK and db. NOT "the
-#              secure one": a qOS UKI is signed with the owner's key, which that
+#              secure one": a Tilo UKI is signed with the owner's key, which that
 #              db does not cover, so under it nothing boots and the firmware says
 #              nothing about why. Selecting it is an explicit request to test
 #              vendor-key enforcement.
 #   <path>     a prepared store, used as-is and kept across boots.
-QOS_SECBOOT_KEYS="${QOS_SECBOOT_KEYS:-none}"
+TILO_SECBOOT_KEYS="${TILO_SECBOOT_KEYS:-none}"
 
 # Where to look for the firmware. Overridable so the "this firmware cannot
 # measure" refusal can be exercised against a directory holding only the 2 MB
 # build, instead of being a branch nobody ever takes.
-QOS_OVMF_DIRS="${QOS_OVMF_DIRS:-/usr/share/edk2/ovmf /usr/share/OVMF}"
-QOS_AAVMF_DIRS="${QOS_AAVMF_DIRS:-/usr/share/edk2/aarch64 /usr/share/AAVMF /usr/share/qemu-efi-aarch64}"
+TILO_OVMF_DIRS="${TILO_OVMF_DIRS:-/usr/share/edk2/ovmf /usr/share/OVMF}"
+TILO_AAVMF_DIRS="${TILO_AAVMF_DIRS:-/usr/share/edk2/aarch64 /usr/share/AAVMF /usr/share/qemu-efi-aarch64}"
 
 # Filled in by firmware_setup; read by machine_args/secboot_qemu_args/pflash_args.
-QOS_FW_CODE=""; QOS_FW_VARS=""; QOS_FW_FMT=""; QOS_FW_MEASURES=0; QOS_FW_SMM=0
+TILO_FW_CODE=""; TILO_FW_VARS=""; TILO_FW_FMT=""; TILO_FW_MEASURES=0; TILO_FW_SMM=0
 
 # Echo the first of $@ that exists in the env, or nothing.
 _env_first_file() {
@@ -281,132 +281,132 @@ _env_first_file() {
     2>/dev/null || true
 }
 
-# Resolve the firmware for the current settings into QOS_FW_*, or die with the
+# Resolve the firmware for the current settings into TILO_FW_*, or die with the
 # remedy. Must be called before machine_args / secboot_qemu_args / pflash_args:
 # the pflash format is part of the answer (the 4 MB build ships as qcow2, the
 # 2 MB one as raw, and the wrong `format=` makes qemu read firmware as garbage).
 firmware_setup() {
-  if [ "$QOS_SECBOOT" = "1" ] && [ "$QOS_SECBOOT_KEYS" = "none" ]; then
-    QOS_SECBOOT_KEYS=persist
+  if [ "$TILO_SECBOOT" = "1" ] && [ "$TILO_SECBOOT_KEYS" = "none" ]; then
+    TILO_SECBOOT_KEYS=persist
     msg "--secboot: variable store will persist across boots so an enrolment sticks"
   fi
 
   local dir d cands
-  if [ "$QOS_VM_ARCH" = aarch64 ]; then
+  if [ "$TILO_VM_ARCH" = aarch64 ]; then
     # AAVMF/QEMU_EFI is distributed under different names by Fedora and
     # Debian-family hosts. Both layouts provide a writable, blank variable-store
     # template next to the read-only code image. This release cycle deliberately
     # exercises the strong-passphrase path; do not imply measured boot from an
     # arbitrary AAVMF build merely because it happens to expose a TPM device.
-    [ "$QOS_TPM" = 0 ] || die "the aarch64 VM cycle has no verified measured-AAVMF profile yet.
+    [ "$TILO_TPM" = 0 ] || die "the aarch64 VM cycle has no verified measured-AAVMF profile yet.
   Run the release-grade ARM installer cycle with --no-tpm; TPM enrollment remains
-  disabled in qOS until signed measured-boot predictions are implemented."
-    [ "$QOS_SECBOOT_KEYS" = none ] || die "aarch64 VM Secure Boot key stores are not verified yet;
-  use QOS_SECBOOT_KEYS=none for the ARM installer cycle"
+  disabled in Tilo until signed measured-boot predictions are implemented."
+    [ "$TILO_SECBOOT_KEYS" = none ] || die "aarch64 VM Secure Boot key stores are not verified yet;
+  use TILO_SECBOOT_KEYS=none for the ARM installer cycle"
     cands=""
-    for d in $QOS_AAVMF_DIRS; do
+    for d in $TILO_AAVMF_DIRS; do
       cands="$cands $d/QEMU_EFI-pflash.raw $d/AAVMF_CODE.fd"
     done
     # shellcheck disable=SC2086
-    QOS_FW_CODE="$(_env_first_file $cands)"
-    [ -n "$QOS_FW_CODE" ] || die "no AAVMF firmware in ${QOS_DISTROBOX:-the host}.
+    TILO_FW_CODE="$(_env_first_file $cands)"
+    [ -n "$TILO_FW_CODE" ] || die "no AAVMF firmware in ${TILO_DISTROBOX:-the host}.
   Remedy: install edk2-aarch64 (Fedora) or qemu-efi-aarch64 (Debian/Ubuntu)."
-    dir="$(dirname "$QOS_FW_CODE")"
-    case "$(basename "$QOS_FW_CODE")" in
+    dir="$(dirname "$TILO_FW_CODE")"
+    case "$(basename "$TILO_FW_CODE")" in
       QEMU_EFI-pflash.raw)
-        QOS_FW_VARS="$dir/vars-template-pflash.raw" ;;
+        TILO_FW_VARS="$dir/vars-template-pflash.raw" ;;
       AAVMF_CODE.fd)
-        QOS_FW_VARS="$dir/AAVMF_VARS.fd" ;;
-      *) die "unsupported AAVMF code image: $QOS_FW_CODE" ;;
+        TILO_FW_VARS="$dir/AAVMF_VARS.fd" ;;
+      *) die "unsupported AAVMF code image: $TILO_FW_CODE" ;;
     esac
-    [ -n "$(_env_first_file "$QOS_FW_VARS")" ] || die "AAVMF variable-store template missing: $QOS_FW_VARS"
-    QOS_FW_FMT=raw
-    QOS_FW_MEASURES=0
-    QOS_FW_SMM=0
-    msg "firmware: $(basename "$QOS_FW_CODE") [raw] keys=none measures=unverified smm=0"
+    [ -n "$(_env_first_file "$TILO_FW_VARS")" ] || die "AAVMF variable-store template missing: $TILO_FW_VARS"
+    TILO_FW_FMT=raw
+    TILO_FW_MEASURES=0
+    TILO_FW_SMM=0
+    msg "firmware: $(basename "$TILO_FW_CODE") [raw] keys=none measures=unverified smm=0"
     return
   fi
 
-  cands=""; for d in $QOS_OVMF_DIRS; do cands="$cands $d/OVMF_CODE_4M.secboot.qcow2"; done
+  cands=""; for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE_4M.secboot.qcow2"; done
   # shellcheck disable=SC2086
-  QOS_FW_CODE="$(_env_first_file $cands)"
-  if [ -n "$QOS_FW_CODE" ]; then
-    QOS_FW_FMT=qcow2; QOS_FW_MEASURES=1; QOS_FW_SMM=1
-    dir="$(dirname "$QOS_FW_CODE")"
-    case "$QOS_SECBOOT_KEYS" in
-      none|persist) QOS_FW_VARS="$dir/OVMF_VARS_4M.qcow2" ;;
-      microsoft)    QOS_FW_VARS="$dir/OVMF_VARS_4M.secboot.qcow2" ;;
-      *)            QOS_FW_VARS="$QOS_SECBOOT_KEYS" ;;
+  TILO_FW_CODE="$(_env_first_file $cands)"
+  if [ -n "$TILO_FW_CODE" ]; then
+    TILO_FW_FMT=qcow2; TILO_FW_MEASURES=1; TILO_FW_SMM=1
+    dir="$(dirname "$TILO_FW_CODE")"
+    case "$TILO_SECBOOT_KEYS" in
+      none|persist) TILO_FW_VARS="$dir/OVMF_VARS_4M.qcow2" ;;
+      microsoft)    TILO_FW_VARS="$dir/OVMF_VARS_4M.secboot.qcow2" ;;
+      *)            TILO_FW_VARS="$TILO_SECBOOT_KEYS" ;;
     esac
   else
     cands=""
-    for d in $QOS_OVMF_DIRS; do cands="$cands $d/OVMF_CODE.secboot.fd"; done
-    for d in $QOS_OVMF_DIRS; do cands="$cands $d/OVMF_CODE.fd"; done
+    for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE.secboot.fd"; done
+    for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE.fd"; done
     # shellcheck disable=SC2086
-    QOS_FW_CODE="$(_env_first_file $cands)"
-    [ -n "$QOS_FW_CODE" ] || die "no OVMF firmware in ${QOS_DISTROBOX:-the host}.
-  Remedy: distrobox enter ${QOS_DISTROBOX:-…} -- sudo dnf install edk2-ovmf"
-    if [ "$QOS_TPM" = "1" ]; then
-      die "the only OVMF build here is the 2 MB one ($QOS_FW_CODE), which has no TPM
+    TILO_FW_CODE="$(_env_first_file $cands)"
+    [ -n "$TILO_FW_CODE" ] || die "no OVMF firmware in ${TILO_DISTROBOX:-the host}.
+  Remedy: distrobox enter ${TILO_DISTROBOX:-…} -- sudo dnf install edk2-ovmf"
+    if [ "$TILO_TPM" = "1" ]; then
+      die "the only OVMF build here is the 2 MB one ($TILO_FW_CODE), which has no TPM
   support: its TCG2 protocol reports zero active PCR banks, so nothing is ever
   measured. Every PCR would read zero and no event log would appear — the same
   evidence a UKI that failed to measure leaves behind — so a measured-boot check
   would fail for a reason that has nothing to do with the kernel. Refusing to
   attach a TPM to a firmware that cannot measure into it.
-  Remedy: install a current edk2-ovmf in ${QOS_DISTROBOX:-the host}; it ships
+  Remedy: install a current edk2-ovmf in ${TILO_DISTROBOX:-the host}; it ships
     /usr/share/edk2/ovmf/OVMF_CODE_4M.secboot.qcow2 + OVMF_VARS_4M.qcow2
-    (distrobox enter ${QOS_DISTROBOX:-…} -- sudo dnf install edk2-ovmf)"
+    (distrobox enter ${TILO_DISTROBOX:-…} -- sudo dnf install edk2-ovmf)"
     fi
-    QOS_FW_FMT=raw; QOS_FW_MEASURES=0
-    case "$QOS_FW_CODE" in *.secboot.fd) QOS_FW_SMM=1 ;; *) QOS_FW_SMM=0 ;; esac
-    warn "the 2 MB OVMF build ($QOS_FW_CODE) cannot measure: no PCR, event-log or"
+    TILO_FW_FMT=raw; TILO_FW_MEASURES=0
+    case "$TILO_FW_CODE" in *.secboot.fd) TILO_FW_SMM=1 ;; *) TILO_FW_SMM=0 ;; esac
+    warn "the 2 MB OVMF build ($TILO_FW_CODE) cannot measure: no PCR, event-log or"
     warn "measured-boot result from this VM is evidence of anything."
-    dir="$(dirname "$QOS_FW_CODE")"
-    case "$QOS_SECBOOT_KEYS" in
-      none|persist) QOS_FW_VARS="$dir/OVMF_VARS.fd" ;;
-      microsoft)    QOS_FW_VARS="$dir/OVMF_VARS.secboot.fd" ;;
-      *)            QOS_FW_VARS="$QOS_SECBOOT_KEYS" ;;
+    dir="$(dirname "$TILO_FW_CODE")"
+    case "$TILO_SECBOOT_KEYS" in
+      none|persist) TILO_FW_VARS="$dir/OVMF_VARS.fd" ;;
+      microsoft)    TILO_FW_VARS="$dir/OVMF_VARS.secboot.fd" ;;
+      *)            TILO_FW_VARS="$TILO_SECBOOT_KEYS" ;;
     esac
   fi
 
-  if [ -z "$(_env_first_file "$QOS_FW_VARS")" ]; then
-    case "$QOS_SECBOOT_KEYS" in
+  if [ -z "$(_env_first_file "$TILO_FW_VARS")" ]; then
+    case "$TILO_SECBOOT_KEYS" in
       none|persist|microsoft)
-        die "OVMF variable-store template missing: $QOS_FW_VARS
-  Remedy: distrobox enter ${QOS_DISTROBOX:-…} -- sudo dnf install edk2-ovmf" ;;
+        die "OVMF variable-store template missing: $TILO_FW_VARS
+  Remedy: distrobox enter ${TILO_DISTROBOX:-…} -- sudo dnf install edk2-ovmf" ;;
       *)
-        die "QOS_SECBOOT_KEYS=$QOS_SECBOOT_KEYS names a variable store that does not
+        die "TILO_SECBOOT_KEYS=$TILO_SECBOOT_KEYS names a variable store that does not
   exist. Enrolling an owner key is a deliberate step, not something a boot does
-  on the way past: boot with QOS_SECBOOT=1 (pristine store, setup mode, kept
-  across boots), run \`/usr/libexec/qos-secureboot enroll\` in the guest, and
+  on the way past: boot with TILO_SECBOOT=1 (pristine store, setup mode, kept
+  across boots), run \`/usr/libexec/tilo-secureboot enroll\` in the guest, and
   reboot the guest — the store then carries the owner PK/KEK/db." ;;
     esac
   fi
 
-  if [ "$QOS_SECBOOT_KEYS" = "microsoft" ]; then
-    warn "variable store: Microsoft's keys ($QOS_FW_VARS). The firmware refuses an"
+  if [ "$TILO_SECBOOT_KEYS" = "microsoft" ]; then
+    warn "variable store: Microsoft's keys ($TILO_FW_VARS). The firmware refuses an"
     warn "image signed with any other key before it prints anything, so an"
     warn "owner-signed UKI produces a guest that never appears. Use"
-    warn "QOS_SECBOOT_KEYS=none (setup mode — still measures) unless you are"
+    warn "TILO_SECBOOT_KEYS=none (setup mode — still measures) unless you are"
     warn "specifically testing vendor-key enforcement."
   fi
 
-  msg "firmware: $(basename "$QOS_FW_CODE") [$QOS_FW_FMT] keys=$QOS_SECBOOT_KEYS measures=$QOS_FW_MEASURES smm=$QOS_FW_SMM"
+  msg "firmware: $(basename "$TILO_FW_CODE") [$TILO_FW_FMT] keys=$TILO_SECBOOT_KEYS measures=$TILO_FW_MEASURES smm=$TILO_FW_SMM"
 }
 
 # Seed and echo the working variable store for this VM. `none` is re-seeded every
 # boot for ad-hoc VM use, but is persisted inside a named installation cycle;
 # every other selection is kept, because an
 # enrolment a restart silently threw away is indistinguishable from one that
-# never happened. $1 = run dir (defaults to QOS_RUN).
+# never happened. $1 = run dir (defaults to TILO_RUN).
 firmware_varstore() {
-  local run="${1:-$QOS_RUN}" tag out
-  tag="$(printf '%s' "$QOS_SECBOOT_KEYS" | tr -c 'a-zA-Z0-9' '-')"
-  out="$run/vars-$QOS_FW_FMT-$tag.img"
-  if [ "$QOS_SECBOOT_KEYS" = "none" ] && [ -z "$QOS_VM_CYCLE" ]; then
-    inenv "mkdir -p '$run' && cp -f '$QOS_FW_VARS' '$out'"
+  local run="${1:-$TILO_RUN}" tag out
+  tag="$(printf '%s' "$TILO_SECBOOT_KEYS" | tr -c 'a-zA-Z0-9' '-')"
+  out="$run/vars-$TILO_FW_FMT-$tag.img"
+  if [ "$TILO_SECBOOT_KEYS" = "none" ] && [ -z "$TILO_VM_CYCLE" ]; then
+    inenv "mkdir -p '$run' && cp -f '$TILO_FW_VARS' '$out'"
   else
-    inenv "mkdir -p '$run' && { test -f '$out' || cp -f '$QOS_FW_VARS' '$out'; }"
+    inenv "mkdir -p '$run' && { test -f '$out' || cp -f '$TILO_FW_VARS' '$out'; }"
   fi
   printf '%s\n' "$out"
 }
@@ -414,25 +414,25 @@ firmware_varstore() {
 # The two -drive lines for the firmware. $1 = working variable store.
 pflash_args() {
   printf -- '-drive if=pflash,format=%s,readonly=on,file=%s -drive if=pflash,format=%s,file=%s' \
-    "$QOS_FW_FMT" "$QOS_FW_CODE" "$QOS_FW_FMT" "$1"
+    "$TILO_FW_FMT" "$TILO_FW_CODE" "$TILO_FW_FMT" "$1"
 }
 
 # Extra qemu args the Secure-Boot firmware needs: SMM, and a pflash that refuses
 # writes from outside SMM. Without both, the variable store is writable from the
 # guest and enforcement is theatre.
 secboot_qemu_args() {
-  [ "$QOS_FW_SMM" = "1" ] || return 0
+  [ "$TILO_FW_SMM" = "1" ] || return 0
   # disable_s3: the SMM-protected variable store and S3 resume do not coexist in
   # OVMF, and leaving S3 on makes the firmware complain and fall back.
   printf -- '-global driver=cfi.pflash01,property=secure,value=on -global ICH9-LPC.disable_s3=1'
 }
 # q35 machine options; SMM is required by the Secure-Boot firmware.
 machine_args() {
-  if [ "$QOS_VM_ARCH" = aarch64 ]; then
+  if [ "$TILO_VM_ARCH" = aarch64 ]; then
     printf -- '-machine virt,gic-version=max'
     return
   fi
-  if [ "$QOS_FW_SMM" = "1" ]; then
+  if [ "$TILO_FW_SMM" = "1" ]; then
     printf -- '-machine q35,smm=on'
   else
     printf -- '-machine q35'
@@ -443,8 +443,8 @@ machine_args() {
 # board uses the PCI virtio-gpu variant, which AAVMF exposes through GOP and the
 # graphical installer can modeset in exactly the same way after ExitBootServices.
 display_qemu_args() {
-  local mode="$1" res="xres=$QOS_XRES,yres=$QOS_YRES" rn
-  case "$mode:$QOS_VM_ARCH" in
+  local mode="$1" res="xres=$TILO_XRES,yres=$TILO_YRES" rn
+  case "$mode:$TILO_VM_ARCH" in
     gl:x86_64)
       rn="$(detect_rendernode)"
       printf -- '-device virtio-vga-gl,%s -display egl-headless,rendernode=%s' "$res" "$rn" ;;
@@ -459,13 +459,14 @@ display_qemu_args() {
       printf -- '-device virtio-vga,%s -display none' "$res" ;;
     2d:aarch64)
       printf -- '-device virtio-gpu-pci,%s -display none' "$res" ;;
-    *) die "unsupported display mode/architecture: $mode/$QOS_VM_ARCH" ;;
+    *) die "unsupported display mode/architecture: $mode/$TILO_VM_ARCH" ;;
   esac
 }
 
 input_qemu_args() {
-  if [ "$QOS_VM_ARCH" = aarch64 ]; then
-    printf -- '-device qemu-xhci -device usb-tablet'
+  if [ "$TILO_VM_ARCH" = aarch64 ]; then
+    # ARM virt has no implicit PC keyboard; monitor sendkey needs a guest device.
+    printf -- '-device qemu-xhci -device usb-tablet -device usb-kbd'
   else
     printf -- '-usb -device usb-tablet'
   fi
@@ -480,17 +481,17 @@ input_qemu_args() {
 # Start a persistent swtpm 2.0 socket inside the env (where qemu runs). Idempotent
 # — reuses an already-running instance so boot-installer/boot-target share state.
 swtpm_start() {
-  [ "$QOS_TPM" = "1" ] || return 0
-  inenv "command -v swtpm >/dev/null || { echo 'swtpm not installed in ${QOS_DISTROBOX:-env}'; exit 1; }" \
-    || die "swtpm missing (sudo dnf install swtpm swtpm-tools in ${QOS_DISTROBOX:-the env})"
+  [ "$TILO_TPM" = "1" ] || return 0
+  inenv "command -v swtpm >/dev/null || { echo 'swtpm not installed in ${TILO_DISTROBOX:-env}'; exit 1; }" \
+    || die "swtpm missing (sudo dnf install swtpm swtpm-tools in ${TILO_DISTROBOX:-the env})"
 
   # A listening emulator is not enough: swtpm enters permanent TPM failure mode
   # when its NVRAM backend cannot persist state. Catch full/quota-limited runtime
   # storage before firmware boots into a misleading PCR-service reboot loop.
-  inenv "mkdir -p '$QOS_TPM_DIR' && \
-    printf 'qOS TPM state preflight\n' >'$QOS_TPM_DIR/.write-test' && \
-    sync '$QOS_TPM_DIR/.write-test' && rm -f '$QOS_TPM_DIR/.write-test'" \
-    || die "cannot persist software-TPM state in $QOS_TPM_DIR (filesystem full or quota exceeded)"
+  inenv "mkdir -p '$TILO_TPM_DIR' && \
+    printf 'Tilo TPM state preflight\n' >'$TILO_TPM_DIR/.write-test' && \
+    sync '$TILO_TPM_DIR/.write-test' && rm -f '$TILO_TPM_DIR/.write-test'" \
+    || die "cannot persist software-TPM state in $TILO_TPM_DIR (filesystem full or quota exceeded)"
 
   # A leftover swtpm from before this fix would be reused silently and put the
   # unstarted TPM back, so check what is actually listening rather than trusting
@@ -501,10 +502,10 @@ swtpm_start() {
   # flag name — so an unanchored match finds itself and reports every leftover as
   # correctly started. Anchoring restricts it to processes whose command line
   # begins with swtpm.
-  if inenv "test -S '$QOS_TPM_SOCK'" && \
-     ! inenv "pgrep -af '^swtpm socket' | grep -F -- '$QOS_TPM_SOCK' | grep -q startup-clear"; then
-    warn "a swtpm without --flags startup-clear holds $QOS_TPM_SOCK; replacing it"
-    swtpm_stop; sleep 1; inenv "rm -f '$QOS_TPM_SOCK'"
+  if inenv "test -S '$TILO_TPM_SOCK'" && \
+     ! inenv "pgrep -af '^swtpm socket' | grep -F -- '$TILO_TPM_SOCK' | grep -q startup-clear"; then
+    warn "a swtpm without --flags startup-clear holds $TILO_TPM_SOCK; replacing it"
+    swtpm_stop; sleep 1; inenv "rm -f '$TILO_TPM_SOCK'"
   fi
 
   # --flags not-need-init,startup-clear is what makes this a *started* TPM.
@@ -514,38 +515,38 @@ swtpm_start() {
   # issuing TPM2_Startup itself — far too late for the boot to have been measured.
   # The evidence that leaves behind is identical to a firmware without TPM
   # support, so it is ruled out here rather than diagnosed afterwards.
-  inenv "mkdir -p '$QOS_TPM_DIR'; \
-    if ! test -S '$QOS_TPM_SOCK'; then \
-      setsid nohup swtpm socket --tpmstate dir='$QOS_TPM_DIR' \
-        --ctrl type=unixio,path='$QOS_TPM_SOCK' --tpm2 \
+  inenv "mkdir -p '$TILO_TPM_DIR'; \
+    if ! test -S '$TILO_TPM_SOCK'; then \
+      setsid nohup swtpm socket --tpmstate dir='$TILO_TPM_DIR' \
+        --ctrl type=unixio,path='$TILO_TPM_SOCK' --tpm2 \
         --flags not-need-init,startup-clear \
-        >'$QOS_TPM_DIR/swtpm.log' 2>&1 & disown; \
-      for _ in \$(seq 1 50); do test -S '$QOS_TPM_SOCK' && break; sleep 0.1; done; \
+        >'$TILO_TPM_DIR/swtpm.log' 2>&1 & disown; \
+      for _ in \$(seq 1 50); do test -S '$TILO_TPM_SOCK' && break; sleep 0.1; done; \
     fi; \
-    test -S '$QOS_TPM_SOCK'" \
-    || die "swtpm failed to start (see $QOS_TPM_DIR/swtpm.log).
+    test -S '$TILO_TPM_SOCK'" \
+    || die "swtpm failed to start (see $TILO_TPM_DIR/swtpm.log).
   If it rejected '--flags not-need-init,startup-clear', the swtpm in
-  ${QOS_DISTROBOX:-the env} is too old to start the TPM itself; without that the
+  ${TILO_DISTROBOX:-the env} is too old to start the TPM itself; without that the
   firmware cannot measure. Remedy: sudo dnf install --refresh swtpm swtpm-tools"
 
   # Prove the emulator answers, rather than reading a socket as a working TPM.
-  inenv "command -v swtpm_ioctl >/dev/null || exit 0; swtpm_ioctl -c --unix '$QOS_TPM_SOCK' >/dev/null" \
-    || die "swtpm is listening on $QOS_TPM_SOCK but not answering control commands
-  (see $QOS_TPM_DIR/swtpm.log). A guest booted against it would measure nothing
+  inenv "command -v swtpm_ioctl >/dev/null || exit 0; swtpm_ioctl -c --unix '$TILO_TPM_SOCK' >/dev/null" \
+    || die "swtpm is listening on $TILO_TPM_SOCK but not answering control commands
+  (see $TILO_TPM_DIR/swtpm.log). A guest booted against it would measure nothing
   and report every PCR as zero."
-  msg "swtpm up (TPM 2.0, started, state=$QOS_TPM_DIR)"
+  msg "swtpm up (TPM 2.0, started, state=$TILO_TPM_DIR)"
 }
 swtpm_stop() {
   # Anchored for the same reason as the check above, and here it also stops the
   # kill from landing on the wrong process: unanchored, the pattern matches the
   # shell running pkill — so this killed its own wrapper (that is the "Terminated"
   # line every `vm.sh stop` printed) and could leave the emulator running.
-  inenv "pkill -f \"^swtpm socket .*$QOS_TPM_SOCK\" 2>/dev/null || true"
+  inenv "pkill -f \"^swtpm socket .*$TILO_TPM_SOCK\" 2>/dev/null || true"
 }
 # qemu args attaching the swtpm to the guest (empty when TPM disabled).
 tpm_qemu_args() {
-  [ "$QOS_TPM" = "1" ] || return 0
-  printf -- '-chardev socket,id=chrtpm,path=%s -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-tis,tpmdev=tpm0' "$QOS_TPM_SOCK"
+  [ "$TILO_TPM" = "1" ] || return 0
+  printf -- '-chardev socket,id=chrtpm,path=%s -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-tis,tpmdev=tpm0' "$TILO_TPM_SOCK"
 }
 
 # --- explaining a boot that produced nothing ----------------------------------
@@ -577,23 +578,23 @@ boot_diagnose() {
     warn "  Two things start a TPM, and neither did: the firmware issues"
     warn "  TPM2_Startup only if it has TPM support (the 2 MB OVMF build does not),"
     warn "  and swtpm issues it itself only with --flags not-need-init,startup-clear."
-    warn "  Firmware in use: ${QOS_FW_CODE:-<not selected>} (measures=${QOS_FW_MEASURES:-?})"
+    warn "  Firmware in use: ${TILO_FW_CODE:-<not selected>} (measures=${TILO_FW_MEASURES:-?})"
     return 0
   fi
-  if [ "$empty" = 1 ] && [ "$QOS_SECBOOT_KEYS" != "none" ] && [ "$QOS_SECBOOT_KEYS" != "persist" ]; then
-    warn "nothing at all on the serial line, with '$QOS_SECBOOT_KEYS' keys in the"
+  if [ "$empty" = 1 ] && [ "$TILO_SECBOOT_KEYS" != "none" ] && [ "$TILO_SECBOOT_KEYS" != "persist" ]; then
+    warn "nothing at all on the serial line, with '$TILO_SECBOOT_KEYS' keys in the"
     warn "variable store: the firmware refuses an image signed with any other key"
     warn "before it prints a character, so this is what a rejected image looks like."
-    warn "  Remedy: QOS_SECBOOT_KEYS=none (setup mode — still measures), or enrol"
+    warn "  Remedy: TILO_SECBOOT_KEYS=none (setup mode — still measures), or enrol"
     warn "  the signing certificate in the guest and keep the store (--secboot)."
     return 0
   fi
-  if [ "$QOS_TPM" = "1" ] && [ "$empty" = 0 ] && \
+  if [ "$TILO_TPM" = "1" ] && [ "$empty" = 0 ] && \
      ! _serial_has "$log" 'tpm_tis|tpm_crb|TPM.?2\.0|tpm[0-9]'; then
     warn "a TPM was attached but the guest never reported one: the firmware did not"
     warn "expose TCG2, so PCR and event-log checks in the guest would report"
     warn "'nothing measured' whatever the kernel did. Firmware in use:"
-    warn "  $QOS_FW_CODE (measures=$QOS_FW_MEASURES)"
+    warn "  $TILO_FW_CODE (measures=$TILO_FW_MEASURES)"
     return 0
   fi
   return 1

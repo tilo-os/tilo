@@ -1,4 +1,4 @@
-//! Integration test: build a bundle from a fake host root, verify it,
+//! Integration test: build a bundle from a fixture host root, verify it,
 //! then flip a byte and confirm verify rejects it. Also exercises the
 //! cross-arch aarch64 path and the signing round-trip.
 

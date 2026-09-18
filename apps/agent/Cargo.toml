@@ -4,14 +4,14 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "qos-agent: a headless participant that joins a word-processor document through the compositor's collaboration broker and edits it with the app's own actions."
+description = "tilo-agent: a headless participant that joins a word-processor document through the compositor's collaboration broker and edits it with the app's own actions."
 
 [lib]
-name = "qos_agent"
+name = "tilo_agent"
 path = "src/lib.rs"
 
 [[bin]]
-name = "qos-agent"
+name = "tilo-agent"
 path = "src/main.rs"
 
 [features]
@@ -21,35 +21,26 @@ thin = ["dep:runtime-dylib"]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 # The blocking agent facade delegates to the toolkit's typed
-# `QOS_SVC_COLLAB_FD` client and consumes the same request/event model as a
+# `TILO_SVC_COLLAB_FD` client and consumes the same request/event model as a
 # windowed app.
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
-# The word processor's exported actions: the agent edits with exactly the
-# ops the toolbar produces, never with its own idea of the document.
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+# The word processor's exported actions, shared with the toolbar.
 word-processor = { path = "../word-processor" }
-# Where the agent is spoken to, and a second app of a deliberately different
-# shape: a conversation rather than a document. Default features off — the
-# live media engine (GStreamer, iroh, openh264, the screen portal) is a chat
-# window's business and nothing a headless participant reading messages
-# needs.
+# Chat conversation types and actions. Live media features remain disabled for
+# this headless participant.
 chat = { path = "../chat", default-features = false }
-# The one app in the room whose subject is not a document at all, and the
-# reason an instruction can name two apps: a photograph edited here is a
-# thing to put somewhere else. Its own decode and its own render, so "the
-# cropped photograph" means what the app means by it.
+# Image editor types and actions, including cross-app image references.
 photos = { path = "../photos" }
-qos-actions = { path = "../../crates/collab/actions" }
-# The address a chat message carries when it was authored by selecting
-# something — what `listen`'s `Subject::Carried` reads, so the agent never
-# has to work out what "this" meant on its own.
-qos-reference = { path = "../../crates/collab/reference" }
+tilo-actions = { path = "../../crates/collab/actions" }
+# The selected-resource address carried by chat messages.
+tilo-reference = { path = "../../crates/collab/reference" }
 # The runner reads the same provider profile Settings writes. Resolving the
 # profile's vault reference remains a desktop-secret-broker operation; no key
 # is linked into this binary through configuration.
 agent-provider-config = { path = "../../crates/agent/provider-config" }
 # The descriptor client for the desktop-owned hosted model gateway. This has
 # no vault access and never exposes a bearer token to the agent process.
-qos-model-gateway = { path = "../../crates/agent/model-gateway" }
+tilo-model-gateway = { path = "../../crates/agent/model-gateway" }
 qdoc = { path = "../../crates/doc/qdoc" }
 automerge.workspace = true
 serde_json.workspace = true
@@ -62,9 +53,9 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 [dev-dependencies]
 tempfile.workspace = true
 hex.workspace = true
-shell = { path = "../../shell", default-features = false }
+shell = { path = "../../crates/session/shell", default-features = false }
 collab-types = { path = "../../crates/collab/collab-types" }
-qos-user-identity = { path = "../../crates/identity/qos-user-identity" }
+tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 ed25519-dalek.workspace = true
 

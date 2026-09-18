@@ -16,21 +16,27 @@ path = "src/lib.rs"
 # crate docstring in `src/lib.rs` for the design intent.
 
 [dependencies]
+bounded-command = { path = "../bounded-command" }
+libc.workspace = true
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 zeroize.workspace = true
+rand_core.workspace = true
+thiserror.workspace = true
+nix = { version = "0.30.1", features = ["ioctl"] }
+tilo-crypto = { path = "../tilo-crypto" }
 # Bluetooth is the one control here that cannot be a shell-out: a scan lives
 # as long as its D-Bus connection, and pairing needs an agent object BlueZ
 # calls back into. See src/bluez.rs.
-qos-bluez = { path = "../qos-bluez" }
-qos-power-mgmt = { path = "../power" }
+tilo-bluez = { path = "../tilo-bluez" }
+tilo-power-mgmt = { path = "../power" }
 tokio = { version = "1.52.3", features = ["rt", "rt-multi-thread", "time"] }
 zbus = { version = "4", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
-# Fixture sysfs trees, so the backlight reader/writer is tested against
-# real directory layouts rather than a mocked filesystem.
+# Fixture sysfs trees for testing the backlight reader/writer against
+# representative directory layouts.
 tempfile = { workspace = true }
 
 [lints]

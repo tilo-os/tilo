@@ -23,9 +23,9 @@
 //!
 //! **External → never an action:** voice / screen-share *transport*, media
 //! upload, and the network send itself. When a file is shared, the message **row
-//! insert** is the action (it carries the attachment *by reference* — a FUSE
-//! path, name and dimensions, never the bytes); the media bytes and their
-//! transport are external and hydrate on demand.
+//! insert** is the action (it carries the attachment *by reference* — a qdoc
+//! content hash, display name, and bounded metadata, never a local path or the
+//! bytes); the media bytes remain outside the CRDT and hydrate on demand.
 //!
 //! ## A call is both halves, and only one of them is external
 //!
@@ -65,12 +65,12 @@
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
     OperationKind, Resource, ResourceProvider,
 };
 
-use crate::doc::{ChatDoc, NewMessage};
+use crate::doc::{ChatDoc, NewMessage, VoiceState};
 use crate::model::{Attachment, ChannelKind};
 
 /// Registry `type_id` for every Chat action.
@@ -180,7 +180,7 @@ pub enum ChatAction {
         /// `#[serde(default)]` so a frame from a release that predates
         /// references still decodes.
         #[serde(default)]
-        reference: Option<qos_reference::ResourceRef>,
+        reference: Option<tilo_reference::ResourceRef>,
     },
     /// Replace a message's body, archiving the prior text into its edit history
     /// and flagging it edited. `ts` (the edit time) is minted at authoring.
@@ -359,8 +359,8 @@ pub enum ChatAction {
     clippy::too_many_lines,
     reason = "one exhaustive action-to-history mapping keeps every ChatAction variant compiler-checked"
 )]
-pub fn history_context(action: &ChatAction) -> qos_actions::ActionContext {
-    let mut context = qos_actions::ActionContext::for_action("org.qos.Chat", "Chat", action);
+pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
+    let mut context = tilo_actions::ActionContext::for_action("org.tilo.Chat", "Chat", action);
     let (label, channel, resource_id, kind) = match action {
         ChatAction::SendMessage { channel, id, .. } => {
             ("Send message", channel, id, "chat.message")
@@ -455,7 +455,7 @@ pub fn history_context(action: &ChatAction) -> qos_actions::ActionContext {
         }
     };
     context.action_label = label.to_string();
-    context.resource = Some(qos_actions::ActionResource {
+    context.resource = Some(tilo_actions::ActionResource {
         id: format!("{kind}:{resource_id}"),
         kind: kind.to_string(),
         label: if kind == "chat.message" {
@@ -503,6 +503,16 @@ impl ChatAction {
                 mentions,
                 reference,
             } => {
+                if !ChatDoc::accepts_message_action(
+                    doc,
+                    channel,
+                    id,
+                    text,
+                    parent.as_deref(),
+                    attachment.as_ref(),
+                ) {
+                    return;
+                }
                 ChatDoc::push_message_with_id(
                     doc,
                     channel,
@@ -640,10 +650,12 @@ impl ChatAction {
                     doc,
                     channel,
                     user,
-                    *talking,
-                    *muted,
-                    *deafened,
-                    *audio_only,
+                    VoiceState {
+                        talking: *talking,
+                        muted: *muted,
+                        deafened: *deafened,
+                        audio_only: *audio_only,
+                    },
                 );
             }
             ChatAction::SetScreenShare {
@@ -694,7 +706,10 @@ pub fn encode(action: &ChatAction) -> EncodedAction {
 // affordances (see `crate::events`) and the Ctrl+K resource tree below.
 // ===========================================================================
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "canonical leaf constructor mirrors the replayable SendMessage action payload; callers must supply every authored field before dispatch"
+)]
 pub fn send_message_action(
     channel: &str,
     id: &str,
@@ -933,6 +948,27 @@ pub struct MessageResource {
     pub label: String,
     pub pinned: bool,
     pub parent: Option<String>,
+    /// An attachment is a durable, content-addressed child of the message,
+    /// rather than an unsearchable bit of its paint. There can be only one in
+    /// the current message schema, so its stable address is keyed by message.
+    pub attachment: Option<AttachmentResource>,
+    /// Reactions are shared rows keyed by their canonical emoji value. Keeping
+    /// them as children makes a reaction discoverable and actionable without
+    /// forcing callers to parse the message body or inspect a rendered chip.
+    pub reactions: Vec<ReactionResource>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AttachmentResource {
+    pub name: String,
+    pub blob: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReactionResource {
+    pub emoji: String,
+    pub count: usize,
+    pub reacted_by_me: bool,
 }
 
 /// The presentation context Chat hands [`provide_resources`]: the local peer id,
@@ -1182,25 +1218,72 @@ pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Op
         annotate_contracts(&mut resource);
         return Some(resource);
     }
-    let message_id = id.strip_prefix("chat.message:")?;
-    let message = ChatDoc::list_channels(doc)
-        .into_iter()
-        .find_map(|channel| {
-            ChatDoc::list_messages(doc, &channel.id)
+    if let Some(message_id) = id.strip_prefix("chat.attachment:") {
+        let (channel, message) = find_message(doc, message_id)?;
+        let attachment = message.attachment.as_ref()?;
+        let workspace = ChatDoc::list_workspaces(doc)
+            .into_iter()
+            .find(|workspace| workspace.id == channel.workspace)?;
+        let channel_model = channel_resource(&channel);
+        let mut resource = build_attachment_resource(
+            &workspace.id,
+            &channel_model,
+            &message.id,
+            message.parent.as_ref(),
+            &AttachmentResource {
+                name: attachment.name().to_owned(),
+                blob: attachment.blob().to_owned(),
+            },
+        );
+        annotate_contracts(&mut resource);
+        return Some(resource);
+    }
+    if let Some(rest) = id.strip_prefix("chat.reaction:") {
+        // Emoji is unconstrained Unicode and may itself contain ':' (custom
+        // emoji commonly do), so resolve against the complete message-id
+        // catalogue rather than splitting an opaque stable id heuristically.
+        let (channel, message, reaction) =
+            ChatDoc::list_channels(doc)
                 .into_iter()
-                .find(|message| message.id == message_id)
-                .map(|message| (channel, message))
-        })?;
+                .find_map(|channel| {
+                    ChatDoc::list_messages(doc, &channel.id)
+                        .into_iter()
+                        .find_map(|message| {
+                            message.reactions.iter().find_map(|reaction| {
+                                let candidate = format!("{}:{}", message.id, reaction.emoji);
+                                (candidate == rest)
+                                    .then(|| (channel.clone(), message.clone(), reaction.clone()))
+                            })
+                        })
+                })?;
+        let workspace = ChatDoc::list_workspaces(doc)
+            .into_iter()
+            .find(|workspace| workspace.id == channel.workspace)?;
+        let channel_model = channel_resource(&channel);
+        let reaction_count = reaction.count();
+        let reacted_by_me = reaction.reacted_by(&ctx.me);
+        let mut resource = build_reaction_resource(
+            ctx,
+            &workspace.id,
+            &channel_model,
+            &message.id,
+            message.parent.as_ref(),
+            &ReactionResource {
+                emoji: reaction.emoji,
+                count: reaction_count,
+                reacted_by_me,
+            },
+        );
+        annotate_contracts(&mut resource);
+        return Some(resource);
+    }
+    let message_id = id.strip_prefix("chat.message:")?;
+    let message = find_message(doc, message_id)?;
     let (channel, message) = message;
     let workspace = ChatDoc::list_workspaces(doc)
         .into_iter()
         .find(|workspace| workspace.id == channel.workspace)?;
-    let channel_model = ChannelResource {
-        id: channel.id,
-        name: channel.name,
-        kind: channel.kind,
-        archived: channel.archived,
-    };
+    let channel_model = channel_resource(&channel);
     let users = ChatDoc::list_users(doc);
     let message_model = MessageResource {
         id: message.id,
@@ -1212,10 +1295,49 @@ pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Op
         ),
         pinned: message.pinned,
         parent: message.parent,
+        attachment: message
+            .attachment
+            .as_ref()
+            .map(|attachment| AttachmentResource {
+                name: attachment.name().to_owned(),
+                blob: attachment.blob().to_owned(),
+            }),
+        reactions: message
+            .reactions
+            .iter()
+            .map(|reaction| ReactionResource {
+                emoji: reaction.emoji.clone(),
+                count: reaction.count(),
+                reacted_by_me: reaction.reacted_by(&ctx.me),
+            })
+            .collect(),
     };
     let mut resource = build_message_resource(ctx, &workspace.id, &channel_model, &message_model);
     annotate_contracts(&mut resource);
     Some(resource)
+}
+
+/// Resolve an immutable message row and its owning channel once. Resource
+/// resolution must read the document, never a currently rendered projection.
+fn find_message(
+    doc: &AutoCommit,
+    message_id: &str,
+) -> Option<(crate::model::Channel, crate::model::Message)> {
+    ChatDoc::list_channels(doc).into_iter().find_map(|channel| {
+        ChatDoc::list_messages(doc, &channel.id)
+            .into_iter()
+            .find(|message| message.id == message_id)
+            .map(|message| (channel, message))
+    })
+}
+
+fn channel_resource(channel: &crate::model::Channel) -> ChannelResource {
+    ChannelResource {
+        id: channel.id.clone(),
+        name: channel.name.clone(),
+        kind: channel.kind,
+        archived: channel.archived,
+    }
 }
 
 /// Workspace-level: create a new text channel in the uncategorised group. The
@@ -1620,7 +1742,104 @@ fn build_message_resource(
         &delete_message_action(&ch.id, &m.id),
     ));
 
+    if let Some(attachment) = &m.attachment {
+        message = message.with_child(build_attachment_resource(
+            workspace_id,
+            ch,
+            &m.id,
+            m.parent.as_ref(),
+            attachment,
+        ));
+    }
+    for reaction in &m.reactions {
+        message = message.with_child(build_reaction_resource(
+            ctx,
+            workspace_id,
+            ch,
+            &m.id,
+            m.parent.as_ref(),
+            reaction,
+        ));
+    }
+
     message
+}
+
+/// The portable attachment is an addressable child of its message. Opening it
+/// deliberately reveals the owning message: qdoc hydration/opening happens in
+/// the content app that knows the file type, whereas Chat's truthful action is
+/// to navigate to the durable conversation record that shared it.
+fn build_attachment_resource(
+    workspace_id: &str,
+    ch: &ChannelResource,
+    message_id: &str,
+    parent: Option<&String>,
+    attachment: &AttachmentResource,
+) -> Resource {
+    Resource::new(
+        format!("chat.attachment:{message_id}"),
+        "chat.attachment",
+        attachment.name.clone(),
+    )
+    .with_action(view_operation(
+        "open-message",
+        "Reveal shared message",
+        &ChatOperation::RevealMessage {
+            workspace: workspace_id.to_owned(),
+            channel: ch.id.clone(),
+            message: message_id.to_owned(),
+            parent: parent.cloned(),
+        },
+    ))
+}
+
+/// A reaction is both a durable aggregate and a direct action surface. The
+/// canonical resource contains the current count in its label and its one
+/// available mutation is the same absolute Add/Remove action the painted chip
+/// dispatches; it never reimplements a local toggle.
+fn build_reaction_resource(
+    ctx: &ChatResourceCtx,
+    workspace_id: &str,
+    ch: &ChannelResource,
+    message_id: &str,
+    parent: Option<&String>,
+    reaction: &ReactionResource,
+) -> Resource {
+    let label = format!("{} · {}", reaction.emoji, reaction.count);
+    let mut resource = Resource::new(
+        format!("chat.reaction:{message_id}:{}", reaction.emoji),
+        "chat.reaction",
+        label,
+    )
+    .with_action(view_operation(
+        "open-message",
+        "Reveal message",
+        &ChatOperation::RevealMessage {
+            workspace: workspace_id.to_owned(),
+            channel: ch.id.clone(),
+            message: message_id.to_owned(),
+            parent: parent.cloned(),
+        },
+    ));
+    let action = if reaction.reacted_by_me {
+        remove_reaction_action(&ch.id, message_id, &reaction.emoji, &ctx.me)
+    } else {
+        add_reaction_action(&ch.id, message_id, &reaction.emoji, &ctx.me)
+    };
+    resource = resource.with_action(immediate_spec(
+        if reaction.reacted_by_me {
+            "remove"
+        } else {
+            "add"
+        },
+        if reaction.reacted_by_me {
+            "Remove my reaction"
+        } else {
+            "Add my reaction"
+        },
+        &action,
+    ));
+    resource
 }
 
 fn message_label(
@@ -1674,7 +1893,7 @@ mod tests {
     use super::*;
     use crate::doc::ChatDoc;
     use crate::model::{self, ChannelKind};
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
 
     /// A fixed authoring timestamp for tests — actions carry it in the payload,
     /// so nothing here reads the wall-clock.
@@ -1706,7 +1925,7 @@ mod tests {
         let encoded = encode(action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
     }
 
     fn seeded() -> AutoCommit {
@@ -1733,6 +1952,19 @@ mod tests {
                 label: m.text.chars().take(24).collect(),
                 pinned: m.pinned,
                 parent: m.parent,
+                attachment: m.attachment.as_ref().map(|attachment| AttachmentResource {
+                    name: attachment.name().to_owned(),
+                    blob: attachment.blob().to_owned(),
+                }),
+                reactions: m
+                    .reactions
+                    .iter()
+                    .map(|reaction| ReactionResource {
+                        emoji: reaction.emoji.clone(),
+                        count: reaction.count(),
+                        reacted_by_me: reaction.reacted_by(model::ME),
+                    })
+                    .collect(),
             })
             .collect();
         ChatResourceCtx {
@@ -1795,6 +2027,22 @@ mod tests {
             label: source.text,
             pinned: source.pinned,
             parent: source.parent,
+            attachment: source
+                .attachment
+                .as_ref()
+                .map(|attachment| AttachmentResource {
+                    name: attachment.name().to_owned(),
+                    blob: attachment.blob().to_owned(),
+                }),
+            reactions: source
+                .reactions
+                .iter()
+                .map(|reaction| ReactionResource {
+                    emoji: reaction.emoji.clone(),
+                    count: reaction.count(),
+                    reacted_by_me: reaction.reacted_by(model::ME),
+                })
+                .collect(),
         };
         let msg = build_message_resource(&ctx, "ws_acme", ch, &msg_model);
         assert_eq!(msg.kind, "chat.message");
@@ -1837,7 +2085,7 @@ mod tests {
         let mut call_doc = AutoCommit::load(&doc.save()).unwrap();
         let joined = registry().decode(&immediate_encode(join)).unwrap();
         let mut transport = LocalTransport::new();
-        qos_actions::dispatch(
+        tilo_actions::dispatch(
             &mut call_doc,
             joined.as_ref(),
             immediate_encode(join),
@@ -1859,7 +2107,7 @@ mod tests {
 
         // Every exported action is reachable — flatten the forest (parents before
         // children) and confirm the message + workspace actions are present.
-        let flat = qos_actions::flatten(&resources);
+        let flat = tilo_actions::flatten(&resources);
         let flat_labels: Vec<&str> = flat.iter().map(|f| f.action.label.as_str()).collect();
         assert!(flat_labels.contains(&"New channel"), "{flat_labels:?}");
         assert!(!flat_labels.contains(&"Delete message"), "{flat_labels:?}");
@@ -1876,6 +2124,41 @@ mod tests {
         );
     }
 
+    /// Attachments and reaction aggregates are durable parts of a message, so
+    /// both must have a stable lazy address rather than being discoverable only
+    /// by scanning the painted timeline.
+    #[test]
+    fn attachment_and_reaction_resources_resolve_with_canonical_actions() {
+        let doc = seeded();
+        let ctx = ctx_from(&doc);
+
+        let attachment = resolve_resource(&ctx, &doc, "chat.attachment:m_concept")
+            .expect("attached message exposes its portable child resource");
+        assert_eq!(attachment.kind, "chat.attachment");
+        assert!(
+            attachment
+                .actions
+                .iter()
+                .any(|action| action.id == "open-message")
+        );
+
+        let reaction = resolve_resource(&ctx, &doc, "chat.reaction:m_concept:❤️")
+            .expect("reaction aggregate exposes its canonical child resource");
+        assert_eq!(reaction.kind, "chat.reaction");
+        let remove = reaction
+            .actions
+            .iter()
+            .find(|action| action.id == "remove")
+            .expect("your current reaction offers the shared remove action");
+        let expected = encode(&remove_reaction_action(
+            "c_crit",
+            "m_concept",
+            "❤️",
+            model::ME,
+        ));
+        assert_eq!(immediate_encode(remove).payload, expected.payload);
+    }
+
     #[test]
     fn ten_thousand_messages_do_not_expand_the_open_snapshot() {
         let doc = seeded();
@@ -1886,6 +2169,8 @@ mod tests {
                 label: format!("Message {id}"),
                 pinned: false,
                 parent: None,
+                attachment: None,
+                reactions: Vec::new(),
             })
             .collect();
         let resources = provide_resources(&ctx, &doc);
@@ -1961,6 +2246,46 @@ mod tests {
         let m = msgs.iter().find(|m| m.id == "m_test1").unwrap();
         assert_eq!(m.text, "hello");
         assert_eq!(m.author, model::ME);
+    }
+
+    #[test]
+    fn send_message_retries_are_exactly_once_and_reject_invalid_targets() {
+        let mut doc = seeded();
+        let action = send_message_action(
+            "c_general",
+            "m_retry_once",
+            model::ME,
+            TS,
+            "retry-safe",
+            None,
+            None,
+            Vec::new(),
+        );
+        dispatch(&mut doc, &action);
+        dispatch(&mut doc, &action);
+        assert_eq!(
+            ChatDoc::list_messages(&doc, "c_general")
+                .iter()
+                .filter(|message| message.id == "m_retry_once")
+                .count(),
+            1,
+            "replaying one authored action cannot create a second resource row"
+        );
+
+        dispatch(
+            &mut doc,
+            &send_message_action(
+                "c_missing",
+                "m_missing_target",
+                model::ME,
+                TS,
+                "must not create a hidden channel",
+                None,
+                None,
+                Vec::new(),
+            ),
+        );
+        assert!(ChatDoc::list_messages(&doc, "c_missing").is_empty());
     }
 
     /// An agent's progress on a summons, through the same action/doc path a
@@ -2189,7 +2514,7 @@ mod tests {
         ));
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -2236,8 +2561,8 @@ mod tests {
             Vec::new(),
         );
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -2273,8 +2598,8 @@ mod tests {
             ChannelKind::Text,
         );
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(a.get_heads(), b.get_heads(), "create replayed identically");
         assert!(ChatDoc::list_channels(&b).iter().any(|c| c.id == "c_sync"));
@@ -2326,6 +2651,22 @@ mod tests {
                 label: source.text,
                 pinned: source.pinned,
                 parent: source.parent,
+                attachment: source
+                    .attachment
+                    .as_ref()
+                    .map(|attachment| AttachmentResource {
+                        name: attachment.name().to_owned(),
+                        blob: attachment.blob().to_owned(),
+                    }),
+                reactions: source
+                    .reactions
+                    .iter()
+                    .map(|reaction| ReactionResource {
+                        emoji: reaction.emoji.clone(),
+                        count: reaction.count(),
+                        reacted_by_me: reaction.reacted_by(model::ME),
+                    })
+                    .collect(),
             },
         );
         let pin_spec = msg.actions.iter().find(|a| a.id == "pin").unwrap();
@@ -2391,6 +2732,22 @@ mod tests {
                 label: source.text,
                 pinned: source.pinned,
                 parent: source.parent,
+                attachment: source
+                    .attachment
+                    .as_ref()
+                    .map(|attachment| AttachmentResource {
+                        name: attachment.name().to_owned(),
+                        blob: attachment.blob().to_owned(),
+                    }),
+                reactions: source
+                    .reactions
+                    .iter()
+                    .map(|reaction| ReactionResource {
+                        emoji: reaction.emoji.clone(),
+                        count: reaction.count(),
+                        reacted_by_me: reaction.reacted_by(model::ME),
+                    })
+                    .collect(),
             },
         );
         assert_eq!(
@@ -2410,10 +2767,10 @@ mod tests {
                 .all(|action| action.kind == OperationKind::Document)
         );
         let delete = channel.actions.iter().find(|a| a.id == "delete").unwrap();
-        assert_eq!(delete.contract.risk, qos_actions::RiskLevel::Destructive);
+        assert_eq!(delete.contract.risk, tilo_actions::RiskLevel::Destructive);
         assert_eq!(
             delete.contract.confirmation,
-            qos_actions::ConfirmationPolicy::Confirm
+            tilo_actions::ConfirmationPolicy::Confirm
         );
     }
 }

@@ -1,0 +1,67 @@
+[Unit]
+Description=Set the TPM dictionary-attack reset authorisation and tighten its parameters
+Documentation=man:tilo-rollback(8)
+After=local-fs.target
+ConditionPathExists=/usr/bin/tilo-rollback
+# TPM character devices are alternatives. Mark both as trigger conditions so
+# systemd skips this oneshot cleanly unless at least one exists; the helper
+# keeps the same check as defense in depth for device-removal races.
+ConditionPathExists=|/dev/tpmrm0
+ConditionPathExists=|/dev/tpm0
+# Never mutate the device TPM from a disposable installer environment. The
+# authorisation is useful only when it is durably recorded on the installed,
+# encrypted root; doing this from the live medium strands the secret there and
+# makes the installed system unable to administer its own lockout policy.
+ConditionKernelCommandLine=!tilo.install
+# Once the authorisation has been recorded there is nothing left to do.
+ConditionPathExists=!/var/lib/tilo/rollback/lockout-auth
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tilo-rollback-harden
+RemainAfterExit=yes
+# First-boot TPM/LUKS discovery is security maintenance, not interactive work.
+# The timer keeps it off the target chain; these weights ensure it also yields
+# if the user reaches the desktop while the one-time ceremony is still running.
+Nice=10
+CPUWeight=20
+IOWeight=20
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateTmp=yes
+PrivateNetwork=yes
+PrivateIPC=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+NoNewPrivileges=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+UMask=0077
+CapabilityBoundingSet=
+AmbientCapabilities=
+DevicePolicy=closed
+DeviceAllow=block-* r
+DeviceAllow=/dev/mapper/control rw
+DeviceAllow=/dev/tpmrm0 rw
+DeviceAllow=/dev/tpm0 rw
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@clock @cpu-emulation @debug @module @mount @obsolete @privileged @raw-io @reboot @swap
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/tilo/rollback
+
+[Install]
+WantedBy=multi-user.target

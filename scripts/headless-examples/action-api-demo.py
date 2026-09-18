@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 """Drive the shell through its action surface, with nothing rendered.
 
-This is the end-to-end proof behind `actions_enumerate` / `actions_invoke`:
-a live compositor, the production provider registry, and no synthetic
-input at any point. Unit tests cover the dispatcher's contracts against a
-fixture; this covers the thing a fixture cannot — that a real session
-exports a real surface and that invoking an address really moves state.
+This exercises `actions_enumerate` / `actions_invoke` against a live
+compositor and the production provider registry, without synthetic input.
+Unit tests cover dispatcher contracts against a fixture; this checks the
+live action surface and state changes.
 
 Usage:
-  ./action-api-demo.py [/tmp/nirios-action-api.sock]
+  ./action-api-demo.py [/tmp/tilo-action-api.sock]
 
 What it proves, in order:
 
   1. A live session exports a non-empty action surface.
   2. Enumeration is side-effect free — chrome state is byte-identical
      before and after enumerating.
-  3. Invoking an address by `(provider, id)` changes real chrome state,
+  3. Invoking an address by `(provider, id)` changes chrome state,
      with no click and no keystroke.
   4. An address that does not exist is refused with `unknown_action`
      rather than silently doing nothing.
@@ -35,7 +34,7 @@ import time
 
 from _control import call
 
-SOCKET = sys.argv[1] if len(sys.argv) > 1 else "/tmp/nirios-action-api.sock"
+SOCKET = sys.argv[1] if len(sys.argv) > 1 else "/tmp/tilo-action-api.sock"
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 BINARY = (SCRIPT_DIR / ".." / ".." / "target" / "debug" / "shell").resolve()
 
@@ -79,15 +78,15 @@ def main() -> int:
     # show only the handful of resources anyone may see. Against leftover
     # state this check would then "pass" while measuring something else.
     #
-    # `QOS_STATE_PATH` alone is not enough. It moves the workspace tree;
+    # `TILO_STATE_PATH` alone is not enough. It moves the workspace tree;
     # record documents live under `XDG_DATA_HOME` (see
-    # `shell/src/shell/room_records.rs`), so isolating only the former
+    # `crates/session/shell/src/shell/room_records.rs`), so isolating only the former
     # leaves every run sharing one set of documents.
-    state_dir = tempfile.mkdtemp(prefix="qos-action-proof-")
+    state_dir = tempfile.mkdtemp(prefix="tilo-action-proof-")
     env = {
         **os.environ,
-        "QOS_TEST_CONTROL": SOCKET,
-        "QOS_STATE_PATH": os.path.join(state_dir, "state.json"),
+        "TILO_TEST_CONTROL": SOCKET,
+        "TILO_STATE_PATH": os.path.join(state_dir, "state.json"),
         "XDG_DATA_HOME": os.path.join(state_dir, "data"),
         "XDG_CACHE_HOME": os.path.join(state_dir, "cache"),
         "XDG_STATE_HOME": os.path.join(state_dir, "state"),

@@ -5,13 +5,9 @@
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
 //!     (headless screenshot; identical passes to the live app).
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
+// Apps run in isolated processes, so app-local arithmetic checks are relaxed.
+// Panic-producing lints remain denied; shared crates retain the full lint set
+// because a fault there can affect the session or every app.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -81,7 +77,7 @@ fn launch_spec(root: fn() -> Box<dyn Widget>) -> LaunchSpec {
 }
 
 fn launch_spec_base(root: fn() -> Box<dyn Widget>) -> LaunchSpec {
-    LaunchSpec::new("dev.qos.monitor", root)
+    LaunchSpec::new("dev.tilo.monitor", root)
         .shot_handler(render_shot)
         .scenarios(&[
             "detail",
@@ -123,6 +119,27 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         out,
     )
     .map_err(|error| LaunchError::Operation(error.to_string()))
+}
+
+/// Reproduce the live accessibility theme in Monitor's custom offscreen path.
+/// Unlike the generic launch harness, this app owns its shot renderer, so it
+/// must explicitly thread text scale and reduced-motion preferences through.
+fn shot_theme(args: &LaunchArgs) -> Theme {
+    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
+    let reduce_motion = ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .any(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+        });
+    theme
+        .with_text_scale(args.text_scale.unwrap_or(1.0))
+        .with_reduce_motion(reduce_motion)
 }
 
 /// Parse `--viewport WxH` (e.g. `--viewport 480x900`) for `--shots`.
@@ -481,7 +498,7 @@ mod launch_tests {
     use ui::history_mode::{HistoryDefinition, HistoryPresentation, HistoryScopeDefinition};
 
     static FOREIGN_HISTORY: HistoryDefinition = HistoryDefinition {
-        app_id: "dev.qos.foreign",
+        app_id: "dev.tilo.foreign",
         scopes: &[HistoryScopeDefinition {
             key: "foreign",
             title: "Foreign",

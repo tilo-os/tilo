@@ -243,8 +243,8 @@ impl Harness {
                 let started = self
                     .app
                     .start_resource_operation(
-                        qos_actions::InvocationId::new(),
-                        qos_actions::OperationKind::View,
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
                         "qos.ui.control.invoke",
                         &payload,
                         &mut self.doc,

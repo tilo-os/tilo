@@ -15,22 +15,18 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
-# Live camera capture ships on by default: a normally-built `camera` opens the
-# real device (GStreamer v4l2src) and shows the live viewfinder. The capture
-# pipeline is only driven for the `Storage::Disk` (live) source — the sample
-# source used by `--shots` and tests synthesizes its viewfinder frame and never
-# enumerates or opens a device (see `poll_camera`), so the feature only compiles
-# the pipeline in while the runtime storage decides whether it runs.
+# Live camera capture uses GStreamer's v4l2src. Sample storage used by shots and
+# tests does not enumerate or open a device.
 default = ["live-capture"]
 # Live capture via GStreamer's v4l2src. See `src/capture.rs`.
 live-capture = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
-# The qOS ACTION model: Camera's `actions` module exports its gallery/scan
-# metadata operations as replayable actions the host's Ctrl+K palette dispatches.
-qos-actions = { path = "../../crates/collab/actions" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+# The Tilo ACTION model: Camera's `actions` module exports capture/scan metadata
+# operations as replayable actions the host's Ctrl+K palette dispatches.
+tilo-actions = { path = "../../crates/collab/actions" }
 qdoc = { path = "../../crates/doc/qdoc" }
 automerge.workspace = true
 serde.workspace = true
@@ -40,20 +36,16 @@ winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
 
-# On-disk photo library: file dimensions, decode + downscale for thumbnails.
-# Default features are trimmed to the formats a camera roll actually holds.
+# Capture encoding plus portal-selected image decoding for code scanning.
+# Default features are trimmed to formats cameras and image portals provide.
 image = { workspace = true, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 png.workspace = true
 dirs.workspace = true
+tilo-ocr = { path = "../../crates/media/ocr" }
+qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
+os-actions = { path = "../../crates/system/os-actions" }
 
-# QR / barcode pipeline — both pure Rust.
-#   qrcode:  encode payloads into a module matrix (used to synthesize the
-#            offline sample frame for `--shots`, and to render the "share
-#            my Wi-Fi" QR in-app).
-#   rqrr:    detect + decode QR codes from a greyscale buffer. This is the
-#            real scanner: the composited sample frame is decoded back so
-#            the on-screen bounding box + payload are produced by an actual
-#            decode, not hand-placed.
+# Pure-Rust QR/barcode fixtures and detection for scanner flows.
 qrcode.workspace = true
 rqrr.workspace = true
 

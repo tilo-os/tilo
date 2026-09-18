@@ -34,6 +34,13 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 
 use crate::model::{Background, Deck, Element, ElementKind, Layout, PaletteKind, Slide, TextAlign};
 
+/// Sparse order keys keep slide objects stable while their user-visible order
+/// changes. A list move would tombstone/recreate the slide Map (and its Text
+/// children); changing this scalar preserves those CRDT objects for concurrent
+/// text/style edits. The large gap makes ordinary insert/reorder operations a
+/// single absolute write.
+const ORDER_GAP: i64 = 1_i64 << 32;
+
 pub struct SlidesDoc;
 
 impl SlidesDoc {
@@ -87,11 +94,151 @@ impl SlidesDoc {
     }
 
     fn slide_obj(doc: &AutoCommit, idx: usize) -> Option<ObjId> {
-        let slides = Self::slides_list_get(doc)?;
-        match doc.get(&slides, idx) {
-            Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
-            _ => None,
+        Self::ordered_slides(doc)
+            .get(idx)
+            .map(|(_, _, object)| object.clone())
+    }
+
+    /// Logical deck order is rank then stable id. Existing documents without a
+    /// rank migrate lazily and deterministically from their physical list
+    /// order; ties from concurrent rank writes converge by immutable slide id.
+    fn ordered_slides(doc: &AutoCommit) -> Vec<(i64, String, ObjId)> {
+        let Some(slides) = Self::slides_list_get(doc) else {
+            return Vec::new();
+        };
+        let mut entries = Vec::new();
+        for physical in 0..doc.length(&slides) {
+            if let Ok(Some((Value::Object(ObjType::Map), object))) = doc.get(&slides, physical) {
+                let id = str_field(doc, &object, "id").unwrap_or_default();
+                let rank = i64_field(doc, &object, "order")
+                    .unwrap_or_else(|| (physical as i64).saturating_mul(ORDER_GAP));
+                entries.push((rank, id, object));
+            }
         }
+        entries.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        entries
+    }
+
+    fn slide_physical_index(doc: &AutoCommit, target: &ObjId) -> Option<usize> {
+        let slides = Self::slides_list_get(doc)?;
+        (0..doc.length(&slides)).find(|physical| {
+            matches!(doc.get(&slides, *physical), Ok(Some((Value::Object(ObjType::Map), object))) if object == *target)
+        })
+    }
+
+    fn rank_for_slot(doc: &mut AutoCommit, slot: usize, omit: Option<&str>) -> i64 {
+        let mut entries = Self::ordered_slides(doc)
+            .into_iter()
+            .filter(|(_, id, _)| Some(id.as_str()) != omit)
+            .collect::<Vec<_>>();
+        let slot = slot.min(entries.len());
+        let previous = slot
+            .checked_sub(1)
+            .and_then(|i| entries.get(i).map(|e| e.0));
+        let next = entries.get(slot).map(|e| e.0);
+        match (previous, next) {
+            (None, Some(next)) if next > i64::MIN + ORDER_GAP => next - ORDER_GAP,
+            (Some(previous), None) if previous < i64::MAX - ORDER_GAP => previous + ORDER_GAP,
+            (Some(previous), Some(next)) if next.saturating_sub(previous) > 1 => {
+                previous + (next - previous) / 2
+            }
+            (None, None) => 0,
+            _ => {
+                // A very dense run is rare. Rebalance only the scalar rank
+                // metadata, never slide/text objects, then recompute.
+                for (index, (current_rank, _, object)) in entries.iter_mut().enumerate() {
+                    let rank = (index as i64).saturating_mul(ORDER_GAP);
+                    let _ = doc.put(object, "order", rank);
+                    *current_rank = rank;
+                }
+                let previous = slot
+                    .checked_sub(1)
+                    .and_then(|i| entries.get(i).map(|e| e.0));
+                let next = entries.get(slot).map(|e| e.0);
+                match (previous, next) {
+                    (None, Some(next)) => next - ORDER_GAP / 2,
+                    (Some(previous), None) => previous + ORDER_GAP,
+                    (Some(previous), Some(next)) => previous + (next - previous) / 2,
+                    (None, None) => 0,
+                }
+            }
+        }
+    }
+
+    /// Produce the one absolute order key for a user-authored reorder.  This
+    /// is deliberately a read-only calculation: an encoded action must carry
+    /// this value to every replica rather than asking each receiver to derive
+    /// a destination from its (possibly concurrently changed) local order.
+    pub fn rank_for_move(doc: &AutoCommit, from: usize, to: usize) -> Option<i64> {
+        let entries = Self::ordered_slides(doc);
+        if from >= entries.len() || to >= entries.len() || from == to {
+            return None;
+        }
+        let moved_id = entries.get(from)?.1.clone();
+        let remaining = entries
+            .into_iter()
+            .filter(|(_, id, _)| id != &moved_id)
+            .collect::<Vec<_>>();
+        let slot = to.min(remaining.len());
+        let previous = slot
+            .checked_sub(1)
+            .and_then(|index| remaining.get(index).map(|entry| entry.0));
+        let next = remaining.get(slot).map(|entry| entry.0);
+        Some(match (previous, next) {
+            (None, Some(next)) => next.saturating_sub(ORDER_GAP),
+            (Some(previous), None) => previous.saturating_add(ORDER_GAP),
+            (Some(previous), Some(next)) if next.saturating_sub(previous) > 1 => {
+                previous + (next - previous) / 2
+            }
+            // Dense order keys remain deterministic.  Equal ranks are sorted
+            // by immutable slide id, so this is still a convergent absolute
+            // operation; a later local insert can rebalance scalar metadata.
+            (Some(previous), Some(_)) => previous,
+            (None, None) => 0,
+        })
+    }
+
+    /// Produce the absolute sparse key for an insertion at this authored
+    /// logical slot. This does not mutate the document; callers put the rank
+    /// into the durable action so a receiver never derives it from a changed
+    /// local slide list.
+    pub fn rank_for_insert(doc: &AutoCommit, at: usize) -> i64 {
+        let entries = Self::ordered_slides(doc);
+        let slot = at.min(entries.len());
+        let previous = slot
+            .checked_sub(1)
+            .and_then(|index| entries.get(index).map(|entry| entry.0));
+        let next = entries.get(slot).map(|entry| entry.0);
+        match (previous, next) {
+            (None, Some(next)) => next.saturating_sub(ORDER_GAP),
+            (Some(previous), None) => previous.saturating_add(ORDER_GAP),
+            (Some(previous), Some(next)) if next.saturating_sub(previous) > 1 => {
+                previous + (next - previous) / 2
+            }
+            (Some(previous), Some(_)) => previous,
+            (None, None) => 0,
+        }
+    }
+
+    /// Set a slide's already-authored absolute order key without replacing its
+    /// CRDT Map or any nested Text objects. Returns false when the stable id
+    /// has been deleted before this action arrived.
+    pub fn set_slide_order(doc: &mut AutoCommit, id: &str, rank: i64) -> bool {
+        let Some((_, _, object)) = Self::ordered_slides(doc)
+            .into_iter()
+            .find(|(_, candidate, _)| candidate == id)
+        else {
+            return false;
+        };
+        doc.put(&object, "order", rank).is_ok()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn slide_order(doc: &AutoCommit, id: &str) -> Option<i64> {
+        Self::ordered_slides(doc)
+            .into_iter()
+            .find(|(_, candidate, _)| candidate == id)
+            .map(|(rank, _, _)| rank)
     }
 
     fn elements_list(doc: &mut AutoCommit, slide_idx: usize) -> Option<ObjId> {
@@ -223,6 +370,7 @@ impl SlidesDoc {
                 .insert_object(&slides, i, ObjType::Map)
                 .expect("insert slide");
             Self::write_slide(doc, &so, s);
+            let _ = doc.put(&so, "order", (i as i64).saturating_mul(ORDER_GAP));
         }
     }
 
@@ -431,34 +579,46 @@ impl SlidesDoc {
 
     /// Insert a slide at `at` (clamped). Returns nothing; caller refreshes.
     pub fn insert_slide(doc: &mut AutoCommit, at: usize, slide: &Slide) {
+        let rank = Self::rank_for_slot(doc, at, None);
+        Self::insert_slide_with_order(doc, slide, rank);
+    }
+
+    /// Insert a slide with the rank already authored into its action payload.
+    /// It appends physically so existing CRDT list entries keep their identity;
+    /// user-visible order is exclusively the absolute rank plus stable id.
+    pub fn insert_slide_with_order(doc: &mut AutoCommit, slide: &Slide, rank: i64) {
         let slides = Self::slides_list_ensure(doc);
         let n = doc.length(&slides);
-        let at = at.min(n);
-        if let Ok(so) = doc.insert_object(&slides, at, ObjType::Map) {
+        // Physical list placement is irrelevant once every entry has a stable
+        // rank, so append without shifting unrelated list identities.
+        if let Ok(so) = doc.insert_object(&slides, n, ObjType::Map) {
             Self::write_slide(doc, &so, slide);
+            let _ = doc.put(&so, "order", rank);
         }
     }
 
     pub fn remove_slide(doc: &mut AutoCommit, idx: usize) {
-        if let Some(slides) = Self::slides_list_get(doc)
-            && idx < doc.length(&slides)
+        if let (Some(slides), Some(object)) =
+            (Self::slides_list_get(doc), Self::slide_obj(doc, idx))
+            && let Some(physical) = Self::slide_physical_index(doc, &object)
         {
-            let _ = doc.delete(&slides, idx);
+            let _ = doc.delete(&slides, physical);
         }
     }
 
-    /// Move the slide at `from` to `to` (both pre-move indices semantics:
-    /// the element is removed then re-inserted, deck snapshot rewritten).
+    /// Move the slide at `from` to `to` without replacing its CRDT Map or its
+    /// nested Text objects. The logical order is independent rank metadata;
+    /// this is therefore one scalar operation and concurrent text edits to the
+    /// moved slide retain their original object targets.
     pub fn move_slide(doc: &mut AutoCommit, from: usize, to: usize) {
-        // Easiest robust approach: read the whole deck, reorder in memory,
-        // rewrite. Decks are small; ordering edits are rare.
-        if let Some(mut deck) = Self::load(doc) {
-            if from >= deck.slides.len() || to >= deck.slides.len() || from == to {
-                return;
-            }
-            let s = deck.slides.remove(from);
-            deck.slides.insert(to, s);
-            Self::seed(doc, &deck);
+        let Some(id) = Self::ordered_slides(doc)
+            .get(from)
+            .map(|(_, id, _)| id.clone())
+        else {
+            return;
+        };
+        if let Some(rank) = Self::rank_for_move(doc, from, to) {
+            let _ = Self::set_slide_order(doc, &id, rank);
         }
     }
 
@@ -470,14 +630,12 @@ impl SlidesDoc {
         let palette = PaletteKind::from_str(
             &str_field(doc, &deck, "palette").unwrap_or_else(|| "indigo".into()),
         );
-        let Ok(Some((Value::Object(ObjType::List), slides_list))) = doc.get(&deck, "slides") else {
+        let Ok(Some((Value::Object(ObjType::List), _slides_list))) = doc.get(&deck, "slides")
+        else {
             return None;
         };
         let mut slides = Vec::new();
-        for i in 0..doc.length(&slides_list) {
-            let Ok(Some((Value::Object(ObjType::Map), so))) = doc.get(&slides_list, i) else {
-                continue;
-            };
+        for (_, _, so) in Self::ordered_slides(doc) {
             let id = str_field(doc, &so, "id").unwrap_or_else(crate::model::new_id);
             let layout = Layout::from_str(
                 &str_field(doc, &so, "layout").unwrap_or_else(|| "title-content".into()),
@@ -700,8 +858,58 @@ mod tests {
         SlidesDoc::seed(&mut doc, &seed_deck());
         let deck = SlidesDoc::load(&doc).unwrap();
         let first = deck.slides[0].id.clone();
+        let unaffected_object = SlidesDoc::slide_obj(&doc, 1).expect("second slide object");
         SlidesDoc::move_slide(&mut doc, 0, 2);
         let after = SlidesDoc::load(&doc).unwrap();
         assert_eq!(after.slides[2].id, first);
+        assert_eq!(
+            SlidesDoc::slide_obj(&doc, 0),
+            Some(unaffected_object),
+            "moving one slide leaves every unrelated CRDT slide object live"
+        );
+    }
+
+    #[test]
+    fn reorder_and_concurrent_text_edit_preserve_the_same_slide_object() {
+        let mut a = AutoCommit::new();
+        SlidesDoc::seed(&mut a, &seed_deck());
+        a.commit();
+        let bytes = a.save();
+        let mut b = AutoCommit::load(&bytes).expect("replica loads");
+
+        let before = SlidesDoc::load(&a).expect("seeded deck");
+        let moved_slide = before.slides[1].id.clone();
+        let element = before.slides[1].elements[0].id.clone();
+        let original = before.slides[1].elements[0].text.clone();
+
+        SlidesDoc::move_slide(&mut a, 1, 3);
+        SlidesDoc::splice_element_text(
+            &mut b,
+            1,
+            &element,
+            original.chars().count(),
+            0,
+            " + collaboration",
+        );
+        a.merge(&mut b).expect("merge into a");
+        b.merge(&mut a).expect("merge into b");
+
+        let left = SlidesDoc::load(&a).expect("merged deck");
+        let right = SlidesDoc::load(&b).expect("merged deck");
+        assert_eq!(left, right, "both merge directions converge");
+        let index = left
+            .slides
+            .iter()
+            .position(|slide| slide.id == moved_slide)
+            .expect("moved slide remains live");
+        assert_eq!(index, 3, "rank metadata preserved the reorder");
+        assert_eq!(
+            left.slides[index]
+                .element(&element)
+                .expect("same element")
+                .text,
+            original + " + collaboration",
+            "the concurrent text splice survived the reorder"
+        );
     }
 }

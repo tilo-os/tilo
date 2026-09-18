@@ -5,7 +5,7 @@
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::path::Path;
-use std::process::Command;
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -100,7 +100,10 @@ const ROWS_BOOT: &[Row] = &[
         Some(very(641)),
         "stdout",
         "Mounting collaborative workspace at /var/workspace (iroh node starting)",
-        &[("CODE_FILE", "fs/src/mount.rs"), ("THREAD", "main")],
+        &[
+            ("CODE_FILE", "crates/system/fs/src/mount.rs"),
+            ("THREAD", "main"),
+        ],
     ),
     (
         930,
@@ -110,7 +113,7 @@ const ROWS_BOOT: &[Row] = &[
         Some(very(641)),
         "stdout",
         "iroh endpoint bound: relay=eu-central, node_id=k51qzi5… (4 candidate paths)",
-        &[("CODE_FILE", "fs/src/p2p.rs")],
+        &[("CODE_FILE", "crates/system/fs/src/p2p.rs")],
     ),
     (
         1180,
@@ -120,7 +123,10 @@ const ROWS_BOOT: &[Row] = &[
         Some(very(641)),
         "stdout",
         "metadata gossip slow: 1820ms for 3 peers (TTL 10s) — degraded projection",
-        &[("CODE_FILE", "fs/src/gossip.rs"), ("PEER_COUNT", "3")],
+        &[
+            ("CODE_FILE", "crates/system/fs/src/gossip.rs"),
+            ("PEER_COUNT", "3"),
+        ],
     ),
     (
         1400,
@@ -150,7 +156,7 @@ const ROWS_BOOT: &[Row] = &[
         Some(very(820)),
         "stdout",
         "compositor: smithay DRM backend up; output eDP-1 2560x1600@60 (hw cursor)",
-        &[("CODE_FILE", "shell/src/backend/drm.rs")],
+        &[("CODE_FILE", "crates/session/shell/src/backend/drm.rs")],
     ),
 ];
 
@@ -164,7 +170,7 @@ const ROWS_SERVICES: &[Row] = &[
         Some(very(820)),
         "stdout",
         "loaded 2D-cluster workspace tree: 3 clusters, 7 windows restored",
-        &[("CODE_FILE", "shell/src/shell/state.rs")],
+        &[("CODE_FILE", "crates/session/shell/src/shell/state.rs")],
     ),
     (
         2240,
@@ -175,7 +181,7 @@ const ROWS_SERVICES: &[Row] = &[
         "stdout",
         "sandbox: cluster 'web' requested /home/quinten/Downloads — prompting user",
         &[
-            ("CODE_FILE", "shell/src/portal/access.rs"),
+            ("CODE_FILE", "crates/session/shell/src/portal/access.rs"),
             ("CLUSTER", "web"),
         ],
     ),
@@ -217,7 +223,10 @@ const ROWS_SERVICES: &[Row] = &[
         Some(very(820)),
         "stdout",
         "collab: peer 'mara@thinkpad' invited to cluster 'design' (gossip topic ok)",
-        &[("CODE_FILE", "shell/src/collab/mod.rs"), ("PEER", "mara")],
+        &[
+            ("CODE_FILE", "crates/session/shell/src/collab/mod.rs"),
+            ("PEER", "mara"),
+        ],
     ),
     (
         3650,
@@ -227,7 +236,10 @@ const ROWS_SERVICES: &[Row] = &[
         Some(very(641)),
         "stdout",
         "hydrated blob bafyb… (1.4MB) on first read of /var/workspace/notes/spec.md",
-        &[("CODE_FILE", "fs/src/hydrate.rs"), ("SIZE", "1466368")],
+        &[
+            ("CODE_FILE", "crates/system/fs/src/hydrate.rs"),
+            ("SIZE", "1466368"),
+        ],
     ),
     (
         3900,
@@ -262,7 +274,7 @@ const ROWS_SESSION: &[Row] = &[
         "stdout",
         "wgpu: surface lost (Outdated) during cluster crossfade — recreating swapchain",
         &[
-            ("CODE_FILE", "shell/src/render/frame.rs"),
+            ("CODE_FILE", "crates/session/shell/src/render/frame.rs"),
             ("BACKEND", "vulkan"),
         ],
     ),
@@ -274,7 +286,7 @@ const ROWS_SESSION: &[Row] = &[
         Some(very(820)),
         "stdout",
         "renderer stalled 2 frames recreating swapchain; input queue depth 14",
-        &[("CODE_FILE", "shell/src/render/frame.rs")],
+        &[("CODE_FILE", "crates/session/shell/src/render/frame.rs")],
     ),
     (
         4900,
@@ -285,7 +297,7 @@ const ROWS_SESSION: &[Row] = &[
         "stdout",
         "conflict copy written: spec.md ⇒ spec.conflict-mara.md (concurrent edit)",
         &[
-            ("CODE_FILE", "fs/src/conflict.rs"),
+            ("CODE_FILE", "crates/system/fs/src/conflict.rs"),
             ("PATH", "notes/spec.md"),
         ],
     ),
@@ -317,7 +329,7 @@ const ROWS_SESSION: &[Row] = &[
         Some(very(820)),
         "stdout",
         "focus moved: cluster[1].window[2] 'terminal' — directional nav (ArrowRight)",
-        &[("CODE_FILE", "shell/src/focus.rs")],
+        &[("CODE_FILE", "crates/session/shell/src/focus.rs")],
     ),
     (
         6300,
@@ -338,7 +350,7 @@ const ROWS_SESSION: &[Row] = &[
         "stdout",
         "collab: remote cursor stream from 'mara@thinkpad' attached (12 fps)",
         &[
-            ("CODE_FILE", "shell/src/collab/cursor.rs"),
+            ("CODE_FILE", "crates/session/shell/src/collab/cursor.rs"),
             ("PEER", "mara"),
         ],
     ),
@@ -360,7 +372,7 @@ const ROWS_SESSION: &[Row] = &[
         Some(very(641)),
         "stdout",
         "anti-entropy sweep complete: 0 divergent objects across 3 peers (820ms)",
-        &[("CODE_FILE", "fs/src/anti_entropy.rs")],
+        &[("CODE_FILE", "crates/system/fs/src/anti_entropy.rs")],
     ),
     (
         7900,
@@ -369,8 +381,8 @@ const ROWS_SESSION: &[Row] = &[
         Priority::Notice,
         Some(very(820)),
         "stdout",
-        "workspace snapshot persisted: 3 clusters → ~/.local/state/qos/wheel.json",
-        &[("CODE_FILE", "shell/src/persist.rs")],
+        "workspace snapshot persisted: 3 clusters → ~/.local/state/tilo/wheel.json",
+        &[("CODE_FILE", "crates/session/shell/src/persist.rs")],
     ),
 ];
 
@@ -410,13 +422,25 @@ impl JournalLoadError {
 /// Returns a safe classification when `journalctl` is unavailable, denied, or
 /// otherwise fails. It never returns the command's stderr.
 pub fn load_live(limit: usize) -> Result<Vec<LogEntry>, JournalLoadError> {
-    let output = Command::new("journalctl")
-        .args(["-o", "json", "--no-pager", "-n", &limit.to_string()])
-        .output();
-
-    let Ok(output) = output else {
-        return Err(JournalLoadError::Unavailable);
-    };
+    let limit_arg = limit.to_string();
+    let output_limit = limit
+        .saturating_mul(64 * 1024)
+        .clamp(1024 * 1024, 32 * 1024 * 1024);
+    let output = bounded_command::run(
+        "journalctl",
+        &["-o", "json", "--no-pager", "-n", &limit_arg],
+        None,
+        output_limit,
+        Duration::from_secs(5),
+    )
+    .map_err(|error| match error {
+        bounded_command::Error::Process(ref io_error)
+            if io_error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            JournalLoadError::Unavailable
+        }
+        _ => JournalLoadError::Failed,
+    })?;
     if !output.status.success() {
         // Do not relay stderr. Its wording is neither stable nor safe to
         // publish, but the common permission failure deserves a useful
@@ -562,7 +586,7 @@ fn entry_from_json(v: &Value) -> Option<LogEntry> {
 // Bundled sample journal
 // ===================================================================
 
-/// A realistic offline journal: a qOS boot sequence across the shell
+/// A realistic offline journal: a Tilo boot sequence across the shell
 /// compositor, the FUSE filesystem, the kernel, networking, audio, and a
 /// collaboration session — seeded with a scatter of warnings and errors
 /// so the severity colouring and filters have something to bite on.
@@ -572,7 +596,7 @@ pub fn sample_entries() -> Vec<LogEntry> {
         let days: u64 = 20_634; // days from 1970-01-01 to 2026-06-30
         (days * 86_400 + 14 * 3_600 + 20 * 60) * 1_000_000
     };
-    let host = "qos-station";
+    let host = "tilo-station";
     let boot_a = "9f2c1e7b4a6d4c0fb1e3a8d5c2f70a11";
     let boot_b = "5a1d8c3e2b9f4710a6c4e0d7b385f922";
 
@@ -724,7 +748,7 @@ mod tests {
     fn export_writes_json_lines_to_the_selected_target() {
         let entries = sample_entries();
         let path = std::env::temp_dir().join(format!(
-            "qos-logs-export-{}-{}.jsonl",
+            "tilo-logs-export-{}-{}.jsonl",
             std::process::id(),
             entries[0].realtime_us
         ));

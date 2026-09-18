@@ -1,12 +1,12 @@
 //! Choosing a real file to share into a channel.
 //!
-//! qOS files live in the P2P FUSE workspace mounted at `/var/workspace`; a
+//! Tilo files live in the P2P FUSE workspace mounted at `/var/workspace`; a
 //! chat attachment is imported as bounded shared bytes before it is projected
 //! into a message. The composer's "+" opens this picker over the workspace so
 //! a share is always a *real* file the user selected, never fabricated content.
 //!
 //! The browsed directory is the workspace mount, overridable with
-//! `QOS_CHAT_ATTACH_DIR` (for tests and for an install that mounts the shared
+//! `TILO_CHAT_ATTACH_DIR` (for tests and for an install that mounts the shared
 //! space elsewhere). In a headless environment with no workspace the listing is
 //! simply empty and nothing can be attached — honest, not faked.
 
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 /// Where the picker browses: the P2P workspace mount by default.
 pub fn attach_dir() -> PathBuf {
-    std::env::var_os("QOS_CHAT_ATTACH_DIR")
+    std::env::var_os("TILO_CHAT_ATTACH_DIR")
         .map_or_else(|| PathBuf::from("/var/workspace"), PathBuf::from)
 }
 
@@ -41,9 +41,9 @@ impl PickEntry {
 /// `image` dependency).
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "bmp"];
 
-/// Video containers the picker offers. These post as inline video cards; the
-/// bytes hydrate from the FUSE mount by reference (no decode in the default
-/// build — see [`crate::model::Attachment::Video`]).
+/// Video containers the picker offers. The selected local source is imported
+/// into qdoc's content-addressed blob store before the inline card is posted;
+/// default builds do not decode video frames (see [`crate::model::Attachment::Video`]).
 const VIDEO_EXTS: &[&str] = &["mp4", "webm", "mov", "mkv", "m4v", "avi", "ogv"];
 
 fn has_ext(name: &str, exts: &[&str]) -> bool {

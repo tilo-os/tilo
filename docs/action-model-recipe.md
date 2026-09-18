@@ -1,18 +1,16 @@
 # Building an app on the resource + action model
 
-Every collaborative operation in a qOS app is an **action**: a small serializable
+Every collaborative operation in a Tilo app is an **action**: a small serializable
 value that deterministically mutates the shared Automerge document. Actions are
 the single path by which app state changes — so undo, multi-peer replay, and the
-Ctrl+K command palette all work from one implementation, for free.
+Ctrl+K command palette all use the same implementation.
 
-This is not optional plumbing layered on top of a "real" event handler. It is the
-event handler. A button, a context-menu item, a swipe, and a Ctrl+K row that all
-do the same thing dispatch the **same** action.
+The action is the event handler. A button, a context-menu item, a swipe, and a
+Ctrl+K row that all do the same thing dispatch the **same** action.
 
-The reference implementation is `apps/ebook/src/actions.rs` (Books). Read it
-alongside this doc; everything below is drawn from it.
+The reference implementation is `apps/ebook/src/actions.rs` (Books).
 
-## The one rule that decides everything
+## Classify each interaction
 
 Split every interaction into exactly one of two buckets:
 
@@ -23,7 +21,7 @@ Split every interaction into exactly one of two buckets:
   is open, the scroll position, the current selection, an overlay being open.
   Nothing to replicate; dispatching it as an action would be wrong.
 
-If you find yourself wanting an "action" that opens a panel, it is not an action.
+An operation that only opens a panel belongs to presentation state.
 
 ## The five pieces (all in `apps/<app>/src/actions.rs`)
 
@@ -118,7 +116,7 @@ steady, level-triggered value, recomputed each frame.
 
 ## Wiring existing UI to the same actions
 
-The point is a single source of truth. A toolbar button, a context-menu row, and
+A toolbar button, a context-menu row, and
 the Ctrl+K entry must all resolve to the **same** `EncodedAction`, dispatched the
 same way (the host records the undo boundary and attributes the author). Don't
 leave the button calling `self.delete_annotation(id)` while only Ctrl+K goes
@@ -152,7 +150,7 @@ impl Widget for MyApp {
 }
 ```
 
-That is the whole wiring. `ActionHost::last_dispatched()` exposes the last
+`ActionHost::last_dispatched()` exposes the last
 `EncodedAction` for the covenant test below (affordance == `ActionSpec`).
 
 Content *search* is a separate hook: `Widget::search_providers()` folds a
@@ -161,10 +159,10 @@ Content *search* is a separate hook: `Widget::search_providers()` folds a
 (presentation), not a dispatched action. Use it to make records findable
 (contacts, tracks, files); use actions for things that *change* the document.
 
-## Proving it (the covenant applies)
+## Verification requirements
 
-Assert on the real path — never a tautological helper, never `#[ignore]`, never a
-weakened assertion:
+Assert production behavior without tautological helpers, `#[ignore]` tests, or
+weakened assertions:
 
 - Dispatch the action through the envelope and assert the doc changed **and** it
   is recorded as one undo boundary.
@@ -175,7 +173,7 @@ weakened assertion:
 
 ## Adoption status (2026-09-01)
 
-The `qos_actions` spine, unified Ctrl+K palette/action door, and framework
+The `tilo_actions` spine, unified Ctrl+K palette/action door, and framework
 `ActionHost` are broadly adopted across the app catalogue. Generic dispatch
 retains the document actor, infers app ownership when a caller omits it, and can
 inherit ambient purpose/work-group context from a task or agent run while
@@ -201,18 +199,18 @@ should become paragraph- (sub-resource-) addressed actions**, so that changing a
 document is an invocation against a named part of it rather than a gesture aimed
 at a pixel.
 
-The reason to care is not tidiness. During the demo work every driving failure
-landed in the coordinate path and none in the action path: a click at a
+This distinction matters because driving failures have landed in the coordinate
+path rather than the action path: during demo work, a click at a
 remembered point landed on the style panel and moved focus off the page, so a
 "passing" proof proved nothing for hours; a caret was aimed at a coordinate that
 stopped being the page once a second window opened beside it; tiles turned out
 to be registered under two names, so an exact-name lookup found nothing while
-the window was plainly on screen. Meanwhile the beat driven by enumerate-and-
-invoke — a model choosing from an app's exported catalogue — worked first time
-and never regressed.
+the window was plainly on screen. The enumerate-and-invoke path — a model
+choosing from an app's exported catalogue — worked first time and never regressed.
 
 Pointer gestures are a different case and are legitimately coordinate-based: a
 drag *is* a path across the screen, and clicking a file row *is* pointing at it.
 An edit to a paragraph is not.
 
-Not scheduled. Recorded here so whoever picks it up has the reasoning.
+This work is not scheduled. The limitation and rationale are recorded here for
+future implementation.

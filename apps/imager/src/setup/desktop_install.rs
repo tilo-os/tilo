@@ -35,7 +35,7 @@ pub enum DesktopInstallEvent {
 }
 
 pub(super) const REQUEST_LIMIT: usize = 16 * 1024;
-pub(super) const SESSION_ENTRY: &str = "/usr/share/wayland-sessions/qos.desktop";
+pub(super) const SESSION_ENTRY: &str = "/usr/share/wayland-sessions/tilo.desktop";
 
 pub(super) fn request_digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -367,7 +367,8 @@ mod native {
         time::{Duration, Instant},
     };
 
-    const WRAPPER: &str = "/usr/libexec/qos-session";
+    const WRAPPER: &str = "/usr/libexec/tilo-session";
+    const RUNNER: &str = "/usr/libexec/tilo-session-runner";
     const OUTPUT_LIMIT: usize = 64 * 1024;
     pub(super) struct NativeBackend;
 
@@ -450,7 +451,7 @@ mod native {
                     "Installed native package version does not match the selected release.".into(),
                 );
             }
-            for path in [SESSION_ENTRY, WRAPPER] {
+            for path in [SESSION_ENTRY, WRAPPER, RUNNER] {
                 let (program, args): (&str, Vec<OsString>) = match manager {
                     PackageManager::Dnf => (
                         "/usr/bin/rpm",
@@ -468,9 +469,9 @@ mod native {
                 };
                 let result = run_command(program, &args, true)?;
                 let expected = if manager == PackageManager::Apt {
-                    format!("qos-session: {path}\n")
+                    format!("tilo-session: {path}\n")
                 } else {
-                    "qos-session\n".into()
+                    "tilo-session\n".into()
                 };
                 if result.code != 0 || !result.stderr.is_empty() || result.stdout != expected {
                     return Err(
@@ -479,14 +480,15 @@ mod native {
                 }
             }
             let (program, args) = match manager {
-                PackageManager::Dnf => ("/usr/bin/rpm", vec!["-V".into(), "qos-session".into()]),
+                PackageManager::Dnf => ("/usr/bin/rpm", vec!["-V".into(), "tilo-session".into()]),
                 PackageManager::Apt => (
                     "/usr/bin/dpkg",
-                    vec!["--verify".into(), "qos-session".into()],
+                    vec!["--verify".into(), "tilo-session".into()],
                 ),
-                PackageManager::Pacman => {
-                    ("/usr/bin/pacman", vec!["-Qkk".into(), "qos-session".into()])
-                }
+                PackageManager::Pacman => (
+                    "/usr/bin/pacman",
+                    vec!["-Qkk".into(), "tilo-session".into()],
+                ),
             };
             let result = run_command(program, &args, true)?;
             if result.code != 0
@@ -498,6 +500,7 @@ mod native {
             validate_session(
                 &read_installed(SESSION_ENTRY, false)?,
                 &read_installed(WRAPPER, true)?,
+                &read_installed(RUNNER, true)?,
             )?;
             Ok(InstalledDesktop {
                 version: release.version.clone(),
@@ -516,7 +519,7 @@ mod native {
                 if text.lines().count() == 1 {
                     let parts: Vec<_> = text.trim_end_matches('\n').split('\t').collect();
                     match parts.as_slice() {
-                        ["qos-session", epoch, version, revision, arch]
+                        ["tilo-session", epoch, version, revision, arch]
                             if !epoch.is_empty() && epoch.bytes().all(|b| b.is_ascii_digit()) =>
                         {
                             let actual = if *epoch == "0" {
@@ -538,7 +541,7 @@ mod native {
                     "x86_64" => "amd64",
                     _ => return Err("Unsupported Debian architecture.".into()),
                 };
-                text == format!("qos-session\t{}\t{arch}\n", release.version)
+                text == format!("tilo-session\t{}\t{arch}\n", release.version)
             }
             PackageManager::Pacman => {
                 let mut fields = std::collections::HashMap::new();
@@ -549,7 +552,7 @@ mod native {
                         return Err("Ambiguous Arch package identity.".into());
                     }
                 }
-                fields.get("Name") == Some(&"qos-session")
+                fields.get("Name") == Some(&"tilo-session")
                     && fields.get("Version") == Some(&release.version.as_str())
                     && fields.get("Architecture") == Some(&release.architecture.as_str())
             }
@@ -588,7 +591,7 @@ mod native {
         (program, args)
     }
 
-    pub(super) fn validate_session(entry: &str, wrapper: &str) -> Result<(), String> {
+    pub(super) fn validate_session(entry: &str, wrapper: &str, runner: &str) -> Result<(), String> {
         let mut desktop = false;
         let mut exec = None;
         let mut kind = None;
@@ -616,9 +619,18 @@ mod native {
         }
         if exec != Some(WRAPPER)
             || kind != Some("Application")
-            || !wrapper.lines().any(|line| {
+            || !wrapper
+                .lines()
+                .any(|line| line.trim() == "TILO_SHELL=/usr/bin/tilo-shell")
+            || !wrapper
+                .lines()
+                .any(|line| line.trim() == "SESSION_RUNNER=/usr/libexec/tilo-session-runner")
+            || !wrapper
+                .lines()
+                .any(|line| line.trim() == r#"exec "$SESSION_RUNNER" "$TILO_SHELL" "$@""#)
+            || !runner.lines().any(|line| {
                 line.trim()
-                    == r#""$QOS_SHELL" --host-desktop-session --firstboot --backend drm "$@" &"#
+                    == r#""$TILO_SHELL" --host-desktop-session --firstboot --backend drm "$@" &"#
             })
         {
             return Err(
@@ -1174,23 +1186,35 @@ mod tests {
     fn installed_contract_rejects_wrong_exec_or_missing_wrapper_flags() {
         assert!(
             native::validate_session(
-                "[Desktop Entry]\nExec=/usr/libexec/qos-session\nType=Application\n",
-                include_str!("../../../../dist/session/qos-session")
+                include_str!("../../../../dist/session/tilo.desktop"),
+                include_str!("../../../../dist/session/tilo-session"),
+                "#!/bin/sh\nexec tilo-shell --host-desktop-session"
+            )
+            .is_err()
+        );
+
+        assert!(
+            native::validate_session(
+                "[Desktop Entry]\nExec=/usr/libexec/tilo-session\nType=Application\n",
+                include_str!("../../../../dist/session/tilo-session"),
+                include_str!("../../../../dist/session/tilo-session-runner")
             )
             .is_ok()
         );
         assert!(
             native::validate_session(
-                "[Desktop Entry]\nExec=/tmp/qos-session\nType=Application\n",
-                include_str!("../../../../dist/session/qos-session")
+                "[Desktop Entry]\nExec=/tmp/tilo-session\nType=Application\n",
+                include_str!("../../../../dist/session/tilo-session"),
+                include_str!("../../../../dist/session/tilo-session-runner")
             )
             .is_err()
         );
-        assert!(native::validate_session("[Desktop Entry]\nExec=/usr/libexec/qos-session\nExec=/tmp/evil\nType=Application\n", "--host-desktop-session --firstboot").is_err());
+        assert!(native::validate_session("[Desktop Entry]\nExec=/usr/libexec/tilo-session\nExec=/tmp/evil\nType=Application\n", "--host-desktop-session --firstboot", "--host-desktop-session --firstboot").is_err());
         assert!(
             native::validate_session(
-                "[Desktop Entry]\nExec=/usr/libexec/qos-session\nType=Application\n",
-                "#!/bin/sh\nexec qos-shell --host-desktop-session"
+                "[Desktop Entry]\nExec=/usr/libexec/tilo-session\nType=Application\n",
+                "#!/bin/sh\nexec tilo-shell --host-desktop-session",
+                include_str!("../../../../dist/session/tilo-session-runner")
             )
             .is_err()
         );
@@ -1304,16 +1328,16 @@ mod tests {
         assert!(
             native::validate_package_identity(
                 PackageManager::Dnf,
-                "qos-session\t0\t0.1.9\t1.fc44\taarch64\n",
+                "tilo-session\t0\t0.1.9\t1.fc44\taarch64\n",
                 &release
             )
             .is_ok()
         );
         for wrong in [
             "other\t0\t0.1.9\t1.fc44\taarch64\n",
-            "qos-session\t0\t0.1.8\t1.fc44\taarch64\n",
-            "qos-session\t0\t0.1.9\t1.fc44\tx86_64\n",
-            "qos-session\t0\t0.1.9\t1.fc44\taarch64\nextra",
+            "tilo-session\t0\t0.1.8\t1.fc44\taarch64\n",
+            "tilo-session\t0\t0.1.9\t1.fc44\tx86_64\n",
+            "tilo-session\t0\t0.1.9\t1.fc44\taarch64\nextra",
         ] {
             assert!(
                 native::validate_package_identity(PackageManager::Dnf, wrong, &release).is_err()

@@ -1,5 +1,5 @@
 #!/usr/bin/bash
-# Tests for the shell helpers the qos-rollback systemd units use.
+# Tests for the shell helpers the tilo-rollback systemd units use.
 #
 # These wrappers decide whether a machine discards its rollback fallback, so
 # "it looked right" is not good enough. What is testable without a booted machine
@@ -7,14 +7,14 @@
 # filesystem (device-mapper discovery) and a real boot (the health gate) are called
 # out at the end rather than faked.
 #
-#   ./os/tests/rollback-wrappers.sh [path-to-qos-rollback-binary]
+#   ./os/tests/rollback-wrappers.sh [path-to-tilo-rollback-binary]
 #
-# Needs cryptsetup and a qos-rollback binary. Exits non-zero on the first failure.
+# Needs cryptsetup and a tilo-rollback binary. Exits non-zero on the first failure.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
-QOS_ROLLBACK_BIN="${1:-$REPO/target/debug/qos-rollback}"
+TILO_ROLLBACK_BIN="${1:-$REPO/target/debug/tilo-rollback}"
 
 pass=0
 fail=0
@@ -25,16 +25,17 @@ check(){ if [ "$1" = "$2" ]; then ok "$3"; else bad "$3 (got '$1', wanted '$2')"
 for tool in cryptsetup; do
   command -v "$tool" >/dev/null || { echo "SKIP: $tool is not installed"; exit 0; }
 done
-[ -x "$QOS_ROLLBACK_BIN" ] || { echo "SKIP: no qos-rollback binary at $QOS_ROLLBACK_BIN"; exit 0; }
+[ -x "$TILO_ROLLBACK_BIN" ] || { echo "SKIP: no tilo-rollback binary at $TILO_ROLLBACK_BIN"; exit 0; }
+TILO_ROLLBACK_BIN="$(realpath "$TILO_ROLLBACK_BIN")"
 
-# The helpers call `qos-rollback` by name, so put the binary under test on PATH.
+# The helpers call `tilo-rollback` by name, so put the binary under test on PATH.
 BINDIR="$(mktemp -d)"
-ln -sf "$QOS_ROLLBACK_BIN" "$BINDIR/qos-rollback"
+ln -sf "$TILO_ROLLBACK_BIN" "$BINDIR/tilo-rollback"
 PATH="$BINDIR:$PATH"
 export PATH
 
 # shellcheck source=/dev/null
-. "$REPO/os/usr/libexec/qos-rollback-common"
+. "$REPO/os/usr/libexec/tilo-rollback-common"
 
 W="$(mktemp -d)"
 cleanup() { rm -rf "$W" "$BINDIR"; }
@@ -51,7 +52,7 @@ echo "== rollback_has_independent_keyslot =="
 printf 'recovery-key-for-the-wrapper-test' > "$W/rec.key"
 luks_image "$W/one.img" "$W/rec.key"
 
-# One keyslot, no qos-rollback token: that slot is not ours, so it counts.
+# One keyslot, no tilo-rollback token: that slot is not ours, so it counts.
 if rollback_has_independent_keyslot "$W/one.img"; then
   ok "a lone recovery keyslot counts as an independent unlock path"
 else
@@ -64,10 +65,11 @@ printf 'a-generation-secret' > "$W/gen.key"
 cryptsetup luksAddKey --batch-mode --pbkdf pbkdf2 --pbkdf-force-iterations 1000 \
   --key-file "$W/rec.key" "$W/one.img" "$W/gen.key"
 cat > "$W/token.json" <<'JSON'
-{"type":"qos-rollback","keyslots":["1"],"version":1,"generation":7,
- "nv_index":31002880,"nv_operand":7,"nv_base":0,"pcr_bank":"sha256","pcrs":[7,11],
+{"type":"tilo-rollback","keyslots":["1"],"version":2,"generation":7,
+ "nv_index":31002880,"nv_operand":7,"nv_base":0,"pcr_bank":"sha256","pcrs":[11],
+ "platform_pcrs":[7],
  "pin":false,"sealed_public":"AA==","sealed_private":"AA==","key_name":"AA==",
- "policy_digest":"AA==","nv_name":"",
+ "policy_digest":"AA==",
  "predictions":[{"approved_policy":"AA==","signature":"AA==","label":""}]}
 JSON
 cryptsetup token import --token-id 0 --json-file "$W/token.json" "$W/one.img"
@@ -78,13 +80,14 @@ else
 fi
 
 # Now the pathological case the gate exists for: every keyslot claimed by a
-# qos-rollback token, so there is nothing left that does not need the TPM.
+# tilo-rollback token, so there is nothing left that does not need the TPM.
 luks_image "$W/two.img" "$W/gen.key"
 cat > "$W/token0.json" <<'JSON'
-{"type":"qos-rollback","keyslots":["0"],"version":1,"generation":7,
- "nv_index":31002880,"nv_operand":7,"nv_base":0,"pcr_bank":"sha256","pcrs":[7,11],
+{"type":"tilo-rollback","keyslots":["0"],"version":2,"generation":7,
+ "nv_index":31002880,"nv_operand":7,"nv_base":0,"pcr_bank":"sha256","pcrs":[11],
+ "platform_pcrs":[7],
  "pin":false,"sealed_public":"AA==","sealed_private":"AA==","key_name":"AA==",
- "policy_digest":"AA==","nv_name":"",
+ "policy_digest":"AA==",
  "predictions":[{"approved_policy":"AA==","signature":"AA==","label":""}]}
 JSON
 cryptsetup token import --token-id 0 --json-file "$W/token0.json" "$W/two.img"
@@ -103,11 +106,11 @@ else
 fi
 
 echo "== rollback_generation_from =="
-check "$(rollback_generation_from 'root=x qos.generation=42 quiet')" "42" "reads the generation from a command line"
+check "$(rollback_generation_from 'root=x tilo.generation=42 quiet')" "42" "reads the generation from a command line"
 check "$(rollback_generation_from 'root=x quiet')" "" "absent generation reads as empty"
-check "$(rollback_generation_from 'qos.generationx=9')" "" "a similar key is not mistaken for it"
-check "$(rollback_generation_from 'a=1 qos.generation=abc b=2')" "" "a non-numeric value is not accepted"
-check "$(rollback_generation_from 'qos.generation=0')" "0" "generation zero is a real generation"
+check "$(rollback_generation_from 'tilo.generationx=9')" "" "a similar key is not mistaken for it"
+check "$(rollback_generation_from 'a=1 tilo.generation=abc b=2')" "" "a non-numeric value is not accepted"
+check "$(rollback_generation_from 'tilo.generation=0')" "0" "generation zero is a real generation"
 
 echo "== rollback_luks_device =="
 # The real function reads findmnt and cryptsetup status, which needs a booted

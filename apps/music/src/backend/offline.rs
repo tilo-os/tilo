@@ -3,7 +3,7 @@
 //! The app's bundled [`crate::seed`] sample library is what populates every
 //! screen offline, so this backend deliberately returns an empty search result
 //! (the UI falls back to [`crate::model::Library::search`] over the sample) and
-//! refuses stream resolution rather than fabricating a URL. Zero dependencies —
+//! refuses stream resolution because no stream URL is available. Zero dependencies —
 //! this is what the hermetic `--shots` / CI build links.
 
 use super::{BackendError, MusicBackend, ResolveOutcome, SearchOutcome};

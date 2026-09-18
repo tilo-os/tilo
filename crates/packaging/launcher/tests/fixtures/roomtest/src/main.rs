@@ -2,7 +2,7 @@
 // than reporting its config — every line printed is the answer a
 // syscall gave, since a bind list is not proof.
 //
-//   write <relative path> <contents>   write inside $QOS_APP_DIR
+//   write <relative path> <contents>   write inside $TILO_APP_DIR
 //   writeabs <path> <contents>         write to an absolute path
 //   read  <path>                       read it, print OK/ERR
 //   readdir <path>                     list it, print OK/ERR
@@ -29,7 +29,7 @@ fn main() {
     let mut out = std::io::stdout();
     match args.first().map(String::as_str) {
         Some("write") => {
-            let root = std::env::var("QOS_APP_DIR").unwrap_or_else(|_| "/nowhere".into());
+            let root = std::env::var("TILO_APP_DIR").unwrap_or_else(|_| "/nowhere".into());
             let path = std::path::Path::new(&root).join(&args[1]);
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);

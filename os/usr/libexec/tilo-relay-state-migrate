@@ -1,0 +1,20 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+marker=/var/lib/tilo/.relay-unprivileged-v1
+if [ -e "$marker" ] || [ -L "$marker" ]; then
+    [ -f "$marker" ] && [ ! -L "$marker" ] \
+        && [ "$(stat -c '%u:%a:%h:%s' -- "$marker" 2>/dev/null)" = 0:600:1:0 ] \
+        || { echo "tilo-relay-state-migrate: unsafe completion marker" >&2; exit 1; }
+    exit 0
+fi
+
+for state in /var/lib/tilo-relay /var/lib/tilo/full-replica; do
+    [ -d "$state" ] && [ ! -L "$state" ] \
+        || { echo "tilo-relay-state-migrate: unsafe state root: $state" >&2; exit 1; }
+    chown -R --no-dereference --one-file-system tilo-relay:tilo-relay "$state"
+done
+
+# A crash before this publication simply repeats the idempotent migration.
+install -m 0600 -o root -g root /dev/null "$marker"
+sync -f /var/lib/tilo

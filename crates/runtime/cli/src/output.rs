@@ -1,11 +1,8 @@
 //! Terminal-aware output helpers.
 //!
-//! The main win is OSC 8 hyperlinks — the escape sequence modern terminals
-//! (gnome-terminal, iTerm2, kitty, wezterm, foot, alacritty) render as
-//! clickable links, degrading to plain text on pipes/files so `notes |
-//! grep` still works. Scope is intentionally small: no colour theming, no
-//! progress bars, no tables — apps that need those reach for
-//! `owo-colors`/`indicatif` themselves.
+//! The builder emits OSC 8 hyperlinks on terminals and plain text when output
+//! is redirected. It does not provide colour, progress bars, or tables;
+//! callers needing those can use their preferred output library.
 
 use std::fmt;
 use std::io::{self, IsTerminal, Write};

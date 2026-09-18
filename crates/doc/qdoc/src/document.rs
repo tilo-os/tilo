@@ -3,7 +3,7 @@
 //! drives the same operations over a host's doc (e.g. `ui::State.doc`).
 
 use crate::model::{Containers, DocMut, DocRef, IdGen, IdGenError};
-use automerge::{AutoCommit, ObjId, ROOT};
+use automerge::{AutoCommit, ROOT};
 
 #[derive(thiserror::Error, Debug)]
 pub enum DocError {
@@ -91,8 +91,6 @@ pub fn author_runs(marks: &[MarkSpan]) -> Vec<(usize, usize, String)> {
 
 pub struct Document {
     pub(crate) doc: AutoCommit,
-    #[allow(dead_code)]
-    pub(crate) root: ObjId,
     pub(crate) c: Containers,
     ids: IdGen,
 }
@@ -103,12 +101,7 @@ impl Document {
         let c = crate::model::init(&mut doc, &ROOT);
         let ids = IdGen::new(doc.get_actor().to_hex_string());
         doc.commit();
-        Self {
-            doc,
-            root: ROOT,
-            c,
-            ids,
-        }
+        Self { doc, c, ids }
     }
 
     /// # Errors
@@ -118,12 +111,7 @@ impl Document {
         let doc = AutoCommit::load(bytes).map_err(|e| DocError::Load(e.to_string()))?;
         let c = crate::model::open(&doc, &ROOT)?;
         let ids = crate::model::try_seeded_id_gen(&doc, &c)?;
-        Ok(Self {
-            doc,
-            root: ROOT,
-            c,
-            ids,
-        })
+        Ok(Self { doc, c, ids })
     }
 
     pub fn save(&mut self) -> Vec<u8> {
@@ -651,12 +639,7 @@ impl Document {
         doc.set_actor(automerge::ActorId::random());
         let c = crate::model::open(&doc, &ROOT).expect("fork open");
         let ids = IdGen::new(doc.get_actor().to_hex_string());
-        Document {
-            doc,
-            root: ROOT,
-            c,
-            ids,
-        }
+        Document { doc, c, ids }
     }
 
     /// Merge another replica's changes into this one. Done via the low-level `Automerge` (no patch

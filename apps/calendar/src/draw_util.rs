@@ -12,10 +12,10 @@ use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
 use ui::chrome::{GLOW_ALPHA, panel_border, panel_ground};
-use ui::tokens::colors::{Colors, over};
 use ui::surface::{edge_on, edge_outline, shadow};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tokens::colors::{Colors, over};
 
 /// A floating Panel (HIG §9.1): the theme's elevation shadow, the Panel
 /// ground and the derived Panel border — the same material as every shell
@@ -144,6 +144,16 @@ pub(crate) fn hairline(scene: &mut Scene, transform: Affine, surface: Color, p0:
         Rect::new(p0.x.min(p1.x), y, p0.x.max(p1.x), y + 1.0)
     };
     scene.fill(Fill::NonZero, transform, color, None, &rect);
+}
+
+/// Mutable paint resources shared by Calendar's immediate-mode view
+/// components. Geometry and domain state stay explicit at each call site;
+/// renderer plumbing travels as one coherent capability.
+pub(crate) struct PaintContext<'a> {
+    pub(crate) scene: &'a mut Scene,
+    pub(crate) transform: Affine,
+    pub(crate) text: &'a mut TextRenderer,
+    pub(crate) theme: &'a Theme,
 }
 
 pub(crate) fn fill_rect(scene: &mut Scene, transform: Affine, color: Color, rect: Rect) {

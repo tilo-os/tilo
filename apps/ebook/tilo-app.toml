@@ -1,0 +1,71 @@
+# E-Book Reader — Tilo application manifest.
+#
+# The shelf is the room's, and a new room starts with an empty one.
+# Reading progress and annotations are the app's own state.
+#
+# Beyond the system read profile it needs, as consented capabilities:
+# read on whichever library directories the user points it at —
+# `~/Books`, `~/Documents`, `~/Downloads`, `/var/workspace`
+# (override `EBOOK_LIBRARY_DIR`).
+#
+
+
+[package]
+id       = "dev.tilo.ebook"
+name     = "E-Book Reader"
+category = "Office"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[continuity]
+required = ["presentation", "semantic"]
+semantic-schema = "publication-position-v1"
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` deliberately absent from `namespaces`: this app opens no
+# socket of its own.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab = "optional@1"
+tilo-fs = "optional@1"
+
+[entrypoint]
+bin             = "bin/ebook"
+type            = "gui"
+splash-segments = ["bin/ebook[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = [
+    "application/epub+zip",
+]
+ext  = [
+    "epub",
+]

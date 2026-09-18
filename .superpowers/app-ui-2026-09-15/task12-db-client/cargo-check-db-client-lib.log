@@ -1,4 +1,0 @@
-    Checking ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
-    Checking qos-app v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/app/qos-app)
-    Checking db_client v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/db_client)
-    Finished `dev` profile [unoptimized] target(s) in 6.15s

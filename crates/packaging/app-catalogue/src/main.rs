@@ -1,14 +1,14 @@
-//! `qos-catalogue` — list what the configured registries offer that
+//! `tilo-catalogue` — list what the configured registries offer that
 //! is not installed, and fetch one of them.
 //!
 //! The compositor shells out to this rather than linking the library:
 //! listing and installing both mean HTTP, and neither belongs inside
 //! the most privileged process on the machine. Same shape as
-//! `qos-launcher`, for the same reason.
+//! `tilo-launcher`, for the same reason.
 //!
 //! ```text
-//! qos-catalogue list [--json]
-//! qos-catalogue install <package-id>
+//! tilo-catalogue list [--json]
+//! tilo-catalogue install <package-id>
 //! ```
 //!
 //! `install` exits 0 when the package is installed and ready to
@@ -53,7 +53,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "qos-catalogue",
+    name = "tilo-catalogue",
     about = "List and fetch apps the configured registries offer but this machine hasn't installed."
 )]
 struct Cli {
@@ -107,8 +107,7 @@ enum RepoCmd {
 }
 
 fn main() -> ExitCode {
-    // rustls needs an explicit provider: the tree carries both ring
-    // and aws-lc-rs, and 0.23 will not pick one on its own. Failing
+    // Install the workspace-standard rustls ring provider explicitly. Failing
     // here would mean every https registry silently errored later.
     let _ = rustls::crypto::ring::default_provider().install_default();
 

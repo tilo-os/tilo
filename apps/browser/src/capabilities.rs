@@ -174,7 +174,7 @@ impl Capabilities {
             WebViewEvent::PermissionClosed { id } => {
                 self.permissions.remove(&id);
             }
-            WebViewEvent::DownloadRequested { id, url, name } => {
+            WebViewEvent::NativeDownloadRequested { id, url, name } => {
                 self.request_download(id, url, name);
             }
             WebViewEvent::DownloadUpdated {
@@ -362,7 +362,9 @@ impl Capabilities {
                 let engine = engine.clone();
                 row = row.push(Box::new(
                     Button::new(&format!("browser.download.cancel.{id}"), "Cancel", None)
-                        .on_effect(move || engine.send(WebViewCommand::CancelDownload { id })),
+                        .on_effect(move || {
+                            engine.send(WebViewCommand::CancelNativeDownload { id })
+                        }),
                 ));
             }
             if d.state == "complete" && !d.path.is_empty() {
@@ -444,8 +446,8 @@ mod tests {
         assert!(contains(rows.as_ref(), "browser.download.cancel.7"));
         let result = rows
             .start_resource_operation(
-                ui::qos_actions::InvocationId::new(),
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::InvocationId::new(),
+                ui::tilo_actions::OperationKind::Effect,
                 "qos.ui.control.invoke",
                 &serde_json::to_vec("browser.download.cancel.7").unwrap(),
                 &automerge::AutoCommit::new(),
@@ -456,7 +458,7 @@ mod tests {
         assert!(
             second_capture
                 .commands()
-                .contains(&WebViewCommand::CancelDownload { id: 7 })
+                .contains(&WebViewCommand::CancelNativeDownload { id: 7 })
         );
         drop(first);
         second.apply(WebViewEvent::DownloadUpdated {
@@ -576,8 +578,8 @@ mod tests {
         assert!(contains(rows.as_ref(), "browser.download.retry.41"));
         let result = rows
             .start_resource_operation(
-                ui::qos_actions::InvocationId::new(),
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::InvocationId::new(),
+                ui::tilo_actions::OperationKind::Effect,
                 "qos.ui.control.invoke",
                 &serde_json::to_vec("browser.download.retry.41").unwrap(),
                 &automerge::AutoCommit::new(),

@@ -25,3 +25,5 @@ mod install_timing;
 mod pin_unpin_changes_state;
 #[path = "registry_roundtrip.rs"]
 mod registry_roundtrip;
+#[path = "socket_activation.rs"]
+mod socket_activation;

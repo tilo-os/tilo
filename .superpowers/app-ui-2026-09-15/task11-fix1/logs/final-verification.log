@@ -1,7 +1,0 @@
-rustfmt --edition 2024 --check apps/api_tester/src/app.rs apps/api_tester/src/navrow.rs
-exit 0
-
-git diff --check -- apps/api_tester/src/app.rs apps/api_tester/src/navrow.rs .superpowers/sdd/2026-09-15-app-composition/task-11-report.md
-exit 0
-
-Manifest sources, all 24 capture files and both binaries: SHA-256 verified against final filesystem.

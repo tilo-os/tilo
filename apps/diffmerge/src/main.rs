@@ -1,5 +1,6 @@
-//! Diff/merge — standard qOS application entry point.
+//! Diff/merge — standard Tilo application entry point.
 
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -40,12 +41,14 @@ pub fn main() {
 }
 
 fn launch_spec() -> LaunchSpec {
-    LaunchSpec::new("dev.qos.diffmerge", diffmerge::app_root)
-            .history(&diffmerge::framework_history::HISTORY)
-            .shot_root(shot_root)
-            .scenarios(&["empty", "diff", "merge", "error", "status"])
-            .configure_app(|app| diffmerge::actions::register(app.action_registry_mut()))
+    LaunchSpec::new("dev.tilo.diffmerge", diffmerge::app_root)
+        .history(&diffmerge::framework_history::HISTORY)
+        .shot_root(shot_root)
+        .scenarios(&["empty", "diff", "merge", "error", "status"])
+        .configure_app(|app| diffmerge::actions::register(app.action_registry_mut()))
 }
 
 #[test]
-fn production_launch_registers_history() { launch_spec().validate_history_declaration().unwrap(); }
+fn production_launch_registers_history() {
+    launch_spec().validate_history_declaration().unwrap();
+}

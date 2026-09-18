@@ -1,23 +1,21 @@
-# qos-channel-crypto
+# tilo-channel-crypto
 
-Per-channel MLS group encryption for qOS. Implements **Phase 7** of
-the `2026-06-29-spaces-channels-and-cryptographic-roles.md` design
-spec.
+Per-channel MLS group encryption for Tilo.
 
 ## What this crate does
 
-Each qOS channel maps to one MLS group. The group key rotates on every
+Each Tilo channel maps to one MLS group. The group key rotates on every
 membership change. Application
 payloads on the wire ride encrypted under the current epoch key; the
 `SignedOp` envelope's metadata (author, artifact, op class, timestamp,
 seq, plus the new `EncryptionMetadata`) stays cleartext so the broker
 can route by artifact and filter by op class without decrypting.
 
-The public surface is intentionally narrow:
+The public surface is narrow:
 
 ```rust
-use qos_channel_crypto::{ChannelGroup, MemberKey};
-use qos_collab_types::ChannelId;
+use tilo_channel_crypto::{ChannelGroup, MemberKey};
+use tilo_collab_types::ChannelId;
 
 // Alice creates a fresh one-member channel.
 let cid = ChannelId::new();
@@ -88,10 +86,9 @@ workspace capability admission/removal. It is deliberately not an app-facing
 RPC. Production broker startup installs a Secret Service-backed MLS provider
 under the launcher-supplied `XDG_STATE_HOME`; missing/locked Secret Service or
 a missing state root reports unavailable rather than creating a local fallback
-key. Consequently applications must not
-claim that collaboration is E2E encrypted merely because the wire and endpoint
-paths support it. Encrypted mode is active only after the trusted workspace
-identity service supplies/restores the exact route's group.
+key. Encrypted mode is active only after the trusted workspace identity service
+supplies or restores the exact route's group.
+Applications must not claim E2E encryption based only on wire and endpoint support.
 
 ## Remaining work
 
@@ -125,9 +122,8 @@ identity service supplies/restores the exact route's group.
   freedesktop Secret Service and never creates a key beside its ciphertext.
   Device recovery/export still needs product ceremony. Without the key, load
   fails explicitly and encrypted inbound traffic stays closed.
-- **PCS / forward-secrecy proofs beyond openmls defaults.** We get
-  what openmls gives us — sufficient for Phase 7's goals; harder
-  claims need explicit analysis.
+- **PCS / forward-secrecy proofs beyond OpenMLS defaults.** Additional
+  claims require explicit analysis.
 - **Multiple ciphersuites / negotiation.** One suite, fixed.
 - **Direct-share (cross-channel single-recipient envelope).** That
   path is per-recipient HPKE, not MLS; not in this crate.
@@ -137,7 +133,7 @@ identity service supplies/restores the exact route's group.
 `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` — the canonical MLS
 small-suite. Picked because:
 
-- Ed25519 aligns with the rest of qOS (identity, FROST, Iroh).
+- Ed25519 aligns with the rest of Tilo (identity, FROST, Iroh).
 - X25519 / AES-128-GCM / SHA-256 are universally implemented; no
   P-384 dependency for human-scale groups.
 - Single fixed suite eliminates downgrade attacks and keeps the test
@@ -153,12 +149,12 @@ This crate ships two extensions to `collab-types`:
 1. `SignedOp.encryption: Option<EncryptionMetadata>`. `None` means the
    payload is cleartext (legacy / unencrypted channels keep working);
    `Some { epoch, channel }` means the payload is a ciphertext from
-   this crate's `ChannelGroup::encrypt`. The metadata IS covered by
+   this crate's `ChannelGroup::encrypt`. The metadata is covered by
    the outer signature so a peer cannot strip or rewrite it.
 
 2. Legacy `ChannelEvent::MemberAdded { welcome, signed_by, signature }` and
    `ChannelEvent::MemberRemoved { removal, signed_by, signature }` are the
-   existing signed governance carriers remain decode-compatible. New code uses
+   existing signed governance carriers and remain decode-compatible. New code uses
    `MlsGovernanceFrameV1`, which names the Welcome recipient, membership
    revision, post-change epoch, prior-frame digest, and the commit required for
    a 3+ member add. `GovernanceJournal` derives exact recipient outbox rows.
@@ -167,11 +163,10 @@ The signature pipeline (Phase 3) is unchanged — it still signs over
 the canonical-bytes view of the envelope. The new `encryption` field
 is part of that view.
 
-## Version-pinning quirks
+## Implementation notes
 
-- **openmls 0.9** is the pinned line. The spec's brief mentioned
-  0.6; the implementation has since moved to the 0.9 API with
-  a usable API. The other companion crates pinned at this version:
+- **openmls 0.9** is the pinned line. The companion crates are pinned as
+  follows:
   - `openmls_rust_crypto = "0.6"`
   - `openmls_basic_credential = "0.6"`
   - `openmls_traits = "0.6"`
@@ -197,15 +192,15 @@ is part of that view.
   Cargo.toml. This couples our public API surface to openmls's minor
   versions; revisit if openmls reshapes the type in 0.9+.
 
-## Honest end-to-end answer
+## End-to-end behavior
 
 > "If I encrypt a payload with this crate, ship it through the
 > existing broker as a `SignedOp` with `EncryptionMetadata=Some`,
 > and another node has the matching `ChannelGroup`, can they decrypt
 > and apply?"
 
-**Yes**, with the following constraints (all proven by the
-integration tests in `tests/`):
+The payload can be decrypted and applied when the following constraints hold
+(covered by the integration tests in `tests/`):
 
 - The recipient must have processed the corresponding
   `ChannelEvent::MemberAdded` (i.e. their `ChannelGroup` was joined
@@ -215,8 +210,8 @@ integration tests in `tests/`):
   they're at the same MLS epoch or within openmls's
   out-of-order-tolerance window).
 - The `SignedOp.signature` must verify (the outer envelope's bind
-  to a qos-collab-types `Identity` + attestation).
-- `qos-collab-types::validator::validate_inbound_op` must pass on
+  to a tilo-collab-types `Identity` + attestation).
+- `tilo-collab-types::validator::validate_inbound_op` must pass on
   the metadata (correct role, attestation, replay seq). Phase 3's
   pipeline runs *before* the decrypt; the decrypt runs only if all
   checks pass.
@@ -232,10 +227,10 @@ governance primitives it must call are implemented and restart-tested.
 
 ```bash
 distrobox enter my-distrobox -- \
-    bash -c 'cargo build -p qos-channel-crypto --release'
+    bash -c 'cargo build -p tilo-channel-crypto --release'
 distrobox enter my-distrobox -- \
-    bash -c 'cargo test -p qos-channel-crypto'
+    bash -c 'cargo test -p tilo-channel-crypto'
 ```
 
 Both must run inside `my-distrobox`; the host lacks crypto build deps
-in the standard qOS layout.
+in the standard Tilo layout.

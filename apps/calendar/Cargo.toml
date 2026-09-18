@@ -17,54 +17,46 @@ path = "src/main.rs"
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
-# The shared multi-account store + encrypted secret vault. Calendar reads its
-# CalDAV accounts from here (Settings owns the write lifecycle); credentials
-# are sealed in the vault, never in the plaintext store. Reading the one
-# shared store is what keeps Calendar and Settings from disagreeing on shape.
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+# Shared multi-account store and encrypted secret vault. Settings owns writes;
+# credentials are sealed in the vault rather than the plaintext store.
 accounts = { path = "../../crates/system/accounts" }
-# The qOS action model: every document-mutating operation is a serializable,
-# replayable action dispatched through one executor, so undo, multi-peer replay
-# and the Ctrl+K command palette all work from a single implementation.
-qos-actions = { path = "../../crates/collab/actions" }
+# Tilo action model for serializable, replayable document mutations.
+tilo-actions = { path = "../../crates/collab/actions" }
 chrono = { workspace = true, features = ["std", "clock"] }
+# RFC 5545 TZID values are IANA names.  Keep the transition database in the
+# app so imported wall times resolve identically on every peer, including DST
+# gaps/folds, rather than depending on the host's current `/usr/share/zoneinfo`.
+chrono-tz = "0.10.4"
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+url.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 
-# Live CalDAV sync (PROPFIND discovery, calendar-query/sync-collection REPORTs,
-# ETag-guarded PUTs). This pulls a TLS/HTTP stack, so it is OPTIONAL and gated
-# behind the `live` feature (OFF by default). The default build — and `--shots`
-# — uses the offline path in `caldav.rs`, which synthesises each calendar's
-# events as real iCalendar and parses them through the in-tree `ics` module,
-# staying small, green, and deterministic. The data types the offline path uses
-# (`CalDavConfig`, `RemoteCalendar`, `Event`, `Task`) are exactly the shapes a
-# CalDAV client consumes and produces, so enabling `live` is a drop-in.
+# Live CalDAV sync (discovery, REPORT, and ETag-guarded PUT) is optional and
+# gated by `live`; the default build uses the offline path.
 reqwest = { workspace = true, optional = true, features = ["blocking", "rustls-tls"] }
 roxmltree = "0.20"
 
 [features]
 thin = ["dep:runtime-dylib"]
-# The real CalDAV transport ships on by default so a configured account syncs
-# for real over HTTPS. It runs on a background thread (see `app::CalendarApp`),
-# so the UI never blocks on the network, and it degrades gracefully: with no
-# account configured, or the `live` feature turned off for a lean headless
-# build, sync is an instant no-op that reports "no accounts" rather than
-# fabricating events.
+# The CalDAV transport runs on a background thread and is a no-op without a
+# configured account.
 default = ["live"]
 live = ["dep:reqwest"]
 
 [dev-dependencies]
 # Serialises the handful of tests that set the process-wide
-# `QOS_CALENDAR_IMPORT_DIR` env var (export/import go through `transfer_dir`),
+# `TILO_CALENDAR_IMPORT_DIR` env var (export/import go through `transfer_dir`),
 # so they never race each other under cargo's default parallel runner.
 serial_test.workspace = true
+mail = { path = "../mail" }
 
 [lints]
 workspace = true

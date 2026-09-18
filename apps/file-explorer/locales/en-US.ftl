@@ -4,6 +4,21 @@
 
 files-time-unknown = unknown time
 
+## Keyboard shortcuts
+files-shortcuts-title = Keyboard shortcuts
+files-shortcuts-summary = Files controls that work with the current desktop keyboard convention
+files-shortcuts-primary = Primary modifier: Ctrl on most desktops, Command on macOS
+files-shortcuts-navigate = Move selection: ↑ / ↓ · select a range: Shift + ↑ / ↓
+files-shortcuts-grid = Grid navigation: ← / → move across; ↑ / ↓ move by visual row
+files-shortcuts-open = Open selected: Enter · rename: F2 · move to Trash: Delete
+files-shortcuts-location = Edit location: Primary + L · refresh: F5
+files-shortcuts-new-folder = New folder: Primary + Shift + N
+files-shortcuts-edit = Copy, cut, paste, undo Trash, select all: Primary + C / X / V / Z / A
+files-shortcuts-hidden = Show or hide hidden files: Primary + H
+files-shortcuts-size = Change item size: Primary + + / − · reset size: Primary + 0
+files-shortcuts-context = Context menu: Menu key or right-click
+files-shortcuts-close = Show this reference: ? or F1 · close sheets and menus: Escape
+
 ## Availability actions and status
 files-keep-offline = Keep Offline
 files-use-automatic-storage = Use Automatic Storage
@@ -203,14 +218,14 @@ files-merge-review-menu = Review merge
 files-merge-review-title = Review merge — { $name }
 files-merge-review-summary = No changes have been made yet
 files-merge-review-checking = Checking the exact immutable revisions…
-files-merge-review-checking-detail = qOS is comparing both changes with their shared base. Nothing is changed while this runs.
+files-merge-review-checking-detail = Tilo is comparing both changes with their shared base. Nothing is changed while this runs.
 files-merge-review-safe = Safe to merge
 files-merge-review-needs-review = Needs review — no merge will be applied
 files-merge-review-unavailable = The merge preflight is unavailable. Refresh the file and compare the versions manually.
 files-merge-review-no-apply = Keep Both or choose a version after reviewing the immutable diff.
 files-merge-review-incoming = Incoming revision from device { $device }
 files-merge-review-diff = Version History lets you compare the two immutable revisions before applying this merge.
-files-merge-review-guard = qOS rechecks the exact base and both revisions immediately before saving. If the edits overlap or changed meanwhile, nothing is merged.
+files-merge-review-guard = Tilo rechecks the exact base and both revisions immediately before saving. If the edits overlap or changed meanwhile, nothing is merged.
 files-merge-review-undo = Applying creates one signed history entry, so you can restore either earlier version without undoing later work.
 files-merge-apply-safe = Apply safe merge
 files-merge-apply-safe-detail = This only proceeds when the deterministic preflight still proves both revisions can be preserved.
@@ -400,6 +415,13 @@ files-restored = Restored { $count } { $count ->
     [one] item
    *[other] items
 }
+files-undo-move-trash = Undo Move to Trash
+files-undo-trash-restored = Restored { $count } { $count ->
+    [one] 1 item
+   *[other] { $count } items
+}
+files-undo-trash-unavailable = Undo is no longer available because Trash changed
+files-undo-trash-failed = Could not restore the trashed items: { $error }
 files-restore-failed = Restore failed: { $error }
 files-trash-already-empty = Trash is already empty
 files-emptied-trash = Emptied Trash ({ $count })
@@ -449,7 +471,6 @@ files-menu-add-favourite = Add to Favourites
 files-menu-remove-favourite = Remove from Favourites
 files-menu-hide-hidden = Hide Hidden Files
 files-menu-show-hidden = Show Hidden Files
-files-menu-show-hidden-checked = ✓ Show Hidden Files
 files-menu-sort-name = Sort by Name
 files-menu-sort-size = Sort by Size
 files-menu-sort-type = Sort by Type
@@ -461,10 +482,26 @@ files-sort-type = Type
 files-sort-date = Date
 files-sort-ascending = Ascending
 files-sort-descending = Descending
-files-menu-checked = ✓ { $label }
-files-menu-unchecked =      { $label }
 files-new-from-template = New { $name }
 files-drag-items = { $count } items
+
+## Archives
+files-archive-extract = Extract archive…
+files-archive-extract-here = Extract here
+files-archive-compress = Compress to ZIP
+files-archive-select-compress = Select files or folders to compress
+files-archive-read-only = Archives are read-only until extracted
+files-archive-open-after-extract = Extract this archive to open or edit files inside it
+files-archive-select = Select a ZIP, TAR, or TAR.GZ archive to extract
+files-archive-extracted =
+    { $count ->
+        [one] Extracted 1 file
+       *[other] Extracted { $count } files
+    }
+files-archive-extracted-partial = Extracted { $count } files; { $failures }
+files-archive-extract-failed = Could not extract archive: { $error }
+files-archive-created = Created { $name }
+files-archive-create-failed = Could not create archive: { $error }
 
 ## File-operation validation
 files-folder-name-empty = Folder name cannot be empty
@@ -474,3 +511,33 @@ files-name-slash = Name cannot contain '/'
 files-no-parent = No parent directory
 files-name-exists = “{ $name }” already exists
 files-source-no-name = Source has no file name
+files-menu-send-nearby = Send to Nearby Device…
+files-action-send-nearby-device = Send to { $device }
+files-nearby-send-to-device = Send to { $device }
+files-nearby-select-one = Select one file or folder to send.
+files-nearby-loading-devices = Looking for your certified devices…
+files-nearby-no-devices = No certified devices are online.
+files-nearby-choose-device = Choose a certified device.
+files-nearby-queueing = Preparing a secure Nearby Send…
+files-nearby-accepted = Nearby Send accepted.
+files-nearby-declined = Nearby Send declined.
+files-nearby-cancelled = Nearby Send cancelled.
+files-nearby-retrying = Retrying Nearby Send…
+files-nearby-accept = Accept
+files-nearby-retry = Retry
+files-nearby-consent-detail = Nothing is saved until you accept this exact transfer.
+files-nearby-retry-detail = The source remains available, so this resumable transfer can be retried safely.
+files-nearby-offer-title = Nearby Send from { $device }
+files-nearby-offer-summary = Receive { $name }?
+files-nearby-offer-size = Transfer size: { $bytes } bytes
+files-nearby-failed-title = Nearby Send failed
+files-nearby-failed-device = Certified device: { $device }
+files-nearby-choose-destination = Choose where to save
+files-nearby-no-destinations = No approved writable workspace folder is available.
+files-nearby-destination-count = Choose from { $count } approved destinations.
+files-nearby-save-to-destination = Save to { $destination }
+files-nearby-save-and-remember = Save to { $destination } and use it for this session
+
+files-share-not-available = Share service is not available on this host
+
+files-name-invalid = Enter a valid file or folder name

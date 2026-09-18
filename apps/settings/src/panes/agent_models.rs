@@ -1,11 +1,10 @@
 //! Agent Models — device-local model lifecycle and provider profiles.
 //!
-//! qOS owns the user-facing lifecycle, while a small adapter speaks to the
+//! Tilo owns the user-facing lifecycle, while a small adapter speaks to the
 //! privileged model manager that pins Hugging Face snapshots and supervises
 //! vLLM. Settings never downloads model bytes or starts a server itself.
 
 use std::collections::HashMap;
-use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -22,13 +21,35 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 use zeroize::Zeroize;
 
-use crate::widgets::{El, caption, card, card_with_action, rows, value_row};
+use crate::widgets::{El, caption, card, card_with_action, hgap, rows, value_row};
 
 const SETUP_KEY: &str = "agent_models.local.setup";
-const CONFIRM_KEY: &str = "agent_models.local.confirm";
+pub(crate) const CONFIRM_KEY: &str = "agent_models.local.confirm";
 const CANCEL_KEY: &str = "agent_models.local.cancel";
-const ACCELERATOR_SETUP_KEY: &str = "agent_models.accelerator.setup";
+pub(crate) const ACCELERATOR_SETUP_KEY: &str = "agent_models.accelerator.setup";
 const POLL_INTERVAL: Duration = Duration::from_millis(750);
+const MANAGER_OUTPUT_LIMIT: usize = 1024 * 1024;
+
+fn manager_run(args: &[&str], timeout: Duration) -> Result<bounded_command::Output, String> {
+    bounded_command::run(
+        "tilo-model-manager",
+        args,
+        None,
+        MANAGER_OUTPUT_LIMIT,
+        timeout,
+    )
+    .map_err(|error| format!("model service is unavailable: {error}"))
+}
+
+fn manager_diagnostic(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .chars()
+        .filter(|character| !character.is_control() || matches!(character, ' ' | '\n' | '\t'))
+        .take(512)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
 
 #[derive(Clone)]
 struct HostedFieldBuffers {
@@ -78,6 +99,14 @@ pub struct LocalModelPackage {
     pub license_url: String,
     pub download_bytes: u64,
     pub installed_bytes: u64,
+    /// Signed capability reported by the local-model manager for this exact
+    /// revision. It is not inferred from a model name.
+    #[serde(default)]
+    pub vision: bool,
+    /// Signed biometric capability for a distinct local face runtime.  A
+    /// general image-analysis model must not gain this capability implicitly.
+    #[serde(default)]
+    pub face_recognition: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,7 +172,7 @@ pub enum AcceleratorSetupState {
 }
 
 impl AcceleratorSetupState {
-    fn blocks_model_setup(&self) -> bool {
+    pub(crate) fn blocks_model_setup(&self) -> bool {
         !matches!(self, Self::Active)
     }
 
@@ -168,7 +197,7 @@ pub struct LocalModelSnapshot {
     pub accelerator_setup: Option<AcceleratorSetup>,
 }
 
-/// Boundary implemented by qOS' model service. The production adapter is a
+/// Boundary implemented by Tilo' model service. The production adapter is a
 /// deliberately tiny JSON CLI seam so Settings does not acquire downloader,
 /// container-runtime, GPU-driver, or privilege-management dependencies.
 #[allow(
@@ -188,13 +217,9 @@ pub struct ModelManagerCli;
 
 impl ModelManagerCli {
     fn command(verb: &str, id: &str) -> Result<(), String> {
-        let status = Command::new("qos-model-manager")
-            .args([verb, "--model", id])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .status()
-            .map_err(|error| format!("model service is unavailable: {error}"))?;
-        status
+        let output = manager_run(&[verb, "--model", id], Duration::from_secs(10 * 60))?;
+        output
+            .status
             .success()
             .then_some(())
             .ok_or_else(|| format!("model service refused {verb}"))
@@ -203,34 +228,28 @@ impl ModelManagerCli {
 
 impl LocalModelControl for ModelManagerCli {
     fn snapshot(&self) -> Result<LocalModelSnapshot, String> {
-        let output = Command::new("qos-model-manager")
-            .args(["snapshot", "--format", "json"])
-            .stdin(Stdio::null())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|error| format!("model service is unavailable: {error}"))?;
+        let output = manager_run(&["snapshot", "--format", "json"], Duration::from_secs(10))?;
         if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+            return Err(manager_diagnostic(&output.stderr));
         }
         serde_json::from_slice(&output.stdout)
             .map_err(|error| format!("model service returned invalid status: {error}"))
     }
 
     fn install(&self, model: &LocalModelPackage) -> Result<(), String> {
-        let status = Command::new("qos-model-manager")
-            .args([
+        let output = manager_run(
+            &[
                 "install",
                 "--model",
                 &model.id,
                 "--revision",
                 &model.revision,
                 "--accept-license",
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .status()
-            .map_err(|error| format!("model service is unavailable: {error}"))?;
-        status
+            ],
+            Duration::from_secs(30 * 60),
+        )?;
+        output
+            .status
             .success()
             .then_some(())
             .ok_or_else(|| "model service refused the installation".to_string())
@@ -246,17 +265,24 @@ impl LocalModelControl for ModelManagerCli {
         Self::command("remove", id)
     }
     fn stage_accelerator(&self) -> Result<(), String> {
-        let status = Command::new("qos-model-manager")
-            .arg("stage-accelerator")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .status()
-            .map_err(|error| format!("model service is unavailable: {error}"))?;
-        status
+        let output = manager_run(&["stage-accelerator"], Duration::from_secs(30 * 60))?;
+        output
+            .status
             .success()
             .then_some(())
             .ok_or_else(|| "accelerator setup service refused the request".to_string())
     }
+}
+
+/// Read the manager's current, signed inventory for the resource tree and
+/// effect-time validation.  This performs no mutation and deliberately keeps
+/// manager implementation details out of `actions.rs`.
+///
+/// # Errors
+///
+/// Returns the local manager's unavailable or malformed-snapshot error.
+pub fn live_snapshot() -> Result<LocalModelSnapshot, String> {
+    LocalModelControl::snapshot(&ModelManagerCli)
 }
 
 fn fallback_snapshot() -> LocalModelSnapshot {
@@ -310,7 +336,7 @@ fn fallback_snapshot() -> LocalModelSnapshot {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ModelAction {
+pub(crate) enum ModelAction {
     Start,
     Stop,
     Remove,
@@ -348,7 +374,7 @@ fn action_slug(action: ModelAction) -> &'static str {
     }
 }
 
-fn model_key(id: &str, action: ModelAction) -> String {
+pub(crate) fn model_key(id: &str, action: ModelAction) -> String {
     let token = id
         .chars()
         .map(|character| {
@@ -380,21 +406,17 @@ fn phase_progress(phase: &LocalModelPhase) -> Option<f32> {
     }
 }
 
-fn save_profile(profile: ProviderProfile) {
-    let mut config = ProviderConfig::load();
-    config.upsert(profile);
-    let _ = config.save();
-}
-
-fn select_default(profile_id: String) {
-    let mut config = ProviderConfig::load();
-    if config
-        .profiles
-        .iter()
-        .any(|profile| profile.id == profile_id && profile.default_model.is_some())
-    {
-        config.default_profile = Some(profile_id);
-        let _ = config.save();
+fn provider_action_button(
+    resources: &tilo_actions::Resource,
+    id: &str,
+    label: &str,
+    profile_id: Option<&str>,
+    action_id: &str,
+) -> Button {
+    let button = Button::new(id, label, None);
+    match crate::actions::agent_provider_binding(resources, profile_id, action_id) {
+        Some(binding) => button.on_action(binding),
+        None => button.with_enabled(false),
     }
 }
 
@@ -453,7 +475,9 @@ fn synced_local_profile(
             id: model.package.id.clone(),
             label: model.package.name.clone(),
             context_window: None,
-            vision: false,
+            revision: Some(model.package.revision.clone()),
+            vision: model.package.vision,
+            face_recognition: model.package.face_recognition,
             tool_calling: true,
         })
         .collect();
@@ -486,16 +510,39 @@ pub struct AgentModelsPane {
     last_poll: Instant,
     needs_seed: bool,
     structure_dirty: bool,
+    operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
+    command_state: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
+    local_doc: AutoCommit,
+    isolate_document: bool,
     /// API keys are deliberately process-local masked-input buffers. They are
     /// not Automerge text, never enter the settings document, and are erased
     /// as soon as the gateway accepts or rejects submission.
     provider_key_buffers: Arc<Mutex<HashMap<String, Arc<Mutex<String>>>>>,
     provider_field_buffers: Arc<Mutex<HashMap<String, HostedFieldBuffers>>>,
+    provider_notice: ui::LocalState<Option<String>>,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
 
 impl AgentModelsPane {
+    #[must_use]
+    pub fn with_operation_status(
+        mut self,
+        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
+    ) -> Self {
+        self.operation_status = status.clone();
+        self
+    }
+    #[must_use]
+    pub fn with_command_state(
+        mut self,
+        commands: &ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
+    ) -> Self {
+        self.command_state = commands.clone();
+        self.isolate_document = true;
+        self
+    }
+
     pub fn new() -> Self {
         let mut pane = Self::with_control(Arc::new(ModelManagerCli));
         pane.sync_provider_profile = true;
@@ -510,7 +557,7 @@ impl AgentModelsPane {
                 fallback_snapshot(),
                 false,
                 Some(format!(
-                    "Local model service is not connected. Hardware guidance is approximate; installation controls become available when qos-model-manager is installed. {error}"
+                    "The local model service is unavailable ({error}). Install or start tilo-model-manager to inspect hardware, install models, or manage local model lifecycle."
                 )),
             ),
         };
@@ -525,8 +572,13 @@ impl AgentModelsPane {
             last_poll: Instant::now(),
             needs_seed: true,
             structure_dirty: false,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
+            command_state: ui::LocalState::new(None),
+            local_doc: AutoCommit::new(),
+            isolate_document: false,
             provider_key_buffers: Arc::new(Mutex::new(HashMap::new())),
             provider_field_buffers: Arc::new(Mutex::new(HashMap::new())),
+            provider_notice: ui::LocalState::new(None),
             composed: None,
             rect: Rect::ZERO,
         }
@@ -551,6 +603,38 @@ impl AgentModelsPane {
         self.structure_dirty = true;
     }
 
+    fn operation_is_running(&self, operation: &crate::actions::AgentModelOperation) -> bool {
+        let token = crate::actions::local_operation_token_for(
+            crate::actions::AGENT_MODEL_OPERATION_TYPE,
+            operation,
+        );
+        matches!(
+            self.operation_status.get(),
+            crate::actions::LocalOperationStatus::Running { token: active } if active == token
+        )
+    }
+
+    fn operation_finished(
+        &self,
+        operation: &crate::actions::AgentModelOperation,
+        result: Result<String, String>,
+    ) {
+        let token = crate::actions::local_operation_token_for(
+            crate::actions::AGENT_MODEL_OPERATION_TYPE,
+            operation,
+        );
+        if !matches!(
+            self.operation_status.get(),
+            crate::actions::LocalOperationStatus::Running { token: active } if active == token
+        ) {
+            return;
+        }
+        self.operation_status.set(match result {
+            Ok(message) => crate::actions::LocalOperationStatus::Succeeded { token, message },
+            Err(message) => crate::actions::LocalOperationStatus::Failed { token, message },
+        });
+    }
+
     fn is_busy(&self) -> bool {
         self.snapshot
             .models
@@ -569,7 +653,7 @@ impl AgentModelsPane {
         let status = match &setup.status {
             AcceleratorSetupState::Available => {
                 body.push(caption(
-                    "qOS found a signed accelerator stack matched to this device. Setup stages a new immutable system image; it does not install a driver into the running system.",
+                    "Tilo found a signed accelerator stack matched to this device. Setup stages a new immutable system image; it does not install a driver into the running system.",
                 ));
                 body.push(Box::new(
                     Row::new()
@@ -587,7 +671,7 @@ impl AgentModelsPane {
                     ProgressBar::indeterminate().with_label("Preparing accelerator support"),
                 ));
                 body.push(caption(
-                    "The request is queued. You can leave Settings while qOS verifies and stages the signed system image.",
+                    "The request is queued. You can leave Settings while Tilo verifies and stages the signed system image.",
                 ));
                 "Queued"
             }
@@ -596,13 +680,13 @@ impl AgentModelsPane {
                     ProgressBar::indeterminate().with_label("Staging accelerator support"),
                 ));
                 body.push(caption(
-                    "qOS is building the next boot deployment. The current desktop keeps running normally.",
+                    "Tilo is building the next boot deployment. The current desktop keeps running normally.",
                 ));
                 "Staging"
             }
             AcceleratorSetupState::RestartRequired => {
                 body.push(caption(
-                    "Accelerator support is ready for the next boot. Restart from the system power menu when convenient; qOS will verify the booted deployment before calling it active.",
+                    "Accelerator support is ready for the next boot. Restart from the system power menu when convenient; Tilo will verify the booted deployment before calling it active.",
                 ));
                 "Restart required"
             }
@@ -684,7 +768,7 @@ impl AgentModelsPane {
                 value_row("Pinned revision", &package.revision),
                 value_row("License", &package.license),
                 caption(&format!(
-                    "By continuing, you accept the model license at {}. qOS downloads the pinned snapshot once and keeps inference on this device.",
+                    "By continuing, you accept the model license at {}. Tilo downloads the pinned snapshot once and keeps inference on this device.",
                     package.license_url
                 )),
                 Box::new(
@@ -768,7 +852,7 @@ impl AgentModelsPane {
                 ));
             }
             LocalModelPhase::Ready { running: true, .. } => body.push(caption(
-                "Available to agents through the local qOS gateway. Workspace permissions still apply to every task.",
+                "Available to agents through the local Tilo gateway. Workspace permissions still apply to every task.",
             )),
             LocalModelPhase::Ready { running: false, .. } => body.push(caption(
                 "Installed and verified. Start it when you want agents to use it; stopped models consume no accelerator memory.",
@@ -785,16 +869,15 @@ impl AgentModelsPane {
                 } else {
                     action_label(action)
                 };
-                row = row
-                    .push(Box::new(Button::new(
-                        &format!(
-                            "agent-models-{}-{}",
-                            action_slug(action),
-                            model_key(&model.package.id, action)
-                        ),
-                        label,
-                        Some(&model_key(&model.package.id, action)),
-                    )));
+                row = row.push(Box::new(Button::new(
+                    &format!(
+                        "agent-models-{}-{}",
+                        action_slug(action),
+                        model_key(&model.package.id, action)
+                    ),
+                    label,
+                    Some(&model_key(&model.package.id, action)),
+                )));
             }
             body.push(Box::new(row.push(Box::new(Spacer::new()))));
         }
@@ -839,25 +922,27 @@ impl AgentModelsPane {
     )]
     fn hosted_profiles(&self) -> El {
         let config = ProviderConfig::load();
+        let action_resources = crate::actions::agent_provider_action_resources();
         let mut body: Vec<El> = vec![caption(
             "Hosted and compatible endpoints are personal to this device. Credentials remain references in the system vault.",
         )];
         body.push(Box::new(
             Row::new()
-                .push(Box::new(
-                    Button::new("agent-models-add-anthropic", "Add Anthropic", None).on_effect(
-                        || save_profile(ProviderProfile::hosted(ProviderProtocol::Anthropic)),
-                    ),
-                ))
-                .push(Box::new(
-                    Button::new("agent-models-add-openai", "Add compatible API", None).on_effect(
-                        || {
-                            save_profile(ProviderProfile::hosted(
-                                ProviderProtocol::OpenAiCompatible,
-                            ));
-                        },
-                    ),
-                ))
+                .push(Box::new(provider_action_button(
+                    &action_resources,
+                    "agent-models-add-anthropic",
+                    "Add Anthropic",
+                    None,
+                    "add-anthropic",
+                )))
+                .push(hgap(8.0))
+                .push(Box::new(provider_action_button(
+                    &action_resources,
+                    "agent-models-add-openai",
+                    "Add compatible API",
+                    None,
+                    "add-openai-compatible",
+                )))
                 .push(Box::new(Spacer::new())),
         ));
         for profile in config
@@ -906,14 +991,12 @@ impl AgentModelsPane {
             ));
             let save_id = profile_id.clone();
             let save_fields = fields.clone();
-            let protocol_id = profile_id.clone();
+            let save_notice = self.provider_notice.clone();
             let alternate_protocol = match profile.protocol {
                 ProviderProtocol::Anthropic => ProviderProtocol::OpenAiCompatible,
                 ProviderProtocol::OpenAiCompatible => ProviderProtocol::Anthropic,
             };
             let alternate_protocol_label = format!("Use {}", alternate_protocol.label());
-            let enabled_id = profile_id.clone();
-            let remove_profile_id = profile_id.clone();
             body.push(Box::new(
                 Row::new()
                     .push(Box::new(
@@ -939,7 +1022,7 @@ impl AgentModelsPane {
                                 .map(|value| value.clone())
                                 .unwrap_or_default();
                             let mut config = ProviderConfig::load();
-                            if let Some(profile) = config
+                            let result = if let Some(profile) = config
                                 .profiles
                                 .iter_mut()
                                 .find(|profile| profile.id == save_id)
@@ -953,59 +1036,40 @@ impl AgentModelsPane {
                                     }
                                     profile.default_model = Some(model);
                                 }
-                                let _ = config.save();
-                            }
+                                config.save().map_err(|error| error.to_string())
+                            } else {
+                                Err("Provider is no longer available.".into())
+                            };
+                            save_notice.set(Some(match result {
+                                Ok(()) => "Provider details saved.".into(),
+                                Err(error) => format!("Provider details were not saved: {error}"),
+                            }));
                         }),
                     ))
-                    .push(Box::new(
-                        Button::new(
-                            &format!("agent-models-protocol-{profile_id}"),
-                            &alternate_protocol_label,
-                            None,
-                        )
-                        .on_effect(move || {
-                            let mut config = ProviderConfig::load();
-                            if let Some(profile) = config
-                                .profiles
-                                .iter_mut()
-                                .find(|profile| profile.id == protocol_id)
-                            {
-                                profile.protocol = alternate_protocol;
-                                let _ = config.save();
-                            }
-                        }),
-                    ))
-                    .push(Box::new(
-                        Button::new(
-                            &format!("agent-models-enabled-{profile_id}"),
-                            if profile.enabled { "Disable" } else { "Enable" },
-                            None,
-                        )
-                        .on_effect(move || {
-                            let mut config = ProviderConfig::load();
-                            if let Some(profile) = config
-                                .profiles
-                                .iter_mut()
-                                .find(|profile| profile.id == enabled_id)
-                            {
-                                profile.enabled = !profile.enabled;
-                                let _ = config.save();
-                            }
-                        }),
-                    ))
-                    .push(Box::new(
-                        Button::new(
-                            &format!("agent-models-remove-provider-{profile_id}"),
-                            "Remove provider",
-                            None,
-                        )
-                        .on_effect(move || {
-                            let mut config = ProviderConfig::load();
-                            config.remove(&remove_profile_id);
-                            let _ = config.save();
-                            let _ = qos_model_gateway::remove_api_key(&remove_profile_id);
-                        }),
-                    ))
+                    .push(hgap(8.0))
+                    .push(Box::new(provider_action_button(
+                        &action_resources,
+                        &format!("agent-models-protocol-{profile_id}"),
+                        &alternate_protocol_label,
+                        Some(&profile_id),
+                        "set-protocol",
+                    )))
+                    .push(hgap(8.0))
+                    .push(Box::new(provider_action_button(
+                        &action_resources,
+                        &format!("agent-models-enabled-{profile_id}"),
+                        if profile.enabled { "Disable" } else { "Enable" },
+                        Some(&profile_id),
+                        if profile.enabled { "disable" } else { "enable" },
+                    )))
+                    .push(hgap(8.0))
+                    .push(Box::new(provider_action_button(
+                        &action_resources,
+                        &format!("agent-models-remove-provider-{profile_id}"),
+                        "Remove provider",
+                        Some(&profile_id),
+                        "remove",
+                    )))
                     .push(Box::new(Spacer::new())),
             ));
             body.push(value_row("Protocol", profile.protocol.label()));
@@ -1013,8 +1077,10 @@ impl AgentModelsPane {
             let initial = buffer.lock().map(|key| key.clone()).unwrap_or_default();
             let set_id = profile_id.clone();
             let set_buffer = Arc::clone(&buffer);
+            let set_notice = self.provider_notice.clone();
             let remove_id = profile_id.clone();
-            let configured = qos_model_gateway::secret_configured(&profile_id).unwrap_or(false);
+            let remove_notice = self.provider_notice.clone();
+            let configured = tilo_model_gateway::secret_configured(&profile_id).unwrap_or(false);
             body.push(Box::new(
                 Row::new()
                     .push(Box::new(
@@ -1023,7 +1089,7 @@ impl AgentModelsPane {
                             .with_external_buffer(buffer)
                             .with_initial_value(&initial)
                             .with_secret(true)
-                            .with_placeholder("API key (stored in qOS vault)"),
+                            .with_placeholder("API key (stored in Tilo vault)"),
                     ))
                     .push(Box::new(
                         Button::new(
@@ -1040,8 +1106,13 @@ impl AgentModelsPane {
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
                             let value = std::mem::take(&mut *key);
-                            let _ = qos_model_gateway::set_api_key(&set_id, value);
+                            let result = tilo_model_gateway::set_api_key(&set_id, value);
                             key.zeroize();
+                            drop(key);
+                            set_notice.set(Some(match result {
+                                Ok(()) => "API key saved in the Tilo vault.".into(),
+                                Err(error) => format!("API key was not saved: {error}"),
+                            }));
                         }),
                     ))
                     .push(Box::new(
@@ -1051,30 +1122,32 @@ impl AgentModelsPane {
                             None,
                         )
                         .on_effect(move || {
-                            let _ = qos_model_gateway::remove_api_key(&remove_id);
+                            let result = tilo_model_gateway::remove_api_key(&remove_id);
+                            remove_notice.set(Some(match result {
+                                Ok(()) => "API key removed from the Tilo vault.".into(),
+                                Err(error) => format!("API key was not removed: {error}"),
+                            }));
                         }),
                     ))
                     .push(Box::new(Spacer::new())),
             ));
             body.push(caption(if configured {
-                "API key is stored in the qOS vault."
+                "API key is stored in the Tilo vault."
             } else {
                 "No API key stored."
             }));
             if profile.default_model.is_some() {
-                let profile_id = profile.id.clone();
-                body.push(Box::new(
-                    Button::new(
-                        &format!("agent-models-default-{profile_id}"),
-                        if config.default_profile.as_deref() == Some(&profile.id) {
-                            "Default for new tasks"
-                        } else {
-                            "Use by default"
-                        },
-                        None,
-                    )
-                    .on_effect(move || select_default(profile_id.clone())),
-                ));
+                body.push(Box::new(provider_action_button(
+                    &action_resources,
+                    &format!("agent-models-default-{profile_id}"),
+                    if config.default_profile.as_deref() == Some(&profile.id) {
+                        "Default for new tasks"
+                    } else {
+                        "Use by default"
+                    },
+                    Some(&profile_id),
+                    "set-default",
+                )));
             }
         }
         for issue in config.validation_errors() {
@@ -1093,10 +1166,20 @@ impl AgentModelsPane {
                 caption(
                     "Models configured here supply inference only. They do not grant an agent access to a workspace, app, file, message, or device.",
                 ),
-                value_row("Local inference", "Loopback-only qOS model gateway"),
+                value_row("Local inference", "Loopback-only Tilo model gateway"),
                 value_row("Downloads", "Explicit, pinned, and visible here"),
             ]),
         )];
+        if !self.manager_available {
+            cards.push(card(
+                "Local model service unavailable",
+                caption(
+                    "Install or start tilo-model-manager to inspect hardware, install models, or manage local model lifecycle. Existing hosted providers remain available below.",
+                ),
+            ));
+            cards.push(self.hosted_profiles());
+            return crate::widgets::cards(cards);
+        }
         if let Some(notice) = &self.notice {
             cards.push(card("Local model service", caption(notice)));
         }
@@ -1136,12 +1219,29 @@ impl AgentModelsPane {
     }
 
     fn run_model_action(&mut self, model: &InstalledLocalModel, action: ModelAction) {
+        let operation = match action {
+            ModelAction::Start => crate::actions::AgentModelOperation::Start {
+                id: model.package.id.clone(),
+            },
+            ModelAction::Stop => crate::actions::AgentModelOperation::Stop {
+                id: model.package.id.clone(),
+            },
+            ModelAction::Retry => crate::actions::AgentModelOperation::Retry {
+                id: model.package.id.clone(),
+                revision: model.package.revision.clone(),
+            },
+            ModelAction::Remove => crate::actions::AgentModelOperation::Remove {
+                id: model.package.id.clone(),
+            },
+        };
         let result = match action {
             ModelAction::Start => self.control.start(&model.package.id),
             ModelAction::Stop => self.control.stop(&model.package.id),
             ModelAction::Retry => self.control.install(&model.package),
             ModelAction::Remove => {
-                if self.remove_confirmation.as_deref() != Some(&model.package.id) {
+                if self.remove_confirmation.as_deref() != Some(&model.package.id)
+                    && !self.operation_is_running(&operation)
+                {
                     self.remove_confirmation = Some(model.package.id.clone());
                     self.notice = Some(format!(
                         "Remove {}? This deletes its {} local snapshot. Tasks and workspace data are unchanged.",
@@ -1156,18 +1256,40 @@ impl AgentModelsPane {
             }
         };
         if let Err(error) = result {
+            self.operation_finished(
+                &operation,
+                Err(format!("{} failed: {error}", action_label(action))),
+            );
             self.notice = Some(format!("{} failed: {error}", action_label(action)));
             self.structure_dirty = true;
         } else {
             self.refresh();
+            self.operation_finished(
+                &operation,
+                Ok(format!(
+                    "{} request accepted by the local model manager",
+                    action_label(action)
+                )),
+            );
         }
     }
 
     fn sync_actions(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if take_bool(state, root, ACCELERATOR_SETUP_KEY) {
+            let operation = crate::actions::AgentModelOperation::StageAccelerator;
             match self.control.stage_accelerator() {
-                Ok(()) => self.refresh(),
+                Ok(()) => {
+                    self.refresh();
+                    self.operation_finished(
+                        &operation,
+                        Ok("Accelerator setup request accepted by the local model manager".into()),
+                    );
+                }
                 Err(error) => {
+                    self.operation_finished(
+                        &operation,
+                        Err(format!("Accelerator setup could not start: {error}")),
+                    );
                     self.notice = Some(format!("Accelerator setup could not start: {error}"));
                     self.structure_dirty = true;
                 }
@@ -1185,12 +1307,30 @@ impl AgentModelsPane {
         }
         if take_bool(state, root, CONFIRM_KEY)
             && let Some(package) = self.snapshot.recommendation.clone()
-            && self.confirmation.as_deref() == Some(package.id.as_str())
+            && (self.confirmation.as_deref() == Some(package.id.as_str())
+                || self.operation_is_running(&crate::actions::AgentModelOperation::Install {
+                    id: package.id.clone(),
+                    revision: package.revision.clone(),
+                }))
         {
             self.confirmation = None;
+            let operation = crate::actions::AgentModelOperation::Install {
+                id: package.id.clone(),
+                revision: package.revision.clone(),
+            };
             match self.control.install(&package) {
-                Ok(()) => self.refresh(),
+                Ok(()) => {
+                    self.refresh();
+                    self.operation_finished(
+                        &operation,
+                        Ok("Model installation request accepted by the local model manager".into()),
+                    );
+                }
                 Err(error) => {
+                    self.operation_finished(
+                        &operation,
+                        Err(format!("Installation could not start: {error}")),
+                    );
                     self.notice = Some(format!("Installation could not start: {error}"));
                     self.structure_dirty = true;
                 }
@@ -1231,11 +1371,52 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for AgentModelsPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        self.seed(state, root);
-        self.sync_actions(state, root);
+    fn sync(&mut self, shared: &mut AutoCommit, _root: &ObjId) {
+        let isolated = self.isolate_document;
+        let mut state = if isolated {
+            std::mem::take(&mut self.local_doc)
+        } else {
+            std::mem::take(shared)
+        };
+        let root = automerge::ROOT;
+        if let Some(notice) = self.provider_notice.get() {
+            self.provider_notice.set(None);
+            self.notice = Some(notice);
+            self.structure_dirty = true;
+        }
+        self.seed(&mut state, &root);
+        if let Some(crate::actions::LocalPaneCommand::AgentModel(operation)) =
+            self.command_state.get()
+        {
+            self.command_state.set(None);
+            let key = match operation {
+                crate::actions::AgentModelOperation::StageAccelerator => {
+                    ACCELERATOR_SETUP_KEY.into()
+                }
+                crate::actions::AgentModelOperation::Install { .. } => CONFIRM_KEY.into(),
+                crate::actions::AgentModelOperation::Start { id } => {
+                    model_key(&id, ModelAction::Start)
+                }
+                crate::actions::AgentModelOperation::Stop { id } => {
+                    model_key(&id, ModelAction::Stop)
+                }
+                crate::actions::AgentModelOperation::Retry { id, .. } => {
+                    model_key(&id, ModelAction::Retry)
+                }
+                crate::actions::AgentModelOperation::Remove { id } => {
+                    model_key(&id, ModelAction::Remove)
+                }
+            };
+            let _ = state.put(&root, key, true);
+        }
+        self.sync_actions(&mut state, &root);
         if let Some(composed) = &mut self.composed {
-            composed.sync(state, root);
+            composed.sync(&mut state, &root);
+        }
+        if isolated {
+            self.local_doc = state;
+        } else {
+            *shared = state;
         }
     }
 
@@ -1396,6 +1577,8 @@ mod tests {
             license_url: "https://example.test/license".into(),
             download_bytes: 5_368_709_120,
             installed_bytes: 10_737_418_240,
+            vision: false,
+            face_recognition: false,
         }
     }
 
@@ -1506,6 +1689,42 @@ mod tests {
     }
 
     #[test]
+    fn local_start_reports_a_terminal_receipt_only_for_its_matching_operation() {
+        let control = Arc::new(MockControl {
+            snapshot: Mutex::new(snapshot(Some(LocalModelPhase::Ready {
+                running: false,
+                endpoint: None,
+            }))),
+            calls: Mutex::new(Vec::new()),
+        });
+        let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
+        let mut pane =
+            AgentModelsPane::with_control(control.clone()).with_operation_status(&status);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        let operation = crate::actions::AgentModelOperation::Start {
+            id: "test/model".into(),
+        };
+        status.set(crate::actions::LocalOperationStatus::Running {
+            token: crate::actions::local_operation_token_for(
+                crate::actions::AGENT_MODEL_OPERATION_TYPE,
+                &operation,
+            ),
+        });
+        let _ = doc.put(&root, model_key("test/model", ModelAction::Start), true);
+        pane.sync(&mut doc, &root);
+        assert_eq!(
+            control.calls.lock().unwrap().as_slice(),
+            ["start:test/model"]
+        );
+        assert!(matches!(
+            status.get(),
+            crate::actions::LocalOperationStatus::Succeeded { .. }
+        ));
+    }
+
+    #[test]
     fn lifecycle_exposes_only_safe_controls() {
         assert_eq!(
             available_actions(&LocalModelPhase::Ready {
@@ -1557,7 +1776,9 @@ mod tests {
 
     #[test]
     fn local_profile_uses_the_ready_manager_endpoint_not_port_8000() {
-        let package = package();
+        let mut package = package();
+        package.vision = true;
+        package.face_recognition = true;
         let model_id = package.id.clone();
         let models = vec![InstalledLocalModel {
             package,
@@ -1572,6 +1793,12 @@ mod tests {
         let profile = synced_local_profile(None, &models).expect("ready local profile");
         assert_eq!(profile.endpoint, "http://127.0.0.1:43127/v1");
         assert_eq!(profile.default_model.as_deref(), Some("test/model"));
+        assert_eq!(
+            profile.models[0].revision.as_deref(),
+            Some("0123456789abcdef")
+        );
+        assert!(profile.models[0].vision);
+        assert!(profile.models[0].face_recognition);
         assert!(profile.enabled);
     }
 

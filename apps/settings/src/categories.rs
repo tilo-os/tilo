@@ -99,6 +99,7 @@ const BLUETOOTH_KEYWORDS: &[&str] = &[
 ];
 const DEVICE_MESH_KEYWORDS: &[&str] = &[
     "sync",
+    "continuity",
     "devices",
     "server",
     "host",
@@ -106,6 +107,17 @@ const DEVICE_MESH_KEYWORDS: &[&str] = &[
     "relay",
     "copies",
     "files",
+    "clipboard",
+    "file transfer",
+    "realtime sessions",
+    "wi-fi settings",
+    "media handoff",
+    "display extension",
+    "notification mirroring",
+    "gamepad",
+    "typed gamepad",
+    "handoff",
+    "privacy",
 ];
 const SOUND_KEYWORDS: &[&str] = &[
     "audio",
@@ -310,6 +322,10 @@ const ABOUT_KEYWORDS: &[&str] = &[
     "system",
     "version",
     "fingerprint",
+    "backup",
+    "portable backup",
+    "encrypted backup",
+    "recovery",
 ];
 
 impl Category {
@@ -646,6 +662,14 @@ mod tests {
         assert!(
             Category::KeyboardShortcuts.matches("hotkeys"),
             "hotkeys → Keyboard Shortcuts"
+        );
+        assert!(
+            Category::DeviceMesh.matches("file transfer"),
+            "file transfer → Devices & Sync"
+        );
+        assert!(
+            Category::DeviceMesh.matches("typed gamepad"),
+            "typed gamepad → Devices & Sync"
         );
     }
 

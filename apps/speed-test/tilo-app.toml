@@ -1,0 +1,39 @@
+[package]
+id = "dev.tilo.speed-test"
+name = "Speed Test"
+category = "System"
+version = "0.1.0"
+kind = "app"
+runtime = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor = "tilo-demo/2026.07"
+claim = "deadbeef"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+# Measurements use Cloudflare's fixed download and upload endpoints; the app
+# does not need unrestricted host networking.
+mode = "allowlist"
+hosts = ["speed.cloudflare.com"]
+
+[sandbox.services]
+collab = "optional@1"
+
+[entrypoint]
+bin = "bin/speed-test"
+type = "gui"
+splash-segments = ["bin/speed-test[0x0:0x400000]"]
+splash-budget = 250

@@ -1847,7 +1847,7 @@ impl ContainersApp {
             None,
             &caret,
         );
-        // Attach button (real exec via the qOS terminal) for running containers.
+        // Attach button (real exec via the Tilo terminal) for running containers.
         if container.status.is_running() {
             let bw = 150.0;
             let btn = Rect::new(
@@ -1888,7 +1888,7 @@ impl ContainersApp {
         }
         // hint
         let hint = if container.status.is_running() {
-            "Attach opens the qOS terminal running podman exec -it in this container."
+            "Attach opens the Tilo terminal running podman exec -it in this container."
         } else {
             "Start the container to attach an interactive shell."
         };
@@ -3400,12 +3400,12 @@ impl ContainersApp {
         }
     }
 
-    /// Launch a REAL terminal entering the distrobox: spawn the qOS terminal
+    /// Launch a REAL terminal entering the distrobox: spawn the Tilo terminal
     /// app running `distrobox enter <box>` (see [`crate::terminal`]).
     fn enter_distrobox(&mut self, name: &str) {
         if self.engine.live {
-            self.pending_control_invocation = Some(ui::qos_actions::ControlInvocation {
-                address: ui::qos_actions::ActionAddress::new(format!("distrobox:{name}"), "enter"),
+            self.pending_control_invocation = Some(ui::tilo_actions::ControlInvocation {
+                address: ui::tilo_actions::ActionAddress::new(format!("distrobox:{name}"), "enter"),
                 arguments: serde_json::Map::new(),
             });
             self.show_toast(format!("Enter {name} requested"), false);

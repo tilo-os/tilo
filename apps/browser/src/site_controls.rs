@@ -335,7 +335,10 @@ impl SiteControls {
     /// the current origin's permission names — so the column can be sized
     /// from the widest of them at the current text scale.
     pub(crate) fn fact_labels(&self) -> Vec<String> {
-        let mut labels: Vec<String> = FACT_LABELS.iter().map(|label| (*label).to_string()).collect();
+        let mut labels: Vec<String> = FACT_LABELS
+            .iter()
+            .map(|label| (*label).to_string())
+            .collect();
         if let Some(status) = &self.status {
             labels.extend(status.permissions.iter().map(|(name, _)| name.clone()));
         }
@@ -387,7 +390,8 @@ impl SiteControls {
     pub fn panel(&self, width: f32, height: f32, label_w: f32) -> Box<dyn Widget> {
         // Body copy at the theme's body step; the 13px here was off the type
         // scale.
-        let line = |text: &str| Box::new(Text::new(text).with_role(TextRole::Body)) as Box<dyn Widget>;
+        let line =
+            |text: &str| Box::new(Text::new(text).with_role(TextRole::Body)) as Box<dyn Widget>;
         let fact = |name: &str, value: &str| -> Box<dyn Widget> {
             Box::new(
                 Row::new()
@@ -717,8 +721,8 @@ mod tests {
         assert_eq!(intent.address.resource, "qos.control:browser.site.close");
         let result = panel
             .start_resource_operation(
-                ui::qos_actions::InvocationId::new(),
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::InvocationId::new(),
+                ui::tilo_actions::OperationKind::Effect,
                 "qos.ui.control.invoke",
                 &serde_json::to_vec("browser.site.close").unwrap(),
                 &doc,

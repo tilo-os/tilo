@@ -1,8 +1,8 @@
-//! The real `systemd-logind` glue (`org.freedesktop.login1`) over `zbus`.
+//! `systemd-logind` integration (`org.freedesktop.login1`) over `zbus`.
 //!
 //! Everything here performs actual D-Bus I/O against the system bus, so it only works where
 //! `systemd-logind` is running. The pure decision logic for *whether* to call these lives in
-//! [`super::policy`] / [`super::battery`]; this module is the thin, honest actuator.
+//! [`super::policy`] / [`super::battery`]; this module performs the D-Bus operations.
 //!
 //! Three capabilities the compositor needs:
 //!
@@ -140,7 +140,7 @@ impl LogindManager {
     pub async fn delegate_handled_keys(&self) -> zbus::Result<LogindInhibitor> {
         self.inhibit(
             "handle-lid-switch:handle-power-key:handle-suspend-key",
-            "qOS compositor",
+            "Tilo compositor",
             "compositor owns lid / power-key policy",
             "block",
         )
@@ -197,9 +197,9 @@ mod tests {
         let Some(m) = manager_or_skip("inhibit").await else {
             return;
         };
-        let why = format!("qos-power test {}", std::process::id());
+        let why = format!("tilo-power test {}", std::process::id());
         let holder = m
-            .inhibit("idle:sleep", "qOS power test", &why, "block")
+            .inhibit("idle:sleep", "Tilo power test", &why, "block")
             .await
             .expect("Inhibit call");
         assert_eq!(holder.what(), "idle:sleep");

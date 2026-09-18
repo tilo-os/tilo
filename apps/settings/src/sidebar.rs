@@ -48,6 +48,14 @@ use crate::widgets::{El, caption, spacing};
 /// padding) without clipping.
 pub const SIDEBAR_WIDTH: f64 = DEFAULT_SHELL_SIDEBAR_WIDTH;
 
+/// The docked sidebar needs to grow with system text. Its labels are rendered
+/// by the shared text renderer at this scale, while the shell itself is a
+/// geometry-only primitive; exposing the matching width here keeps Settings
+/// from painting 200%-text labels into a normal-width navigation rail.
+pub fn width_for_text_scale(text_scale: f32) -> f64 {
+    SIDEBAR_WIDTH * f64::from(text_scale.clamp(0.5, 4.0))
+}
+
 /// Height (logical px) of a single category row at 1×: it seats the
 /// toolkit's minimum pointer target (the selection pill,
 /// `Metrics::min_pointer_target`) plus one `s1` inset above and below it. A
@@ -176,6 +184,9 @@ pub struct SidebarRow {
     /// One-shot local navigation request. Category selection is deliberately
     /// not document state: it is only this window's current presentation.
     selection_request: ui::LocalState<Option<Category>>,
+    /// The live system text scale. Sidebar chrome is custom-painted, so its
+    /// geometry must scale alongside the shared renderer's glyphs.
+    text_scale: f64,
     rect: Rect,
     is_hovered: bool,
     is_pressed: bool,
@@ -198,10 +209,20 @@ impl SidebarRow {
         active: bool,
         selection_request: ui::LocalState<Option<Category>>,
     ) -> Self {
+        Self::with_selection_request_and_scale(category, active, selection_request, 1.0)
+    }
+
+    fn with_selection_request_and_scale(
+        category: Category,
+        active: bool,
+        selection_request: ui::LocalState<Option<Category>>,
+        text_scale: f32,
+    ) -> Self {
         Self {
             category,
             active,
             selection_request,
+            text_scale: f64::from(text_scale.clamp(0.5, 4.0)),
             rect: Rect::ZERO,
             is_hovered: false,
             is_pressed: false,
@@ -377,7 +398,13 @@ impl Widget for SidebarRow {
         };
         if tier.fill.components[3] > 0.0 {
             let pill = RoundedRect::from_rect(geo.pill, radius);
-            scene.fill(vello::peniko::Fill::NonZero, pill_transform, tier.fill, None, &pill);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                pill_transform,
+                tier.fill,
+                None,
+                &pill,
+            );
         }
         if let Some(border) = tier.border {
             // A crisp 1 px edge half a pixel inside the pill, so it covers the
@@ -587,6 +614,19 @@ pub fn build(
     query: &str,
     selection_request: &ui::LocalState<Option<Category>>,
 ) -> Box<dyn Widget> {
+    build_with_text_scale(selected, query, selection_request, 1.0)
+}
+
+/// Build the sidebar with a geometry scale matching the system text scale.
+/// This is intentionally Settings-local: these custom-painted navigation rows
+/// carry their own fixed dimensions, unlike normal shared text controls.
+pub fn build_with_text_scale(
+    selected: Category,
+    query: &str,
+    selection_request: &ui::LocalState<Option<Category>>,
+    text_scale: f32,
+) -> Box<dyn Widget> {
+    let scale = text_scale.clamp(0.5, 4.0);
     // Three explicit steps of the spacing scale carry the whole rhythm, so
     // the eye reads groups rather than a list of equally spaced lines:
     //
@@ -946,5 +986,42 @@ mod tests {
             "the semantic activation uses the same local navigation request as a pointer click"
         );
         assert!(doc.get_heads().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod incoming_large_text_tests {
+    use super::*;
+    #[test]
+    fn large_text_sidebar_scales_the_rail_row_and_label_geometry_together() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let width = width_for_text_scale(2.0);
+        let request = ui::LocalState::new(None);
+        let mut row = SidebarRow::with_selection_request(Category::Accessibility, true, request);
+        let mut tree = TaffyTree::new();
+        row.build_layout(&mut tree, &theme, &mut std::collections::HashMap::new());
+        let height = f64::from(row.measured_height(&mut tr, width));
+        let rect = Rect::new(0.0, 0.0, width, height);
+        let size = row.renderer_label_size(&tr);
+        let (_, line_box) = tr.measure(
+            row.category.label(),
+            size,
+            Some(SidebarRow::label_max_width(width)),
+        );
+        let geometry = RowGeometry::compute(rect, 18.0, f64::from(line_box), &spacing());
+        assert!(
+            geometry.pill.width() > SIDEBAR_WIDTH,
+            "active target grows with text"
+        );
+        assert!(
+            geometry.label_x > f64::from(row.label_size),
+            "icon gutter clears the label"
+        );
+        assert!(
+            geometry.text_y >= rect.y0 && geometry.text_y + f64::from(line_box) <= rect.y1,
+            "scaled text remains inside its measured row"
+        );
     }
 }

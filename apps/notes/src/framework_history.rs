@@ -94,7 +94,7 @@ impl TreeRowMetrics {
 }
 
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
-    app_id: "dev.qos.notes",
+    app_id: "dev.tilo.notes",
     scopes: &[HistoryScopeDefinition {
         key: "notebook",
         title: "Notebook",
@@ -189,7 +189,10 @@ impl NotebookPreview {
                     self.workspace
                         .tags_for_page(id)
                         .into_iter()
-                        .map(|tag| tag.name.clone())
+                        .map(|tag| crate::main_panel::TagChip {
+                            id: tag.id,
+                            name: tag.name.clone(),
+                        })
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -249,14 +252,26 @@ impl HistoryPreview for NotebookPreview {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
-        scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &self.bounds);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.bg_primary,
+            None,
+            &self.bounds,
+        );
         let m = TreeRowMetrics::new(theme, text.text_scale());
         if let Some(pane) = m.pane(self.bounds) {
             let colors = &theme.tokens.colors;
             // The page tree is its own raised pane beside the page, with the
             // edge derived against that pane (HIG §9.5) — a bare list of
             // titles on the page ground read as part of the page.
-            scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &pane);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.surfaces.raised,
+                None,
+                &pane,
+            );
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -394,7 +409,8 @@ mod tree_geometry_tests {
         let m = TreeRowMetrics::new(&theme, 1.0);
         let pane = m.pane(Rect::new(0.0, 0.0, 1280.0, 400.0)).unwrap();
         assert!(
-            m.pane(Rect::new(0.0, 0.0, m.min_panel_w - 1.0, 400.0)).is_none(),
+            m.pane(Rect::new(0.0, 0.0, m.min_panel_w - 1.0, 400.0))
+                .is_none(),
             "below the compact breakpoint the tree yields to the page"
         );
         let a = m.pill(m.row(pane, 0));
@@ -404,7 +420,10 @@ mod tree_geometry_tests {
             (gap - f64::from(theme.tokens.spacing.s1)).abs() < 1e-9,
             "pill gap {gap} is not s1"
         );
-        assert!(a.x0 > pane.x0 && a.x1 < pane.x1, "pill is inset from the pane sides");
+        assert!(
+            a.x0 > pane.x0 && a.x1 < pane.x1,
+            "pill is inset from the pane sides"
+        );
     }
 
     #[test]

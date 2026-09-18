@@ -131,7 +131,7 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     }
     let namespace = Arc::new(Mutex::new(namespace));
     let hydrator = Arc::new(fs::Hydrator::new(endpoint.clone(), content));
-    let heuristics = Arc::new(fs::Heuristics::new(hydrator.clone(), namespace.clone()));
+    let heuristics = Arc::new(fs::Heuristics::new(hydrator.clone()));
     let workspace = uuid::Uuid::new_v4();
     let journal = Arc::new(Mutex::new(
         fs::record_transaction::RecordTransactionJournal::open(
@@ -245,10 +245,7 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     ));
     let reopened_history =
         Arc::new(fs::FileHistoryStore::open(directory.path().join("history.json")).unwrap());
-    let reopened_heuristics = Arc::new(fs::Heuristics::new(
-        hydrator.clone(),
-        reopened_namespace.clone(),
-    ));
+    let reopened_heuristics = Arc::new(fs::Heuristics::new(hydrator.clone()));
     let reopened = fs::QuickFS::new(reopened_namespace, hydrator, reopened_heuristics)
         .without_legacy_record_migration()
         .with_history(reopened_history.clone(), actor)
@@ -328,7 +325,7 @@ fn framework_history_embedded_files_root_has_shared_entry_and_preserves_incident
     let directory = tempfile::tempdir().unwrap();
     let mut owners = ui::record::RecordOwners::new(directory.path().to_path_buf());
     let store = owners
-        .open("dev.qos.file-explorer", "embedded-history-test")
+        .open("dev.tilo.file-explorer", "embedded-history-test")
         .unwrap();
     let checkout = ui::RecordCheckout::new(
         ui::RecordId::for_tab(501),

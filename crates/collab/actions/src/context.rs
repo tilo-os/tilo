@@ -1,7 +1,7 @@
 //! Human context carried by an action into durable history.
 //!
 //! The action payload says how to reproduce a mutation. [`ActionContext`]
-//! says how a person should find and understand it later. It deliberately
+//! says how a person should find and understand it later. It
 //! contains no generated prose: apps provide the stable action/resource
 //! labels they already expose through the action door, while a person or
 //! agent may add an explicit purpose and work-group label.
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 /// Prefix used when context is embedded in an Automerge change message.
 /// Ordinary application-authored commit messages remain untouched.
-pub const CHANGE_MESSAGE_PREFIX: &str = "qos.action/1 ";
+pub const CHANGE_MESSAGE_PREFIX: &str = "tilo.action/1 ";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -139,7 +139,7 @@ impl ActionContext {
             .collect::<Vec<_>>()
             .join(" ");
         self.app = Some(ActionApp {
-            id: format!("org.qos.{component}"),
+            id: format!("org.tilo.{component}"),
             label,
         });
         self
@@ -302,7 +302,7 @@ mod tests {
             "files.entry",
             "brief.md",
         )
-        .with_app("org.qos.Files", "Files")
+        .with_app("org.tilo.Files", "Files")
         .with_purpose("Prepare the launch brief")
         .with_group("issue:42", "Launch brief", "issue")
         .with_facet(ActionFacet::new("file-type", "Markdown"));
@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn unrelated_or_malformed_messages_are_legacy_history() {
         assert!(ActionContext::from_change_message("saved draft").is_none());
-        assert!(ActionContext::from_change_message("qos.action/1 {").is_none());
+        assert!(ActionContext::from_change_message("tilo.action/1 {").is_none());
         assert!(ActionContext::default().change_message().is_none());
     }
 
@@ -336,8 +336,11 @@ mod tests {
         enum ExampleAction {
             RenameFile { id: u64 },
         }
-        let context =
-            ActionContext::for_action("org.qos.Code", "Code", &ExampleAction::RenameFile { id: 7 });
+        let context = ActionContext::for_action(
+            "org.tilo.Code",
+            "Code",
+            &ExampleAction::RenameFile { id: 7 },
+        );
         assert_eq!(context.action_label, "Rename File");
         assert_eq!(
             context.app.as_ref().map(|app| app.label.as_str()),
@@ -352,7 +355,7 @@ mod tests {
         assert_eq!(
             context.app,
             Some(ActionApp {
-                id: "org.qos.WordProcessor".into(),
+                id: "org.tilo.WordProcessor".into(),
                 label: "Word Processor".into(),
             })
         );
@@ -361,7 +364,7 @@ mod tests {
     #[test]
     fn ambient_context_fills_intent_without_overwriting_the_action() {
         let action = ActionContext::for_resource("Rename", "file:1", "file", "brief.md")
-            .with_app("org.qos.Code", "Code");
+            .with_app("org.tilo.Code", "Code");
         let ambient = ActionContext::default()
             .with_purpose("Prepare launch")
             .with_group("issue:42", "Launch", "issue")
@@ -369,7 +372,7 @@ mod tests {
         let merged = action.enriched_by(&ambient);
         assert_eq!(
             merged.app.as_ref().map(|app| app.id.as_str()),
-            Some("org.qos.Code")
+            Some("org.tilo.Code")
         );
         assert_eq!(merged.purpose.as_deref(), Some("Prepare launch"));
         assert_eq!(

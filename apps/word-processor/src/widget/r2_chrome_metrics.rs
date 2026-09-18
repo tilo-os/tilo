@@ -38,8 +38,14 @@ fn styles_panel_controls_follow_measured_text_at_every_scale() {
         pipeline_draw_themed(&mut wp, &mut state, 1400, 900, &theme);
 
         let pm = wp.panel_metrics;
-        assert!((pm.scale - f64::from(scale)).abs() < 0.01, "metrics measured at {scale}x");
-        assert!(pm.control_h() >= pm.lh_label + pm.tk.s2 - 0.01, "control fits its label box");
+        assert!(
+            (pm.scale - f64::from(scale)).abs() < 0.01,
+            "metrics measured at {scale}x"
+        );
+        assert!(
+            pm.control_h() >= pm.lh_label + pm.tk.s2 - 0.01,
+            "control fits its label box"
+        );
         let panel = wp.panel_rect;
         assert!(
             panel.width() >= STYLES_PANEL_W * f64::from(scale) - 0.01,
@@ -47,7 +53,10 @@ fn styles_panel_controls_follow_measured_text_at_every_scale() {
             panel.width()
         );
         let hits = &wp.panel_hits;
-        assert!(hits.len() > 10, "the paragraph editor registered its controls");
+        assert!(
+            hits.len() > 10,
+            "the paragraph editor registered its controls"
+        );
         for (index, (r, _)) in hits.iter().enumerate() {
             assert!(
                 r.x0 >= panel.x0 - 0.01 && r.x1 <= panel.x1 + 0.01 && r.y0 >= panel.y0 - 0.01,
@@ -61,7 +70,10 @@ fn styles_panel_controls_follow_measured_text_at_every_scale() {
         }
         for (i, (a, _)) in hits.iter().enumerate() {
             for (j, (b, _)) in hits.iter().enumerate().skip(i + 1) {
-                assert!(!overlaps(*a, *b), "controls #{i} {a:?} and #{j} {b:?} overlap at {scale}x");
+                assert!(
+                    !overlaps(*a, *b),
+                    "controls #{i} {a:?} and #{j} {b:?} overlap at {scale}x"
+                );
             }
         }
         // W6: the square custom-colour chip sits where the swatch strip starts.
@@ -83,7 +95,11 @@ fn styles_panel_controls_follow_measured_text_at_every_scale() {
             "chip {chip:?} starts at the swatch column {swatch_x0:.1} at {scale}x"
         );
         if (scale - 1.0).abs() < f32::EPSILON {
-            assert!((pm.control_h() - PANEL_CONTROL_H).abs() < 0.01, "1x control {}", pm.control_h());
+            assert!(
+                (pm.control_h() - PANEL_CONTROL_H).abs() < 0.01,
+                "1x control {}",
+                pm.control_h()
+            );
             // A 24 px control plus the `s2` sibling seam (the 1× polish pass
             // moved the seam from an off-scale 6 px onto the token grid).
             assert!(
@@ -91,8 +107,14 @@ fn styles_panel_controls_follow_measured_text_at_every_scale() {
                 "1x row advance {}",
                 pm.row_adv()
             );
-            assert!((pm.row_adv() - 32.0).abs() < 0.01, "1x row advance is 24 + s2");
-            assert!((panel.width() - STYLES_PANEL_W).abs() < 0.01, "1x panel width");
+            assert!(
+                (pm.row_adv() - 32.0).abs() < 0.01,
+                "1x row advance is 24 + s2"
+            );
+            assert!(
+                (panel.width() - STYLES_PANEL_W).abs() < 0.01,
+                "1x panel width"
+            );
         }
     }
 }
@@ -130,7 +152,10 @@ fn image_inspector_controls_never_overlap_at_two_x() {
     });
     wp.set_styles_panel_open(true);
     pipeline_draw_themed(&mut wp, &mut state, 1400, 900, &theme);
-    assert!(wp.selected_image_id().is_some(), "the image is the selected object");
+    assert!(
+        wp.selected_image_id().is_some(),
+        "the image is the selected object"
+    );
     let hits = &wp.panel_hits;
     assert!(
         hits.iter().any(|(_, h)| matches!(h, PanelHit::ImageFlipH)),
@@ -146,7 +171,10 @@ fn image_inspector_controls_never_overlap_at_two_x() {
     }
     for (i, (a, _)) in hits.iter().enumerate() {
         for (j, (b, _)) in hits.iter().enumerate().skip(i + 1) {
-            assert!(!overlaps(*a, *b), "image controls #{i} {a:?} and #{j} {b:?} overlap at 2x");
+            assert!(
+                !overlaps(*a, *b),
+                "image controls #{i} {a:?} and #{j} {b:?} overlap at 2x"
+            );
         }
     }
 }
@@ -175,12 +203,24 @@ fn layout_bar_chips_center_on_measured_labels() {
         let bar_mid = f64::midpoint(bar_top, wp.rect.y1);
         assert_eq!(wp.layout_chips.len(), 2, "both layout chips are placed");
         for (_, r) in &wp.layout_chips {
-            assert!(r.height() >= lh + tk.s1 - 0.01, "chip {r:?} fits its label at {scale}x");
-            assert!(r.y0 >= bar_top - 0.01 && r.y1 <= wp.rect.y1 + 0.01, "chip inside the bar");
-            assert!((r.center().y - bar_mid).abs() < 0.01, "chip on the bar's centre line");
+            assert!(
+                r.height() >= lh + tk.s1 - 0.01,
+                "chip {r:?} fits its label at {scale}x"
+            );
+            assert!(
+                r.y0 >= bar_top - 0.01 && r.y1 <= wp.rect.y1 + 0.01,
+                "chip inside the bar"
+            );
+            assert!(
+                (r.center().y - bar_mid).abs() < 0.01,
+                "chip on the bar's centre line"
+            );
         }
         if (scale - 1.0).abs() < f32::EPSILON {
-            assert!((wp.layout_bar_height - LAYOUT_BAR_H).abs() < 0.01, "1x bar is 32");
+            assert!(
+                (wp.layout_bar_height - LAYOUT_BAR_H).abs() < 0.01,
+                "1x bar is 32"
+            );
             assert!((chip_h - LAYOUT_CHIP_H).abs() < 0.01, "1x chip is 22");
         }
     }
@@ -206,11 +246,18 @@ fn find_bar_controls_fit_their_measured_labels_at_every_scale() {
         let bar_top = wp.rect.y0 + wp.toolbar_height(wp.rect.width()) + wp.recovery.height();
         let mut tr = renderer(scale);
         let lh_action = f64::from(tr.measure("Ag", 13.0, None).1);
-        assert!(bar_h >= lh_action + 3.0 * wp.tokens.s2 - 0.01, "bar {bar_h} holds a field plus s2 each side");
+        assert!(
+            bar_h >= lh_action + 3.0 * wp.tokens.s2 - 0.01,
+            "bar {bar_h} holds a field plus s2 each side"
+        );
         // At 2× one row of controls is wider than a 1200 px window, so the
         // bar wraps: two field-height rows, and the actions sit on the second.
         let field_h = rects[0].height();
-        let rows = if bar_h >= 2.0 * field_h + 3.0 * wp.tokens.s2 - 0.01 { 2 } else { 1 };
+        let rows = if bar_h >= 2.0 * field_h + 3.0 * wp.tokens.s2 - 0.01 {
+            2
+        } else {
+            1
+        };
         let expected_rows = if scale > 1.5 { 2 } else { 1 };
         assert_eq!(rows, expected_rows, "bar {bar_h} at {scale}x");
         if rows == 2 {
@@ -220,7 +267,10 @@ fn find_bar_controls_fit_their_measured_labels_at_every_scale() {
                 rects[9],
                 rects[0]
             );
-            assert!(rects[4].x0 <= rects[0].x0 + 0.01, "the replace field starts the second row");
+            assert!(
+                rects[4].x0 <= rects[0].x0 + 0.01,
+                "the replace field starts the second row"
+            );
         }
         for r in &rects {
             assert!(
@@ -228,12 +278,21 @@ fn find_bar_controls_fit_their_measured_labels_at_every_scale() {
                 "{r:?} leaves the find band {bar_top}..{} at {scale}x",
                 bar_top + bar_h
             );
-            assert!(r.height() >= lh_action - 0.01, "{r:?} shorter than its text at {scale}x");
-            assert!(r.x1 <= wp.rect.x1 + 0.01, "{r:?} runs off the window at {scale}x");
+            assert!(
+                r.height() >= lh_action - 0.01,
+                "{r:?} shorter than its text at {scale}x"
+            );
+            assert!(
+                r.x1 <= wp.rect.x1 + 0.01,
+                "{r:?} runs off the window at {scale}x"
+            );
         }
         for (i, a) in rects.iter().enumerate() {
             for (j, b) in rects.iter().enumerate().skip(i + 1) {
-                assert!(!overlaps(*a, *b), "find controls #{i} {a:?} and #{j} {b:?} overlap at {scale}x");
+                assert!(
+                    !overlaps(*a, *b),
+                    "find controls #{i} {a:?} and #{j} {b:?} overlap at {scale}x"
+                );
             }
         }
         // Labels fit their buttons: the widest action ("Ersetzen"/"Replace")
@@ -242,7 +301,10 @@ fn find_bar_controls_fit_their_measured_labels_at_every_scale() {
         let (w, _) = tr.measure(&crate::i18n::t("find-replace"), 13.0, None);
         assert!(replace.width() >= f64::from(w) + 2.0 * wp.tokens.s2 - 0.01);
         if (scale - 1.0).abs() < f32::EPSILON {
-            assert!((bar_h - crate::find_bar::HEIGHT).abs() < 0.01, "1x bar is 42");
+            assert!(
+                (bar_h - crate::find_bar::HEIGHT).abs() < 0.01,
+                "1x bar is 42"
+            );
             assert!((rects[0].height() - 26.0).abs() < 0.01, "1x field is 26");
         }
     }
@@ -257,7 +319,7 @@ fn toolbar_packer_mirrors_the_toolkit_row_model() {
     let widths = [80.0, 60.0, 100.0, 70.0, 90.0, 40.0];
     let starts = [true, false, true, false, true, false];
     let avail = 300.0;
-    let rows = pack_toolbar_rows(&widths, &starts, avail);
+    let rows = pack_toolbar_rows(&widths, &starts, avail, 1.0);
     assert!(rows.len() >= 2, "the fixture wraps: {rows:?}");
     let theme = Theme::dark();
     let mut tr = renderer(1.0);
@@ -276,7 +338,11 @@ fn toolbar_packer_mirrors_the_toolkit_row_model() {
         );
         let first = rects.first().expect("a row has an item");
         let lead = TOOLBAR_MODEL.pad + if starts[s] { TOOLBAR_MODEL.sep } else { 0.0 };
-        assert!((first.x0 - lead).abs() < 0.01, "toolkit lead-in {} vs model {lead}", first.x0);
+        assert!(
+            (first.x0 - lead).abs() < 0.01,
+            "toolkit lead-in {} vs model {lead}",
+            first.x0
+        );
         let last = rects.last().expect("a row has an item");
         assert!(
             last.x1 <= avail - TOOLBAR_MODEL.right_pad + TOOLBAR_MODEL.gap + 0.01,
@@ -290,11 +356,24 @@ fn toolbar_packer_mirrors_the_toolkit_row_model() {
             );
         }
     }
-    let (_, lh) = tr.measure_weighted("Ag", TOOLBAR_MODEL.label_font, None, ui::text_render::TextWeight::Regular);
+    let (_, lh) = tr.measure_weighted(
+        "Ag",
+        TOOLBAR_MODEL.label_font,
+        None,
+        ui::text_render::TextWeight::Regular,
+    );
     let lh = f64::from(lh);
-    assert!((TOOLBAR_MODEL.row_h(lh, 18.0) - TOOLBAR_H).abs() < 0.01, "1x row is the classic 50");
+    assert!(
+        (TOOLBAR_MODEL.row_h(lh, 18.0) - TOOLBAR_H).abs() < 0.01,
+        "1x row is the classic 50"
+    );
     let mut tr2 = renderer(2.0);
-    let (_, lh2) = tr2.measure_weighted("Ag", TOOLBAR_MODEL.label_font, None, ui::text_render::TextWeight::Regular);
+    let (_, lh2) = tr2.measure_weighted(
+        "Ag",
+        TOOLBAR_MODEL.label_font,
+        None,
+        ui::text_render::TextWeight::Regular,
+    );
     let lh2 = f64::from(lh2);
     assert!(
         TOOLBAR_MODEL.row_h(lh2, 36.0) >= lh2 + TOOLBAR_MODEL.item_pad + 2.0,
@@ -316,9 +395,15 @@ fn two_x_frame_reserves_its_measured_chrome() {
     pipeline_draw_themed(&mut wp, &mut state, 800, 900, &theme);
     let tb_h = wp.toolbar_height(wp.rect.width());
     for (_, r) in &wp.toolbar {
-        assert!(r.y1 <= wp.rect.y0 + tb_h + 0.01, "toolbar target {r:?} below the reserved band");
+        assert!(
+            r.y1 <= wp.rect.y0 + tb_h + 0.01,
+            "toolbar target {r:?} below the reserved band"
+        );
     }
-    assert!(wp.panel_rect.y0 >= wp.rect.y0 + tb_h - 0.01, "panel starts under the toolbar");
+    assert!(
+        wp.panel_rect.y0 >= wp.rect.y0 + tb_h - 0.01,
+        "panel starts under the toolbar"
+    );
     assert!(
         wp.panel_rect.y1 <= wp.rect.y1 - wp.layout_bar_height + 0.01,
         "panel ends above the layout bar"

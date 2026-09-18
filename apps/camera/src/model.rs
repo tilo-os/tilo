@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 pub enum Screen {
     Camera,
     Scanner,
-    Gallery,
+    Document,
     Settings,
 }
 
@@ -22,7 +22,7 @@ impl Screen {
     pub const ALL: [Screen; 4] = [
         Screen::Camera,
         Screen::Scanner,
-        Screen::Gallery,
+        Screen::Document,
         Screen::Settings,
     ];
 
@@ -30,7 +30,7 @@ impl Screen {
         match self {
             Screen::Camera => "Camera",
             Screen::Scanner => "Scan",
-            Screen::Gallery => "Gallery",
+            Screen::Document => "Documents",
             Screen::Settings => "Settings",
         }
     }
@@ -39,7 +39,7 @@ impl Screen {
         match self {
             Screen::Camera => "camera",
             Screen::Scanner => "scanner",
-            Screen::Gallery => "gallery",
+            Screen::Document => "document",
             Screen::Settings => "settings",
         }
     }
@@ -48,7 +48,7 @@ impl Screen {
         match s {
             "camera" => Some(Screen::Camera),
             "scanner" => Some(Screen::Scanner),
-            "gallery" => Some(Screen::Gallery),
+            "document" | "documents" => Some(Screen::Document),
             "settings" => Some(Screen::Settings),
             _ => None,
         }
@@ -306,7 +306,7 @@ impl CaptureKind {
     }
 }
 
-/// One item in the library.
+/// Camera's single recent capture handoff.
 ///
 /// A capture may have a local projection (`path`) and/or a verified portable
 /// media identity (`media_id`). Peers materialize the latter via qdoc's blob
@@ -323,7 +323,6 @@ pub struct Capture {
     /// Video duration in milliseconds (0 for photos / unknown).
     pub dur_ms: i64,
     pub label: String,
-    pub favorite: bool,
     pub facing: Facing,
     /// Procedural scene seed for the sample/hermetic path only.
     pub scene: u8,
@@ -346,40 +345,6 @@ impl Capture {
 pub struct ScanEntry {
     pub raw: String,
     pub ts: i64,
-}
-
-/// Gallery filter chip.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GalleryFilter {
-    All,
-    Photos,
-    Videos,
-    Favorites,
-}
-
-impl GalleryFilter {
-    pub const ALL: [GalleryFilter; 4] = [
-        GalleryFilter::All,
-        GalleryFilter::Photos,
-        GalleryFilter::Videos,
-        GalleryFilter::Favorites,
-    ];
-    pub fn label(self) -> &'static str {
-        match self {
-            GalleryFilter::All => "All",
-            GalleryFilter::Photos => "Photos",
-            GalleryFilter::Videos => "Videos",
-            GalleryFilter::Favorites => "Favorites",
-        }
-    }
-    pub fn matches(self, c: &Capture) -> bool {
-        match self {
-            GalleryFilter::All => true,
-            GalleryFilter::Photos => matches!(c.kind, CaptureKind::Photo),
-            GalleryFilter::Videos => matches!(c.kind, CaptureKind::Video),
-            GalleryFilter::Favorites => c.favorite,
-        }
-    }
 }
 
 /// Classified payload of a decoded code, used to surface contextual
@@ -612,13 +577,13 @@ mod tests {
 
     #[test]
     fn classify_url() {
-        assert_eq!(classify("https://qos.example/app"), CodeKind::Url);
+        assert_eq!(classify("https://tilo.example/app"), CodeKind::Url);
         assert_eq!(classify("HTTP://X"), CodeKind::Url);
     }
 
     #[test]
     fn classify_and_parse_wifi() {
-        let k = classify("WIFI:T:WPA2;S:qOS Guest;P:hunter2;H:false;;");
+        let k = classify("WIFI:T:WPA2;S:Tilo Guest;P:hunter2;H:false;;");
         match k {
             CodeKind::Wifi {
                 ssid,
@@ -626,7 +591,7 @@ mod tests {
                 password,
                 hidden,
             } => {
-                assert_eq!(ssid, "qOS Guest");
+                assert_eq!(ssid, "Tilo Guest");
                 assert_eq!(auth, "WPA2");
                 assert_eq!(password, "hunter2");
                 assert!(!hidden);
@@ -652,28 +617,6 @@ mod tests {
             }
             other => panic!("expected contact, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn gallery_filter_matches() {
-        let photo = Capture {
-            id: "a".into(),
-            kind: CaptureKind::Photo,
-            ts: 0,
-            w: 4032,
-            h: 3024,
-            dur_ms: 0,
-            label: String::new(),
-            favorite: true,
-            facing: Facing::Back,
-            scene: 0,
-            path: None,
-            media_id: None,
-        };
-        assert!(GalleryFilter::All.matches(&photo));
-        assert!(GalleryFilter::Photos.matches(&photo));
-        assert!(!GalleryFilter::Videos.matches(&photo));
-        assert!(GalleryFilter::Favorites.matches(&photo));
     }
 
     #[test]

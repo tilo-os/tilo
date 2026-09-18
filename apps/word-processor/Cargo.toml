@@ -27,10 +27,11 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-ui = { package = "qos-app", path = "../../crates/app/qos-app", features = ["portal"] }
+atomic-file = { path = "../../crates/system/atomic-file" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
 # Only pulled in under `--features thin`; see the `thin` feature above.
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-qos-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/collab/actions" }
 qdoc = { path = "../../crates/doc/qdoc" }
 spellcheck = { path = "../../crates/text/spellcheck" }
 qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
@@ -44,6 +45,7 @@ winit.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 regex.workspace = true
+url.workspace = true
 fluent.workspace = true
 unic-langid.workspace = true
 # Host-native image open through the XDG Desktop Portal (FileChooser). The

@@ -1,0 +1,99 @@
+from __future__ import annotations
+
+import os
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+
+SCRIPT = Path(__file__).parents[1] / "ci/check-changed-rustfmt.sh"
+
+
+class ChangedRustfmtTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "ci@example.invalid"],
+            cwd=self.root,
+            check=True,
+        )
+        subprocess.run(["git", "config", "user.name", "CI"], cwd=self.root, check=True)
+        (self.root / "base.rs").write_text("fn base() {}\n", encoding="utf-8")
+        (self.root / "notes.txt").write_text("base\n", encoding="utf-8")
+        self.commit("base")
+        self.base = self.git("rev-parse", "HEAD")
+        self.arguments = self.root / "rustfmt-arguments"
+        fake = self.bin / "rustfmt"
+        fake.write_text(
+            "#!/usr/bin/env bash\n"
+            "printf '<%s>\\n' \"$@\" > \"$RUSTFMT_ARGUMENTS\"\n",
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def git(self, *args: str) -> str:
+        return subprocess.check_output(["git", *args], cwd=self.root, text=True).strip()
+
+    def commit(self, message: str) -> None:
+        subprocess.run(["git", "add", "."], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", message], cwd=self.root, check=True)
+
+    def run_check(self, base: str = "", before: str = "") -> subprocess.CompletedProcess[str]:
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "PATH": f"{self.bin}:{environment['PATH']}",
+                "TILO_REPO_ROOT": str(self.root),
+                "RUSTFMT_ARGUMENTS": str(self.arguments),
+            }
+        )
+        return subprocess.run(
+            ["bash", str(SCRIPT), base, before],
+            text=True,
+            capture_output=True,
+            check=True,
+            env=environment,
+        )
+
+    def test_only_changed_rust_files_are_passed_with_safe_argument_boundary(self) -> None:
+        (self.root / "base.rs").write_text("fn changed() {}\n", encoding="utf-8")
+        (self.root / "space name.rs").write_text("fn spaced() {}\n", encoding="utf-8")
+        (self.root / "notes.txt").write_text("changed\n", encoding="utf-8")
+        self.commit("change")
+
+        result = self.run_check(self.base)
+
+        self.assertIn("changed Rust formatting OK (2 files)", result.stdout)
+        self.assertEqual(
+            self.arguments.read_text(encoding="utf-8").splitlines(),
+            ["<--edition>", "<2024>", "<--check>", "<-->", "<base.rs>", "<space name.rs>"],
+        )
+
+    def test_push_zero_base_falls_back_to_parent(self) -> None:
+        (self.root / "base.rs").write_text("fn changed() {}\n", encoding="utf-8")
+        self.commit("change")
+
+        self.run_check("", "0" * 40)
+
+        self.assertIn("<base.rs>", self.arguments.read_text(encoding="utf-8"))
+
+    def test_non_rust_change_skips_rustfmt(self) -> None:
+        (self.root / "notes.txt").write_text("changed\n", encoding="utf-8")
+        self.commit("docs")
+
+        result = self.run_check(self.base)
+
+        self.assertIn("no Rust files", result.stdout)
+        self.assertFalse(self.arguments.exists())
+
+
+if __name__ == "__main__":
+    unittest.main()

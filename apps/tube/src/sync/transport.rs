@@ -1,6 +1,6 @@
 //! Live Grayjay "Sync" transport over the Noise Protocol Framework.
 //!
-//! This is the real thing (gated behind the `grayjay-sync` cargo feature):
+//! This transport is gated behind the `grayjay-sync` cargo feature:
 //! a blocking TCP client that runs Grayjay's exact handshake and framing, so it
 //! can pair with and sync subscriptions/history to/from a phone or desktop
 //! running Grayjay. Every wire detail is a clean-room reimplementation of the

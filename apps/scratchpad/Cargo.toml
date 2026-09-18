@@ -1,14 +1,19 @@
 [package]
-name = "qos-scratchpad"
+name = "scratchpad"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+[features]
+thin = ["dep:runtime-dylib"]
+
 [dependencies]
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
-fs = { path = "../../fs" }
-qos-actions = { path = "../../crates/collab/actions" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+# Persistent blob storage is portable; the app does not mount filesystems.
+fs = { path = "../../crates/system/fs", default-features = false }
+tilo-actions = { path = "../../crates/collab/actions" }
 atomic-file = { path = "../../crates/system/atomic-file" }
 anyhow.workspace = true
 automerge.workspace = true

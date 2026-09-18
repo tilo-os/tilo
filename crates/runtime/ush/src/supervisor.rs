@@ -11,7 +11,7 @@
 //!  ├─ start the broker on a socket in the session dir      (crate::broker)
 //!  ├─ exec bwrap ─┬─ unshare, mount the overlays, pivot
 //!  │              ├─ install the seccomp filter        ← the boundary
-//!  │              └─ exec qos-ush guest-init ─┬─ install Landlock
+//!  │              └─ exec tilo-ush guest-init ─┬─ install Landlock
 //!  │                                          └─ exec the shell
 //!  ├─ wait
 //!  └─ undo one-time installs, burn if asked, restart if asked
@@ -19,15 +19,16 @@
 //!
 //! # `serve` — how an app reaches a guest
 //!
-//! A qOS app cannot build a namespace (its seccomp filter denies the
+//! A Tilo app cannot build a namespace (its seccomp filter denies the
 //! syscalls and its sandbox has no path to this binary), so `apps/terminal`
-//! asks for a guest instead of starting one: `qos-ush serve` listens on a
-//! socket `qos-launcher` passes every app as a connected descriptor, and one
+//! asks for a guest instead of starting one: `tilo-ush serve` listens on a
+//! socket `tilo-launcher` passes every app as a connected descriptor, and one
 //! line of JSON gets back a pty master over `SCM_RIGHTS` — a terminal, never
 //! a namespace, a capability, or a `dsh` session
 //! ([`crate::profile::Profile::reachable_from_app_launch`] gates every request).
 
 use std::io::{BufRead, BufReader, Write};
+use std::os::fd::FromRawFd;
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -73,10 +74,10 @@ impl Default for SessionOptions {
 ///
 /// # Errors
 ///
-/// Returns an error if `QOS_USH_BIN` is unset and
+/// Returns an error if `TILO_USH_BIN` is unset and
 /// [`std::env::current_exe`] cannot resolve the running binary's path.
 pub fn runtime_binary() -> std::io::Result<PathBuf> {
-    if let Some(explicit) = std::env::var_os("QOS_USH_BIN") {
+    if let Some(explicit) = std::env::var_os("TILO_USH_BIN") {
         return Ok(PathBuf::from(explicit));
     }
     std::env::current_exe()
@@ -257,7 +258,7 @@ impl Session {
         let shell = plan.shell.clone();
         let user_command = std::mem::take(&mut plan.command);
         let mut command = vec![
-            format!("{}/qos-ush", crate::GUEST_BIN_DIR),
+            format!("{}/tilo-ush", crate::GUEST_BIN_DIR),
             "guest-init".into(),
             "--".into(),
         ];
@@ -326,8 +327,8 @@ impl Session {
 }
 
 /// Give a fresh guest home the dotfiles that make a shell usable.
-/// Deliberately minimal and not a copy of the user's own: the home is
-/// write-isolated by default, and seeding from the real one would undo that.
+/// Minimal home contents for the guest. The home is write-isolated by default,
+/// so it is not seeded from the user's home directory.
 #[allow(
     clippy::literal_string_with_formatting_args,
     reason = "the `${VAR}` below is shell syntax in the .bashrc content, not a Rust format placeholder"
@@ -342,7 +343,7 @@ fn seed_guest_home(home: &Path) -> std::io::Result<()> {
         &bashrc,
         "# ush guest shell\n\
          [ -f /etc/bashrc ] && . /etc/bashrc\n\
-         PS1='[\\[\\e[36m\\]${QOS_USH_PROFILE:-ush}\\[\\e[0m\\] \\W]\\$ '\n\
+         PS1='[\\[\\e[36m\\]${TILO_USH_PROFILE:-ush}\\[\\e[0m\\] \\W]\\$ '\n\
          alias ls='ls --color=auto'\n",
     )
 }
@@ -418,15 +419,20 @@ pub fn decide_serve(req: &ServeRequest) -> Result<Profile, String> {
 /// cannot be set to owner-only.
 pub fn serve(socket: &Path, store: &Store, base: &Path) -> anyhow::Result<()> {
     store.ensure()?;
-    if let Some(parent) = socket.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let _ = std::fs::remove_file(socket);
-    let listener = UnixListener::bind(socket)?;
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
-    }
+    let listener = if let Some(listener) = systemd_listener(socket)? {
+        listener
+    } else {
+        if let Some(parent) = socket.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let _ = std::fs::remove_file(socket);
+        let listener = UnixListener::bind(socket)?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+        }
+        listener
+    };
     tracing::info!(socket = %socket.display(), "ush: serving guests");
 
     for conn in listener.incoming() {
@@ -440,6 +446,49 @@ pub fn serve(socket: &Path, store: &Store, base: &Path) -> anyhow::Result<()> {
         });
     }
     Ok(())
+}
+
+/// Consume systemd's one pre-bound service socket when activation metadata is
+/// addressed to this process. Invalid matching metadata is fatal: falling back
+/// to unlinking and rebinding would race queued clients and could replace an
+/// endpoint systemd already exposed.
+fn systemd_listener(expected: &Path) -> anyhow::Result<Option<UnixListener>> {
+    const SYSTEMD_LISTEN_FD: libc::c_int = 3;
+
+    let pid_matches = std::env::var("LISTEN_PID")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        == Some(std::process::id());
+    if !pid_matches {
+        return Ok(None);
+    }
+    anyhow::ensure!(
+        std::env::var("LISTEN_FDS").as_deref() == Ok("1"),
+        "systemd must pass exactly one ush listener"
+    );
+    // SAFETY: fcntl only validates the scalar descriptor.
+    anyhow::ensure!(
+        unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_GETFD) } != -1,
+        "systemd ush listener fd is closed"
+    );
+    // SAFETY: validated activation metadata transfers ownership of fd 3 once.
+    let listener = unsafe { UnixListener::from_raw_fd(SYSTEMD_LISTEN_FD) };
+    anyhow::ensure!(
+        listener.local_addr()?.as_pathname() == Some(expected),
+        "systemd ush listener has an unexpected path"
+    );
+    // Guest processes must never inherit the host supervisor endpoint.
+    anyhow::ensure!(
+        unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_SETFD, libc::FD_CLOEXEC) } != -1,
+        "cannot mark systemd ush listener close-on-exec"
+    );
+    // SAFETY: serve is entered before any worker thread is started.
+    unsafe {
+        std::env::remove_var("LISTEN_PID");
+        std::env::remove_var("LISTEN_FDS");
+        std::env::remove_var("LISTEN_FDNAMES");
+    }
+    Ok(Some(listener))
 }
 
 fn serve_one(stream: &UnixStream, store: &Store, base: PathBuf) -> anyhow::Result<()> {
@@ -531,7 +580,7 @@ fn serve_one(stream: &UnixStream, store: &Store, base: PathBuf) -> anyhow::Resul
     Ok(())
 }
 
-/// Start `qos-ush run` with `slave` as its stdio, in its own session, with the
+/// Start `tilo-ush run` with `slave` as its stdio, in its own session, with the
 /// pty as its controlling terminal.
 fn spawn_attached(
     session: &Session,
@@ -546,7 +595,7 @@ fn spawn_attached(
     cmd.arg("run");
     cmd.env(crate::store::STORE_ENV, session.store.root());
     cmd.env("TERM", &session.opts.term);
-    cmd.env("QOS_USH_BASE", &session.opts.base);
+    cmd.env("TILO_USH_BASE", &session.opts.base);
     cmd.stdin(Stdio::from(slave.try_clone()?));
     cmd.stdout(Stdio::from(slave.try_clone()?));
     cmd.stderr(Stdio::from(slave.try_clone()?));

@@ -1,0 +1,69 @@
+# Maps — Tilo application manifest.
+#
+# The app's egress is enumerable, so it gets an explicit
+# allowlist instead of `host`: OSM tiles, Nominatim geocoding,
+# Overpass POI queries, OSRM routing and Transitous transit. The tile
+# cache is the app's own directory, so it needs nothing beyond the
+# system read profile.
+#
+
+
+[package]
+id       = "dev.tilo.maps"
+name     = "Maps"
+category = "Utility"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+    "net",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "allowlist"
+hosts = [
+    "tile.openstreetmap.org",
+    "nominatim.openstreetmap.org",
+    "overpass-api.de",
+    "router.project-osrm.org",
+    "api.transitous.org",
+]
+
+[sandbox.portals]
+file-chooser = "via-host"
+
+[sandbox.services]
+collab = "optional@1"
+tilo-fs = "optional@1"
+shell-ui = "optional@1"
+
+[entrypoint]
+bin             = "bin/maps"
+type            = "gui"
+splash-segments = ["bin/maps[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = []
+ext  = []

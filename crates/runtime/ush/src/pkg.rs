@@ -1,32 +1,12 @@
 //! `pkg` — packages, in a layer rather than on the host.
 //!
-//! # Where packages come from, and why
+//! Package operations run inside the guest so scriptlets see the read-only
+//! base and the writable layer together. Installing directly into a layer
+//! would omit the base's shell, libraries, and rpm state; unpacking archives
+//! would omit dependency solving and removal metadata. A separate container
+//! per layer would duplicate the package universe and update state.
 //!
-//! **`dnf`, running inside the guest, installing into `/`.** The guest's `/usr`
-//! is an overlay whose upper is the user's layer, so "into `/`" *is* "into the
-//! layer" — the host's filesystem is on the read-only side of the mount and
-//! cannot be reached however the transaction is spelled. The rpm database the
-//! guest sees is the layer's seeded copy of the base's
-//! ([`crate::layer::STATE_SEED_DIRS`]), so the solver starts from the image's
-//! installed set: `pkg install htop` downloads htop and not glibc.
-//!
-//! Three alternatives were tried or considered, and rejected:
-//!
-//! - **`dnf --installroot=<layer>` on the host.** Installs the right files,
-//!   but an installroot holding only the delta has no `/bin/sh`, `ldconfig`
-//!   or `/usr/lib/rpm`, so every scriptlet fails. Measured on Fedora 44:
-//!   `ldconfig` errors, `man-db`'s file trigger exits 127, and `dnf` reports
-//!   the transaction failed while leaving the files behind. Running it
-//!   inside the guest fixes this for free — the guest *is* the base plus
-//!   the layer, so every scriptlet finds what it expects.
-//! - **`rpm2cpio` into the layer.** No dependency solving, no scriptlets, no
-//!   database — works only for packages that need none of those, and there
-//!   is no honest answer to `pkg remove`.
-//! - **A container image per layer.** Correct and heavy: a second package
-//!   universe, a second update cadence, gigabytes where the delta is
-//!   kilobytes.
-//!
-//! # The one thing the guest cannot do
+//! # The guest cannot modify
 //!
 //! It cannot *modify* a file from the base — owned by host uid 0, unmapped
 //! in the guest's namespace, so overlayfs can't copy it up. A layer can
@@ -34,7 +14,7 @@
 //! says so rather than letting `dnf` fail somewhere confusing.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::time::Duration;
 
 /// Where a layer records what `pkg` put in it, inside `/usr` so it lands in
 /// the layer. `rpm -qa` can't answer this alone — it reports base+layer as
@@ -143,38 +123,50 @@ pub fn remove_argv(packages: &[String], releasever: &str) -> Vec<String> {
 
 /// `%fedora`, or whatever the base says its release is.
 pub fn releasever() -> String {
-    Command::new("rpm")
-        .args(["-E", "%fedora"])
-        .output()
-        .ok()
-        .and_then(|o| {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            (!s.is_empty() && s != "%fedora").then_some(s)
-        })
-        .unwrap_or_else(|| "rawhide".into())
+    bounded_command::run(
+        "rpm",
+        &["-E", "%fedora"],
+        None,
+        4096,
+        Duration::from_secs(10),
+    )
+    .ok()
+    .and_then(|o| {
+        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        (!s.is_empty() && s != "%fedora").then_some(s)
+    })
+    .unwrap_or_else(|| "rawhide".into())
 }
 
 /// Is this package already part of what the guest can see? The guest's rpm
 /// database is base+layer, so this answers "would installing it do
 /// anything", not "did this layer install it" — see [`Manifest`] for that.
 pub fn is_installed(name: &str) -> bool {
-    Command::new("rpm")
-        .args(["-q", name])
-        .status()
-        .is_ok_and(|s| s.success())
+    bounded_command::run(
+        "rpm",
+        &["-q", name],
+        None,
+        64 * 1024,
+        Duration::from_secs(10),
+    )
+    .is_ok_and(|output| output.status.success())
 }
 
 /// `name-version-release.arch` for an installed package, or the bare name.
 pub fn nevra(name: &str) -> String {
-    Command::new("rpm")
-        .args(["-q", name])
-        .output()
-        .ok()
-        .and_then(|o| {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            (o.status.success() && !s.is_empty()).then_some(s)
-        })
-        .unwrap_or_else(|| name.to_string())
+    bounded_command::run(
+        "rpm",
+        &["-q", name],
+        None,
+        64 * 1024,
+        Duration::from_secs(10),
+    )
+    .ok()
+    .and_then(|o| {
+        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        (o.status.success() && !s.is_empty()).then_some(s)
+    })
+    .unwrap_or_else(|| name.to_string())
 }
 
 /// What `pkg inspect` reports.
@@ -191,11 +183,11 @@ pub struct Inspection {
     pub risks: Vec<String>,
 }
 
-/// Inspect an installed package with rpm. The "risk" read is deliberately
+/// Inspect an installed package with rpm. The "risk" read is
 /// mechanical and says what it looked at: setuid/setgid files, root
 /// install-time scriptlets, boot-start services, anything outside a
 /// layer's normal paths — not a malware verdict; see [`crate::guard`] for
-/// the same honesty applied to `scan`.
+/// the corresponding `scan` behavior.
 pub fn inspect(name: &str) -> Inspection {
     let mut out = Inspection {
         nevra: nevra(name),
@@ -256,7 +248,14 @@ pub fn inspect(name: &str) -> Inspection {
 }
 
 fn run_capture(program: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(program).args(args).output().ok()?;
+    let output = bounded_command::run(
+        program,
+        args,
+        None,
+        8 * 1024 * 1024,
+        Duration::from_secs(30),
+    )
+    .ok()?;
     output
         .status
         .success()

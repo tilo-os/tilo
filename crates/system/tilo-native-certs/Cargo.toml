@@ -1,0 +1,13 @@
+[package]
+name = "rustls-native-certs"
+version = "0.8.3"
+edition = "2021"
+license = "Apache-2.0 OR ISC OR MIT"
+description = "Tilo fixed-path Rustls system root loader"
+publish = false
+
+[dependencies]
+rustls-pki-types = { version = "1.10", features = ["std"] }
+
+[dev-dependencies]
+tempfile.workspace = true

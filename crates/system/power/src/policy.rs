@@ -4,7 +4,7 @@
 //! total function of the policy configuration and the event, so the whole
 //! layer is exhaustively unit-testable without a bus or a battery.
 //!
-//! The [`super::service::PowerService`] pairs these decisions with the real
+//! The [`super::service::PowerService`] pairs these decisions with the
 //! `systemd-logind` / `UPower` glue in [`super::logind`] / [`super::upower`];
 //! the compositor applies the resulting [`PowerAction`]s.
 
@@ -59,6 +59,10 @@ pub struct PowerPolicy {
     /// is intentionally independent from idle-suspend: a machine can save
     /// display power without suspending an active background task.
     pub idle_blank: Option<Duration>,
+    /// Idle duration before the compositor locks the session. `None` is the
+    /// persisted "Never" choice; it does not disable explicit or pre-sleep
+    /// locking.
+    pub idle_lock: Option<Duration>,
     /// Idle duration before the session suspends. `None` disables
     /// idle-suspend (the display can still blank/lock — that is the idle
     /// state machine's separate concern).
@@ -83,6 +87,7 @@ impl Default for PowerPolicy {
             // Match the Settings default. `config::default_policy` only
             // changes the more disruptive idle-suspend behaviour.
             idle_blank: Some(Duration::from_secs(600)),
+            idle_lock: Some(Duration::from_secs(300)),
             // Idle-suspend is opt-in: suspending is more disruptive than
             // blanking, so a fresh machine only suspends if the user (or the
             // Settings default) asks. The Settings default *does* enable it

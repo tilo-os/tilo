@@ -2,19 +2,19 @@
 //!
 //! # The decision this module encodes
 //!
-//! A qOS package runs inside qOS's sandbox: bubblewrap with `--unshare-all`, a seccomp
+//! A Tilo package runs inside Tilo's sandbox: bubblewrap with `--unshare-all`, a seccomp
 //! deny-list, Landlock, one writable directory, and an environment carrying the app's room. A
 //! host application **does not**, and cannot be made to:
 //!
 //! - A Flatpak brings its own sandbox, which needs `unshare(2)`/`mount(2)`/`pivot_root(2)` —
-//!   denied by qOS's baseline seccomp filter — plus `/usr/bin` and its own runtime tree, not
-//!   bound in qOS's sandbox. `flatpak run` inside qOS's sandbox doesn't doubly-confine it;
+//!   denied by Tilo's baseline seccomp filter — plus `/usr/bin` and its own runtime tree, not
+//!   bound in Tilo's sandbox. `flatpak run` inside Tilo's sandbox doesn't doubly-confine it;
 //!   it just fails to start.
 //! - A plain distribution binary has no sandbox and no manifest to derive a policy from —
-//!   qOS's sandbox is built out of a package manifest, and a `.desktop` file is not one.
+//!   Tilo's sandbox is built out of a package manifest, and a `.desktop` file is not one.
 //!
 //! So a host application runs **unconfined**, as the user, with the user's own files and
-//! network: no `QOS_WORKSPACE_ID` (no collaboration room, nothing partitioned per room), no
+//! network: no `TILO_WORKSPACE_ID` (no collaboration room, nothing partitioned per room), no
 //! capability file (there's no sandbox to enforce workspace grants against, and passing them
 //! would falsely imply the app was limited to them), and no per-room state partition (it
 //! writes to the user's real `$HOME`).
@@ -28,7 +28,7 @@
 //!
 //! The environment. A host app is spawned from an explicit allowlist of the launcher's own
 //! variables plus a fixed set of overrides, not whatever the compositor happens to be
-//! carrying — keeping qOS's internal variables (room id, app directory, identity path) from
+//! carrying — keeping Tilo's internal variables (room id, app directory, identity path) from
 //! leaking into a process not entitled to them.
 
 use std::collections::BTreeMap;
@@ -39,7 +39,7 @@ use crate::entry::{DesktopEntry, EntrySource, EntryType};
 use crate::exec::{ExecError, ExpandContext, expand, split_exec};
 
 /// Variables inherited from the launching process, when set. Everything a normal desktop
-/// app needs to find its user, theme, locale and session bus — nothing that describes qOS's
+/// app needs to find its user, theme, locale and session bus — nothing that describes Tilo's
 /// own confinement, since a host app is not subject to it.
 const INHERITED_ENV: &[&str] = &[
     "HOME",
@@ -63,9 +63,9 @@ const INHERITED_ENV: &[&str] = &[
     "XDG_DATA_DIRS",
     "XDG_CONFIG_DIRS",
     "DBUS_SESSION_BUS_ADDRESS",
-    // Input-method bridges are desktop interoperability, not qOS authority.
+    // Input-method bridges are desktop interoperability, not Tilo authority.
     // Omitting these makes compose/IME input fail specifically in Electron,
-    // GTK and Qt host applications while native qOS fields keep working.
+    // GTK and Qt host applications while native Tilo fields keep working.
     "XMODIFIERS",
     "GTK_IM_MODULE",
     "QT_IM_MODULE",
@@ -78,26 +78,26 @@ const INHERITED_ENV: &[&str] = &[
 /// Variables that are always cleared, whatever the parent had. `DISPLAY` and
 /// `XAUTHORITY` are accepted only as the explicit, matched rootless-Xwayland
 /// pair in [`LaunchEnv`]; stale values from the preceding desktop can point at
-/// another session. `QOS_*` describe confinement this process does not have.
+/// another session. `TILO_*` describe confinement this process does not have.
 const CLEARED_ENV: &[&str] = &[
     "DISPLAY",
     "XAUTHORITY",
-    "QOS_WORKSPACE_ID",
-    "QOS_APP_DIR",
-    "QOS_USER_IDENTITY",
-    "QOS_IDENTITY_BROKER_FD",
-    "QOS_CLI_COMMAND",
-    "QOS_NET_GATE",
-    "QOS_HOST_ACTIVATION_TOKEN",
+    "TILO_WORKSPACE_ID",
+    "TILO_APP_DIR",
+    "TILO_USER_IDENTITY",
+    "TILO_IDENTITY_BROKER_FD",
+    "TILO_CLI_COMMAND",
+    "TILO_NET_GATE",
+    "TILO_HOST_ACTIVATION_TOKEN",
 ];
 
-/// The desktop name qOS announces, and what `OnlyShowIn`/`NotShowIn` are matched against.
-pub const XDG_CURRENT_DESKTOP: &str = "nirios";
+/// The desktop name Tilo announces, and what `OnlyShowIn`/`NotShowIn` are matched against.
+pub const XDG_CURRENT_DESKTOP: &str = "tilo";
 
 /// Marker set in a host application's environment. Not a capability and not read by anything
-/// qOS enforces — there so `ps`, a crash report or a confused user can tell it was started by
-/// qOS and is not confined by it.
-pub const HOST_APP_ENV: &str = "QOS_HOST_APP";
+/// Tilo enforces — there so `ps`, a crash report or a confused user can tell it was started by
+/// Tilo and is not confined by it.
+pub const HOST_APP_ENV: &str = "TILO_HOST_APP";
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum HostLaunchError {
@@ -112,9 +112,9 @@ pub enum HostLaunchError {
         source: ExecError,
     },
     #[error(
-        "{id} asks to be run inside a terminal window (Terminal=true). qOS does not \
+        "{id} asks to be run inside a terminal window (Terminal=true). Tilo does not \
          yet host a terminal for applications it did not package — run it from the \
-         qOS terminal instead."
+         Tilo terminal instead."
     )]
     NeedsTerminal { id: String },
     #[error("no application on this system has the desktop-file id {0}")]
@@ -143,7 +143,7 @@ pub struct HostLaunch {
 impl HostLaunch {
     /// Always `false`, and a method rather than a constant so a caller asking "is this app
     /// confined?" gets an answer from the type that knows, not a comment. Nothing in this crate
-    /// can return `true` here — a confined launch is a `.qpkg` going through `qos-launcher run`.
+    /// can return `true` here — a confined launch is a `.qpkg` going through `tilo-launcher run`.
     pub fn is_confined(&self) -> bool {
         false
     }
@@ -176,7 +176,7 @@ pub struct LaunchEnv {
     pub x11_authority: Option<PathBuf>,
     /// A compositor-minted, single-use activation token for this user
     /// initiated launch. It selects/focuses the first toplevel only; it is
-    /// not a sandbox capability or qOS authority.
+    /// not a sandbox capability or Tilo authority.
     pub activation_token: Option<String>,
     /// Documents to open, as absolute host paths. Feed `%f`/`%F`, and `%u`/`%U` as `file://` URLs.
     pub files: Vec<String>,
@@ -378,15 +378,15 @@ mod tests {
         assert!(!launch.is_confined());
     }
 
-    /// The three things a confined qOS app has and a host app must not be told it has.
+    /// The three things a confined Tilo app has and a host app must not be told it has.
     #[test]
     fn the_environment_carries_no_room_no_app_dir_and_no_identity() {
         let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
         for absent in [
-            "QOS_WORKSPACE_ID",
-            "QOS_APP_DIR",
-            "QOS_USER_IDENTITY",
-            "QOS_NET_GATE",
+            "TILO_WORKSPACE_ID",
+            "TILO_APP_DIR",
+            "TILO_USER_IDENTITY",
+            "TILO_NET_GATE",
         ] {
             assert!(
                 !launch.env.contains_key(absent),
@@ -416,7 +416,7 @@ mod tests {
         );
         assert_eq!(
             launch.env.get("XDG_CURRENT_DESKTOP").map(String::as_str),
-            Some("nirios")
+            Some("tilo")
         );
         assert!(
             !launch.env.contains_key("DISPLAY"),
@@ -425,13 +425,13 @@ mod tests {
     }
 
     #[test]
-    fn activation_token_is_standard_child_environment_not_qos_authority() {
+    fn activation_token_is_standard_child_environment_not_tilo_authority() {
         let launch = plan(
             &spotify(),
             &LaunchEnv {
                 activation_token: Some("one-shot-token".into()),
                 x11_display: Some(":42".into()),
-                x11_authority: Some(PathBuf::from("/run/user/1000/qos/Xauthority")),
+                x11_authority: Some(PathBuf::from("/run/user/1000/tilo/Xauthority")),
                 ..Default::default()
             },
         )
@@ -445,7 +445,7 @@ mod tests {
             Some("one-shot-token"),
             "classic X11 clients receive the startup-notification bridge too; xwayland-satellite itself reads XDG_ACTIVATION_TOKEN"
         );
-        assert!(!launch.env.contains_key("QOS_HOST_ACTIVATION_TOKEN"));
+        assert!(!launch.env.contains_key("TILO_HOST_ACTIVATION_TOKEN"));
     }
 
     #[test]
@@ -455,7 +455,7 @@ mod tests {
             &LaunchEnv {
                 wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-3")),
                 x11_display: Some(":1234".into()),
-                x11_authority: Some(PathBuf::from("/run/user/1000/qos-session/Xauthority")),
+                x11_authority: Some(PathBuf::from("/run/user/1000/tilo-session/Xauthority")),
                 ..Default::default()
             },
         )
@@ -463,7 +463,7 @@ mod tests {
         assert_eq!(launch.env.get("DISPLAY").map(String::as_str), Some(":1234"));
         assert_eq!(
             launch.env.get("XAUTHORITY").map(String::as_str),
-            Some("/run/user/1000/qos-session/Xauthority")
+            Some("/run/user/1000/tilo-session/Xauthority")
         );
         assert_eq!(
             launch
@@ -476,7 +476,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn host_apps_keep_input_methods_and_select_the_qos_desktop() {
+    fn host_apps_keep_input_methods_and_select_the_tilo_desktop() {
         let previous = [
             "XMODIFIERS",
             "GTK_IM_MODULE",
@@ -501,7 +501,7 @@ mod tests {
         }
         assert_eq!(
             launch.env.get("XDG_SESSION_DESKTOP").map(String::as_str),
-            Some("nirios")
+            Some("tilo")
         );
         assert_eq!(
             launch
@@ -599,9 +599,9 @@ mod tests {
         let launch = plan(
             &probe,
             &LaunchEnv {
-                wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-qos")),
+                wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-tilo")),
                 x11_display: Some(":71".into()),
-                x11_authority: Some(PathBuf::from("/run/user/1000/qos/Xauthority")),
+                x11_authority: Some(PathBuf::from("/run/user/1000/tilo/Xauthority")),
                 ..Default::default()
             },
         )
@@ -610,13 +610,13 @@ mod tests {
         assert!(output.status.success());
         let stdout = String::from_utf8(output.stdout).expect("environment is UTF-8");
         for expected in [
-            "WAYLAND_DISPLAY=wayland-qos",
+            "WAYLAND_DISPLAY=wayland-tilo",
             "XDG_RUNTIME_DIR=/run/user/1000",
             "DISPLAY=:71",
-            "XDG_CURRENT_DESKTOP=nirios",
-            "XDG_SESSION_DESKTOP=nirios",
+            "XDG_CURRENT_DESKTOP=tilo",
+            "XDG_SESSION_DESKTOP=tilo",
             "ELECTRON_OZONE_PLATFORM_HINT=auto",
-            "QOS_HOST_APP=1",
+            "TILO_HOST_APP=1",
         ] {
             assert!(
                 stdout.lines().any(|line| line == expected),
@@ -626,7 +626,7 @@ mod tests {
         assert!(
             !stdout
                 .lines()
-                .any(|line| line.starts_with("QOS_WORKSPACE_ID=")),
+                .any(|line| line.starts_with("TILO_WORKSPACE_ID=")),
             "portal attribution must never become ambient workspace authority"
         );
     }

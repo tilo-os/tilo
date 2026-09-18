@@ -64,8 +64,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_are_window_local() {
-        assert_eq!(Prefs::default(), Prefs::default());
+    fn defaults_favor_safe_periodic_sampling() {
+        let prefs = Prefs::default();
+
+        assert_eq!(prefs.interval_ms, 1500);
+        assert!(prefs.auto_refresh);
+        assert!(!prefs.show_kernel_threads);
+        assert!(prefs.confirm_kill);
     }
 
     #[test]

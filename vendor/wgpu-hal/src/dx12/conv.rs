@@ -311,7 +311,7 @@ fn map_blend_component(
 pub fn map_render_targets(
     color_targets: &[Option<wgt::ColorTargetState>],
 ) -> [Direct3D12::D3D12_RENDER_TARGET_BLEND_DESC;
-       Direct3D12::D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT as usize] {
+    Direct3D12::D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT as usize] {
     let dummy_target = Direct3D12::D3D12_RENDER_TARGET_BLEND_DESC {
         BlendEnable: false.into(),
         LogicOpEnable: false.into(),

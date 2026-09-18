@@ -10,39 +10,39 @@
 //!
 //! ## Per-room partitioning falls out of the location
 //!
-//! The host location is `<data home>/qos-rooms/<room>/<package>`. The
+//! The host location is `<data home>/tilo-rooms/<room>/<package>`. The
 //! room is [`crate::sandbox::WORKSPACE_ID_ENV`], the same value the
 //! collaboration cluster is keyed on, so two launches of one app into
 //! two rooms get two directories, neither able to name the other's.
 //!
-//! A launch with no room gets the [`PERSONAL_ROOM`] — a real room, not
-//! a bypass: one directory like any other, unreachable from a workspace.
+//! A launch with no room gets the [`PERSONAL_ROOM`]: one directory like any
+//! other, unreachable from a workspace.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
 /// Where the app's directory appears inside the sandbox. Fixed, so the
 /// app never learns the host layout.
-pub const SANDBOX_APP_DIR: &str = "/run/qos/app";
+pub const SANDBOX_APP_DIR: &str = "/run/tilo/app";
 
 /// Env var naming [`SANDBOX_APP_DIR`], so an app can be explicit about
 /// "the directory the system gave me" rather than inferring it from `HOME`.
-pub const APP_DIR_ENV: &str = "QOS_APP_DIR";
+pub const APP_DIR_ENV: &str = "TILO_APP_DIR";
 
 /// The room a launch with no workspace belongs to.
 ///
-/// `plan/rooms.md`: "Your own room is not special — same kind of room,
+/// `docs/architecture/rooms.md`: "Your own room is not special — same kind of room,
 /// one member." A slug like any other, deliberately not a UUID, so it
 /// cannot collide with a workspace id.
 pub const PERSONAL_ROOM: &str = "personal";
 
 /// Directory under the user's data home that holds every room.
-pub const ROOMS_DIR: &str = "qos-rooms";
+pub const ROOMS_DIR: &str = "tilo-rooms";
 
 /// Marker written into an app directory that adopted pre-partition
 /// state — its presence makes the adoption happen exactly once, and its
 /// contents name where the bytes came from.
-const ADOPTION_MARKER: &str = ".qos-adopted-from";
+const ADOPTION_MARKER: &str = ".tilo-adopted-from";
 
 /// Turn a workspace id into a single path component that cannot escape
 /// its parent.
@@ -185,11 +185,11 @@ pub fn prepare_host_app_dir(
 /// **What it does not adopt.** Only `<data home>/<package id>` — where
 /// `app_state::DocStore` keeps a package's document and its
 /// `records/<key>/` subtree. Ad-hoc locations apps also used
-/// (`~/.local/share/qos-notes`, …) are left alone; adopting them would
+/// (`~/.local/share/tilo-notes`, …) are left alone; adopting them would
 /// mean the launcher holding a per-package path list, the thing this
 /// change removes.
 ///
-/// To reverse: delete `<data home>/qos-rooms/personal/<package>`. The
+/// To reverse: delete `<data home>/tilo-rooms/personal/<package>`. The
 /// original at `<data home>/<package>` was never touched.
 fn adopt_legacy_state_into_personal_room(
     data_home: &Path,
@@ -206,7 +206,7 @@ fn adopt_legacy_state_into_personal_room(
     }
     let legacy = data_home.join(sanitise_component(package_id));
     // Guard against the rooms tree adopting itself, which a package id of
-    // `qos-rooms` would otherwise arrange.
+    // `tilo-rooms` would otherwise arrange.
     if !legacy.is_dir() || legacy.starts_with(data_home.join(ROOMS_DIR)) {
         let _ = std::fs::write(&marker, b"nothing to adopt\n");
         return;
@@ -221,7 +221,7 @@ fn adopt_legacy_state_into_personal_room(
     match copy_tree(&legacy, &dest) {
         Ok(n) => {
             tracing::info!(
-                target: "qos_launcher::appdir",
+                target: "tilo_launcher::appdir",
                 package = %package_id,
                 from = %legacy.display(),
                 to = %dest.display(),
@@ -236,7 +236,7 @@ fn adopt_legacy_state_into_personal_room(
             // working, empty directory. Losing the library is visible; losing the
             // app is worse.
             tracing::warn!(
-                target: "qos_launcher::appdir",
+                target: "tilo_launcher::appdir",
                 package = %package_id,
                 from = %legacy.display(),
                 "could not adopt pre-partition app state: {e}",
@@ -335,9 +335,9 @@ mod tests {
                 "{hostile:?} produced {slug:?}, which names a directory \
                  instead of creating one"
             );
-            let dir = host_app_dir(data, &slug, "dev.qos.notes");
+            let dir = host_app_dir(data, &slug, "dev.tilo.notes");
             assert!(
-                dir.starts_with("/data/qos-rooms/"),
+                dir.starts_with("/data/tilo-rooms/"),
                 "{hostile:?} escaped to {}",
                 dir.display()
             );
@@ -359,13 +359,15 @@ mod tests {
         for hostile in ["..", "../../etc", "/", "a/b"] {
             let dir = host_app_dir(data, PERSONAL_ROOM, hostile);
             assert!(
-                dir.starts_with("/data/qos-rooms/personal/"),
+                dir.starts_with("/data/tilo-rooms/personal/"),
                 "{hostile:?} escaped to {}",
                 dir.display()
             );
             assert_eq!(
                 dir.components().count(),
-                Path::new("/data/qos-rooms/personal/x").components().count(),
+                Path::new("/data/tilo-rooms/personal/x")
+                    .components()
+                    .count(),
                 "{hostile:?} produced more than one component: {}",
                 dir.display()
             );
@@ -377,8 +379,8 @@ mod tests {
     #[test]
     fn two_rooms_are_two_directories() {
         let data = Path::new("/data");
-        let a = host_app_dir(data, &room_slug(Some("room-a")), "dev.qos.notes");
-        let b = host_app_dir(data, &room_slug(Some("room-b")), "dev.qos.notes");
+        let a = host_app_dir(data, &room_slug(Some("room-a")), "dev.tilo.notes");
+        let b = host_app_dir(data, &room_slug(Some("room-b")), "dev.tilo.notes");
         assert_ne!(a, b);
         assert!(!a.starts_with(&b) && !b.starts_with(&a));
     }
@@ -407,7 +409,7 @@ mod tests {
             .find(|(k, _)| k == "XDG_DATA_HOME")
             .map(|(_, v)| v.clone())
             .expect("XDG_DATA_HOME is announced");
-        assert_eq!(data, "/run/qos/app/.local/share");
+        assert_eq!(data, "/run/tilo/app/.local/share");
     }
 
     #[test]
@@ -415,11 +417,11 @@ mod tests {
         let mut argv = Vec::new();
         push_app_dir(
             &mut argv,
-            Path::new("/data/qos-rooms/personal/dev.qos.notes"),
+            Path::new("/data/tilo-rooms/personal/dev.tilo.notes"),
         );
         assert!(
             argv.windows(3).any(|w| w[0] == "--bind"
-                && w[1] == "/data/qos-rooms/personal/dev.qos.notes"
+                && w[1] == "/data/tilo-rooms/personal/dev.tilo.notes"
                 && w[2] == SANDBOX_APP_DIR),
             "app dir must be bound read-write at the fixed path: {argv:?}"
         );
@@ -433,31 +435,31 @@ mod tests {
     #[test]
     fn preparing_the_directory_creates_the_xdg_tree() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = prepare_host_app_dir(tmp.path(), Some("room-a"), "dev.qos.notes").unwrap();
+        let dir = prepare_host_app_dir(tmp.path(), Some("room-a"), "dev.tilo.notes").unwrap();
         assert!(dir.join(".local/share").is_dir());
         assert!(dir.join(".config").is_dir());
         assert!(dir.join(".cache").is_dir());
-        assert_eq!(dir, tmp.path().join("qos-rooms/room-a/dev.qos.notes"));
+        assert_eq!(dir, tmp.path().join("tilo-rooms/room-a/dev.tilo.notes"));
     }
 
     /// The migration adopts into the personal room and nowhere else.
     #[test]
     fn legacy_state_is_adopted_into_the_personal_room_only() {
         let tmp = tempfile::tempdir().unwrap();
-        let legacy = tmp.path().join("dev.qos.notes");
+        let legacy = tmp.path().join("dev.tilo.notes");
         std::fs::create_dir_all(&legacy).unwrap();
         std::fs::write(legacy.join("state.bin"), b"old library").unwrap();
 
-        let workspace = prepare_host_app_dir(tmp.path(), Some("room-a"), "dev.qos.notes").unwrap();
+        let workspace = prepare_host_app_dir(tmp.path(), Some("room-a"), "dev.tilo.notes").unwrap();
         assert!(
             !workspace
-                .join(".local/share/dev.qos.notes/state.bin")
+                .join(".local/share/dev.tilo.notes/state.bin")
                 .exists(),
             "a workspace room must start empty"
         );
 
-        let personal = prepare_host_app_dir(tmp.path(), None, "dev.qos.notes").unwrap();
-        let adopted = personal.join(".local/share/dev.qos.notes/state.bin");
+        let personal = prepare_host_app_dir(tmp.path(), None, "dev.tilo.notes").unwrap();
+        let adopted = personal.join(".local/share/dev.tilo.notes/state.bin");
         assert_eq!(
             std::fs::read(&adopted).unwrap(),
             b"old library",
@@ -474,15 +476,15 @@ mod tests {
     #[test]
     fn adoption_happens_exactly_once() {
         let tmp = tempfile::tempdir().unwrap();
-        let legacy = tmp.path().join("dev.qos.notes");
+        let legacy = tmp.path().join("dev.tilo.notes");
         std::fs::create_dir_all(&legacy).unwrap();
         std::fs::write(legacy.join("state.bin"), b"old").unwrap();
 
-        let personal = prepare_host_app_dir(tmp.path(), None, "dev.qos.notes").unwrap();
-        let adopted = personal.join(".local/share/dev.qos.notes/state.bin");
+        let personal = prepare_host_app_dir(tmp.path(), None, "dev.tilo.notes").unwrap();
+        let adopted = personal.join(".local/share/dev.tilo.notes/state.bin");
         std::fs::write(&adopted, b"edited in the room").unwrap();
 
-        prepare_host_app_dir(tmp.path(), None, "dev.qos.notes").unwrap();
+        prepare_host_app_dir(tmp.path(), None, "dev.tilo.notes").unwrap();
         assert_eq!(
             std::fs::read(&adopted).unwrap(),
             b"edited in the room",
@@ -497,12 +499,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let outside = tmp.path().join("outside-secret");
         std::fs::write(&outside, b"not the app's").unwrap();
-        let legacy = tmp.path().join("dev.qos.notes");
+        let legacy = tmp.path().join("dev.tilo.notes");
         std::fs::create_dir_all(&legacy).unwrap();
         std::os::unix::fs::symlink(&outside, legacy.join("link")).unwrap();
 
-        let personal = prepare_host_app_dir(tmp.path(), None, "dev.qos.notes").unwrap();
-        let copied = personal.join(".local/share/dev.qos.notes/link");
+        let personal = prepare_host_app_dir(tmp.path(), None, "dev.tilo.notes").unwrap();
+        let copied = personal.join(".local/share/dev.tilo.notes/link");
         assert!(
             copied.symlink_metadata().unwrap().file_type().is_symlink(),
             "a symlink must be copied as a symlink, not resolved"

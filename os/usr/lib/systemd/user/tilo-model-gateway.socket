@@ -1,0 +1,14 @@
+[Unit]
+Description=Tilo hosted-model gateway activation socket
+Documentation=file:///usr/share/doc/tilo/model-gateway.md
+
+[Socket]
+ListenStream=%t/tilo/services/model-gateway.sock
+SocketMode=0600
+DirectoryMode=0700
+Backlog=16
+RemoveOnStop=yes
+Service=tilo-model-gateway.service
+
+[Install]
+WantedBy=sockets.target

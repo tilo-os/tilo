@@ -1,4 +1,4 @@
-//! The shared **online-accounts** model + store, used by every qOS app that consumes
+//! The shared **online-accounts** model + store, used by every Tilo app that consumes
 //! external accounts (Mail, Calendar, and the Settings hub).
 //!
 //! # Why one crate
@@ -14,7 +14,7 @@
 //! - [`Account`] — the type-agnostic envelope. `config` is opaque type-specific JSON,
 //!   (de)serialised by the owning type. **No secret fields live here.**
 //! - [`AccountStore`] — the canonical multi-account store, one pretty-JSON document at
-//!   `$XDG_CONFIG_HOME/qos/accounts/store.json`, holding every account plus the per-type
+//!   `$XDG_CONFIG_HOME/tilo/accounts/store.json`, holding every account plus the per-type
 //!   active selection.
 //! - [`SecretVault`] — the encrypted-at-rest credential store keyed by [`AccountId`] (see
 //!   [`vault`]). Credentials go here, never into [`AccountStore`].
@@ -39,6 +39,12 @@ use serde::{Deserialize, Serialize};
 
 pub mod vault;
 pub use vault::{Secret, SecretCustody, SecretVault};
+pub mod secrets;
+pub use secrets::{
+    AccessDecision, AccessRequest, BrokerError, ClipboardLease, CredentialBroker,
+    CredentialCandidate, CredentialGrant, GeneratedPasswordPolicy, SecretId, SecretItem,
+    SecretItemKind, SecretStore,
+};
 pub mod status;
 pub use status::{
     AccountSyncHealth, AccountSyncReporter, AccountSyncStatus, AccountSyncStatusStore,
@@ -321,14 +327,31 @@ impl AccountStore {
     }
 }
 
-/// The per-user qOS config root: `$XDG_CONFIG_HOME/qos` or `~/.config/qos`. Deliberately
-/// identical to the Settings app's `config_root()` so every app resolves the same directory.
+/// The per-user account config root: `$XDG_CONFIG_HOME/tilo` or `~/.config/tilo`.
+/// Like Settings, ignore empty or relative XDG paths. Reuse an existing qOS
+/// accounts subtree until a Tilo accounts subtree exists, keeping the store
+/// and credential vault together even when unrelated Tilo settings exist.
 pub fn config_root() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
+    config_root_from(std::env::var_os("XDG_CONFIG_HOME"), dirs::home_dir())
+}
+
+fn config_root_from(
+    xdg_config_home: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let base = xdg_config_home
         .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))?;
-    Some(base.join("qos"))
+        .filter(|p| !p.as_os_str().is_empty() && p.is_absolute())
+        .or_else(|| home.map(|h| h.join(".config")))?;
+    let current = base.join("tilo");
+    let legacy = base.join("qos");
+    Some(
+        if !current.join("accounts").exists() && legacy.join("accounts").is_dir() {
+            legacy
+        } else {
+            current
+        },
+    )
 }
 
 /// The accounts directory under a config root (`root/accounts`).
@@ -373,7 +396,32 @@ mod tests {
     }
 
     fn temp_root() -> PathBuf {
-        std::env::temp_dir().join(format!("qos-accounts-store-{}", uuid::Uuid::new_v4()))
+        std::env::temp_dir().join(format!("tilo-accounts-store-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn config_rename_compatibility_preserves_account_subtree() {
+        let base = temp_root();
+        let resolve = || config_root_from(Some(base.clone().into_os_string()), None).unwrap();
+        assert_eq!(resolve(), base.join("tilo"));
+        std::fs::create_dir_all(base.join("qos/accounts/vault")).unwrap();
+        std::fs::create_dir_all(base.join("tilo/identity")).unwrap();
+        assert_eq!(resolve(), base.join("qos"));
+        std::fs::create_dir_all(base.join("tilo/accounts")).unwrap();
+        assert_eq!(resolve(), base.join("tilo"));
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn config_rename_compatibility_ignores_unusable_xdg_values() {
+        let home = temp_root();
+        for xdg in [None, Some("".into()), Some("relative-config".into())] {
+            assert_eq!(
+                config_root_from(xdg, Some(home.clone())),
+                Some(home.join(".config/tilo")),
+            );
+        }
+        assert_eq!(config_root_from(Some("relative-config".into()), None), None);
     }
 
     #[test]

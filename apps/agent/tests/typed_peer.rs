@@ -23,8 +23,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use ed25519_dalek::{Signer as _, SigningKey};
-use qos_actions::{ActionAddress, ActionRegistry, LocalTransport, Resource};
-use qos_agent::wire::Link;
+use tilo_actions::{ActionAddress, ActionRegistry, LocalTransport, Resource};
+use tilo_agent::wire::Link;
 use ui::collaboration::{
     CertifiedEndpointIdentity, CollabEvent, CollabRequest, DocumentMutation, ExportedAction,
     ExportedInput,
@@ -52,16 +52,16 @@ fn device_key(handle: &str) -> SigningKey {
 pub fn endpoint_identity(handle: &str) -> CertifiedEndpointIdentity {
     let root = SigningKey::from_bytes(&ROOT_KEY);
     let device = device_key(handle);
-    let mut certificate = qos_user_identity::DeviceCert {
+    let mut certificate = tilo_user_identity::DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: device.verifying_key().to_bytes(),
         device_label: handle.to_owned(),
-        capabilities: qos_user_identity::DeviceCapabilities::primary(),
+        capabilities: tilo_user_identity::DeviceCapabilities::primary(),
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
     };
-    qos_user_identity::sign_device_cert(&mut certificate, &root).expect("root signs test device");
+    tilo_user_identity::sign_device_cert(&mut certificate, &root).expect("root signs test device");
     let presentation = runtime_collab::CertifiedJoinIdentity {
         workspace_id: TEST_ROOM.to_string(),
         device_certificate: serde_json::to_vec(&certificate).expect("certificate JSON"),
@@ -180,7 +180,7 @@ pub fn document_mutation(event: &CollabEvent) -> Option<DocumentMutation> {
 /// Panics if a production action descriptor cannot be serialized for the
 /// broker wire, which is an invalid test fixture.
 pub fn exported_actions(resources: &[Resource]) -> Vec<ExportedAction> {
-    qos_actions::door::survey(resources)
+    tilo_actions::door::survey(resources)
         .into_iter()
         .map(|descriptor| ExportedAction {
             resource: descriptor.address.resource,
@@ -193,15 +193,15 @@ pub fn exported_actions(resources: &[Resource]) -> Vec<ExportedAction> {
             params_json: serde_json::to_string(&descriptor.params).unwrap(),
             contract_json: serde_json::to_string(&descriptor.contract).unwrap(),
             input: match descriptor.input {
-                qos_actions::InputSpec::None => ExportedInput::None,
-                qos_actions::InputSpec::Text {
+                tilo_actions::InputSpec::None => ExportedInput::None,
+                tilo_actions::InputSpec::Text {
                     prompt,
                     placeholder,
                     collects,
                 } => ExportedInput::Text {
                     prompt,
                     placeholder,
-                    wants_content: collects == qos_actions::Collects::Content,
+                    wants_content: collects == tilo_actions::Collects::Content,
                 },
             },
         })
@@ -289,19 +289,19 @@ pub fn service_document_invocation(
     action: String,
     argument: Option<&str>,
     actor: &str,
-) -> qos_actions::InvocationUpdate {
+) -> tilo_actions::InvocationUpdate {
     let address = ActionAddress::new(resource, action);
     let mut registry = ActionRegistry::new();
     register(&mut registry);
     let mut transport = LocalTransport::new();
     let before = replica.get_heads();
     let result = if let Some(json) =
-        argument.and_then(|value| value.strip_prefix(qos_actions::ARGUMENTS_JSON_PREFIX))
+        argument.and_then(|value| value.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
     {
         serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
-            .map_err(|error| qos_actions::DoorError::InvalidArguments(error.to_string()))
+            .map_err(|error| tilo_actions::DoorError::InvalidArguments(error.to_string()))
             .and_then(|arguments| {
-                qos_actions::door::invoke_json_confirmed(
+                tilo_actions::door::invoke_json_confirmed(
                     replica,
                     resources,
                     &address,
@@ -312,7 +312,7 @@ pub fn service_document_invocation(
                 )
             })
     } else {
-        qos_actions::door::invoke_confirmed(
+        tilo_actions::door::invoke_confirmed(
             replica,
             resources,
             &address,
@@ -322,22 +322,22 @@ pub fn service_document_invocation(
             &mut transport,
         )
     };
-    let invocation = qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+    let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
     match result {
         Ok(_) => {
             let delta = replica.save_after(&before);
             assert!(!delta.is_empty(), "the invoked document action was a no-op");
-            peer.send(&CollabRequest::DocumentIncremental { data: delta })
+            peer.send(&CollabRequest::document_incremental(delta))
                 .unwrap();
-            qos_actions::InvocationUpdate::Succeeded {
+            tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             }
         }
-        Err(error) => qos_actions::InvocationUpdate::Failed {
+        Err(error) => tilo_actions::InvocationUpdate::Failed {
             invocation,
-            error: qos_actions::ActionFailure {
-                code: "qos.test_app_host".into(),
+            error: tilo_actions::ActionFailure {
+                code: "tilo.test_app_host".into(),
                 message: error.to_string(),
                 details: None,
                 retryable: false,
@@ -353,12 +353,12 @@ pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
     spawn_with_agent_actions(
         path,
         &[
-            ("dev.qos.word-processor", "align-center"),
-            ("dev.qos.word-processor", "delete"),
-            ("dev.qos.word-processor", "insert-table"),
-            ("dev.qos.word-processor", "place-image"),
-            ("dev.qos.photos", "rotate-right"),
-            ("dev.qos.photos", "export-edited-content"),
+            ("dev.tilo.word-processor", "align-center"),
+            ("dev.tilo.word-processor", "delete"),
+            ("dev.tilo.word-processor", "insert-table"),
+            ("dev.tilo.word-processor", "place-image"),
+            ("dev.tilo.photos", "rotate-right"),
+            ("dev.tilo.photos", "export-edited-content"),
         ],
     )
 }
@@ -426,9 +426,9 @@ pub fn spawn_with_agent_actions(
     // App fixtures use the same agent-only endpoint as Scribe. Admission and
     // app authority remain separate, so each host receives only its own app.
     for (host, app) in [
-        ("quinten", "dev.qos.word-processor"),
-        ("photos", "dev.qos.photos"),
-        ("files", "dev.qos.file-explorer"),
+        ("quinten", "dev.tilo.word-processor"),
+        ("photos", "dev.tilo.photos"),
+        ("files", "dev.tilo.file-explorer"),
     ] {
         workspace
             .grant_as(

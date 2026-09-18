@@ -21,7 +21,7 @@ use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{CodeEditor, Language, Widget};
 
 use crate::actions::{self, DiffmergeAction, HunkChoice, MergeResourceCtx};
 use crate::doc::MergeDoc;
@@ -207,6 +207,9 @@ pub struct MergeView {
     pending_action: Option<DiffmergeAction>,
     /// Last measured row metrics (see [`Metrics`]); defaults until the first draw.
     metrics: Metrics,
+    /// The authoritative merged CRDT text, edited through the same shared
+    /// caret/selection/IME/clipboard implementation as every code surface.
+    merged_editor: CodeEditor,
 }
 
 impl Default for MergeView {
@@ -236,11 +239,16 @@ impl MergeView {
             merged_output: String::new(),
             pending_action: None,
             metrics: Metrics::default(),
+            merged_editor: CodeEditor::new(Vec::new())
+                .with_language(Language::PlainText)
+                .with_id("diffmerge_merged_editor"),
         }
     }
 
     pub(crate) fn context_matches(&self, doc: &AutoCommit) -> bool {
-        self.expected_content.as_ref().is_some_and(|expected| *expected == crate::doc::authored_snapshot(doc))
+        self.expected_content
+            .as_ref()
+            .is_some_and(|expected| *expected == crate::doc::authored_snapshot(doc))
     }
     pub(crate) fn acknowledge_content(&mut self, doc: &AutoCommit) {
         self.expected_content = Some(crate::doc::authored_snapshot(doc));
@@ -250,9 +258,12 @@ impl MergeView {
     pub(crate) fn reconcile_content(&mut self, doc: &AutoCommit) {
         if !self.pending_seed && !self.context_matches(doc) {
             self.model = MergeModel::default();
-            self.base_label.clear(); self.ours_label.clear(); self.theirs_label.clear();
+            self.base_label.clear();
+            self.ours_label.clear();
+            self.theirs_label.clear();
             self.pending_action = None;
-            self.action_hits.clear(); self.hunk_spans.clear();
+            self.action_hits.clear();
+            self.hunk_spans.clear();
             self.active_hunk = None;
             self.expected_content = None;
             self.dirty = true;
@@ -274,7 +285,11 @@ impl MergeView {
     /// `(row_h, header_h, chip_h)` from the last draw.
     #[cfg(test)]
     pub(crate) fn metrics_for_test(&self) -> (f64, f64, f64) {
-        (self.metrics.row_h, self.metrics.header_h, self.metrics.chip_h)
+        (
+            self.metrics.row_h,
+            self.metrics.header_h,
+            self.metrics.chip_h,
+        )
     }
 
     /// Total content height of the source band in content space.
@@ -309,6 +324,10 @@ impl MergeView {
 
     pub fn model(&self) -> &MergeModel {
         &self.model
+    }
+
+    pub(crate) fn merged_editor_focused(&self) -> bool {
+        self.merged_editor.is_focused()
     }
 
     fn is_compact(&self) -> bool {
@@ -760,8 +779,7 @@ impl MergeView {
             status_label,
             CHIP_FONT_SIZE,
             status.1.color(c),
-            transform
-                * Affine::translate((status_x, ay + (m.chip_h - f64::from(status_h)) / 2.0)),
+            transform * Affine::translate((status_x, ay + (m.chip_h - f64::from(status_h)) / 2.0)),
             None,
         );
 
@@ -816,11 +834,7 @@ impl MergeView {
             );
             // A selected chip is filled in its hue; the label takes the ink
             // that reads on that hue rather than a fixed near-black.
-            let text_col = if selected {
-                c.on_surface(col).ink
-            } else {
-                col
-            };
+            let text_col = if selected { c.on_surface(col).ink } else { col };
             let (lw, lh) = tr.measure(label, CHIP_FONT_SIZE, None);
             tr.draw_text(
                 scene,
@@ -947,7 +961,7 @@ impl MergeView {
     /// The merged-result band: header (with conflict count) and the scrolled
     /// merged buffer body.
     fn draw_merged_band(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
@@ -999,48 +1013,12 @@ impl MergeView {
             Some((merged.width() - PAD_X * 2.0 - 8.0) as f32),
         );
 
-        // Merged buffer body.
+        // Merged buffer body. The shared editor owns text, caret, selection,
+        // scrolling, clipboard, IME, accessibility, and CRDT splices.
         let merged_body = Rect::new(merged.x0, merged.y0 + m.header_h, merged.x1, merged.y1);
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &merged_body,
-        );
-        let lines: Vec<String> = self.merged_output.lines().map(str::to_owned).collect();
-        for (i, line) in lines.iter().enumerate() {
-            let ly = merged_body.y0 + 4.0 + i as f64 * m.row_h;
-            if ly > merged_body.y1 {
-                break;
-            }
-            // Line number gutter: right-aligned on the measured digit width
-            // and centred on the row like the code beside it.
-            let no = (i + 1).to_string();
-            let (nw, nh) = tr.measure(&no, GUTTER_FONT_SIZE, None);
-            tr.draw_text(
-                scene,
-                &no,
-                GUTTER_FONT_SIZE,
-                c.text_dim,
-                transform
-                    * Affine::translate((
-                        merged_body.x0 + m.gutter_w - 10.0 - f64::from(nw),
-                        ly + (m.row_h - f64::from(nh)) / 2.0,
-                    )),
-                None,
-            );
-            draw_code_segments(
-                scene,
-                transform,
-                tr,
-                theme,
-                merged_body.x0 + m.gutter_w,
-                ly + m.text_dy,
-                line,
-            );
-        }
-        scene.pop_layer();
+        self.merged_editor.set_rect(merged_body);
+        self.merged_editor
+            .draw_embedded(scene, transform, tr, theme);
     }
 }
 
@@ -1054,9 +1032,16 @@ impl Widget for MergeView {
             MergeDoc::set_merged(state, &self.model.merged_text());
             self.pending_seed = false;
             self.acknowledge_content(state);
-            return;
+        } else {
+            self.reconcile_content(state);
         }
-        self.reconcile_content(state);
+        // Seed once for a late joiner that has no buffer yet.
+        if !MergeDoc::has_merged(state) {
+            MergeDoc::set_merged(state, &self.model.merged_text());
+        }
+        let merged = MergeDoc::merged_text_obj(state);
+        self.merged_editor.bind_text(merged);
+        self.merged_editor.pull(state);
         // Reconcile chip state from resolutions recorded by (possibly remote)
         // actions, so a reload or a peer shows the same take-a-side selections.
         // The merged `Text` itself stays authoritative — the actions already
@@ -1107,6 +1092,14 @@ impl Widget for MergeView {
             origin.y + f64::from(l.location.y),
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
+        ));
+        self.recompute_spans();
+        let merged = self.merged_band_rect();
+        self.merged_editor.set_rect(Rect::new(
+            merged.x0,
+            merged.y0 + self.metrics.header_h,
+            merged.x1,
+            merged.y1,
         ));
     }
 
@@ -1169,14 +1162,30 @@ impl Widget for MergeView {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
+        m: &winit::event::Modifiers,
+        s: &mut AutoCommit,
+        p: &ObjId,
         handled: &mut bool,
-        _focus: &mut Option<NodeId>,
-        _node: NodeId,
-        _taffy: &TaffyTree<()>,
+        focus: &mut Option<NodeId>,
+        node: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
+        if self.merged_editor.is_focused() || self.merged_editor.rect().contains(self.cursor) {
+            self.merged_editor.handle_event(
+                event,
+                scale_factor,
+                m,
+                s,
+                p,
+                handled,
+                focus,
+                node,
+                taffy,
+            );
+            if *handled {
+                return;
+            }
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -1252,6 +1261,14 @@ impl Widget for MergeView {
 
     fn is_focusable(&self) -> bool {
         true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.merged_editor.set_focused(focused);
+    }
+
+    fn is_focused(&self) -> bool {
+        self.merged_editor.is_focused()
     }
 
     fn test_rects(&self) -> Vec<(String, Rect)> {

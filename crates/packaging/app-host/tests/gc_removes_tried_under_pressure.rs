@@ -1,5 +1,5 @@
 //! GC sweep removes LRU-Tried entries under size pressure and preserves
-//! Pinned ones. Uses real .qpkg installs so both the payload tree and
+//! Pinned ones. Uses .qpkg installs so both the payload tree and
 //! the blob store contribute to reported disk usage.
 
 #![allow(

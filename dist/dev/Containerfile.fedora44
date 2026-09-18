@@ -1,0 +1,14 @@
+# A deliberately small, persistent build image for the desktop-session edit
+# loop.  It contains build dependencies only; the source tree and Cargo target
+# directory are mounted by distrobox, so editing source does not invalidate
+# this image and no application binaries are baked into it.
+FROM registry.fedoraproject.org/fedora-toolbox:44
+
+COPY install-build-deps.sh /usr/local/libexec/tilo-install-build-deps
+
+RUN /usr/local/libexec/tilo-install-build-deps fedora \
+ && dnf install -y --setopt=install_weak_deps=False \
+      libavcodec-free-devel libavformat-free-devel libswscale-free-devel \
+      mold sccache openssh-clients \
+ && dnf clean all \
+ && rm -rf /var/cache/dnf /usr/local/libexec/tilo-install-build-deps

@@ -7,7 +7,7 @@
 //! encoding the group verifying key.
 //!
 //! [`DkgSession`] is a per-device handle advancing `Round1 → Round2 →
-//! Complete`; a higher-level orchestrator (in `shell/`) shuttles
+//! Complete`; a higher-level orchestrator (in `crates/session/shell/`) shuttles
 //! [`EnrolmentRound1`]/[`EnrolmentRound2`] messages between devices over
 //! its transport (Iroh direct-message in production).
 //!
@@ -21,7 +21,7 @@
 //!
 //! [`EnrolmentRound1`]/[`EnrolmentRound2`] are the only types crossing
 //! device boundaries, serialised via postcard for consistency with the
-//! rest of the qOS crypto stack: the frost-ed25519 round package wrapped
+//! rest of the Tilo crypto stack: the frost-ed25519 round package wrapped
 //! in a small header carrying the sender's share index.
 
 use std::collections::BTreeMap;

@@ -1,6 +1,6 @@
-//! `cli` — SDK for qOS CLI apps.
+//! `cli` — SDK for Tilo CLI apps.
 //!
-//! qOS apps come in two flavours: GUI (talks Wayland, uses the `ui`
+//! Tilo apps come in two flavours: GUI (talks Wayland, uses the `ui`
 //! toolkit) and CLI (owns stdio, prints text, may be piped). Both run
 //! inside the same launcher-managed sandbox and talk to the same
 //! underlying services (workspace fs, collab broker, portal); this crate
@@ -19,22 +19,17 @@
 //! ```
 //!
 //! [`run_main`] wraps the closure with `anyhow::Error` → stderr + non-zero
-//! exit, silent `SIGPIPE` handling (e.g. `| head`), and a `QOS_CLI_COMMAND`
+//! exit, silent `SIGPIPE` handling (e.g. `| head`), and a `TILO_CLI_COMMAND`
 //! lookup exposed via [`invoked_command`].
 //!
-//! [`resolve_workspace_path`] returns a path a CLI can `open()` today: under
-//! `/var/workspace/` inside qOS ([`is_qos_native`]), or under
-//! `~/.local/share/<package id>/` standalone (stock Linux, Flatpak) —
-//! deliberately unrelated to `runtime-fs` so the CLI keeps working when the
+//! [`resolve_workspace_path`] returns a path a CLI can `open()`: under
+//! `/var/workspace/` inside Tilo ([`is_tilo_native`]), or under
+//! `~/.local/share/<package id>/` standalone (stock Linux, Flatpak). The
+//! fallback does not depend on `runtime-fs`, so the CLI also works when the
 //! FUSE driver is offline.
 //!
-//! This SDK exposes **no** grant API. Access control for a CLI app is the
-//! launcher's sandbox (one writable directory, a fixed system read profile,
-//! `sandbox.net`) plus the capability model in `collab-types::caps`, all
-//! enforced outside the app — a `request_grant` helper that always returned
-//! `Ok(())` used to live here, and a permission call that always succeeds is
-//! worse than none, so it's gone. Add the real thing when the compositor
-//! grows a text/dbus portal.
+//! This SDK exposes no grant API. CLI access is enforced outside the app by
+//! the launcher's sandbox and the capability model in `collab-types::caps`.
 //!
 //! [`output`] builds a terminal-aware writer that emits ANSI OSC 8
 //! hyperlinks on an interactive terminal, degrading to plain text on pipes.
@@ -59,7 +54,7 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 pub use runtime_portal::NotAvailable;
-pub use runtime_portal::is_qos_native;
+pub use runtime_portal::is_tilo_native;
 
 pub mod output;
 pub mod workspace;
@@ -71,7 +66,7 @@ pub use workspace::{
 
 /// The CLI command name the shim invoked us as; `None` outside the launcher.
 pub fn invoked_command() -> Option<String> {
-    std::env::var("QOS_CLI_COMMAND").ok()
+    std::env::var("TILO_CLI_COMMAND").ok()
 }
 
 /// Run a fallible closure as `main`, mirroring `main() -> ExitCode` while
@@ -106,9 +101,9 @@ unsafe fn libc_signal_ignore_sigpipe() {
     let _ = unsafe { signal(SIGPIPE, SIG_IGN) };
 }
 
-/// The process's package id from `QOS_PACKAGE_ID`, falling back to a dev default.
+/// The process's package id from `TILO_PACKAGE_ID`, falling back to a dev default.
 pub fn package_id() -> String {
-    std::env::var("QOS_PACKAGE_ID").unwrap_or_else(|_| "qos-standalone".to_string())
+    std::env::var("TILO_PACKAGE_ID").unwrap_or_else(|_| "tilo-standalone".to_string())
 }
 
 /// Print to stdout if it's a terminal, else write unstyled — small enough
@@ -154,15 +149,27 @@ pub fn data_home() -> PathBuf {
     if let Some(home) = std::env::var_os("HOME") {
         return Path::new(&home).join(".local/share");
     }
-    // Last-ditch temporary storage is not persistent, but keeps the CLI alive
-    // when the platform's home/data environment is unavailable.
+    // Temporary storage is not persistent and is used when the platform's
+    // home/data environment is unavailable.
     std::env::temp_dir()
 }
 
-/// The XDG data dir fallback for state outside qOS; public so an app can
-/// point its own storage at the same spot.
+/// The XDG data dir fallback for state outside Tilo; public so an app can
+/// point its own storage at the same spot. Renamed built-in packages keep using
+/// an existing `dev.qos.*` directory in place, including its actor and locks.
+/// An existing current directory always takes precedence; nothing is moved.
 pub fn standalone_state_dir(pkg_id: &str) -> PathBuf {
-    data_home().join(pkg_id)
+    let home = data_home();
+    let current = home.join(pkg_id);
+    if matches!(current.try_exists(), Ok(false)) {
+        if let Some(suffix) = pkg_id.strip_prefix("dev.tilo.") {
+            let legacy = home.join(format!("dev.qos.{suffix}"));
+            if legacy.is_dir() {
+                return legacy;
+            }
+        }
+    }
+    current
 }
 
 #[cfg(test)]
@@ -172,20 +179,20 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn invoked_command_reads_env() {
-        unsafe { std::env::set_var("QOS_CLI_COMMAND", "notes") };
+        unsafe { std::env::set_var("TILO_CLI_COMMAND", "notes") };
         assert_eq!(invoked_command().as_deref(), Some("notes"));
-        unsafe { std::env::remove_var("QOS_CLI_COMMAND") };
+        unsafe { std::env::remove_var("TILO_CLI_COMMAND") };
         assert!(invoked_command().is_none());
     }
 
     #[test]
     #[serial_test::serial]
     fn package_id_falls_back_to_standalone() {
-        unsafe { std::env::remove_var("QOS_PACKAGE_ID") };
-        assert_eq!(package_id(), "qos-standalone");
-        unsafe { std::env::set_var("QOS_PACKAGE_ID", "dev.example.notes") };
+        unsafe { std::env::remove_var("TILO_PACKAGE_ID") };
+        assert_eq!(package_id(), "tilo-standalone");
+        unsafe { std::env::set_var("TILO_PACKAGE_ID", "dev.example.notes") };
         assert_eq!(package_id(), "dev.example.notes");
-        unsafe { std::env::remove_var("QOS_PACKAGE_ID") };
+        unsafe { std::env::remove_var("TILO_PACKAGE_ID") };
     }
 
     #[test]
@@ -193,10 +200,37 @@ mod tests {
     fn standalone_state_dir_honours_xdg() {
         unsafe { std::env::set_var("XDG_DATA_HOME", "/tmp/xdg") };
         assert_eq!(
-            standalone_state_dir("notes.qos.dev"),
-            PathBuf::from("/tmp/xdg/notes.qos.dev")
+            standalone_state_dir("notes.tilo.dev"),
+            PathBuf::from("/tmp/xdg/notes.tilo.dev")
         );
         unsafe { std::env::remove_var("XDG_DATA_HOME") };
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn renamed_package_reuses_legacy_directory_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_DATA_HOME");
+        unsafe { std::env::set_var("XDG_DATA_HOME", tmp.path()) };
+        let old = tmp.path().join("dev.qos.notes");
+        let current = tmp.path().join("dev.tilo.notes");
+        std::fs::create_dir(&old).unwrap();
+        std::fs::write(old.join("actor"), b"original actor").unwrap();
+        assert_eq!(standalone_state_dir("dev.tilo.notes"), old);
+        assert!(!current.exists());
+        std::fs::create_dir(&current).unwrap();
+        assert_eq!(standalone_state_dir("dev.tilo.notes"), current);
+        assert_eq!(std::fs::read(old.join("actor")).unwrap(), b"original actor");
+        assert_eq!(
+            standalone_state_dir("dev.other.notes"),
+            tmp.path().join("dev.other.notes")
+        );
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+                None => std::env::remove_var("XDG_DATA_HOME"),
+            }
+        }
     }
 
     #[test]

@@ -121,7 +121,13 @@ impl crate::TextureCopy {
 
 /// Adjust `limits` to honor HAL-imposed maximums and comply with WebGPU's
 /// adapter capability guarantees.
-#[cfg_attr(any(not(any_backend), metal), allow(dead_code))]
+#[cfg_attr(
+    any(not(any_backend), metal),
+    allow(
+        dead_code,
+        reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+    )
+)]
 pub(crate) fn adjust_raw_limits(mut limits: wgt::Limits) -> wgt::Limits {
     // Apply hal limits.
     limits.max_bind_groups = limits.max_bind_groups.min(crate::MAX_BIND_GROUPS as u32);

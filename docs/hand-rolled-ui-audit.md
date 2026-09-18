@@ -5,7 +5,7 @@ interactive UI primitive instead of using the shared `ui` toolkit widget. These
 are the things that MUST be unified: a painted rect with a manual hit-test, or a
 `String` field you `push`/`pop` on raw key events, silently drops text selection,
 clipboard (Ctrl+C/V/X), keyboard activation and caret nav, the focus ring, the
-a11y tree, and `Theme`-driven colors. The rule is codified in `ui/HIG.md` §8.
+a11y tree, and `Theme`-driven colors. The rule is codified in `crates/sdk/ui-core/HIG.md` §8.
 
 **Scope.** All UI apps under `apps/`. This is now a living migration ledger,
 not the original read-only snapshot. A row is marked done only after the app
@@ -68,7 +68,7 @@ reuses ContextMenu), `video-player` (thin `VideoPlayer` shell).
 The worst class: a per-app `String` (or `chars`/`caret`) that receives characters
 directly from `Key::Character`/`Backspace`. No real selection, no clipboard, no
 IME, no a11y, no caret-by-click. Several offenders also rewrite the whole CRDT
-field every keystroke (O(n²) tombstone churn — see `ui/HIG.md` §6).
+field every keystroke (O(n²) tombstone churn — see `crates/sdk/ui-core/HIG.md` §6).
 
 **Status (search-field wave):** **feeds** and **weather** were already migrated
 to shared `TextInput` / `Autocomplete` widgets (their audit entries were stale).
@@ -251,7 +251,7 @@ widget, tracked separately).
 | `apps/imager/src/app.rs:421` wizard back/primary | imager | painted rects hit-tested | `Button` | M | MED |
 | `apps/api_tester/src/app.rs:808` `send_label` | api_tester ✅ | hand-painted Send button | `Button` | S | MED |
 | `apps/logs/src/app.rs:873` `draw_back_button` | logs | narrow-mode nav back | `Button` | S | MED |
-| `apps/word-processor/src/widget.rs:2463` `find_buttons`, `:5685` `recovery_buttons` | word-processor | find/replace + recovery-banner painted rects | `Button` | M | MED |
+| `apps/word-processor/src/find_bar.rs`, `recovery_banner.rs`, `widget.rs` inspector controls | word-processor ✅ | **DONE for ordinary controls** — shared `SearchField`/`ButtonFace`/`ColorSwatchFace`/`NumberInput`; responsive find layout; inspector semantics derive from its painted hit list and use shared synthetic focus traversal/paint; short panels use the shared scrollbar with wheel, thumb, track paging, and focus-follow. Numeric styles now inherit selection, clipboard, caret/IME, validation, clamping, steppers, and spin-button actions instead of maintaining a private text buffer. | shared controls + semantic focus + `Scrollbar` | M | HIGH |
 | `apps/snippets/src/app.rs:1545` `toolbar_button`, `expand.rs:249` copy/cancel | snippets ✅ | painted rect + hover-only hit-test | `Button` | S | MED |
 | `apps/backups/src/app.rs` restore footer + `Hit::BackupNow` | backups ✅ | **DONE where ordinary** — Restore/Cancel use shared faces; Backup Now retains its progress sliver and custom compact glyph | `ButtonFace` | S | MED |
 | `apps/notes/src/sidebar.rs:672` button chip | notes | one hand-drawn hover chip (otherwise a model app) | `Button` | S | MED |
@@ -384,7 +384,7 @@ Left for later, with the reason each isn't a clean face-swap:
 | `apps/logs/src/app.rs:625` priority threshold | logs | cumulative, per-priority-**coloured** chips — **not single-select (see status)** | `ToggleGroup` | M |
 | `apps/firewall/src/app.rs` filter/kind/proto/action | firewall ✅ | **DONE** — `draw_segmented` → `ToggleGroup::paint` (Solid) | `ToggleGroup` | M |
 | `apps/imager/src/app.rs:394` step chips | imager | wizard step selector | `Breadcrumb`/`Segmented` | M |
-| `apps/word-processor/src/widget.rs:2468` find chips | word-processor | Aa / W / .* case/word/regex toggles | `Toggle`/`segmented` | S |
+| `apps/word-processor/src/find_bar.rs` find chips | word-processor ✅ | **DONE** — shared compact toggles with full spoken labels, checked state, tooltips, keyboard traversal, and canonical activation | `ButtonFace::compact_toggle` | S |
 | `apps/hex_editor/src/view.rs:1043` search-kind chip | hex_editor | painted cycle | `segmented` | S |
 | `apps/sheets/src/app.rs:95` `SettingChip` | sheets | settings option chips | `ToggleGroup` | M |
 
@@ -597,5 +597,5 @@ ink, shadows/scrims, picker seeds, and test literals remain intentional.
 
 ---
 
-*Grade every migration on `shots`, not a green build (`ui/HIG.md` §7). When a
+*Grade every migration on `shots`, not a green build (`crates/sdk/ui-core/HIG.md` §7). When a
 migration reveals a missing capability, extend the widget — never re-fork it.*

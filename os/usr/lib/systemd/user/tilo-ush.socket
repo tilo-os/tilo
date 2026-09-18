@@ -1,0 +1,13 @@
+[Unit]
+Description=Tilo confined shell runtime activation socket
+
+[Socket]
+ListenStream=%t/tilo/services/ush.sock
+Service=tilo-ush.service
+SocketMode=0600
+DirectoryMode=0700
+Backlog=16
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

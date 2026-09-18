@@ -17,7 +17,7 @@
 # Read the result with:  journalctl -u fs-test
 set -euo pipefail
 
-echo "=== qOS OS validation ==="
+echo "=== Tilo OS validation ==="
 MOUNT_POINT="/var/workspace"
 TEST_FILE="$MOUNT_POINT/hello.txt"
 
@@ -61,7 +61,7 @@ for bin in /usr/bin/shell /usr/bin/fs \
         exit 1
     fi
 done
-# The browser is optional: an image built with QOS_WITH_BROWSER=0 ships without
+# The browser is optional: an image built with TILO_WITH_BROWSER=0 ships without
 # it (and without its WPE engine) so boot verification isn't gated on the
 # browser engine building. Still checked when it IS there — absent is allowed,
 # present-but-broken is not.
@@ -84,8 +84,8 @@ echo "--- [3/4] Portal backend registration ---"
 # race and the loser serves nobody while looking healthy. Assert the
 # definition ships and that the daemon's files are gone — a resurrected
 # activation file is the failure this guards.
-PORTAL_DEF=/usr/share/xdg-desktop-portal/portals/qos.portal
-PORTAL_DBUS_SERVICE=/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service
+PORTAL_DEF=/usr/share/xdg-desktop-portal/portals/tilo.portal
+PORTAL_DBUS_SERVICE=/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.tilo.service
 PORTAL_USER_UNIT=/usr/lib/systemd/user/shell-portal.service
 
 if [ ! -f "$PORTAL_DEF" ]; then
@@ -98,7 +98,7 @@ for f in "$PORTAL_DBUS_SERVICE" "$PORTAL_USER_UNIT"; do
         exit 1
     fi
 done
-if ! grep -q '^DBusName=org.freedesktop.impl.portal.desktop.qos$' "$PORTAL_DEF"; then
+if ! grep -q '^DBusName=org.freedesktop.impl.portal.desktop.tilo$' "$PORTAL_DEF"; then
     echo "FAIL: $PORTAL_DEF wrong DBusName"
     exit 1
 fi
@@ -106,7 +106,7 @@ echo "PASS: portal config registered and consistent"
 
 # --- 4. Compositor can bind a wayland socket -----------------------
 # Launch in --mode native, give it 10s to bind, look for the
-# "nirios compositor listening on wayland-N" line that native.rs
+# "tilo compositor listening on wayland-N" line that native.rs
 # prints to stderr. We capture both stdout and stderr.
 echo "--- [4/4] Compositor wayland-N binding ---"
 
@@ -132,4 +132,4 @@ else
 fi
 
 echo
-echo "=== All qOS OS validation checks passed! ==="
+echo "=== All Tilo OS validation checks passed! ==="

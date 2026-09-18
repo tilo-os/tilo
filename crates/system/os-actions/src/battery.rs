@@ -1,13 +1,13 @@
 //! Read-only battery diagnostics from the kernel power-supply class.
 //!
-//! Battery health is deliberately observational here.  Vendor charge-limit
+//! Battery health is observational here.  Vendor charge-limit
 //! files are not written by the desktop process: their names and semantics
 //! differ between drivers, and granting a GUI arbitrary sysfs writes would be
 //! a privilege boundary disguised as a setting.
 
 use std::path::{Path, PathBuf};
 
-pub use qos_power_mgmt::{BatteryHistory, BatteryHistoryPoint, load_battery_history};
+pub use tilo_power_mgmt::{BatteryHistory, BatteryHistoryPoint, load_battery_history};
 
 /// A normalized description of the charge-limit control the kernel or
 /// platform driver actually exposes.  Settings builds its choices from this
@@ -198,7 +198,7 @@ impl BatteryInfo {
     }
 }
 
-/// Discover the real hardware contract.  Standard power-supply attributes
+/// Discover the hardware contract.  Standard power-supply attributes
 /// win; vendor paths are used only when the kernel has not normalized the
 /// feature already.  `sys_root` is injectable so every backend is tested
 /// without touching the host.
@@ -301,13 +301,13 @@ pub fn charge_capability_from(sys_root: &Path) -> Option<ChargeCapCapability> {
 ///
 /// # Errors
 ///
-/// Returns an error message if `percent` is outside `50..=100`, or the `qos-battery-cap@`
+/// Returns an error message if `percent` is outside `50..=100`, or the `tilo-battery-cap@`
 /// service is unavailable, not authorised, or fails.
 pub fn set_charge_limit(percent: u32) -> Result<(), String> {
     if !(50..=100).contains(&percent) {
         return Err("battery charge cap must be between 50 and 100 percent".into());
     }
-    let unit = format!("qos-battery-cap@{percent}.service");
+    let unit = format!("tilo-battery-cap@{percent}.service");
     crate::process::run("systemctl", &["start", "--wait", &unit])
 }
 

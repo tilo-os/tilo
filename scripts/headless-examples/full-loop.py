@@ -7,15 +7,16 @@ snapshots, and kills it. Use this as the template for a CI smoke test
 or an AI agent's exploratory probe.
 
 Usage:
-  ./full-loop.py [/tmp/nirios-full-loop.sock]
+  ./full-loop.py [/tmp/tilo-full-loop.sock]
 
 What it does:
   1. Spawns ./target/debug/shell --backend headless with
-     QOS_TEST_CONTROL set to the socket path and DISPLAY +
+     TILO_TEST_CONTROL set to the socket path and DISPLAY +
      WAYLAND_DISPLAY unset.
   2. Waits up to 15s for the socket to appear.
   3. Lists targets, picks the workspace wheel, clicks it.
-  4. Opens the palette (Ctrl+K), types "Files", snapshots.
+  4. Opens global search (Super+K), types "Files", proves its live state,
+     waits for the transition to settle, and snapshots.
   5. Closes the palette (Escape), snapshots again.
   6. Kills the compositor + removes the socket.
 
@@ -25,16 +26,137 @@ Exits non-zero on any compositor error response or process timeout.
 """
 import os
 import pathlib
+import struct
 import subprocess
 import sys
 import time
 
 from _control import call, require_ok
 
-SOCKET = sys.argv[1] if len(sys.argv) > 1 else "/tmp/nirios-full-loop.sock"
+SOCKET = sys.argv[1] if len(sys.argv) > 1 else "/tmp/tilo-full-loop.sock"
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
-BINARY = SCRIPT_DIR / ".." / ".." / "target" / "debug" / "shell"
-BINARY = BINARY.resolve()
+BINARY = pathlib.Path(
+    os.environ.get(
+        "TILO_SHELL_BINARY",
+        SCRIPT_DIR / ".." / ".." / "target" / "debug" / "shell",
+    )
+).resolve()
+PALETTE_PNG = pathlib.Path("/tmp/full-loop-palette.png")
+FINAL_PNG = pathlib.Path("/tmp/full-loop-final.png")
+
+
+def state() -> dict:
+    response = call(SOCKET, {"op": "state_dump"})
+    if "state" not in response:
+        raise RuntimeError(f"unexpected state_dump response: {response}")
+    return response["state"]
+
+
+def palette() -> dict:
+    return state()["chrome"]["palette"]
+
+
+def wait_until(description: str, predicate, timeout: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.05)
+    raise RuntimeError(f"timed out waiting for {description}")
+
+
+def png_pixels(path: pathlib.Path) -> tuple[int, int, int, bytes]:
+    """Reject a missing, malformed, transparent, or one-colour screenshot.
+
+    This deliberately uses only the stdlib.  A PNG's compressed IDAT bytes
+    can be non-empty even when every rendered pixel is identical, so inspect
+    the decoded scanlines after undoing PNG filters.
+    """
+    import zlib
+
+    data = path.read_bytes()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise RuntimeError(f"{path} is not a PNG")
+    pos = 8
+    width = height = colour_type = bit_depth = None
+    compressed = bytearray()
+    while pos + 12 <= len(data):
+        length = struct.unpack(">I", data[pos:pos + 4])[0]
+        kind = data[pos + 4:pos + 8]
+        payload = data[pos + 8:pos + 8 + length]
+        pos += 12 + length
+        if kind == b"IHDR":
+            width, height, bit_depth, colour_type = struct.unpack(">IIBB", payload[:10])
+        elif kind == b"IDAT":
+            compressed.extend(payload)
+        elif kind == b"IEND":
+            break
+    channels = {0: 1, 2: 3, 4: 2, 6: 4}.get(colour_type)
+    if not width or not height or bit_depth != 8 or channels is None:
+        raise RuntimeError(f"{path} has unsupported or empty PNG geometry")
+    raw = zlib.decompress(bytes(compressed))
+    stride = width * channels
+    previous = bytearray(stride)
+    pixels = bytearray()
+    offset = 0
+    for _ in range(height):
+        filter_kind = raw[offset]
+        source = raw[offset + 1:offset + 1 + stride]
+        offset += stride + 1
+        row = bytearray(stride)
+        for i, value in enumerate(source):
+            left = row[i - channels] if i >= channels else 0
+            above = previous[i]
+            upper_left = previous[i - channels] if i >= channels else 0
+            if filter_kind == 0:
+                decoded = value
+            elif filter_kind == 1:
+                decoded = value + left
+            elif filter_kind == 2:
+                decoded = value + above
+            elif filter_kind == 3:
+                decoded = value + ((left + above) // 2)
+            elif filter_kind == 4:
+                p = left + above - upper_left
+                pa, pb, pc = abs(p - left), abs(p - above), abs(p - upper_left)
+                decoded = value + (left if pa <= pb and pa <= pc else above if pb <= pc else upper_left)
+            else:
+                raise RuntimeError(f"{path} uses invalid PNG filter {filter_kind}")
+            row[i] = decoded & 0xff
+        pixels.extend(row)
+        previous = row
+    return width, height, channels, bytes(pixels)
+
+
+def assert_nonblank_png(path: pathlib.Path) -> None:
+    width, height, channels, pixels = png_pixels(path)
+    colours: set[bytes] = set()
+    for i in range(0, len(pixels), channels):
+        pixel = pixels[i:i + channels]
+        if channels in (2, 4) and pixel[-1] == 0:
+            continue
+        colours.add(pixel)
+        if len(colours) >= 8:
+            return
+    raise RuntimeError(f"{path} is blank or effectively one-colour ({len(colours)} colours)")
+
+
+def assert_palette_is_visually_gone(open_path: pathlib.Path, closed_path: pathlib.Path) -> None:
+    """Prove Escape changed the rendered palette area, not only live state."""
+    ow, oh, oc, open_pixels = png_pixels(open_path)
+    cw, ch, cc, closed_pixels = png_pixels(closed_path)
+    if (ow, oh, oc) != (cw, ch, cc):
+        raise RuntimeError("open and closed screenshots use different pixel formats")
+    changed = sum(a != b for a, b in zip(open_pixels, closed_pixels, strict=True))
+    # The palette and scrim cover hundreds of thousands of channels at 1600x900.
+    # A cursor blink or antialiasing wobble changes only a tiny fraction; require
+    # a material frame change so stale retained palette pixels cannot pass.
+    minimum = max(10_000, (ow * oh * oc) // 100)
+    if changed < minimum:
+        raise RuntimeError(
+            f"palette state closed but rendered frame stayed stale: "
+            f"only {changed} of {len(open_pixels)} channels changed (need {minimum})"
+        )
 
 
 def main() -> int:
@@ -48,7 +170,7 @@ def main() -> int:
         os.unlink(SOCKET)
     except FileNotFoundError:
         pass
-    env = {**os.environ, "QOS_TEST_CONTROL": SOCKET}
+    env = {**os.environ, "TILO_TEST_CONTROL": SOCKET}
     env.pop("DISPLAY", None)
     env.pop("WAYLAND_DISPLAY", None)
     print(f"spawning {BINARY} --backend headless ...")
@@ -78,18 +200,41 @@ def main() -> int:
         require_ok(call(SOCKET, {"op": "click_named", "name": "wheel_disc"}))
         print("  clicked wheel_disc")
 
-        # 4. Ctrl+K → palette, type, snapshot.
-        require_ok(call(SOCKET, {"op": "modifiers", "ctrl": True, "shift": False, "alt": False, "logo": False}))
+        # 4. Super+K → machine-wide search, type, prove live state, snapshot.
+        require_ok(call(SOCKET, {"op": "modifiers", "ctrl": False, "shift": False, "alt": False, "logo": True}))
         require_ok(call(SOCKET, {"op": "key", "key": "k"}))
         require_ok(call(SOCKET, {"op": "modifiers", "ctrl": False, "shift": False, "alt": False, "logo": False}))
+        wait_until("global-search palette to open", lambda: palette()["visible"])
         require_ok(call(SOCKET, {"op": "type", "text": "Files"}))
-        require_ok(call(SOCKET, {"op": "snapshot", "path": "/tmp/full-loop-palette.png"}))
-        print("  /tmp/full-loop-palette.png written")
+        wait_until(
+            "palette query to become Files",
+            lambda: palette()["visible"] and palette()["query"] == "Files",
+        )
+        if state()["chrome"]["search_scope"] != "All":
+            raise RuntimeError("Super+K did not select machine-wide search scope")
+        if not any(
+            t["name"] == "command_palette_input"
+            for t in call(SOCKET, {"op": "list_targets"})["targets"]
+        ):
+            raise RuntimeError("palette is live in state but has no visible semantic target")
+        time.sleep(0.5)  # palette transition is 400ms; do not attest a cross-fade frame
+        require_ok(call(SOCKET, {"op": "snapshot", "path": str(PALETTE_PNG)}))
+        assert_nonblank_png(PALETTE_PNG)
+        print(f"  {PALETTE_PNG} written and verified")
 
         # 5. Escape, snapshot final state.
         require_ok(call(SOCKET, {"op": "key", "key": "Escape"}))
-        require_ok(call(SOCKET, {"op": "snapshot", "path": "/tmp/full-loop-final.png"}))
-        print("  /tmp/full-loop-final.png written")
+        wait_until("palette to close", lambda: not palette()["visible"])
+        if any(
+            t["name"] == "command_palette_input"
+            for t in call(SOCKET, {"op": "list_targets"})["targets"]
+        ):
+            raise RuntimeError("closed palette still exports a visible semantic input target")
+        time.sleep(0.5)  # let the close transition finish before judging pixels
+        require_ok(call(SOCKET, {"op": "snapshot", "path": str(FINAL_PNG)}))
+        assert_nonblank_png(FINAL_PNG)
+        assert_palette_is_visually_gone(PALETTE_PNG, FINAL_PNG)
+        print(f"  {FINAL_PNG} written and verified")
 
         return 0
     finally:

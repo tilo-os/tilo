@@ -21,6 +21,8 @@ use crate::delivery::Id;
 /// Domain separation for the room-id derivation. Any change here re-points every
 /// existing conversation at a room nobody is in, hence the version in the string:
 /// a future scheme bumps it instead.
+/// Keep the original protocol namespace across product renames: this value is
+/// persistent identity, not a user-facing product name.
 const ROOM_ID_DOMAIN: &[u8] = b"qos.direct-room.v1";
 
 /// A room with exactly two members — the room a direct message is held in.
@@ -72,7 +74,7 @@ impl DirectRoom {
     }
 
     /// The room's identity as a uuid string — the value that goes wherever any
-    /// other room id goes: `QOS_WORKSPACE_ID`, a `CrdtRoute`'s `cluster_id`,
+    /// other room id goes: `TILO_WORKSPACE_ID`, a `CrdtRoute`'s `cluster_id`,
     /// `shell`'s `RoomId::parse`.
     ///
     /// A domain-separated BLAKE3 digest of the sorted pair, laid out as an RFC

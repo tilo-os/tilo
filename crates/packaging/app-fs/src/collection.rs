@@ -1,18 +1,18 @@
 //! The payload Collection — a deterministic `path -> blob_hash`
 //! table.
 //!
-//! The encoding is byte-identical to the one in `qos-pkg::blobs`
-//! so a Collection blob produced by `qos-pkg pack` can be read
-//! directly by the mount. We don't pull `qos-pkg` in as a
-//! dependency here because the qos-pkg `BlobStore` trait is
+//! The encoding is byte-identical to the one in `tilo-pkg::blobs`
+//! so a Collection blob produced by `tilo-pkg pack` can be read
+//! directly by the mount. We don't pull `tilo-pkg` in as a
+//! dependency here because the tilo-pkg `BlobStore` trait is
 //! whole-blob (no `get_range`) and we want this crate's
 //! dependency tree to stay minimal — the mount has to be cheap
-//! enough that `qos-app-host` can spawn one per running app.
+//! enough that `tilo-app-host` can spawn one per running app.
 //!
 //! ## Wire format
 //!
 //! ```text
-//! MAGIC      "QOSCOL\0\0"          (8 bytes)
+//! MAGIC      "TLOCOL\0\0"          (8 bytes)
 //! count      u32 LE                (4 bytes)
 //! for each entry, sorted by path:
 //!     path-len    u32 LE           (4 bytes)
@@ -29,7 +29,7 @@ use std::collections::BTreeMap;
 
 use thiserror::Error;
 
-const MAGIC: &[u8; 8] = b"QOSCOL\0\0";
+const MAGIC: &[u8; 8] = b"TLOCOL\0\0";
 
 /// A payload Collection: payload-relative path -> BLAKE3 blob
 /// hash.

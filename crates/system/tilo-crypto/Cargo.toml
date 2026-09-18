@@ -1,0 +1,48 @@
+[package]
+name = "tilo-crypto"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Small Rust-native cryptographic helpers used by Tilo system tooling"
+
+[lib]
+name = "tilo_crypto"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-crypto"
+path = "src/main.rs"
+
+[dependencies]
+authenticode = { version = "0.6", features = ["object", "std"] }
+cms = "0.2"
+const-oid = { version = "0.9", features = ["db"] }
+der = { version = "0.7", features = ["alloc", "pem"] }
+ed25519-dalek.workspace = true
+hex.workspace = true
+libc.workspace = true
+object = { version = "0.39", default-features = false, features = ["pe", "read_core", "unaligned"] }
+p256 = { version = "0.13", features = ["pem"] }
+picky = { version = "=7.0.0-rc.26", default-features = false, features = ["pkcs7", "time_conversion", "wincert"] }
+picky-asn1 = "0.10"
+picky-asn1-der = "0.5"
+picky-asn1-x509 = "0.15"
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+rand.workspace = true
+rand10 = { package = "rand", version = "0.10" }
+ring = "0.17"
+rsa = { version = "=0.10.0-rc.18", features = ["encoding", "sha2"] }
+sha-crypt = { version = "0.6", features = ["getrandom"] }
+sha2.workspace = true
+spki = "0.7"
+time = "0.3"
+x509-parser = "0.18"
+x509-cert = { version = "0.2", features = ["pem"] }
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

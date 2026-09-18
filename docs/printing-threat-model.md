@@ -2,8 +2,8 @@
 
 Printing is the one desktop capability where the obvious implementation hands
 an untrusted application a bidirectional socket to a network daemon running as
-another user. This document says what qOS trusts CUPS with, what it does not,
-and which mechanism enforces each part.
+another user. It defines what Tilo trusts CUPS with, what it does not, and
+which mechanism enforces each part.
 
 The short version: **CUPS runs, confined, reachable only from this machine;
 applications never touch it.** An app that wants to print hands the compositor
@@ -13,14 +13,14 @@ other side of the sandbox boundary.
 ## Why CUPS is here at all
 
 There is no alternative. Every printer worth supporting speaks IPP or expects
-a CUPS filter chain, and reimplementing that is not a project qOS is going to
+a CUPS filter chain, and reimplementing that is not a project Tilo is going to
 finish. So CUPS is a necessary evil: required for the feature, and not
 something to be trusted with the run of the machine.
 
 That framing drives everything below. The goal is not "make CUPS safe" — it is
 "make a compromised CUPS not matter very much".
 
-## What the attack surface actually is
+## Attack surface
 
 CUPS is a large C codebase that, on a default install, does all of the
 following with input it did not author:
@@ -61,7 +61,7 @@ So no sandbox gets it. Instead:
 (untrusted)     (compositor)      (OS chrome)      (compositor)   (confined)
 ```
 
-The app calls `org.freedesktop.impl.portal.Print` (`shell/src/portal/print.rs`)
+The app calls `org.freedesktop.impl.portal.Print` (`crates/session/shell/src/portal/print.rs`)
 and gets exactly two abilities: hand over **bytes** via a file descriptor, and
 ask **the user** to send them somewhere. It cannot name a destination the
 user's CUPS does not already have, cannot speak IPP, and cannot see the
@@ -70,7 +70,7 @@ printer list without consent.
 Enforcement, concretely:
 
 - `Capability::Print` has **no arm in `SandboxProfile::apply_grants`**
-  (`shell/src/sandbox/profile.rs`). Granting print permission — at any scope,
+  (`crates/session/shell/src/sandbox/profile.rs`). Granting print permission — at any scope,
   however broadly — adds no bind mount. There is no code path that puts the
   cups socket inside a sandbox, which is why `os/tests/printing_isolation.sh`
   greps for one and fails if it appears.
@@ -83,12 +83,12 @@ Enforcement, concretely:
 
 ### The scheduler is confined
 
-`os/usr/lib/systemd/system/cups.service.d/qos-confinement.conf`. Fedora ships
+`os/usr/lib/systemd/system/cups.service.d/tilo-confinement.conf`. Fedora ships
 cups.service with no hardening at all; `systemd-analyze security` scores it
 **9.6 UNSAFE**. With the drop-in it scores **2.8 OK**, measured offline against
 the same unit file.
 
-The parts that matter, and what each one is actually for:
+The relevant parts and their purpose are:
 
 | Mechanism | What it denies a compromised cupsd |
 |---|---|
@@ -112,7 +112,7 @@ socket with the right ownership and `setuid()`s per job so filters run as the
 *submitting* user rather than pooling every user's documents under one
 account. `User=lp` on the unit makes it fail at startup, which surfaces as
 "printing is broken" long after whoever set it has moved on. The dedicated
-unprivileged account is applied where it actually bites — `User lp` / `Group
+unprivileged account is applied where it matters — `User lp` / `Group
 lp` in `cupsd.conf`, governing the filter processes that touch document bytes
 and vendor PPD code. Root is contained by the table above instead.
 
@@ -185,7 +185,7 @@ files, or persistence in `/usr`. On a bootc image an attacker who cannot write
 ## Residual risk, knowingly accepted
 
 1. **cupsd is root.** Confined, but root. The alternative breaks printing; see
-   above. If upstream ever supports a genuinely rootless cupsd, this is the
+   above. If upstream ever supports a rootless cupsd, this is the
    first thing to revisit.
 2. **`/etc/cups` is writable by the scheduler.** It must be, or adding a
    printer fails. An attacker who owns cupsd can therefore persist a malicious
@@ -205,23 +205,23 @@ files, or persistence in `/usr`. On a bootc image an attacker who cannot write
 
 ## Out of scope
 
-- **Printer sharing.** qOS does not serve printers to other machines. That
+- **Printer sharing.** Tilo does not serve printers to other machines. That
   would mean exposing an IPP parser to the network, which is the surface this
   document exists to avoid.
 - **Scanning.** SANE is a separate stack with its own problems; none of this
   applies to it.
 - **Print accounting, quotas, and per-user policy** beyond `MaxJobsPerUser`.
 - **Confidentiality of the printed artifact.** Once bytes reach a printer,
-  what happens to them is outside any boundary qOS controls.
+  what happens to them is outside any boundary Tilo controls.
 
 ## Where this is enforced
 
 | Property | Enforced by |
 |---|---|
 | Apps never get the cups socket | No `Capability::Print` arm in `SandboxProfile::apply_grants`; asserted by `os/tests/printing_isolation.sh` |
-| Apps print via a consented portal | `shell/src/portal/print.rs`, through `flow::resolve` |
-| Scheduler confinement | `os/usr/lib/systemd/system/cups.service.d/qos-confinement.conf` |
-| No network listener | `os/usr/lib/systemd/system/cups.socket.d/qos-local-only.conf`, `os/etc/cups/cupsd.conf` |
+| Apps print via a consented portal | `crates/session/shell/src/portal/print.rs`, through `flow::resolve` |
+| Scheduler confinement | `os/usr/lib/systemd/system/cups.service.d/tilo-confinement.conf` |
+| No network listener | `os/usr/lib/systemd/system/cups.socket.d/tilo-local-only.conf`, `os/etc/cups/cupsd.conf` |
 | Discovery off | `cups-browsed` and `avahi` not installed; `Browsing Off` |
 | Filters unprivileged | `User lp` / `Group lp` in `os/etc/cups/cupsd.conf` |
 | All of the above stay true | `os/tests/printing_isolation.sh`, which fails rather than skips when it cannot observe its subject |

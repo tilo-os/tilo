@@ -2,21 +2,21 @@ use alloc::vec::Vec;
 use core::{mem, ops::Range};
 
 use windows::{
-    core::Interface as _,
     Win32::{
         Foundation,
         Graphics::{Direct3D12, Dxgi},
     },
+    core::Interface as _,
 };
 
 use super::conv;
 use crate::{
+    AccelerationStructureEntries, CommandEncoder as _,
     auxil::{
         self,
         dxgi::{name::ObjectExt as _, result::HResult as _},
     },
     dx12::borrow_interface_temporarily,
-    AccelerationStructureEntries, CommandEncoder as _,
 };
 
 fn make_box(origin: &wgt::Origin3d, size: &crate::CopyExtent) -> Direct3D12::D3D12_BOX {

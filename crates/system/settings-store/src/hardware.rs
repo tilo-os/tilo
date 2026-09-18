@@ -276,7 +276,7 @@ pub fn display_snapshot_path() -> Option<std::path::PathBuf> {
     std::env::var_os("XDG_RUNTIME_DIR")
         .map(std::path::PathBuf::from)
         .filter(|path| path.is_absolute())
-        .map(|path| path.join("qos/display-state.json"))
+        .map(|path| path.join("tilo/display-state.json"))
 }
 
 pub fn unix_ms() -> u64 {
@@ -538,7 +538,7 @@ pub struct RichInputConfig {
     pub left_handed: bool,
     pub accel_profile: AccelProfile,
     pub key_repeat: f64,
-    /// Exact physical repeat values imported from the host desktop. A qOS
+    /// Exact physical repeat values imported from the host desktop. A Tilo
     /// repeat-slider choice clears both and resumes using `key_repeat`.
     pub key_repeat_delay_ms: Option<u32>,
     pub key_repeat_rate_hz: Option<u32>,
@@ -586,6 +586,13 @@ impl Default for RichInputConfig {
 /// widely interoperable group limit (and is already more than most people
 /// can switch between without losing track of the active source).
 pub const MAX_KEYBOARD_INPUT_SOURCES: usize = 4;
+
+/// Slowest repeat rate selectable by Tilo's single repeat-speed control.
+/// Imported host settings may still preserve zero (repeat disabled) or a
+/// higher exact rate until the person changes that control.
+pub const KEY_REPEAT_SLIDER_MIN_HZ: u32 = 10;
+/// Fastest repeat rate selectable by Tilo's single repeat-speed control.
+pub const KEY_REPEAT_SLIDER_MAX_HZ: u32 = 50;
 
 /// A validated XKB source from the per-user settings document.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -733,7 +740,7 @@ impl RichInputConfig {
     }
 
     /// XKB option fragments owned by this preference section. Layout
-    /// switching is Alt+Shift because Super+Space is qOS global search;
+    /// switching is Alt+Shift because Super+Space is Tilo global search;
     /// Compose remains independently configurable.
     pub fn xkb_options(&self) -> Vec<String> {
         let mut options = Vec::new();
@@ -1088,13 +1095,16 @@ impl Default for ShortcutConfig {
             (ShortcutAction::WorkspaceOverview, super_chord("tab")),
             (ShortcutAction::Lock, super_chord("l")),
             (ShortcutAction::QuickSettings, super_chord("q")),
-            (ShortcutAction::ShortcutHelp, super_chord("/")),
+            // A physical question-mark press reports the shifted slash key
+            // plus Shift. Keep the stored/default chord identical to that
+            // live event rather than accepting the unshifted slash instead.
+            (ShortcutAction::ShortcutHelp, super_shift_chord("/")),
             // Spatial arrows are the always-visible desktop model. Alt+Tab
             // remains an immutable conventional ring alias in the shell.
             (ShortcutAction::FocusPreviousWindow, super_chord("left")),
             (ShortcutAction::FocusNextWindow, super_chord("right")),
             // Conventional application tab cycling belongs to the focused
-            // qOS window group too. Keeping this distinct from Super+Tab
+            // Tilo window group too. Keeping this distinct from Super+Tab
             // means the overview is never opened while changing tabs.
             (ShortcutAction::PreviousTab, ctrl_shift_chord("tab")),
             (ShortcutAction::NextTab, ctrl_chord("tab")),
@@ -1372,6 +1382,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn process_start_identity_rejects_pid_reuse_shape() {
         let current = process_start_ticks(std::process::id())
             .expect("the current Linux process has /proc stat data");
@@ -1388,6 +1399,12 @@ mod tests {
             Some(stale.publisher_start_ticks)
         );
     }
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn unavailable_linux_process_identity_is_not_invented() {
+        assert_eq!(process_start_ticks(std::process::id()), None);
+    }
+
     #[test]
     fn shortcut_parser_normalises_and_rejects_plain_letters() {
         assert_eq!(KeyChord::parse("meta + K").unwrap().display(), "Super+k");
@@ -1477,7 +1494,7 @@ mod tests {
     #[serial_test::serial]
     fn saved_shortcuts_reload_as_the_same_valid_effective_config() {
         let dir = std::env::temp_dir().join(format!(
-            "qos-shortcut-save-reload-{}-{}",
+            "tilo-shortcut-save-reload-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

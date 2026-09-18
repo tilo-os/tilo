@@ -15,7 +15,7 @@
 //! handshake), the `org.freedesktop.portal.*` tree,
 //! `org.freedesktop.Notifications`, and `org.mpris.MediaPlayer2.*`;
 //! listen on a per-launcher socket under
-//! `/run/user/<uid>/qos/dbus-proxy/<pid>.sock`; and return an RAII
+//! `/run/user/<uid>/tilo/dbus-proxy/<pid>.sock`; and return an RAII
 //! guard that `SIGTERM`s the proxy and unlinks the socket on drop.
 //!
 //! `xdg-dbus-proxy` takes the upstream bus address as its first
@@ -49,12 +49,13 @@ pub const DEFAULT_FILTER_ARGS: &[&str] = &[
 /// Env-var override for the `xdg-dbus-proxy` binary path — used by the
 /// test suite (mock fixture) and installs that ship the binary
 /// somewhere non-standard.
-pub const PROXY_BIN_ENV: &str = "QOS_LAUNCHER_DBUS_PROXY_BIN";
+pub const PROXY_BIN_ENV: &str = "TILO_LAUNCHER_DBUS_PROXY_BIN";
 
-/// Locate the `xdg-dbus-proxy` binary, `None` if nothing matches
-/// (callers fall back to the raw-bind path).
+/// Locate the `xdg-dbus-proxy` binary, `None` if nothing matches. Production
+/// then leaves D-Bus unavailable; it never falls back to binding the raw
+/// session bus into an untrusted sandbox.
 ///
-/// Lookup order: `$QOS_LAUNCHER_DBUS_PROXY_BIN` (test/override),
+/// Lookup order: `$TILO_LAUNCHER_DBUS_PROXY_BIN` (test/override),
 /// `xdg-dbus-proxy` on `$PATH`,
 /// `/usr/libexec/flatpak-xdg-utils/xdg-dbus-proxy` (Fedora), then
 /// `/usr/lib/flatpak-xdg-utils/xdg-dbus-proxy` (some Debian derivatives).
@@ -86,11 +87,11 @@ pub fn find_proxy_binary() -> Option<PathBuf> {
 }
 
 /// Host-side path where the per-launcher proxy listens:
-/// `/run/user/<uid>/qos/dbus-proxy/<pid>.sock`. The `<pid>`
+/// `/run/user/<uid>/tilo/dbus-proxy/<pid>.sock`. The `<pid>`
 /// disambiguates concurrent launches.
 pub fn proxy_socket_path(uid: u32, launcher_pid: u32) -> PathBuf {
     PathBuf::from(format!(
-        "/run/user/{uid}/qos/dbus-proxy/{launcher_pid}.sock"
+        "/run/user/{uid}/tilo/dbus-proxy/{launcher_pid}.sock"
     ))
 }
 
@@ -263,7 +264,7 @@ mod tests {
     #[test]
     fn proxy_socket_path_uses_uid_and_pid() {
         let p = proxy_socket_path(1000, 4242);
-        assert_eq!(p, PathBuf::from("/run/user/1000/qos/dbus-proxy/4242.sock"));
+        assert_eq!(p, PathBuf::from("/run/user/1000/tilo/dbus-proxy/4242.sock"));
     }
 
     #[test]

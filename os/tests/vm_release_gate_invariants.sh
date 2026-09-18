@@ -5,6 +5,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 common="$repo/os/dev/_common.sh"
 vm="$repo/os/dev/vm.sh"
 generation="$repo/os/dev/next-generation.sh"
+installer_cycle="$repo/os/dev/test-installer-cycle.sh"
 
 fail=0
 ok() { printf 'ok    %s\n' "$*"; }
@@ -22,10 +23,10 @@ fi
 
 platform_probe() {
   local arch="$1"
-  QOS_DISTROBOX='' QOS_VM_ARCH="$arch" bash -c '
+  TILO_DISTROBOX='' TILO_VM_ARCH="$arch" bash -c '
     source "$1"
     printf "arch=%s\nqemu=%s\nmachine=%s\ndisplay=%s\ninput=%s\n" \
-      "$QOS_VM_ARCH" "$QOS_QEMU_SYSTEM" "$(machine_args)" \
+      "$TILO_VM_ARCH" "$TILO_QEMU_SYSTEM" "$(machine_args)" \
       "$(display_qemu_args 2d)" "$(input_qemu_args)"
   ' _ "$common"
 }
@@ -40,7 +41,7 @@ if x86_platform="$(platform_probe amd64)" \
   && grep -Fq 'qemu=qemu-system-aarch64' <<<"$arm_platform" \
   && grep -Fq 'machine=-machine virt,gic-version=max' <<<"$arm_platform" \
   && grep -Fq 'display=-device virtio-gpu-pci,' <<<"$arm_platform" \
-  && grep -Fq 'input=-device qemu-xhci -device usb-tablet' <<<"$arm_platform"; then
+  && grep -Fxq 'input=-device qemu-xhci -device usb-tablet -device usb-kbd' <<<"$arm_platform"; then
   ok 'VM platform selection maps x86 and ARM to native QEMU machines and devices'
 else
   bad 'VM platform selection can mix a release medium with another architecture'
@@ -56,23 +57,66 @@ else
   bad 'ARM firmware selection is incomplete or can claim unverified measurement'
 fi
 
-if grep -Fq 'QOS_VM_CYCLE=' "$common" \
-  && grep -Fq '$QOS_CYCLE_DIR/installer-work.qcow2' "$common" \
-  && grep -Fq '$QOS_CYCLE_DIR/target.qcow2' "$common" \
-  && grep -Fq '/qos-vm-$QOS_VM_CYCLE' "$common" \
-  && grep -Fq 'QOS_TPM_DIR="${QOS_TPM_DIR:-$QOS_RUN/tpm}"' "$common" \
-  && grep -Fq 'QOS_SECBOOT_KEYS" = "none" ] && [ -z "$QOS_VM_CYCLE"' "$common" \
+if grep -Fq 'TILO_VM_CYCLE=' "$common" \
+  && grep -Fq '$TILO_CYCLE_DIR/installer-work.qcow2' "$common" \
+  && grep -Fq '$TILO_CYCLE_DIR/target.qcow2' "$common" \
+  && grep -Fq '/tilo-vm-$TILO_VM_CYCLE' "$common" \
+  && grep -Fq 'TILO_TPM_DIR="${TILO_TPM_DIR:-$TILO_RUN/tpm}"' "$common" \
+  && grep -Fq 'TILO_SECBOOT_KEYS" = "none" ] && [ -z "$TILO_VM_CYCLE"' "$common" \
   && grep -Fq 'cmd_init_cycle()' "$vm" \
   && grep -Fq 'refusing to clear non-cycle runtime' "$vm" \
-  && grep -Fq '|| rm -r "$QOS_CYCLE_DIR"' "$vm"; then
+  && grep -Fq '|| rm -r "$TILO_CYCLE_DIR"' "$vm"; then
   ok 'named cycles isolate overlay, target, firmware runtime and TPM state'
 else
   bad 'mutable release-VM state is not scoped to one named cycle'
 fi
 
-[ "$(grep -Fc 'serial=qos-install-target' "$vm")" -ge 3 ] \
+if grep -Fq 'cmd_pointer()' "$vm" \
+  && grep -Fq 'mouse_move $qx $qy 1' "$vm" \
+  && grep -Fq 'mouse_button $mask' "$vm" \
+  && grep -Fq 'mouse_button 0' "$vm" \
+  && grep -Fq 'pointer coordinate ($x,$y) is outside' "$vm"; then
+  ok 'VM interaction helper maps guest pixels to the absolute tablet and releases clicks'
+else
+  bad 'VM interaction helper can leave buttons held or inject coordinates outside the guest mode'
+fi
+
+if grep -Fq 'cmd_wait_greeter_return()' "$vm" \
+  && grep -Fq "! pgrep -f '^/usr/bin/shell --backend drm( |$)'" "$vm" \
+  && grep -Fq 'systemctl is-active --quiet greetd.service' "$vm" \
+  && grep -Fq 'cmd_shutdown()' "$vm" \
+  && grep -Fq 'sudo systemctl poweroff' "$vm" \
+  && grep -Fq 'guest did not power off' "$vm"; then
+  ok 'VM helpers prove UI logout returned to greetd and bound clean guest shutdown'
+else
+  bad 'VM lifecycle helpers cannot distinguish logout, crash, and forced VM termination'
+fi
+
+[ "$(grep -Fc 'serial=tilo-install-target' "$vm")" -ge 3 ] \
   && ok 'the target keeps one stable serial through attach, install and reboot' \
   || bad 'the target disk serial changes across the install cycle'
+
+if grep -Fq "wait_screen 09-oobe-backup 'Back[[:space:]]+up[[:space:]]+your[[:space:]]+Tilo[[:space:]]+identity'" "$installer_cycle" \
+  && grep -Fq '"$vm" keys tab tab tab spc tab ret' "$installer_cycle" \
+  && grep -Fq "wait_screen 10-oobe-ready 'Your[[:space:]]+identity[[:space:]]+is[[:space:]]+ready'" "$installer_cycle" \
+  && grep -Fq "wait_screen 14-tour-start 'Your[[:space:]]+first[[:space:]]+five[[:space:]]+minutes'" "$installer_cycle" \
+  && grep -Fq '"$vm" keys tab tab ret' "$installer_cycle"; then
+  ok 'graphical cycle acknowledges backup loss and completes all four tutorial pages'
+else
+  bad 'graphical cycle can bypass required OOBE recovery or strand the tutorial'
+fi
+
+if grep -Fq -- '--software-tpm) software_tpm=1' "$installer_cycle" \
+  && grep -Fq 'TILO_SECBOOT_KEYS=/path/to/pre-enrolled-vars' "$installer_cycle" \
+  && grep -Fq 'Microsoft-only store do not trust the owner-signed UKI' "$installer_cycle" \
+  && grep -Fq 'TILO_INSTALLER_CYCLE_PIN:-804927' "$installer_cycle" \
+  && grep -Fq '"$vm" boot-installer "$display_arg" --tpm' "$installer_cycle" \
+  && grep -Fq '"$vm" boot-target "$display_arg" --tpm' "$installer_cycle" \
+  && grep -Fq 'did not pass verified-boot preflight' "$installer_cycle"; then
+  ok 'software-TPM graphical cycle is opt-in and fails closed without verified boot'
+else
+  bad 'software-TPM graphical cycle can claim a PIN path from an unverified boot'
+fi
 
 if ! grep -Eq 'list-tags .*--creds|--creds .*list-tags' "$generation" \
   && grep -Fq 'REGISTRY_AUTH_FILE="$auth" skopeo list-tags' "$generation" \
@@ -86,7 +130,7 @@ else
   bad 'generation lookup can expose registry credentials in process argv'
 fi
 
-bash -n "$common" "$vm" "$generation" "$repo/os/dev/assert-native-arch.sh" \
+bash -n "$common" "$vm" "$generation" "$installer_cycle" "$repo/os/dev/assert-native-arch.sh" \
   || bad 'release VM helper shell syntax is invalid'
 
 tmp="$(mktemp -d)"
@@ -99,15 +143,15 @@ mkdir -p "$tmp/aavmf-fedora" "$tmp/aavmf-debian"
 : > "$tmp/aavmf-fedora/vars-template-pflash.raw"
 : > "$tmp/aavmf-debian/AAVMF_CODE.fd"
 : > "$tmp/aavmf-debian/AAVMF_VARS.fd"
-if fedora_fw="$(QOS_DISTROBOX='' QOS_VM_ARCH=aarch64 \
-    QOS_AAVMF_DIRS="$tmp/aavmf-fedora" "$vm" firmware --no-tpm 2>/dev/null)" \
-  && debian_fw="$(QOS_DISTROBOX='' QOS_VM_ARCH=aarch64 \
-    QOS_AAVMF_DIRS="$tmp/aavmf-debian" "$vm" firmware --no-tpm 2>/dev/null)" \
+if fedora_fw="$(TILO_DISTROBOX='' TILO_VM_ARCH=aarch64 \
+    TILO_AAVMF_DIRS="$tmp/aavmf-fedora" "$vm" firmware --no-tpm 2>/dev/null)" \
+  && debian_fw="$(TILO_DISTROBOX='' TILO_VM_ARCH=aarch64 \
+    TILO_AAVMF_DIRS="$tmp/aavmf-debian" "$vm" firmware --no-tpm 2>/dev/null)" \
   && grep -Fq "code       $tmp/aavmf-fedora/QEMU_EFI-pflash.raw" <<<"$fedora_fw" \
   && grep -Fq "vars       $tmp/aavmf-fedora/vars-template-pflash.raw" <<<"$fedora_fw" \
   && grep -Fq "code       $tmp/aavmf-debian/AAVMF_CODE.fd" <<<"$debian_fw" \
   && grep -Fq "vars       $tmp/aavmf-debian/AAVMF_VARS.fd" <<<"$debian_fw" \
-  && ! QOS_DISTROBOX='' QOS_VM_ARCH=aarch64 QOS_AAVMF_DIRS="$tmp/aavmf-fedora" \
+  && ! TILO_DISTROBOX='' TILO_VM_ARCH=aarch64 TILO_AAVMF_DIRS="$tmp/aavmf-fedora" \
     "$vm" firmware --tpm >/dev/null 2>&1; then
   ok 'ARM firmware resolution works for both package families and TPM fails closed'
 else
@@ -116,27 +160,31 @@ fi
 
 cat > "$tmp/bin/skopeo" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$*" > "$QOS_TEST_ARGS"
-printf '%s\n' "$REGISTRY_AUTH_FILE" > "$QOS_TEST_AUTH_PATH"
-cp "$REGISTRY_AUTH_FILE" "$QOS_TEST_AUTH_COPY"
-[ "${QOS_TEST_FAIL:-0}" != 1 ] || exit 19
+printf '%s\n' "$*" > "$TILO_TEST_ARGS"
+printf '%s\n' "$REGISTRY_AUTH_FILE" > "$TILO_TEST_AUTH_PATH"
+cp "$REGISTRY_AUTH_FILE" "$TILO_TEST_AUTH_COPY"
+[ "${TILO_TEST_NAME_UNKNOWN:-0}" != 1 ] || {
+  echo 'Error listing repository tags: fetching tags list: name unknown' >&2
+  exit 1
+}
+[ "${TILO_TEST_FAIL:-0}" != 1 ] || exit 19
 printf '{"Tags":[]}\n'
 EOF
 chmod 0755 "$tmp/bin/skopeo"
 if result="$(
   PATH="$tmp/bin:$PATH" \
-  QOS_DISTROBOX='' \
-  QOS_GENERATION_VERIFY_KEY="$tmp/unused.pub" \
-  QOS_PUBLISH_REPO='registry.invalid/qos/qos' \
-  QOS_REGISTRY_CREDS='ci-user:do-not-leak-token' \
-  QOS_TEST_ARGS="$tmp/args" \
-  QOS_TEST_AUTH_PATH="$tmp/auth-path" \
-  QOS_TEST_AUTH_COPY="$tmp/auth-copy" \
+  TILO_DISTROBOX='' \
+  TILO_GENERATION_VERIFY_KEY="$tmp/unused.pub" \
+  TILO_PUBLISH_REPO='registry.invalid/tilo/tilo' \
+  TILO_REGISTRY_CREDS='ci-user:do-not-leak-token' \
+  TILO_TEST_ARGS="$tmp/args" \
+  TILO_TEST_AUTH_PATH="$tmp/auth-path" \
+  TILO_TEST_AUTH_COPY="$tmp/auth-copy" \
     "$generation"
 )" \
   && [ "$result" = 1 ] \
   && ! grep -Fq 'do-not-leak-token' "$tmp/args" \
-  && grep -Fq 'registry.invalid/qos/qos' "$tmp/args" \
+  && grep -Fq 'registry.invalid/tilo/tilo' "$tmp/args" \
   && grep -Fq 'Y2ktdXNlcjpkby1ub3QtbGVhay10b2tlbg==' "$tmp/auth-copy" \
   && [ ! -e "$(cat "$tmp/auth-path")" ]; then
   ok 'generation lookup securely materializes and removes explicit credentials'
@@ -145,13 +193,13 @@ else
 fi
 
 if ! PATH="$tmp/bin:$PATH" \
-    QOS_DISTROBOX='' \
-    QOS_PUBLISH_REPO='registry.invalid/qos/qos' \
-    QOS_REGISTRY_CREDS='ci-user:do-not-leak-token' \
-    QOS_TEST_ARGS="$tmp/fail-args" \
-    QOS_TEST_AUTH_PATH="$tmp/fail-auth-path" \
-    QOS_TEST_AUTH_COPY="$tmp/fail-auth-copy" \
-    QOS_TEST_FAIL=1 \
+    TILO_DISTROBOX='' \
+    TILO_PUBLISH_REPO='registry.invalid/tilo/tilo' \
+    TILO_REGISTRY_CREDS='ci-user:do-not-leak-token' \
+    TILO_TEST_ARGS="$tmp/fail-args" \
+    TILO_TEST_AUTH_PATH="$tmp/fail-auth-path" \
+    TILO_TEST_AUTH_COPY="$tmp/fail-auth-copy" \
+    TILO_TEST_FAIL=1 \
     "$generation" >/dev/null 2>&1 \
   && [ -s "$tmp/fail-auth-path" ] \
   && [ ! -e "$(cat "$tmp/fail-auth-path")" ]; then
@@ -160,21 +208,39 @@ else
   bad 'failed generation lookup retained its temporary registry auth'
 fi
 
+if result="$(
+  PATH="$tmp/bin:$PATH" \
+  TILO_DISTROBOX='' \
+  TILO_GENERATION_VERIFY_KEY="$tmp/unused.pub" \
+  TILO_PUBLISH_REPO='registry.invalid/tilo/tilo' \
+  TILO_REGISTRY_CREDS='ci-user:do-not-leak-token' \
+  TILO_ALLOW_EMPTY_SERIES=1 \
+  TILO_TEST_ARGS="$tmp/bootstrap-args" \
+  TILO_TEST_AUTH_PATH="$tmp/bootstrap-auth-path" \
+  TILO_TEST_AUTH_COPY="$tmp/bootstrap-auth-copy" \
+  TILO_TEST_NAME_UNKNOWN=1 \
+    "$generation"
+)" && [ "$result" = 1 ]; then
+  ok 'validation can bootstrap an authenticated repository with no published series'
+else
+  bad 'validation could not bootstrap a genuinely absent published series'
+fi
+
 cycle_output="$tmp/cycle-output"
 cycle_runtime="$tmp/runtime"
 mkdir -p "$cycle_runtime"
-if QOS_DISTROBOX='' QOS_INSTALLER_OUTPUT="$cycle_output" \
-    XDG_RUNTIME_DIR="$cycle_runtime" QOS_VM_CYCLE='release-42-x86_64' \
+if TILO_DISTROBOX='' TILO_INSTALLER_OUTPUT="$cycle_output" \
+    XDG_RUNTIME_DIR="$cycle_runtime" TILO_VM_CYCLE='release-42-x86_64' \
     "$vm" init-cycle >/dev/null \
   && [ -d "$cycle_output/vm-cycles/release-42-x86_64" ] \
-  && [ -d "$cycle_runtime/qos-vm-release-42-x86_64" ]; then
+  && [ -d "$cycle_runtime/tilo-vm-release-42-x86_64" ]; then
   touch "$cycle_output/vm-cycles/release-42-x86_64/stale-target"
-  touch "$cycle_runtime/qos-vm-release-42-x86_64/stale-tpm"
-  if QOS_DISTROBOX='' QOS_INSTALLER_OUTPUT="$cycle_output" \
-      XDG_RUNTIME_DIR="$cycle_runtime" QOS_VM_CYCLE='release-42-x86_64' \
+  touch "$cycle_runtime/tilo-vm-release-42-x86_64/stale-tpm"
+  if TILO_DISTROBOX='' TILO_INSTALLER_OUTPUT="$cycle_output" \
+      XDG_RUNTIME_DIR="$cycle_runtime" TILO_VM_CYCLE='release-42-x86_64' \
       "$vm" init-cycle >/dev/null \
     && [ ! -e "$cycle_output/vm-cycles/release-42-x86_64/stale-target" ] \
-    && [ ! -e "$cycle_runtime/qos-vm-release-42-x86_64/stale-tpm" ]; then
+    && [ ! -e "$cycle_runtime/tilo-vm-release-42-x86_64/stale-tpm" ]; then
     ok 'cycle initialization removes stale disk, TPM and firmware state'
   else
     bad 'cycle initialization retained stale mutable state'
@@ -182,9 +248,9 @@ if QOS_DISTROBOX='' QOS_INSTALLER_OUTPUT="$cycle_output" \
 else
   bad 'cycle initialization did not create isolated storage and runtime roots'
 fi
-if ! QOS_DISTROBOX='' QOS_INSTALLER_OUTPUT="$cycle_output" \
-    QOS_RUN='/' XDG_RUNTIME_DIR="$cycle_runtime" \
-    QOS_VM_CYCLE='release-unsafe-runtime' \
+if ! TILO_DISTROBOX='' TILO_INSTALLER_OUTPUT="$cycle_output" \
+    TILO_RUN='/' XDG_RUNTIME_DIR="$cycle_runtime" \
+    TILO_VM_CYCLE='release-unsafe-runtime' \
     "$vm" init-cycle >/dev/null 2>&1; then
   ok 'cycle initialization refuses a non-cycle runtime path'
 else

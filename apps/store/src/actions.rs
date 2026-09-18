@@ -2,9 +2,9 @@
 //! launcher-issued app-host capability; this sandbox never discovers or
 //! executes host package-management binaries.
 //!
-//! The qOS side deliberately has **no "Install" button**. `Open`
+//! The Tilo side deliberately has **no "Install" button**. `Open`
 //! fetches the package the first time and launches it every time;
-//! `Mark installed` (pin) is the separate, optional step that keeps an
+//! `Keep on device` (pin) is the separate, optional step that keeps an
 //! app and ranks it first. app-host binds the download to the signed
 //! catalogue's root, publisher, app id, version, and size before extracting.
 
@@ -77,7 +77,7 @@ pub fn download_qpkg(url: &str, dest: &Path, expected_size: u64) -> Result<u64, 
         return Err("package URL must be HTTPS without credentials or a fragment".into());
     }
     let client = reqwest::blocking::Client::builder()
-        .user_agent("qos-store/0.1")
+        .user_agent("tilo-store/0.1")
         .timeout(Duration::from_secs(120))
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -112,7 +112,7 @@ pub fn download_qpkg(url: &str, dest: &Path, expected_size: u64) -> Result<u64, 
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
     }
-    std::fs::write(dest, &bytes).map_err(|e| format!("write {}: {e}", dest.display()))?;
+    atomic_file::write(dest, &bytes).map_err(|e| format!("write {}: {e}", dest.display()))?;
     Ok(bytes.len() as u64)
 }
 
@@ -122,7 +122,7 @@ pub fn download_qpkg(url: &str, dest: &Path, expected_size: u64) -> Result<u64, 
 /// downloaded `.qpkg` is written before install; pass
 /// [`qpkg_staging_dir`] in production.
 ///
-/// For `Open`/`Update` on an uncached qOS app this is: download →
+/// For `Open`/`Update` on an uncached Tilo app this is: download →
 /// app-host verified install → app-host launch
 /// (launch). For an already-cached app `Open` skips straight to the
 /// launch. Every subprocess result is folded into the returned
@@ -141,19 +141,19 @@ pub fn execute_with_host(
     staging_dir: &Path,
 ) -> ActionOutcome {
     match (action, &item.source) {
-        (ActionKind::Open, StoreSource::Qos { .. })
-        | (ActionKind::Update, StoreSource::Qos { .. }) => {
-            open_qos(host, item, action, staging_dir)
+        (ActionKind::Open, StoreSource::Tilo { .. })
+        | (ActionKind::Update, StoreSource::Tilo { .. }) => {
+            open_tilo(host, item, action, staging_dir)
         }
-        (ActionKind::Remove, StoreSource::Qos { .. }) => qos_existing(host, item, |host, id| {
+        (ActionKind::Remove, StoreSource::Tilo { .. }) => tilo_existing(host, item, |host, id| {
             host.remove(id).map(|()| "Removed app.".into())
         }),
-        (ActionKind::MarkInstalled, StoreSource::Qos { .. }) => {
-            qos_existing(host, item, |host, id| {
+        (ActionKind::MarkInstalled, StoreSource::Tilo { .. }) => {
+            tilo_existing(host, item, |host, id| {
                 host.pin(id, true).map(|()| "Marked installed.".into())
             })
         }
-        (ActionKind::Unmark, StoreSource::Qos { .. }) => qos_existing(host, item, |host, id| {
+        (ActionKind::Unmark, StoreSource::Tilo { .. }) => tilo_existing(host, item, |host, id| {
             host.pin(id, false).map(|()| "Unmarked app.".into())
         }),
         (ActionKind::FlatpakInstall, StoreSource::Flathub) => {
@@ -195,8 +195,8 @@ pub fn execute_with_host(
     }
 }
 
-/// The qOS `Open` / `Update` flow: fetch-if-needed, then launch.
-fn open_qos(
+/// The Tilo `Open` / `Update` flow: fetch-if-needed, then launch.
+fn open_tilo(
     host: Option<&app_host::client::BlockingClient>,
     item: &StoreItem,
     action: ActionKind,
@@ -295,7 +295,7 @@ fn host_result(
     }
 }
 
-fn qos_existing(
+fn tilo_existing(
     host: Option<&app_host::client::BlockingClient>,
     item: &StoreItem,
     action: impl FnOnce(
@@ -324,9 +324,9 @@ mod tests {
     use super::*;
     use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
 
-    fn qos_item(name: &str, installed: InstalledState) -> StoreItem {
+    fn tilo_item(name: &str, installed: InstalledState) -> StoreItem {
         StoreItem {
-            id: format!("dev.qos.{}", name.to_ascii_lowercase()),
+            id: format!("dev.tilo.{}", name.to_ascii_lowercase()),
             name: name.into(),
             description: String::new(),
             categories: vec![],
@@ -335,8 +335,8 @@ mod tests {
             homepage_url: None,
             source_url: None,
             install_ref_path: None,
-            source: StoreSource::Qos {
-                registry_name: "qOS".into(),
+            source: StoreSource::Tilo {
+                registry_name: "Tilo".into(),
             },
             trust: StoreTrust::PublisherSigned,
             versions: vec![StoreItemVersion {
@@ -385,8 +385,8 @@ mod tests {
 
     #[test]
     fn open_without_host_capability_fails_without_spawning_anything() {
-        // A qOS item whose registry entry lost its download URL.
-        let mut item = qos_item("Notes", InstalledState::Not);
+        // A Tilo item whose registry entry lost its download URL.
+        let mut item = tilo_item("Notes", InstalledState::Not);
         item.versions[0].download_url = None;
         let out = execute(&item, ActionKind::Open, Path::new("/tmp"));
         assert!(!out.ok);

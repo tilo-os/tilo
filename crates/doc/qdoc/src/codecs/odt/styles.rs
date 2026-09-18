@@ -1,7 +1,7 @@
 //! Parse ODF styles — named styles from `styles.xml` and automatic styles from
-//! `content.xml` — into a registry the body parser resolves against. Real `.odt`
+//! `content.xml` — into a registry the body parser resolves against. `.odt`
 //! files keep most formatting (headings, bold, fonts, list numbering) in named
-//! styles, so resolving them is what makes real documents import faithfully.
+//! styles, which are resolved before body content is imported.
 
 use crate::document::MarkValue;
 use crate::schema::{

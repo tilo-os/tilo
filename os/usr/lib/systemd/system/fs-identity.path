@@ -1,16 +1,16 @@
 [Unit]
 Description=Start QuickFS when the certified device identity is created
-Documentation=https://github.com/nirios/quickdesktop
+Documentation=https://github.com/tilo/tilo
 ConditionPathExists=/dev/fuse
-# The live installer intentionally has no durable identity. qos-install removes
+# The live installer intentionally has no durable identity. tilo-install removes
 # this sealed marker from the installed target before its first boot.
-ConditionKernelCommandLine=!qos.install
+ConditionKernelCommandLine=!tilo.install
 
 [Path]
 # Watch for creation/change rather than a permanently true PathExists predicate.
-# Once fs.service starts, genuine daemon failures remain governed by its
+# Once fs.service starts, daemon failures remain governed by its
 # RestartSec backoff instead of being immediately retriggered by this path unit.
-PathChanged=/var/lib/qos/device/cert.bin
+PathChanged=/var/lib/tilo/device/cert.bin
 Unit=fs.service
 
 [Install]

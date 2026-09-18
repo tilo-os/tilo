@@ -1,0 +1,65 @@
+# Retained ARM image finalization worker
+
+`development-finalize.yml` is manual and must not be dispatched until the raw
+artifact exists and the operator is ready to service signing requests. It uses
+the existing `runner-disk-100g-arm64` disposable CI guest and native Podman overlay.
+It does not run the compile driver, generate signing keys, or create installation
+disks. The CI guest has its existing block-backed scratch disk; it is not an
+eligible supervised installation-disk worker.
+
+The workflow pins the public tools image/config and original source4583. Supply
+the reviewed full helper commit and exact SHA256 of the request JSON. The helper
+and source checkouts are checked for revision and tracked modifications, archived
+without `.git`, and stamped for the finalizer. Controller and helpers copy only
+`os`; source is copied once. No image or dependency build occurs.
+
+## Operator handshake
+
+1. Prepare the validated retained receipt and original/new public trust bundles
+   before dispatch. Keep signing keys and used-request state on the operator.
+2. Observe `worker-identity.json` in the live job output: full inner Docker ID,
+   image config ID, StartedAt and request SHA256. Independently bind the enclosing
+   Kubernetes pod UID, runtime, DinD container identity and these inner fields.
+   A container name alone is insufficient. Use the nested Docker signing-spool
+   transport with before/after identity checks.
+3. Within five minutes, copy public files to
+   `/work/inputs/retained-rootfs.json`, `/work/inputs/original-public` and
+   `/work/inputs/new-public`. Install the validated external signer bridge under
+   `/var/lib/tilo-signing-bridge`, with its actual runtime context and private
+   directory modes. This directory contains public configuration and requests,
+   never private signing keys. The launcher supplies scoped registry auth
+   privately from the existing CI login.
+4. After pinning and validating the worker and bridge, atomically publish the
+   root-owned regular `/work/operator-ready` containing the request SHA256.
+   The launcher checks native overlay and trusted writable directories before
+   waiting, then invokes `finalize-development-rootfs.py --helpers /work/helpers
+   --request /work/finalization-request.json --evidence /evidence` exactly once.
+5. Service external signing through the bound transport. The driver must publish
+   its verified image before success; a local image ID is insufficient. The
+   public `08-published.json` identifies the immutable result. Apply local Cosign
+   signatures and fresh verification to that immutable result separately.
+
+`/var/lib` is a writable root-owned0755 operation-scratch volume, distinct from
+the nested image-store volume. `/evidence` is root-owned0700, matching the driver.
+No host directory or Docker socket enters the tools container. Its privilege is
+confined to the existing disposable CI guest, as in the compile workflow.
+
+## Completion and failure
+
+The finalizer gets a bounded lifetime, not automatic retries. Only fixed public
+JSON receipts (including bounded pending signing metadata) are exported. Tar
+transport itself is byte/time limited; symlinks, multiple members and oversized
+files are rejected before export. No signing inputs, full workspace, raw logs,
+registry credentials or keys are uploaded.
+
+Cleanup always attempts the exact created Docker ID and only volumes created by
+this invocation; `cleanup.json` lists failures. Existing resource names cause
+rejection and are never adopted or deleted. CI teardown can also destroy the
+guest: no image-store persistence is promised. On interruption, inspect public
+receipts and resolve the local signer's pending/used state before explicitly
+starting another job. Do not blindly replay signing requests. Repeating cheap
+finalization stages is acceptable; recompiling native applications is unnecessary.
+
+Contract tests: `python3 os/tests/test_finalization_worker.py`. These test input,
+argv, directory-mode, bounded-receipt and cleanup behavior; they do not establish
+that a full remote finalization or OS boot has succeeded.

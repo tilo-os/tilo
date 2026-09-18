@@ -1,0 +1,52 @@
+[Unit]
+Description=Tilo complete authenticated filesystem replica
+After=network-online.target tilo-relay-firstboot.service
+Wants=network-online.target
+Requires=tilo-relay-firstboot.service
+Requires=tilo-relay-state-migrate.service
+After=tilo-relay-state-migrate.service
+After=tilo-relay.service
+BindsTo=tilo-relay.service
+ConditionPathExists=/etc/tilo/home-peer.toml
+ConditionPathExists=!/var/lib/tilo-relay/decommissioned
+
+[Service]
+Type=simple
+User=tilo-relay
+Group=tilo-relay
+SupplementaryGroups=tilo-identity
+ExecStart=/usr/bin/fs replica --config /etc/tilo/home-peer.toml
+Restart=always
+RestartSec=3
+LimitCORE=0
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+NoNewPrivileges=yes
+ReadOnlyPaths=/etc/tilo /var/lib/tilo
+ReadWritePaths=/var/lib/tilo/full-replica
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+KeyringMode=private
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallFilter=~@clock @debug @keyring @module @mount @obsolete @raw-io @reboot @resources @swap
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

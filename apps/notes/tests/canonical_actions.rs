@@ -4,7 +4,7 @@ use notes::{
     actions::{self, NotesAction},
     doc::NotesDoc,
 };
-use qos_actions::Action;
+use tilo_actions::Action;
 
 // Catches metadata-only/Markdown copies, lost native marks, wrong link remaps,
 // reused identifiers and nondeterministic replay.
@@ -48,16 +48,16 @@ fn duplicate_subtree_roundtrips_and_preserves_rich_native_content() {
         .unwrap();
     let mut a = doc.clone();
     let mut b = doc.clone();
-    let mut registry = qos_actions::ActionRegistry::new();
+    let mut registry = tilo_actions::ActionRegistry::new();
     actions::register(&mut registry);
-    let dispatched = qos_actions::dispatch(
+    let dispatched = tilo_actions::dispatch(
         &mut a,
         &action,
         encoded,
-        &mut qos_actions::LocalTransport::new(),
+        &mut tilo_actions::LocalTransport::new(),
     )
     .unwrap();
-    qos_actions::replay(&mut b, dispatched.envelope(), &registry).unwrap();
+    tilo_actions::replay(&mut b, dispatched.envelope(), &registry).unwrap();
     assert_eq!(a.get_heads(), b.get_heads());
     let projected = notes::notebook::project(&a, None).unwrap();
     assert_eq!(projected.pages().len(), 5);
@@ -453,7 +453,7 @@ fn app_and_driver_use_real_notes_registry_and_revoked_authority_refuses() {
         b.invoke_bound_action(
             &ui::bound_dispatch::BoundActionAddress {
                 instance_id: 12,
-                address: qos_actions::ActionAddress::new(
+                address: tilo_actions::ActionAddress::new(
                     actions::page_resource_id(f.child),
                     "rename"
                 )
@@ -466,7 +466,7 @@ fn app_and_driver_use_real_notes_registry_and_revoked_authority_refuses() {
         b.invoke_bound_action_confirmed(
             &ui::bound_dispatch::BoundActionAddress {
                 instance_id: 12,
-                address: qos_actions::ActionAddress::new(
+                address: tilo_actions::ActionAddress::new(
                     actions::page_resource_id(f.child),
                     "delete"
                 )
@@ -515,16 +515,16 @@ fn tree_update_is_atomic_exact_and_replayable_without_touching_rich_content() {
     };
     let mut a = doc.clone();
     let mut b = doc.clone();
-    let dispatched = qos_actions::dispatch(
+    let dispatched = tilo_actions::dispatch(
         &mut a,
         &action,
         actions::encode(&action),
-        &mut qos_actions::LocalTransport::new(),
+        &mut tilo_actions::LocalTransport::new(),
     )
     .unwrap();
-    let mut registry = qos_actions::ActionRegistry::new();
+    let mut registry = tilo_actions::ActionRegistry::new();
     actions::register(&mut registry);
-    qos_actions::replay(&mut b, dispatched.envelope(), &registry).unwrap();
+    tilo_actions::replay(&mut b, dispatched.envelope(), &registry).unwrap();
     assert_eq!(a.get_heads(), b.get_heads());
     notes::notebook::validate(&a).unwrap();
     for page in [f.root, f.child, f.empty] {
@@ -628,7 +628,7 @@ fn bound_views_stale_page_refusal_and_close_reopen_keep_other_instance_live() {
     invoke_confirmed(&mut b, 12, actions::page_resource_id(f.child), "delete");
     let denied = ui::bound_dispatch::BoundActionAddress {
         instance_id: 11,
-        address: qos_actions::ActionAddress::new(actions::page_resource_id(f.child), "rename"),
+        address: tilo_actions::ActionAddress::new(actions::page_resource_id(f.child), "rename"),
     };
     assert!(
         a.invoke_bound_action(
@@ -648,7 +648,7 @@ fn bound_views_stale_page_refusal_and_close_reopen_keep_other_instance_live() {
     close_driver(&mut a);
     let stale = ui::bound_dispatch::BoundActionAddress {
         instance_id: 11,
-        address: qos_actions::ActionAddress::new(actions::page_resource_id(f.root), "rename"),
+        address: tilo_actions::ActionAddress::new(actions::page_resource_id(f.root), "rename"),
     };
     let mut reopened = driver(&f, 11, &checkout);
     assert!(
@@ -1315,7 +1315,7 @@ fn assert_open_tag_view(
     a.invoke_bound_action(
         &ui::bound_dispatch::BoundActionAddress {
             instance_id: 11,
-            address: qos_actions::ActionAddress::new(actions::tag_resource_id(tag), "open"),
+            address: tilo_actions::ActionAddress::new(actions::tag_resource_id(tag), "open"),
         },
         &serde_json::Map::new(),
     )

@@ -4,15 +4,16 @@
 use crate::document::{DocError, MarkSpan};
 use crate::schema::{
     ATTR_BLOB_BYTES, ATTR_BLOB_H, ATTR_BLOB_MIME, ATTR_BLOB_W, BLOB_H, BLOB_LEN, BLOB_MIME, BLOB_W,
-    BLOCK_ATTRS, BLOCK_CHILDREN, BLOCK_KIND, BLOCK_ORDER, BLOCK_TEXT, CHANGE_AUTHOR, CHANGE_DATE,
-    CHANGE_KIND, COMMENT_AUTHOR, COMMENT_BLOCKS, COMMENT_DATE, COMMENT_REPLY_AUTHOR,
-    COMMENT_REPLY_BLOCKS, COMMENT_REPLY_DATE, COMMENT_REPLY_PARENT, CROSS_REF_PREFIX,
-    DEFAULT_COLUMNS, FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, HEADING_REF_PREFIX, KEY_BLOBS,
-    KEY_BLOCKS, KEY_CHANGES, KEY_COMMENTS, KEY_FOOTER, KEY_HEADER, KEY_META, KEY_NOTES,
-    KEY_PRESERVED, KEY_PROPS, KEY_SCHEMA, KEY_SCHEMA_VERSION, KEY_STYLES, MARK_BOOKMARK,
-    MARK_COMMENT, MARK_DEL, MARK_FIELD, MARK_INS, MARK_LINK, MARK_NOTE_REF, META_COLUMN_GAP,
-    META_COLUMNS, META_LANGUAGE, NOTE_BLOCKS, NOTE_KIND, NOTE_KIND_ENDNOTE, NOTE_KIND_FOOTNOTE,
-    PRESERVED_SEG_BYTES, PRESERVED_SEG_ORD, SCHEMA_ID, SCHEMA_VERSION,
+    BLOCK_ATTRS, BLOCK_CHILDREN, BLOCK_KIND, BLOCK_ORDER, BLOCK_TEXT, BLOCK_TOMBSTONE_PREFIX,
+    CHANGE_AUTHOR, CHANGE_DATE, CHANGE_KIND, COMMENT_AUTHOR, COMMENT_BLOCKS, COMMENT_DATE,
+    COMMENT_REPLY_AUTHOR, COMMENT_REPLY_BLOCKS, COMMENT_REPLY_DATE, COMMENT_REPLY_PARENT,
+    COMMENT_TOMBSTONE_PREFIX, CROSS_REF_PREFIX, DEFAULT_COLUMNS, FIELD_PAGE_NUMBER,
+    FIELD_PLACEHOLDER, HEADING_REF_PREFIX, KEY_BLOBS, KEY_BLOCKS, KEY_CHANGES, KEY_COMMENTS,
+    KEY_FOOTER, KEY_HEADER, KEY_META, KEY_NOTES, KEY_PRESERVED, KEY_PROPS, KEY_SCHEMA,
+    KEY_SCHEMA_VERSION, KEY_STYLES, MARK_BOOKMARK, MARK_COMMENT, MARK_DEL, MARK_FIELD, MARK_INS,
+    MARK_LINK, MARK_NOTE_REF, META_COLUMN_GAP, META_COLUMNS, META_LANGUAGE, NOTE_BLOCKS, NOTE_KIND,
+    NOTE_KIND_ENDNOTE, NOTE_KIND_FOOTNOTE, PRESERVED_SEG_BYTES, PRESERVED_SEG_ORD, SCHEMA_ID,
+    SCHEMA_VERSION, STYLE_TOMBSTONE_PREFIX,
 };
 use crate::snapshot::{AttrVal, BlockView, DocSnapshot};
 use automerge::marks::{ExpandMark, Mark};
@@ -131,6 +132,25 @@ pub struct IdGen {
     next: Option<u64>,
     /// In-memory block-order index (see [`OrderIndex`]); private bookkeeping carried on `IdGen` since it threads through every `DocMut`.
     order: OrderIndex,
+}
+
+/// Clone for transactional staging against a cloned document, with a fresh
+/// derived ordering cache. On success the candidate document and generator must
+/// replace their originals together; on failure discard both candidates.
+///
+/// The original and clone share an actor and next counter. They must never be
+/// used as two concurrently allocating live generators: that would reuse durable
+/// identifiers. Independent replicas require distinct actor identities.
+impl Clone for IdGen {
+    fn clone(&self) -> Self {
+        Self {
+            actor_hex: self.actor_hex.clone(),
+            // Deleted IDs remain part of durable history. A staged edit must
+            // inherit the counter rather than reseeding from visible objects.
+            next: self.next,
+            order: OrderIndex::default(),
+        }
+    }
 }
 
 /// The finite per-actor block-id namespace has been consumed.
@@ -638,8 +658,22 @@ fn comments_obj(doc: &AutoCommit, c: &Containers) -> Option<ObjId> {
         .or_else(|| opt_map_at(doc, &c.root, KEY_COMMENTS))
 }
 
+/// A grow-only resolution marker. Unlike deleting the comment map entry alone,
+/// this remains observable when a divergent replica concurrently authors a
+/// reply against its still-live copy of the thread.
+pub fn comment_is_tombstoned(doc: &AutoCommit, c: &Containers, id: &str) -> bool {
+    let Some(comments) = comments_obj(doc, c) else {
+        return false;
+    };
+    let key = format!("{COMMENT_TOMBSTONE_PREFIX}{id}");
+    matches!(doc.get(&comments, key), Ok(Some((value, _))) if value.to_bool() == Some(true))
+}
+
 /// Resolve a single comment's sub-map object by id.
 fn comment_obj(doc: &AutoCommit, c: &Containers, id: &str) -> Option<ObjId> {
+    if comment_is_tombstoned(doc, c, id) {
+        return None;
+    }
     let comments = comments_obj(doc, c)?;
     match doc.get(&comments, id) {
         Ok(Some((Value::Object(ObjType::Map), oid))) => Some(oid),
@@ -695,7 +729,8 @@ pub fn comment_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
             let mut ids: Vec<String> = doc
                 .keys(&comments)
                 .filter(|id| {
-                    matches!(doc.get(&comments, id), Ok(Some((Value::Object(ObjType::Map), oid))) if !matches!(doc.get(&oid, COMMENT_REPLY_PARENT), Ok(Some(_))))
+                    !comment_is_tombstoned(doc, c, id)
+                        && matches!(doc.get(&comments, id), Ok(Some((Value::Object(ObjType::Map), oid))) if !matches!(doc.get(&oid, COMMENT_REPLY_PARENT), Ok(Some(_))))
                 })
                 .collect();
             ids.sort();
@@ -1652,12 +1687,18 @@ fn read_style_props(doc: &AutoCommit, style_obj: &ObjId) -> BTreeMap<String, Att
 pub fn style_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
     doc.keys(&c.styles)
         .filter(|id| {
-            matches!(
-                doc.get(&c.styles, id),
-                Ok(Some((Value::Object(ObjType::Map), _)))
-            )
+            !style_is_tombstoned(doc, c, id)
+                && matches!(
+                    doc.get(&c.styles, id),
+                    Ok(Some((Value::Object(ObjType::Map), _)))
+                )
         })
         .collect()
+}
+
+pub fn style_is_tombstoned(doc: &AutoCommit, c: &Containers, id: &str) -> bool {
+    let key = format!("{STYLE_TOMBSTONE_PREFIX}{id}");
+    matches!(doc.get(&c.styles, key), Ok(Some((value, _))) if value.to_bool() == Some(true))
 }
 
 /// The scalar properties of a single style (`name`/`font`/`size`/… → value), or an empty map if the style id is unknown.
@@ -2099,6 +2140,15 @@ impl DocMut<'_> {
         self.doc
             .put_object(&self.c.root, KEY_COMMENTS, ObjType::Map)
             .unwrap()
+    }
+
+    /// Permanently resolve a comment id. The grow-only marker gives delete-wins
+    /// semantics when a reply is authored against a divergent copy of the
+    /// thread and merged later.
+    pub fn tombstone_comment(&mut self, comment_id: &str) {
+        let comments = self.comments_container();
+        let key = format!("{COMMENT_TOMBSTONE_PREFIX}{comment_id}");
+        let _ = self.doc.put(&comments, key, true);
     }
 
     /// Create a new comment with an `author`, a `date` string, and an empty block sequence; returns its
@@ -2560,6 +2610,19 @@ impl DocMut<'_> {
         self.forget_order(&container, id);
     }
 
+    /// Remove one structural block and leave a grow-only semantic tombstone in
+    /// the same region container. Action replay uses this for delete-wins
+    /// behavior against divergent edits of the removed object.
+    pub fn tombstone_block_in(&mut self, region: Region, id: &str) {
+        let Some(container) = region_obj(self.doc, self.c, region) else {
+            return;
+        };
+        let key = format!("{BLOCK_TOMBSTONE_PREFIX}{id}");
+        let _ = self.doc.put(&container, key, true);
+        let _ = self.doc.delete(&container, id);
+        self.forget_order(&container, id);
+    }
+
     /// Move block `id` to a new position, ordered directly after `after` (or first, when `after` is `None`).
     ///
     /// # Panics
@@ -2699,6 +2762,13 @@ impl DocMut<'_> {
     /// Remove a named style from the styles container.
     pub fn remove_style(&mut self, id: &str) {
         let _ = self.doc.delete(&self.c.styles, id);
+    }
+
+    /// Permanently delete a custom style id across divergent replicas.
+    pub fn tombstone_style(&mut self, id: &str) {
+        let key = format!("{STYLE_TOMBSTONE_PREFIX}{id}");
+        let _ = self.doc.put(&self.c.styles, key, true);
+        self.remove_style(id);
     }
 
     /// Change a block's kind (e.g. `paragraph` ↔ `heading` ↔ `list_item`).

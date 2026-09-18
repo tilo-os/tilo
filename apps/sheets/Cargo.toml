@@ -17,12 +17,13 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+atomic-file = { path = "../../crates/system/atomic-file" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-# One owner for ~/.config/qos/settings.json.
+# One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../crates/system/settings-store" }
-# The qOS action model: doc-mutating operations are replayable, undoable actions.
-qos-actions = { path = "../../crates/collab/actions" }
-ui = { package = "qos-app", path = "../../crates/app/qos-app", features = ["portal"] }
+# The Tilo action model: doc-mutating operations are replayable, undoable actions.
+tilo-actions = { path = "../../crates/collab/actions" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

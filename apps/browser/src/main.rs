@@ -1,10 +1,6 @@
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
+// Apps run in isolated processes, so app-local arithmetic checks are relaxed.
+// Panic-producing lints remain denied; shared crates retain the full lint set
+// because a fault there can affect the session or every app.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -25,8 +21,8 @@
 //   * `--shots-live <PATH> [--url <URL>]` —
 //     boot the real Chromium engine headless, load `URL` over the
 //     network, wait for the painted page, and render chrome + live page
-//     into a PNG. End-to-end verification of the engine → frame →
-//     widget → offscreen-render pipeline without a window.
+//     into a PNG, covering the engine → frame → widget → offscreen-render
+//     pipeline without a window.
 #![cfg_attr(
     test,
     allow(
@@ -77,7 +73,7 @@ pub fn main() {
     // zero-copy dmabuf path (opt-in) keeps hardware. Overridable by setting
     // the var yourself. wgpu (the chrome) uses Vulkan, so it's unaffected.
     #[cfg(feature = "wpe")]
-    if std::env::var_os("QOS_WEBVIEW_DMABUF").is_none()
+    if std::env::var_os("TILO_WEBVIEW_DMABUF").is_none()
         && std::env::var_os("LIBGL_ALWAYS_SOFTWARE").is_none()
     {
         // Safe: called at the very top of `main`, before any thread (or the
@@ -86,7 +82,7 @@ pub fn main() {
     }
 
     ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("dev.qos.browser", browser_root)
+        &LaunchSpec::new_with_args("dev.tilo.browser", browser_root)
             .runtime_attachment(|args| !launch_browsing_mode(args).is_private())
             .shot_handler(render_shot)
             .open_state_with_args(open_browser_state)
@@ -102,6 +98,8 @@ pub fn main() {
                 "--shots-library",
                 "--shots-tabs",
                 "--library-section",
+                "--library-filter",
+                "--download-state",
                 "--audit-state",
                 "--url",
                 "--size",
@@ -294,10 +292,10 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
     let engine = widget.engine_handle();
 
     // Zero-copy GPU compositing: when the WebView engine exports dmabuf
-    // frames (QOS_WEBVIEW_DMABUF=1), install a render-thread hook that
+    // frames (TILO_WEBVIEW_DMABUF=1), install a render-thread hook that
     // blits the imported texture over the content rect. A no-op otherwise.
     #[cfg(feature = "wpe")]
-    if std::env::var_os("QOS_WEBVIEW_DMABUF").is_some() {
+    if std::env::var_os("TILO_WEBVIEW_DMABUF").is_some() {
         ui::render_thread::set_frame_post_processor(Box::new(
             browser::compositor::WebViewCompositor::new(
                 engine.clone(),
@@ -306,7 +304,7 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
         ));
     }
 
-    let (state, autosave) = open_browser_state("dev.qos.browser", args);
+    let (state, autosave) = open_browser_state("dev.tilo.browser", args);
     let mode = prepare_launch(args).map_err(LaunchError::Operation)?.mode;
     let mut app = if mode.is_private() {
         ui::App::from_scoped_parts_local(wake_scope, state, Box::new(widget))
@@ -328,7 +326,7 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
 
 #[allow(
     clippy::too_many_lines,
-    reason = "The explicit visual-audit command routing keeps each deterministic state discoverable."
+    reason = "the deterministic screenshot command routing is kept together"
 )]
 fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
     if let Some(out) = args.value("--shots-live") {
@@ -379,13 +377,8 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
         tabs.set_fixture_visual(2, None, true, false, false);
         tabs.set_fixture_visual(30, None, false, true, false);
         tabs.set_fixture_visual(32, None, false, true, true);
-        render_shot_to_png(
-            Box::new(tabs),
-            size,
-            std::path::Path::new(out),
-            args,
-        )
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        render_shot_to_png(Box::new(tabs), size, std::path::Path::new(out), args)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
     }
     if let Some(out) = args.value("--shots-suggestions") {
@@ -405,13 +398,8 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             .and_then(parse_size)
             .unwrap_or((1000, 650));
         widget.debug_set_viewport_width(size.0);
-        render_shot_to_png(
-            Box::new(widget),
-            size,
-            std::path::Path::new(out),
-            args,
-        )
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out), args)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
     }
     if let Some(out) = args.value("--shots-settings") {
@@ -422,13 +410,8 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             .and_then(parse_size)
             .unwrap_or((900, 700));
         widget.debug_set_viewport_width(size.0);
-        render_shot_to_png(
-            Box::new(widget),
-            size,
-            std::path::Path::new(out),
-            args,
-        )
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out), args)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
     }
     if let Some(out) = args.value("--shots-history-paused") {
@@ -439,13 +422,8 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             .and_then(parse_size)
             .unwrap_or((900, 700));
         widget.debug_set_viewport_width(size.0);
-        render_shot_to_png(
-            Box::new(widget),
-            size,
-            std::path::Path::new(out),
-            args,
-        )
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out), args)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
     }
     if let Some(out) = args.value("--shots-loading") {
@@ -456,30 +434,27 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             .and_then(parse_size)
             .unwrap_or((900, 620));
         widget.debug_set_viewport_width(size.0);
-        render_shot_to_png(
-            Box::new(widget),
-            size,
-            std::path::Path::new(out),
-            args,
-        )
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out), args)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
     }
     if let Some(out) = args.value("--shots-library") {
         let mut widget = BrowserWidget::new_headless();
-        widget.debug_show_library(args.value("--library-section").unwrap_or("history"));
+        let section = args.value("--library-section").unwrap_or("history");
+        widget.debug_show_library(section);
+        if let Some(query) = args.value("--library-filter") {
+            widget.debug_set_library_filter(query);
+        }
+        if section == "downloads" {
+            widget.debug_show_downloads(args.value("--download-state").unwrap_or("progress"));
+        }
         let size = args
             .value("--size")
             .and_then(parse_size)
             .unwrap_or((1000, 700));
         widget.debug_set_viewport_width(size.0);
-        render_shot_to_png(
-            Box::new(widget),
-            size,
-            std::path::Path::new(out),
-            args,
-        )
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out), args)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
     }
     if let Some(out) = args.value("--shots-error") {
@@ -490,13 +465,8 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             .and_then(parse_size)
             .unwrap_or((900, 620));
         widget.debug_set_viewport_width(size.0);
-        render_shot_to_png(
-            Box::new(widget),
-            size,
-            std::path::Path::new(out),
-            args,
-        )
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out), args)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
     }
     Ok(false)
@@ -527,8 +497,8 @@ fn render_overlay_shot(
     let mut widget = BrowserWidget::new_headless();
     widget.debug_force_suggestions(vec![
         HistoryEntry {
-            url: "https://github.com/qos/qos".into(),
-            title: "qOS on code.podesta.ai".into(),
+            url: "https://github.com/tilo/tilo".into(),
+            title: "Tilo on code.podesta.ai".into(),
             last_visit: 3,
             visit_count: 12,
         },
@@ -558,12 +528,13 @@ fn render_suggestions_shot(out: &std::path::Path, args: &LaunchArgs) {
     let theme = ui::launch::shot_theme(args);
     let presence = PresenceCtx::empty();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
 
     let mut overlay = AddressSuggestions::new();
     overlay.set_suggestions(vec![
         HistoryEntry {
-            url: "https://github.com/qos/qos".into(),
-            title: "qOS — code.podesta.ai".into(),
+            url: "https://github.com/tilo/tilo".into(),
+            title: "Tilo — code.podesta.ai".into(),
             last_visit: 3,
             visit_count: 12,
         },
@@ -646,6 +617,7 @@ fn render_live_shot_to_png(
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
 
     let mut state = ui::State::new();
     let root_obj = state.root.clone();
@@ -702,9 +674,16 @@ fn render_live_shot_to_png(
         if let Some(error) = &page.error {
             return Err(format!("{}: {error}", page.uri).into());
         }
-        let frame = engine.frames().lock().map_err(|_| "Capture frame store is unavailable")?.clone();
+        let frame = engine
+            .frames()
+            .lock()
+            .map_err(|_| "Capture frame store is unavailable")?
+            .clone();
         if let Some(f) = frame {
-            let painted = f.rgba.chunks_exact(4).any(|px| px.last().is_some_and(|alpha| *alpha != 0));
+            let painted = f
+                .rgba
+                .chunks_exact(4)
+                .any(|px| px.last().is_some_and(|alpha| *alpha != 0));
             // Wait for a painted frame at the requested viewport width
             // (edge-to-edge web view, scale 1.0 → frame width ≈ w), so
             // the layout-driven Resize has taken hold rather than the
@@ -759,6 +738,7 @@ fn render_shot_to_png(
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
@@ -878,7 +858,6 @@ fn write_live_capture(
     );
     Ok(())
 }
-
 
 #[cfg(test)]
 mod resource_claim_tests {

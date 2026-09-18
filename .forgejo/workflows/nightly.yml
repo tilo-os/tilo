@@ -13,19 +13,27 @@ concurrency:
 
 jobs:
   complete:
-    runs-on: runner
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: runner
+          - arch: aarch64
+            runner: runner-arm64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
     container:
       # Visual goldens are meaningful only when fonts, Mesa and the software
       # renderer are byte-for-byte identical to the reviewed refresh job.
       # Advance this digest together with refresh-visual-baselines.yml.
-      image: code.podesta.ai/qos/qos-builder@sha256:e3b372adc7f2a6eb624c7a1993d7131dc87654b11189ab1982ec165a493c421c
+      image: code.podesta.ai/qos/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
     env:
       CARGO_HOME: /cargo-home
-      CARGO_BUILD_JOBS: "4"
+      CARGO_BUILD_JOBS: ${{ matrix.arch == 'aarch64' && '1' || '4' }}
       CARGO_INCREMENTAL: "0"
       # Keep dev and test fingerprints compatible. The all-target check and
       # example links can then reuse dependencies emitted by nextest instead
@@ -35,9 +43,9 @@ jobs:
       CARGO_TERM_COLOR: never
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
       WGPU_BACKEND: vulkan
-      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.${{ matrix.arch }}.json
       WGPU_ADAPTER_NAME: llvmpipe
-      XDG_RUNTIME_DIR: /tmp/qos-xdg-runtime
+      XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
       # Keep this identical to the nextest gpu-golden override. These tests
       # need an idle software Vulkan renderer, not merely serialization with
       # one another; the isolated tail below retains full daily coverage.
@@ -51,24 +59,31 @@ jobs:
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
 
-      - name: Restore Cargo downloads
-        id: cargo-cache
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        continue-on-error: true
-        with:
-          path: |
-            /cargo-home/registry/index
-            /cargo-home/registry/cache
-            /cargo-home/git/db
-          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-deps-
+      - name: Prepare Rust build caches
+        id: rust-build
+        uses: ./.forgejo/actions/prepare-rust-build
 
-      - name: Prepare runtime and cache metrics
+      - name: Prepare headless runtime
         run: |
+          ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
           test -r "$VK_DRIVER_FILES"
           mkdir -p "$XDG_RUNTIME_DIR"
           chmod 700 "$XDG_RUNTIME_DIR"
-          bash tools/ci-sccache.sh prepare
+
+      # This golden-pinned image predates the audio fixture. Install only new
+      # packages or replace the audio daemon: never update fonts, Mesa or libraries.
+      # A dependency requiring an existing package upgrade must fail the job.
+      - name: Ensure isolated audio test dependency
+        run: bash tools/ensure-headless-audio.sh
+
+      # Pinned/older builders may predate native PDF capture coverage. Stage
+      # only the verified runtime; leave Mesa, fonts and OS packages unchanged.
+      - name: Ensure native PDF capture dependency
+        run: |
+          asset=$(bash tools/ci/install-pdfium.sh --asset-name)
+          ./os/dev/cache-github-assets.sh "$asset"
+          library=$(bash tools/ci/install-pdfium.sh os/external-assets/cache /usr os/external-assets/github-assets.tsv)
+          printf 'TILO_PDFIUM_LIB=%s\n' "$library" >> "$GITHUB_ENV"
 
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
@@ -80,9 +95,9 @@ jobs:
       # rlibs/rmeta instead of compiling metadata before codegen.
       - name: Run every workspace test
         run: >-
-          bash tools/ci-measure.sh "nightly workspace nextest" --
+          bash tools/ci/measure.sh "nightly workspace nextest" --
           bash scripts/ci-run.sh "cargo nextest --workspace" --
-          cargo nextest run --workspace --locked --profile ci
+          bash tools/with-headless-audio.sh cargo nextest run --workspace --locked --profile ci
           -E "not ($GOLDEN_FILTER)"
 
       # This reuses the artifacts compiled above and executes the same number
@@ -90,7 +105,7 @@ jobs:
       # running at the tail makes llvmpipe/lavapipe idle without extra CPU.
       - name: Verify visual goldens on an idle renderer
         run: >-
-          bash tools/ci-measure.sh "nightly isolated visual goldens" --
+          bash tools/ci/measure.sh "nightly isolated visual goldens" --
           bash scripts/ci-run.sh "cargo nextest visual goldens" --
           cargo nextest run --workspace --locked --profile ci
           -E "$GOLDEN_FILTER"
@@ -101,15 +116,26 @@ jobs:
       - name: Probe live music search and stream resolution
         continue-on-error: true
         run: >-
-          bash tools/ci-measure.sh "nightly live music integration" --
+          bash tools/ci/measure.sh "nightly live music integration" --
           cargo nextest run -p music --locked --profile ci --run-ignored all
           -E 'test(live_search_and_stream_resolve_through_the_app)'
 
       - name: Check every workspace target
         run: >-
-          bash tools/ci-measure.sh "nightly all-target check" --
+          bash tools/ci/measure.sh "nightly all-target check" --
           bash scripts/ci-run.sh "cargo check --workspace --all-targets" --
           cargo check --workspace --locked --all-targets
+
+      # Source-level protocol checks prevent an app from opting out, but only
+      # the laid-out production root can prove that visible effect controls
+      # resolve to live resources/actions (and that no stale or legacy binding
+      # remains). tilo-dev builds the graphical apps as one Cargo graph, then
+      # runs every binary's deterministic --native-audit entry point.
+      - name: Certify every production app action surface
+        run: >-
+          bash tools/ci/measure.sh "nightly native app certification" --
+          bash scripts/ci-run.sh "tilo-dev certify --workspace" --
+          cargo run --locked -p tilo-dev -- certify --workspace
 
       # `cargo check --all-targets` type-checks examples but neither links nor
       # runs their test harnesses. Reuse the test-profile artifacts above to do
@@ -117,7 +143,7 @@ jobs:
       # request.
       - name: Test every workspace example
         run: >-
-          bash tools/ci-measure.sh "nightly workspace examples" --
+          bash tools/ci/measure.sh "nightly workspace examples" --
           bash scripts/ci-run.sh "cargo test --workspace --examples" --
           cargo test --workspace --examples --locked
 
@@ -126,11 +152,11 @@ jobs:
         run: |
           echo "### nightly sccache" >> "$GITHUB_STEP_SUMMARY"
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          bash tools/ci-sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+          bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save Cargo downloads
-        if: always() && steps.cargo-cache.outputs.cache-hit != 'true'
+        if: always() && steps.rust-build.outputs.cargo-cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:

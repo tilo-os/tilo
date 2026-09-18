@@ -9,13 +9,13 @@
 # directly: it computes the composefs digest of /target, reads the extra kernel
 # arguments out of /target/usr/lib/bootc/kargs.d, and hands both to ukify. So the
 # sealed command line carries the image's own kargs — the hardening set and
-# `qos.generation=` — and that is how a generation number reaches a *measured*
+# `tilo.generation=` — and that is how a generation number reaches a *measured*
 # command line rather than an editable file beside the kernel.
 #
-# The UKI is NOT signed here. qOS's root of trust is a Platform Key the machine
+# The UKI is NOT signed here. Tilo's root of trust is a Platform Key the machine
 # generates for itself (docs/security/boot-chain.md), so there is no key at image-build
-# time that the target firmware would accept. /usr/libexec/qos-secureboot signs
-# the UKI on the installed machine, and qos-secureboot-sign.path already watches
+# time that the target firmware would accept. /usr/libexec/tilo-secureboot signs
+# the UKI on the installed machine, and tilo-secureboot-sign.path already watches
 # /boot/EFI/Linux for a newly staged one. Measurement does not depend on the
 # signature: systemd-stub extends PCR 11 with the command line whether or not
 # anyone signed the PE.
@@ -36,20 +36,31 @@ set -euo pipefail
 target=/target
 mkdir -p /out
 kver="$(ls /kernel)"
-python3 /usr/local/bin/make-boot-splash.py /out/qos-splash.bmp
+python3 /usr/local/bin/make-boot-splash.py /out/tilo-splash.bmp
 
 ukify_args=(
   --output "/out/${kver}.efi"
   # systemd-stub paints this directly from the signed UKI. It replaces the
   # console-to-black gap without adding Plymouth or another boot service to
   # the critical chain.
-  --splash /out/qos-splash.bmp
+  --splash /out/tilo-splash.bmp
   # Print the PCR 11 values this UKI will produce, per boot phase. This is the
   # host-side prediction a booted machine's PCR 11 is checked against, and the
   # input a signed per-generation prediction is made from.
   --measure
   --json pretty
 )
+
+# A device-specific image carries a trusted profile in its measured rootfs.
+# Embed its pinned DTB before either ukify path measures the UKI. systemd-stub
+# supplies .dtb to the kernel and measures it into PCR 11. The installer derives
+# both its live and target UKIs from this image, retaining the same section;
+# sign-target-prediction.sh already measures .dtb from the final resealed UKI.
+# Never add an editable loader-entry DTB or a target-side path override here.
+profile_dtb="$(python3 /usr/local/bin/uki-hardware-profile.py "$target" "$kver" "$(uname -m)")"
+if [ -n "$profile_dtb" ]; then
+  ukify_args+=(--devicetree "$profile_dtb")
+fi
 
 if [ -n "${CFS_DIGEST:-}" ]; then
   cfs_digest="${CFS_DIGEST#sha512:}"
@@ -99,18 +110,18 @@ objcopy -O binary --only-section=.cmdline "/out/${kver}.efi" /out/cmdline
 printf '%s\n' "${kver}" > /out/kver
 
 # Fail the build here rather than at first boot if the generation did not make it
-# into the seal. QOS_SEAL_GENERATION=0 builds the negative control on purpose —
+# into the seal. TILO_SEAL_GENERATION=0 builds the negative control on purpose —
 # a UKI that measures perfectly and carries no generation — so that a check
 # reporting the generation as measured can be shown to fail when it is absent.
-if [ "${QOS_SEAL_GENERATION:-1}" = "1" ]; then
-  grep -q 'qos\.generation=[0-9]' /out/cmdline || {
-    echo "the sealed command line carries no qos.generation=; rollback protection" >&2
+if [ "${TILO_SEAL_GENERATION:-1}" = "1" ]; then
+  grep -q 'tilo\.generation=[0-9]' /out/cmdline || {
+    echo "the sealed command line carries no tilo.generation=; rollback protection" >&2
     echo "would have nothing to bind to. Sealed command line was:" >&2
     cat /out/cmdline >&2
     exit 1
   }
 else
-  echo "NEGATIVE CONTROL: not asserting qos.generation= on the sealed command line"
+  echo "NEGATIVE CONTROL: not asserting tilo.generation= on the sealed command line"
 fi
 
 ls -l /out

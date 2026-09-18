@@ -1,14 +1,12 @@
 # composefs-backend + UKI probe image.
 #
-# A deliberately thin image: the qOS *boot chain* pieces that the composefs
-# question turns on (hardening kargs, a generation number on the measured
+# A deliberately thin image containing the Tilo *boot chain* pieces used by the
+# composefs probe (hardening kargs, a generation number on the measured
 # command line, the bounded-rollback machinery that binds to it, systemd-boot, no
-# bootupd) on top of the same digest-pinned Fedora bootc base the real image uses
-# — and nothing else. The full qOS
-# rootfs takes ~25 minutes to build and none of it participates in the
-# mechanism under test, so building it three times to prove an update series
-# would only slow the answer down. os/dev/composefs/build-qos.sh does the real
-# image once the mechanism is settled.
+# bootupd) on top of the same digest-pinned Fedora bootc base the desktop image uses
+# — and nothing else. The full Tilo rootfs takes ~25 minutes to build and none
+# of it participates in the mechanism under test. os/dev/composefs/build-tilo.sh
+# builds the desktop image once the mechanism is settled.
 #
 # Build with os/dev/composefs/build.sh (it passes BASE_REF and GENERATION).
 #
@@ -21,7 +19,7 @@ ARG BASE_REF
 ARG RPMS_REF
 ARG GENERATION=1
 # Whether the generation number reaches the sealed command line at all. Always 1
-# for a real image; 0 builds the negative control — a UKI that measures perfectly
+# for a built image; 0 builds the negative control — a UKI that measures perfectly
 # but carries no generation — so that a check reporting the generation as measured
 # can be shown to fail when it is not there. A check that only ever passes is not
 # evidence.
@@ -33,7 +31,7 @@ FROM ${BASE_REF} AS rootfs
 ARG GENERATION
 
 # systemd-boot comes out of the digest-pinned RPM snapshot, not the network, so
-# this stage builds the same way the real qOS image does — and stays buildable
+# this stage builds the same way the desktop image does — and stays buildable
 # when Fedora's `updates` metalink is serving repodata checksums that 404 on
 # every mirror, which is a state it does reach.
 #
@@ -47,29 +45,29 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     && dnf clean all
 
 # A sealed composefs image must have systemd-boot and must NOT have bootupd.
-# The GRUB stack goes with it: qOS already drops shim + grub2, and bootupd's
+# The GRUB stack goes with it: Tilo already drops shim + grub2, and bootupd's
 # payload directory and the legacy ostree boot dir have to go too, or bootc
 # still finds a bootupd install path.
 RUN rpm -e --nodeps bootupd \
     && rm -rf /usr/lib/bootupd /usr/lib/ostree-boot \
     && (rpm -qa | grep -E '^(shim-x64|grub2-)' | xargs -r rpm -e --nodeps)
 
-# qOS's real hardening kargs, unmodified. This is the file whose contents have
+# Tilo's hardening kargs, unmodified. This is the file whose contents have
 # to reach the *measured* command line for the rollback design to work.
 COPY 01-hardening.toml /usr/lib/bootc/kargs.d/01-hardening.toml
-# And the mode karg, likewise unmodified. `qos.mode=repair` on a sealed command
+# And the mode karg, likewise unmodified. `tilo.mode=repair` on a sealed command
 # line is what makes repair mode selectable and unforgeable; the probe is where
 # that gets booted rather than reasoned about.
 COPY 04-mode.toml /usr/lib/bootc/kargs.d/04-mode.toml
 
-# The generation number. qOS binds rollback protection to it, and it has to be
+# The generation number. Tilo binds rollback protection to it, and it has to be
 # sealed into the UKI rather than written by a bootloader, so it enters through
 # the same kargs.d mechanism the hardening set uses.
 ARG SEAL_GENERATION
-RUN mkdir -p /usr/lib/qos /boot/EFI/Linux \
-    && printf '%s\n' "${GENERATION}" > /usr/lib/qos/generation \
+RUN mkdir -p /usr/lib/tilo /boot/EFI/Linux \
+    && printf '%s\n' "${GENERATION}" > /usr/lib/tilo/generation \
     && if [ "${SEAL_GENERATION}" = 1 ]; then \
-         printf 'kargs = ["qos.generation=%s"]\n' "${GENERATION}" \
+         printf 'kargs = ["tilo.generation=%s"]\n' "${GENERATION}" \
            > /usr/lib/bootc/kargs.d/02-generation.toml; \
        else \
          echo "NEGATIVE CONTROL: no generation on the sealed command line"; \
@@ -85,17 +83,17 @@ RUN printf '%s\n' \
         '  "console=ttyS0,115200",' \
         ']' > /usr/lib/bootc/kargs.d/03-spike.toml
 
-# btrfs root (matching qOS) and systemd-boot, both through the same install
-# drop-in mechanism the real image uses.
+# btrfs root (matching Tilo) and systemd-boot, both through the same install
+# drop-in mechanism the desktop image uses.
 RUN printf '%s\n' '[install]' 'bootloader = "systemd"' \
-        > /usr/lib/bootc/install/40-qos.toml \
+        > /usr/lib/bootc/install/40-tilo.toml \
     && printf '%s\n' '[install.filesystem.root]' 'type = "btrfs"' \
         > /usr/lib/bootc/install/80-rootfs.toml
 
 # A login. The evidence for every numbered step is collected over ssh.
 RUN useradd -m -G wheel quickuser \
-    && printf 'quickuser:quickdesktop\n' | chpasswd \
-    && printf 'root:quickdesktop\n' | chpasswd \
+    && printf 'quickuser:tilo\n' | chpasswd \
+    && printf 'root:tilo\n' | chpasswd \
     && printf '%%wheel ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/wheel-nopasswd \
     && chmod 0440 /etc/sudoers.d/wheel-nopasswd \
     && systemctl enable sshd.service \
@@ -103,32 +101,32 @@ RUN useradd -m -G wheel quickuser \
     && printf 'PermitRootLogin yes\nPasswordAuthentication yes\n' \
         > /etc/ssh/sshd_config.d/01-spike.conf
 
-# The consumer of that measured generation: qOS's bounded-rollback machinery,
-# copied from the real image rather than reimplemented, so that
+# The consumer of that measured generation: Tilo's bounded-rollback machinery,
+# copied from the desktop image rather than reimplemented, so that
 # os/tests/rollback-boot-check.sh runs here against the same files it will run
-# against on a real install. Without it the boot-side check can only report the
+# against an install. Without it the boot-side check can only report the
 # tooling as missing, which says nothing about whether the measurement works.
 #
 # One COPY, not eight: each layer commit here rewrites a 2.3 GB rootfs through
 # fuse-overlayfs and costs minutes, so build.sh assembles the files under
 # stage/tree/ at their final paths and this copies the tree in a single layer.
 COPY stage/tree/ /
-# ReadWritePaths=/var/lib/qos in the units is not optional: a namespace that
+# ReadWritePaths=/var/lib/tilo in the units is not optional: a namespace that
 # cannot bind a path it was told to make writable refuses to start, and the unit
 # then fails for a reason that has nothing to do with rollback.
-RUN chmod 0755 /usr/bin/qos-rollback /usr/libexec/qos-rollback-common \
-        /usr/libexec/qos-rollback-confirm /usr/libexec/qos-rollback-harden \
-        /usr/libexec/qos-rollback-boot-check /usr/libexec/qos-recovery-boot-check \
-        /usr/libexec/qos-deployment /usr/libexec/qos-boot-health \
-        /usr/libexec/qos-repair /usr/libexec/qos-uki-cmdline \
-        /usr/lib/systemd/system-generators/qos-boot-mode-generator \
-    && printf 'd /var/lib/qos 0755 root root -\n' \
-        > /usr/lib/tmpfiles.d/qos-rollback.conf \
-    && systemctl enable qos-rollback-harden.service qos-rollback-confirm.timer \
-    && systemctl enable qos-boot-entries.service qos-boot-health.service
+RUN chmod 0755 /usr/bin/tilo-rollback /usr/libexec/tilo-rollback-common \
+        /usr/libexec/tilo-rollback-confirm /usr/libexec/tilo-rollback-harden \
+        /usr/libexec/tilo-rollback-boot-check /usr/libexec/tilo-recovery-boot-check \
+        /usr/libexec/tilo-deployment /usr/libexec/tilo-boot-health \
+        /usr/libexec/tilo-repair /usr/libexec/tilo-uki-cmdline \
+        /usr/lib/systemd/system-generators/tilo-boot-mode-generator \
+    && printf 'd /var/lib/tilo 0755 root root -\n' \
+        > /usr/lib/tmpfiles.d/tilo-rollback.conf \
+    && systemctl enable tilo-rollback-harden.timer tilo-rollback-confirm.timer \
+    && systemctl enable tilo-boot-entries.timer tilo-boot-health.service
 
 # --- what "the session came up" means on an image with no session ------------
-# qos-boot-health waits for greetd, which this image does not have — it is the
+# tilo-boot-health waits for greetd, which this image does not have — it is the
 # boot chain without the desktop. So it is pointed at a stand-in that plays the
 # same part in the same units: something the boot has to reach for the boot to
 # count. SESSION_OK=0 builds a generation whose stand-in fails, which is the
@@ -149,17 +147,17 @@ RUN if [ "${SESSION_OK}" = 1 ]; then start=/bin/true; else start=/bin/false; fi 
         "ExecStart=$start" \
         '' \
         '[Install]' \
-        'WantedBy=multi-user.target' > /usr/lib/systemd/system/qos-probe-session.service \
-    && mkdir -p /usr/lib/systemd/system/qos-boot-health.service.d \
+        'WantedBy=multi-user.target' > /usr/lib/systemd/system/tilo-probe-session.service \
+    && mkdir -p /usr/lib/systemd/system/tilo-boot-health.service.d \
     && printf '%s\n' \
         '[Unit]' \
-        'After=qos-probe-session.service' \
+        'After=tilo-probe-session.service' \
         '' \
         '[Service]' \
-        'Environment=QOS_BOOT_HEALTH_UNIT=qos-probe-session.service' \
-        'Environment=QOS_BOOT_HEALTH_TIMEOUT=45' \
-        > /usr/lib/systemd/system/qos-boot-health.service.d/10-probe-session.conf \
-    && systemctl enable qos-probe-session.service \
+        'Environment=TILO_BOOT_HEALTH_UNIT=tilo-probe-session.service' \
+        'Environment=TILO_BOOT_HEALTH_TIMEOUT=45' \
+        > /usr/lib/systemd/system/tilo-boot-health.service.d/10-probe-session.conf \
+    && systemctl enable tilo-probe-session.service \
     && echo "probe session unit: ExecStart=$start (SESSION_OK=${SESSION_OK})"
 
 # The registry the update series is served from runs on the VM host, reachable
@@ -184,9 +182,10 @@ FROM ${BASE_REF} AS tools
 # comes from this stage's systemd-boot-unsigned and does not have to match the
 # systemd in the rootfs.
 RUN dnf install -y --disablerepo=updates --disablerepo=updates-archive \
-        systemd-ukify sbsigntools binutils \
+        systemd-ukify binutils \
     && dnf clean all
 COPY uki.sh /usr/local/bin/uki.sh
+COPY stage/tree/usr/bin/tilo-crypto /usr/local/bin/tilo-crypto
 
 FROM tools AS uki
 ARG SIGN=0

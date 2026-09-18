@@ -1,6 +1,6 @@
-//! HEADLINE INTEROP — threshold sigs ↔ `collab-types`.
+//! Threshold-signature interop with `collab-types`.
 //!
-//! The test the whole crate was built for: a signature produced by
+//! A signature produced by
 //! collaborative threshold signing across multiple devices must verify
 //! byte-for-byte through the standard Ed25519 path in `collab_types`,
 //! with no special "threshold mode" needed.
@@ -67,7 +67,7 @@ fn threshold_sign(a: &ThresholdIdentity, b: &ThresholdIdentity, canon: &[u8]) ->
 }
 
 #[test]
-fn threshold_sig_verifies_via_qos_collab_types_verify_event_on_bytes() {
+fn threshold_sig_verifies_via_tilo_collab_types_verify_event_on_bytes() {
     let (a, b) = dkg_two();
     let value: Vec<u8> = b"hello threshold".to_vec();
     let canon = canonical_bytes(&value).unwrap();

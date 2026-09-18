@@ -1,10 +1,10 @@
 @0xc418c22ce00b8d8d;
 
-# qOS collaboration broker — public Cap'n Proto contract.
+# Tilo collaboration broker — public Cap'n Proto contract.
 #
 # This is the wire surface app SDK clients talk to. The broker is
 # the compositor's in-session broker; when an app is launched
-# under qOS, the launcher hands the app a connected Unix socket
+# under Tilo, the launcher hands the app a connected Unix socket
 # whose other end speaks this protocol.
 #
 # Streaming caveat (capnp-rpc 0.26): there is no first-class
@@ -175,7 +175,7 @@ interface ChannelHandle {
   completeInvocation @15 (id :UInt64, code :Text, message :Text) -> ();
 
   # Additive v2 lifecycle update. `updateJson` is a serialized
-  # qos_actions::InvocationUpdate. Legacy clients continue using @15.
+  # tilo_actions::InvocationUpdate. Legacy clients continue using @15.
   updateInvocation @17 (id :UInt64, updateJson :Text) -> ();
   # Cooperative cancellation flag polled by background application jobs.
   invocationCancellation @18 (id :UInt64) -> (cancelled :Bool);
@@ -192,7 +192,9 @@ interface ChannelHandle {
   publishedInvocationStatus @22 (id :UInt64)
       -> (found :Bool, updateJson :Text);
   cancelPublishedInvocation @23 (id :UInt64) -> (updateJson :Text);
-  launchPublishedApplication @24 (appId :Text)
+  # Optional content-addressed object to stage read-only for the launched app.
+  # Empty keeps the ordinary app-launch behavior.
+  launchPublishedApplication @24 (appId :Text, contentHash :Text)
       -> (id :UInt64, updateJson :Text);
 
   # Ask this session to open the "say something about this" surface.
@@ -202,7 +204,7 @@ interface ChannelHandle {
   # socket every app already holds and what it carries is a resource
   # address — this interface's subject.
   #
-  # `reference` is a serialised `qos_reference::ResourceRef` (JSON, the
+  # `reference` is a serialised `tilo_reference::ResourceRef` (JSON, the
   # encoding `sendAction` payloads use). `x`/`y`/`w`/`h` are the rect to
   # sit beside, in the ASKING WINDOW's own coordinates: the app reports
   # where its context menu is and the session converts, because only the
@@ -274,6 +276,39 @@ interface ChannelHandle {
   resolvePublishedAction @35 (peerId :UInt64, revision :Text,
                               resource :Text, action :Text)
       -> (resolution :ActionDirectoryResolution);
+
+  # Level-triggered private media handoff descriptors. The broker binds appId,
+  # workspace and process instance to this channel and keeps source locators
+  # session-local; only sanitized now-playing metadata enters device sync.
+  reportPlayback @36 (appId :Text, reportsJson :Data) -> ();
+
+  # Ask the broker to select exactly one existing holder of this route and
+  # request a complete signed snapshot. The request itself is directed and
+  # carries no document data; it replaces the old presence-based broadcast
+  # where every holder serialized and fanned out the same full document.
+  requestDocumentSnapshot @37 () -> ();
+
+  # Versioned, bounded active-session continuity control. The JSON vocabulary
+  # is owned by tilo-app's realtime_continuity module. Device routing and app /
+  # workspace identity are re-derived by the broker; apps receive only opaque
+  # restart-scoped session capabilities.
+  realtimeCommand @38 (appId :Text, commandJson :Data) -> (replyJson :Data);
+  # Directed lifecycle edges for this exact certified application connection.
+  subscribeRealtime @39 () -> (stream :RealtimeStream);
+
+  # Files' local semantic action reaches the shell through the same
+  # authenticated application connection as every other system operation.
+  # The JSON vocabulary is typed and bounded by runtime-collab; the broker
+  # re-derives the caller/app/workspace route and alone may turn an exact path
+  # into an existing personal-device transfer. No file bytes, certificate, or
+  # ambient device authority crosses this command surface.
+  nearbyTransferCommand @40 (appId :Text, commandJson :Data) -> (replyJson :Data);
+
+  # Settings-only, launcher-authenticated access to the shell's sealed
+  # personal Wi-Fi credential authority. The command contains portable Wi-Fi
+  # semantics only; NetworkManager UUIDs are accepted solely as local lookup
+  # capabilities and never enter personal-fabric state.
+  wifiContinuityCommand @41 (appId :Text, commandJson :Data) -> (replyJson :Data);
 }
 
 # Application-owned, broker-pulled resource/action directory. A capability is
@@ -321,6 +356,9 @@ struct ActionDirectoryRow {
   # metadata must travel here rather than forcing shells to render raw ids.
   resourceKind @7 :Text;
   resourceLabel @8 :Text;
+  # Bounded declarative metadata. The shell parses this into its own themed
+  # primitives; application drawing code never crosses this boundary.
+  resourcePresentationJson @9 :Text;
 }
 
 struct ActionDirectoryPage {
@@ -358,9 +396,15 @@ interface ActionCatalogueStream {
   read @0 () -> (catalogueJson :Text);
 }
 
+interface RealtimeStream {
+  # Versioned tilo-app RealtimeEvent JSON. Client-pull preserves bounded
+  # backpressure and prevents an idle app from accumulating callbacks.
+  read @0 () -> (eventJson :Data);
+}
+
 # One operation an application exports, as inert data.
 #
-# Mirrors `qos_actions::door::ActionDescriptor`. A native capnp struct
+# Mirrors `tilo_actions::door::ActionDescriptor`. A native capnp struct
 # rather than opaque bytes for the reason `PresencePayload` is: this is
 # what a non-Rust participant reads to find out what a window can do,
 # and it should not need a postcard decoder to do it.
@@ -386,11 +430,11 @@ struct ExportedAction {
   # `document`, `effect`, or `view`. Empty from an older client means
   # `document` for backwards compatibility.
   operationKind @7 :Text;
-  # JSON encoding of `qos_actions::ActionParam[]`. Kept as an opaque JSON
+  # JSON encoding of `tilo_actions::ActionParam[]`. Kept as an opaque JSON
   # projection so Cap'n Proto clients can forward newer parameter vocabulary
   # without a schema bump; empty means the legacy `input` projection.
   paramsJson @8 :Text;
-  # Versioned JSON encoding of qos_actions::ActionContract. Empty from an
+  # Versioned JSON encoding of tilo_actions::ActionContract. Empty from an
   # older client selects conservative compatibility defaults.
   contractJson @9 :Text;
 }
@@ -526,6 +570,10 @@ interface PresenceHandle {
   # not contain (and cannot override) identity. Unlike pointer/caret presence,
   # this describes what an action is doing without inventing input gestures.
   publishInteraction @9 (keyBytes :Data, interactionJson :Text) -> ();
+
+  # Short transient intention. Empty text clears it; automatic distinguishes
+  # a local-model suggestion from words the participant explicitly authored.
+  publishStatus @10 (keyBytes :Data, text :Text, automatic :Bool) -> ();
 }
 
 interface PresenceStream {
@@ -607,10 +655,15 @@ struct PresencePayload {
     # never a request to alter the receiver's viewport.
     following @11 :Text;
 
-    # Versioned qos_actions::InteractionUpdate JSON. Kept as an additive
+    # Versioned tilo_actions::InteractionUpdate JSON. Kept as an additive
     # union arm so non-Rust peers can preserve/forward evolving semantic
     # targets without understanding app-specific anchor variants.
     interactionJson @12 :Text;
+
+    status :group {
+      text @13 :Text;
+      automatic @14 :Bool;
+    }
   }
 }
 
@@ -630,6 +683,9 @@ struct ChannelContext {
   # or stop when it is empty. The compositor never relays this to peers.
   followTarget  @2 :Text;
   followChanged @3 :Bool;
+  # Directed control frame for one selected document holder. Ordinary context
+  # snapshots and follow controls leave this false.
+  snapshotRequested @4 :Bool;
 }
 
 # A single collaborator in a `ChannelContext`. `color` is packed as

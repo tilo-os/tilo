@@ -75,7 +75,7 @@ SHELL = REPO / "target" / "debug" / "shell"
 REAL_HOME = os.path.expanduser("~")
 
 # What quinten types into the invite composer. Deliberately not the
-# guest session's own `QOS_USER_ID`: a name that matched what the guest
+# guest session's own `TILO_USER_ID`: a name that matched what the guest
 # calls itself could have been read off the guest's own presence frames,
 # and a name a peer announces about itself is exactly what this room
 # refuses to believe. This one exists nowhere but in quinten's typing.
@@ -143,8 +143,8 @@ class Session:
         os.makedirs(self.home, exist_ok=True)
         env = {
             **os.environ,
-            "QOS_TEST_CONTROL": self.socket,
-            "QOS_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
+            "TILO_TEST_CONTROL": self.socket,
+            "TILO_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
             "HOME": self.home,
             "XDG_DATA_HOME": os.path.join(self.dir, "data"),
             "XDG_CACHE_HOME": os.path.join(self.dir, "cache"),
@@ -153,14 +153,14 @@ class Session:
             "XDG_RUNTIME_DIR": self.runtime,
             # The app payload + runtime bundle are the machine's, not the
             # session's — they are read-only inputs both sessions share.
-            "QOS_APPS_DATA_DIR": os.path.join(REAL_HOME, ".local/share/qos-apps"),
-            "QOS_RUNTIME_BUNDLE_DIR": os.path.join(REAL_HOME, ".local/share/qos-runtime"),
+            "TILO_APPS_DATA_DIR": os.path.join(REAL_HOME, ".local/share/tilo-apps"),
+            "TILO_RUNTIME_BUNDLE_DIR": os.path.join(REAL_HOME, ".local/share/tilo-runtime"),
             # Without its own device key a session's peer-sync turns
             # itself off, and the only visible symptom is that the
             # invite controls never appear.
-            "QOS_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
-            "QOS_USER_ID": name,
-            "NIRIOS_HEADLESS_SIZE": "1600x1000",
+            "TILO_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
+            "TILO_USER_ID": name,
+            "TILO_HEADLESS_SIZE": "1600x1000",
             # The host is de_DE and bwrap does not clear the
             # environment, so without this the chrome renders in German.
             "LC_ALL": "en_US.UTF-8",
@@ -310,21 +310,21 @@ def main() -> int:
     os.makedirs(shots, exist_ok=True)
 
     stale = freshness(SHELL, [
-        REPO / "shell" / "src" / "shell" / "overlay_host.rs",
-        REPO / "shell" / "src" / "shell" / "topbar_chrome.rs",
-        REPO / "shell" / "src" / "compositor" / "frame.rs",
+        REPO / "crates" / "session" / "shell" / "src" / "shell" / "overlay_host" / "mod.rs",
+        REPO / "crates" / "session" / "shell" / "src" / "shell" / "topbar_chrome.rs",
+        REPO / "crates" / "session" / "shell" / "src" / "compositor" / "frame.rs",
         # The roster: who the panel lists, and the state dump that
         # reports it. A binary older than either answers the last
         # question this script asks with code that is not under test.
-        REPO / "shell" / "src" / "shell" / "peer_presence.rs",
-        REPO / "shell" / "src" / "compositor" / "native.rs",
+        REPO / "crates" / "session" / "shell" / "src" / "shell" / "peer_presence.rs",
+        REPO / "crates" / "session" / "shell" / "src" / "compositor" / "native.rs",
         # Where the name goes and when: the composer parks it against
         # the room, and the arrival of the peer that redeems the token
         # is what writes it into the room document. A binary older than
         # either answers the last question this script asks with code
         # that is not under test.
-        REPO / "shell" / "src" / "shell" / "network.rs",
-        REPO / "shell" / "src" / "shell" / "chrome_state.rs",
+        REPO / "crates" / "session" / "shell" / "src" / "shell" / "network.rs",
+        REPO / "crates" / "session" / "shell" / "src" / "shell" / "chrome_state.rs",
     ])
     if stale:
         print(f"REFUSING: {stale}\n  build first:  cargo build -p shell")

@@ -214,7 +214,7 @@ impl KeyboardLayout {
         Self::alpha("qwerty", &["qwertyuiop", "asdfghjkl", "zxcvbnm"])
     }
 
-    /// French AZERTY — proof that another locale is *just data*. Same
+    /// French AZERTY — another locale represented as data. Same
     /// chrome (Shift / Backspace / function row) as QWERTY.
     pub fn azerty() -> Self {
         Self::alpha("azerty", &["azertyuiop", "qsdfghjklm", "wxcvbn"])

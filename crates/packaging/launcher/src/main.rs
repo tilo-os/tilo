@@ -1,4 +1,4 @@
-//! qos-launcher binary entry.
+//! tilo-launcher binary entry.
 
 #![cfg_attr(
     test,
@@ -13,6 +13,8 @@
     )
 )]
 
+use std::io::Read;
+use std::os::fd::{FromRawFd, RawFd};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -22,10 +24,37 @@ use launcher::landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
 use launcher::registry;
 use launcher::run::{LaunchMode, RunError, RunOptions, run};
 
+const LAUNCH_REGISTRATION_FD_ENV: &str = "TILO_INTERNAL_LAUNCH_REGISTRATION_FD";
+
+fn wait_for_registration_fd(fd: RawFd) -> std::io::Result<()> {
+    if fd < 3 {
+        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+    }
+    // SAFETY: the compositor transfers ownership of this inherited descriptor
+    // specifically through `LAUNCH_REGISTRATION_FD_ENV`.
+    let mut gate = unsafe { std::fs::File::from_raw_fd(fd) };
+    let mut release = [0_u8; 1];
+    gate.read_exact(&mut release)
+}
+
+fn wait_for_shell_registration() -> Result<(), String> {
+    let Ok(raw_fd) = std::env::var(LAUNCH_REGISTRATION_FD_ENV) else {
+        return Ok(());
+    };
+    // SAFETY: process startup is single-threaded; remove the internal handoff
+    // before any launched app environment can inherit it.
+    unsafe { std::env::remove_var(LAUNCH_REGISTRATION_FD_ENV) };
+    let fd = raw_fd
+        .parse::<RawFd>()
+        .map_err(|_| "invalid launch-registration descriptor".to_string())?;
+    wait_for_registration_fd(fd)
+        .map_err(|error| format!("launch-registration handoff failed: {error}"))
+}
+
 #[derive(Debug, Parser)]
 #[command(
-    name = "qos-launcher",
-    about = "Launch a qOS application package in a sandbox."
+    name = "tilo-launcher",
+    about = "Launch a Tilo application package in a sandbox."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -51,7 +80,7 @@ enum Cmd {
         #[arg(long)]
         no_services: bool,
         /// Bind the minimum host libs a dynamically-linked ELF needs. Deprecated
-        /// — prefer a manifest `runtime = "qos-runtime/<v>"` declaration; silently
+        /// — prefer a manifest `runtime = "tilo-runtime/<v>"` declaration; silently
         /// overridden when a runtime bundle is mounted.
         #[arg(long, hide = true)]
         minimal_libs: bool,
@@ -60,7 +89,7 @@ enum Cmd {
         #[arg(long)]
         allow_missing_runtime: bool,
         /// Accept an unsigned runtime bundle. Default refuses unsigned bundles
-        /// (the OS ships signed ones, `qos-install` signs on install) — only
+        /// (the OS ships signed ones, `tilo-install` signs on install) — only
         /// needed for local bring-up / debugging.
         #[arg(long)]
         allow_unsigned_runtime: bool,
@@ -74,7 +103,7 @@ enum Cmd {
         #[arg(long)]
         wayland_socket: Option<PathBuf>,
         /// Workspace (collaboration room) this launch belongs to, forwarded as
-        /// `QOS_WORKSPACE_ID` — the cluster id CRDT deltas are addressed to, so
+        /// `TILO_WORKSPACE_ID` — the cluster id CRDT deltas are addressed to, so
         /// two apps with the same value can collaborate. Omit for launches with
         /// no session.
         #[arg(long)]
@@ -121,13 +150,13 @@ enum Cmd {
         rest: Vec<String>,
     },
     /// Launch a CLI command from an already-installed package. Used by the
-    /// PATH shim (`qos-cli-shim`).
+    /// PATH shim (`tilo-cli-shim`).
     RunInstalled {
-        /// Reverse-DNS package id, as printed by `qos-install list`.
+        /// Reverse-DNS package id, as printed by `tilo-install list`.
         #[arg(long, alias = "pkg")]
         package: String,
         /// Which command from `[cli].commands` was invoked, forwarded as
-        /// `QOS_CLI_COMMAND`.
+        /// `TILO_CLI_COMMAND`.
         #[arg(long)]
         command: String,
         /// Skip well-known service-socket resolution.
@@ -142,7 +171,7 @@ enum Cmd {
     },
     /// Resolve an installed package by id and launch its GUI entrypoint.
     /// Counterpart to `run`: takes the reverse-DNS id and looks it up in
-    /// the registry `qos-install` writes.
+    /// the registry `tilo-install` writes.
     Exec {
         /// Reverse-DNS package identifier.
         #[arg(long)]
@@ -169,7 +198,7 @@ enum Cmd {
         #[arg(long)]
         allow_unsigned_runtime: bool,
     },
-    /// Admit a `qos-file` bearer from stdin through the per-user filesystem
+    /// Admit a `tilo-file` bearer from stdin through the per-user filesystem
     /// service, then open Files at the resulting non-secret mount path.
     AdmitShare {
         /// Host Wayland socket passed to Files.
@@ -182,10 +211,10 @@ enum Cmd {
         #[arg(long)]
         allow_unsigned_runtime: bool,
     },
-    /// Launch an application qOS did **not** package: a `.desktop` entry
+    /// Launch an application Tilo did **not** package: a `.desktop` entry
     /// already installed on the host, Flatpak or otherwise.
     ///
-    /// Runs the entry's own command line UNCONFINED — no qOS sandbox, no
+    /// Runs the entry's own command line UNCONFINED — no Tilo sandbox, no
     /// room. A Flatpak brings its own sandbox; a distribution binary has no
     /// manifest to build one from. See the `launcher::host` module docs.
     RunHost(RunHostArgs),
@@ -193,7 +222,7 @@ enum Cmd {
 
 #[derive(Debug, clap::Args)]
 struct RunHostArgs {
-    /// Desktop-file id, as printed by `qos-desktop-scan`
+    /// Desktop-file id, as printed by `tilo-desktop-scan`
     /// (`com.spotify.Client`, `org.gnome.TextEditor`).
     #[arg(long)]
     desktop_id: String,
@@ -232,6 +261,10 @@ fn exit_code(code: i32) -> ExitCode {
 }
 
 fn main() -> ExitCode {
+    if let Err(error) = wait_for_shell_registration() {
+        eprintln!("tilo-launcher: {error}");
+        return ExitCode::from(126);
+    }
     // Hidden subcommand: parsed BEFORE clap so its argv shape (positional
     // paths, `--` separator) doesn't collide with clap's flag parsing.
     let raw_args: Vec<String> = std::env::args().collect();
@@ -360,9 +393,9 @@ struct RunCliArgs {
 fn run_gui_command(args: RunCliArgs) -> ExitCode {
     if args.minimal_libs {
         eprintln!(
-            "qos-launcher: --minimal-libs is deprecated. \
-             Prefer a manifest `runtime = \"qos-runtime/<v>\"` declaration \
-             plus `qos-install runtime install --version <v> --from-host`."
+            "tilo-launcher: --minimal-libs is deprecated. \
+             Prefer a manifest `runtime = \"tilo-runtime/<v>\"` declaration \
+             plus `tilo-install runtime install --version <v> --from-host`."
         );
     }
     let opts = RunOptions {
@@ -401,7 +434,7 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
             }
         }
         Err(e) => {
-            eprintln!("qos-launcher: {e}");
+            eprintln!("tilo-launcher: {e}");
             exit_code(e.to_exit_code())
         }
     }
@@ -416,7 +449,7 @@ fn admit_share_and_open(
         Ok(path) => match received_file_capability(&path) {
             Ok((capability_path, guard)) => {
                 let result = exec_installed(
-                    "dev.qos.file-explorer",
+                    "dev.tilo.file-explorer",
                     ExecArgs {
                         no_services: false,
                         wayland_socket,
@@ -432,12 +465,12 @@ fn admit_share_and_open(
                 result
             }
             Err(error) => {
-                eprintln!("qos-launcher: {error}");
+                eprintln!("tilo-launcher: {error}");
                 ExitCode::from(2)
             }
         },
         Err(error) => {
-            eprintln!("qos-launcher: {error}");
+            eprintln!("tilo-launcher: {error}");
             ExitCode::from(2)
         }
     }
@@ -465,7 +498,7 @@ fn admit_share_from_stdin() -> Result<PathBuf, String> {
         return Err("shared-file link is empty".into());
     }
 
-    let socket = launcher::services::socket_for("qos-fs");
+    let socket = launcher::services::socket_for("tilo-fs");
     let mut stream = UnixStream::connect(&socket)
         .map_err(|_| "received-file service is unavailable".to_string())?;
     request_received_mount(uri, &mut stream)
@@ -563,7 +596,7 @@ fn received_file_capability(
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
         .map_err(|_| "could not secure the temporary capability directory".to_string())?;
     let capability = collab_types::CapOverride::new(
-        collab_types::Subject::app("dev.qos.file-explorer"),
+        collab_types::Subject::app("dev.tilo.file-explorer"),
         collab_types::Scope::FsPath(path.display().to_string()),
         collab_types::Effect::Grant,
         collab_types::Verb::Read,
@@ -609,27 +642,27 @@ fn exec_installed(package: &str, args: ExecArgs) -> ExitCode {
         Ok(Some(e)) => e,
         Ok(None) => {
             eprintln!(
-                "qos-launcher: package {package} is not installed. \
-                 Run `qos-install list` to see what is."
+                "tilo-launcher: package {package} is not installed. \
+                 Run `tilo-install list` to see what is."
             );
             return ExitCode::from(2);
         }
         Err(e) => {
-            eprintln!("qos-launcher: {e}");
+            eprintln!("tilo-launcher: {e}");
             return ExitCode::from(2);
         }
     };
     let manifest = match launcher::manifest::read_manifest(&entry.manifest_path) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("qos-launcher: manifest read: {e}");
+            eprintln!("tilo-launcher: manifest read: {e}");
             return ExitCode::from(2);
         }
     };
     if manifest.entrypoint.gui_bin().is_none() {
         eprintln!(
-            "qos-launcher: {package} declares no GUI entrypoint. \
-             Use `qos-launcher run-installed --package {package} --command <name>` \
+            "tilo-launcher: {package} declares no GUI entrypoint. \
+             Use `tilo-launcher run-installed --package {package} --command <name>` \
              for a CLI package."
         );
         return ExitCode::from(2);
@@ -651,7 +684,7 @@ fn exec_installed(package: &str, args: ExecArgs) -> ExitCode {
     match launcher::run::run_with(&manifest, &entry.payload_root, &opts) {
         Ok(status) => exit_code(status.code().unwrap_or(1)),
         Err(e) => {
-            eprintln!("qos-launcher: {e}");
+            eprintln!("tilo-launcher: {e}");
             exit_code(e.to_exit_code())
         }
     }
@@ -672,7 +705,7 @@ fn run_host(args: RunHostArgs) -> ExitCode {
         wayland_socket,
         x11_display,
         x11_authority,
-        activation_token: std::env::var("QOS_HOST_ACTIVATION_TOKEN").ok(),
+        activation_token: std::env::var("TILO_HOST_ACTIVATION_TOKEN").ok(),
         files: open
             .as_deref()
             .map(|path| vec![path.display().to_string()])
@@ -698,7 +731,7 @@ fn run_host(args: RunHostArgs) -> ExitCode {
                 ExitCode::SUCCESS
             }
             Err(e) => {
-                eprintln!("qos-launcher: {e}");
+                eprintln!("tilo-launcher: {e}");
                 ExitCode::from(2)
             }
         };
@@ -706,7 +739,7 @@ fn run_host(args: RunHostArgs) -> ExitCode {
     match launcher::host::run_host(&desktop_id, &env) {
         Ok(status) => exit_code(status.code().unwrap_or(1)),
         Err(e) => {
-            eprintln!("qos-launcher: {e}");
+            eprintln!("tilo-launcher: {e}");
             exit_code(e.to_exit_code())
         }
     }
@@ -728,12 +761,12 @@ fn run_installed(
         Ok(Some(e)) => e,
         Ok(None) => {
             eprintln!(
-                "qos-launcher: package {package} is not installed. Run `qos-install list` to see what is."
+                "tilo-launcher: package {package} is not installed. Run `tilo-install list` to see what is."
             );
             return ExitCode::from(2);
         }
         Err(e) => {
-            eprintln!("qos-launcher: {e}");
+            eprintln!("tilo-launcher: {e}");
             return ExitCode::from(2);
         }
     };
@@ -744,38 +777,34 @@ fn run_installed(
     let manifest = match launcher::manifest::read_manifest(&entry.manifest_path) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("qos-launcher: manifest read: {e}");
+            eprintln!("tilo-launcher: manifest read: {e}");
             return ExitCode::from(2);
         }
     };
     if !manifest.cli_commands.iter().any(|c| c == command) {
         eprintln!(
-            "qos-launcher: {package} does not declare CLI command {command:?} — check its manifest's [cli] block."
+            "tilo-launcher: {package} does not declare CLI command {command:?} — check its manifest's [cli] block."
         );
         return ExitCode::from(2);
     }
     if manifest.entrypoint.cli_bin().is_none() {
         eprintln!(
-            "qos-launcher: {package}'s entrypoint is not a CLI (type != cli / both). Add `type = \"cli\"` to the manifest."
+            "tilo-launcher: {package}'s entrypoint is not a CLI (type != cli / both). Add `type = \"cli\"` to the manifest."
         );
         return ExitCode::from(2);
     }
 
-    // QOS_LAUNCHER_DISABLE_LANDLOCK=1 is an explicit developer escape hatch,
-    // matching the knob threaded through `run` via
-    // `RunOptions.landlock_enforce`. Production app launches keep enforcement
-    // enabled and fail closed unless the in-namespace shim reports the full
-    // required policy.
-    let landlock_enforce = !matches!(
-        std::env::var("QOS_LAUNCHER_DISABLE_LANDLOCK").as_deref(),
-        Ok("1" | "true")
-    );
+    // Installed qpkg command shims are a production launch surface. Their
+    // inherited environment is app/user input, not trusted launcher policy,
+    // so it must never be able to turn off either confinement or runtime
+    // verification. Tests and developer harnesses that intentionally need a
+    // weaker policy call the library with an explicit `RunOptions` value.
     // CLI-flavour launches through the PATH shim default --minimal-libs
     // on: shim invocations have no place to pass launcher flags, and CLI
-    // apps are dynamically-linked ELFs until qos-runtime bundles land.
+    // apps are dynamically-linked ELFs until tilo-runtime bundles land.
     let minimal_libs = minimal_libs
         || !matches!(
-            std::env::var("QOS_LAUNCHER_NO_MINIMAL_LIBS").as_deref(),
+            std::env::var("TILO_LAUNCHER_NO_MINIMAL_LIBS").as_deref(),
             Ok("1" | "true")
         );
     let opts = RunOptions {
@@ -784,20 +813,14 @@ fn run_installed(
         bwrap_bin: None,
         sandbox_shim_bin: None,
         minimal_libs,
-        landlock_enforce,
+        landlock_enforce: true,
         mode: LaunchMode::Cli {
             command: command.to_string(),
             passthrough_argv: rest,
         },
         allow_missing_runtime: false,
-        // CLI-shim launches happen from a user shell without extra flags;
-        // honour the same env-escape-hatch as landlock so shim users can opt
-        // out for debugging.
-        allow_unsigned_runtime: matches!(
-            std::env::var("QOS_LAUNCHER_ALLOW_UNSIGNED_RUNTIME").as_deref(),
-            Ok("1" | "true")
-        ),
-        require_runtime_publisher: std::env::var("QOS_LAUNCHER_REQUIRE_RUNTIME_PUBLISHER")
+        allow_unsigned_runtime: false,
+        require_runtime_publisher: std::env::var("TILO_LAUNCHER_REQUIRE_RUNTIME_PUBLISHER")
             .ok()
             .filter(|s| !s.is_empty()),
         identity_host_path: None,
@@ -835,7 +858,7 @@ fn run_installed(
             }
         }
         Err(e) => {
-            eprintln!("qos-launcher: {e}");
+            eprintln!("tilo-launcher: {e}");
             exit_code(e.to_exit_code())
         }
     }
@@ -864,10 +887,20 @@ fn _link_run_error(_: &RunError) {}
 mod admit_share_tests {
     use super::*;
     use std::io::{Cursor, Read, Write};
+    use std::os::fd::IntoRawFd;
+    use std::os::unix::net::UnixStream;
 
     struct ScriptedStream {
         written: Vec<u8>,
         response: Cursor<Vec<u8>>,
+    }
+
+    #[test]
+    fn registration_descriptor_releases_process_entry_exactly_once() {
+        let (mut release, wait) = UnixStream::pair().unwrap();
+        let writer = std::thread::spawn(move || release.write_all(&[1]));
+        wait_for_registration_fd(wait.into_raw_fd()).unwrap();
+        writer.join().unwrap().unwrap();
     }
 
     impl Read for ScriptedStream {
@@ -920,7 +953,7 @@ mod admit_share_tests {
 
     #[test]
     fn admission_sends_the_bearer_only_in_the_service_frame() {
-        let uri = "qos-file://v2/payload#bearer-secret".to_string();
+        let uri = "tilo-file://v2/payload#bearer-secret".to_string();
         let mut stream = response("/home/alice/Shared/record");
         let mount = request_received_mount(uri.clone(), &mut stream).unwrap();
         assert_eq!(mount, PathBuf::from("/home/alice/Shared/record"));
@@ -943,7 +976,7 @@ mod admit_share_tests {
     fn host_launch_dry_run_redacts_one_shot_activation_values() {
         assert!(host_launch_env_is_secret("XDG_ACTIVATION_TOKEN"));
         assert!(host_launch_env_is_secret("DESKTOP_STARTUP_ID"));
-        assert!(!host_launch_env_is_secret("QOS_HOST_ACTIVATION_TOKEN"));
+        assert!(!host_launch_env_is_secret("TILO_HOST_ACTIVATION_TOKEN"));
         assert!(!host_launch_env_is_secret("WAYLAND_DISPLAY"));
     }
 }

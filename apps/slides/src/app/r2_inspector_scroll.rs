@@ -25,7 +25,10 @@ fn two_x_inspector_scrolls_instead_of_running_past_the_viewport() {
         .and_then(|s| s.elements.first().map(|e| e.id.clone()));
     let chrome = app.compute_chrome();
     let inspector = chrome.inspector;
-    assert!(inspector.width() > 100.0, "inspector is docked: {inspector:?}");
+    assert!(
+        inspector.width() > 100.0,
+        "inspector is docked: {inspector:?}"
+    );
     assert!(
         chrome.inspector_content_h > inspector.height() + 40.0,
         "the scenario overflows the panel: content {:.0} vs viewport {:.0}",
@@ -37,7 +40,10 @@ fn two_x_inspector_scrolls_instead_of_running_past_the_viewport() {
     // Unscrolled: the notes box is beyond the viewport (that was the bug),
     // and nothing kept from the panel sits outside it.
     let notes = chrome.notes_box.expect("notes box");
-    assert!(notes.y1 > inspector.y1, "notes start below the fold before scrolling");
+    assert!(
+        notes.y1 > inspector.y1,
+        "notes start below the fold before scrolling"
+    );
     for b in chrome
         .buttons
         .iter()
@@ -76,7 +82,11 @@ fn two_x_inspector_scrolls_instead_of_running_past_the_viewport() {
     // The FILL swatches scrolled off the top and were culled: no panel item
     // has its centre above the panel, so none can be painted over the toolbar
     // by the base-chrome pass (which paints everything `in_inspector` rejects).
-    for b in scrolled.buttons.iter().filter(|b| in_span(b.rect.center().x)) {
+    for b in scrolled
+        .buttons
+        .iter()
+        .filter(|b| in_span(b.rect.center().x))
+    {
         let toolbar_control = b.rect.center().y < scrolled.toolbar.y1;
         assert!(
             toolbar_control || SlidesApp::in_inspector(&scrolled, b.rect.center()),
@@ -94,26 +104,45 @@ fn two_x_inspector_scrolls_instead_of_running_past_the_viewport() {
         }
     }
     assert!(
-        !scrolled.buttons.iter().any(|b| matches!(b.hit, Hit::SetFill(_))),
+        !scrolled
+            .buttons
+            .iter()
+            .any(|b| matches!(b.hit, Hit::SetFill(_))),
         "the FILL swatches scrolled out and are no longer hit targets"
     );
     // The embedded font-size field follows the same rule as the buttons: it
     // had a slot unscrolled, and once its TYPE row leaves the panel it has
     // none — so `position_inspector_widgets` parks it instead of leaving a
     // stale rect in the toolbar band.
-    assert!(chrome.font_input_rect.is_some(), "TYPE row is present unscrolled");
+    assert!(
+        chrome.font_input_rect.is_some(),
+        "TYPE row is present unscrolled"
+    );
     match scrolled.font_input_rect {
-        Some(fi) => assert!(inside_y(fi.center().y), "kept field {fi:?} is inside the panel"),
+        Some(fi) => assert!(
+            inside_y(fi.center().y),
+            "kept field {fi:?} is inside the panel"
+        ),
         None => {
             app.position_inspector_widgets(&scrolled);
             assert!(
-                !app.font_input.get_rect().contains(scrolled.toolbar.center()),
+                !app.font_input
+                    .get_rect()
+                    .contains(scrolled.toolbar.center()),
                 "a culled field must not keep a rect under the toolbar"
             );
         }
     }
-    for l in scrolled.labels.iter().filter(|l| in_span(l.pos.x) && l.pos.y >= scrolled.toolbar.y1) {
-        assert!(l.pos.y >= inspector.y0 - 0.01, "label '{}' leaked above the panel", l.text);
+    for l in scrolled
+        .labels
+        .iter()
+        .filter(|l| in_span(l.pos.x) && l.pos.y >= scrolled.toolbar.y1)
+    {
+        assert!(
+            l.pos.y >= inspector.y0 - 0.01,
+            "label '{}' leaked above the panel",
+            l.text
+        );
     }
 
     // The wheel over the panel scrolls it and is consumed; at the end of the
@@ -152,13 +181,21 @@ fn one_x_inspector_that_fits_neither_shifts_nor_scrolls() {
         chrome.inspector.height()
     );
     assert!(
-        chrome.buttons.iter().any(|b| matches!(b.hit, Hit::SetFill(_)))
-            && chrome.buttons.iter().any(|b| matches!(b.hit, Hit::BringFront)),
+        chrome
+            .buttons
+            .iter()
+            .any(|b| matches!(b.hit, Hit::SetFill(_)))
+            && chrome
+                .buttons
+                .iter()
+                .any(|b| matches!(b.hit, Hit::BringFront)),
         "every section is present unscrolled"
     );
     app.inspector_scroll.set_viewport_rect(chrome.inspector);
-    app.inspector_scroll
-        .set_content_size(chrome.inspector.width() as f32, chrome.inspector_content_h as f32);
+    app.inspector_scroll.set_content_size(
+        chrome.inspector.width() as f32,
+        chrome.inspector_content_h as f32,
+    );
     app.last_mouse = chrome.inspector.center();
     let mut handled = false;
     app.on_wheel(MouseScrollDelta::LineDelta(0.0, -3.0), 1.0, &mut handled);
@@ -172,7 +209,10 @@ fn one_x_inspector_that_fits_neither_shifts_nor_scrolls() {
 fn chrome_labels_are_fluent_resolved_text() {
     let (app, _tr) = measured_app(1400.0, 1.0);
     for (text, _, _) in app.chrome_label_set() {
-        assert!(!text.starts_with("slides-"), "chrome label set carries a raw key: {text}");
+        assert!(
+            !text.starts_with("slides-"),
+            "chrome label set carries a raw key: {text}"
+        );
         assert!(!text.is_empty());
     }
     let chrome = app.compute_chrome();
@@ -180,7 +220,9 @@ fn chrome_labels_are_fluent_resolved_text() {
         .buttons
         .iter()
         .filter_map(|b| match &b.kind {
-            ButtonKind::Text { label, .. } | ButtonKind::IconText { label, .. } => Some(label.clone()),
+            ButtonKind::Text { label, .. } | ButtonKind::IconText { label, .. } => {
+                Some(label.clone())
+            }
             _ => None,
         })
         .collect();
@@ -188,6 +230,10 @@ fn chrome_labels_are_fluent_resolved_text() {
     assert!(faces.iter().any(|f| f == "Slide"), "{faces:?}");
     assert!(faces.iter().all(|f| !f.starts_with("slides-")), "{faces:?}");
     for l in &chrome.labels {
-        assert!(!l.text.starts_with("slides-"), "label carries a raw key: {}", l.text);
+        assert!(
+            !l.text.starts_with("slides-"),
+            "label carries a raw key: {}",
+            l.text
+        );
     }
 }

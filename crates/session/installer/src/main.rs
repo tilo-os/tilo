@@ -1,10 +1,10 @@
-// Thin binary entry point for the qOS graphical installer — all logic
+// Thin binary entry point for the Tilo graphical installer — all logic
 // lives in the library (mirrors greeter/src/main.rs).
 //
 // Modes:
 //   * default — build an `InstallerApp`, hand it to `ui::App`, run the
 //     live winit event loop. Launched off the live media under `cage`:
-//         cage -s -- /usr/bin/qos-installer
+//         cage -s -- /usr/bin/tilo-installer
 //   * `--shots <PATH> [--step <name>] [--viewport <WIDTH>x<HEIGHT>]` — render one screen into a PNG at
 //     `<PATH>` and exit. No window, no event loop. Headless snapshot for
 //     CI / visual inspection (output identical to the live binary's first
@@ -63,7 +63,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let text_scale = parse_text_scale_arg(&args);
         let Some((widget, seed)) = build_shot(&name) else {
-            eprintln!("qos-installer: unknown --step '{name}'");
+            eprintln!("tilo-installer: unknown --step '{name}'");
             std::process::exit(2);
         };
         render_shot_to_png(widget, viewport, text_scale, &out, seed)?;
@@ -324,7 +324,7 @@ fn render_shot_to_png(
     }
     let mut renderer = OffscreenRenderer::new(w, h);
     renderer.render_png(&scene, Color::TRANSPARENT, out);
-    println!("qos-installer: wrote shot to {}", out.display());
+    println!("tilo-installer: wrote shot to {}", out.display());
     Ok(())
 }
 
@@ -339,11 +339,11 @@ mod tests {
     #[test]
     fn viewport_accepts_separate_and_equals_forms() {
         assert_eq!(
-            parse_viewport_arg(&args(&["qos-installer", "--viewport", "640x480"])),
+            parse_viewport_arg(&args(&["tilo-installer", "--viewport", "640x480"])),
             Some((640, 480))
         );
         assert_eq!(
-            parse_viewport_arg(&args(&["qos-installer", "--viewport=360X640"])),
+            parse_viewport_arg(&args(&["tilo-installer", "--viewport=360X640"])),
             Some((360, 640))
         );
     }
@@ -352,7 +352,7 @@ mod tests {
     fn viewport_rejects_malformed_or_empty_dimensions() {
         for raw in ["", "640", "x480", "640x", "0x480", "640x0", "-1x480"] {
             assert_eq!(
-                parse_viewport_arg(&args(&["qos-installer", "--viewport", raw])),
+                parse_viewport_arg(&args(&["tilo-installer", "--viewport", raw])),
                 None,
                 "accepted malformed viewport {raw:?}"
             );
@@ -362,12 +362,12 @@ mod tests {
     #[test]
     fn shot_text_scale_accepts_only_bounded_finite_values() {
         assert_eq!(
-            parse_text_scale_arg(&args(&["qos-installer", "--text-scale=1.3"])),
+            parse_text_scale_arg(&args(&["tilo-installer", "--text-scale=1.3"])),
             Some(1.3)
         );
         for value in ["NaN", "0.5", "2.1", "not-a-number"] {
             assert_eq!(
-                parse_text_scale_arg(&args(&["qos-installer", "--text-scale", value])),
+                parse_text_scale_arg(&args(&["tilo-installer", "--text-scale", value])),
                 None
             );
         }

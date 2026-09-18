@@ -12,13 +12,10 @@
 //!   (see `music::app_root_for_shot`); `sidebar` snaps the navigation sidebar
 //!   open.
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
+// Apps run in isolated processes, so app-local arithmetic checks are relaxed.
+// Panic-producing lints remain denied; shared crates retain the full lint set
+// because a fault there can affect the session or every app.
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -108,22 +105,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_probe(&query);
     }
 
-    // Headless relay mode: a home server runs the library document + sync
-    // transport with no GUI; clients sync to it. Live iroh transport is gated
-    // behind the `p2p` feature (the relay still runs on the loopback transport
-    // otherwise, demonstrating the seam). See `music::relay`.
-    if args.iter().any(|a| a == "--relay") {
-        let mut relay = music::relay::Relay::new();
-        println!(
-            "music: headless relay — {} tracks, live={}, ticket={}",
-            relay.track_count(),
-            relay.is_live(),
-            relay.ticket().as_deref().unwrap_or("<none>")
-        );
-        relay.run();
-        return Ok(());
-    }
-
     // Headless per-frame benchmark: render a view offscreen N times and report
     // the layout+draw cost distribution. Reproducible + display-free.
     if let Some(pos) = args.iter().position(|a| a == "--bench") {
@@ -139,13 +120,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // The ordinary GUI, screenshots, and headless driver share the standard
-    // lifecycle. Probe/relay/benchmark remain explicit command modes above:
+    // lifecycle. Probe/benchmark remain explicit command modes above:
     // they do not construct a GUI and therefore are not launch lifecycle.
     ui::launch::run(
-        &LaunchSpec::new("dev.qos.music", music::app_root)
+        &LaunchSpec::new_with_args("dev.tilo.music", music::app_root_with_args)
             .shot_handler(render_shot)
             .allowed_flags(&["--live"])
             .allowed_options(&["--theme", "--play"])
+            .max_positionals(1)
             .scenarios(SHOT_SCENARIOS)
             .configure_app(configure_app),
     )?;
@@ -164,12 +146,12 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     let scenario = args.scenario.as_deref().unwrap_or_default();
     let theme = pick_shot_theme(args);
     let live =
-        args.has("--live") || std::env::var("QOS_MUSIC_LIVE").is_ok_and(|value| !value.is_empty());
+        args.has("--live") || std::env::var("TILO_MUSIC_LIVE").is_ok_and(|value| !value.is_empty());
     if live {
         let play = args
             .value("--play")
             .map(str::to_owned)
-            .or_else(|| std::env::var("QOS_MUSIC_PLAY").ok())
+            .or_else(|| std::env::var("TILO_MUSIC_PLAY").ok())
             .filter(|value| !value.is_empty());
         render_live_shot_to_png(viewport, out, play.as_deref(), &theme);
     } else {
@@ -281,7 +263,7 @@ fn probe_home(backend: &impl music::backend::MusicBackend) {
 }
 
 /// Real artist page for the top hit's artist (proves the artist endpoint +
-/// yields a channel id usable for `QOS_MUSIC_VIEW=artist:<id>`).
+/// yields a channel id usable for `TILO_MUSIC_VIEW=artist:<id>`).
 #[cfg(feature = "live")]
 fn probe_artist(backend: &impl music::backend::MusicBackend, top: &music::backend::TrackHit) {
     let Some(aid) = top.artist_id.clone() else {
@@ -472,7 +454,7 @@ fn probe_decode(_url: &str) {
 fn run_probe(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!(
         "music --probe needs the `live` feature (real YouTube-Music backend).\n\
-         Rebuild with:  qos-build run -p music --features live -- --probe \"aurora runaway\""
+         Rebuild with:  cargo run -p music --features live -- --probe \"aurora runaway\""
     );
     std::process::exit(2);
 }
@@ -499,8 +481,8 @@ fn parse_viewport(s: &str) -> Option<(u32, u32)> {
 }
 
 /// The OS theme a `--shots` frame renders in: `--theme light|dark|high-contrast`
-/// (or the `QOS_MUSIC_THEME` env), defaulting to dark. `QOS_REDUCE_MOTION`,
-/// `QOS_A11Y_REDUCE_MOTION`, or the app-scoped `QOS_MUSIC_REDUCE_MOTION` also
+/// (or the `TILO_MUSIC_THEME` env), defaulting to dark. `TILO_REDUCE_MOTION`,
+/// `TILO_A11Y_REDUCE_MOTION`, or the app-scoped `TILO_MUSIC_REDUCE_MOTION` also
 /// makes a deterministic no-motion shot. This mirrors the live app's
 /// accessibility setting without altering live state.
 fn pick_shot_theme(args: &LaunchArgs) -> Theme {
@@ -508,7 +490,7 @@ fn pick_shot_theme(args: &LaunchArgs) -> Theme {
     let sel = args
         .value("--theme")
         .map(str::to_owned)
-        .or_else(|| std::env::var("QOS_MUSIC_THEME").ok())
+        .or_else(|| std::env::var("TILO_MUSIC_THEME").ok())
         .unwrap_or_default();
     let theme = match sel.to_lowercase().as_str() {
         "" => None,
@@ -518,9 +500,9 @@ fn pick_shot_theme(args: &LaunchArgs) -> Theme {
         _ => Some(Theme::dark()),
     };
     let reduce_motion = [
-        "QOS_MUSIC_REDUCE_MOTION",
-        "QOS_A11Y_REDUCE_MOTION",
-        "QOS_REDUCE_MOTION",
+        "TILO_MUSIC_REDUCE_MOTION",
+        "TILO_A11Y_REDUCE_MOTION",
+        "TILO_REDUCE_MOTION",
     ]
     .iter()
     .any(|key| std::env::var(key).is_ok_and(|value| !value.is_empty() && value != "0"));
@@ -538,7 +520,7 @@ fn pick_shot_theme(args: &LaunchArgs) -> Theme {
     )
 }
 
-/// Headless benchmark: render the current view (`QOS_MUSIC_VIEW`) `n` times
+/// Headless benchmark: render the current view (`TILO_MUSIC_VIEW`) `n` times
 /// offscreen, timing the full per-frame CPU path (sync → layout → draw) that
 /// `QUICK_UI_PERF` reports live. No GPU submit, no display — reproducible.
 fn run_bench(n: usize, viewport: (u32, u32)) {
@@ -585,8 +567,8 @@ fn run_bench(n: usize, viewport: (u32, u32)) {
         .copied()
         .unwrap_or(0.0);
     let max = samples.last().copied().unwrap_or(0.0);
-    let view = std::env::var("QOS_MUSIC_VIEW").unwrap_or_else(|_| "home".into());
-    let nocache = std::env::var("QOS_MUSIC_NOCACHE").is_ok();
+    let view = std::env::var("TILO_MUSIC_VIEW").unwrap_or_else(|_| "home".into());
+    let nocache = std::env::var("TILO_MUSIC_NOCACHE").is_ok();
     println!(
         "bench view={view} nocache={nocache} frames={n} @ {}x{} :  avg={avg:.3}ms  p50={p50:.3}ms  p95={p95:.3}ms  max={max:.3}ms",
         viewport.0, viewport.1

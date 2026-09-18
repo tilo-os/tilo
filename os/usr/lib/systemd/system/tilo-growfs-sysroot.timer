@@ -1,0 +1,12 @@
+[Unit]
+Description=Grow the installed root outside the login critical path
+
+[Timer]
+# Let the greeter's cold-start I/O go first. Root growth remains early enough
+# for first-session workloads and is idempotent if systemd-repart already grew it.
+OnBootSec=5s
+AccuracySec=1s
+Unit=tilo-growfs-sysroot.service
+
+[Install]
+WantedBy=timers.target

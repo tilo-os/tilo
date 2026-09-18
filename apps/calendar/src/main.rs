@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
+
 //! Calendar — thin binary entry point. All logic lives in the library.
 //!
 //! Modes (all through the standard [`ui::launch`] runner):
@@ -19,6 +21,7 @@
 //!       * `--new-event`, `--date-popover`, `--calendar-popover`,
 //!         `--task-detail`, `--task-picker due|priority|project`,
 //!         `--scroll-hour N`.
+//!       * `--schedule-conflict` stage a local overlap in the demo editor.
 //!       * `--resize-from WxH` lay the SAME instance out at this size first,
 //!         then render at `--viewport`. Proves the layout reflows on a live
 //!         resize (rather than caching the first frame's breakpoint).
@@ -37,16 +40,12 @@
 //! The offscreen pass is identical to the live app's frame cycle — only the
 //! sample seed and viewport differ, which is exactly what drives the layout.
 //! Theme and text scale come from [`ui::launch::shot_theme`], so
-//! `QOS_SHOTS_THEME` / `QOS_SHOTS_TEXT_SCALE` mean the same here as in every
+//! `TILO_SHOTS_THEME` / `TILO_SHOTS_TEXT_SCALE` mean the same here as in every
 //! other app.
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
+// Apps run in isolated processes, so app-local arithmetic checks are relaxed.
+// Panic-producing lints remain denied; shared crates retain the full lint set
+// because a fault there can affect the session or every app.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -128,6 +127,8 @@ const SHOT_FLAGS: &[&str] = &[
     "--date-popover",
     "--calendar-popover",
     "--task-detail",
+    "--schedule-conflict",
+    "--sheet-scroll-end",
 ];
 
 /// Legacy valued shot options, still accepted on top of a scenario.
@@ -166,7 +167,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn launch_spec() -> LaunchSpec {
-    LaunchSpec::new("dev.qos.calendar", calendar::app_root)
+    LaunchSpec::new_with_args("dev.tilo.calendar", live_root)
+        .max_positionals(1)
+        .open_state(calendar::store::open_state)
         .shot_root(shot_root)
         .shot_handler(render_shot)
         .shot_viewport(shot_viewport)
@@ -178,6 +181,15 @@ fn launch_spec() -> LaunchSpec {
 
 fn configure_app(app: &mut ui::App) {
     calendar::actions::register(app.action_registry_mut());
+}
+
+fn live_root(args: &ui::launch::LaunchArgs) -> Result<Box<dyn Widget>, ui::launch::LaunchError> {
+    let mut app = CalendarApp::new();
+    if let Some(target) = args.positionals().first() {
+        app.queue_launch_ics(target)
+            .map_err(ui::launch::LaunchError::Operation)?;
+    }
+    Ok(Box::new(app))
 }
 
 /// Which popover a scenario opens over the New-Event form.
@@ -199,6 +211,8 @@ struct ShotState {
     new_event: bool,
     popover: Option<FormPopoverShot>,
     task_detail: bool,
+    schedule_conflict: bool,
+    sheet_scroll_end: bool,
     task_picker: Option<String>,
     sync_state: Option<String>,
     flap: bool,
@@ -312,6 +326,8 @@ impl ShotState {
             s.popover = Some(FormPopoverShot::Calendar);
         }
         s.task_detail |= opts.task_detail;
+        s.schedule_conflict |= opts.schedule_conflict;
+        s.sheet_scroll_end |= opts.sheet_scroll_end;
         if let Some(picker) = opts.task_picker {
             if !TASK_PICKERS.contains(&picker) {
                 return Err(LaunchError::Operation(format!(
@@ -342,9 +358,8 @@ impl ShotState {
             s.scroll_hour = Some(parsed);
         }
         if let Some(from) = opts.resize_from {
-            s.resize_from = Some(
-                parse_wxh(from).ok_or_else(|| LaunchError::InvalidViewport(from.to_owned()))?,
-            );
+            s.resize_from =
+                Some(parse_wxh(from).ok_or_else(|| LaunchError::InvalidViewport(from.to_owned()))?);
         }
         Ok(s)
     }
@@ -378,6 +393,9 @@ impl ShotState {
         if self.empty {
             return Box::new(app);
         }
+        if self.schedule_conflict {
+            app.shots_show_schedule_conflict();
+        }
         if self.calendar_screen {
             app.shots_show_calendar();
         }
@@ -392,6 +410,9 @@ impl ShotState {
         }
         if self.collapse {
             app.shots_collapse_sidebar();
+        }
+        if self.sheet_scroll_end {
+            app.shots_scroll_detail_to_end();
         }
         match self.popover {
             Some(FormPopoverShot::Date) => app.shots_open_date_popover(),
@@ -418,6 +439,8 @@ struct ShotOptions<'a> {
     date_popover: bool,
     calendar_popover: bool,
     task_detail: bool,
+    schedule_conflict: bool,
+    sheet_scroll_end: bool,
     task_picker: Option<&'a str>,
     sync_state: Option<&'a str>,
     scroll_hour: Option<&'a str>,
@@ -436,6 +459,8 @@ impl<'a> ShotOptions<'a> {
             date_popover: args.has("--date-popover"),
             calendar_popover: args.has("--calendar-popover"),
             task_detail: args.has("--task-detail"),
+            schedule_conflict: args.has("--schedule-conflict"),
+            sheet_scroll_end: args.has("--sheet-scroll-end"),
             task_picker: args.value("--task-picker"),
             sync_state: args.value("--sync-state"),
             scroll_hour: args.value("--scroll-hour"),
@@ -588,6 +613,39 @@ fn render_shot_to_png(
     Ok(())
 }
 
+/// Resolve Calendar's offscreen theme through the same accessibility choices
+/// as its launched app. Keeping it pure makes visual audit flags testable and
+/// prevents a PNG from silently claiming a high-contrast or reduced-motion
+/// pass that never reached the widget tree.
+fn shot_theme(theme_name: Option<&str>, text_scale: Option<f32>, reduce_motion: bool) -> Theme {
+    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
+    // theme-driven chrome can be proven across palettes; defaults to dark.
+    let theme = match theme_name {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
+    let theme = text_scale.map_or_else(
+        || theme.clone(),
+        |scale| theme.clone().with_text_scale(scale),
+    );
+    theme.with_reduce_motion(reduce_motion)
+}
+
+/// The custom offscreen renderer does not instantiate [`ui::App`], so it must
+/// read the same preference names explicitly before rendering a review frame.
+fn shot_motion_reduced() -> bool {
+    ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .any(|value| motion_env_value_enabled(&value))
+}
+
+fn motion_env_value_enabled(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -614,7 +672,9 @@ mod tests {
         let error = ShotState::scenario("sync_error").unwrap();
         assert_eq!(error.sync_state.as_deref(), Some("error"));
         assert_eq!(
-            ShotState::scenario("narrow_drawer").unwrap().default_viewport(),
+            ShotState::scenario("narrow_drawer")
+                .unwrap()
+                .default_viewport(),
             NARROW_SHOTS_VIEWPORT
         );
     }
@@ -657,16 +717,40 @@ mod tests {
     fn malformed_shot_options_are_errors_not_silent_fallbacks() {
         let d = ShotOptions::default;
         let bad = [
-            ShotOptions { view: Some("tomorrow"), ..d() },
-            ShotOptions { screen: Some("settings"), ..d() },
-            ShotOptions { sync_state: Some("lost"), ..d() },
-            ShotOptions { task_picker: Some("colour"), ..d() },
-            ShotOptions { scroll_hour: Some("99"), ..d() },
-            ShotOptions { scroll_hour: Some("noon"), ..d() },
-            ShotOptions { resize_from: Some("wide"), ..d() },
+            ShotOptions {
+                view: Some("tomorrow"),
+                ..d()
+            },
+            ShotOptions {
+                screen: Some("settings"),
+                ..d()
+            },
+            ShotOptions {
+                sync_state: Some("lost"),
+                ..d()
+            },
+            ShotOptions {
+                task_picker: Some("colour"),
+                ..d()
+            },
+            ShotOptions {
+                scroll_hour: Some("99"),
+                ..d()
+            },
+            ShotOptions {
+                scroll_hour: Some("noon"),
+                ..d()
+            },
+            ShotOptions {
+                resize_from: Some("wide"),
+                ..d()
+            },
         ];
         for opts in bad {
-            assert!(ShotState::resolve(None, &opts).is_err(), "{opts:?} was accepted");
+            assert!(
+                ShotState::resolve(None, &opts).is_err(),
+                "{opts:?} was accepted"
+            );
         }
         assert!(ShotState::resolve(Some("nope"), &d()).is_err());
         let good = ShotState::resolve(
@@ -693,5 +777,22 @@ mod tests {
         assert_eq!(parse_wxh("1280x720"), Some((1280, 720)));
         assert_eq!(parse_wxh("390X844"), Some((390, 844)));
         assert_eq!(parse_wxh("wide"), None);
+    }
+
+    #[test]
+    fn offscreen_a11y_theme_inputs_reach_calendar_widgets() {
+        let theme = shot_theme(Some("high-contrast"), Some(2.0), true);
+        assert_eq!(theme.name, Theme::high_contrast().name);
+        assert_eq!(theme.text_scale, 2.0);
+        assert!(
+            theme.reduce_motion,
+            "the reduced-motion review frame must carry the actual preference"
+        );
+        for value in ["1", "true", " yes "] {
+            assert!(motion_env_value_enabled(value), "accepted {value:?}");
+        }
+        for value in ["", "0", "false", " FALSE "] {
+            assert!(!motion_env_value_enabled(value), "rejected {value:?}");
+        }
     }
 }

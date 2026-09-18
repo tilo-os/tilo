@@ -1375,8 +1375,8 @@ impl super::PrivateCapabilities {
 
 impl super::PrivateTextureFormatCapabilities {
     pub fn map_format(&self, format: wgt::TextureFormat) -> MTLPixelFormat {
-        use wgt::TextureFormat as Tf;
         use MTLPixelFormat as MTL;
+        use wgt::TextureFormat as Tf;
         match format {
             Tf::R8Unorm => MTL::R8Unorm,
             Tf::R8Snorm => MTL::R8Snorm,
@@ -1526,8 +1526,8 @@ impl super::PrivateTextureFormatCapabilities {
         aspects: crate::FormatAspects,
     ) -> MTLPixelFormat {
         use crate::FormatAspects as Fa;
-        use wgt::TextureFormat as Tf;
         use MTLPixelFormat as MTL;
+        use wgt::TextureFormat as Tf;
         match (format, aspects) {
             // map combined depth-stencil format to their stencil-only format
             // see https://developer.apple.com/library/archive/documentation/Miscellaneous/Conceptual/MetalProgrammingGuide/WhatsNewiniOS10tvOS10andOSX1012/WhatsNewiniOS10tvOS10andOSX1012.html#//apple_ref/doc/uid/TP40014221-CH14-DontLinkElementID_77

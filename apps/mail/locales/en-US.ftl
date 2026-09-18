@@ -28,6 +28,8 @@ mail-setup-oauth-note-unavailable = Not available in this installation · Passwo
 mail-setup-tls = TLS
 mail-setup-hint-verified = Credentials are verified before the account is saved.
 mail-setup-save = Save & verify
+mail-setup-verifying = Verifying…
+mail-setup-finding-provider = Finding provider…
 mail-setup-cancel = Cancel
 mail-setup-remove = Remove
 

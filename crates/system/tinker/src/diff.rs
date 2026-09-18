@@ -9,8 +9,8 @@
 //!   first write);
 //! * anything else is new.
 //!
-//! No bookkeeping at layer-write time is needed, so this cannot drift out of sync with
-//! reality the way a recorded change journal can.
+//! No bookkeeping at layer-write time is needed, so the change set is derived
+//! directly from the layer and base directories.
 
 use std::collections::BTreeMap;
 use std::ffi::CString;
@@ -152,12 +152,12 @@ fn is_pkg_metadata(path: &Path) -> bool {
 /// layer was stacked on, read only to answer "did this path already exist" — a missing base
 /// yields an all-`Added` diff rather than an error.
 ///
+/// Filesystem failures for individual entries are represented as unknown-size
+/// additions or skipped; failures opening `upper` are returned.
+///
 /// # Errors
 ///
-/// Never returns an error today: a walk, stat or metadata failure on an individual entry is
-/// recorded as a change (an unreadable entry becomes an unknown-size addition) or skipped
-/// rather than failing the whole diff. The `Result` is kept for a future genuine failure, such
-/// as `upper` not existing at all.
+/// Returns an I/O error when the upper layer cannot be traversed.
 pub fn compute(upper: &Path, base: Option<&Path>) -> std::io::Result<Diff> {
     let mut changes = Vec::new();
 

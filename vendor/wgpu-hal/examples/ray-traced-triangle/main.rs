@@ -50,7 +50,10 @@ impl std::fmt::Debug for AccelerationStructureInstance {
     }
 }
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+)]
 impl AccelerationStructureInstance {
     const LOW_24_MASK: u32 = 0x00ff_ffff;
     const MAX_U24: u32 = (1u32 << 24u32) - 1u32;
@@ -194,7 +197,10 @@ impl<A: hal::Api> ExecutionContext<A> {
     }
 }
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+)]
 struct Example<A: hal::Api> {
     instance: A::Instance,
     adapter: A::Adapter,
@@ -319,7 +325,10 @@ impl<A: hal::Api> Example<A> {
             surface.configure(&device, &surface_config).unwrap();
         };
 
-        #[allow(dead_code)]
+        #[allow(
+            dead_code,
+            reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+        )]
         struct Uniforms {
             view_inverse: glam::Mat4,
             proj_inverse: glam::Mat4,

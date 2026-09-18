@@ -12,13 +12,9 @@
 //!   * `--viewport WxH`  — render at a custom size (e.g. `--viewport 760x900`
 //!     to exercise the narrow-window overlay flaps).
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
+// Apps run in isolated processes, so app-local arithmetic checks are relaxed.
+// Panic-producing lints remain denied; shared crates retain the full lint set
+// because a fault there can affect the session or every app.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -96,10 +92,11 @@ pub fn main() {
         qdoc::blobstore::FsBlobStore::default_root(),
     )));
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.chat", chat::app_root)
+        &LaunchSpec::new("dev.tilo.chat", chat::app_root)
             .shot_handler(shot_handler)
             .scenarios(&[
                 "narrow",
+                "history",
                 "compact",
                 "starter",
                 "people",
@@ -200,11 +197,22 @@ fn render_shot_to_png(
         &presence,
     );
 
-    if let Some(parent) = out.parent() {
+    let parent = out.parent().unwrap_or_else(|| std::path::Path::new("."));
+    if !parent.as_os_str().is_empty() {
         std::fs::create_dir_all(parent).ok();
     }
+    // Render into a sibling temp path and publish only after PNG encoding
+    // returns. A killed headless renderer must leave no valid-looking but
+    // truncated screenshot at the requested path for visual review tools to
+    // mistake for an inspected frame.
+    let name = out
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("chat.png");
+    let tmp = parent.join(format!(".{name}.partial-{}", std::process::id()));
     let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    renderer.render_png(&scene, Color::TRANSPARENT, &tmp);
+    std::fs::rename(&tmp, out)?;
     println!("chat: wrote shot to {}", out.display());
     Ok(())
 }

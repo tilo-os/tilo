@@ -1,0 +1,258 @@
+#!/usr/bin/bash
+# The Tilo repair console.
+#
+# Runs as PID-something on tty1 and on the serial line when the machine booted a
+# UKI whose sealed command line says `tilo.mode=repair`. Nothing else on the
+# machine is running: no compositor, no greeter, no collaborative filesystem, no
+# update timer, no sshd. See /usr/share/doc/tilo/repair-mode.md.
+#
+#   tilo-repair                 the console (what the boot starts)
+#   tilo-repair report          print the machine's state and exit
+#
+# ## Authentication
+#
+# Every action below is gated on proving a LUKS passphrase for the root volume.
+# The gate uses `cryptsetup open --test-passphrase`, which only a key in the
+# LUKS header satisfies. It is needed because the disk may already be open after
+# a passphrase, recovery key, or explicitly enrolled FIDO2 token was supplied;
+# LUKS header satisfies. An open disk does not show that the same person is still
+# at the keyboard.
+#
+# On a machine whose root is NOT encrypted there is no secret to prove and none is
+# asked for. An unencrypted disk can be read by removing it, so a prompt would
+# not provide authentication.
+set -uo pipefail
+
+# shellcheck source=/dev/null
+[ -r /usr/libexec/tilo-rollback-common ] && . /usr/libexec/tilo-rollback-common
+
+DEPLOY=/usr/libexec/tilo-deployment
+
+bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
+rule()  { printf '%s\n' "------------------------------------------------------------------------"; }
+say()   { printf '%s\n' "$*"; }
+oops()  { printf '\n  !! %s\n\n' "$*"; }
+
+# The LUKS device, if this root is encrypted. tilo-rollback-common finds it by
+# content (what the root filesystem actually sits on) rather than by reading
+# /etc/crypttab, which would say what was intended.
+luks_device() {
+  if command -v rollback_luks_device >/dev/null 2>&1 || declare -F rollback_luks_device >/dev/null; then
+    rollback_luks_device
+  fi
+}
+
+AUTHED=0
+AUTH_REASON=""
+
+authenticate() {
+  [ "$AUTHED" = 1 ] && return 0
+  local dev; dev="$(luks_device)"
+  if [ -z "$dev" ]; then
+    AUTHED=1
+    AUTH_REASON="this machine's root filesystem is not encrypted"
+    say "The root filesystem on this machine is not encrypted, so there is no disk"
+    say "secret to prove. Repair mode gives you no more than taking the disk out"
+    say "and reading it elsewhere would."
+    return 0
+  fi
+
+  # A key file is how automation authenticates. It is the same check — the file
+  # has to contain a passphrase the header accepts.
+  if [ -n "${TILO_REPAIR_KEYFILE:-}" ]; then
+    if cryptsetup open --test-passphrase --key-file "$TILO_REPAIR_KEYFILE" "$dev" 2>/dev/null; then
+      AUTHED=1; AUTH_REASON="recovery key from $TILO_REPAIR_KEYFILE"
+      say "Authenticated with the key file."
+      return 0
+    fi
+    oops "the key file at $TILO_REPAIR_KEYFILE is not a passphrase for $dev"
+    return 1
+  fi
+
+  say "This machine's disk is encrypted ($dev)."
+  say "Enter the recovery key, or any passphrase enrolled on this volume."
+  local i pass
+  for i in 1 2 3; do
+    printf '  passphrase (%d of 3): ' "$i"
+    read -r -s pass || { printf '\n'; return 1; }
+    printf '\n'
+    if printf '%s' "$pass" | cryptsetup open --test-passphrase --key-file - "$dev" 2>/dev/null; then
+      pass=""
+      AUTHED=1; AUTH_REASON="passphrase for $dev"
+      say "Authenticated."
+      return 0
+    fi
+    pass=""
+    oops "that is not a passphrase for this volume"
+  done
+  return 1
+}
+
+require_auth() {
+  authenticate && return 0
+  oops "not authenticated; that action is not available"
+  return 1
+}
+
+# --- the report ---------------------------------------------------------------
+# Deliberately available WITHOUT authenticating. It reveals what is already on the
+# boot menu of a machine you are standing in front of, and someone diagnosing a
+# machine that will not boot needs to see it before they can decide what to try.
+report() {
+  rule
+  bold "Tilo repair mode"
+  rule
+  local gen mode cfs
+  gen="$(tr ' \t' '\n\n' < /proc/cmdline | sed -n 's/^tilo\.generation=//p' | head -1)"
+  mode="$(tr ' \t' '\n\n' < /proc/cmdline | sed -n 's/^tilo\.mode=//p' | head -1)"
+  cfs="$(tr ' \t' '\n\n' < /proc/cmdline | sed -n 's/^composefs=//p' | head -1)"
+  printf '  booted     : generation %s, mode %s\n' "${gen:-unknown}" "${mode:-unknown}"
+  printf '  rootfs     : composefs %.16s\n' "${cfs:-<none>}"
+  printf '  kernel     : %s\n' "$(uname -r)"
+  local dev; dev="$(luks_device)"
+  printf '  encryption : %s\n' "${dev:-none — the root filesystem is not encrypted}"
+  if mountpoint -q /var 2>/dev/null || [ -d /var/home ]; then
+    printf '  /var       : %s\n' "$(findmnt -no SOURCE,OPTIONS /var 2>/dev/null | head -1 || echo 'part of the root filesystem')"
+  fi
+  rule
+  "$DEPLOY" list 2>&1 | sed 's/^/  /'
+  rule
+  say "Previous boot's log is available (option 5). Nothing on this machine has"
+  say "been changed by booting here."
+  rule
+}
+
+# --- actions ------------------------------------------------------------------
+act_rollback() {
+  require_auth || return
+  "$DEPLOY" rollback
+}
+
+act_boot_once() {
+  require_auth || return
+  "$DEPLOY" list 2>&1 | sed 's/^/  /'
+  printf '\n  entry to boot once (or empty to cancel): '
+  local e; read -r e || return
+  [ -n "$e" ] || return
+  "$DEPLOY" boot "$e" && say "  Reboot to take it."
+}
+
+act_update() {
+  require_auth || return
+  say "This re-fetches the image this machine is configured to track and stages it."
+  say "It needs a network route and a reachable registry."
+  "$DEPLOY" update
+}
+
+act_var_rw() {
+  require_auth || return
+  # On a bootc machine /var is the stateroot and is already read-write; the root
+  # of the deployment is the part that is read-only. Report what is actually the
+  # case rather than remounting something that did not need it.
+  local opts; opts="$(findmnt -no OPTIONS /var 2>/dev/null | head -1)"
+  if [ -z "$opts" ]; then
+    say "  /var is not a separate mount; it is part of the root filesystem."
+    opts="$(findmnt -no OPTIONS / 2>/dev/null | head -1)"
+    case "$opts" in
+      *ro,*|*,ro|ro) mount -o remount,rw / && say "  / remounted read-write." ;;
+      *) say "  / is already read-write." ;;
+    esac
+    return
+  fi
+  case "$opts" in
+    *ro,*|*,ro|ro) mount -o remount,rw /var && say "  /var remounted read-write." ;;
+    *) say "  /var is already read-write ($opts)." ;;
+  esac
+  say "  Your data is under /var/home. A rollback does not touch it — which is"
+  say "  also why a rollback cannot undo damage that lives there."
+}
+
+act_logs() {
+  require_auth || return
+  # -b -1 is the boot before this one: the failed boot, which is the whole point.
+  # A machine with no persistent journal has nothing from before the reboot, and
+  # saying so beats printing this boot's log and letting someone read it as the
+  # failure.
+  if ! journalctl --list-boots --no-pager 2>/dev/null | grep -q '^ *-1'; then
+    oops "there is no record of a previous boot on this machine."
+    say "  The journal is not persistent here, so nothing from before this reboot"
+    say "  survived. /var/log/journal is where it would be."
+    say "  This boot's log, for what it is worth:"
+    journalctl -b 0 --no-pager -p warning 2>&1 | tail -60
+    return
+  fi
+  say "  Warnings and errors from the previous boot (journalctl -b -1 -p warning):"
+  journalctl -b -1 --no-pager -p warning 2>&1 | tail -120
+  say ""
+  say "  Full log: journalctl -b -1   (from the shell, option 7)"
+}
+
+act_recover_files() {
+  require_auth || return
+  say "  Connect and mount an external disk first. The original /var/home is"
+  say "  read, never modified. The destination must be a different physical disk."
+  printf '  path below /var/home (for example alex/Documents, or . for all homes): '
+  local source destination
+  read -r source || return
+  printf '  mounted external destination: '
+  read -r destination || return
+  /usr/libexec/tilo-recovery copy-current --from "$source" --destination "$destination"
+}
+
+act_shell() {
+  require_auth || return
+  say "  Root shell. 'exit' comes back here."
+  ${SHELL:-/bin/bash} -l
+}
+
+# --- the console --------------------------------------------------------------
+menu() {
+  printf '\n'
+  bold "What would you like to do?"
+  say "  1  Roll back to the previous deployment"
+  say "  2  Boot a specific deployment once"
+  say "  3  Re-fetch and stage the current image"
+  say "  4  Make /var writable and show where your data is"
+  say "  5  Show the previous boot's warnings and errors"
+  say "  6  Copy personal files to an external disk"
+  say "  7  Show this report again"
+  say "  8  Root shell"
+  say "  9  Reboot"
+  say "  0  Power off"
+  printf '\n  choice: '
+}
+
+main() {
+  case "${1:-}" in
+    report) report; exit 0 ;;
+    "") ;;
+    *) printf 'usage: tilo-repair [report]\n' >&2; exit 2 ;;
+  esac
+
+  report
+  # The report also goes to the journal and the console for a machine nobody can
+  # type at — a headless boot leaves it on the serial line, which is the only
+  # evidence such a machine can produce.
+  report 2>/dev/null | systemd-cat -t tilo-repair -p info 2>/dev/null || true
+
+  while :; do
+    menu
+    local c; read -r c || { printf '\n'; sleep 2; continue; }
+    case "$c" in
+      1) act_rollback ;;
+      2) act_boot_once ;;
+      3) act_update ;;
+      4) act_var_rw ;;
+      5) act_logs ;;
+      6) act_recover_files ;;
+      7) report ;;
+      8) act_shell ;;
+      9) require_auth && systemctl reboot ;;
+      0) require_auth && systemctl poweroff ;;
+      "") ;;
+      *) oops "not one of the options" ;;
+    esac
+  done
+}
+
+main "$@"

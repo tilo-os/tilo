@@ -384,7 +384,7 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
             let changes = snapshot.get_changes(&before.0);
             assert_eq!(changes.len(), 1, "exactly one durable owned action");
             let context =
-                qos_actions::ActionContext::from_change_message(changes[0].message().unwrap())
+                tilo_actions::ActionContext::from_change_message(changes[0].message().unwrap())
                     .unwrap();
             assert_eq!(context.action_label, "Edit note");
             assert_eq!(

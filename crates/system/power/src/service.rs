@@ -1,6 +1,6 @@
 //! The power **service** — the async orchestrator that pairs the pure policy
-//! ([`super::policy`], [`super::battery`], [`super::inhibit`]) with the real `systemd-logind`
-//! / `UPower` glue ([`super::logind`], [`super::upower`]).
+//! ([`super::policy`], [`super::battery`], [`super::inhibit`]) with the `systemd-logind`
+//! / `UPower` integration ([`super::logind`], [`super::upower`]).
 //!
 //! Runs on a background tokio runtime (spawned by the compositor next to the notification
 //! service) and:
@@ -15,7 +15,7 @@
 //! * resets the compositor's idle timer on resume.
 //!
 //! The reaction *mappings* (battery events → signals, lid → effect) are pure functions
-//! tested below; `run` only wires them to real streams.
+//! tested below; `run` only wires them to the D-Bus streams.
 
 use futures_util::StreamExt;
 use tracing::{debug, info, warn};
@@ -58,9 +58,9 @@ impl From<Option<PowerAction>> for Effect {
     }
 }
 
-/// Decide the effect of a lid observation given the previous state. Only a genuine
+/// Decide the effect of a lid observation given the previous state. Only an
 /// open→closed edge acts; the first observation (`prev == None`) or a lid that stays closed
-/// just records. Pure — the async [`PowerService`] calls exactly this.
+/// records the state. Pure — the async [`PowerService`] calls exactly this.
 pub fn lid_edge_effect(prev: Option<bool>, now: bool, policy: &PowerPolicy) -> Effect {
     if now && prev == Some(false) {
         Effect::from(policy.on_lid(true))
@@ -70,7 +70,7 @@ pub fn lid_edge_effect(prev: Option<bool>, now: bool, policy: &PowerPolicy) -> E
 }
 
 /// Map battery-threshold events to the compositor signals + whether to auto-suspend. Pure:
-/// this is what [`PowerService::run`] applies for real.
+/// this is what [`PowerService::run`] applies.
 pub fn battery_reaction(events: &[BatteryEvent], policy: &PowerPolicy) -> (Vec<PowerSignal>, bool) {
     let mut signals = Vec::new();
     let mut suspend = false;
@@ -167,11 +167,11 @@ impl PowerService {
         // just also act on the lid. Do not fail startup.
         let delegate = match logind.delegate_handled_keys().await {
             Ok(l) => {
-                info!(target: "qos::power", "logind: delegating lid/power-key to compositor policy");
+                info!(target: "tilo::power", "logind: delegating lid/power-key to compositor policy");
                 Some(l)
             }
             Err(e) => {
-                warn!(target: "qos::power", error = %e, "logind: could not take delegate lock");
+                warn!(target: "tilo::power", error = %e, "logind: could not take delegate lock");
                 None
             }
         };
@@ -202,7 +202,7 @@ impl PowerService {
         const BATTERY_POLL_EVERY: u32 = 80; // 250ms * 80 = 20s
 
         let policy = self.policy;
-        info!(target: "qos::power", ?policy, "power service started");
+        info!(target: "tilo::power", ?policy, "power service started");
 
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
         let mut ticks: u32 = 0;
@@ -213,7 +213,7 @@ impl PowerService {
         let mut sleep_stream = match self.logind.receive_prepare_for_sleep().await {
             Ok(stream) => Some(stream),
             Err(error) => {
-                warn!(target: "qos::power", %error, "PrepareForSleep subscription unavailable; retrying");
+                warn!(target: "tilo::power", %error, "PrepareForSleep subscription unavailable; retrying");
                 None
             }
         };
@@ -242,11 +242,11 @@ impl PowerService {
                     if sleep_stream.is_none() && now >= sleep_stream_retry_at {
                         match self.logind.receive_prepare_for_sleep().await {
                             Ok(stream) => {
-                                info!(target: "qos::power", "subscribed to logind PrepareForSleep");
+                                info!(target: "tilo::power", "subscribed to logind PrepareForSleep");
                                 sleep_stream = Some(stream);
                             }
                             Err(error) => {
-                                debug!(target: "qos::power", %error, "PrepareForSleep subscription unavailable; retrying");
+                                debug!(target: "tilo::power", %error, "PrepareForSleep subscription unavailable; retrying");
                                 sleep_stream_retry_at = stream_retry_after(now);
                             }
                         }
@@ -259,7 +259,7 @@ impl PowerService {
                         // no fallible subscription step; if its stream
                         // ended, creating a new one is the retry.
                         profile_stream = Some(monitor.receive_active_profile_changed().await);
-                        info!(target: "qos::power", "subscribed to power-profile changes");
+                        info!(target: "tilo::power", "subscribed to power-profile changes");
                     }
                     self.reap_suspend_task().await;
                     self.drain_commands().await;
@@ -274,7 +274,7 @@ impl PowerService {
                     if let Some(msg) = msg {
                         self.handle_prepare_for_sleep(&msg).await;
                     } else {
-                        warn!(target: "qos::power", "PrepareForSleep stream ended; scheduling resubscription");
+                        warn!(target: "tilo::power", "PrepareForSleep stream ended; scheduling resubscription");
                         sleep_stream = None;
                         sleep_stream_retry_at = stream_retry_after(tokio::time::Instant::now());
                     }
@@ -283,10 +283,10 @@ impl PowerService {
                     if let Some(changed) = changed {
                         match changed.get().await {
                             Ok(profile) => self.apply_active_profile(&profile),
-                            Err(error) => debug!(target: "qos::power", %error, "active profile change could not be read"),
+                            Err(error) => debug!(target: "tilo::power", %error, "active profile change could not be read"),
                         }
                     } else {
-                        debug!(target: "qos::power", "power-profile stream ended; scheduling resubscription");
+                        debug!(target: "tilo::power", "power-profile stream ended; scheduling resubscription");
                         profile_stream = None;
                         profile_stream_retry_at = stream_retry_after(tokio::time::Instant::now());
                     }
@@ -306,16 +306,16 @@ impl PowerService {
                         sample.health,
                         sample.on_ac,
                     ) {
-                        debug!(target: "qos::power", %error, "power history sample could not be stored");
+                        debug!(target: "tilo::power", %error, "power history sample could not be stored");
                     }
                 }
             }
-            Err(error) => debug!(target: "qos::power", %error, "power history sample failed"),
+            Err(error) => debug!(target: "tilo::power", %error, "power history sample failed"),
         }
         let snap = match self.upower.battery_snapshot().await {
             Ok(s) => s,
             Err(e) => {
-                debug!(target: "qos::power", error = %e, "battery read failed");
+                debug!(target: "tilo::power", error = %e, "battery read failed");
                 return;
             }
         };
@@ -327,7 +327,7 @@ impl PowerService {
         if policy == self.policy {
             return;
         }
-        info!(target: "qos::power", %profile, ?policy, "active power profile policy applied");
+        info!(target: "tilo::power", %profile, ?policy, "active power profile policy applied");
         self.policy = policy;
         self.bridge
             .push_signal(PowerSignal::IdleSuspendChanged(policy.idle_suspend));
@@ -343,7 +343,7 @@ impl PowerService {
             self.bridge.push_signal(s);
         }
         if suspend {
-            info!(target: "qos::power", percent = snap.percent, "critical battery: suspending");
+            info!(target: "tilo::power", percent = snap.percent, "critical battery: suspending");
             self.start_suspend().await;
         }
     }
@@ -354,7 +354,7 @@ impl PowerService {
         let closed = match self.upower.lid_is_closed().await {
             Ok(c) => c,
             Err(e) => {
-                debug!(target: "qos::power", error = %e, "lid read failed");
+                debug!(target: "tilo::power", error = %e, "lid read failed");
                 return;
             }
         };
@@ -362,11 +362,11 @@ impl PowerService {
         self.last_lid_closed = Some(closed);
         match lid_edge_effect(prev, closed, &self.policy) {
             Effect::Suspend => {
-                info!(target: "qos::power", "lid closed: suspending");
+                info!(target: "tilo::power", "lid closed: suspending");
                 self.start_suspend().await;
             }
             Effect::Lock => {
-                info!(target: "qos::power", "lid closed: locking");
+                info!(target: "tilo::power", "lid closed: locking");
                 self.bridge.push_signal(PowerSignal::Lock);
             }
             Effect::None => {}
@@ -377,12 +377,12 @@ impl PowerService {
         // `PrepareForSleep(true)` = about to sleep, `false` = just resumed.
         if let Ok(going_to_sleep) = msg.body().deserialize::<bool>() {
             if going_to_sleep {
-                info!(target: "qos::power", "system preparing for sleep: locking session");
+                info!(target: "tilo::power", "system preparing for sleep: locking session");
                 self.preparing_for_sleep = true;
                 self.bridge.push_signal(sleep_reaction(true));
                 self.release_sleep_delay_if_ready();
             } else {
-                info!(target: "qos::power", "resumed from sleep");
+                info!(target: "tilo::power", "resumed from sleep");
                 self.preparing_for_sleep = false;
                 self.sleep_lock_drawn = false;
                 self.sleep_delay_lock = take_sleep_delay_lock(&self.logind).await;
@@ -405,8 +405,8 @@ impl PowerService {
         }
     }
 
-    /// Take/release the logind `idle:sleep` block lock to match the qOS inhibitor registry, so
-    /// an app holding a qOS inhibitor also blocks logind's own idle/suspend handling.
+    /// Take/release the logind `idle:sleep` block lock to match the Tilo inhibitor registry, so
+    /// an app holding a Tilo inhibitor also blocks logind's own idle/suspend handling.
     async fn mirror_inhibit_registry(&mut self) {
         let inhibited = self.registry.is_inhibited();
         match (inhibited, self.idle_sleep_lock.is_some()) {
@@ -414,25 +414,25 @@ impl PowerService {
                 let why = self.registry.active_reasons().join(", ");
                 match self
                     .logind
-                    .inhibit("idle:sleep", "qOS power", &why, "block")
+                    .inhibit("idle:sleep", "Tilo power", &why, "block")
                     .await
                 {
                     Ok(l) => {
-                        debug!(target: "qos::power", %why, "took logind idle:sleep lock");
+                        debug!(target: "tilo::power", %why, "took logind idle:sleep lock");
                         self.idle_sleep_lock = Some(l);
                     }
-                    Err(e) => warn!(target: "qos::power", error = %e, "idle:sleep inhibit failed"),
+                    Err(e) => warn!(target: "tilo::power", error = %e, "idle:sleep inhibit failed"),
                 }
             }
             (false, true) => {
-                debug!(target: "qos::power", "releasing logind idle:sleep lock");
+                debug!(target: "tilo::power", "releasing logind idle:sleep lock");
                 self.idle_sleep_lock = None; // drop closes the fd
             }
             _ => {}
         }
     }
 
-    /// Issue the real suspend, if logind says it can. The inhibitor registry is the compositor's
+    /// Issue the suspend request, if logind allows it. The inhibitor registry is the compositor's
     /// gate for *idle* suspend; lid/critical suspends are deliberate and proceed regardless.
     async fn start_suspend(&mut self) {
         if self.suspend_task.is_some() {
@@ -446,7 +446,7 @@ impl PowerService {
         if self.sleep_delay_lock.is_none() {
             self.sleep_delay_lock = take_sleep_delay_lock(&self.logind).await;
             if self.sleep_delay_lock.is_none() {
-                warn!(target: "qos::power", "cannot suspend without a sleep-delay inhibitor");
+                warn!(target: "tilo::power", "cannot suspend without a sleep-delay inhibitor");
                 self.bridge.push_signal(PowerSignal::SuspendFailed);
                 return;
             }
@@ -462,17 +462,17 @@ impl PowerService {
                 let bridge = self.bridge.clone();
                 self.suspend_task = Some(tokio::spawn(async move {
                     if let Err(e) = logind.suspend(false).await {
-                        warn!(target: "qos::power", error = %e, "logind Suspend failed");
+                        warn!(target: "tilo::power", error = %e, "logind Suspend failed");
                         bridge.push_signal(PowerSignal::SuspendFailed);
                     }
                 }));
             }
             Ok(v) => {
-                warn!(target: "qos::power", verdict = %v, "logind says cannot suspend");
+                warn!(target: "tilo::power", verdict = %v, "logind says cannot suspend");
                 self.bridge.push_signal(PowerSignal::SuspendFailed);
             }
             Err(e) => {
-                warn!(target: "qos::power", error = %e, "CanSuspend failed");
+                warn!(target: "tilo::power", error = %e, "CanSuspend failed");
                 self.bridge.push_signal(PowerSignal::SuspendFailed);
             }
         }
@@ -486,13 +486,13 @@ impl PowerService {
             && let Some(task) = self.suspend_task.take()
             && let Err(error) = task.await
         {
-            warn!(target: "qos::power", %error, "logind Suspend task failed");
+            warn!(target: "tilo::power", %error, "logind Suspend task failed");
         }
     }
 
     fn release_sleep_delay_if_ready(&mut self) {
         if self.preparing_for_sleep && self.sleep_lock_drawn {
-            debug!(target: "qos::power", "lock frame drawn; releasing sleep delay inhibitor");
+            debug!(target: "tilo::power", "lock frame drawn; releasing sleep delay inhibitor");
             self.sleep_delay_lock = None;
         }
     }
@@ -502,7 +502,7 @@ async fn take_sleep_delay_lock(logind: &LogindManager) -> Option<LogindInhibitor
     match logind
         .inhibit(
             "sleep",
-            "qOS compositor",
+            "Tilo compositor",
             "Draw lock screen before sleep",
             "delay",
         )
@@ -510,7 +510,7 @@ async fn take_sleep_delay_lock(logind: &LogindManager) -> Option<LogindInhibitor
     {
         Ok(lock) => Some(lock),
         Err(error) => {
-            warn!(target: "qos::power", %error, "sleep delay inhibitor unavailable");
+            warn!(target: "tilo::power", %error, "sleep delay inhibitor unavailable");
             None
         }
     }

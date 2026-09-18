@@ -1,6 +1,6 @@
 //! Which processes get the expensive runtime protections.
 //!
-//! Most of qOS is Rust, which does not produce the bug classes a hardening
+//! Most of Tilo is Rust, which does not produce the bug classes a hardening
 //! allocator catches, so paying for one everywhere would be a tax on
 //! already-memory-safe code. Measured on this machine, an allocation-heavy loop
 //! runs about 3.4x slower under scudo than under glibc's allocator (32 ms vs
@@ -18,7 +18,7 @@
 //! Two protections: **hardened allocator** (scudo, from compiler-rt) —
 //! out-of-line metadata, guard slabs, header checksums, delayed reuse, turning
 //! a heap overflow or double free into a controlled abort — and **hardware
-//! shadow stacks** (`GLIBC_TUNABLES=glibc.cpu.hwcaps=SHSTK`): every qOS binary
+//! shadow stacks** (`GLIBC_TUNABLES=glibc.cpu.hwcaps=SHSTK`): every Tilo binary
 //! is link-time compatible, but glibc won't switch shadow stacks on without
 //! this opt-in, which scopes the protection instead of making it global and
 //! is inert (not an error) on a CPU without shadow-stack support.
@@ -27,19 +27,23 @@ use std::path::{Path, PathBuf};
 
 /// Image-owned list of package ids whose processes parse untrusted
 /// bytes. One entry per line, `#` for a comment, a trailing `*` for a
-/// prefix match (`dev.qos.*` covers a family).
-pub const POLICY_PATH: &str = "/usr/lib/qos/untrusted-parsers.conf";
+/// prefix match (`dev.tilo.*` covers a family).
+pub const POLICY_PATH: &str = "/usr/lib/tilo/untrusted-parsers.conf";
 
 /// Fallback when [`POLICY_PATH`] is absent — the packages in this tree
 /// that decode attacker-supplied data through a C or C++ library:
 /// browser (a whole web engine, the only package allowed to generate
 /// code), tube/music (container demux and audio/video decode operating
 /// on bytes from the network).
-pub const BUILTIN_HIGH_RISK: &[&str] = &["dev.qos.browser", "dev.qos.tube", "dev.qos.music"];
+pub const BUILTIN_HIGH_RISK: &[&str] = &["dev.tilo.browser", "dev.tilo.tube", "dev.tilo.music"];
 
 /// Environment variable that overrides [`POLICY_PATH`] — for tests to
 /// point at a fixture; production reads the image's file.
-pub const POLICY_PATH_ENV: &str = "QOS_UNTRUSTED_PARSERS_FILE";
+pub const POLICY_PATH_ENV: &str = "TILO_UNTRUSTED_PARSERS_FILE";
+
+/// Image-owned Scudo copy. Tilo retains this DSO without shipping the complete
+/// compiler-rt sanitizer/toolchain payload it came from.
+pub const TILO_SCUDO_PATH: &str = "/usr/lib/tilo/libclang_rt.scudo_standalone.so";
 
 /// The extra runtime protections to apply to one launch.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -91,6 +95,10 @@ pub fn policy_matches(list: &str, package_id: &str) -> bool {
 /// with the system allocator.
 pub fn find_hardened_allocator() -> Option<PathBuf> {
     const NAME: &str = "libclang_rt.scudo_standalone.so";
+    let tilo_copy = PathBuf::from(TILO_SCUDO_PATH);
+    if tilo_copy.is_file() {
+        return Some(tilo_copy);
+    }
     // Flat library dirs first — a distribution that ships the library
     // unversioned puts it here.
     for root in ["/usr/lib64", "/usr/lib"] {
@@ -161,35 +169,35 @@ mod tests {
 
     #[test]
     fn an_exact_id_matches_only_itself() {
-        let list = "dev.qos.browser\n";
-        assert!(policy_matches(list, "dev.qos.browser"));
-        assert!(!policy_matches(list, "dev.qos.browserish"));
-        assert!(!policy_matches(list, "dev.qos.calculator"));
+        let list = "dev.tilo.browser\n";
+        assert!(policy_matches(list, "dev.tilo.browser"));
+        assert!(!policy_matches(list, "dev.tilo.browserish"));
+        assert!(!policy_matches(list, "dev.tilo.calculator"));
     }
 
     #[test]
     fn comments_and_blank_lines_are_not_entries() {
-        let list = "\n# dev.qos.calculator\n   \ndev.qos.tube  # decodes video\n";
-        assert!(policy_matches(list, "dev.qos.tube"));
+        let list = "\n# dev.tilo.calculator\n   \ndev.tilo.tube  # decodes video\n";
+        assert!(policy_matches(list, "dev.tilo.tube"));
         assert!(
-            !policy_matches(list, "dev.qos.calculator"),
+            !policy_matches(list, "dev.tilo.calculator"),
             "a commented-out id must not match"
         );
     }
 
     #[test]
     fn a_trailing_star_matches_a_family() {
-        let list = "dev.qos.media.*\n";
-        assert!(policy_matches(list, "dev.qos.media.player"));
-        assert!(!policy_matches(list, "dev.qos.notes"));
+        let list = "dev.tilo.media.*\n";
+        assert!(policy_matches(list, "dev.tilo.media.player"));
+        assert!(!policy_matches(list, "dev.tilo.notes"));
     }
 
     #[test]
     fn an_empty_policy_hardens_nothing() {
-        assert!(!policy_matches("", "dev.qos.browser"));
+        assert!(!policy_matches("", "dev.tilo.browser"));
         assert!(!policy_matches(
             "# everything commented\n",
-            "dev.qos.browser"
+            "dev.tilo.browser"
         ));
     }
 
@@ -198,12 +206,12 @@ mod tests {
     fn a_policy_file_replaces_the_builtin_list() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("untrusted-parsers.conf");
-        std::fs::write(&file, "dev.qos.notes\n").unwrap();
+        std::fs::write(&file, "dev.tilo.notes\n").unwrap();
         // SAFETY: single-threaded test body; the var is removed before return.
         unsafe { std::env::set_var(POLICY_PATH_ENV, &file) };
 
-        let notes = for_package("dev.qos.notes");
-        let browser = for_package("dev.qos.browser");
+        let notes = for_package("dev.tilo.notes");
+        let browser = for_package("dev.tilo.browser");
 
         // SAFETY: as above.
         unsafe { std::env::remove_var(POLICY_PATH_ENV) };
@@ -227,8 +235,8 @@ mod tests {
         // SAFETY: single-threaded test body; the var is removed before return.
         unsafe { std::env::set_var(POLICY_PATH_ENV, &missing) };
 
-        let browser = for_package("dev.qos.browser");
-        let calculator = for_package("dev.qos.calculator");
+        let browser = for_package("dev.tilo.browser");
+        let calculator = for_package("dev.tilo.calculator");
 
         // SAFETY: as above.
         unsafe { std::env::remove_var(POLICY_PATH_ENV) };

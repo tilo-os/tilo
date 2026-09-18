@@ -16,7 +16,7 @@
 //!
 //! A hash/signature mismatch on downloaded bytes aborts the whole
 //! fetch — those bytes are never returned for install. A registry that
-//! simply doesn't carry the app, or whose index we can't trust, is
+//! doesn't carry the app, or whose index we can't trust, is
 //! skipped so a later registry can serve it.
 
 use anyhow::{Context, Result, anyhow, bail};

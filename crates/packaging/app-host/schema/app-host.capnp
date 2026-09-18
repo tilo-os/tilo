@@ -1,8 +1,8 @@
 @0xc7f8a8b3c4d54e21;
 
-# qOS app-host control-socket RPC schema. The host exposes a single
+# Tilo app-host control-socket RPC schema. The host exposes a single
 # AppHost capability over a Unix-domain stream socket at
-# $XDG_RUNTIME_DIR/qos/services/app-host.sock . The launcher and a
+# $XDG_RUNTIME_DIR/tilo/services/app-host.sock . The launcher and a
 # future App Tray UI call list/resolve/pin/unpin/install/etc. against
 # this interface.
 #
@@ -39,6 +39,10 @@ struct PackageEntry {
     sizeBytes     @4 :UInt64;
     # Unix epoch seconds of the last `markUsed` (or install time).
     lastUsedUnix  @5 :UInt64;
+    # True when this entry belongs to the per-user mutable app-host store.
+    # False denotes a read-only system package from /usr/share/tilo-apps;
+    # system entries may be launched but cannot be pinned or removed here.
+    userManaged   @6 :Bool;
 }
 
 struct ByPinning {

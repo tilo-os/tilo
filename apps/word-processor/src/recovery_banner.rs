@@ -109,7 +109,7 @@ impl RecoveryBanner {
         {
             return;
         }
-        let _ = std::fs::write(path, markdown);
+        let _ = atomic_file::write(&path, &markdown);
     }
 
     /// Remove a superseded recovery copy after a successful open/save.
@@ -122,6 +122,11 @@ impl RecoveryBanner {
 
     /// Stage an on-disk recovery copy for user confirmation.
     pub(crate) fn check(&mut self, document_path: Option<&Path>) -> bool {
+        // Switching documents must dismiss the previous offer without deleting
+        // its on-disk recovery. Only the new document's copy may be restored.
+        self.offer = None;
+        self.buttons.clear();
+        self.edits_since_autosave = 0;
         let path = self.path_for(document_path);
         match std::fs::read(&path) {
             Ok(markdown) if !markdown.is_empty() => {

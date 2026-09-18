@@ -22,19 +22,20 @@ PipeWire `pw-play` fallback. Work is coalesced on a bounded session thread and a
 wedged helper is killed after five seconds; the compositor render loop never
 forks or waits. Settings reports the detected backend.
 
-`x-qos-badge-count` is a bounded extension because the freedesktop notification
+`x-tilo-badge-count` is a bounded extension because the freedesktop notification
 protocol has no unread-count field. It is accepted only with verified package
 attribution. The top bar consumes the aggregate now; per-app icon badges remain
 unclaimed until a dock or launcher consumes the same map.
 
 Priority contacts are sourced from favourites in Contacts. Only a
-launcher-verified `dev.qos.contacts` caller may replace the shell-owned
+launcher-verified `dev.tilo.contacts` caller may replace the shell-owned
 projection. Endpoints are normalized and stored as salted BLAKE3 digests in a
 private, bounded, atomically replaced record; raw endpoints are not persisted
 there. A notification pierces scheduled focus only when its verified app has an
 explicit user grant and its bounded contact handle matches that registry.
 
 The authorized communication app still asserts which sender produced a
-message. It is therefore part of the trusted path for that assertion; qOS does
-not call this ungamable until mail/chat transport itself is OS-owned. Unknown
-callers, stale PIDs, unapproved apps and unmatched handles never gain priority.
+message. It is therefore part of the trusted path for that assertion; this
+guarantee remains provisional until mail/chat transport itself is OS-owned.
+Unknown callers, stale PIDs, unapproved apps and unmatched handles never gain
+priority.

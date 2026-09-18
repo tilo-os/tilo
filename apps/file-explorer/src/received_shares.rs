@@ -1,16 +1,21 @@
 //! Client for the per-user received-file service inherited from the launcher.
 //!
-//! Files remains networkless. The launcher connects to `qos-fs.sock` outside
+//! Files remains networkless. The launcher connects to `tilo-fs.sock` outside
 //! the sandbox and gives this process only that connected descriptor. Bearer
 //! URIs are written inside a bounded frame and never placed in child argv.
 
+#[cfg(unix)]
 use std::os::fd::{BorrowedFd, RawFd};
 
+#[cfg(unix)]
 use collab_types::{
-    MAX_RECIPIENT_CONTROL_FRAME_BYTES, RECIPIENT_CONTROL_VERSION, RecipientControlOperationV1,
-    RecipientControlRequestV1, RecipientControlResponseV1, RecipientControlResultV1,
+    MAX_RECIPIENT_CONTROL_FRAME_BYTES, RECIPIENT_CONTROL_VERSION, RecipientControlRequestV1,
+};
+use collab_types::{
+    RecipientControlOperationV1, RecipientControlResponseV1, RecipientControlResultV1,
     RecipientSubscriptionStatusV1,
 };
+#[cfg(unix)]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::i18n::{arg, t, t_args};
@@ -55,6 +60,7 @@ pub fn retry(
     })
 }
 
+#[cfg(unix)]
 fn transact(operation: RecipientControlOperationV1) -> Result<RecipientControlResponseV1, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
@@ -107,6 +113,7 @@ fn transact(operation: RecipientControlOperationV1) -> Result<RecipientControlRe
     })
 }
 
+#[cfg(unix)]
 fn connected_service_stream() -> Result<tokio::net::UnixStream, String> {
     let raw = service_fd().ok_or_else(|| t("files-received-not-available"))?;
     // Clone the inherited descriptor: converting the clone into Tokio ownership
@@ -122,8 +129,14 @@ fn connected_service_stream() -> Result<tokio::net::UnixStream, String> {
     tokio::net::UnixStream::from_std(stream).map_err(|_| t("files-received-fd-invalid"))
 }
 
+#[cfg(unix)]
 fn service_fd() -> Option<RawFd> {
-    // `qos-fs` is the shipped manifest name. Accept `fs` while older local
+    // `tilo-fs` is the shipped manifest name. Accept `fs` while older local
     // development manifests are still present.
-    runtime_portal::service_fd("qos-fs").or_else(|| runtime_portal::service_fd("fs"))
+    runtime_portal::service_fd("tilo-fs").or_else(|| runtime_portal::service_fd("fs"))
+}
+
+#[cfg(not(unix))]
+fn transact(_operation: RecipientControlOperationV1) -> Result<RecipientControlResponseV1, String> {
+    Err(t("files-received-not-available"))
 }

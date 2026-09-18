@@ -7,8 +7,8 @@
 //! The pure pieces — PKCE generation (SHA-256 + base64url), the authorization
 //! URL builder, and the token-response parser — are dependency-free and always
 //! built, so they are unit-tested in every configuration (no network, no
-//! `live` feature). The `authorization_url` a real browser would open and the
-//! `code_verifier` an exchange would send are produced here for real.
+//! `live` feature). The `authorization_url` a browser would open and the
+//! `code_verifier` an exchange would send are produced here.
 //!
 //! ## What needs the network (`live`)
 //! [`exchange_code`] performs the actual HTTPS POST to the provider's token
@@ -17,9 +17,9 @@
 //!
 //! ## Client registration
 //! A working OAuth flow needs a **registered OAuth client id** for the
-//! provider (Google Cloud Console / Azure AD). qOS ships without one baked in
+//! provider (Google Cloud Console / Azure AD). Tilo ships without one baked in
 //! (it would be a shared secret), so the id is read from the environment at
-//! runtime — `QOS_MAIL_GOOGLE_CLIENT_ID` / `QOS_MAIL_MICROSOFT_CLIENT_ID`.
+//! runtime — `TILO_MAIL_GOOGLE_CLIENT_ID` / `TILO_MAIL_MICROSOFT_CLIENT_ID`.
 //! Without it the setup UI still constructs the (correct) authorization URL but
 //! notes that a client id is required to complete sign-in.
 
@@ -81,8 +81,8 @@ impl OAuthProvider {
     /// Environment variable that carries the registered OAuth client id.
     pub fn client_id_env(self) -> &'static str {
         match self {
-            OAuthProvider::Google => "QOS_MAIL_GOOGLE_CLIENT_ID",
-            OAuthProvider::Microsoft => "QOS_MAIL_MICROSOFT_CLIENT_ID",
+            OAuthProvider::Google => "TILO_MAIL_GOOGLE_CLIENT_ID",
+            OAuthProvider::Microsoft => "TILO_MAIL_MICROSOFT_CLIENT_ID",
         }
     }
 
@@ -465,7 +465,7 @@ impl LoopbackServer {
 fn write_http_response(stream: &mut std::net::TcpStream, body: &str) -> std::io::Result<()> {
     use std::io::Write;
     let page = format!(
-        "<!doctype html><html><head><meta charset=utf-8><title>qOS Mail</title></head>\
+        "<!doctype html><html><head><meta charset=utf-8><title>Tilo Mail</title></head>\
          <body style=\"font-family:system-ui;padding:3rem;text-align:center\">{body}</body></html>"
     );
     let resp = format!(
@@ -556,7 +556,7 @@ pub fn refresh_tokens(
 /// consents or `timeout` elapses. Network path — compiled only under `live`.
 ///
 /// # Errors
-/// Returns `Err` if the loopback listener can't be bound, the redirect
+/// Returns `Err` if the loopback listener can't be bound, the browser cannot open, the redirect
 /// never arrives (timeout, state mismatch, provider `error=`), or the
 /// subsequent code exchange fails.
 #[cfg(feature = "live")]
@@ -564,7 +564,7 @@ pub fn run_loopback_authorization(
     provider: OAuthProvider,
     client_id: &str,
     login_hint: &str,
-    open_browser: impl FnOnce(&str),
+    open_browser: impl FnOnce(&str) -> Result<(), String>,
     timeout: std::time::Duration,
 ) -> Result<OAuthTokens, String> {
     let server = LoopbackServer::bind().map_err(|e| format!("could not bind loopback: {e}"))?;
@@ -579,7 +579,8 @@ pub fn run_loopback_authorization(
         state: state.clone(),
         login_hint: login_hint.to_string(),
     };
-    open_browser(&req.authorization_url());
+    open_browser(&req.authorization_url())
+        .map_err(|error| format!("could not open sign-in browser: {error}"))?;
     let code = server.wait_for_code(&state, timeout)?;
     exchange_code(provider, client_id, &redirect_uri, &code, &pkce.verifier)
         .map(OAuthTokens::stamp_now)
@@ -813,6 +814,25 @@ pub fn sha256(input: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "live")]
+    #[test]
+    fn authorization_reports_browser_failure_before_waiting_for_callback() {
+        let result = run_loopback_authorization(
+            OAuthProvider::Google,
+            "test-client",
+            "fixture@example.invalid",
+            |url| {
+                assert!(url.starts_with("https://accounts.google.com/o/oauth2/v2/auth?"));
+                Err("fixture browser unavailable".into())
+            },
+            std::time::Duration::ZERO,
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "could not open sign-in browser: fixture browser unavailable"
+        );
+    }
 
     fn hex(bytes: &[u8]) -> String {
         bytes.iter().fold(String::new(), |mut out, b| {

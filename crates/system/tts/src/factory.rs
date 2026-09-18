@@ -26,26 +26,28 @@ pub fn default_speaker() -> Box<dyn Speaker> {
 /// Like [`default_speaker`] but also returns the chosen backend's name, for
 /// diagnostics/tests.
 pub fn select_speaker() -> (Box<dyn Speaker>, &'static str) {
-    // 1. speech-dispatcher.
+    // 1. speech-dispatcher uses a Unix-domain socket. Other platforms retain
+    // the portable subprocess backend below.
+    #[cfg(unix)]
     match crate::speechd::SpeechDispatcherSpeaker::new() {
         Ok(s) => {
-            log::info!("qos-tts: using speech-dispatcher backend");
+            log::info!("tilo-tts: using speech-dispatcher backend");
             return (Box::new(s), "speech-dispatcher");
         }
-        Err(e) => log::debug!("qos-tts: speech-dispatcher unavailable: {e}"),
+        Err(e) => log::debug!("tilo-tts: speech-dispatcher unavailable: {e}"),
     }
 
     // 2. espeak-ng subprocess.
     match crate::espeak::EspeakSpeaker::new() {
         Ok(s) => {
-            log::info!("qos-tts: using espeak-ng subprocess backend");
+            log::info!("tilo-tts: using espeak-ng subprocess backend");
             return (Box::new(s), "espeak-ng");
         }
-        Err(e) => log::debug!("qos-tts: espeak-ng unavailable: {e}"),
+        Err(e) => log::debug!("tilo-tts: espeak-ng unavailable: {e}"),
     }
 
     // 3. null.
-    log::warn!("qos-tts: no TTS backend available; falling back to NullSpeaker (silent)");
+    log::warn!("tilo-tts: no TTS backend available; falling back to NullSpeaker (silent)");
     (Box::new(NullSpeaker::new()), "null")
 }
 

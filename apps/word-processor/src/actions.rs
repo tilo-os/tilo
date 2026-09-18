@@ -26,7 +26,7 @@ use qdoc::{Containers, DocMut};
 
 use crate::num;
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
     ResourceProvider, ResultSpec,
@@ -50,6 +50,9 @@ pub enum WordProcessorOperation {
     Find,
     ZoomIn,
     ZoomOut,
+    /// Return the page canvas to its explicit 100% scale. This matches the
+    /// percentage chip in the visible zoom stepper and Ctrl+0.
+    ZoomReset,
     ToggleSpellcheck,
     ToggleMarkup,
     ToggleStyles,
@@ -171,12 +174,29 @@ pub struct Span {
     pub end: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TocTarget {
+    pub heading: String,
+    pub level: i64,
+    pub text: String,
+    pub page: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TableEdit {
+    InsertRow { at: usize },
+    InsertColumn { at: usize },
+    DeleteRow { row: usize },
+    DeleteColumn { column: usize },
+    Delete,
+}
+
 /// Every collaborative, document-mutating operation the word processor exports.
 ///
 /// Deliberately positional: each variant names the exact block ids and offsets
-/// it touches, so [`Action::apply`] is a pure, replayable write. Live per-
-/// keystroke typing is *not* here (it splices directly into the CRDT `Text`); a
-/// discrete text edit (Find & Replace, a scripted splice) is [`Self::SpliceText`].
+/// it touches, so [`Action::apply`] is a pure, replayable write. Ordinary typing,
+/// deletion, paragraph splitting, Find & Replace, and agent-authored edits all
+/// enter through these same envelopes; caret and selection updates remain local.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum WordProcessorAction {
     /// Replace `[at, at+del)` of `block` with `ins` (insert = `del` 0; delete =
@@ -243,6 +263,29 @@ pub enum WordProcessorAction {
         key: String,
         value: AttrVal,
     },
+    /// Replace all four page margins as one absolute page-setup operation.
+    /// Keeping the rectangle atomic avoids transient invalid page geometry while
+    /// still giving history and collaborators a single authored mutation.
+    SetPageMargins {
+        top: f64,
+        right: f64,
+        bottom: f64,
+        left: f64,
+    },
+    /// Set one scalar property of one stable named style. Keeping each field in
+    /// its own envelope lets replicas edit e.g. font and spacing concurrently
+    /// without replaying an entire stale stylesheet over either change.
+    SetStyleProperty {
+        style: String,
+        key: String,
+        value: AttrVal,
+    },
+    /// Delete one custom style and atomically move its addressed instances back
+    /// to the body default. The style id receives a grow-only tombstone.
+    DeleteStyle {
+        style: String,
+        fallback_blocks: Vec<String>,
+    },
     /// Set an image crop in ten-thousandths of its source rectangle.  Keeping
     /// all four edges in one action is important: a crop must never briefly
     /// become invalid while a collaborator/replay observes it.
@@ -278,6 +321,8 @@ pub enum WordProcessorAction {
         rows: usize,
         cols: usize,
     },
+    /// Mutate one stable table id using an absolute row/column boundary.
+    EditTable { table: String, edit: TableEdit },
     /// Insert an image (blob `bytes`, optional intrinsic `width`/`height`) at
     /// `(block, at)`: the caret block is split so the tail follows the image in a
     /// fresh paragraph beneath it.
@@ -290,7 +335,44 @@ pub enum WordProcessorAction {
     },
     /// Insert a manual page break at `(block, at)`: split the block like Enter and
     /// mark the new block to start on a fresh page.
-    InsertPageBreak { block: String, at: usize },
+    InsertPageBreak {
+        #[serde(default)]
+        region: RegionKind,
+        block: String,
+        at: usize,
+    },
+    /// Split one paragraph at an absolute character offset. The new block id is
+    /// minted by the pinned action actor, so origin and replay produce the same
+    /// stable child entity. Used by Enter in body/header/footer alike.
+    SplitBlock {
+        region: RegionKind,
+        block: String,
+        at: usize,
+        kind: String,
+        ordered: Option<bool>,
+    },
+    /// Insert one canonical field marker at an absolute text position.
+    InsertField {
+        region: RegionKind,
+        block: String,
+        at: usize,
+        field: String,
+    },
+    /// Replace the generated TOC using stable heading ids and authored page
+    /// labels captured from one pagination frame.
+    GenerateToc { entries: Vec<TocTarget> },
+    /// Paste a rich or plain multi-paragraph fragment at an absolute selection.
+    /// Paragraphs and marks are authored payload, while newly-created block ids
+    /// are minted under the pinned action actor.
+    PasteFragment {
+        region: RegionKind,
+        start_block: String,
+        start: usize,
+        end_block: String,
+        end: usize,
+        blocks: Vec<crate::word_processor::ClipBlock>,
+        adopt_first_style: bool,
+    },
     /// Insert a fresh paragraph carrying `text` directly after block `after`.
     /// The action-level way to add a line: Enter is a live-edit path, not an
     /// action, so a headless participant (an agent, a script) had no way to
@@ -328,6 +410,50 @@ pub enum WordProcessorAction {
         date: String,
         text: String,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActionDomain {
+    Text,
+    Formatting,
+    Media,
+    Table,
+    Structure,
+    Review,
+}
+
+impl WordProcessorAction {
+    fn domain(&self) -> ActionDomain {
+        match self {
+            Self::SpliceText { .. }
+            | Self::ReplaceSelection { .. }
+            | Self::SetMark { .. }
+            | Self::PasteFragment { .. }
+            | Self::InsertParagraph { .. }
+            | Self::RemoveBlocks { .. }
+            | Self::ReplaceBody { .. } => ActionDomain::Text,
+            Self::SetParagraphStyle { .. }
+            | Self::ApplyNamedStyle { .. }
+            | Self::SetBlockAttr { .. }
+            | Self::SetPageMargins { .. }
+            | Self::SetStyleProperty { .. }
+            | Self::DeleteStyle { .. } => ActionDomain::Formatting,
+            Self::SetImageCrop { .. }
+            | Self::SetImageSize { .. }
+            | Self::SetImagePlacement { .. }
+            | Self::InsertImage { .. } => ActionDomain::Media,
+            Self::InsertTable { .. } | Self::EditTable { .. } => ActionDomain::Table,
+            Self::InsertPageBreak { .. }
+            | Self::SplitBlock { .. }
+            | Self::InsertField { .. }
+            | Self::GenerateToc { .. } => ActionDomain::Structure,
+            Self::AcceptChanges { .. }
+            | Self::RejectChanges { .. }
+            | Self::ResolveComment { .. }
+            | Self::AddComment { .. }
+            | Self::ReplyToComment { .. } => ActionDomain::Review,
+        }
+    }
 }
 
 // Action payloads may arrive after the document has changed (or from an
@@ -383,10 +509,6 @@ fn splice_target_len(
 /// action allocates a large table/blob or asks automerge to index impossible
 /// offsets.  The caller maps `false` to an explicit [`ActionError::Refused`],
 /// preserving a useful stale-target result without leaving a partial edit.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one exhaustive validation table keeps every action's atomic preconditions auditable at one boundary"
-)]
 fn action_is_valid(action: &WordProcessorAction, doc: &AutoCommit, c: &Containers) -> bool {
     // Typing addresses a single block. Avoid materializing unrelated text,
     // marks, images and regions on every keystroke; retain the same bounds.
@@ -402,102 +524,238 @@ fn action_is_valid(action: &WordProcessorAction, doc: &AutoCommit, c: &Container
             .is_some_and(|len| *at <= len && *del <= len.saturating_sub(*at))
             && ins.chars().take(MAX_ACTION_TEXT_CHARS + 1).count() <= MAX_ACTION_TEXT_CHARS;
     }
-    let snap = qdoc::model::materialize(doc, c);
-    let blocks_for = |region: RegionKind| match region {
-        RegionKind::Body => &snap.blocks,
-        RegionKind::Header => &snap.header,
-        RegionKind::Footer => &snap.footer,
-    };
-    let block_len = |region: RegionKind, id: &str| {
-        blocks_for(region)
+    ActionValidator::new(doc, c).validate(action)
+}
+
+struct ActionValidator<'a> {
+    doc: &'a AutoCommit,
+    containers: &'a Containers,
+    snapshot: qdoc::snapshot::DocSnapshot,
+}
+
+impl<'a> ActionValidator<'a> {
+    fn new(doc: &'a AutoCommit, containers: &'a Containers) -> Self {
+        Self {
+            doc,
+            containers,
+            snapshot: qdoc::model::materialize(doc, containers),
+        }
+    }
+
+    fn blocks_for(&self, region: RegionKind) -> &[qdoc::snapshot::BlockView] {
+        match region {
+            RegionKind::Body => &self.snapshot.blocks,
+            RegionKind::Header => &self.snapshot.header,
+            RegionKind::Footer => &self.snapshot.footer,
+        }
+    }
+
+    fn block_len(&self, region: RegionKind, id: &str) -> Option<usize> {
+        self.blocks_for(region)
             .iter()
             .find(|block| block.id == id)
             .map(|block| block.text.chars().count())
-    };
-    let unique_existing = |region: RegionKind, ids: &[String]| {
+    }
+
+    fn unique_existing(&self, region: RegionKind, ids: &[String]) -> bool {
         !ids.is_empty()
-            && ids.iter().all(|id| block_len(region, id).is_some())
+            && ids.iter().all(|id| self.block_len(region, id).is_some())
             && ids.iter().collect::<HashSet<_>>().len() == ids.len()
-    };
-    let safe_name = |name: &str| {
+    }
+
+    fn safe_name(name: &str) -> bool {
         !name.is_empty()
             && name.len() <= 128
             && name
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    };
-    let safe_text = |text: &str| text.chars().count() <= MAX_ACTION_TEXT_CHARS;
-    let valid_attr = |key: &str, value: &AttrVal| match key {
-        "align" => {
-            matches!(value, AttrVal::Str(v) if matches!(v.as_str(), "left" | "center" | "right" | "justify"))
-        }
-        "page_break_before" | "flip_h" | "flip_v" => matches!(value, AttrVal::Bool(_)),
-        "indent" | "first_line_indent" | "line_spacing" => {
-            matches!(value, AttrVal::Float(v) if v.is_finite() && *v >= 0.0 && *v <= 10_000.0)
-        }
-        "tab_stops" | "style" => matches!(value, AttrVal::Str(v) if v.len() <= 4_096),
-        "width" | "height" => matches!(value, AttrVal::Int(v) if *v > 0 && *v <= 100_000),
-        _ => false,
-    };
+    }
 
-    match action {
-        WordProcessorAction::SpliceText {
-            region,
-            block,
-            at,
-            del,
-            ins,
-        } => {
-            block_len(*region, block)
-                .is_some_and(|len| *at <= len && *del <= len.saturating_sub(*at))
-                && safe_text(ins)
-        }
-        WordProcessorAction::ReplaceSelection {
-            region,
-            start_block,
-            start,
-            end_block,
-            end,
-            ins,
-        } => {
-            let blocks = blocks_for(*region);
-            let start_index = blocks.iter().position(|block| block.id == *start_block);
-            let end_index = blocks.iter().position(|block| block.id == *end_block);
-            match (
-                start_index,
-                end_index,
-                block_len(*region, start_block),
-                block_len(*region, end_block),
-            ) {
-                (Some(start_index), Some(end_index), Some(start_len), Some(end_len)) => {
-                    (start_index < end_index || (start_index == end_index && start <= end))
-                        && *start <= start_len
-                        && *end <= end_len
-                        && safe_text(ins)
-                }
-                _ => false,
+    fn safe_text(text: &str) -> bool {
+        text.chars().count() <= MAX_ACTION_TEXT_CHARS
+    }
+
+    fn valid_attr(key: &str, value: &AttrVal) -> bool {
+        match key {
+            "align" => {
+                matches!(value, AttrVal::Str(v) if matches!(v.as_str(), "left" | "center" | "right" | "justify"))
             }
+            "page_break_before" | "flip_h" | "flip_v" => matches!(value, AttrVal::Bool(_)),
+            "indent" | "line_spacing" => {
+                matches!(value, AttrVal::Float(v) if v.is_finite() && *v >= 0.0 && *v <= 10_000.0)
+            }
+            "first_line_indent" => {
+                matches!(value, AttrVal::Float(v) if v.is_finite() && (-10_000.0..=10_000.0).contains(v))
+            }
+            "tab_stops" | "style" => matches!(value, AttrVal::Str(v) if v.len() <= 4_096),
+            "width" | "height" => matches!(value, AttrVal::Int(v) if *v > 0 && *v <= 100_000),
+            _ => false,
         }
-        WordProcessorAction::SetMark {
-            region,
-            spans,
-            name,
-            value,
-            also_clear,
-        } => {
-            safe_name(name)
-                && also_clear.iter().all(|sibling| safe_name(sibling))
-                && spans.len() <= 10_000
-                && !spans.is_empty()
-                && spans.iter().all(|span| {
-                    block_len(*region, &span.block)
-                        .is_some_and(|len| span.start < span.end && span.end <= len)
-                })
-                && match value {
-                    Some(MarkVal::Str(text)) => safe_text(text),
-                    _ => true,
+    }
+
+    fn valid_style_property(key: &str, value: &AttrVal) -> bool {
+        match key {
+            qdoc::schema::STYLE_NAME => {
+                matches!(value, AttrVal::Str(v) if v.chars().count() <= 256)
+            }
+            qdoc::schema::STYLE_FONT => {
+                matches!(value, AttrVal::Str(v) if matches!(v.as_str(), "sans" | "serif" | "mono"))
+            }
+            qdoc::schema::STYLE_SIZE => {
+                matches!(value, AttrVal::Float(v) if v.is_finite() && (6.0..=200.0).contains(v))
+            }
+            qdoc::schema::STYLE_BOLD | qdoc::schema::STYLE_ITALIC => {
+                matches!(value, AttrVal::Bool(_))
+            }
+            qdoc::schema::STYLE_COLOR => {
+                matches!(value, AttrVal::Str(v) if v.len() == 7 && v.starts_with('#'))
+            }
+            qdoc::schema::STYLE_ALIGN => {
+                matches!(value, AttrVal::Str(v) if matches!(v.as_str(), "left" | "center" | "right" | "justify"))
+            }
+            qdoc::schema::STYLE_SPACE_BEFORE
+            | qdoc::schema::STYLE_SPACE_AFTER
+            | qdoc::schema::STYLE_INDENT => {
+                matches!(value, AttrVal::Float(v) if v.is_finite() && (0.0..=10_000.0).contains(v))
+            }
+            _ => false,
+        }
+    }
+
+    fn validate(&self, action: &WordProcessorAction) -> bool {
+        match action.domain() {
+            ActionDomain::Text => {
+                self.validate_text_edit(action) || self.validate_paste_and_body(action)
+            }
+            ActionDomain::Formatting => self.validate_formatting(action),
+            ActionDomain::Media => self.validate_media(action),
+            ActionDomain::Table => self.validate_tables(action),
+            ActionDomain::Structure => self.validate_structure(action),
+            ActionDomain::Review => self.validate_review(action),
+        }
+    }
+
+    fn validate_text_edit(&self, action: &WordProcessorAction) -> bool {
+        match action {
+            WordProcessorAction::SpliceText {
+                region,
+                block,
+                at,
+                del,
+                ins,
+            } => {
+                self.block_len(*region, block)
+                    .is_some_and(|len| *at <= len && *del <= len.saturating_sub(*at))
+                    && Self::safe_text(ins)
+            }
+            WordProcessorAction::ReplaceSelection {
+                region,
+                start_block,
+                start,
+                end_block,
+                end,
+                ins,
+            } => {
+                let blocks = self.blocks_for(*region);
+                let start_index = blocks.iter().position(|block| block.id == *start_block);
+                let end_index = blocks.iter().position(|block| block.id == *end_block);
+                match (
+                    start_index,
+                    end_index,
+                    self.block_len(*region, start_block),
+                    self.block_len(*region, end_block),
+                ) {
+                    (Some(start_index), Some(end_index), Some(start_len), Some(end_len)) => {
+                        (start_index < end_index || (start_index == end_index && start <= end))
+                            && *start <= start_len
+                            && *end <= end_len
+                            && Self::safe_text(ins)
+                    }
+                    _ => false,
                 }
+            }
+            WordProcessorAction::SetMark {
+                region,
+                spans,
+                name,
+                value,
+                also_clear,
+            } => {
+                Self::safe_name(name)
+                    && also_clear.iter().all(|sibling| Self::safe_name(sibling))
+                    && spans.len() <= 10_000
+                    && !spans.is_empty()
+                    && spans.iter().all(|span| {
+                        self.block_len(*region, &span.block)
+                            .is_some_and(|len| span.start < span.end && span.end <= len)
+                    })
+                    && match (name.as_str(), value) {
+                        ("link", Some(MarkVal::Str(target))) => valid_hyperlink_target(target),
+                        ("link", Some(_)) => false,
+                        (_, Some(MarkVal::Str(text))) => Self::safe_text(text),
+                        _ => true,
+                    }
+            }
+            _ => false,
         }
+    }
+
+    fn validate_paste_and_body(&self, action: &WordProcessorAction) -> bool {
+        match action {
+            WordProcessorAction::PasteFragment {
+                region,
+                start_block,
+                start,
+                end_block,
+                end,
+                blocks,
+                ..
+            } => {
+                let region_blocks = self.blocks_for(*region);
+                let start_index = region_blocks
+                    .iter()
+                    .position(|block| block.id == *start_block);
+                let end_index = region_blocks
+                    .iter()
+                    .position(|block| block.id == *end_block);
+                let valid_range = match (
+                    start_index,
+                    end_index,
+                    self.block_len(*region, start_block),
+                    self.block_len(*region, end_block),
+                ) {
+                    (Some(si), Some(ei), Some(sl), Some(el)) => {
+                        (si < ei || (si == ei && start <= end)) && *start <= sl && *end <= el
+                    }
+                    _ => false,
+                };
+                valid_range
+                    && !blocks.is_empty()
+                    && blocks.len() <= 10_000
+                    && blocks.iter().all(|block| {
+                        Self::safe_text(&block.text)
+                            && Self::safe_name(&block.kind)
+                            && block.level.is_none_or(|level| (0..=9).contains(&level))
+                            && block.marks.iter().all(|mark| {
+                                Self::safe_name(&mark.name)
+                                    && mark.start < mark.end
+                                    && mark.end <= block.text.chars().count()
+                            })
+                    })
+            }
+            WordProcessorAction::InsertParagraph { after, text } => {
+                self.block_len(RegionKind::Body, after).is_some() && Self::safe_text(text)
+            }
+            WordProcessorAction::RemoveBlocks { blocks } => {
+                self.unique_existing(RegionKind::Body, blocks)
+            }
+            WordProcessorAction::ReplaceBody { markdown } => Self::safe_text(markdown),
+            _ => false,
+        }
+    }
+
+    fn validate_formatting(&self, action: &WordProcessorAction) -> bool {
+        match action {
         WordProcessorAction::SetParagraphStyle {
             region,
             blocks,
@@ -505,8 +763,8 @@ fn action_is_valid(action: &WordProcessorAction, doc: &AutoCommit, c: &Container
             level,
             ..
         } => {
-            unique_existing(*region, blocks)
-                && safe_name(kind)
+            self.unique_existing(*region, blocks)
+                && Self::safe_name(kind)
                 && level.is_none_or(|level| (0..=9).contains(&level))
         }
         WordProcessorAction::ApplyNamedStyle {
@@ -517,10 +775,10 @@ fn action_is_valid(action: &WordProcessorAction, doc: &AutoCommit, c: &Container
             level,
             ..
         } => {
-            unique_existing(*region, blocks)
+            self.unique_existing(*region, blocks)
                 && !style.is_empty()
                 && style.len() <= 128
-                && kind.as_deref().is_none_or(safe_name)
+                && kind.as_deref().is_none_or(Self::safe_name)
                 && level.is_none_or(|level| (0..=9).contains(&level))
         }
         WordProcessorAction::SetBlockAttr {
@@ -528,16 +786,44 @@ fn action_is_valid(action: &WordProcessorAction, doc: &AutoCommit, c: &Container
             blocks,
             key,
             value,
-        } => unique_existing(*region, blocks) && valid_attr(key, value),
-        WordProcessorAction::SetImageCrop {
-            block,
-            left,
-            top,
-            right,
-            bottom,
+        } => self.unique_existing(*region, blocks) && Self::valid_attr(key, value),
+        WordProcessorAction::SetPageMargins { top, right, bottom, left } => [top, right, bottom, left]
+            .into_iter()
+            .all(|value| value.is_finite() && (4.0..=10_000.0).contains(value)),
+        WordProcessorAction::SetStyleProperty { style, key, value } => {
+            Self::safe_name(style)
+                && !qdoc::model::style_is_tombstoned(self.doc, self.containers, style)
+                && Self::valid_style_property(key, value)
+        }
+        WordProcessorAction::DeleteStyle {
+            style,
+            fallback_blocks,
         } => {
-            block_len(RegionKind::Body, block).is_some()
-                && snap.blocks.iter().any(|b| b.id == *block && b.kind == "image")
+            Self::safe_name(style)
+                && !crate::styles::StyleSheet::is_builtin(style)
+                && qdoc::model::style_ids(self.doc, self.containers).contains(style)
+                && fallback_blocks.iter().all(|block| {
+                    self.snapshot.blocks.iter().any(|entry| {
+                        entry.id == *block
+                            && matches!(entry.attrs.get("style"), Some(qdoc::AttrVal::Str(id)) if id == style)
+                    })
+                })
+        }
+            _ => false,
+        }
+    }
+
+    fn validate_media(&self, action: &WordProcessorAction) -> bool {
+        match action {
+            WordProcessorAction::SetImageCrop {
+                block,
+                left,
+                top,
+                right,
+                bottom,
+            } => {
+                self.block_len(RegionKind::Body, block).is_some()
+                && self.snapshot.blocks.iter().any(|b| b.id == *block && b.kind == "image")
                 && [left, top, right, bottom]
                     .iter()
                     .all(|edge| (0_i64..=9_500).contains(*edge))
@@ -546,99 +832,202 @@ fn action_is_valid(action: &WordProcessorAction, doc: &AutoCommit, c: &Container
                 // infinite scale factor in the renderer.
                 && (*left).saturating_add(*right) <= 9_500
                 && (*top).saturating_add(*bottom) <= 9_500
+            }
+            WordProcessorAction::SetImageSize {
+                block,
+                width,
+                height,
+            } => {
+                self.block_len(RegionKind::Body, block).is_some()
+                    && self
+                        .snapshot
+                        .blocks
+                        .iter()
+                        .any(|b| b.id == *block && b.kind == "image")
+                    && (16..=100_000).contains(width)
+                    && (16..=100_000).contains(height)
+            }
+            WordProcessorAction::SetImagePlacement {
+                block,
+                anchor,
+                wrap,
+                x,
+                y,
+                page,
+            } => {
+                self.block_len(RegionKind::Body, block).is_some()
+                    && self
+                        .snapshot
+                        .blocks
+                        .iter()
+                        .any(|b| b.id == *block && b.kind == "image")
+                    && matches!(anchor.as_str(), "inline" | "paragraph" | "page")
+                    && matches!(wrap.as_str(), "none" | "left" | "right" | "both")
+                    && (-100_000..=100_000).contains(x)
+                    && (-100_000..=100_000).contains(y)
+                    && (0..=10_000).contains(page)
+            }
+            WordProcessorAction::InsertImage {
+                block,
+                at,
+                bytes,
+                width,
+                height,
+            } => {
+                self.block_len(RegionKind::Body, block)
+                    .is_some_and(|len| *at <= len)
+                    && !bytes.is_empty()
+                    && bytes.len() <= MAX_ACTION_BLOB_BYTES
+                    && width.is_none_or(|value| (1..=100_000).contains(&value))
+                    && height.is_none_or(|value| (1..=100_000).contains(&value))
+            }
+            _ => false,
         }
-        WordProcessorAction::SetImageSize {
-            block,
-            width,
-            height,
-        } => {
-            block_len(RegionKind::Body, block).is_some()
-                && snap
+    }
+
+    fn validate_tables(&self, action: &WordProcessorAction) -> bool {
+        match action {
+            WordProcessorAction::InsertTable { after, rows, cols } => {
+                self.block_len(RegionKind::Body, after).is_some()
+                    && *rows > 0
+                    && *cols > 0
+                    && *rows <= MAX_TABLE_DIMENSION
+                    && *cols <= MAX_TABLE_DIMENSION
+                    && rows.saturating_mul(*cols) <= MAX_TABLE_CELLS
+            }
+            WordProcessorAction::EditTable { table, edit } => {
+                let cells: Vec<_> = self
+                    .snapshot
                     .blocks
                     .iter()
-                    .any(|b| b.id == *block && b.kind == "image")
-                && (16..=100_000).contains(width)
-                && (16..=100_000).contains(height)
-        }
-        WordProcessorAction::SetImagePlacement {
-            block,
-            anchor,
-            wrap,
-            x,
-            y,
-            page,
-        } => {
-            block_len(RegionKind::Body, block).is_some()
-                && snap
-                    .blocks
+                    .filter(|block| {
+                        block.kind == "cell"
+                            && matches!(block.attrs.get("table"), Some(qdoc::AttrVal::Str(id)) if id == table)
+                    })
+                    .collect();
+                let coord =
+                    |block: &qdoc::snapshot::BlockView, key: &str| match block.attrs.get(key) {
+                        Some(qdoc::AttrVal::Int(value)) if *value >= 0 => num::usize_of_i64(*value),
+                        _ => 0,
+                    };
+                let rows = cells
                     .iter()
-                    .any(|b| b.id == *block && b.kind == "image")
-                && matches!(anchor.as_str(), "inline" | "paragraph" | "page")
-                && matches!(wrap.as_str(), "none" | "left" | "right" | "both")
-                && (-100_000..=100_000).contains(x)
-                && (-100_000..=100_000).contains(y)
-                && (0..=10_000).contains(page)
+                    .map(|block| coord(block, "row"))
+                    .max()
+                    .map_or(0, |value| value.saturating_add(1));
+                let cols = cells
+                    .iter()
+                    .map(|block| coord(block, "col"))
+                    .max()
+                    .map_or(0, |value| value.saturating_add(1));
+                !table.is_empty()
+                    && !cells.is_empty()
+                    && cells.len() == rows.saturating_mul(cols)
+                    && match edit {
+                        TableEdit::InsertRow { at } => *at <= rows && rows < MAX_TABLE_DIMENSION,
+                        TableEdit::InsertColumn { at } => *at <= cols && cols < MAX_TABLE_DIMENSION,
+                        TableEdit::DeleteRow { row } => *row < rows,
+                        TableEdit::DeleteColumn { column } => *column < cols,
+                        TableEdit::Delete => true,
+                    }
+            }
+            _ => false,
         }
-        WordProcessorAction::InsertTable { after, rows, cols } => {
-            block_len(RegionKind::Body, after).is_some()
-                && *rows > 0
-                && *cols > 0
-                && *rows <= MAX_TABLE_DIMENSION
-                && *cols <= MAX_TABLE_DIMENSION
-                && rows.saturating_mul(*cols) <= MAX_TABLE_CELLS
+    }
+
+    fn validate_structure(&self, action: &WordProcessorAction) -> bool {
+        match action {
+            WordProcessorAction::InsertPageBreak { region, block, at } => {
+                self.block_len(*region, block).is_some_and(|len| *at <= len)
+            }
+            WordProcessorAction::SplitBlock {
+                region,
+                block,
+                at,
+                kind,
+                ..
+            } => {
+                self.block_len(*region, block).is_some_and(|len| *at <= len)
+                    && matches!(kind.as_str(), "paragraph" | "list_item")
+            }
+            WordProcessorAction::InsertField {
+                region,
+                block,
+                at,
+                field,
+            } => {
+                self.block_len(*region, block).is_some_and(|len| *at <= len)
+                    && field == qdoc::schema::FIELD_PAGE_NUMBER
+            }
+            WordProcessorAction::GenerateToc { entries } => {
+                !entries.is_empty()
+                    && entries.len() <= 10_000
+                    && entries
+                        .iter()
+                        .map(|entry| entry.heading.as_str())
+                        .collect::<HashSet<_>>()
+                        .len()
+                        == entries.len()
+                    && entries.iter().all(|entry| {
+                        (1..=9).contains(&entry.level)
+                            && Self::safe_text(&entry.text)
+                            && entry.page.is_none_or(|page| page <= 100_000)
+                            && self
+                                .snapshot
+                                .blocks
+                                .iter()
+                                .any(|block| block.id == entry.heading && block.kind == "heading")
+                    })
+            }
+            _ => false,
         }
-        WordProcessorAction::InsertImage {
-            block,
-            at,
-            bytes,
-            width,
-            height,
-        } => {
-            block_len(RegionKind::Body, block).is_some_and(|len| *at <= len)
-                && !bytes.is_empty()
-                && bytes.len() <= MAX_ACTION_BLOB_BYTES
-                && width.is_none_or(|value| (1..=100_000).contains(&value))
-                && height.is_none_or(|value| (1..=100_000).contains(&value))
-        }
-        WordProcessorAction::InsertPageBreak { block, at } => {
-            block_len(RegionKind::Body, block).is_some_and(|len| *at <= len)
-        }
-        WordProcessorAction::InsertParagraph { after, text } => {
-            block_len(RegionKind::Body, after).is_some() && safe_text(text)
-        }
-        WordProcessorAction::RemoveBlocks { blocks } => unique_existing(RegionKind::Body, blocks),
-        WordProcessorAction::ReplaceBody { markdown } => safe_text(markdown),
-        WordProcessorAction::AcceptChanges { id } | WordProcessorAction::RejectChanges { id } => id
-            .as_ref()
-            .is_none_or(|id| snap.changes.iter().any(|change| &change.id == id)),
-        WordProcessorAction::ResolveComment { id } => {
-            !id.is_empty() && snap.comments.iter().any(|comment| comment.id == *id)
-        }
-        WordProcessorAction::AddComment {
-            block,
-            start,
-            end,
-            author,
-            date,
-            text,
-        } => {
-            block_len(RegionKind::Body, block).is_some_and(|len| *start < *end && *end <= len)
-                && !author.trim().is_empty()
-                && author.chars().count() <= 256
-                && date.chars().count() <= 128
-                && safe_text(text)
-        }
-        WordProcessorAction::ReplyToComment {
-            comment,
-            author,
-            date,
-            text,
-        } => {
-            snap.comments.iter().any(|entry| entry.id == *comment)
-                && !author.trim().is_empty()
-                && author.chars().count() <= 256
-                && date.chars().count() <= 128
-                && safe_text(text)
+    }
+
+    fn validate_review(&self, action: &WordProcessorAction) -> bool {
+        match action {
+            WordProcessorAction::AcceptChanges { id }
+            | WordProcessorAction::RejectChanges { id } => id
+                .as_ref()
+                .is_none_or(|id| self.snapshot.changes.iter().any(|change| &change.id == id)),
+            WordProcessorAction::ResolveComment { id } => {
+                !id.is_empty()
+                    && self
+                        .snapshot
+                        .comments
+                        .iter()
+                        .any(|comment| comment.id == *id)
+            }
+            WordProcessorAction::AddComment {
+                block,
+                start,
+                end,
+                author,
+                date,
+                text,
+            } => {
+                self.block_len(RegionKind::Body, block)
+                    .is_some_and(|len| *start < *end && *end <= len)
+                    && !author.trim().is_empty()
+                    && author.chars().count() <= 256
+                    && date.chars().count() <= 128
+                    && Self::safe_text(text)
+            }
+            WordProcessorAction::ReplyToComment {
+                comment,
+                author,
+                date,
+                text,
+            } => {
+                self.snapshot
+                    .comments
+                    .iter()
+                    .any(|entry| entry.id == *comment)
+                    && !author.trim().is_empty()
+                    && author.chars().count() <= 256
+                    && date.chars().count() <= 128
+                    && Self::safe_text(text)
+            }
+            _ => false,
         }
     }
 }
@@ -759,11 +1148,7 @@ fn apply_splice_text(
 }
 
 fn remove_block_in_region(dm: &mut DocMut, region: Region, block: &str) {
-    if region == Region::Body {
-        dm.remove_block(block);
-    } else if let Some(container) = region_container_obj(dm.doc, dm.c, region) {
-        let _ = dm.doc.delete(&container, block);
-    }
+    dm.tombstone_block_in(region, block);
 }
 
 fn apply_replace_selection(
@@ -941,6 +1326,157 @@ fn apply_insert_table(dm: &mut DocMut, after: &str, rows: usize, cols: usize) {
     }
 }
 
+type TableCells = Vec<(String, usize, usize)>;
+
+fn table_cells(dm: &DocMut<'_>, table: &str) -> TableCells {
+    qdoc::model::materialize(dm.doc, dm.c)
+        .blocks
+        .into_iter()
+        .filter(|block| {
+            block.kind == "cell"
+                && matches!(block.attrs.get("table"), Some(qdoc::AttrVal::Str(id)) if id == table)
+        })
+        .map(|block| {
+            let coordinate = |key: &str| match block.attrs.get(key) {
+                Some(qdoc::AttrVal::Int(value)) if *value >= 0 => num::usize_of_i64(*value),
+                _ => 0,
+            };
+            (block.id, coordinate("row"), coordinate("col"))
+        })
+        .collect()
+}
+
+fn table_head_anchor(dm: &DocMut<'_>, cells: &TableCells) -> Option<String> {
+    let order = qdoc::model::blocks_in_order(dm.doc, dm.c);
+    let first = cells
+        .iter()
+        .filter_map(|(id, _, _)| order.iter().position(|candidate| candidate == id))
+        .min()?;
+    first
+        .checked_sub(1)
+        .and_then(|index| order.get(index).cloned())
+}
+
+fn apply_insert_table_row(dm: &mut DocMut<'_>, table: &str, at: usize, cells: &TableCells) {
+    let columns = cells
+        .iter()
+        .map(|(_, _, column)| *column)
+        .max()
+        .map_or(0, |column| column.saturating_add(1));
+    let anchor = if at == 0 {
+        table_head_anchor(dm, cells)
+    } else {
+        cells
+            .iter()
+            .filter(|(_, row, _)| *row == at.saturating_sub(1))
+            .max_by_key(|(_, _, column)| *column)
+            .map(|(id, _, _)| id.clone())
+    };
+    let mut shifted: Vec<_> = cells.iter().filter(|(_, row, _)| *row >= at).collect();
+    shifted.sort_by_key(|(id, _, _)| id.as_str());
+    for (id, row, _) in shifted {
+        dm.set_attr(id, "row", num::i64_of_usize(row.saturating_add(1)));
+    }
+    let mut previous = anchor;
+    for column in 0..columns {
+        let id = dm.insert_block(previous.as_deref(), "cell");
+        dm.set_attr(&id, "table", table);
+        dm.set_attr(&id, "row", num::i64_of_usize(at));
+        dm.set_attr(&id, "col", num::i64_of_usize(column));
+        previous = Some(id);
+    }
+}
+
+fn apply_insert_table_column(dm: &mut DocMut<'_>, table: &str, at: usize, cells: &TableCells) {
+    let rows = cells
+        .iter()
+        .map(|(_, row, _)| *row)
+        .max()
+        .map_or(0, |row| row.saturating_add(1));
+    let mut shifted: Vec<_> = cells
+        .iter()
+        .filter(|(_, _, column)| *column >= at)
+        .collect();
+    shifted.sort_by_key(|(id, _, _)| id.as_str());
+    for (id, _, column) in shifted {
+        dm.set_attr(id, "col", num::i64_of_usize(column.saturating_add(1)));
+    }
+    for row in 0..rows {
+        let anchor = if at == 0 {
+            if row == 0 {
+                table_head_anchor(dm, cells)
+            } else {
+                cells
+                    .iter()
+                    .filter(|(_, candidate_row, _)| *candidate_row == row.saturating_sub(1))
+                    .max_by_key(|(_, _, column)| *column)
+                    .map(|(id, _, _)| id.clone())
+            }
+        } else {
+            cells
+                .iter()
+                .find(|(_, candidate_row, column)| {
+                    *candidate_row == row && *column == at.saturating_sub(1)
+                })
+                .map(|(id, _, _)| id.clone())
+        };
+        let id = dm.insert_block(anchor.as_deref(), "cell");
+        dm.set_attr(&id, "table", table);
+        dm.set_attr(&id, "row", num::i64_of_usize(row));
+        dm.set_attr(&id, "col", num::i64_of_usize(at));
+    }
+}
+
+fn apply_delete_table_axis(dm: &mut DocMut<'_>, cells: &TableCells, row_axis: bool, index: usize) {
+    let axis_value = |cell: &&(String, usize, usize)| if row_axis { cell.1 } else { cell.2 };
+    let extent = cells
+        .iter()
+        .map(|cell| axis_value(&cell))
+        .max()
+        .map_or(0, |value| value.saturating_add(1));
+    if extent <= 1 {
+        for (id, _, _) in cells {
+            dm.tombstone_block_in(Region::Body, id);
+        }
+        return;
+    }
+    let mut ordered = cells.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|(id, _, _)| id.as_str());
+    for cell @ (id, row, column) in ordered {
+        let value = axis_value(&cell);
+        if value == index {
+            dm.tombstone_block_in(Region::Body, id);
+        } else if value > index {
+            dm.set_attr(
+                id,
+                if row_axis { "row" } else { "col" },
+                num::i64_of_usize(if row_axis {
+                    row.saturating_sub(1)
+                } else {
+                    column.saturating_sub(1)
+                }),
+            );
+        }
+    }
+}
+
+fn apply_table_edit(dm: &mut DocMut<'_>, table: &str, edit: TableEdit) {
+    let cells = table_cells(dm, table);
+    match edit {
+        TableEdit::InsertRow { at } => apply_insert_table_row(dm, table, at, &cells),
+        TableEdit::InsertColumn { at } => apply_insert_table_column(dm, table, at, &cells),
+        TableEdit::DeleteRow { row } => apply_delete_table_axis(dm, &cells, true, row),
+        TableEdit::DeleteColumn { column } => {
+            apply_delete_table_axis(dm, &cells, false, column);
+        }
+        TableEdit::Delete => {
+            for (id, _, _) in &cells {
+                dm.tombstone_block_in(Region::Body, id);
+            }
+        }
+    }
+}
+
 fn apply_insert_image(
     dm: &mut DocMut,
     block: &str,
@@ -975,20 +1511,155 @@ fn apply_insert_image(
     }
 }
 
-fn apply_insert_page_break(dm: &mut DocMut, block: &str, at: usize) {
+fn apply_insert_page_break(dm: &mut DocMut, region: Region, block: &str, at: usize) {
     // Split the block at the caret (like Enter): the tail moves into a fresh
     // paragraph that starts on a new page.
-    let text = qdoc::model::block_text(dm.doc, dm.c, block).unwrap_or_default();
+    let text = match region {
+        Region::Body => qdoc::model::block_text(dm.doc, dm.c, block),
+        other => qdoc::model::materialize_region(dm.doc, dm.c, other)
+            .into_iter()
+            .find(|entry| entry.id == block)
+            .map(|entry| entry.text),
+    }
+    .unwrap_or_default();
     let char_count = text.chars().count();
     let tail: String = text.chars().skip(at).collect();
     if let Some(tail) = char_count.checked_sub(at).filter(|n| *n > 0) {
-        dm.splice_text(block, at, num::isize_of_usize(tail), "");
+        dm.splice_text_in(region, block, at, num::isize_of_usize(tail), "");
     }
-    let new = dm.insert_block(Some(block), "paragraph");
+    let new = dm.insert_block_in(region, Some(block), "paragraph");
     if !tail.is_empty() {
-        dm.splice_text(&new, 0, 0, &tail);
+        dm.splice_text_in(region, &new, 0, 0, &tail);
     }
-    dm.set_attr(&new, "page_break_before", true);
+    dm.set_attr_in(region, &new, "page_break_before", true);
+}
+
+fn apply_split_block(
+    dm: &mut DocMut,
+    region: Region,
+    block: &str,
+    at: usize,
+    kind: &str,
+    ordered: Option<bool>,
+) {
+    let text = match region {
+        Region::Body => qdoc::model::block_text(dm.doc, dm.c, block),
+        other => qdoc::model::materialize_region(dm.doc, dm.c, other)
+            .into_iter()
+            .find(|entry| entry.id == block)
+            .map(|entry| entry.text),
+    }
+    .unwrap_or_default();
+    let tail: String = text.chars().skip(at).collect();
+    let remove = text.chars().count().saturating_sub(at);
+    if remove > 0 {
+        dm.splice_text_in(region, block, at, num::isize_of_usize(remove), "");
+    }
+    let new = dm.insert_block_in(region, Some(block), kind);
+    if let Some(value) = ordered {
+        dm.set_attr_in(region, &new, "ordered", value);
+    }
+    if !tail.is_empty() {
+        dm.splice_text_in(region, &new, 0, 0, &tail);
+    }
+}
+
+fn apply_generate_toc(dm: &mut DocMut, entries: &[TocTarget]) {
+    let snapshot = qdoc::model::materialize(dm.doc, dm.c);
+    for block in snapshot
+        .blocks
+        .iter()
+        .filter(|block| matches!(block.attrs.get("toc"), Some(qdoc::AttrVal::Bool(true))))
+    {
+        dm.tombstone_block_in(Region::Body, &block.id);
+    }
+    let mut previous = None;
+    for entry in entries {
+        let block = dm.insert_block(previous.as_deref(), "paragraph");
+        dm.set_attr(&block, "toc", true);
+        dm.set_attr(&block, "toc_level", entry.level);
+        dm.set_attr(&block, "toc_heading", entry.heading.as_str());
+        let indent = "  ".repeat(num::usize_of_i64(entry.level.saturating_sub(1)));
+        let title = entry.text.trim();
+        let line = entry.page.map_or_else(
+            || format!("{indent}{title}"),
+            |page| format!("{indent}{title} .......... {page}"),
+        );
+        dm.splice_text(&block, 0, 0, &line);
+        previous = Some(block);
+    }
+}
+
+fn apply_paste_fragment(
+    dm: &mut DocMut,
+    region: Region,
+    selection: &SelectionTarget,
+    blocks: &[crate::word_processor::ClipBlock],
+    adopt_first_style: bool,
+) {
+    apply_replace_selection(
+        dm,
+        region,
+        &selection.start_block,
+        selection.start,
+        &selection.end_block,
+        selection.end,
+        "",
+    );
+    let mut current = selection.start_block.clone();
+    let mut offset = selection.start;
+    for (index, fragment) in blocks.iter().enumerate() {
+        if index > 0 {
+            let text = match region {
+                Region::Body => qdoc::model::block_text(dm.doc, dm.c, &current),
+                other => qdoc::model::materialize_region(dm.doc, dm.c, other)
+                    .into_iter()
+                    .find(|entry| entry.id == current)
+                    .map(|entry| entry.text),
+            }
+            .unwrap_or_default();
+            let tail: String = text.chars().skip(offset).collect();
+            let remove = text.chars().count().saturating_sub(offset);
+            if remove > 0 {
+                dm.splice_text_in(region, &current, offset, num::isize_of_usize(remove), "");
+            }
+            let next = dm.insert_block_in(region, Some(&current), "paragraph");
+            if !tail.is_empty() {
+                dm.splice_text_in(region, &next, 0, 0, &tail);
+            }
+            current = next;
+            offset = 0;
+        }
+        if !fragment.text.is_empty() {
+            dm.splice_text_in(region, &current, offset, 0, &fragment.text);
+        }
+        for mark in &fragment.marks {
+            let span = Span {
+                block: current.clone(),
+                start: offset.saturating_add(mark.start),
+                end: offset.saturating_add(mark.end),
+            };
+            let value = match &mark.value {
+                qdoc::document::MarkValue::Bool(value) => MarkVal::Bool(*value),
+                qdoc::document::MarkValue::Int(value) => MarkVal::Int(*value),
+                qdoc::document::MarkValue::Str(value) => MarkVal::Str(value.clone()),
+            };
+            add_mark_region(dm, region, &span, &mark.name, &value);
+        }
+        if index > 0 || adopt_first_style {
+            set_kind_region(dm, region, &current, &fragment.kind);
+            if let Some(level) = fragment.level {
+                set_attr_region(dm, region, &current, "level", &AttrVal::Int(level));
+            }
+            if let Some(ordered) = fragment.ordered {
+                set_attr_region(dm, region, &current, "ordered", &AttrVal::Bool(ordered));
+            }
+            if let Some(align) = &fragment.align {
+                set_attr_region(dm, region, &current, "align", &AttrVal::Str(align.clone()));
+            }
+        }
+        offset = offset.saturating_add(fragment.text.chars().count());
+    }
 }
 
 fn apply_insert_paragraph(dm: &mut DocMut, after: &str, text: &str) {
@@ -1002,7 +1673,7 @@ fn apply_remove_blocks(dm: &mut DocMut, blocks: &[String]) {
     let mut sorted = blocks.to_vec();
     sorted.sort();
     for block in &sorted {
-        dm.remove_block(block);
+        dm.tombstone_block_in(Region::Body, block);
     }
 }
 
@@ -1010,7 +1681,7 @@ fn apply_replace_body(dm: &mut DocMut, markdown: &str) {
     use qdoc::FormatProvider;
     let existing = qdoc::model::blocks_in_order(dm.doc, dm.c);
     for id in &existing {
-        dm.remove_block(id);
+        dm.tombstone_block_in(Region::Body, id);
     }
     // A malformed template can't wedge a replay: the body-clear stays in the
     // pinned change either way.
@@ -1056,6 +1727,10 @@ fn apply_review_changes(dm: &mut DocMut, id: Option<&str>, accept: bool) {
 }
 
 fn apply_resolve_comment(dm: &mut DocMut, id: &str) {
+    // Record the semantic delete independently from the current map entry.
+    // A reply authored on a divergent replica may merge after this deletion;
+    // the grow-only tombstone keeps that stale thread from reappearing.
+    dm.tombstone_comment(id);
     let range = qdoc::model::comment_range(dm.doc, dm.c, id);
     if let Some((block, start, end)) = range
         && start < end
@@ -1091,6 +1766,249 @@ fn apply_add_comment(
     }
 }
 
+fn apply_text_action(dm: &mut DocMut<'_>, action: &WordProcessorAction) {
+    match action {
+        WordProcessorAction::SpliceText {
+            region,
+            block,
+            at,
+            del,
+            ins,
+        } => apply_splice_text(dm, region.to_region(), block, *at, *del, ins),
+        WordProcessorAction::ReplaceSelection {
+            region,
+            start_block,
+            start,
+            end_block,
+            end,
+            ins,
+        } => apply_replace_selection(
+            dm,
+            region.to_region(),
+            start_block,
+            *start,
+            end_block,
+            *end,
+            ins,
+        ),
+        WordProcessorAction::SetMark {
+            region,
+            spans,
+            name,
+            value,
+            also_clear,
+        } => apply_set_mark(
+            dm,
+            region.to_region(),
+            spans,
+            name,
+            value.as_ref(),
+            also_clear,
+        ),
+        WordProcessorAction::PasteFragment {
+            region,
+            start_block,
+            start,
+            end_block,
+            end,
+            blocks,
+            adopt_first_style,
+        } => apply_paste_fragment(
+            dm,
+            region.to_region(),
+            &SelectionTarget {
+                start_block: start_block.clone(),
+                start: *start,
+                end_block: end_block.clone(),
+                end: *end,
+            },
+            blocks,
+            *adopt_first_style,
+        ),
+        WordProcessorAction::InsertParagraph { after, text } => {
+            apply_insert_paragraph(dm, after, text);
+        }
+        WordProcessorAction::RemoveBlocks { blocks } => apply_remove_blocks(dm, blocks),
+        WordProcessorAction::ReplaceBody { markdown } => apply_replace_body(dm, markdown),
+        _ => {}
+    }
+}
+
+fn apply_formatting_action(dm: &mut DocMut<'_>, action: &WordProcessorAction) {
+    match action {
+        WordProcessorAction::SetParagraphStyle {
+            region,
+            blocks,
+            kind,
+            level,
+            ordered,
+        } => apply_set_paragraph_style(dm, region.to_region(), blocks, kind, *level, *ordered),
+        WordProcessorAction::ApplyNamedStyle {
+            region,
+            blocks,
+            style,
+            kind,
+            level,
+            ordered,
+        } => apply_named_style(
+            dm,
+            region.to_region(),
+            blocks,
+            style,
+            kind.as_ref(),
+            *level,
+            *ordered,
+        ),
+        WordProcessorAction::SetBlockAttr {
+            region,
+            blocks,
+            key,
+            value,
+        } => apply_set_block_attr(dm, region.to_region(), blocks, key, value),
+        WordProcessorAction::SetPageMargins {
+            top,
+            right,
+            bottom,
+            left,
+        } => {
+            dm.set_meta_str("page_margin_top", &top.to_string());
+            dm.set_meta_str("page_margin_right", &right.to_string());
+            dm.set_meta_str("page_margin_bottom", &bottom.to_string());
+            dm.set_meta_str("page_margin_left", &left.to_string());
+        }
+        WordProcessorAction::SetStyleProperty { style, key, value } => {
+            let value = match value {
+                AttrVal::Bool(value) => qdoc::AttrVal::Bool(*value),
+                AttrVal::Int(value) => qdoc::AttrVal::Int(*value),
+                AttrVal::Float(value) => qdoc::AttrVal::Float(*value),
+                AttrVal::Str(value) => qdoc::AttrVal::Str(value.clone()),
+            };
+            dm.set_style(style, &[(key.clone(), value)].into_iter().collect());
+        }
+        WordProcessorAction::DeleteStyle {
+            style,
+            fallback_blocks,
+        } => {
+            let mut blocks = fallback_blocks.clone();
+            blocks.sort();
+            for block in &blocks {
+                dm.set_attr(block, "style", "");
+            }
+            dm.tombstone_style(style);
+        }
+        _ => {}
+    }
+}
+
+fn apply_media_action(dm: &mut DocMut<'_>, action: &WordProcessorAction) {
+    match action {
+        WordProcessorAction::SetImageCrop {
+            block,
+            left,
+            top,
+            right,
+            bottom,
+        } => {
+            dm.set_attr(block, "crop_left", *left);
+            dm.set_attr(block, "crop_top", *top);
+            dm.set_attr(block, "crop_right", *right);
+            dm.set_attr(block, "crop_bottom", *bottom);
+        }
+        WordProcessorAction::SetImageSize {
+            block,
+            width,
+            height,
+        } => {
+            dm.set_attr(block, "width", *width);
+            dm.set_attr(block, "height", *height);
+        }
+        WordProcessorAction::SetImagePlacement {
+            block,
+            anchor,
+            wrap,
+            x,
+            y,
+            page,
+        } => {
+            dm.set_attr(block, "anchor", anchor.as_str());
+            dm.set_attr(block, "wrap", wrap.as_str());
+            dm.set_attr(block, "offset_x", *x);
+            dm.set_attr(block, "offset_y", *y);
+            dm.set_attr(block, "page", *page);
+        }
+        WordProcessorAction::InsertImage {
+            block,
+            at,
+            bytes,
+            width,
+            height,
+        } => apply_insert_image(dm, block, *at, bytes, *width, *height),
+        _ => {}
+    }
+}
+
+fn apply_table_action(dm: &mut DocMut<'_>, action: &WordProcessorAction) {
+    match action {
+        WordProcessorAction::InsertTable { after, rows, cols } => {
+            apply_insert_table(dm, after, *rows, *cols);
+        }
+        WordProcessorAction::EditTable { table, edit } => apply_table_edit(dm, table, *edit),
+        _ => {}
+    }
+}
+
+fn apply_structure_action(dm: &mut DocMut<'_>, action: &WordProcessorAction) {
+    match action {
+        WordProcessorAction::InsertPageBreak { region, block, at } => {
+            apply_insert_page_break(dm, region.to_region(), block, *at);
+        }
+        WordProcessorAction::SplitBlock {
+            region,
+            block,
+            at,
+            kind,
+            ordered,
+        } => apply_split_block(dm, region.to_region(), block, *at, kind, *ordered),
+        WordProcessorAction::InsertField {
+            region,
+            block,
+            at,
+            field: _,
+        } => dm.insert_page_number_field(region.to_region(), block, *at),
+        WordProcessorAction::GenerateToc { entries } => apply_generate_toc(dm, entries),
+        _ => {}
+    }
+}
+
+fn apply_review_action(dm: &mut DocMut<'_>, action: &WordProcessorAction) {
+    match action {
+        WordProcessorAction::AcceptChanges { id } => {
+            apply_review_changes(dm, id.as_deref(), true);
+        }
+        WordProcessorAction::RejectChanges { id } => {
+            apply_review_changes(dm, id.as_deref(), false);
+        }
+        WordProcessorAction::ResolveComment { id } => apply_resolve_comment(dm, id),
+        WordProcessorAction::AddComment {
+            block,
+            start,
+            end,
+            author,
+            date,
+            text,
+        } => apply_add_comment(dm, block, *start, *end, author, date, text),
+        WordProcessorAction::ReplyToComment {
+            comment,
+            author,
+            date,
+            text,
+        } => {
+            let _ = dm.add_comment_reply(comment, author, date, text);
+        }
+        _ => {}
+    }
+}
+
 impl Action for WordProcessorAction {
     /// Apply this action's mutation to `doc`.
     ///
@@ -1098,10 +2016,6 @@ impl Action for WordProcessorAction {
     ///
     /// Returns [`ActionError::Refused`] for an unavailable Writer document or
     /// stale/hostile decoded arguments before opening a mutable view.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one match deliberately makes the complete action envelope surface reviewable in one place"
-    )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         // Bind to the canonical schema under ROOT. Refuse an unbound document
         // explicitly so callers never mistake an unavailable target for a
@@ -1130,180 +2044,13 @@ impl Action for WordProcessorAction {
             ids: &mut ids,
         };
 
-        match self {
-            WordProcessorAction::SpliceText {
-                region,
-                block,
-                at,
-                del,
-                ins,
-            } => apply_splice_text(&mut dm, region.to_region(), block, *at, *del, ins),
-
-            WordProcessorAction::ReplaceSelection {
-                region,
-                start_block,
-                start,
-                end_block,
-                end,
-                ins,
-            } => apply_replace_selection(
-                &mut dm,
-                region.to_region(),
-                start_block,
-                *start,
-                end_block,
-                *end,
-                ins,
-            ),
-
-            WordProcessorAction::SetMark {
-                region,
-                spans,
-                name,
-                value,
-                also_clear,
-            } => apply_set_mark(
-                &mut dm,
-                region.to_region(),
-                spans,
-                name,
-                value.as_ref(),
-                also_clear,
-            ),
-
-            WordProcessorAction::SetParagraphStyle {
-                region,
-                blocks,
-                kind,
-                level,
-                ordered,
-            } => apply_set_paragraph_style(
-                &mut dm,
-                region.to_region(),
-                blocks,
-                kind,
-                *level,
-                *ordered,
-            ),
-
-            WordProcessorAction::ApplyNamedStyle {
-                region,
-                blocks,
-                style,
-                kind,
-                level,
-                ordered,
-            } => apply_named_style(
-                &mut dm,
-                region.to_region(),
-                blocks,
-                style,
-                kind.as_ref(),
-                *level,
-                *ordered,
-            ),
-
-            WordProcessorAction::SetBlockAttr {
-                region,
-                blocks,
-                key,
-                value,
-            } => apply_set_block_attr(&mut dm, region.to_region(), blocks, key, value),
-
-            WordProcessorAction::SetImageCrop {
-                block,
-                left,
-                top,
-                right,
-                bottom,
-            } => {
-                dm.set_attr(block, "crop_left", *left);
-                dm.set_attr(block, "crop_top", *top);
-                dm.set_attr(block, "crop_right", *right);
-                dm.set_attr(block, "crop_bottom", *bottom);
-            }
-
-            WordProcessorAction::SetImageSize {
-                block,
-                width,
-                height,
-            } => {
-                dm.set_attr(block, "width", *width);
-                dm.set_attr(block, "height", *height);
-            }
-
-            WordProcessorAction::SetImagePlacement {
-                block,
-                anchor,
-                wrap,
-                x,
-                y,
-                page,
-            } => {
-                dm.set_attr(block, "anchor", anchor.as_str());
-                dm.set_attr(block, "wrap", wrap.as_str());
-                dm.set_attr(block, "offset_x", *x);
-                dm.set_attr(block, "offset_y", *y);
-                dm.set_attr(block, "page", *page);
-            }
-
-            WordProcessorAction::InsertTable { after, rows, cols } => {
-                apply_insert_table(&mut dm, after, *rows, *cols);
-            }
-
-            WordProcessorAction::InsertImage {
-                block,
-                at,
-                bytes,
-                width,
-                height,
-            } => apply_insert_image(&mut dm, block, *at, bytes, *width, *height),
-
-            WordProcessorAction::InsertPageBreak { block, at } => {
-                apply_insert_page_break(&mut dm, block, *at);
-            }
-
-            WordProcessorAction::InsertParagraph { after, text } => {
-                apply_insert_paragraph(&mut dm, after, text);
-            }
-
-            WordProcessorAction::RemoveBlocks { blocks } => {
-                apply_remove_blocks(&mut dm, blocks);
-            }
-
-            WordProcessorAction::ReplaceBody { markdown } => {
-                apply_replace_body(&mut dm, markdown);
-            }
-
-            WordProcessorAction::AcceptChanges { id } => {
-                apply_review_changes(&mut dm, id.as_deref(), true);
-            }
-
-            WordProcessorAction::RejectChanges { id } => {
-                apply_review_changes(&mut dm, id.as_deref(), false);
-            }
-
-            WordProcessorAction::ResolveComment { id } => {
-                apply_resolve_comment(&mut dm, id);
-            }
-
-            WordProcessorAction::AddComment {
-                block,
-                start,
-                end,
-                author,
-                date,
-                text,
-            } => apply_add_comment(&mut dm, block, *start, *end, author, date, text),
-
-            WordProcessorAction::ReplyToComment {
-                comment,
-                author,
-                date,
-                text,
-            } => {
-                let _ = dm.add_comment_reply(comment, author, date, text);
-            }
+        match self.domain() {
+            ActionDomain::Text => apply_text_action(&mut dm, self),
+            ActionDomain::Formatting => apply_formatting_action(&mut dm, self),
+            ActionDomain::Media => apply_media_action(&mut dm, self),
+            ActionDomain::Table => apply_table_action(&mut dm, self),
+            ActionDomain::Structure => apply_structure_action(&mut dm, self),
+            ActionDomain::Review => apply_review_action(&mut dm, self),
         }
         Ok(())
     }
@@ -1373,6 +2120,37 @@ pub fn set_hyperlink_action(
     )
 }
 
+/// Accept only link targets the editor can safely activate and round-trip.
+/// Imported documents may preserve other URI forms for fidelity, but newly
+/// authored actions deliberately have a narrower contract.
+pub fn valid_hyperlink_target(target: &str) -> bool {
+    if target.is_empty() || target.trim() != target || target.chars().count() > 2_048 {
+        return false;
+    }
+    if let Some(fragment) = target.strip_prefix('#') {
+        return !fragment.is_empty()
+            && fragment.len() <= 128
+            && fragment
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+    }
+    let Ok(url) = url::Url::parse(target) else {
+        return false;
+    };
+    match url.scheme() {
+        "https" => {
+            url.host_str().is_some() && url.username().is_empty() && url.password().is_none()
+        }
+        "mailto" => {
+            let address = url.path();
+            address
+                .split_once('@')
+                .is_some_and(|(local, domain)| !local.is_empty() && !domain.is_empty())
+        }
+        _ => false,
+    }
+}
+
 /// Set one block attribute on `blocks`.
 pub fn set_block_attr_action(
     region: RegionKind,
@@ -1385,6 +2163,32 @@ pub fn set_block_attr_action(
         blocks,
         key: key.to_string(),
         value,
+    }
+}
+
+pub fn set_page_margins_action(margins: [f64; 4]) -> WordProcessorAction {
+    WordProcessorAction::SetPageMargins {
+        top: margins[0],
+        right: margins[1],
+        bottom: margins[2],
+        left: margins[3],
+    }
+}
+
+/// Set one field of a stable named style.
+pub fn set_style_property_action(style: &str, key: &str, value: AttrVal) -> WordProcessorAction {
+    WordProcessorAction::SetStyleProperty {
+        style: style.to_string(),
+        key: key.to_string(),
+        value,
+    }
+}
+
+/// Delete one custom style and reassign its exact current instances.
+pub fn delete_style_action(style: &str, fallback_blocks: Vec<String>) -> WordProcessorAction {
+    WordProcessorAction::DeleteStyle {
+        style: style.to_string(),
+        fallback_blocks,
     }
 }
 
@@ -1489,11 +2293,83 @@ pub fn insert_table_action(after: &str, rows: usize, cols: usize) -> WordProcess
     }
 }
 
+pub fn edit_table_action(table: &str, edit: TableEdit) -> WordProcessorAction {
+    WordProcessorAction::EditTable {
+        table: table.to_string(),
+        edit,
+    }
+}
+
 /// Insert a manual page break at `(block, at)`.
 pub fn insert_page_break_action(block: &str, at: usize) -> WordProcessorAction {
     WordProcessorAction::InsertPageBreak {
+        region: RegionKind::Body,
         block: block.to_string(),
         at,
+    }
+}
+
+/// Insert a manual page break in the addressed editing region.
+pub fn insert_page_break_in_action(
+    region: RegionKind,
+    block: &str,
+    at: usize,
+) -> WordProcessorAction {
+    WordProcessorAction::InsertPageBreak {
+        region,
+        block: block.to_string(),
+        at,
+    }
+}
+
+pub fn insert_page_number_action(
+    region: RegionKind,
+    block: &str,
+    at: usize,
+) -> WordProcessorAction {
+    WordProcessorAction::InsertField {
+        region,
+        block: block.to_string(),
+        at,
+        field: qdoc::schema::FIELD_PAGE_NUMBER.to_string(),
+    }
+}
+
+pub fn generate_toc_action(entries: Vec<TocTarget>) -> WordProcessorAction {
+    WordProcessorAction::GenerateToc { entries }
+}
+
+pub fn paste_fragment_action(
+    region: RegionKind,
+    selection: SelectionTarget,
+    blocks: Vec<crate::word_processor::ClipBlock>,
+    adopt_first_style: bool,
+) -> WordProcessorAction {
+    WordProcessorAction::PasteFragment {
+        region,
+        start_block: selection.start_block,
+        start: selection.start,
+        end_block: selection.end_block,
+        end: selection.end,
+        blocks,
+        adopt_first_style,
+    }
+}
+
+/// Split a body/header/footer block at one absolute character offset.
+pub fn split_block_action(
+    region: RegionKind,
+    block: &str,
+    at: usize,
+    kind: &str,
+    ordered: Option<bool>,
+) -> WordProcessorAction {
+    WordProcessorAction::SplitBlock {
+        region,
+        block: block.to_string(),
+        at,
+        kind: kind.to_string(),
+        ordered,
     }
 }
 
@@ -1708,27 +2584,21 @@ fn range_label(
     Some(format!("Result: {}", short(&text, "Empty match")))
 }
 
-/// Build the resource tree the word processor currently has open: the document
-/// (exporting the structural inserts + paragraph alignment over the current
-/// target blocks) and a child resource per image, table and heading, each
-/// exporting the document-mutating operations the data model implies.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the resource catalogue is one ordered declaration of the live document surface"
-)]
-pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    let mut root = Resource::new(
+fn document_resource() -> Resource {
+    Resource::new(
         "word-processor.document",
         "word_processor.document",
         "Document",
-    );
+    )
+}
 
+fn add_file_operations(root: &mut Resource) {
     for (id, label, variant) in [
         ("open", "Open document", 0_u8),
         ("save", "Save document", 1_u8),
         ("save-as", "Save document as", 2_u8),
     ] {
-        root = root.with_action(
+        root.actions.push(
             ActionSpec::typed_operation(
                 id,
                 label,
@@ -1762,135 +2632,121 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
             .returns(ResultSpec::Job),
         );
     }
+}
 
-    for (id, label, kind, value) in [
+fn add_view_operations(root: &mut Resource) {
+    for (id, label, value) in [
+        ("find", "Find in document", WordProcessorOperation::Find),
+        ("zoom-in", "Zoom in", WordProcessorOperation::ZoomIn),
+        ("zoom-out", "Zoom out", WordProcessorOperation::ZoomOut),
         (
-            "find",
-            "Find in document",
-            OperationKind::View,
-            WordProcessorOperation::Find,
-        ),
-        (
-            "zoom-in",
-            "Zoom in",
-            OperationKind::View,
-            WordProcessorOperation::ZoomIn,
-        ),
-        (
-            "zoom-out",
-            "Zoom out",
-            OperationKind::View,
-            WordProcessorOperation::ZoomOut,
+            "zoom-reset",
+            "Reset zoom to 100%",
+            WordProcessorOperation::ZoomReset,
         ),
         (
             "spellcheck",
             "Toggle spellcheck",
-            OperationKind::View,
             WordProcessorOperation::ToggleSpellcheck,
         ),
         (
             "markup",
             "Toggle review markup",
-            OperationKind::View,
             WordProcessorOperation::ToggleMarkup,
         ),
         (
             "styles",
             "Toggle styles panel",
-            OperationKind::View,
             WordProcessorOperation::ToggleStyles,
         ),
-        (
-            "ruler",
-            "Toggle ruler",
-            OperationKind::View,
-            WordProcessorOperation::ToggleRuler,
-        ),
+        ("ruler", "Toggle ruler", WordProcessorOperation::ToggleRuler),
         (
             "outline",
             "Toggle outline",
-            OperationKind::View,
             WordProcessorOperation::ToggleOutline,
         ),
         (
             "history",
             "Toggle history",
-            OperationKind::View,
             WordProcessorOperation::ToggleHistory,
         ),
     ] {
-        if let Some(spec) = operation(id, label, kind, &value) {
-            root = root.with_action(spec);
+        if let Some(spec) = operation(id, label, OperationKind::View, &value) {
+            root.actions.push(spec);
         }
     }
+}
 
-    // Document-level structural inserts, anchored on the caret.
-    root = root.with_action(immediate_spec(
+fn add_caret_actions(root: &mut Resource, ctx: &WpResourceCtx) {
+    root.actions.push(immediate_spec(
         "insert-table",
         "Insert table",
         &insert_table_action(&ctx.caret_block, 2, 2),
     ));
-    if !ctx.format_spans.is_empty() {
-        let spans = ctx.format_spans.clone();
-        let region = ctx.region;
-        root = root.with_action(ActionSpec::typed(
-            "set-hyperlink",
-            "Add or change hyperlink",
-            "Web URL (https://… or mailto:…) or #bookmark",
-            ExecutionLocus::ClientLocal,
-            vec![ActionParam::required_owned(
-                "target",
-                ParamType::Text,
-                "A safe external URL, mail address, or document-local #bookmark target",
-            )],
-            move |args: &ActionArgs| {
-                let target = args.text("target").unwrap_or_default().trim();
-                if target.is_empty() {
-                    return EncodedAction {
-                        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                        payload: b"hyperlink target is required".to_vec(),
-                    };
-                }
-                encode(&set_hyperlink_action(region, spans.clone(), target))
-            },
-        ));
+    if ctx.format_spans.is_empty() {
+        return;
     }
-    if let Some(selection) = &ctx.selection {
-        let selection = selection.clone();
-        let root_selection = selection.clone();
-        let region = ctx.region;
-        root = root.with_action(ActionSpec::typed(
-            "replace-selection",
-            "Replace selection",
-            "Replacement text for the selected document range",
-            ExecutionLocus::ClientLocal,
-            vec![ActionParam::required_owned(
-                "text",
-                ParamType::Text,
-                "Text that replaces the current selection (empty deletes it)",
-            )],
-            move |args: &ActionArgs| {
-                let Some(text) = args.text("text") else {
-                    return EncodedAction {
-                        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                        payload: b"replacement text is required".to_vec(),
-                    };
+    let spans = ctx.format_spans.clone();
+    let region = ctx.region;
+    root.actions.push(ActionSpec::typed(
+        "set-hyperlink",
+        "Add or change hyperlink",
+        "Web URL (https://… or mailto:…) or #bookmark",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::required_owned(
+            "target",
+            ParamType::Text,
+            "A safe external URL, mail address, or document-local #bookmark target",
+        )],
+        move |args: &ActionArgs| {
+            let target = args.text("target").unwrap_or_default().trim();
+            if !valid_hyperlink_target(target) {
+                return EncodedAction {
+                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                    payload: b"hyperlink target must use https:, mailto:, or #bookmark".to_vec(),
                 };
-                encode(&replace_selection_action(
-                    region,
-                    &root_selection.start_block,
-                    root_selection.start,
-                    &root_selection.end_block,
-                    root_selection.end,
-                    text,
-                ))
-            },
-        ));
+            }
+            encode(&set_hyperlink_action(region, spans.clone(), target))
+        },
+    ));
+}
 
-        // Selection is a first-class, exact-range resource as well as a root
-        // convenience action. Agents/global search can target it without
-        // reconstructing a UI-local selection from an unstable block index.
-        let selection_resource = Resource::new(
+fn add_selection_resources(root: &mut Resource, ctx: &WpResourceCtx) {
+    let Some(selection) = &ctx.selection else {
+        return;
+    };
+    let selection = selection.clone();
+    let root_selection = selection.clone();
+    let region = ctx.region;
+    root.actions.push(ActionSpec::typed(
+        "replace-selection",
+        "Replace selection",
+        "Replacement text for the selected document range",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::required_owned(
+            "text",
+            ParamType::Text,
+            "Text that replaces the current selection (empty deletes it)",
+        )],
+        move |args: &ActionArgs| {
+            let Some(text) = args.text("text") else {
+                return EncodedAction {
+                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                    payload: b"replacement text is required".to_vec(),
+                };
+            };
+            encode(&replace_selection_action(
+                region,
+                &root_selection.start_block,
+                root_selection.start,
+                &root_selection.end_block,
+                root_selection.end,
+                text,
+            ))
+        },
+    ));
+    root.children.push(
+        Resource::new(
             format!(
                 "word-processor.selection:{}:{}:{}:{}",
                 selection.start_block, selection.start, selection.end_block, selection.end
@@ -1911,7 +2767,7 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
             move |args: &ActionArgs| {
                 let Some(text) = args.text("text") else {
                     return EncodedAction {
-                        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                         payload: b"replacement text is required".to_vec(),
                     };
                 };
@@ -1924,106 +2780,106 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
                     text,
                 ))
             },
-        ));
-        root = root.with_child(selection_resource);
-    }
+        )),
+    );
+}
 
-    // Creating a comment is a real collaborative action, not a local overlay.
-    // A multi-block selection stays available for replacement/formatting; its
-    // comment action is withheld because qdoc comment anchors intentionally
-    // address one stable block range at a time.
-    if ctx.region == RegionKind::Body
-        && let Some(selection) = &ctx.selection
-        && selection.start_block == selection.end_block
-        && selection.start < selection.end
-    {
-        let target = selection.clone();
-        root = root.with_action(ActionSpec::typed(
-            "add-comment",
-            "Add comment",
-            "Comment text and author for the selected text",
-            ExecutionLocus::ClientLocal,
-            vec![
-                ActionParam::required_owned("author", ParamType::Text, "Comment author"),
-                ActionParam::required_owned("text", ParamType::Text, "Comment text"),
-                ActionParam::optional_owned("date", ParamType::Text, "ISO-8601 comment date"),
-            ],
-            move |args: &ActionArgs| {
-                let author = args.text("author").unwrap_or_default().trim();
-                let text = args.text("text").unwrap_or_default();
-                if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
-                    return EncodedAction {
-                        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                        payload: b"comment author is required and comment text is too long"
-                            .to_vec(),
-                    };
-                }
-                encode(&add_comment_action(
-                    &target.start_block,
-                    target.start,
-                    target.end,
-                    author,
-                    args.text("date").unwrap_or_default(),
-                    text,
-                ))
-            },
-        ));
-    }
-
-    // Materialize the stable content once for all structural resources below.
-    // This intentionally sits outside the bounded per-hit loops.
-    let Ok(c) = qdoc::model::open(doc, &automerge::ROOT) else {
-        return vec![root];
+fn add_comment_resource_action(root: &mut Resource, ctx: &WpResourceCtx) {
+    let Some(selection) = &ctx.selection else {
+        return;
     };
-    let snap = qdoc::model::materialize(doc, &c);
-
-    if !ctx.search_hits.is_empty() {
-        let mut search = Resource::new(
-            "word-processor.search-results",
-            "word_processor.search-results",
-            "Search results",
-        );
-        let mut seen = HashSet::new();
-        let mut result_index = 0usize;
-        for hit in &ctx.search_hits {
-            if !seen.insert((hit.block.as_str(), hit.start, hit.end)) {
-                continue;
-            }
-            if result_index >= MAX_RESOURCE_SEARCH_HITS {
-                break;
-            }
-            result_index += 1;
-            let label = range_label(&snap.blocks, &hit.block, hit.start, hit.end)
-                .unwrap_or_else(|| format!("Result {result_index}"));
-            let view_operation = WordProcessorOperation::NavigateTo {
-                block: hit.block.clone(),
-                start: hit.start,
-                end: hit.end,
-            };
-            if let Some(spec) = operation(
-                "go-to",
-                "Go to result",
-                OperationKind::View,
-                &view_operation,
-            ) {
-                search = search.with_child(
-                    Resource::new(
-                        format!(
-                            "word-processor.search-hit:{}:{}:{}",
-                            hit.block, hit.start, hit.end
-                        ),
-                        "word_processor.search-hit",
-                        label,
-                    )
-                    .with_action(spec),
-                );
-            }
-        }
-        root = root.with_child(search);
+    if ctx.region != RegionKind::Body
+        || selection.start_block != selection.end_block
+        || selection.start >= selection.end
+    {
+        return;
     }
+    let target = selection.clone();
+    root.actions.push(ActionSpec::typed(
+        "add-comment",
+        "Add comment",
+        "Comment text and author for the selected text",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required_owned("author", ParamType::Text, "Comment author"),
+            ActionParam::required_owned("text", ParamType::Text, "Comment text"),
+            ActionParam::optional_owned("date", ParamType::Text, "ISO-8601 comment date"),
+        ],
+        move |args: &ActionArgs| {
+            let author = args.text("author").unwrap_or_default().trim();
+            let text = args.text("text").unwrap_or_default();
+            if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
+                return EncodedAction {
+                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                    payload: b"comment author is required and comment text is too long".to_vec(),
+                };
+            }
+            encode(&add_comment_action(
+                &target.start_block,
+                target.start,
+                target.end,
+                author,
+                args.text("date").unwrap_or_default(),
+                text,
+            ))
+        },
+    ));
+}
+
+fn add_search_resources(
+    root: &mut Resource,
+    ctx: &WpResourceCtx,
+    snapshot: &qdoc::snapshot::DocSnapshot,
+) {
+    if ctx.search_hits.is_empty() {
+        return;
+    }
+    let mut search = Resource::new(
+        "word-processor.search-results",
+        "word_processor.search-results",
+        "Search results",
+    );
+    let mut seen = HashSet::new();
+    for (result_index, hit) in ctx
+        .search_hits
+        .iter()
+        .filter(|hit| seen.insert((hit.block.as_str(), hit.start, hit.end)))
+        .take(MAX_RESOURCE_SEARCH_HITS)
+        .enumerate()
+    {
+        let label = range_label(&snapshot.blocks, &hit.block, hit.start, hit.end)
+            .unwrap_or_else(|| format!("Result {}", result_index + 1));
+        let view_operation = WordProcessorOperation::NavigateTo {
+            block: hit.block.clone(),
+            start: hit.start,
+            end: hit.end,
+        };
+        if let Some(spec) = operation(
+            "go-to",
+            "Go to result",
+            OperationKind::View,
+            &view_operation,
+        ) {
+            search.children.push(
+                Resource::new(
+                    format!(
+                        "word-processor.search-hit:{}:{}:{}",
+                        hit.block, hit.start, hit.end
+                    ),
+                    "word_processor.search-hit",
+                    label,
+                )
+                .with_action(spec),
+            );
+        }
+    }
+    root.children.push(search);
+}
+
+fn add_document_edit_actions(root: &mut Resource, ctx: &WpResourceCtx) {
     let image_anchor = ctx.caret_block.clone();
     let image_offset = ctx.caret_offset;
-    root = root.with_action(
+    root.actions.push(
         ActionSpec::prompted_content(
             "place-image",
             "Place image",
@@ -2033,7 +2889,7 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
             move |hash| {
                 let Some(bytes) = qdoc::blobstore::get(hash) else {
                     return EncodedAction {
-                        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                         payload: format!("content `{hash}` is not available on this machine")
                             .into_bytes(),
                     };
@@ -2053,364 +2909,470 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
         )
         .reversible(),
     );
-    root = root.with_action(immediate_spec(
+    root.actions.push(immediate_spec(
         "insert-page-break",
         "Insert page break",
         &insert_page_break_action(&ctx.caret_block, ctx.caret_offset),
     ));
-
-    // Document-level paragraph alignment over the current target blocks.
     for (id, label, align) in [
         ("align-left", "Align left", "left"),
         ("align-center", "Align centre", "center"),
         ("align-right", "Align right", "right"),
         ("align-justify", "Justify", "justify"),
     ] {
-        root = root.with_action(immediate_spec(
+        root.actions.push(immediate_spec(
             id,
             label,
             &set_align_action(ctx.target_blocks.clone(), align),
         ));
     }
+}
 
-    // Review is document state, not an overlay-only island: comments and
-    // tracked changes are navigable resources, and every resolution decision
-    // is the same typed, replayable action used by the margin cards.
-    if !snap.comments.is_empty() || !snap.changes.is_empty() {
-        let mut review = Resource::new("word-processor.review", "word_processor.review", "Review");
-        if !snap.changes.is_empty() {
-            review = review
-                .with_action(immediate_spec(
-                    "accept-all",
-                    "Accept all changes",
-                    &WordProcessorAction::AcceptChanges { id: None },
-                ))
-                .with_action(immediate_spec(
-                    "reject-all",
-                    "Reject all changes",
-                    &WordProcessorAction::RejectChanges { id: None },
-                ));
-        }
-        for comment in &snap.comments {
-            let text = comment
-                .blocks
-                .iter()
-                .map(|block| block.text.as_str())
-                .collect::<Vec<_>>()
-                .join(" ");
-            let label = format!(
-                "Comment by {}: {}",
-                short(&comment.author, "Unknown author"),
-                short(&text, "Empty comment")
-            );
-            let mut comment_resource = Resource::new(
-                format!("word-processor.comment:{}", comment.id),
-                "word_processor.comment",
-                label,
+fn comment_resource(comment: &qdoc::snapshot::CommentView) -> Resource {
+    let text = comment
+        .blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut resource = Resource::new(
+        format!("word-processor.comment:{}", comment.id),
+        "word_processor.comment",
+        format!(
+            "Comment by {}: {}",
+            short(&comment.author, "Unknown author"),
+            short(&text, "Empty comment")
+        ),
+    )
+    .with_action(immediate_spec(
+        "resolve",
+        "Resolve comment",
+        &WordProcessorAction::ResolveComment {
+            id: comment.id.clone(),
+        },
+    ));
+    if let Some((block, start, end)) = &comment.range
+        && let Some(spec) = operation(
+            "go-to-anchor",
+            "Go to commented text",
+            OperationKind::View,
+            &WordProcessorOperation::NavigateTo {
+                block: block.clone(),
+                start: *start,
+                end: *end,
+            },
+        )
+    {
+        resource.actions.push(spec);
+    }
+    for reply in comment.replies.iter().take(MAX_RESOURCE_SEARCH_HITS) {
+        let reply_text = reply
+            .blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        resource.children.push(Resource::new(
+            format!("word-processor.comment-reply:{}:{}", comment.id, reply.id),
+            "word_processor.comment-reply",
+            format!(
+                "Reply by {}: {}",
+                short(&reply.author, "Unknown author"),
+                short(&reply_text, "Empty reply")
+            ),
+        ));
+    }
+    let parent = comment.id.clone();
+    resource.actions.push(ActionSpec::typed(
+        "reply",
+        "Reply to comment",
+        "Reply text and author, stored in the shared comment thread",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required_owned("author", ParamType::Text, "Reply author"),
+            ActionParam::required_owned("text", ParamType::Text, "Reply text"),
+            ActionParam::optional_owned("date", ParamType::Text, "ISO-8601 reply date"),
+        ],
+        move |args: &ActionArgs| {
+            let author = args.text("author").unwrap_or_default().trim();
+            let text = args.text("text").unwrap_or_default();
+            if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
+                return EncodedAction {
+                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                    payload: b"reply author is required and reply text is too long".to_vec(),
+                };
+            }
+            encode(&reply_to_comment_action(
+                &parent,
+                author,
+                args.text("date").unwrap_or_default(),
+                text,
+            ))
+        },
+    ));
+    resource
+}
+
+fn add_review_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnapshot) {
+    if snapshot.comments.is_empty() && snapshot.changes.is_empty() {
+        return;
+    }
+    let mut review = Resource::new("word-processor.review", "word_processor.review", "Review");
+    if !snapshot.changes.is_empty() {
+        review.actions.push(immediate_spec(
+            "accept-all",
+            "Accept all changes",
+            &WordProcessorAction::AcceptChanges { id: None },
+        ));
+        review.actions.push(immediate_spec(
+            "reject-all",
+            "Reject all changes",
+            &WordProcessorAction::RejectChanges { id: None },
+        ));
+    }
+    review
+        .children
+        .extend(snapshot.comments.iter().map(comment_resource));
+    for change in &snapshot.changes {
+        let kind = match change.kind {
+            qdoc::snapshot::ChangeKind::Ins => "Insertion",
+            qdoc::snapshot::ChangeKind::Del => "Deletion",
+        };
+        review.children.push(
+            Resource::new(
+                format!("word-processor.change:{}", change.id),
+                "word_processor.change",
+                format!("{kind} by {}", short(&change.author, "Unknown author")),
             )
             .with_action(immediate_spec(
-                "resolve",
-                "Resolve comment",
-                &WordProcessorAction::ResolveComment {
-                    id: comment.id.clone(),
+                "accept",
+                "Accept change",
+                &WordProcessorAction::AcceptChanges {
+                    id: Some(change.id.clone()),
                 },
-            ));
-            if let Some((block, start, end)) = &comment.range
-                && let Some(spec) = operation(
-                    "go-to-anchor",
-                    "Go to commented text",
-                    OperationKind::View,
-                    &WordProcessorOperation::NavigateTo {
-                        block: block.clone(),
-                        start: *start,
-                        end: *end,
-                    },
-                )
-            {
-                comment_resource = comment_resource.with_action(spec);
-            }
-            for reply in comment.replies.iter().take(MAX_RESOURCE_SEARCH_HITS) {
-                let reply_text = reply
-                    .blocks
-                    .iter()
-                    .map(|block| block.text.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                comment_resource = comment_resource.with_child(Resource::new(
-                    format!("word-processor.comment-reply:{}:{}", comment.id, reply.id),
-                    "word_processor.comment-reply",
-                    format!(
-                        "Reply by {}: {}",
-                        short(&reply.author, "Unknown author"),
-                        short(&reply_text, "Empty reply")
-                    ),
-                ));
-            }
-            let parent = comment.id.clone();
-            comment_resource = comment_resource.with_action(ActionSpec::typed(
-                "reply",
-                "Reply to comment",
-                "Reply text and author, stored in the shared comment thread",
-                ExecutionLocus::ClientLocal,
-                vec![
-                    ActionParam::required_owned("author", ParamType::Text, "Reply author"),
-                    ActionParam::required_owned("text", ParamType::Text, "Reply text"),
-                    ActionParam::optional_owned("date", ParamType::Text, "ISO-8601 reply date"),
-                ],
-                move |args: &ActionArgs| {
-                    let author = args.text("author").unwrap_or_default().trim();
-                    let text = args.text("text").unwrap_or_default();
-                    if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
-                        return EncodedAction {
-                            type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                            payload: b"reply author is required and reply text is too long"
-                                .to_vec(),
-                        };
-                    }
-                    encode(&reply_to_comment_action(
-                        &parent,
-                        author,
-                        args.text("date").unwrap_or_default(),
-                        text,
-                    ))
+            ))
+            .with_action(immediate_spec(
+                "reject",
+                "Reject change",
+                &WordProcessorAction::RejectChanges {
+                    id: Some(change.id.clone()),
                 },
-            ));
-            review = review.with_child(comment_resource);
-        }
-        for change in &snap.changes {
-            let kind = match change.kind {
-                qdoc::snapshot::ChangeKind::Ins => "Insertion",
-                qdoc::snapshot::ChangeKind::Del => "Deletion",
-            };
-            review = review.with_child(
-                Resource::new(
-                    format!("word-processor.change:{}", change.id),
-                    "word_processor.change",
-                    format!("{kind} by {}", short(&change.author, "Unknown author")),
-                )
-                .with_action(immediate_spec(
-                    "accept",
-                    "Accept change",
-                    &WordProcessorAction::AcceptChanges {
-                        id: Some(change.id.clone()),
-                    },
-                ))
-                .with_action(immediate_spec(
-                    "reject",
-                    "Reject change",
-                    &WordProcessorAction::RejectChanges {
-                        id: Some(change.id.clone()),
-                    },
-                )),
-            );
-        }
-        root = root.with_child(review);
+            )),
+        );
     }
+    root.children.push(review);
+}
 
-    // The change graph is also searchable: expose a bounded tail as stable
-    // hash-addressed revision resources. The action is view-only and opens the
-    // existing history strip at the exact graph position.
-    // Automerge exposes causal history through a mutable reader API even
-    // though enumeration itself is read-only. Clone the lightweight document
-    // handle so the resource-provider contract remains immutable.
+fn add_revision_resources(root: &mut Resource, doc: &AutoCommit) {
     let mut history_doc = doc.clone();
     let changes = history_doc.get_changes(&[]);
-    if !changes.is_empty() {
-        let mut history = Resource::new(
-            "word-processor.revisions",
-            "word_processor.revisions",
-            "Revision history",
-        );
-        let start = changes.len().saturating_sub(MAX_RESOURCE_REVISIONS);
-        for (index, change) in changes.iter().enumerate().skip(start) {
-            let label = change.message().map_or_else(
-                || format!("Revision {}", index + 1),
-                |message| short(message, "Revision"),
-            );
-            let view_operation = WordProcessorOperation::ShowRevision { index };
-            if let Some(spec) = operation(
-                "show",
-                "Show revision",
-                OperationKind::View,
-                &view_operation,
-            ) {
-                history = history.with_child(
-                    Resource::new(
-                        format!("word-processor.revision:{}", change.hash()),
-                        "word_processor.revision",
-                        label,
-                    )
-                    .with_action(spec),
-                );
-            }
-        }
-        root = root.with_child(history);
+    if changes.is_empty() {
+        return;
     }
+    let mut history = Resource::new(
+        "word-processor.revisions",
+        "word_processor.revisions",
+        "Revision history",
+    );
+    let start = changes.len().saturating_sub(MAX_RESOURCE_REVISIONS);
+    for (index, change) in changes.iter().enumerate().skip(start) {
+        let label = change.message().map_or_else(
+            || format!("Revision {}", index + 1),
+            |message| short(message, "Revision"),
+        );
+        if let Some(spec) = operation(
+            "show",
+            "Show revision",
+            OperationKind::View,
+            &WordProcessorOperation::ShowRevision { index },
+        ) {
+            history.children.push(
+                Resource::new(
+                    format!("word-processor.revision:{}", change.hash()),
+                    "word_processor.revision",
+                    label,
+                )
+                .with_action(spec),
+            );
+        }
+    }
+    root.children.push(history);
+}
 
-    if !snap.notes.is_empty() {
+fn add_metadata_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnapshot) {
+    if !snapshot.notes.is_empty() {
         let mut notes = Resource::new("word-processor.notes", "word_processor.notes", "Notes");
-        for note in &snap.notes {
+        for note in &snapshot.notes {
             let text = note
                 .blocks
                 .iter()
                 .map(|block| block.text.as_str())
                 .collect::<Vec<_>>()
                 .join(" ");
-            notes = notes.with_child(Resource::new(
+            notes.children.push(Resource::new(
                 format!("word-processor.note:{}", note.id),
                 "word_processor.note",
                 format!("{}: {}", note.kind, short(&text, "Empty note")),
             ));
         }
-        root = root.with_child(notes);
+        root.children.push(notes);
     }
-
-    if !snap.bookmarks.is_empty() {
+    if !snapshot.bookmarks.is_empty() {
         let mut bookmarks = Resource::new(
             "word-processor.bookmarks",
             "word_processor.bookmarks",
             "Bookmarks",
         );
-        for bookmark in &snap.bookmarks {
-            bookmarks = bookmarks.with_child(Resource::new(
+        for bookmark in &snapshot.bookmarks {
+            bookmarks.children.push(Resource::new(
                 format!("word-processor.bookmark:{}", bookmark.name),
                 "word_processor.bookmark",
                 bookmark.name.clone(),
             ));
         }
-        root = root.with_child(bookmarks);
+        root.children.push(bookmarks);
     }
+}
 
-    if !snap.styles.is_empty() {
-        let mut styles = Resource::new(
-            "word-processor.styles",
-            "word_processor.styles",
-            "Paragraph styles",
+fn add_style_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnapshot) {
+    if snapshot.styles.is_empty() {
+        return;
+    }
+    let mut styles = Resource::new(
+        "word-processor.styles",
+        "word_processor.styles",
+        "Paragraph styles",
+    );
+    for (style, properties) in &snapshot.styles {
+        let bold = matches!(
+            properties.get(qdoc::schema::STYLE_BOLD),
+            Some(qdoc::AttrVal::Bool(true))
         );
-        for style in snap.styles.keys() {
-            styles = styles.with_child(Resource::new(
-                format!("word-processor.style:{style}"),
-                "word_processor.style",
-                style.clone(),
-            ));
-        }
-        root = root.with_child(styles);
-    }
-
-    // Images are first-class document resources.  Object layout is not a
-    // private canvas gesture: crop, flow/free placement, and delete all use
-    // the same replayable action envelope as the inspector controls.
-    for b in snap.blocks.iter().filter(|b| b.kind == "image") {
-        let edge = |key: &str| match b.attrs.get(key) {
-            // Imported/legacy attributes are not action-validated, so clamp
-            // before the resource builder does arithmetic for its next crop.
-            Some(qdoc::AttrVal::Int(value)) => (*value).clamp(0, 9_500),
-            _ => 0,
-        };
-        let left = edge("crop_left");
-        let top = edge("crop_top");
-        let right = edge("crop_right");
-        let bottom = edge("crop_bottom");
-        let can_crop_further =
-            left.saturating_add(right) <= 8_500 && top.saturating_add(bottom) <= 8_500;
         let mut child = Resource::new(
-            format!("word-processor.image:{}", b.id),
-            "word_processor.image",
-            "Image",
+            format!("word-processor.style:{style}"),
+            "word_processor.style",
+            style.clone(),
         )
         .with_action(immediate_spec(
-            "delete",
-            "Delete image",
-            &remove_blocks_action(vec![b.id.clone()]),
+            "toggle-bold",
+            if bold { "Remove bold" } else { "Make bold" },
+            &set_style_property_action(style, qdoc::schema::STYLE_BOLD, AttrVal::Bool(!bold)),
         ));
-        if can_crop_further {
-            child = child.with_action(immediate_spec(
-                "crop-inset",
-                "Crop image by 5%",
-                &set_image_crop_action(&b.id, left + 250, top + 250, right + 250, bottom + 250),
+        if !crate::styles::StyleSheet::is_builtin(style) {
+            let instances = snapshot
+                .blocks
+                .iter()
+                .filter(|block| {
+                    matches!(block.attrs.get("style"), Some(qdoc::AttrVal::Str(id)) if id == style)
+                })
+                .map(|block| block.id.clone())
+                .collect();
+            child.actions.push(immediate_spec(
+                "delete",
+                "Delete style",
+                &delete_style_action(style, instances),
             ));
         }
-        if left != 0 || top != 0 || right != 0 || bottom != 0 {
-            child = child.with_action(immediate_spec(
-                "reset-crop",
-                "Reset crop",
-                &set_image_crop_action(&b.id, 0, 0, 0, 0),
-            ));
-        }
-        child = child
-            .with_action(immediate_spec(
-                "free-position",
-                "Place freely on page",
-                &set_image_placement_action(&b.id, "page", "none", 0, 0, 0),
-            ))
-            .with_action(immediate_spec(
-                "flow-left",
-                "Wrap text on right",
-                &set_image_placement_action(&b.id, "paragraph", "left", 0, 0, 0),
-            ))
-            .with_action(immediate_spec(
-                "flow-right",
-                "Wrap text on left",
-                &set_image_placement_action(&b.id, "paragraph", "right", 0, 0, 0),
-            ));
-        root = root.with_child(child);
+        styles.children.push(child);
     }
+    root.children.push(styles);
+}
 
-    // Tables (grouped by the shared `table` id, in first-cell document order) →
-    // a resource each, deleting every cell of the table.
-    let mut table_ids: Vec<String> = Vec::new();
-    for b in snap.blocks.iter().filter(|b| b.kind == "cell") {
-        if let Some(qdoc::AttrVal::Str(tid)) = b.attrs.get("table")
-            && !table_ids.contains(tid)
-        {
-            table_ids.push(tid.clone());
-        }
+fn image_resource(block: &qdoc::snapshot::BlockView) -> Resource {
+    let edge = |key: &str| match block.attrs.get(key) {
+        Some(qdoc::AttrVal::Int(value)) => (*value).clamp(0, 9_500),
+        _ => 0,
+    };
+    let left = edge("crop_left");
+    let top = edge("crop_top");
+    let right = edge("crop_right");
+    let bottom = edge("crop_bottom");
+    let can_crop_further =
+        left.saturating_add(right) <= 8_500 && top.saturating_add(bottom) <= 8_500;
+    let mut resource = Resource::new(
+        format!("word-processor.image:{}", block.id),
+        "word_processor.image",
+        "Image",
+    )
+    .with_action(immediate_spec(
+        "delete",
+        "Delete image",
+        &remove_blocks_action(vec![block.id.clone()]),
+    ));
+    if can_crop_further {
+        resource.actions.push(immediate_spec(
+            "crop-inset",
+            "Crop image by 5%",
+            &set_image_crop_action(&block.id, left + 250, top + 250, right + 250, bottom + 250),
+        ));
     }
-    for tid in &table_ids {
-        let cells: Vec<String> = snap
+    if left != 0 || top != 0 || right != 0 || bottom != 0 {
+        resource.actions.push(immediate_spec(
+            "reset-crop",
+            "Reset crop",
+            &set_image_crop_action(&block.id, 0, 0, 0, 0),
+        ));
+    }
+    for (id, label, anchor, wrap) in [
+        ("free-position", "Place freely on page", "page", "none"),
+        ("flow-left", "Wrap text on right", "paragraph", "left"),
+        ("flow-right", "Wrap text on left", "paragraph", "right"),
+    ] {
+        resource.actions.push(immediate_spec(
+            id,
+            label,
+            &set_image_placement_action(&block.id, anchor, wrap, 0, 0, 0),
+        ));
+    }
+    resource
+}
+
+fn table_resource(table_id: &str, table_blocks: &[&qdoc::snapshot::BlockView]) -> Resource {
+    let coordinate = |block: &qdoc::snapshot::BlockView, key: &str| match block.attrs.get(key) {
+        Some(qdoc::AttrVal::Int(value)) if *value >= 0 => num::usize_of_i64(*value),
+        _ => 0,
+    };
+    let rows = table_blocks
+        .iter()
+        .map(|block| coordinate(block, "row"))
+        .max()
+        .map_or(0, |value| value.saturating_add(1));
+    let columns = table_blocks
+        .iter()
+        .map(|block| coordinate(block, "col"))
+        .max()
+        .map_or(0, |value| value.saturating_add(1));
+    let mut resource = Resource::new(
+        format!("word-processor.table:{table_id}"),
+        "word_processor.table",
+        "Table",
+    )
+    .with_action(immediate_spec(
+        "append-row",
+        "Add row",
+        &edit_table_action(table_id, TableEdit::InsertRow { at: rows }),
+    ))
+    .with_action(immediate_spec(
+        "append-column",
+        "Add column",
+        &edit_table_action(table_id, TableEdit::InsertColumn { at: columns }),
+    ))
+    .with_action(immediate_spec(
+        "delete",
+        "Delete table",
+        &edit_table_action(table_id, TableEdit::Delete),
+    ));
+    for cell in table_blocks {
+        let row = coordinate(cell, "row");
+        let column = coordinate(cell, "col");
+        let mut cell_resource = Resource::new(
+            format!("word-processor.cell:{}", cell.id),
+            "word_processor.table-cell",
+            format!(
+                "Cell {}, {}",
+                row.saturating_add(1),
+                column.saturating_add(1)
+            ),
+        )
+        .with_action(immediate_spec(
+            "delete-row",
+            "Delete row",
+            &edit_table_action(table_id, TableEdit::DeleteRow { row }),
+        ))
+        .with_action(immediate_spec(
+            "delete-column",
+            "Delete column",
+            &edit_table_action(table_id, TableEdit::DeleteColumn { column }),
+        ));
+        if let Some(spec) = operation(
+            "go-to",
+            "Go to cell",
+            OperationKind::View,
+            &WordProcessorOperation::NavigateTo {
+                block: cell.id.clone(),
+                start: 0,
+                end: cell.text.chars().count(),
+            },
+        ) {
+            cell_resource.actions.push(spec);
+        }
+        resource.children.push(cell_resource);
+    }
+    resource
+}
+
+fn add_structural_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnapshot) {
+    root.children.extend(
+        snapshot
             .blocks
             .iter()
-            .filter(|b| {
-                b.kind == "cell"
-                    && matches!(b.attrs.get("table"), Some(qdoc::AttrVal::Str(s)) if s == tid)
-            })
-            .map(|b| b.id.clone())
-            .collect();
-        let child = Resource::new(
-            format!("word-processor.table:{tid}"),
-            "word_processor.table",
-            "Table",
-        )
-        .with_action(immediate_spec(
-            "delete",
-            "Delete table",
-            &remove_blocks_action(cells),
-        ));
-        root = root.with_child(child);
+            .filter(|block| block.kind == "image")
+            .map(image_resource),
+    );
+    let mut table_ids = Vec::new();
+    for block in snapshot.blocks.iter().filter(|block| block.kind == "cell") {
+        if let Some(qdoc::AttrVal::Str(table_id)) = block.attrs.get("table")
+            && !table_ids.contains(table_id)
+        {
+            table_ids.push(table_id.clone());
+        }
     }
-
-    // Headings → a `section` resource each, labelled by the heading text, with
-    // alignment actions over that heading block.
-    for b in snap.blocks.iter().filter(|b| b.kind == "heading") {
-        let mut child = Resource::new(
-            format!("word-processor.section:{}", b.id),
+    for table_id in &table_ids {
+        let blocks = snapshot
+            .blocks
+            .iter()
+            .filter(|block| {
+                block.kind == "cell"
+                    && matches!(block.attrs.get("table"), Some(qdoc::AttrVal::Str(id)) if id == table_id)
+            })
+            .collect::<Vec<_>>();
+        root.children.push(table_resource(table_id, &blocks));
+    }
+    for block in snapshot
+        .blocks
+        .iter()
+        .filter(|block| block.kind == "heading")
+    {
+        let mut section = Resource::new(
+            format!("word-processor.section:{}", block.id),
             "word_processor.section",
-            short(&b.text, "Heading"),
+            short(&block.text, "Heading"),
         );
         for (id, label, align) in [
             ("align-left", "Align left", "left"),
             ("align-center", "Align centre", "center"),
             ("align-right", "Align right", "right"),
         ] {
-            child = child.with_action(immediate_spec(
+            section.actions.push(immediate_spec(
                 id,
                 label,
-                &set_align_action(vec![b.id.clone()], align),
+                &set_align_action(vec![block.id.clone()], align),
             ));
         }
-        root = root.with_child(child);
+        root.children.push(section);
     }
+}
 
+/// Build the resource tree the word processor currently has open.
+pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+    let mut root = document_resource();
+    add_file_operations(&mut root);
+    add_view_operations(&mut root);
+    add_caret_actions(&mut root, ctx);
+    add_selection_resources(&mut root, ctx);
+    add_comment_resource_action(&mut root, ctx);
+
+    let Ok(containers) = qdoc::model::open(doc, &automerge::ROOT) else {
+        return vec![root];
+    };
+    let snapshot = qdoc::model::materialize(doc, &containers);
+    add_search_resources(&mut root, ctx, &snapshot);
+    add_document_edit_actions(&mut root, ctx);
+    add_review_resources(&mut root, &snapshot);
+    add_revision_resources(&mut root, doc);
+    add_metadata_resources(&mut root, &snapshot);
+    add_style_resources(&mut root, &snapshot);
+    add_structural_resources(&mut root, &snapshot);
     vec![root]
 }
 
@@ -2426,8 +3388,8 @@ impl ResourceProvider for crate::widget::WordProcessorWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_actions::ActionInput;
-    use qos_actions::LocalTransport;
+    use tilo_actions::ActionInput;
+    use tilo_actions::LocalTransport;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -2440,6 +3402,24 @@ mod tests {
             ActionInput::Immediate(enc) => enc.clone(),
             ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
         }
+    }
+
+    #[test]
+    fn view_catalogue_exposes_zoom_reset_as_a_typed_operation() {
+        let mut root = document_resource();
+        add_view_operations(&mut root);
+        let spec = root
+            .actions
+            .iter()
+            .find(|spec| spec.id == "zoom-reset")
+            .expect("the visible zoom reset has a resource action");
+        let encoded = immediate_encode(spec);
+        assert_eq!(encoded.type_id, WORD_PROCESSOR_OPERATION_TYPE);
+        assert_eq!(
+            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(WordProcessorOperation::ZoomReset),
+            "the resource action decodes to the one canonical reset operation"
+        );
     }
 
     /// A `ui::State` holding a canonical document seeded from `markdown`, plus the
@@ -2468,12 +3448,12 @@ mod tests {
         qdoc::model::block_text(doc, &c, block).unwrap_or_default()
     }
 
-    /// Dispatch an action through the qOS executor with a discarding transport
+    /// Dispatch an action through the Tilo executor with a discarding transport
     /// (the local, single-peer path the affordances take).
     fn dispatch(doc: &mut AutoCommit, action: &WordProcessorAction) {
         let encoded = encode(action);
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(doc, action, encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(doc, action, encoded, &mut tx).unwrap();
     }
 
     #[test]
@@ -2642,8 +3622,8 @@ mod tests {
         // Replace "world" with "there".
         let action = splice_text_action(RegionKind::Body, &block, 6, 11, "there");
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
         assert_eq!(text_of(&a.doc, &block), "Hello there", "the splice landed");
         assert_eq!(
@@ -2675,8 +3655,8 @@ mod tests {
             vec![],
         );
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
         assert_eq!(
             a.doc.get_heads(),
@@ -2713,8 +3693,8 @@ mod tests {
             None,
         );
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
         assert_eq!(
             a.doc.get_heads(),
@@ -2745,8 +3725,8 @@ mod tests {
 
         let action = insert_table_action(&after, 2, 3);
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
         assert_eq!(
             a.doc.get_heads(),
@@ -2778,8 +3758,8 @@ mod tests {
         // Break in the middle: "one" | "two".
         let action = insert_page_break_action(&block, 3);
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
         assert_eq!(
             a.doc.get_heads(),
@@ -2812,8 +3792,8 @@ mod tests {
 
         let action = replace_body_action("# Fresh\n\nBrand new body\n");
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
         assert_eq!(
             a.doc.get_heads(),
@@ -2954,7 +3934,7 @@ mod tests {
         let replacement = replace
             .build_args([(
                 "text".to_string(),
-                qos_actions::ArgValue::Text("guide".into()),
+                tilo_actions::ArgValue::Text("guide".into()),
             )])
             .unwrap();
         assert_eq!(
@@ -2979,7 +3959,7 @@ mod tests {
         let encoded = link
             .build_args([(
                 "target".to_string(),
-                qos_actions::ArgValue::Text("https://example.com/guide".into()),
+                tilo_actions::ArgValue::Text("https://example.com/guide".into()),
             )])
             .unwrap();
         let action: WordProcessorAction = serde_json::from_slice(&encoded.payload).unwrap();
@@ -2990,6 +3970,84 @@ mod tests {
                 && mark.end == 4
                 && mark.value.as_str() == Some("https://example.com/guide")
         }));
+    }
+
+    #[test]
+    fn hyperlink_targets_are_limited_to_safe_authored_schemes() {
+        for target in [
+            "https://example.com/guide?q=writer#links",
+            "mailto:writer@example.com",
+            "#introduction",
+            "#_heading_actor-42",
+        ] {
+            assert!(valid_hyperlink_target(target), "expected valid: {target}");
+        }
+        for target in [
+            "",
+            " https://example.com",
+            "http://example.com",
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "https://user:secret@example.com",
+            "mailto:not-an-address",
+            "#",
+            "#two words",
+        ] {
+            assert!(
+                !valid_hyperlink_target(target),
+                "expected refusal: {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn hyperlink_validation_is_enforced_by_both_resource_and_executor() {
+        let (mut state, ids) = seeded("Read this\n");
+        let block = ids[0].clone();
+        let span = Span {
+            block: block.clone(),
+            start: 0,
+            end: 4,
+        };
+        let ctx = WpResourceCtx {
+            format_spans: vec![span.clone()],
+            selection: None,
+            region: RegionKind::Body,
+            caret_block: block,
+            caret_offset: 4,
+            target_blocks: vec![ids[0].clone()],
+            search_hits: Vec::new(),
+        };
+        let root = provide_resources(&ctx, &state.doc).pop().unwrap();
+        let link = root
+            .actions
+            .iter()
+            .find(|action| action.id == "set-hyperlink")
+            .expect("selected text exposes link authoring");
+        let encoded = link
+            .build_args([(
+                "target".to_string(),
+                tilo_actions::ArgValue::Text("javascript:alert(1)".into()),
+            )])
+            .unwrap();
+        assert_eq!(
+            encoded.type_id,
+            tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
+            "the prompt reports invalid input before dispatch"
+        );
+
+        let action = set_hyperlink_action(RegionKind::Body, vec![span], "javascript:alert(1)");
+        assert!(matches!(
+            action.apply(&mut state.doc),
+            Err(ActionError::Refused(_))
+        ));
+        assert!(
+            body_blocks(&state.doc)[0]
+                .marks
+                .iter()
+                .all(|mark| mark.name != "link"),
+            "a refused target leaves the document untouched"
+        );
     }
 
     #[test]
@@ -3039,17 +4097,17 @@ mod tests {
         let bytes = b"content supplied by a preceding action";
         let hash = qdoc::blobstore::put(bytes).expect("test fixture fits blob quota");
         let resources = provide_resources(&ctx, &state.doc);
-        let descriptor = qos_actions::door::survey(&resources)
+        let descriptor = tilo_actions::door::survey(&resources)
             .into_iter()
             .find(|descriptor| descriptor.address.action == "place-image")
             .expect("the document publishes its content hand-off action");
         assert!(descriptor.input.wants_content());
 
         let arguments = serde_json::Map::from_iter([(
-            qos_actions::PROMPTED_PARAM.to_string(),
+            tilo_actions::PROMPTED_PARAM.to_string(),
             serde_json::Value::String(hash.clone()),
         )]);
-        qos_actions::door::invoke_json(
+        tilo_actions::door::invoke_json(
             &mut state.doc,
             &resources,
             &descriptor.address,
@@ -3066,12 +4124,10 @@ mod tests {
         }));
     }
 
-    /// Ctrl+K publishes the document resource with its structural children: an
-    /// image, a table and a heading each surface as their own resource with the
-    /// expected actions. Drives the real resource-builder path.
+    /// The catalogue publishes each structural document object as a stable,
+    /// directly actionable resource.
     #[test]
-    fn ctrl_k_publishes_document_and_structure() {
-        // A document with a heading, an image and a table.
+    fn resource_catalogue_exposes_structural_document_contract() {
         let (mut state, ids) = seeded("# Section\n\nBody\n");
         let para = ids[1].clone();
         dispatch(
@@ -3100,41 +4156,34 @@ mod tests {
         let ids_of = |kind: &str| root.children.iter().filter(|r| r.kind == kind).count();
         assert_eq!(ids_of("word_processor.image"), 1, "an image resource");
         assert_eq!(ids_of("word_processor.table"), 1, "a table resource");
+        let table = root
+            .children
+            .iter()
+            .find(|resource| resource.kind == "word_processor.table")
+            .unwrap();
+        assert_eq!(table.children.len(), 4, "every stable cell is navigable");
+        assert!(table.children.iter().all(|cell| {
+            cell.kind == "word_processor.table-cell"
+                && cell.actions.iter().any(|action| action.id == "go-to")
+                && cell.actions.iter().any(|action| action.id == "delete-row")
+                && cell
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "delete-column")
+        }));
         assert!(
             ids_of("word_processor.section") >= 1,
             "a heading section resource"
         );
-
-        // The one palette surfaces the tree's actions as rows.
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        palette.set_query("Insert table");
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Insert table")),
-            "{labels:?}"
-        );
-        palette.set_query("Delete image");
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Delete image")),
-            "{labels:?}"
-        );
-        palette.set_query("Delete table");
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Delete table")),
-            "{labels:?}"
-        );
-        palette.set_query("Crop image");
-        assert!(
-            palette
-                .result_labels()
-                .iter()
-                .any(|label| label.contains("Crop image")),
-            "image crop is a searchable resource action"
-        );
+        let image = root
+            .children
+            .iter()
+            .find(|resource| resource.kind == "word_processor.image")
+            .unwrap();
+        assert!(image.actions.iter().any(|action| action.id == "delete"));
+        assert!(image.actions.iter().any(|action| action.id == "crop-inset"));
+        assert!(table.actions.iter().any(|action| action.id == "delete"));
+        assert!(table.actions.iter().any(|action| action.id == "append-row"));
     }
 
     #[test]
@@ -3158,9 +4207,9 @@ mod tests {
             set_image_placement_action(&image, "page", "none", 24, 36, 0),
         ];
         for action in &actions {
-            let envelope = qos_actions::apply_local(&mut a.doc, action, encode(action))
+            let envelope = tilo_actions::apply_local(&mut a.doc, action, encode(action))
                 .expect("apply object action");
-            qos_actions::replay(&mut b.doc, &envelope, &registry()).expect("replay object action");
+            tilo_actions::replay(&mut b.doc, &envelope, &registry()).expect("replay object action");
         }
         assert_eq!(
             a.doc.get_heads(),
@@ -3251,8 +4300,8 @@ mod tests {
                 .unwrap(),
         );
         let action: WordProcessorAction = serde_json::from_slice(&accept.payload).unwrap();
-        let envelope = qos_actions::apply_local(&mut a.doc, &action, accept).unwrap();
-        qos_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut a.doc, &action, accept).unwrap();
+        tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
         assert_eq!(a.doc.get_heads(), b.doc.get_heads());
         let snap = qdoc::model::materialize(
             &a.doc,
@@ -3281,8 +4330,8 @@ mod tests {
         let mut b = ui::State::load(&bytes).unwrap();
 
         let reply = reply_to_comment_action(&comment, "Jonas", "2026-09-07", "Will do.");
-        let envelope = qos_actions::apply_local(&mut a.doc, &reply, encode(&reply)).unwrap();
-        qos_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut a.doc, &reply, encode(&reply)).unwrap();
+        tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
         assert_eq!(
             a.doc.get_heads(),
             b.doc.get_heads(),
@@ -3295,8 +4344,8 @@ mod tests {
         assert_eq!(comments[0].replies[0].blocks[0].text, "Will do.");
 
         let resolve = WordProcessorAction::ResolveComment { id: comment };
-        let envelope = qos_actions::apply_local(&mut a.doc, &resolve, encode(&resolve)).unwrap();
-        qos_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut a.doc, &resolve, encode(&resolve)).unwrap();
+        tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
         assert_eq!(
             a.doc.get_heads(),
             b.doc.get_heads(),
@@ -3304,6 +4353,37 @@ mod tests {
         );
         let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
         assert!(qdoc::model::materialize_comments(&a.doc, &c).is_empty());
+    }
+
+    #[test]
+    fn resolved_comment_tombstone_wins_over_divergent_reply() {
+        let (mut a, ids) = seeded("Review this paragraph\n");
+        let block = ids[0].clone();
+        let add = add_comment_action(&block, 0, 6, "Maya", "2026-09-07", "Please clarify");
+        dispatch(&mut a.doc, &add);
+        let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
+        let comment = qdoc::model::comment_ids(&a.doc, &c)
+            .into_iter()
+            .next()
+            .unwrap();
+        let bytes = a.save();
+        let mut b = ui::State::load(&bytes).unwrap();
+        b.doc.set_actor(automerge::ActorId::random());
+
+        let resolve = WordProcessorAction::ResolveComment {
+            id: comment.clone(),
+        };
+        let reply = reply_to_comment_action(&comment, "Jonas", "2026-09-08", "Will do");
+        tilo_actions::apply_local(&mut a.doc, &resolve, encode(&resolve)).unwrap();
+        tilo_actions::apply_local(&mut b.doc, &reply, encode(&reply)).unwrap();
+        a.doc.merge(&mut b.doc).unwrap();
+
+        let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
+        assert!(qdoc::model::comment_is_tombstoned(&a.doc, &c, &comment));
+        assert!(
+            qdoc::model::materialize_comments(&a.doc, &c).is_empty(),
+            "a reply from a divergent replica cannot resurrect a resolved thread"
+        );
     }
 
     #[test]
@@ -3408,12 +4488,210 @@ mod tests {
         let mut b = ui::State::load(&bytes).unwrap();
         let action = replace_selection_action(RegionKind::Body, &ids[0], 2, &ids[2], 3, "X");
         let encoded = encode(&action);
-        let envelope = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        qos_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
         assert_eq!(a.doc.get_heads(), b.doc.get_heads());
         let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
         let blocks = qdoc::model::materialize(&a.doc, &c).blocks;
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].text, "alXma");
+    }
+
+    #[test]
+    fn encoded_split_and_concurrent_splice_converge_on_divergent_replicas() {
+        let (mut a, ids) = seeded("alpha beta\n");
+        let bytes = a.save();
+        let mut b = ui::State::load(&bytes).unwrap();
+        b.doc.set_actor(automerge::ActorId::random());
+        let block = ids[0].clone();
+
+        let split = split_block_action(RegionKind::Body, &block, 5, "paragraph", None);
+        let encoded_split = encode(&split);
+        let decoded_split: WordProcessorAction =
+            serde_json::from_slice(&encoded_split.payload).unwrap();
+        tilo_actions::apply_local(&mut a.doc, &decoded_split, encoded_split).unwrap();
+
+        let splice = splice_text_action(RegionKind::Body, &block, 0, 0, "Shared ");
+        let encoded_splice = encode(&splice);
+        let decoded_splice: WordProcessorAction =
+            serde_json::from_slice(&encoded_splice.payload).unwrap();
+        tilo_actions::apply_local(&mut b.doc, &decoded_splice, encoded_splice).unwrap();
+
+        let mut merged_a = a.doc.clone();
+        let mut b_for_a = b.doc.clone();
+        merged_a.merge(&mut b_for_a).unwrap();
+        let mut merged_b = b.doc.clone();
+        let mut a_for_b = a.doc.clone();
+        merged_b.merge(&mut a_for_b).unwrap();
+        assert_eq!(
+            body_blocks(&merged_a),
+            body_blocks(&merged_b),
+            "encoded actions converge regardless of merge direction"
+        );
+    }
+
+    #[test]
+    fn style_fields_merge_granularly_and_style_tombstone_wins() {
+        let (mut base, ids) = seeded("Styled paragraph\n");
+        let create = set_style_property_action(
+            "custom1",
+            qdoc::schema::STYLE_NAME,
+            AttrVal::Str("Callout".into()),
+        );
+        dispatch(&mut base.doc, &create);
+        dispatch(
+            &mut base.doc,
+            &set_block_attr_action(
+                RegionKind::Body,
+                vec![ids[0].clone()],
+                "style",
+                AttrVal::Str("custom1".into()),
+            ),
+        );
+        let bytes = base.save();
+        let mut a = ui::State::load(&bytes).unwrap();
+        let mut b = ui::State::load(&bytes).unwrap();
+        b.doc.set_actor(automerge::ActorId::random());
+
+        let bold =
+            set_style_property_action("custom1", qdoc::schema::STYLE_BOLD, AttrVal::Bool(true));
+        let size =
+            set_style_property_action("custom1", qdoc::schema::STYLE_SIZE, AttrVal::Float(28.0));
+        tilo_actions::apply_local(&mut a.doc, &bold, encode(&bold)).unwrap();
+        tilo_actions::apply_local(&mut b.doc, &size, encode(&size)).unwrap();
+        a.doc.merge(&mut b.doc).unwrap();
+        let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
+        let properties = qdoc::model::style_props(&a.doc, &c, "custom1");
+        assert_eq!(
+            properties.get(qdoc::schema::STYLE_BOLD),
+            Some(&qdoc::AttrVal::Bool(true))
+        );
+        assert_eq!(
+            properties.get(qdoc::schema::STYLE_SIZE),
+            Some(&qdoc::AttrVal::Float(28.0))
+        );
+
+        let bytes = a.save();
+        let mut deleted = ui::State::load(&bytes).unwrap();
+        let mut divergent = ui::State::load(&bytes).unwrap();
+        divergent.doc.set_actor(automerge::ActorId::random());
+        let remove = delete_style_action("custom1", vec![ids[0].clone()]);
+        let rename = set_style_property_action(
+            "custom1",
+            qdoc::schema::STYLE_NAME,
+            AttrVal::Str("Late rename".into()),
+        );
+        tilo_actions::apply_local(&mut deleted.doc, &remove, encode(&remove)).unwrap();
+        tilo_actions::apply_local(&mut divergent.doc, &rename, encode(&rename)).unwrap();
+        deleted.doc.merge(&mut divergent.doc).unwrap();
+        let c = qdoc::model::open(&deleted.doc, &automerge::ROOT).unwrap();
+        assert!(qdoc::model::style_is_tombstoned(
+            &deleted.doc,
+            &c,
+            "custom1"
+        ));
+        assert!(!qdoc::model::style_ids(&deleted.doc, &c).contains(&"custom1".to_string()));
+    }
+
+    #[test]
+    fn toc_field_rich_paste_and_table_edits_encode_and_replay_identically() {
+        let (mut origin, ids) = seeded("# Heading\n\nBody\n");
+        let bytes = origin.save();
+        let mut replay = ui::State::load(&bytes).unwrap();
+        let heading = ids[0].clone();
+        let body = ids[1].clone();
+        let fragment = crate::word_processor::ClipBlock {
+            kind: "heading".into(),
+            text: "Pasted title".into(),
+            marks: vec![qdoc::document::MarkSpan {
+                name: "strong".into(),
+                start: 0,
+                end: 6,
+                value: qdoc::document::MarkValue::Bool(true),
+            }],
+            level: Some(2),
+            ordered: None,
+            align: Some("center".into()),
+        };
+        let actions = [
+            generate_toc_action(vec![TocTarget {
+                heading,
+                level: 1,
+                text: "Heading".into(),
+                page: Some(1),
+            }]),
+            insert_page_number_action(RegionKind::Body, &body, 0),
+            paste_fragment_action(
+                RegionKind::Body,
+                SelectionTarget {
+                    start_block: body.clone(),
+                    start: 1,
+                    end_block: body.clone(),
+                    end: 1,
+                },
+                vec![fragment],
+                false,
+            ),
+            insert_table_action(&body, 2, 2),
+        ];
+        for action in actions {
+            let encoded = encode(&action);
+            let decoded: WordProcessorAction = serde_json::from_slice(&encoded.payload).unwrap();
+            let envelope = tilo_actions::apply_local(&mut origin.doc, &decoded, encoded).unwrap();
+            tilo_actions::replay(&mut replay.doc, &envelope, &registry()).unwrap();
+        }
+        let table = body_blocks(&origin.doc)
+            .iter()
+            .find_map(|block| match block.attrs.get("table") {
+                Some(qdoc::AttrVal::Str(id)) => Some(id.clone()),
+                _ => None,
+            })
+            .unwrap();
+        for edit in [
+            TableEdit::InsertRow { at: 1 },
+            TableEdit::InsertColumn { at: 1 },
+            TableEdit::DeleteRow { row: 0 },
+            TableEdit::DeleteColumn { column: 0 },
+        ] {
+            let action = edit_table_action(&table, edit);
+            let encoded = encode(&action);
+            let decoded: WordProcessorAction = serde_json::from_slice(&encoded.payload).unwrap();
+            let envelope = tilo_actions::apply_local(&mut origin.doc, &decoded, encoded).unwrap();
+            tilo_actions::replay(&mut replay.doc, &envelope, &registry()).unwrap();
+        }
+        assert_eq!(origin.doc.get_heads(), replay.doc.get_heads());
+        assert_eq!(body_blocks(&origin.doc), body_blocks(&replay.doc));
+    }
+
+    #[test]
+    fn table_tombstone_wins_over_a_divergent_cell_edit() {
+        let (mut base, ids) = seeded("Anchor\n");
+        dispatch(&mut base.doc, &insert_table_action(&ids[0], 2, 2));
+        let blocks = body_blocks(&base.doc);
+        let cell = blocks.iter().find(|block| block.kind == "cell").unwrap();
+        let table = match cell.attrs.get("table") {
+            Some(qdoc::AttrVal::Str(id)) => id.clone(),
+            other => panic!("cell has stable table id: {other:?}"),
+        };
+        let bytes = base.save();
+        let mut deleted = ui::State::load(&bytes).unwrap();
+        let mut divergent = ui::State::load(&bytes).unwrap();
+        divergent.doc.set_actor(automerge::ActorId::random());
+
+        let remove = edit_table_action(&table, TableEdit::Delete);
+        let late_edit = splice_text_action(RegionKind::Body, &cell.id, 0, 0, "late");
+        tilo_actions::apply_local(&mut deleted.doc, &remove, encode(&remove)).unwrap();
+        tilo_actions::apply_local(&mut divergent.doc, &late_edit, encode(&late_edit)).unwrap();
+
+        let mut merged_a = deleted.doc.clone();
+        let mut divergent_for_a = divergent.doc.clone();
+        merged_a.merge(&mut divergent_for_a).unwrap();
+        let mut merged_b = divergent.doc.clone();
+        let mut deleted_for_b = deleted.doc.clone();
+        merged_b.merge(&mut deleted_for_b).unwrap();
+        assert_eq!(body_blocks(&merged_a), body_blocks(&merged_b));
+        assert!(body_blocks(&merged_a)
+            .iter()
+            .all(|block| !matches!(block.attrs.get("table"), Some(qdoc::AttrVal::Str(id)) if id == &table)));
     }
 }

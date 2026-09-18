@@ -4,6 +4,7 @@
 //! and frame-local hit targets. The editor remains responsible for applying the
 //! typed [`ReviewAction`] to the document.
 
+use crate::paint_context::PaintContext;
 use qdoc::snapshot::{ChangeKind, ChangeView, CommentView};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -149,13 +150,14 @@ impl ReviewOverlay {
 
     pub(super) fn draw(
         &mut self,
-        scene: &mut Scene,
-        text_renderer: &mut TextRenderer,
+        context: &mut PaintContext<'_>,
         canvas: Rect,
-        transform: Affine,
         mut comment_markers: Vec<(String, f64, f64)>,
         mut change_markers: Vec<(String, f64, f64)>,
     ) {
+        let scene = &mut *context.scene;
+        let transform = context.transform;
+        let text_renderer = &mut *context.text;
         self.clear_hits();
         if !self.visible {
             return;

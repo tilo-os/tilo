@@ -6,7 +6,7 @@ running system with a known hole in it.
 
 This document covers what an operator needs, and the contract the boot chain has
 to satisfy. The reasoning behind the design lives with the code, in
-`crates/system/qos-rollback/src/lib.rs`.
+`crates/system/tilo-rollback/src/lib.rs`.
 
 ## The two mechanisms, and why neither is enough alone
 
@@ -16,7 +16,7 @@ to satisfy. The reasoning behind the design lives with the code, in
 | NV floor counter | the TPM | nothing available to software or to disk surgery | header restore, downgrade, image relabelling |
 
 Unlock requires **both**: the token for the running generation must be in the
-header, *and* the NV policy must pass. `crates/system/qos-rollback/tests/mechanism.rs`
+header, *and* the NV policy must pass. `crates/system/tilo-rollback/tests/mechanism.rs`
 performs the header-restore attack and shows the resurrected token still cannot
 unseal.
 
@@ -25,8 +25,8 @@ unseal.
 ```
 bootc upgrade          stage generation N, seal N's keyslot (floor unchanged)
 reboot                 boot N; N-1 is still fully able to unseal
-+10 min, healthy       qos-rollback-confirm.timer fires
-qos-rollback confirm   prove N unseals, prune the window, THEN raise the floor
++10 min, healthy       tilo-rollback-confirm.timer fires
+tilo-rollback confirm   prove N unseals, prune the window, THEN raise the floor
 ```
 
 Never at install time. An update that boots and then fails never reaches its own
@@ -40,7 +40,7 @@ increment it on authority of an empty password. Its `authPolicy` is
 
 ```
 PolicyOR(
-    PolicyAuthorize(floor authority key, policyRef = "qos-rollback-floor"),
+    PolicyAuthorize(floor authority key, policyRef = "tilo-rollback-floor"),
     PolicyNvWritten(clear) -> PolicyCommandCode(TPM2_NV_Increment),
 )
 ```
@@ -65,13 +65,13 @@ value. So it is a request/response exchange, and it works offline over a file:
 
 ```bash
 # On the device.
-qos-rollback floor-request --device /dev/vda3 --out req.json
+tilo-rollback floor-request --device /dev/vda3 --out req.json
 
 # On the authority, which holds the private key.
-qos-rollback approve-floor --private-key keys/tpm2-pcr-signing.private.pem     --request req.json --out-dir approvals/
+tilo-rollback approve-floor --private-key keys/tpm2-pcr-signing.private.pem     --request req.json --out-dir approvals/
 
 # Back on the device.
-cp approvals/*.json /var/lib/qos/rollback/approvals/
+cp approvals/*.json /var/lib/tilo/rollback/approvals/
 ```
 
 `approve-floor` refuses to issue past the newest generation that has a sealed
@@ -103,24 +103,29 @@ is bricked.
 
 ```bash
 # What this TPM's lockout actually permits.
-qos-rollback tpm-status
+tilo-rollback tpm-status
 
 # Set the dictionary-attack reset authorisation and tighten the parameters.
 # Refuses unless you confirm the recovery key exists.
-qos-rollback harden --i-have-a-recovery-key
+tilo-rollback harden --i-have-a-recovery-key
 
 # First-time enrollment. The recovery key is verified before anything is touched.
-qos-rollback enroll --device /dev/vda3 --recovery-key-file -
+tilo-rollback enroll --device /dev/vda3 --recovery-key-file -
 
 # Seal the keyslot for an incoming generation, before rebooting into it.
-qos-rollback enroll --device /dev/vda3 --generation 42 --recovery-key-file -
+tilo-rollback enroll --device /dev/vda3 --generation 42 --recovery-key-file -
 
 # Where the floor is and which generations it permits.
-qos-rollback status --device /dev/vda3
+tilo-rollback status --device /dev/vda3
 
 # A signed statement of the floor, for a peer to verify.
-qos-rollback certify --nonce "$(openssl rand -hex 16)" --out-dir /tmp/att
+tilo-rollback certify --nonce "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')" --out-dir /tmp/att
 ```
+
+The installed system schedules that one-time hardening ceremony five seconds
+after boot. It remains early, but TPM probing, LUKS discovery, and key generation
+do not hold `multi-user.target` or the first greeter open. Its service conditions
+skip later boots once the authorization is durably recorded.
 
 `--retain N` sets the window (default 3: the current generation plus the two
 before it). `--floor-at-least N` on `confirm` jumps the floor past a
@@ -131,7 +136,7 @@ to the PCR-prediction key because both are the same trust domain. Production
 custody should separate them — a prediction signature says "these are the expected
 measurements", while a floor approval permanently narrows what a machine will boot.
 
-`QOS_ROLLBACK_DEBUG=1` prints the failing TPM tool's own diagnostics, which is
+`TILO_ROLLBACK_DEBUG=1` prints the failing TPM tool's own diagnostics, which is
 what you want when a boot could not unseal. It never prints a secret — the PIN and
 passphrases are always passed by file reference, never on `argv`.
 
@@ -141,14 +146,14 @@ Signing a PCR prediction needs the private key, which is deliberately **not** in
 the image:
 
 ```bash
-qos-rollback sign-prediction \
+tilo-rollback sign-prediction \
     --private-key keys/tpm2-pcr-signing.private.pem \
     --generation 42 \
     --pcr-values predicted-pcrs.bin \
     --out-dir os/pcr-predictions
 ```
 
-The results ship in the image at `/usr/share/qos/pcr-predictions/`. A generation
+The results ship in the image at `/usr/share/tilo/pcr-predictions/`. A generation
 with no prediction cannot be enrolled — the enrollment path refuses rather than
 sealing a keyslot that can never open.
 
@@ -159,14 +164,14 @@ firmware update from turning into a recovery-key prompt.
 
 ## What the boot chain has to provide
 
-1. **`qos.generation=<N>` on the sealed UKI command line.** Inside the signature,
+1. **`tilo.generation=<N>` on the sealed UKI command line.** Inside the signature,
    measured into PCR 11. Not assembled by the bootloader, not read from a file
    under `/boot` — either would make the number attacker-controlled and the whole
    feature decorative.
 2. **`N` dense and monotonic**: `+1` per published image. Set at build time via
-   the `QOS_GENERATION` build argument, which writes both
+   the `TILO_GENERATION` build argument, which writes both
    `/usr/lib/bootc/kargs.d/02-generation.toml` — the copy `bootc container ukify`
-   seals — and `/usr/lib/qos/generation`, so a staged deployment's generation can be
+   seals — and `/usr/lib/tilo/generation`, so a staged deployment's generation can be
    read before it has booted. A timestamp is monotonic and still wrong: the
    retention window is arithmetic on the number, and moving the floor costs one NV
    write per step.
@@ -202,12 +207,12 @@ firmware update from turning into a recovery-key prompt.
    `systemd-cryptsetup@<volume>.service`:
 
    ```
-   qos-rollback unlock --device <luks> --output /run/cryptsetup-keys.d/<volume>.key
+   tilo-rollback unlock --device <luks> --output /run/cryptsetup-keys.d/<volume>.key
    ```
 
    `systemd-cryptsetup` picks that path up as an implicit key file, so no patched
    systemd, cryptsetup plugin, or keyscript is needed. The same invocation leaves
-   the secret in `/run/qos-rollback/proof.key` for the confirmation later in the
+   the secret in `/run/tilo-rollback/proof.key` for the confirmation later in the
    boot; without it, unattended confirmation cannot authorise a keyslot change,
    because nothing on a rebooted machine knows the PIN.
 4. **PCR 7 and 11 measured as usual**, and a prediction for them signed per
@@ -217,7 +222,7 @@ firmware update from turning into a recovery-key prompt.
 
 ```bash
 # Mechanism, against an emulated TPM and a real LUKS2 header. No root, no VM.
-cargo test -p qos-rollback
+cargo test -p tilo-rollback
 
 # The shell helpers the systemd units use.
 ./os/tests/rollback-wrappers.sh
@@ -225,7 +230,7 @@ cargo test -p qos-rollback
 # Boot-side, inside a booted guest — the only place the rest can be established.
 ./os/dev/vm.sh boot --tpm
 #   ... then in the guest:
-sudo /usr/libexec/qos-rollback-boot-check
+sudo /usr/libexec/tilo-rollback-boot-check
 ```
 
 The boot-side check is the one that establishes what the host cannot: that the
@@ -234,7 +239,7 @@ meaningful measurements, that early userspace produced the key file before
 `systemd-cryptsetup` wanted it, and that the units fired. It passes on a VM booted
 from an image `os/dev/build-image.sh` produced. The unlock hand-off is reported
 `n/a` on an unencrypted disk and asserted on an enrolled encrypted one. The
-initramfs module now calls `qos-rollback unlock` before the matching cryptsetup
+initramfs module now calls `tilo-rollback unlock` before the matching cryptsetup
 unit and yields to its independent recovery prompt on failure. Signed target
 predictions and installer enrollment remain outstanding; the check reports an
 enrolled volume without a working hand-off as a failure rather than a skip.
@@ -244,13 +249,13 @@ fail on purpose:
 
 ```bash
 # At build time: a UKI that measures normally and carries no generation.
-QOS_SEAL_GENERATION=0 ./os/dev/build-image.sh
+TILO_SEAL_GENERATION=0 ./os/dev/build-image.sh
 
 # On an installed machine: blank the generation out of the UKI in place. Same
 # length, so the PE layout is untouched and the boot still measures — into a
 # different PCR 11, which is the point.
 sudo ./os/dev/uki-cmdline.py show
-sudo ./os/dev/uki-cmdline.py blank qos.generation
+sudo ./os/dev/uki-cmdline.py blank tilo.generation
 ```
 
 Either way the check must fail on the generation assertions specifically, not on
@@ -266,14 +271,14 @@ before `boot-complete.target`, and a repair-mode boot entry.
 
 The two meet at one point, and it is the reason confirmation is late rather than
 at update time. An automatic rollback is only survivable because the floor has
-not moved yet — `qos-rollback-confirm.timer` fires ten minutes in, and an update
+not moved yet — `tilo-rollback-confirm.timer` fires ten minutes in, and an update
 that boots and then fails never reaches its own confirmation. So the generation
 the boot loader falls back to is still able to unseal.
 
 They also disagree about strictness, deliberately.
 `rollback_system_is_healthy` here requires `systemctl is-system-running` =
 `running`, because it gates **destroying** the fallback and refusing costs
-nothing. `qos-boot-health` requires only that the session came up, because it
+nothing. `tilo-boot-health` requires only that the session came up, because it
 gates **keeping the current generation**, and the same strictness there would
 fail every boot of every generation over one unrelated broken unit and walk the
 retention window down to nothing.
@@ -290,13 +295,11 @@ It is what unlocks the disk when:
 - the PIN was forgotten and the lockout is exhausted,
 - the NV index was destroyed, or recreated with a different floor authority key
   (its TPM Name changes, and every token is sealed against the old Name —
-  `qos-rollback enroll` reports this by name rather than letting it surface as an
+  `tilo-rollback enroll` reports this by name rather than letting it surface as an
   unexplained failure to unseal).
 
-That last one is worth stating plainly, because it is circular by construction:
-the dictionary-attack reset authorisation lives on the encrypted root, so a
+The dictionary-attack reset authorisation lives on the encrypted root, so a
 locked-out TPM cannot be reset until the disk is open, and opening it needs the
-recovery key. That is the design working as intended — the TPM keyslot is the
-convenience, the recovery key is the guarantee — but it means a user who discards
-the recovery key and then forgets their PIN has lost the data, and nothing in this
-subsystem can change that.
+recovery key. The TPM keyslot provides convenience; the recovery key is the
+independent recovery path. A user who discards the recovery key and then forgets
+their PIN has lost the data, and nothing in this subsystem can change that.

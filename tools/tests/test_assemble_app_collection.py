@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "apps"))
 import assemble_app_collection  # noqa: E402
 
 
@@ -14,15 +14,15 @@ class AssembleAppCollectionTests(unittest.TestCase):
     def test_requires_exact_versioned_architecture_set(self) -> None:
         plan = {
             "catalog": [
-                {"name": "notes", "version": "1.2.3", "id": "dev.qos.notes"},
-                {"name": "files", "version": "2.0.0", "id": "dev.qos.files"},
+                {"name": "notes", "version": "1.2.3", "id": "dev.tilo.notes"},
+                {"name": "files", "version": "2.0.0", "id": "dev.tilo.files"},
             ]
         }
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             runtime = root / "runtime"
-            (runtime / "qos-runtime/2026.07").mkdir(parents=True)
-            (runtime / "qos-runtime/2026.07/bundle.toml").write_text("version='2026.07'")
+            (runtime / "tilo-runtime/2026.07").mkdir(parents=True)
+            (runtime / "tilo-runtime/2026.07/bundle.toml").write_text("version='2026.07'")
             (runtime / "runtime-bundle-publisher.hex").write_text("ab" * 32)
             (root / "notes-1.2.3-x86_64.qpkg").write_bytes(b"notes")
             (root / "files-2.0.0-x86_64.qpkg").write_bytes(b"files")

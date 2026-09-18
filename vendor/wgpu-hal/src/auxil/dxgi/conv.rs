@@ -13,8 +13,8 @@ pub fn map_adapter_name(name: [u16; 128]) -> String {
 pub fn map_texture_format_failable(
     format: wgt::TextureFormat,
 ) -> Option<Dxgi::Common::DXGI_FORMAT> {
-    use wgt::TextureFormat as Tf;
     use Dxgi::Common::*;
+    use wgt::TextureFormat as Tf;
 
     Some(match format {
         Tf::R8Unorm => DXGI_FORMAT_R8_UNORM,
@@ -187,8 +187,8 @@ pub fn map_texture_format_for_resource(
     has_view_formats: bool,
     casting_fully_typed_format_supported: bool,
 ) -> Dxgi::Common::DXGI_FORMAT {
-    use wgt::TextureFormat as Tf;
     use Dxgi::Common::*;
+    use wgt::TextureFormat as Tf;
 
     if casting_fully_typed_format_supported {
         map_texture_format(format)
@@ -234,8 +234,8 @@ pub fn map_index_format(format: wgt::IndexFormat) -> Dxgi::Common::DXGI_FORMAT {
 }
 
 pub fn map_vertex_format(format: wgt::VertexFormat) -> Dxgi::Common::DXGI_FORMAT {
-    use wgt::VertexFormat as Vf;
     use Dxgi::Common::*;
+    use wgt::VertexFormat as Vf;
 
     match format {
         Vf::Unorm8 => DXGI_FORMAT_R8_UNORM,

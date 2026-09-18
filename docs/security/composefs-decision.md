@@ -1,7 +1,7 @@
 # Will bootc's composefs backend stabilise by ~February 2027?
 
 Researched 2026-08-11 against bootc 1.16.7 (latest release) and bootc `main`.
-qOS currently pins bootc 1.16.4 and `quay.io/centos-bootc/bootc-image-builder:latest`.
+Tilo currently pins bootc 1.16.4 and `quay.io/centos-bootc/bootc-image-builder:latest`.
 
 ## Verdict
 
@@ -23,7 +23,7 @@ rests on a premise the evidence contradicts.** Two findings drive that:
 
 1. **bootc has already made, and is already honouring, the specific guarantee that
    a stabilisation label would give us.** The docs say: *"We are committed to
-   in-place upgrades from all systems deployed since bootc 1.16.0."* qOS is on
+   in-place upgrades from all systems deployed since bootc 1.16.0."* Tilo is on
    1.16.4 — inside that window. And this is not aspirational: release 1.16.5
    shipped `store: Fix upgrade with existing V2 composefs repo`, i.e. a repository
    format migration was handled in place rather than by reinstall.
@@ -36,9 +36,9 @@ rests on a premise the evidence contradicts.** Two findings drive that:
    the 1.16.0+ in-place commitment. The usual "wait for stable" instinct is
    inverted here.
 
-Restoring GRUB also costs more than systemd-boot. qOS's TPM rollback protection
+Restoring GRUB also costs more than systemd-boot. Tilo's TPM rollback protection
 already structurally depends on a UKI — `os/tests/rollback-boot-check.sh` asserts
-`qos.generation=` is on the *measured* kernel command line and checks PCR 11 /
+`tilo.generation=` is on the *measured* kernel command line and checks PCR 11 /
 `StubPcrKernelImage`, with the comment "It has to come from the UKI, not from a
 bootloader config". The ostree backend cannot produce that. So the real
 alternative to composefs is not "GRUB instead of systemd-boot", it is
@@ -160,7 +160,7 @@ subsystems:
 - [#2336](https://github.com/bootc-dev/bootc/issues/2336) soft-reboot not implemented for composefs
 - [#2208](https://github.com/bootc-dev/bootc/issues/2208) a series of rebases breaks bootc rollback, **persisting through reboots**
 - [#2334](https://github.com/bootc-dev/bootc/issues/2334) upgrade with composefs+UKI: `composefs=` parameter mismatch
-- [#1976](https://github.com/bootc-dev/bootc/issues/1976) UKI profiles ignored with `install to-disk --bootloader=systemd --composefs-backend` — *exactly qOS's flag combination*
+- [#1976](https://github.com/bootc-dev/bootc/issues/1976) UKI profiles ignored with `install to-disk --bootloader=systemd --composefs-backend` — *exactly Tilo's flag combination*
 - [#2131](https://github.com/bootc-dev/bootc/issues/2131) / [#2132](https://github.com/bootc-dev/bootc/issues/2132) `install to-disk` builds the wrong partition layout for composefs+UKI (BIOS partition created, ESP too small)
 - [#2375](https://github.com/bootc-dev/bootc/issues/2375) status/upgrade/switch fail on non-EFI BLS systems (filed 2026-08-10, against 1.16.7)
 
@@ -256,18 +256,18 @@ So bib's gap is plumbing, not a missing primitive. Two ways out:
   systemd-repart partitioning into `bootc install` itself and raising the default
   ESP to 2GB for composefs — so this path is converging on being built in.
 
-qOS uses bib in `os/build.sh`, `os/build-host.sh`, `os/verify-test.sh`,
+Tilo uses bib in `os/build.sh`, `os/build-host.sh`, `os/verify-test.sh`,
 `os/dev/build-image.sh`, `os/dev/build-installer.sh` and
 `os/dev/build-custom-installer.sh`. This is the work item to size, and it is the
 honest cost of the decision.
 
-Worth noting: qOS's `os/usr/lib/bootc/install/40-qos.toml` already sets
+Worth noting: Tilo's `os/usr/lib/bootc/install/40-tilo.toml` already sets
 `bootloader = "systemd"`, and its own comment claims bib drives the same install
 code path. Given the `bail!` above, that config **cannot currently be producing a
 systemd-boot install through bib** — it either errors or something is falling back.
 That is worth verifying against a real build log independently of this decision.
 
-### 2. The UKI requirement is softer than assumed — and qOS needs a UKI regardless
+### 2. The UKI requirement is softer than assumed — and Tilo needs a UKI regardless
 
 Correcting the premise in the brief: **a UKI is not required for the composefs
 backend.** Per the docs:
@@ -286,38 +286,38 @@ during installation."* That is UKI ⇒ composefs, not composefs ⇒ UKI. Without
 UKI you select it explicitly with `--composefs-backend`, which the docs flag as
 *"not as heavily tested yet"*.
 
-But qOS does want the UKI, independent of composefs: the rollback design in
-`os/tests/rollback-boot-check.sh` requires `qos.generation=` on a *measured*
+But Tilo does want the UKI, independent of composefs: the rollback design in
+`os/tests/rollback-boot-check.sh` requires `tilo.generation=` on a *measured*
 command line (PCR 11, `StubPcrKernelImage`). Building it means a three-stage
 Containerfile:
 
 ```
 rootfs  →  bootc container split-kernel-and-rootfs --rootfs / --output /kernel
         →  bootc container ukify --rootfs /target --kernel-dir /kernel/$kver -- \
-             --output /out/$kver.efi --signtool sbsign \
+             --output /out/$kver.efi \
              --secureboot-private-key ... --secureboot-certificate ...
         →  COPY the signed .efi to /boot/EFI/Linux/
 ```
 
-The sketch is what got built, with one correction: qOS does **not** sign at build
+The sketch is what got built, with one correction: Tilo does **not** sign at build
 time. Its root of trust is a Platform Key the target machine generates for itself, so
 there is no build-time key that machine's firmware would accept —
-`/usr/libexec/qos-secureboot` signs the UKI on the installed system instead.
+`/usr/libexec/tilo-secureboot` signs the UKI on the installed system instead.
 Measurement does not depend on the signature.
 
-Two things fit qOS unusually well here:
+Two things fit Tilo unusually well here:
 
 - `bootc container ukify` "reads extra kernel arguments from
-  `/usr/lib/bootc/kargs.d`". qOS already has
+  `/usr/lib/bootc/kargs.d`". Tilo already has
   `os/usr/lib/bootc/kargs.d/01-hardening.toml`, so the existing kargs mechanism
-  feeds the UKI command line directly — which is where `qos.generation=` now goes,
-  as `02-generation.toml` written from the `QOS_GENERATION` build argument.
+  feeds the UKI command line directly — which is where `tilo.generation=` now goes,
+  as `02-generation.toml` written from the `TILO_GENERATION` build argument.
 - `--uki-addon` exists for machine-specific kargs as separately signed PE addons,
   if per-machine cmdline additions are ever needed without rebuilding the UKI.
 
 One real conflict to resolve: sealed images must have systemd-boot and **must not
-have bootupd**. qOS installs `systemd-boot-unsigned` (good) but
-`os/usr/lib/systemd/system/qos-secureboot-sign.path` and `os/usr/libexec/qos-secureboot`
+have bootupd**. Tilo installs `systemd-boot-unsigned` (good) but
+`os/usr/lib/systemd/system/tilo-secureboot-sign.path` and `os/usr/libexec/tilo-secureboot`
 are built around `bootupctl update` rewriting the ESP. That machinery needs
 rethinking under a sealed composefs image. (bootc 1.16.7's `packaging: Drop shim
 alongside bootupd when switching to systemd-boot` is upstream moving in the same
@@ -357,7 +357,7 @@ Ranked by what I'd actually worry about:
 - **Moderate — the one to actually plan for: boot-state and rollback bugs across
   update series.** #2208 (rollback breaks after a series of rebases, persisting
   through reboots) and #2334 are failures that accumulate over a machine's
-  *lifetime*, not at install. For qOS this is sharper than for most, because
+  *lifetime*, not at install. For Tilo this is sharper than for most, because
   bounded rollback protection is wired into TPM-sealed LUKS keyslots — a broken
   rollback entry is not just an inconvenience, it interacts with disk unlock.
   This deserves a deliberate test: install, then rebase/update repeatedly, and
@@ -403,7 +403,7 @@ stabilisation issue; bib#1164 getting maintainer commitment; #2079
 asymmetry and signal the format is settled enough to migrate onto.
 
 **Would reverse the recommendation:** #2208-class rollback corruption turning out
-to be architectural rather than a bug, given how tightly qOS binds rollback state
+to be architectural rather than a bug, given how tightly Tilo binds rollback state
 to TPM-sealed LUKS keyslots.
 
 ## Where this is thin
@@ -423,8 +423,8 @@ Stated plainly:
   comments' substance (achilleas-k ×2, cgwalters, mvo5) and none address composefs
   support or a timeline, but I cannot rule out discussion elsewhere, e.g. the
   referenced internal Red Hat ticket HMS-9844.
-- **I did not build or boot anything.** Every claim about qOS's own state comes
-  from reading `os/` in this tree; the claim that qOS's current bib path cannot
+- **I did not build or boot anything.** Every claim about Tilo's own state comes
+  from reading `os/` in this tree; the claim that Tilo's current bib path cannot
   actually be installing systemd-boot is an inference from the `bail!` and should
   be checked against a real build log.
 - Release-note quotes come from the GitHub releases API rather than each release
@@ -436,7 +436,7 @@ Stated plainly:
 
 Two open items above are now settled by running them.
 
-**qOS's bib path could not install systemd-boot — it could not install at all.**
+**Tilo's bib path could not install systemd-boot — it could not install at all.**
 `bootc-image-builder` on the current desktop image fails after deploying the
 container, at the bootloader step:
 
@@ -450,14 +450,14 @@ mutually exclusive, and bib has no way to ask for the other backend. The
 inference from the `bail!` was right, and stronger than stated: the bib path was
 not silently falling back to GRUB, it was not producing a qcow2. Replacing bib
 was therefore not a cost of adopting composefs — the composefs backend is what
-makes the bootloader qOS already asks for installable.
+makes the bootloader Tilo already asks for installable.
 
 The same image installs and boots through `systemd-repart` +
 `bootc install to-filesystem --composefs-backend`. It first did so with no UKI:
 systemd-boot on the ESP, a BLS entry pointing at vmlinuz + initrd there, and a root
 mounted `composefs:<digest> overlay ro,…,verity=require`. So fsverity enforcement
 arrived with the backend, before any of the UKI work — what the UKI adds on top is a
-*signed and measured* command line, which is what binds `qos.generation=` to PCR 11.
+*signed and measured* command line, which is what binds `tilo.generation=` to PCR 11.
 
 **The production image now builds the UKI**, in three stages at the end of
 `os/Containerfile` (split → ukify → final; see
@@ -489,17 +489,17 @@ derived image is not a way out either: the kernel and initramfs are no longer in
 rootfs to build one from, they are sections of the UKI it inherited.
 
 `os/Containerfile.test` and `os/Containerfile.installer` both do
-`FROM localhost/qos:latest`, so both have to be rebuilt from the unsealed rootfs
+`FROM localhost/tilo:latest`, so both have to be rebuilt from the unsealed rootfs
 (`podman build --target rootfs`) and sealed themselves. Until they are, their
 container builds still succeed and the *disk* step fails at the digest check with
 the message `os/dev/disk-image.sh` prints — a legible failure rather than an image
 that boots wrong, but outstanding work either way.
 
 **bootupd had to go.** A sealed image may not offer its install path, and this was
-listed above as a real conflict because `qos-secureboot` was built around
+listed above as a real conflict because `tilo-secureboot` was built around
 `bootupctl update` rewriting the ESP. It turned out not to be one: with a UKI there
-is exactly one PE binary on the boot path, `sbsign` over it is the whole job, and
-`qos-secureboot-sign.path` already watched `/boot/EFI/Linux`.
+is exactly one PE binary on the boot path, `tilo-crypto sign-efi` over it is the whole job, and
+`tilo-secureboot-sign.path` already watched `/boot/EFI/Linux`.
 
 **`bootc container lint` survives a split-kernel UKI image.** It exits 0 against
 a built one under bootc 1.16.4 (4 warnings, none of them about the kernel or

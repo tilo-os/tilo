@@ -2,9 +2,8 @@
 //!
 //! A graphical systemd-journal viewer. It is a single self-rendering
 //! [`Widget`] (the data is read-only and the visuals — severity dots,
-//! coloured rows, a detail pane, a filter bar — are bespoke, exactly
-//! the case the toolkit calls out for "draw into the Vello Scene
-//! yourself"). Selection, filters, and search are local view state. Live tail is a local effect that
+//! coloured rows, a detail pane, and a filter bar — are drawn directly into
+//! the Vello scene. Selection, filters, and search are local view state. Live tail is a local effect that
 //! controls this process's journal poller; journal entries themselves are an
 //! external render cache.
 //!
@@ -48,9 +47,9 @@ use winit::keyboard::{Key, NamedKey};
 use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Politeness, Role};
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{ActionAddress, ControlInvocation, OperationKind, Resource};
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
+use ui::tilo_actions::{ActionAddress, ControlInvocation, OperationKind, Resource};
 use ui::widget::{TextInput, Widget};
 
 use crate::actions::{self, LogsOperation};
@@ -681,11 +680,20 @@ impl LogsApp {
     fn filter_bar_regions(&self, x0: f64, w: f64, filter: Rect) -> (Rect, Rect, Rect, Vec<Rect>) {
         if Self::filters_wrap(w / self.m.k) {
             let search_y = filter.y0 + 8.0;
-            let search = Rect::new(x0 + PAD, search_y, x0 + w - PAD, search_y + self.m.control_h);
+            let search = Rect::new(
+                x0 + PAD,
+                search_y,
+                x0 + w - PAD,
+                search_y + self.m.control_h,
+            );
             let facet_y = search.y1 + 6.0;
             let facet_w = ((w - PAD * 2.0 - 10.0) / 2.0).max(72.0);
-            let unit_trigger =
-                Rect::new(x0 + PAD, facet_y, x0 + PAD + facet_w, facet_y + self.m.control_h);
+            let unit_trigger = Rect::new(
+                x0 + PAD,
+                facet_y,
+                x0 + PAD + facet_w,
+                facet_y + self.m.control_h,
+            );
             let boot_trigger = Rect::new(
                 unit_trigger.x1 + 10.0,
                 facet_y,
@@ -961,7 +969,6 @@ fn ts(tr: &TextRenderer, resolved: f32) -> f32 {
     tr.renderer_input_style(&TextStyle::new(resolved)).size
 }
 
-
 /// Vertical pitches of every text-bearing band, derived once per frame from
 /// the measured line growth of the type sizes each band stacks. The `*_H`
 /// constants above are the 1× design; each band grows by exactly the extra
@@ -1013,7 +1020,11 @@ impl Metrics {
         let sm_line = line(tr, ramp.sm);
         let xs = grow(line(tr, ramp.xs));
         let sm = grow(sm_line);
-        let line_per_px = if sm_line > 0.0 { sm_line / f64::from(ramp.sm) } else { 1.25 };
+        let line_per_px = if sm_line > 0.0 {
+            sm_line / f64::from(ramp.sm)
+        } else {
+            1.25
+        };
         Self {
             k,
             row_h: ROW_H + sm,
@@ -1181,7 +1192,8 @@ impl LogsApp {
                 ts(tr, theme.tokens.typography.scale.sm),
                 theme.text_dim,
                 reg.header.x0 + PAD,
-                self.m.vcenter(reg.header, ts(tr, theme.tokens.typography.scale.sm)),
+                self.m
+                    .vcenter(reg.header, ts(tr, theme.tokens.typography.scale.sm)),
                 TextWeight::Medium,
                 false,
             );
@@ -1200,7 +1212,8 @@ impl LogsApp {
             ts(tr, theme.tokens.typography.scale.sm),
             theme.text_dim,
             counts_anchor - 14.0 - f64::from(cw),
-            self.m.vcenter(reg.header, ts(tr, theme.tokens.typography.scale.sm)),
+            self.m
+                .vcenter(reg.header, ts(tr, theme.tokens.typography.scale.sm)),
             TextWeight::Medium,
             false,
         );
@@ -1268,7 +1281,13 @@ impl LogsApp {
         if on {
             fill_round(scene, t, reg.live_pill, theme.tokens.radii.full, pill_bg);
         } else {
-            ui::surface::card(scene, t, reg.live_pill, f64::from(theme.tokens.radii.full), pill_bg);
+            ui::surface::card(
+                scene,
+                t,
+                reg.live_pill,
+                f64::from(theme.tokens.radii.full),
+                pill_bg,
+            );
         }
         let on_accent = c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
         let dot_c = if on { on_accent } else { theme.text_dim };
@@ -1289,7 +1308,8 @@ impl LogsApp {
             ts(tr, theme.tokens.typography.scale.sm),
             lc,
             reg.live_pill.x0 + 28.0,
-            self.m.vcenter(reg.live_pill, ts(tr, theme.tokens.typography.scale.sm)),
+            self.m
+                .vcenter(reg.live_pill, ts(tr, theme.tokens.typography.scale.sm)),
             TextWeight::Semibold,
             false,
         );
@@ -1316,7 +1336,13 @@ impl LogsApp {
         } else {
             c.lift(0.35)
         };
-        ui::surface::card(scene, t, reg.overflow_trigger, f64::from(theme.tokens.radii.full), trigger_bg);
+        ui::surface::card(
+            scene,
+            t,
+            reg.overflow_trigger,
+            f64::from(theme.tokens.radii.full),
+            trigger_bg,
+        );
         if open {
             stroke_round(
                 scene,
@@ -1402,7 +1428,13 @@ impl LogsApp {
     ) {
         let c = &theme.tokens.colors;
         let focused = self.search_input.is_focused();
-        ui::surface::card(scene, t, reg.search, f64::from(theme.tokens.radii.md), c.surfaces.raised);
+        ui::surface::card(
+            scene,
+            t,
+            reg.search,
+            f64::from(theme.tokens.radii.md),
+            c.surfaces.raised,
+        );
         if focused {
             stroke_round(
                 scene,
@@ -1564,14 +1596,24 @@ impl LogsApp {
         active: bool,
     ) {
         let c = &theme.tokens.colors;
-        ui::surface::card(scene, t, rect, f64::from(theme.tokens.radii.md), c.surfaces.raised);
+        ui::surface::card(
+            scene,
+            t,
+            rect,
+            f64::from(theme.tokens.radii.md),
+            c.surfaces.raised,
+        );
         if open || active {
             stroke_round(
                 scene,
                 t,
                 rect,
                 theme.tokens.radii.md,
-                if open { c.border_focus } else { theme.accent_primary },
+                if open {
+                    c.border_focus
+                } else {
+                    theme.accent_primary
+                },
                 1.5,
             );
         }
@@ -1664,7 +1706,13 @@ impl LogsApp {
             reg.list_header.x1,
             reg.list_body.y1,
         );
-        ui::surface::card(scene, t, card, f64::from(theme.tokens.radii.lg), c.surfaces.raised);
+        ui::surface::card(
+            scene,
+            t,
+            card,
+            f64::from(theme.tokens.radii.lg),
+            c.surfaces.raised,
+        );
 
         // Column header.
         fill_round(
@@ -1905,7 +1953,12 @@ impl LogsApp {
             } else if is_hover {
                 fill_rect(scene, t, band, c.lift(0.35));
             } else if pos % 2 == 1 {
-                fill_rect(scene, t, band, ui::tokens::Colors::hairline_on(c.surfaces.raised, 6));
+                fill_rect(
+                    scene,
+                    t,
+                    band,
+                    ui::tokens::Colors::hairline_on(c.surfaces.raised, 6),
+                );
             }
 
             let cols = column_x(row, self.m.k);
@@ -1939,7 +1992,8 @@ impl LogsApp {
                 ts(tr, theme.tokens.typography.scale.xs),
                 col,
                 cols.tag_x,
-                self.m.vcenter(row, ts(tr, theme.tokens.typography.scale.xs)),
+                self.m
+                    .vcenter(row, ts(tr, theme.tokens.typography.scale.xs)),
                 TextWeight::Bold,
                 true,
             );
@@ -2013,7 +2067,13 @@ impl LogsApp {
     ) {
         let c = &theme.tokens.colors;
         let d = reg.detail;
-        ui::surface::card(scene, t, d, f64::from(theme.tokens.radii.lg), c.surfaces.raised);
+        ui::surface::card(
+            scene,
+            t,
+            d,
+            f64::from(theme.tokens.radii.lg),
+            c.surfaces.raised,
+        );
 
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &d);
         let mut layout = DetailLayout {
@@ -2590,7 +2650,7 @@ impl Widget for LogsApp {
         &[actions::LOGS_OPERATION_TYPE]
     }
 
-    fn take_control_invocation(&mut self) -> Option<ui::qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         self.pending_control_invocation
             .take()
             .or_else(|| self.search_input.take_control_invocation())
@@ -3603,7 +3663,7 @@ mod tests {
     #[test]
     fn agent_filter_view_operation_never_changes_the_shared_document() {
         let (mut app, doc) = synced_app();
-        let encoded = qos_actions::EncodedAction::encode_operation(
+        let encoded = tilo_actions::EncodedAction::encode_operation(
             actions::LOGS_OPERATION_TYPE,
             &LogsOperation::SetUnit {
                 value: "kernel".to_string(),
@@ -3724,7 +3784,7 @@ mod tests {
     fn portal_export_writes_the_snapshot_selected_before_the_picker() {
         let mut app = LogsApp::new(sample_entries(), true);
         let path = std::env::temp_dir().join(format!(
-            "qos-logs-portal-export-{}-{}.jsonl",
+            "tilo-logs-portal-export-{}-{}.jsonl",
             std::process::id(),
             app.entries[0].realtime_us
         ));

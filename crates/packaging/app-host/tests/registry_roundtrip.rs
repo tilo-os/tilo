@@ -1,4 +1,4 @@
-//! End-to-end proof of the registry protocol on the real code path:
+//! End-to-end registry protocol coverage:
 //! author a `.qpkg`, publish it to a self-hosted `file://` registry
 //! served by a live iroh node, then resolve → download → verify →
 //! install it on a fresh client — plus the fail-closed negatives.
@@ -26,17 +26,17 @@ use app_registry::{publish_to_dir, registry_dir};
 use pkg::pack::{SigningIdentity, pack};
 use pkg::{Manifest, MemoryBlobStore, PackageId};
 
-/// Author a tiny signed `.qpkg` for `dev.qos.editor@1.0.0`.
+/// Author a tiny signed `.qpkg` for `dev.tilo.editor@1.0.0`.
 fn author_qpkg(identity: &SigningIdentity) -> (Vec<u8>, PackageId) {
     let pubhex = hex::encode(identity.public_key_bytes());
     let dir = tempfile::tempdir().unwrap();
     let payload = dir.path().join("payload");
     std::fs::create_dir_all(payload.join("bin")).unwrap();
-    std::fs::write(payload.join("bin").join("app"), b"#!/bin/true\nqos app\n").unwrap();
+    std::fs::write(payload.join("bin").join("app"), b"#!/bin/true\ntilo app\n").unwrap();
     let manifest_toml = format!(
         r#"
 [package]
-id = "dev.qos.editor"
+id = "dev.tilo.editor"
 version = "1.0.0"
 kind = "app"
 
@@ -46,7 +46,7 @@ signature = ""
 
 [sandbox]
 namespaces = ["user"]
-seccomp = "qos-default"
+seccomp = "tilo-default"
 landlock = "strict"
 
 [sandbox.net]
@@ -93,7 +93,7 @@ async fn publish_resolve_fetch_and_install() {
     )
     .await
     .unwrap();
-    assert_eq!(receipt.app_id, "dev.qos.editor");
+    assert_eq!(receipt.app_id, "dev.tilo.editor");
     assert_eq!(receipt.version, "1.0.0");
 
     // Client trusts the registry operator key.
@@ -105,7 +105,7 @@ async fn publish_resolve_fetch_and_install() {
     }]);
     let host = HostProfile::detect();
 
-    let outcome = fetch_qpkg(&config, "dev.qos.editor", None, &host)
+    let outcome = fetch_qpkg(&config, "dev.tilo.editor", None, &host)
         .await
         .expect("fetch + verify");
     assert_eq!(outcome.package_id, pkg_id);
@@ -161,7 +161,7 @@ async fn untrusted_registry_key_is_skipped() {
     let host = HostProfile::detect();
 
     assert!(
-        fetch_qpkg(&config, "dev.qos.editor", None, &host)
+        fetch_qpkg(&config, "dev.tilo.editor", None, &host)
             .await
             .is_err(),
         "an untrusted registry must serve nothing"
@@ -211,7 +211,7 @@ async fn tampered_entry_is_rejected_after_index_resign() {
     let host = HostProfile::detect();
 
     assert!(
-        fetch_qpkg(&config, "dev.qos.editor", None, &host)
+        fetch_qpkg(&config, "dev.tilo.editor", None, &host)
             .await
             .is_err(),
         "a publisher-unsigned entry must not install"

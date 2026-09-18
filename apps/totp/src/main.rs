@@ -1,4 +1,4 @@
-//! Authenticator — standard qOS application entry point.
+//! Authenticator — standard Tilo application entry point.
 //!
 //! `--shots PATH` uses a deterministic sample vault. `--scenario NAME` (the
 //! shared screenshot vocabulary every app speaks; `--screen NAME` is the
@@ -7,6 +7,7 @@
 //! `missing-secret`; the default is the account list. `--viewport WxH`
 //! controls the screenshot size.
 
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop. Crash-producing lints remain denied.
 #![allow(
@@ -33,7 +34,7 @@
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
-const APP_ID: &str = "dev.qos.totp";
+const APP_ID: &str = "dev.tilo.totp";
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 const SCREENS: &[&str] = &[
     "list",
@@ -68,6 +69,7 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 }
 
 fn configure(app: &mut ui::App) {
+    app.set_window_title(Some("Authenticator".into()));
     totp::actions::register(app.action_registry_mut());
 }
 

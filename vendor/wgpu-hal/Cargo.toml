@@ -47,7 +47,9 @@ targets = [
 ]
 
 [package.metadata.cargo-machete]
-ignored = ["cfg_aliases"]
+# GLES enables windows-result/std for windows_result::Error's Error impl;
+# it is a feature-unification dependency, not a directly imported crate.
+ignored = ["cfg_aliases", "windows-result"]
 
 [features]
 qos-presentation-feedback = ["objc2-metal/objc2-core-foundation"]
@@ -78,6 +80,7 @@ dx12 = [
     "windows/Win32_Security",
     "windows/Win32_System_Diagnostics_Debug",
     "windows/Win32_System_Kernel",
+    "windows/Win32_System_LibraryLoader",
     "windows/Win32_System_Performance",
     "windows/Win32_System_Threading",
     "windows/Win32_UI_WindowsAndMessaging",

@@ -130,6 +130,9 @@ pub struct LayoutKey {
     pub width_q: i32,
     pub height_q: i32,
     pub scale_q: i32,
+    /// System accessibility text scale. `TextRenderer` applies this to glyph
+    /// metrics, so the flow cache and vertical rhythm must invalidate with it.
+    pub text_scale_q: i32,
     pub spacing_q: i32,
     pub composition: bool,
     /// Signature of the selected font (family + per-face size multiplier), so a
@@ -144,12 +147,14 @@ impl LayoutKey {
         content_h: f32,
         s: &Settings,
         font_sig: u64,
+        text_scale: f32,
     ) -> Self {
         Self {
             chapter,
             width_q: content_w.round() as i32,
             height_q: content_h.round() as i32,
             scale_q: (s.font_scale * 100.0).round() as i32,
+            text_scale_q: (text_scale * 100.0).round() as i32,
             spacing_q: (s.line_spacing * 100.0).round() as i32,
             composition: s.composition.justified(),
             font_sig,
@@ -170,7 +175,7 @@ struct BlockStyle {
     fixed_height: Option<f32>,
 }
 
-fn style_for(block: &Block, body: f32) -> BlockStyle {
+fn style_for(block: &Block, body: f32, text_scale: f32) -> BlockStyle {
     match block {
         Block::Heading { level, .. } => {
             let (mult, sb) = match level {
@@ -184,7 +189,7 @@ fn style_for(block: &Block, body: f32) -> BlockStyle {
                 force_italic: false,
                 force_bold: true,
                 indent: 0.0,
-                space_before: body * sb,
+                space_before: body * sb * text_scale,
                 fixed_height: None,
             }
         }
@@ -194,7 +199,7 @@ fn style_for(block: &Block, body: f32) -> BlockStyle {
             force_italic: false,
             force_bold: false,
             indent: 0.0,
-            space_before: body * 0.75,
+            space_before: body * 0.75 * text_scale,
             fixed_height: None,
         },
         Block::Quote { .. } => BlockStyle {
@@ -202,8 +207,8 @@ fn style_for(block: &Block, body: f32) -> BlockStyle {
             size: body * 1.02,
             force_italic: true,
             force_bold: false,
-            indent: 30.0,
-            space_before: body * 0.9,
+            indent: 30.0 * text_scale,
+            space_before: body * 0.9 * text_scale,
             fixed_height: None,
         },
         Block::ListItem { .. } => BlockStyle {
@@ -211,8 +216,8 @@ fn style_for(block: &Block, body: f32) -> BlockStyle {
             size: body,
             force_italic: false,
             force_bold: false,
-            indent: 28.0,
-            space_before: body * 0.4,
+            indent: 28.0 * text_scale,
+            space_before: body * 0.4 * text_scale,
             fixed_height: None,
         },
         Block::Math { .. } => BlockStyle {
@@ -221,7 +226,7 @@ fn style_for(block: &Block, body: f32) -> BlockStyle {
             force_italic: false,
             force_bold: false,
             indent: 0.0,
-            space_before: body,
+            space_before: body * text_scale,
             fixed_height: None,
         },
         Block::Separator => BlockStyle {
@@ -230,8 +235,8 @@ fn style_for(block: &Block, body: f32) -> BlockStyle {
             force_italic: false,
             force_bold: false,
             indent: 0.0,
-            space_before: body * 1.2,
-            fixed_height: Some(body * 1.6),
+            space_before: body * 1.2 * text_scale,
+            fixed_height: Some(body * 1.6 * text_scale),
         },
     }
 }
@@ -346,30 +351,28 @@ fn visual_order(words: &[Word], start: usize, end: usize, bidi: &BidiInfo<'_>) -
 
 /// Append the `Word` for a math span to `words`, advancing `canon`/`char_pos`
 /// and widening `line_height` to fit the formula.
-#[allow(clippy::too_many_arguments)]
 fn push_math_word(
-    words: &mut Vec<Word>,
+    built: &mut BuiltWords,
     expr: &ui::math::MathExpr,
     span: &Span,
-    canon: &mut String,
-    char_pos: &mut usize,
-    tr: &mut TextRenderer,
-    st: &BlockStyle,
-    line_height: &mut f32,
+    text: &mut TextRenderer,
+    style: &BlockStyle,
 ) {
     let space_before = span.space_before;
-    if !canon.is_empty() && space_before {
-        canon.push(' ');
-        *char_pos += 1;
+    if !built.canonical_text.is_empty() && space_before {
+        built.canonical_text.push(' ');
+        built.char_count += 1;
     }
-    let source_byte_start = canon.len();
-    let char_start = *char_pos;
+    let source_byte_start = built.canonical_text.len();
+    let char_start = built.char_count;
     let char_len = span.text.chars().count();
-    canon.push_str(&span.text);
-    *char_pos += char_len;
-    let math_layout = ui::math::layout(&expr.root, tr, st.size);
-    *line_height = line_height.max(math_layout.height as f32 + st.size * 0.18);
-    words.push(Word {
+    built.canonical_text.push_str(&span.text);
+    built.char_count += char_len;
+    let math_layout = ui::math::layout(&expr.root, text, style.size);
+    built.line_height = built
+        .line_height
+        .max(math_layout.height as f32 + style.size * 0.18);
+    built.words.push(Word {
         text: span.text.clone(),
         bold: false,
         italic: false,
@@ -432,7 +435,6 @@ fn word_break_boundaries(w: &str, settings: &Settings, language: &str) -> WordBr
 
 /// Width of one protruding character scaled by `fraction` (0 skips the
 /// measurement entirely — protrusion is the exception, not the rule).
-#[allow(clippy::too_many_arguments)]
 fn protrusion_width(
     character: char,
     fraction: f32,
@@ -470,86 +472,165 @@ struct WordFlags {
     mono: bool,
 }
 
-/// Measure and push the single fragment `w[byte_start..byte_end]` as a
-/// `Word`. Returns its char count, so the caller can advance `chars_before`.
-#[allow(clippy::too_many_arguments)]
-fn push_one_fragment(
-    words: &mut Vec<Word>,
-    w: &str,
-    byte_start: usize,
-    byte_end: usize,
-    fragment_index: usize,
-    chars_before: usize,
+struct FragmentBuildCtx<'a> {
+    words: &'a mut Vec<Word>,
+    style: &'a BlockStyle,
+    settings: &'a Settings,
+    language: &'a str,
+    text: &'a mut TextRenderer,
+}
+
+struct SourceWord<'a> {
+    text: &'a str,
     char_start: usize,
     source_byte_start: usize,
     flags: WordFlags,
+    family: &'a FontChoice,
+}
+
+#[derive(Clone, Copy)]
+struct FragmentSlice {
+    byte_start: usize,
+    byte_end: usize,
+    index: usize,
+    chars_before: usize,
+}
+
+struct WordBuildInput<'a> {
+    block: &'a Block,
+    style: &'a BlockStyle,
+    settings: &'a Settings,
+    language: &'a str,
+    base_family: &'a FontChoice,
+    base_mono: bool,
+    line_height: f32,
+}
+
+struct BuiltWords {
+    words: Vec<Word>,
+    canonical_text: String,
+    char_count: usize,
+    line_height: f32,
+}
+
+struct BlockComposition<'a> {
+    words: &'a [Word],
+    canonical_text: &'a str,
+    style: &'a BlockStyle,
+    settings: &'a Settings,
+    content_width: f32,
+    base_family: &'a FontChoice,
+    block_top: f32,
+    line_height: f32,
+}
+
+struct LineComposition<'a, 'text> {
+    words: &'a [Word],
+    bidi: &'a BidiInfo<'text>,
+    style: &'a BlockStyle,
+    base_family: &'a FontChoice,
+    space_width: f32,
+    line_height: f32,
+    text: &'a mut TextRenderer,
+}
+
+#[derive(Clone, Copy)]
+struct LinePlacement {
+    paragraph_rtl: bool,
+    text_width: f32,
+    justify: bool,
+    block_top: f32,
+}
+
+/// Measure and push the single fragment `w[byte_start..byte_end]` as a
+/// `Word`. Returns its char count, so the caller can advance `chars_before`.
+fn push_one_fragment(
+    ctx: &mut FragmentBuildCtx<'_>,
+    source: &SourceWord<'_>,
+    slice: FragmentSlice,
     breaks: &WordBreaks,
     hyphen_width: f32,
-    st: &BlockStyle,
-    settings: &Settings,
-    tr: &mut TextRenderer,
-    word_family: &FontChoice,
 ) -> usize {
     let WordFlags {
         space_before,
         bold,
         italic,
         mono,
-    } = flags;
-    let fragment = w.get(byte_start..byte_end).unwrap_or_default();
+    } = source.flags;
+    let fragment = source
+        .text
+        .get(slice.byte_start..slice.byte_end)
+        .unwrap_or_default();
     let hyphen_break_before =
-        fragment_index != 0 && breaks.hyphen.binary_search(&byte_start).is_ok();
+        slice.index != 0 && breaks.hyphen.binary_search(&slice.byte_start).is_ok();
     let natural_break_before =
-        fragment_index != 0 && breaks.unicode.binary_search(&byte_start).is_ok();
-    let stretch_before = if natural_break_before && settings.composition.justified() {
-        script_stretch_before(w, byte_start, st.size)
+        slice.index != 0 && breaks.unicode.binary_search(&slice.byte_start).is_ok();
+    let stretch_before = if natural_break_before && ctx.settings.composition.justified() {
+        script_stretch_before(source.text, slice.byte_start, ctx.style.size)
     } else {
         0.0
     };
     let fragment_chars = fragment.chars().count();
-    let fragment_width = tr
-        .measure_font(fragment, st.size, None, weight(bold), italic, word_family)
+    let fragment_width = ctx
+        .text
+        .measure_font(
+            fragment,
+            ctx.style.size,
+            None,
+            weight(bold),
+            italic,
+            source.family,
+        )
         .0;
-    let end_protrusion = if byte_end == w.len() {
+    let end_protrusion = if slice.byte_end == source.text.len() {
         fragment.chars().last().map_or(0.0, |character| {
-            let fraction = if settings.composition.justified() {
+            let fraction = if ctx.settings.composition.justified() {
                 punctuation_protrusion(character)
             } else {
                 0.0
             };
-            protrusion_width(character, fraction, st, bold, italic, tr, word_family)
+            protrusion_width(
+                character,
+                fraction,
+                ctx.style,
+                bold,
+                italic,
+                ctx.text,
+                source.family,
+            )
         })
     } else {
         0.0
     };
-    let start_protrusion =
-        if settings.composition.justified() && fragment_index == 0 && breaks.opening_fraction > 0.0
-        {
-            fragment.chars().next().map_or(0.0, |character| {
-                protrusion_width(
-                    character,
-                    breaks.opening_fraction,
-                    st,
-                    bold,
-                    italic,
-                    tr,
-                    word_family,
-                )
-            })
-        } else {
-            0.0
-        };
-    words.push(Word {
+    let start_protrusion = if ctx.settings.composition.justified()
+        && slice.index == 0
+        && breaks.opening_fraction > 0.0
+    {
+        fragment.chars().next().map_or(0.0, |character| {
+            protrusion_width(
+                character,
+                breaks.opening_fraction,
+                ctx.style,
+                bold,
+                italic,
+                ctx.text,
+                source.family,
+            )
+        })
+    } else {
+        0.0
+    };
+    ctx.words.push(Word {
         text: fragment.to_string(),
         bold,
         italic,
         mono,
         math: None,
         w: fragment_width,
-        space_before: fragment_index == 0 && space_before,
-        char_start: char_start + chars_before,
+        space_before: slice.index == 0 && space_before,
+        char_start: source.char_start + slice.chars_before,
         char_len: fragment_chars,
-        source_byte_start: source_byte_start + byte_start,
+        source_byte_start: source.source_byte_start + slice.byte_start,
         hyphen_break_before,
         hyphen_width_before: if hyphen_break_before {
             hyphen_width
@@ -567,49 +648,33 @@ fn push_one_fragment(
 
 /// Split one whitespace-separated source word `w` into hyphenation/line-break
 /// fragments and push each as a `Word` (measured, with protrusion).
-#[allow(clippy::too_many_arguments)]
-fn push_word_fragments(
-    words: &mut Vec<Word>,
-    w: &str,
-    char_start: usize,
-    source_byte_start: usize,
-    flags: WordFlags,
-    st: &BlockStyle,
-    settings: &Settings,
-    language: &str,
-    tr: &mut TextRenderer,
-    word_family: &FontChoice,
-) {
-    let breaks = word_break_boundaries(w, settings, language);
-    let hyphen_width = tr
+fn push_word_fragments(ctx: &mut FragmentBuildCtx<'_>, source: &SourceWord<'_>) {
+    let breaks = word_break_boundaries(source.text, ctx.settings, ctx.language);
+    let hyphen_width = ctx
+        .text
         .measure_font(
             "-",
-            st.size,
+            ctx.style.size,
             None,
-            weight(flags.bold),
-            flags.italic,
-            word_family,
+            weight(source.flags.bold),
+            source.flags.italic,
+            source.family,
         )
         .0;
     let mut byte_start = 0;
     let mut chars_before = 0;
     for (fragment_index, &byte_end) in breaks.boundaries.iter().enumerate() {
         let fragment_chars = push_one_fragment(
-            words,
-            w,
-            byte_start,
-            byte_end,
-            fragment_index,
-            chars_before,
-            char_start,
-            source_byte_start,
-            flags,
+            ctx,
+            source,
+            FragmentSlice {
+                byte_start,
+                byte_end,
+                index: fragment_index,
+                chars_before,
+            },
             &breaks,
             hyphen_width,
-            st,
-            settings,
-            tr,
-            word_family,
         );
         byte_start = byte_end;
         chars_before += fragment_chars;
@@ -621,113 +686,86 @@ fn push_word_fragments(
 /// span inherits the span's `space_before`; later words are
 /// whitespace-separated by construction. Widens `*line_height` to fit any
 /// inline math.
-#[allow(clippy::too_many_arguments)]
-fn build_words(
-    block: &Block,
-    st: &BlockStyle,
-    settings: &Settings,
-    language: &str,
-    base_family: &FontChoice,
-    base_mono: bool,
-    tr: &mut TextRenderer,
-    line_height: &mut f32,
-) -> (Vec<Word>, String, usize) {
-    let mut words: Vec<Word> = Vec::new();
-    let mut canon = String::new();
-    let mut char_pos = 0usize;
-    for span in block.spans() {
-        let bold = span.bold || st.force_bold;
-        let italic = span.italic || st.force_italic;
-        let mono = span.code || base_mono;
+fn build_words(text: &mut TextRenderer, input: &WordBuildInput<'_>) -> BuiltWords {
+    let mut built = BuiltWords {
+        words: Vec::new(),
+        canonical_text: String::new(),
+        char_count: 0,
+        line_height: input.line_height,
+    };
+    for span in input.block.spans() {
+        let bold = span.bold || input.style.force_bold;
+        let italic = span.italic || input.style.force_italic;
+        let mono = span.code || input.base_mono;
         let word_family = if mono {
             &FontChoice::Monospace
         } else {
-            base_family
+            input.base_family
         };
         if let Some(expr) = &span.math {
-            push_math_word(
-                &mut words,
-                expr,
-                span,
-                &mut canon,
-                &mut char_pos,
-                tr,
-                st,
-                line_height,
-            );
+            push_math_word(&mut built, expr, span, text, input.style);
             continue;
         }
         for (wi, w) in span.text.split_whitespace().enumerate() {
             let space_before = if wi == 0 { span.space_before } else { true };
             // A separating space is one canonical char between words.
-            if !canon.is_empty() && space_before {
-                canon.push(' ');
-                char_pos += 1;
+            if !built.canonical_text.is_empty() && space_before {
+                built.canonical_text.push(' ');
+                built.char_count += 1;
             }
-            let source_byte_start = canon.len();
-            let char_start = char_pos;
+            let source_byte_start = built.canonical_text.len();
+            let char_start = built.char_count;
             let char_len = w.chars().count();
-            canon.push_str(w);
-            char_pos += char_len;
+            built.canonical_text.push_str(w);
+            built.char_count += char_len;
             push_word_fragments(
-                &mut words,
-                w,
-                char_start,
-                source_byte_start,
-                WordFlags {
-                    space_before,
-                    bold,
-                    italic,
-                    mono,
+                &mut FragmentBuildCtx {
+                    words: &mut built.words,
+                    style: input.style,
+                    settings: input.settings,
+                    language: input.language,
+                    text,
                 },
-                st,
-                settings,
-                language,
-                tr,
-                word_family,
+                &SourceWord {
+                    text: w,
+                    char_start,
+                    source_byte_start,
+                    flags: WordFlags {
+                        space_before,
+                        bold,
+                        italic,
+                        mono,
+                    },
+                    family: word_family,
+                },
             );
         }
     }
-    (words, canon, char_pos)
+    built
 }
 
 /// Build the `LineRun`s for one composed line, in visual order, ligating
 /// adjacent fragments that rejoin their source word. Returns the runs and the
 /// final horizontal cursor position (used by the caller for RTL alignment).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "threads the same per-line composition context (words/bidi/style/font/glue-width) \
-              as its sibling compose_one_line/compose_block_lines, which carry the same allow; \
-              splitting it into a context struct would only move the coupling, not remove it"
-)]
-fn line_runs(
-    words: &[Word],
-    bidi: &BidiInfo<'_>,
-    line: &ComposedLine,
-    line_height: f32,
-    st: &BlockStyle,
-    base_family: &FontChoice,
-    space_w: f32,
-    tr: &mut TextRenderer,
-) -> (Vec<LineRun>, f32) {
+fn line_runs(ctx: &mut LineComposition<'_, '_>, line: &ComposedLine) -> (Vec<LineRun>, f32) {
     let mut runs: Vec<LineRun> = Vec::with_capacity(line.end - line.start);
     let mut x = 0.0;
-    let order = visual_order(words, line.start, line.end, bidi);
+    let order = visual_order(ctx.words, line.start, line.end, ctx.bidi);
     let mut previous_index = None;
     for (offset, word_index) in order.into_iter().enumerate() {
-        let Some(word) = words.get(word_index) else {
+        let Some(word) = ctx.words.get(word_index) else {
             continue; // an out-of-range order index: skip (should not happen)
         };
         if offset == 0 {
             x -= word.start_protrusion * line.glyph_scale;
         } else if let Some(previous) = previous_index
-            && let Some(boundary) = words.get(word_index.max(previous))
+            && let Some(boundary) = ctx.words.get(word_index.max(previous))
         {
             // Glue belongs to the logical boundary between visually adjacent
             // items. In an RTL run that boundary is carried by the item with
             // the greater logical index.
             if boundary.space_before {
-                x += space_w * line.glue_scale;
+                x += ctx.space_width * line.glue_scale;
             } else if boundary.natural_break_before {
                 let adjustment = if line.adjustment_ratio >= 0.0 {
                     boundary.stretch_before * line.adjustment_ratio
@@ -755,18 +793,21 @@ fn line_runs(
             let family = if word.mono {
                 &FontChoice::Monospace
             } else {
-                base_family
+                ctx.base_family
             };
             x = previous.x
-                + tr.measure_font(
-                    &previous.text,
-                    st.size,
-                    None,
-                    weight(word.bold),
-                    word.italic,
-                    family,
-                )
-                .0 * line.glyph_scale;
+                + ctx
+                    .text
+                    .measure_font(
+                        &previous.text,
+                        ctx.style.size,
+                        None,
+                        weight(word.bold),
+                        word.italic,
+                        family,
+                    )
+                    .0
+                    * line.glyph_scale;
             previous_index = Some(word_index);
             continue;
         }
@@ -775,7 +816,7 @@ fn line_runs(
             y: word
                 .math
                 .as_ref()
-                .map_or_else(|| 0.0, |math| (line_height - math.height as f32) * 0.5),
+                .map_or_else(|| 0.0, |math| (ctx.line_height - math.height as f32) * 0.5),
             text: word.text.clone(),
             display_text: word.text.clone(),
             bold: word.bold,
@@ -794,27 +835,17 @@ fn line_runs(
 /// Build one visually-ordered `LaidLine` from a composed line's word range: its
 /// runs, a trailing discretionary hyphen when the next word continues past
 /// this line, and right-alignment for a fully-consumed RTL line.
-#[allow(clippy::too_many_arguments)]
 fn compose_one_line(
-    words: &[Word],
-    bidi: &BidiInfo<'_>,
+    ctx: &mut LineComposition<'_, '_>,
     line: &ComposedLine,
     line_idx: usize,
-    paragraph_rtl: bool,
-    text_width: f32,
-    justify: bool,
-    line_height: f32,
-    block_top: f32,
-    st: &BlockStyle,
-    base_family: &FontChoice,
-    space_w: f32,
-    tr: &mut TextRenderer,
+    placement: LinePlacement,
 ) -> LaidLine {
-    let (mut runs, x) = line_runs(words, bidi, line, line_height, st, base_family, space_w, tr);
+    let (mut runs, x) = line_runs(ctx, line);
 
-    if let Some(next_word) = words.get(line.end)
+    if let Some(next_word) = ctx.words.get(line.end)
         && next_word.hyphen_break_before
-        && let Some(source) = words.get(line.end - 1)
+        && let Some(source) = ctx.words.get(line.end - 1)
         && let Some(last) = runs.iter_mut().find(|run| {
             run.char_start <= source.char_start
                 && run.char_start + run.char_len == source.char_start + source.char_len
@@ -822,17 +853,17 @@ fn compose_one_line(
     {
         last.display_text.push('-');
     }
-    if paragraph_rtl && (line.end == words.len() || !justify) {
-        let offset = (text_width - x).max(0.0);
+    if placement.paragraph_rtl && (line.end == ctx.words.len() || !placement.justify) {
+        let offset = (placement.text_width - x).max(0.0);
         for run in &mut runs {
             run.x += offset;
         }
     }
     LaidLine {
-        y: block_top + line_idx as f32 * line_height,
+        y: placement.block_top + line_idx as f32 * ctx.line_height,
         glyph_scale: line.glyph_scale,
         adjustment_ratio: line.adjustment_ratio,
-        rtl: paragraph_rtl,
+        rtl: placement.paragraph_rtl,
         runs,
     }
 }
@@ -842,30 +873,23 @@ fn compose_one_line(
 /// quotations use adjustable inter-word glue; headings and lists retain
 /// natural ragged spacing while still benefiting from paragraph-wide break
 /// selection.
-#[allow(clippy::too_many_arguments)]
 fn compose_block_lines(
-    words: &[Word],
-    canon: &str,
-    st: &BlockStyle,
-    settings: &Settings,
-    content_w: f32,
-    base_family: &FontChoice,
-    tr: &mut TextRenderer,
-    block_top: f32,
-    line_height: f32,
+    text: &mut TextRenderer,
+    composition: &BlockComposition<'_>,
 ) -> Vec<LaidLine> {
-    let text_width = (content_w - st.indent).max(40.0);
-    let space_w = measure_space(tr, st.size, base_family);
-    let bidi = BidiInfo::new(canon, None);
+    let text_width = (composition.content_width - composition.style.indent).max(40.0);
+    let space_width = measure_space(text, composition.style.size, composition.base_family);
+    let bidi = BidiInfo::new(composition.canonical_text, None);
     let paragraph_rtl = bidi
         .paragraphs
         .first()
         .is_some_and(|paragraph| paragraph.level.is_rtl());
-    let boxes: Vec<_> = words
+    let boxes: Vec<_> = composition
+        .words
         .iter()
         .map(|word| ParagraphBox {
             width: word.w,
-            glue_before: if word.space_before { space_w } else { 0.0 },
+            glue_before: if word.space_before { space_width } else { 0.0 },
             stretch_before: word.stretch_before,
             shrink_before: word.shrink_before,
             break_before: word.space_before
@@ -878,37 +902,41 @@ fn compose_block_lines(
         })
         .collect();
     let mut options = ParagraphOptions::new(text_width);
-    options.justify = settings.composition.justified()
-        && matches!(st.kind, LayoutKind::Paragraph | LayoutKind::Quote);
+    options.justify = composition.settings.composition.justified()
+        && matches!(
+            composition.style.kind,
+            LayoutKind::Paragraph | LayoutKind::Quote
+        );
     // At accessibility sizes, favour predictable natural glyph metrics over
     // the subtle expansion used for book-like justification. On a narrow
     // phone one expanded line can otherwise exceed its measured paint box,
     // leaving the final word visibly clipped instead of reflowing.
-    if !settings.composition.justified() || settings.font_scale >= 1.35 {
+    if !composition.settings.composition.justified() || composition.settings.font_scale >= 1.35 {
         options.max_glyph_expansion = 0.0;
     }
     let composed = compose_paragraph(&boxes, options);
     let mut lines: Vec<LaidLine> = Vec::with_capacity(composed.len());
+    let placement = LinePlacement {
+        paragraph_rtl,
+        text_width,
+        justify: options.justify,
+        block_top: composition.block_top,
+    };
+    let mut line_ctx = LineComposition {
+        words: composition.words,
+        bidi: &bidi,
+        style: composition.style,
+        base_family: composition.base_family,
+        space_width,
+        line_height: composition.line_height,
+        text,
+    };
     for (line_idx, line) in composed.iter().enumerate() {
-        lines.push(compose_one_line(
-            words,
-            &bidi,
-            line,
-            line_idx,
-            paragraph_rtl,
-            text_width,
-            options.justify,
-            line_height,
-            block_top,
-            st,
-            base_family,
-            space_w,
-            tr,
-        ));
+        lines.push(compose_one_line(&mut line_ctx, line, line_idx, placement));
     }
     if lines.is_empty() {
         lines.push(LaidLine {
-            y: block_top,
+            y: composition.block_top,
             glyph_scale: 1.0,
             adjustment_ratio: 0.0,
             rtl: paragraph_rtl,
@@ -920,36 +948,31 @@ fn compose_block_lines(
 
 /// A laid-out `Block::Math` — the formula centered in the content width, with
 /// vertical breathing room scaled off the body size.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each parameter feeds a distinct piece of the geometry below (index/source for the \
-              block, y/body/content_w for its measurements, tr/st/expr for the math layout \
-              call); grouping any subset would be arbitrary rather than a real simplification"
-)]
-fn laid_math_block(
+struct MathBlockInput<'a> {
     index: usize,
-    y: f32,
-    expr: &ui::math::MathExpr,
-    source: &str,
-    tr: &mut TextRenderer,
-    st: &BlockStyle,
-    body: f32,
-    content_w: f32,
-) -> LaidBlock {
-    let math_layout = ui::math::layout(&expr.root, tr, st.size);
-    let vertical_pad = body * 0.35;
+    top: f32,
+    expression: &'a ui::math::MathExpr,
+    source: &'a str,
+    style: &'a BlockStyle,
+    body_size: f32,
+    content_width: f32,
+}
+
+fn laid_math_block(text: &mut TextRenderer, input: &MathBlockInput<'_>) -> LaidBlock {
+    let math_layout = ui::math::layout(&input.expression.root, text, input.style.size);
+    let vertical_pad = input.body_size * 0.35;
     let height = math_layout.height as f32 + vertical_pad * 2.0;
-    let math_x = ((content_w - math_layout.width as f32) * 0.5).max(0.0);
+    let math_x = ((input.content_width - math_layout.width as f32) * 0.5).max(0.0);
     LaidBlock {
-        index,
+        index: input.index,
         kind: LayoutKind::Math,
-        top: y,
-        bottom: y + height,
-        size: st.size,
+        top: input.top,
+        bottom: input.top + height,
+        size: input.style.size,
         line_height: height,
         indent: 0.0,
         lines: vec![LaidLine {
-            y,
+            y: input.top,
             glyph_scale: 1.0,
             adjustment_ratio: 0.0,
             rtl: false,
@@ -961,8 +984,8 @@ fn laid_math_block(
             x: math_x,
             y_offset: vertical_pad,
         }),
-        text: source.to_string(),
-        char_len: source.chars().count(),
+        text: input.source.to_string(),
+        char_len: input.source.chars().count(),
     }
 }
 
@@ -995,33 +1018,50 @@ fn laid_separator_block(index: usize, y: f32, st: &BlockStyle) -> LaidBlock {
 /// the reader's chosen body face (serif / a named installed family / sans);
 /// `font_mult` scales the nominal body size for that face; `font_sig` feeds the
 /// layout cache key so a font change relays out.
-// Layout entry point: chapter/text-renderer/box/typography params are the
-// natural, minimal parameter set for the pagination engine.
-#[allow(clippy::too_many_arguments)]
-pub fn layout_chapter(
-    tr: &mut TextRenderer,
-    blocks: &[Block],
-    content_w: f32,
-    content_h: f32,
-    settings: &Settings,
-    chapter: usize,
-    language: &str,
-    base_family: &FontChoice,
-    font_mult: f32,
-    font_sig: u64,
-) -> ChapterLayout {
-    let key = LayoutKey::new(chapter, content_w, content_h, settings, font_sig);
-    let body = settings.body_size_with(font_mult);
-    let base_mono = matches!(base_family, FontChoice::Monospace);
-    let mut laid: Vec<LaidBlock> = Vec::with_capacity(blocks.len());
+pub struct ChapterLayoutRequest<'a> {
+    pub blocks: &'a [Block],
+    pub content_width: f32,
+    pub content_height: f32,
+    pub settings: &'a Settings,
+    pub chapter: usize,
+    pub language: &'a str,
+    pub base_family: &'a FontChoice,
+    pub font_multiplier: f32,
+    pub font_signature: u64,
+}
+
+pub fn layout_chapter(tr: &mut TextRenderer, request: &ChapterLayoutRequest<'_>) -> ChapterLayout {
+    let text_scale = tr.text_scale();
+    let key = LayoutKey::new(
+        request.chapter,
+        request.content_width,
+        request.content_height,
+        request.settings,
+        request.font_signature,
+        text_scale,
+    );
+    let body = request.settings.body_size_with(request.font_multiplier);
+    let base_mono = matches!(request.base_family, FontChoice::Monospace);
+    let mut laid: Vec<LaidBlock> = Vec::with_capacity(request.blocks.len());
     let mut y = 0.0f32;
 
-    for (index, block) in blocks.iter().enumerate() {
-        let st = style_for(block, body);
+    for (index, block) in request.blocks.iter().enumerate() {
+        let st = style_for(block, body, text_scale);
         y += st.space_before;
 
         if let Block::Math { expr, source, .. } = block {
-            let laid_block = laid_math_block(index, y, expr, source, tr, &st, body, content_w);
+            let laid_block = laid_math_block(
+                tr,
+                &MathBlockInput {
+                    index,
+                    top: y,
+                    expression: expr,
+                    source,
+                    style: &st,
+                    body_size: body,
+                    content_width: request.content_width,
+                },
+            );
             y = laid_block.bottom;
             laid.push(laid_block);
             continue;
@@ -1034,29 +1074,33 @@ pub fn layout_chapter(
             continue;
         }
 
-        let mut line_height = st.size * 1.25 * settings.line_spacing;
-        let (words, canon, char_pos) = build_words(
-            block,
-            &st,
-            settings,
-            language,
-            base_family,
-            base_mono,
+        let built = build_words(
             tr,
-            &mut line_height,
+            &WordBuildInput {
+                block,
+                style: &st,
+                settings: request.settings,
+                language: request.language,
+                base_family: request.base_family,
+                base_mono,
+                line_height: st.size * 1.25 * request.settings.line_spacing * text_scale,
+            },
         );
+        let line_height = built.line_height;
 
         let block_top = y;
         let lines = compose_block_lines(
-            &words,
-            &canon,
-            &st,
-            settings,
-            content_w,
-            base_family,
             tr,
-            block_top,
-            line_height,
+            &BlockComposition {
+                words: &built.words,
+                canonical_text: &built.canonical_text,
+                style: &st,
+                settings: request.settings,
+                content_width: request.content_width,
+                base_family: request.base_family,
+                block_top,
+                line_height,
+            },
         );
 
         let bullet = match block {
@@ -1081,14 +1125,14 @@ pub fn layout_chapter(
             lines,
             bullet,
             math: None,
-            char_len: char_pos,
-            text: canon,
+            char_len: built.char_count,
+            text: built.canonical_text,
         });
         y += height;
     }
 
     let total_height = y;
-    let pages = paginate(&laid, content_h);
+    let pages = paginate(&laid, request.content_height);
 
     ChapterLayout {
         blocks: laid,
@@ -1230,6 +1274,31 @@ mod tests {
         }
     }
 
+    fn test_layout(
+        text: &mut TextRenderer,
+        blocks: &[Block],
+        content_width: f32,
+        content_height: f32,
+        settings: &Settings,
+        language: &str,
+        base_family: &FontChoice,
+    ) -> ChapterLayout {
+        layout_chapter(
+            text,
+            &ChapterLayoutRequest {
+                blocks,
+                content_width,
+                content_height,
+                settings,
+                chapter: 0,
+                language,
+                base_family,
+                font_multiplier: 1.0,
+                font_signature: 0,
+            },
+        )
+    }
+
     #[test]
     fn layout_produces_pages_and_lines() {
         let mut tr = TextRenderer::new();
@@ -1249,17 +1318,14 @@ mod tests {
                   couple of times within the narrow measure we hand the engine.",
             ),
         ];
-        let layout = layout_chapter(
+        let layout = test_layout(
             &mut tr,
             &blocks,
             360.0,
             220.0,
             &Settings::default(),
-            0,
             "en-US",
             &FontChoice::SansSerif,
-            1.0,
-            0,
         );
         assert!(layout.total_height > 0.0);
         assert!(layout.page_count() >= 1);
@@ -1288,7 +1354,7 @@ mod tests {
                 }],
             }],
         };
-        let layout = layout_chapter(
+        let layout = test_layout(
             &mut tr,
             &[Block::Math {
                 expr,
@@ -1298,11 +1364,8 @@ mod tests {
             420.0,
             500.0,
             &Settings::default(),
-            0,
             "en-US",
             &FontChoice::Serif,
-            1.0,
-            0,
         );
         let block = &layout.blocks[0];
         let math = block.math.as_ref().expect("shared math layout attached");
@@ -1322,17 +1385,14 @@ mod tests {
         let mut tr = TextRenderer::new();
         let big = "word ".repeat(400);
         let blocks = vec![para(&big)];
-        let layout = layout_chapter(
+        let layout = test_layout(
             &mut tr,
             &blocks,
             300.0,
             160.0,
             &Settings::default(),
-            0,
             "en-US",
             &FontChoice::SansSerif,
-            1.0,
-            0,
         );
         assert!(layout.page_count() >= 3, "lots of text -> several pages");
         // Page starts strictly increase.
@@ -1341,22 +1401,27 @@ mod tests {
 
     #[test]
     fn layout_key_changes_with_settings_and_font() {
-        let base = LayoutKey::new(0, 300.0, 200.0, &Settings::default(), 0);
+        let base = LayoutKey::new(0, 300.0, 200.0, &Settings::default(), 0, 1.0);
         let bigger_font = Settings {
             font_scale: 1.4,
             ..Default::default()
         };
-        let scaled = LayoutKey::new(0, 300.0, 200.0, &bigger_font, 0);
+        let scaled = LayoutKey::new(0, 300.0, 200.0, &bigger_font, 0, 1.0);
         assert_ne!(base, scaled, "font scale change relays out");
         // A different font signature (family/size-mult) also relays out.
-        let font_changed = LayoutKey::new(0, 300.0, 200.0, &Settings::default(), 99);
+        let font_changed = LayoutKey::new(0, 300.0, 200.0, &Settings::default(), 99, 1.0);
         assert_ne!(base, font_changed, "font change relays out");
         let ragged = Settings {
             composition: CompositionStyle::Ragged,
             ..Default::default()
         };
-        let ragged_key = LayoutKey::new(0, 300.0, 200.0, &ragged, 0);
+        let ragged_key = LayoutKey::new(0, 300.0, 200.0, &ragged, 0, 1.0);
         assert_ne!(base, ragged_key, "composition change relays out");
+        let accessibility_scaled = LayoutKey::new(0, 300.0, 200.0, &Settings::default(), 0, 2.0);
+        assert_ne!(
+            base, accessibility_scaled,
+            "host accessibility text scale relays out"
+        );
     }
 
     #[test]
@@ -1366,7 +1431,7 @@ mod tests {
             composition: CompositionStyle::Ragged,
             ..Default::default()
         };
-        let layout = layout_chapter(
+        let layout = test_layout(
             &mut tr,
             &[para(
                 "“Characteristically typographic paragraphs demonstrate hyphenation and spacing.”",
@@ -1374,11 +1439,8 @@ mod tests {
             145.0,
             600.0,
             &settings,
-            0,
             "en-US",
             &FontChoice::Serif,
-            1.0,
-            0,
         );
         let lines = &layout.blocks[0].lines;
         assert!(
@@ -1410,17 +1472,14 @@ mod tests {
     fn selection_char_offsets_are_assigned_across_words() {
         let mut tr = TextRenderer::new();
         let blocks = vec![para("alpha beta gamma")];
-        let layout = layout_chapter(
+        let layout = test_layout(
             &mut tr,
             &blocks,
             600.0,
             400.0,
             &Settings::default(),
-            0,
             "en-US",
             &FontChoice::SansSerif,
-            1.0,
-            0,
         );
         let b = &layout.blocks[0];
         assert_eq!(
@@ -1440,17 +1499,14 @@ mod tests {
     fn language_aware_hyphenation_paints_only_the_exercised_break() {
         let mut tr = TextRenderer::new();
         let blocks = vec![para("characteristically")];
-        let layout = layout_chapter(
+        let layout = test_layout(
             &mut tr,
             &blocks,
             105.0,
             400.0,
             &Settings::default(),
-            0,
             "en-US",
             &FontChoice::Serif,
-            1.0,
-            0,
         );
         let block = &layout.blocks[0];
         assert!(block.lines.len() >= 2, "the long word should hyphenate");
@@ -1477,17 +1533,14 @@ mod tests {
     fn opening_punctuation_hangs_into_the_margin_without_changing_source() {
         let mut tr = TextRenderer::new();
         let blocks = vec![para("“Typography begins at the edge.”")];
-        let layout = layout_chapter(
+        let layout = test_layout(
             &mut tr,
             &blocks,
             600.0,
             400.0,
             &Settings::default(),
-            0,
             "en-US",
             &FontChoice::Serif,
-            1.0,
-            0,
         );
         let block = &layout.blocks[0];
         let line = &block.lines[0];
@@ -1507,17 +1560,14 @@ mod tests {
     fn unspaced_cjk_uses_unicode_breaks_and_inter_character_justification() {
         let mut tr = TextRenderer::new();
         let text = "天地玄黃宇宙洪荒日月盈昃辰宿列張寒來暑往秋收冬藏";
-        let layout = layout_chapter(
+        let layout = test_layout(
             &mut tr,
             &[para(text)],
             120.0,
             500.0,
             &Settings::default(),
-            0,
             "zh-Hant",
             &FontChoice::Serif,
-            1.0,
-            0,
         );
         let block = &layout.blocks[0];
         assert!(block.lines.len() >= 2, "CJK wraps without ASCII spaces");
@@ -1533,17 +1583,14 @@ mod tests {
     #[test]
     fn rtl_paragraphs_use_visual_bidi_order_and_right_align_the_final_line() {
         let mut tr = TextRenderer::new();
-        let layout = layout_chapter(
+        let layout = test_layout(
             &mut tr,
             &[para("مرحبا بالعالم 123")],
             500.0,
             400.0,
             &Settings::default(),
-            0,
             "ar",
             &FontChoice::Serif,
-            1.0,
-            0,
         );
         let line = &layout.blocks[0].lines[0];
         assert!(line.rtl);

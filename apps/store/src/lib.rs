@@ -1,15 +1,15 @@
-//! Library root for the qOS `store` — the app store, itself a qOS app.
+//! Library root for the Tilo `store` — the app store, itself a Tilo app.
 //!
 //! The store surfaces two kinds of installable software side-by-side:
 //!
-//!   * **qOS apps** listed by any registry the user has configured. Each
+//!   * **Tilo apps** listed by any registry the user has configured. Each
 //!     entry carries an ed25519 publisher signature and a BLAKE3 root
 //!     hash of the `.qpkg`, so the client can verify identity + integrity
-//!     before running `qos-install`.
+//!     before running `tilo-install`.
 //!   * **Legacy Flatpak apps** fetched from Flathub's public JSON API.
 //!     Actions cross the capability-scoped app-host service.
 //!
-//! Filter chips (`All | qOS | Flatpak | Installed`), category chips and a
+//! Filter chips (`All | Tilo | Flatpak | Installed`), category chips and a
 //! search box sit above a scrolling list of cards. A detail sheet slides
 //! in from the right when a card is clicked. Selection, filters and the
 //! search string all live in the CRDT so the UI is snapshot-restorable
@@ -19,7 +19,7 @@
 //!
 //!   * [`model`]           — [`StoreItem`], [`Source`], [`ActionKind`]
 //!     and the filter enum shared across the app.
-//!   * [`registry_client`] — HTTP client for the qOS registry protocol.
+//!   * [`registry_client`] — HTTP client for the Tilo registry protocol.
 //!   * [`flathub_client`]  — HTTP client for the Flathub JSON API.
 //!   * [`installed`]       — compatibility parser for legacy install registries.
 //!   * [`config`]          — read/write user config for configured registries.
@@ -68,6 +68,7 @@ pub mod flathub_client;
 pub mod flatpakref;
 pub mod images;
 pub mod installed;
+pub mod live;
 pub mod model;
 pub mod moderation_client;
 pub mod registry_client;
@@ -82,3 +83,10 @@ pub use flatpakref::FlatpakRef;
 pub use model::{
     ActionKind, InstalledState, SourceFilter, StoreItem, StoreItemVersion, StoreSource, StoreTrust,
 };
+
+/// Build the standard worker-backed Store root used by the desktop and SDK
+/// harnesses. The binary's deep-link route calls the same live host with its
+/// additional launch context.
+pub fn app_root() -> Box<dyn ui::widget::Widget> {
+    live::app_root()
+}

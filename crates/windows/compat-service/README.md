@@ -1,4 +1,4 @@
-# qOS Windows compatibility broker
+# Tilo Windows compatibility broker
 
 This crate implements the security-sensitive broker core and its testable
 boundary contracts. It currently provides:
@@ -6,11 +6,11 @@ boundary contracts. It currently provides:
 - deterministic catalogue resolution;
 - persistent isolated Wine/UMU capsule state and registered-program lookup;
 - a fixed Bubblewrap, Landlock, network-gate, Wayland, and GPU plan;
-- a real no-shell Bubblewrap executor with the qOS seccomp baseline for Wine;
+- a no-shell Bubblewrap executor with the Tilo seccomp baseline for Wine;
 - a trait boundary to the singleton `windows-vm` appliance;
 - explainable status DTOs for the Windows Apps UI;
 - a per-launch PipeWire/Pulse proxy: playback is always tunnelled to the
-  session sink, while a microphone source exists only for a canonical qOS
+  session sink, while a microphone source exists only for a canonical Tilo
   microphone grant; and
 - an authenticated, bounded session protocol with server-owned entry IDs; and
 - descriptor-anchored, no-follow capsule storage.
@@ -23,7 +23,7 @@ launch; the client cannot supply grants, executable or host paths, runner
 settings, or VM intent. The manager uses an empty unavailable state when the
 optional service is absent, while sample applications remain screenshot-only.
 
-Filtered network access uses the existing qOS egress gate. Audio uses a
+Filtered network access uses the existing Tilo egress gate. Audio uses a
 private, short-lived PipeWire graph per launch. The graph contains no device
 discovery: its output tunnel is the only playback path, and its input tunnel
 is created only after the compositor has granted `Device("microphone")`.

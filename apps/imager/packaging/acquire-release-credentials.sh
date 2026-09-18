@@ -11,7 +11,7 @@ trusted_path() {
   local path="$1" kind="$2" description="$3" current mode owner
   [[ "$path" = /* && ! -L "$path" ]] \
     || { printf '%s must be an absolute, non-symlink path\n' "$description" >&2; return 1; }
-  [ "$(realpath -e "$path")" = "$path" ] \
+  [ "$(realpath "$path")" = "$path" ] \
     || { printf '%s must be canonical\n' "$description" >&2; return 1; }
   case "$path" in
     "$GITHUB_WORKSPACE"/*|"$RUNNER_TEMP"/*)
@@ -64,7 +64,7 @@ trusted_path "$broker" executable 'credential broker'
 : "${ACTIONS_ID_TOKEN_REQUEST_URL:?Forgejo OIDC request URL is required}"
 : "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:?Forgejo OIDC request token is required}"
 
-lease_dir="$(mktemp -d "$RUNNER_TEMP/qos-imager-$platform.XXXXXX")"
+lease_dir="$(mktemp -d "$RUNNER_TEMP/tilo-imager-$platform.XXXXXX")"
 chmod 0700 "$lease_dir"
 lease="$lease_dir/lease.env"
 trap 'rm -rf -- "$lease_dir"' EXIT
@@ -83,22 +83,22 @@ while IFS= read -r setting || [ -n "$setting" ]; do
   name="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
   setting_count=$((setting_count + 1))
   case "$name" in
-    QOS_LINUX_SIGNER)
+    TILO_LINUX_SIGNER)
       [ -z "$linux_signer" ] \
         || { printf 'credential broker returned duplicate setting %s\n' "$name" >&2; exit 1; }
       linux_signer="$value"
       ;;
-    QOS_LINUX_VERIFY_KEY)
+    TILO_LINUX_VERIFY_KEY)
       [ -z "$linux_verify_key" ] \
         || { printf 'credential broker returned duplicate setting %s\n' "$name" >&2; exit 1; }
       linux_verify_key="$value"
       ;;
-    QOS_MAC_SIGNING_IDENTITY)
+    TILO_MAC_SIGNING_IDENTITY)
       [ -z "$mac_signing_identity" ] \
         || { printf 'credential broker returned duplicate setting %s\n' "$name" >&2; exit 1; }
       mac_signing_identity="$value"
       ;;
-    QOS_NOTARY_KEYCHAIN_PROFILE)
+    TILO_NOTARY_KEYCHAIN_PROFILE)
       [ -z "$notary_keychain_profile" ] \
         || { printf 'credential broker returned duplicate setting %s\n' "$name" >&2; exit 1; }
       notary_keychain_profile="$value"
@@ -113,7 +113,7 @@ if [ "$platform" = linux ]; then
     || { printf 'Linux broker must return exactly signer and verification-key paths\n' >&2; exit 1; }
   trusted_path "$linux_signer" executable 'Linux signer'
   trusted_path "$linux_verify_key" file 'Linux verification key'
-  printf 'QOS_LINUX_SIGNER=%s\nQOS_LINUX_VERIFY_KEY=%s\n' \
+  printf 'TILO_LINUX_SIGNER=%s\nTILO_LINUX_VERIFY_KEY=%s\n' \
     "$linux_signer" "$linux_verify_key"
 else
   [ "$setting_count" = 2 ] && [ -n "$mac_signing_identity" ] \
@@ -122,6 +122,6 @@ else
   identity_re='^[A-Za-z0-9][A-Za-z0-9 .,:()/_+-]{0,255}$'
   [[ "$mac_signing_identity" =~ $identity_re ]]
   [[ "$notary_keychain_profile" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]
-  printf 'QOS_MAC_SIGNING_IDENTITY=%s\nQOS_NOTARY_KEYCHAIN_PROFILE=%s\n' \
+  printf 'TILO_MAC_SIGNING_IDENTITY=%s\nTILO_NOTARY_KEYCHAIN_PROFILE=%s\n' \
     "$mac_signing_identity" "$notary_keychain_profile"
 fi

@@ -283,13 +283,24 @@ impl HiColor {
     }
 }
 
+/// Stable source coordinates for an annotation, independent of its identity,
+/// kind, payload, and highlight-group membership.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnnotationAnchor {
+    pub chapter: usize,
+    pub block: usize,
+    pub start: usize,
+    pub end: usize,
+    pub excerpt: String,
+}
+
 /// One annotation. The reusable anchor contract: `doc_id` (which document),
 /// `chapter` (coarse location: spine index / page / section), `block`
 /// (paragraph index), `start`/`end` (char offsets, both 0 for a
 /// [`AnnoKind::Bookmark`]), and `excerpt` (a text snapshot so the sidebar
 /// renders without re-resolving and a reflow can re-locate the anchor).
 /// Payload is `kind` + `color` + `note`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Annotation {
     pub id: Uuid,
     pub doc_id: String,
@@ -328,6 +339,16 @@ impl Annotation {
             color: HiColor::Yellow,
             created: now_ms(),
             group: id,
+        }
+    }
+
+    pub fn anchor(&self) -> AnnotationAnchor {
+        AnnotationAnchor {
+            chapter: self.chapter,
+            block: self.block,
+            start: self.start,
+            end: self.end,
+            excerpt: self.excerpt.clone(),
         }
     }
 
@@ -887,7 +908,7 @@ pub fn default_schemes() -> Vec<ColorScheme> {
 /// CRDT so collaborators see a consistent layout when reading together.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
-    /// Body font size multiplier; 1.0 == 19px base. Clamped to [0.8, 1.8].
+    /// Body font size multiplier; 1.0 == 19px base. Clamped to [0.8, 2.0].
     pub font_scale: f32,
     /// Line-height multiplier on top of the font's own 1.25. [0.95, 1.6].
     pub line_spacing: f32,
@@ -925,7 +946,7 @@ impl Default for Settings {
 
 impl Settings {
     pub const FONT_MIN: f32 = 0.8;
-    pub const FONT_MAX: f32 = 1.8;
+    pub const FONT_MAX: f32 = 2.0;
     pub const SPACING_MIN: f32 = 0.95;
     pub const SPACING_MAX: f32 = 1.6;
 

@@ -41,9 +41,9 @@ pub const FILE_MUTATION_TRANSACTION_VERSION_V2: u16 = 2;
 pub const FILE_MUTATION_TRANSACTION_VERSION_V3: u16 = 3;
 pub const MAX_TRANSACTION_PARTICIPANTS: usize = 8;
 pub const FILE_MUTATION_TRANSACTION_SIGNATURE_DOMAIN: &str =
-    "qos.collaborative-fs.file-mutation-transaction.v1";
+    "tilo.collaborative-fs.file-mutation-transaction.v1";
 pub const FILE_MUTATION_TRANSACTION_SIGNATURE_DOMAIN_V2: &str =
-    "qos.collaborative-fs.file-mutation-transaction.v2";
+    "tilo.collaborative-fs.file-mutation-transaction.v2";
 
 /// A Unix directory-entry name, preserved as the exact bytes supplied by the
 /// kernel.  The transparent byte-vector encoding is deliberately wire
@@ -1167,12 +1167,12 @@ pub enum HistoryControlOperationV1 {
 pub const HISTORY_CONTROL_VERSION: u16 = 1;
 pub const MAX_HISTORY_CONTROL_BYTES: usize = 1_024;
 /// Read-only dynamic xattr: append a version UUID to request immutable bytes.
-pub const HISTORY_PREVIEW_XATTR_PREFIX: &str = "user.qos.history-preview.";
+pub const HISTORY_PREVIEW_XATTR_PREFIX: &str = "user.tilo.history-preview.";
 /// Fits below Linux's 64 KiB xattr ceiling with room for transport overhead.
 pub const MAX_HISTORY_PREVIEW_BYTES: usize = 48 * 1024;
 /// Read-only dynamic xattr: append an open conflict UUID to request a
 /// non-committing deterministic merge classification.
-pub const MERGE_PREFLIGHT_XATTR_PREFIX: &str = "user.qos.merge-preflight.";
+pub const MERGE_PREFLIGHT_XATTR_PREFIX: &str = "user.tilo.merge-preflight.";
 pub const MERGE_PREFLIGHT_VERSION: u16 = 1;
 pub const MAX_MERGE_PREFLIGHT_BYTES: usize = 4 * 1024;
 

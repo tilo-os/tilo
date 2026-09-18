@@ -1,0 +1,20 @@
+[Unit]
+Description=Tilo graphical user session lifecycle
+Documentation=man:systemd.special(7)
+# The standard targets refuse direct manual starts by design. A desktop-owned
+# target is the supported activation root: pulling both into one transaction
+# runs graphical-session-pre services (identity) before graphical-session.
+Requires=graphical-session-pre.target graphical-session.target
+After=graphical-session-pre.target
+# qOS apps in the layered desktop package use the same per-user services as
+# the OS image. The app host and model daemons are socket-activated; eagerly
+# pulling their services here defeats that design and can put model storage and
+# network readiness on the login path. Only the confined shell runtime must be
+# started with the session. Each activated service is still bound to this target
+# through PartOf= and is stopped when the Tilo session ends.
+Wants=tilo-ush.service
+PartOf=graphical-session.target
+# Releasing the Tilo-owned target must tear down both standard session
+# targets immediately; relying on later StopWhenUnneeded garbage collection
+# leaves PartOf services alive for an indeterminate window.
+PropagatesStopTo=graphical-session.target graphical-session-pre.target

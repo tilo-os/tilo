@@ -1,4 +1,4 @@
-//! Slides — a CRDT-native presentation app for qOS, built on the `ui`
+//! Slides — a CRDT-native presentation app for Tilo, built on the `ui`
 //! toolkit.
 //!
 //! Architecture mirrors the other native apps: a pure data [`model`], an

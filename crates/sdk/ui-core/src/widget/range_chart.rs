@@ -1,0 +1,647 @@
+//! Interactive timeline, Gantt, and numeric range bars.
+
+#![allow(
+    clippy::arithmetic_side_effects,
+    reason = "bounded floating-point chart geometry"
+)]
+
+use automerge::{AutoCommit, ObjId};
+use std::collections::HashMap;
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, BezPath, Line, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::{Color, Fill};
+use winit::event::{ElementState, MouseButton, WindowEvent};
+
+use crate::a11y::{AccessNode, AccessState, Role};
+use crate::color_compat::ColorCompat;
+use crate::presence::PresenceCtx;
+use crate::text_render::{TextRenderer, TextWeight};
+use crate::theme::Theme;
+use crate::widget::chart_navigation::{
+    ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_index,
+};
+use crate::widget::{TaffyTreeExt, Widget};
+
+fn alpha(color: Color, value: u8) -> Color {
+    Color::from_rgba8(color.r(), color.g(), color.b(), value)
+}
+
+/// One interval. Equal start/end values render as milestones.
+#[derive(Clone, Debug)]
+pub struct RangeBar {
+    pub id: String,
+    pub label: String,
+    pub start: f64,
+    pub end: f64,
+    pub progress: Option<f64>,
+    pub color: Option<Color>,
+    pub detail: String,
+}
+
+impl RangeBar {
+    pub fn new(id: impl Into<String>, label: impl Into<String>, start: f64, end: f64) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            start,
+            end,
+            progress: None,
+            color: None,
+            detail: String::new(),
+        }
+    }
+    #[must_use]
+    pub fn with_progress(mut self, progress: f64) -> Self {
+        self.progress = progress.is_finite().then_some(progress.clamp(0.0, 1.0));
+        self
+    }
+    #[must_use]
+    pub fn colored(mut self, color: Color) -> Self {
+        self.color = Some(color);
+        self
+    }
+    #[must_use]
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = detail.into();
+        self
+    }
+    fn valid(&self) -> bool {
+        self.start.is_finite() && self.end.is_finite()
+    }
+}
+
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent presentation switches are composable"
+)]
+#[derive(Clone, Debug)]
+pub struct RangeStyle {
+    pub range: Option<(f64, f64)>,
+    pub tick_count: u8,
+    pub row_height: f64,
+    pub bar_height: f64,
+    pub label_width: f64,
+    pub corner_radius: f64,
+    pub show_grid: bool,
+    pub show_row_bands: bool,
+    pub show_progress: bool,
+    pub tooltip: bool,
+}
+
+impl Default for RangeStyle {
+    fn default() -> Self {
+        Self {
+            range: None,
+            tick_count: 6,
+            row_height: 42.0,
+            bar_height: 20.0,
+            label_width: 112.0,
+            corner_radius: 5.0,
+            show_grid: true,
+            show_row_bands: true,
+            show_progress: true,
+            tooltip: true,
+        }
+    }
+}
+
+pub struct RangeChart {
+    bars: Vec<RangeBar>,
+    style: RangeStyle,
+    title: String,
+    axis_title: String,
+    formatter: Option<Box<dyn Fn(f64) -> String>>,
+    rect: Rect,
+    pointer: Point,
+    hits: Vec<(String, Rect)>,
+    hovered: Option<String>,
+    activated: Option<String>,
+    keyboard_inspection: bool,
+    touch: ChartTouchTracker,
+}
+
+impl RangeChart {
+    pub fn new(bars: Vec<RangeBar>) -> Self {
+        Self {
+            bars,
+            style: RangeStyle::default(),
+            title: String::new(),
+            axis_title: String::new(),
+            formatter: None,
+            rect: Rect::ZERO,
+            pointer: Point::ZERO,
+            hits: Vec::new(),
+            hovered: None,
+            activated: None,
+            keyboard_inspection: false,
+            touch: ChartTouchTracker::default(),
+        }
+    }
+    #[must_use]
+    pub fn styled(mut self, style: RangeStyle) -> Self {
+        self.style = style;
+        self
+    }
+    #[must_use]
+    pub fn with_style(self, style: RangeStyle) -> Self {
+        self.styled(style)
+    }
+    pub fn style(&self) -> &RangeStyle {
+        &self.style
+    }
+    pub fn style_mut(&mut self) -> &mut RangeStyle {
+        &mut self.style
+    }
+    #[must_use]
+    pub fn titled(mut self, title: impl Into<String>) -> Self {
+        self.title = title.into();
+        self
+    }
+    #[must_use]
+    pub fn axis_titled(mut self, title: impl Into<String>) -> Self {
+        self.axis_title = title.into();
+        self
+    }
+    #[must_use]
+    pub fn format_values(mut self, formatter: impl Fn(f64) -> String + 'static) -> Self {
+        self.formatter = Some(Box::new(formatter));
+        self
+    }
+    pub fn set_bars(&mut self, bars: Vec<RangeBar>) {
+        self.bars = bars;
+        self.hovered = None;
+    }
+    pub fn take_activated(&mut self) -> Option<String> {
+        self.activated.take()
+    }
+    pub fn inspect(&mut self, id: &str) -> bool {
+        self.hovered = self
+            .bars
+            .iter()
+            .any(|bar| bar.valid() && bar.id == id)
+            .then(|| id.to_owned());
+        self.keyboard_inspection = self.hovered.is_some();
+        if let Some(rect) = self
+            .hits
+            .iter()
+            .find(|(candidate, _)| Some(candidate) == self.hovered.as_ref())
+            .map(|(_, rect)| *rect)
+        {
+            self.pointer = rect.center();
+        }
+        self.hovered.is_some()
+    }
+    pub fn clear_inspection(&mut self) {
+        self.hovered = None;
+        self.keyboard_inspection = false;
+    }
+
+    fn height(&self) -> f32 {
+        let head = if self.title.is_empty() { 54.0 } else { 82.0 };
+        let count = f64::from(u32::try_from(self.bars.len()).unwrap_or(u32::MAX));
+        crate::num::f32_of_f64((head + count * self.style.row_height).max(140.0))
+    }
+    fn domain(&self) -> (f64, f64) {
+        if let Some((min, max)) = self.style.range
+            && min.is_finite()
+            && max.is_finite()
+            && max > min
+        {
+            return (min, max);
+        }
+        let (min, max) = self
+            .bars
+            .iter()
+            .filter(|b| b.valid())
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), b| {
+                (min.min(b.start.min(b.end)), max.max(b.start.max(b.end)))
+            });
+        if min.is_finite() && max > min {
+            let pad = (max - min) * 0.04;
+            (min - pad, max + pad)
+        } else {
+            (min.min(0.0) - 0.5, min.min(0.0) + 0.5)
+        }
+    }
+    fn plot(&self) -> Rect {
+        Rect::new(
+            self.rect.x0 + self.style.label_width,
+            self.rect.y0 + if self.title.is_empty() { 16.0 } else { 44.0 },
+            self.rect.x1 - 16.0,
+            self.rect.y1 - 38.0,
+        )
+    }
+    fn x(&self, value: f64, domain: (f64, f64)) -> f64 {
+        ((value - domain.0) / (domain.1 - domain.0)).mul_add(self.plot().width(), self.plot().x0)
+    }
+    fn format(&self, value: f64) -> String {
+        self.formatter
+            .as_ref()
+            .map_or_else(|| format_value(value), |f| f(value))
+    }
+    fn hit(&self, point: Point) -> Option<&str> {
+        self.hits
+            .iter()
+            .find(|(_, rect)| rect.inflate(5.0, 7.0).contains(point))
+            .map(|(id, _)| id.as_str())
+    }
+}
+
+fn format_value(value: f64) -> String {
+    if value.abs() >= 1_000_000.0 {
+        format!("{:.1}M", value / 1_000_000.0)
+    } else if value.abs() >= 1_000.0 {
+        format!("{:.1}K", value / 1_000.0)
+    } else if value.fract().abs() < 0.001 {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.1}")
+    }
+}
+
+impl Widget for RangeChart {
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::length(self.height()),
+            },
+            ..Default::default()
+        });
+        map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let l = taffy.layout(node).copied().unwrap_or_default();
+        self.rect = Rect::new(
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+            origin.x + f64::from(l.location.x + l.size.width),
+            origin.y + f64::from(l.location.y + l.size.height),
+        );
+    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "axis, intervals, milestones, progress, and inspector share a projection"
+    )]
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        if !self.title.is_empty() {
+            tr.draw_text_weighted(
+                scene,
+                &self.title,
+                theme.tokens.typography.scale.lg,
+                theme.tokens.colors.text_primary,
+                transform * Affine::translate((self.rect.x0 + 10.0, self.rect.y0 + 8.0)),
+                None,
+                TextWeight::Semibold,
+            );
+        }
+        let plot = self.plot();
+        let domain = self.domain();
+        let ticks = self.style.tick_count.max(2);
+        for tick in 0..ticks {
+            let fraction = f64::from(tick) / f64::from(ticks.saturating_sub(1));
+            let x = fraction.mul_add(plot.width(), plot.x0);
+            if self.style.show_grid {
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    transform,
+                    alpha(theme.tokens.colors.text_dim, 36),
+                    None,
+                    &Line::new((x, plot.y0), (x, plot.y1)),
+                );
+            }
+            tr.draw_text(
+                scene,
+                &self.format(fraction.mul_add(domain.1 - domain.0, domain.0)),
+                theme.tokens.typography.scale.xs,
+                theme.tokens.colors.text_dim,
+                transform * Affine::translate((x - 12.0, plot.y1 + 9.0)),
+                None,
+            );
+        }
+        if !self.axis_title.is_empty() {
+            tr.draw_text(
+                scene,
+                &self.axis_title,
+                theme.tokens.typography.scale.xs,
+                theme.tokens.colors.text_dim,
+                transform * Affine::translate((plot.center().x - 32.0, plot.y1 + 25.0)),
+                None,
+            );
+        }
+        self.hits.clear();
+        for (index, bar) in self.bars.iter().filter(|b| b.valid()).enumerate() {
+            let index = f64::from(u32::try_from(index).unwrap_or(u32::MAX));
+            let row_y = plot.y0 + index * self.style.row_height;
+            if self.style.show_row_bands && index.rem_euclid(2.0) >= 1.0 {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    alpha(theme.tokens.colors.text_dim, 13),
+                    None,
+                    &Rect::new(
+                        self.rect.x0,
+                        row_y,
+                        self.rect.x1,
+                        row_y + self.style.row_height,
+                    ),
+                );
+            }
+            tr.draw_text(
+                scene,
+                &bar.label,
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_primary,
+                transform * Affine::translate((self.rect.x0 + 10.0, row_y + 12.0)),
+                Some(crate::num::f32_of_f64(
+                    (self.style.label_width - 22.0).max(16.0),
+                )),
+            );
+            let x0 = self.x(bar.start.min(bar.end), domain);
+            let x1 = self.x(bar.start.max(bar.end), domain);
+            let y = row_y + (self.style.row_height - self.style.bar_height) / 2.0;
+            let color = bar.color.unwrap_or(theme.tokens.colors.accent.stops[5]);
+            let rect = if (bar.end - bar.start).abs() <= f64::EPSILON {
+                let r = self.style.bar_height * 0.42;
+                let mut diamond = BezPath::new();
+                diamond.move_to((x0, y));
+                diamond.line_to((x0 + r, y + r));
+                diamond.line_to((x0, y + r * 2.0));
+                diamond.line_to((x0 - r, y + r));
+                diamond.close_path();
+                scene.fill(Fill::NonZero, transform, color, None, &diamond);
+                Rect::new(x0 - r, y, x0 + r, y + r * 2.0)
+            } else {
+                let rect = Rect::new(x0, y, x1.max(x0 + 2.0), y + self.style.bar_height);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    alpha(color, 82),
+                    None,
+                    &RoundedRect::from_rect(rect, self.style.corner_radius),
+                );
+                if self.style.show_progress
+                    && let Some(progress) = bar.progress
+                {
+                    let fill = Rect::new(x0, y, (x1 - x0).mul_add(progress, x0), rect.y1);
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        color,
+                        None,
+                        &RoundedRect::from_rect(fill, self.style.corner_radius),
+                    );
+                }
+                if self.hovered.as_deref() == Some(&bar.id) {
+                    scene.stroke(
+                        &Stroke::new(2.0),
+                        transform,
+                        theme.tokens.colors.text_primary,
+                        None,
+                        &RoundedRect::from_rect(rect.inflate(2.0, 2.0), self.style.corner_radius),
+                    );
+                }
+                rect
+            };
+            self.hits.push((bar.id.clone(), rect));
+        }
+        if self.keyboard_inspection
+            && let Some(rect) = self
+                .hits
+                .iter()
+                .find(|(candidate, _)| Some(candidate) == self.hovered.as_ref())
+                .map(|(_, rect)| *rect)
+        {
+            self.pointer = rect.center();
+        }
+        let hovered = self
+            .hovered
+            .as_deref()
+            .and_then(|id| self.bars.iter().find(|bar| bar.id == id));
+        if let Some(bar) = hovered.filter(|_| self.style.tooltip) {
+            let interval = if (bar.end - bar.start).abs() <= f64::EPSILON {
+                self.format(bar.start)
+            } else {
+                format!("{} – {}", self.format(bar.start), self.format(bar.end))
+            };
+            let detail = if bar.detail.is_empty() {
+                interval
+            } else {
+                format!("{interval} · {}", bar.detail)
+            };
+            let (label_width, _) = tr.measure(&bar.label, theme.tokens.typography.scale.sm, None);
+            let (detail_width, _) = tr.measure(&detail, theme.tokens.typography.scale.xs, None);
+            let tooltip_width = f64::from(label_width.max(detail_width)).max(150.0) + 28.0;
+            let x = (self.pointer.x + 16.0)
+                .min(self.rect.x1 - tooltip_width - 8.0)
+                .max(self.rect.x0 + 8.0);
+            let y = (self.pointer.y + 16.0)
+                .min(self.rect.y1 - 72.0)
+                .max(self.rect.y0 + 8.0);
+            let tip = Rect::new(x, y, x + tooltip_width, y + 64.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.overlay,
+                None,
+                &RoundedRect::from_rect(tip, f64::from(theme.tokens.radii.md)),
+            );
+            tr.draw_text_weighted(
+                scene,
+                &bar.label,
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_primary,
+                transform * Affine::translate((x + 14.0, y + 11.0)),
+                None,
+                TextWeight::Semibold,
+            );
+            tr.draw_text(
+                scene,
+                &detail,
+                theme.tokens.typography.scale.xs,
+                theme.tokens.colors.text_dim,
+                transform * Affine::translate((x + 14.0, y + 37.0)),
+                None,
+            );
+        }
+    }
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        _mods: &winit::event::Modifiers,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+        handled: &mut bool,
+        focus: &mut Option<NodeId>,
+        node: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+        if let Some(action) = self.touch.handle(event, scale) {
+            match action {
+                ChartTouchAction::Inspect(point) => {
+                    self.pointer = point;
+                    self.hovered = self.hit(point).map(str::to_owned);
+                    self.keyboard_inspection = false;
+                }
+                ChartTouchAction::Activate(point) => {
+                    self.pointer = point;
+                    self.hovered = self.hit(point).map(str::to_owned);
+                    if let Some(id) = &self.hovered {
+                        self.activated = Some(id.clone());
+                        *handled = true;
+                        *focus = Some(node);
+                    }
+                }
+                ChartTouchAction::Clear => self.hovered = None,
+            }
+            return;
+        }
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.pointer = Point::new(position.x / scale, position.y / scale);
+            self.hovered = self.hit(self.pointer).map(str::to_owned);
+            self.keyboard_inspection = false;
+        }
+        if matches!(event, WindowEvent::CursorLeft { .. }) && !self.keyboard_inspection {
+            self.hovered = None;
+        }
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            }
+        ) && let Some(id) = self.hit(self.pointer).map(str::to_owned)
+        {
+            self.activated = Some(id);
+            *handled = true;
+        }
+        if let Some(action) = chart_nav_action(event) {
+            if action == ChartNavAction::Activate {
+                self.activated.clone_from(&self.hovered);
+            } else {
+                let candidates = self
+                    .bars
+                    .iter()
+                    .filter(|bar| bar.valid())
+                    .map(|bar| bar.id.as_str())
+                    .collect::<Vec<_>>();
+                let current = self
+                    .hovered
+                    .as_deref()
+                    .and_then(|id| candidates.iter().position(|candidate| *candidate == id));
+                self.hovered = moved_index(current, candidates.len(), action)
+                    .and_then(|index| candidates.get(index))
+                    .map(|id| (*id).to_owned());
+                self.keyboard_inspection = self.hovered.is_some();
+                if let Some(rect) = self
+                    .hits
+                    .iter()
+                    .find(|(candidate, _)| Some(candidate) == self.hovered.as_ref())
+                    .map(|(_, rect)| *rect)
+                {
+                    self.pointer = rect.center();
+                }
+            }
+            *handled = true;
+            *focus = Some(node);
+        }
+    }
+    fn accessibility(&self) -> Option<AccessNode> {
+        let mut root = AccessNode::new(Role::Group).with_name(if self.title.is_empty() {
+            "Range chart"
+        } else {
+            &self.title
+        });
+        root.children = self
+            .bars
+            .iter()
+            .filter(|b| b.valid())
+            .map(|b| {
+                AccessNode::new(Role::Button)
+                    .with_action_target(&b.id)
+                    .with_name(&b.label)
+                    .with_description(if b.detail.is_empty() {
+                        format!("{} to {}", self.format(b.start), self.format(b.end))
+                    } else {
+                        b.detail.clone()
+                    })
+                    .with_state(AccessState {
+                        focusable: true,
+                        ..Default::default()
+                    })
+            })
+            .collect();
+        Some(root)
+    }
+    fn perform_action_at(
+        &mut self,
+        action: &crate::a11y::Action,
+        keys: &[u64],
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if !matches!(action, crate::a11y::Action::Activate) {
+            return false;
+        }
+        let Some(key) = keys.last() else {
+            return false;
+        };
+        if let Some(bar) = self
+            .bars
+            .iter()
+            .find(|b| crate::a11y::hash_key(&b.id) == *key)
+        {
+            self.activated = Some(bar.id.clone());
+            true
+        } else {
+            false
+        }
+    }
+    fn name(&self) -> &'static str {
+        "RangeChart"
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+    fn is_focusable(&self) -> bool {
+        true
+    }
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn reversed_intervals_are_included() {
+        let domain = RangeChart::new(vec![RangeBar::new("a", "A", 8.0, 2.0)]).domain();
+        assert!(domain.0 < 2.0 && domain.1 > 8.0);
+    }
+    #[test]
+    fn explicit_range_wins() {
+        let chart = RangeChart::new(Vec::new()).styled(RangeStyle {
+            range: Some((10.0, 20.0)),
+            ..Default::default()
+        });
+        assert_eq!(chart.domain(), (10.0, 20.0));
+    }
+}

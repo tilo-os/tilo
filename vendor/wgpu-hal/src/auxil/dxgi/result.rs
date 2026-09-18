@@ -5,7 +5,10 @@ pub(crate) trait HResult<O> {
 }
 impl<T> HResult<T> for windows::core::Result<T> {
     fn into_device_result(self, description: &str) -> Result<T, crate::DeviceError> {
-        #![allow(unreachable_code)]
+        #![allow(
+            unreachable_code,
+            reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+        )]
 
         self.map_err(|err| {
             log::error!("{description} failed: {err}");

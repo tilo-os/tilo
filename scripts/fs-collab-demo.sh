@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Two-peer end-to-end harness for the collaborative filesystem (fs/).
+# Two-peer end-to-end harness for the collaborative filesystem (crates/system/fs/).
 #
 #   fs-collab-demo.sh up      # set up two synced mounts, leave them running
 #   fs-collab-demo.sh test    # run assertions against a fresh pair, then tear down
@@ -12,7 +12,7 @@ set -uo pipefail
 
 REPO="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 BIN="$REPO/target/debug/fs"
-ROOT="${QOS_FS_DEMO_ROOT:-$HOME/.cache/qos-fs-demo}"
+ROOT="${TILO_FS_DEMO_ROOT:-$HOME/.cache/tilo-fs-demo}"
 A_MNT="$ROOT/A" B_MNT="$ROOT/B"
 A_CACHE="$ROOT/A-cache" B_CACHE="$ROOT/B-cache"
 SEED="$ROOT/seed" LOGS="$ROOT/logs"
@@ -52,7 +52,7 @@ bring_up() {
     ensure_bin; ensure_fuse_conf
     down
     rm -rf "$ROOT"; mkdir -p "$A_MNT" "$B_MNT" "$A_CACHE" "$B_CACHE" "$SEED/notes" "$LOGS"
-    echo "Welcome to the shared qOS workspace!" > "$SEED/README.txt"
+    echo "Welcome to the shared Tilo workspace!" > "$SEED/README.txt"
     echo "edit me from either side" > "$SEED/notes/scratch.txt"
 
     "$BIN" serve --mount-point "$A_MNT" --cache-dir "$A_CACHE" --seed "$SEED" \
@@ -95,7 +95,7 @@ case "${1:-test}" in
     check() { if [ "$2" = "$3" ]; then echo "PASS $1"; else echo "FAIL $1: got '$2' want '$3'"; fail=1; fi; }
 
     # projection + hydration
-    check "B sees seeded README" "$(cat "$B_MNT/README.txt")" "Welcome to the shared qOS workspace!"
+    check "B sees seeded README" "$(cat "$B_MNT/README.txt")" "Welcome to the shared Tilo workspace!"
     check "B hydrates nested"   "$(cat "$B_MNT/notes/scratch.txt")" "edit me from either side"
 
     # write-back A->B and B->A (wait for the content delta, not just the entry)

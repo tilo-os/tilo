@@ -1,0 +1,30 @@
+[Unit]
+Description=Tilo app host (verified package store and launch broker)
+After=tilo-graphical-session.target
+PartOf=tilo-graphical-session.target
+
+[Service]
+Type=notify
+ExecStart=/usr/libexec/tilo-app-host --socket %t/tilo/services/app-host.sock --store %S/tilo-app-host
+Restart=on-failure
+RestartSec=1
+RuntimeDirectory=tilo/services
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+LimitCORE=0
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+KeyringMode=private
+CapabilityBoundingSet=
+AmbientCapabilities=
+StateDirectory=tilo-app-host
+StateDirectoryMode=0700
+ReadWritePaths=%S/tilo-app-host

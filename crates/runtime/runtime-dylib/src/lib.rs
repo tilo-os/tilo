@@ -1,8 +1,8 @@
-//! `runtime-dylib` — the qOS runtime SDK and UI toolkit, packaged as a
+//! `runtime-dylib` — the Tilo runtime SDK and UI toolkit, packaged as a
 //! single shared object (`libruntime_dylib.so`).
 //!
 //! This crate carries **no logic of its own** — it re-exports the three
-//! surfaces a qOS app links against ([`runtime`], [`cli`], [`ui`]) so that
+//! surfaces a Tilo app links against ([`runtime`], [`cli`], [`ui`]) so that
 //! building it as a `dylib` pulls their whole transitive graph (portal /
 //! collab / fs / identity, and for `ui` the wgpu + vello + cosmic-text +
 //! automerge + taffy + fluent + winit stack) into one shared library.
@@ -36,15 +36,54 @@
     )
 )]
 
+pub use accounts;
+pub use agent_provider_config;
+pub use app_catalogue;
+pub use app_host;
+pub use atomic_file;
+pub use chrono_tz;
 pub use cli;
+pub use collab_types;
 pub use comemo;
+pub use desktop_entry;
+pub use desktop_policy;
 pub use iroh;
-pub use qos_callstream;
+pub use launcher;
+pub use media;
+pub use mime_guess;
+pub use os_actions;
+pub use pdfium_render;
+pub use registry_types;
+pub use roxmltree;
 pub use runtime;
+pub use runtime_fs;
+pub use runtime_identity;
+pub use runtime_portal_xdg;
 pub use rustypipe;
+pub use settings_store;
+pub use thumbnail;
+pub use tilo_actions;
+pub use tilo_bluez;
+pub use tilo_callstream;
+pub use tilo_model_gateway;
+pub use tilo_relay;
+pub use tilo_user_identity;
 pub use tiny_skia;
 pub use typst;
 pub use typst_assets;
 pub use typst_pdf;
 pub use typst_render;
 pub use ui;
+pub use vte;
+pub use xattr;
+
+/// Parse the runtime-bundled Typst fonts without making each thin app retain
+/// `typst-assets`' multi-megabyte static font table in its own executable.
+///
+/// Returning the concrete vector keeps iteration over the embedded byte table
+/// on this side of the dylib boundary; thin apps receive only parsed fonts.
+pub fn typst_fonts() -> Vec<typst::text::Font> {
+    typst_assets::fonts()
+        .flat_map(|data| typst::text::Font::iter(typst::foundations::Bytes::new(data)))
+        .collect()
+}

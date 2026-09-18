@@ -1,4 +1,4 @@
-//! Tube — a privacy-respecting `YouTube` client for qOS.
+//! Tube — a privacy-respecting `YouTube` client for Tilo.
 //!
 //! No ads, no tracking, no Google player. Video search + metadata come from
 //! public Invidious instances; `SponsorBlock` marks and auto-skips sponsor /
@@ -10,10 +10,10 @@
 //! screen or personal viewing trail.
 //!
 //! The live (online) app starts with an EMPTY catalogue and populates only
-//! from real results (yt-dlp / rustypipe / trending) — it never presents the
-//! bundled [`sample`] as real data. That sample exists solely for the
-//! hermetic `--shots`/demo review path (and tests), where a cold screenshot
-//! needs to be fully populated. Live fetch (`api`) runs on a worker thread
+//! from live results (yt-dlp / rustypipe / trending). The bundled [`sample`]
+//! exists solely for the hermetic `--shots`/demo review path (and tests), where
+//! a cold screenshot needs to be fully populated. Live fetch (`api`) runs on a
+//! worker thread
 //! that spawns on launch (online) or on the first real interaction.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
@@ -50,6 +50,7 @@ pub mod api;
 pub mod app;
 pub mod backend;
 pub mod contrast;
+pub mod history_store;
 pub mod images;
 pub mod model;
 pub mod recommend;

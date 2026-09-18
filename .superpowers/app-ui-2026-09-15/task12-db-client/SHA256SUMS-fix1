@@ -1,6 +1,0 @@
-5b0521ca4b866acb285e0b5d54adc19b6323a8df43fb26eabebaa92a231c8bcb  target/debug/db_client
-863bb54b9445d5fbfe2632e8e652a902807971109fbed842508d8e8a7a07cdbb  apps/db_client/src/app.rs
-e741540b58d6f3fb283e23ebd89cd9f0d97d55f3839f8873029ea2936c656544  menu-open-short-800x480.png
-5613006f1d0bae3d8ec50619bf849d8dd11f56752db54847d9db82e387af9c40  cargo-test-db-client-lib-fix1.log
-5e699bd569f5b1a0f53ec8b23e3380f5e23dd3ca1191115e56ec1618ac69a269  cargo-check-db-client-lib-fix1.log
-9cbcb1d591c3d83af5b4bfa55a68e6937e70185c907fcdf7e068f5701903d7db  cargo-build-db-client-fix1.log

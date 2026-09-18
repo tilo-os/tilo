@@ -1,5 +1,5 @@
 #!/bin/bash
-# Drive an encrypted install inside a booted qOS VM, then boot the result.
+# Drive an encrypted install inside a booted Tilo VM, then boot the result.
 #
 #   os/dev/test-encrypted-install.sh <label> <desktop-qcow2> [options]
 #
@@ -14,7 +14,7 @@
 #
 # The installer host is an ordinary desktop image booted with a blank second
 # disk (`vm.sh boot --attach`), so this needs no installer medium. It drives the
-# guest's own /usr/libexec/qos-disk-encrypt, so what it proves is the shipped
+# guest's own /usr/libexec/tilo-disk-encrypt, so what it proves is the shipped
 # path and not a re-implementation of it.
 #
 # ## What the verdict is taken from
@@ -53,23 +53,23 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-RUN="${QOS_RUN:-/tmp/qos-vm}"
+RUN="${TILO_RUN:-/tmp/tilo-vm}"
 TARGET="$RUN/$LABEL-target.qcow2"
 OUT="${OUT:-$RUN/$LABEL-results}"
 mkdir -p "$OUT" "$RUN"
 rm -f "$TARGET"
 # One TPM state directory per scenario, or a later run unseals against an
 # earlier run's TPM and proves nothing about its own enrolment.
-export QOS_TPM_DIR="$RUN/tpm-$LABEL"
-rm -rf "$QOS_TPM_DIR"
+export TILO_TPM_DIR="$RUN/tpm-$LABEL"
+rm -rf "$TILO_TPM_DIR"
 
 say() { printf '\n### %s\n' "$*"; }
 die() { printf '\n!!! %s\n' "$*" >&2; exit 1; }
 
-SSHOPTS=(-p "${QOS_SSH_PORT:-2222}" -o StrictHostKeyChecking=no
+SSHOPTS=(-p "${TILO_SSH_PORT:-2222}" -o StrictHostKeyChecking=no
          -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -o LogLevel=ERROR)
-GUEST="${QOS_VM_USER:-quickuser}@127.0.0.1"
-GUEST_PW="${QOS_VM_PASS:-quickdesktop}"
+GUEST="${TILO_VM_USER:-quickuser}@127.0.0.1"
+GUEST_PW="${TILO_VM_PASS:-tilo}"
 gssh() { sshpass -p "$GUEST_PW" ssh "${SSHOPTS[@]}" "$GUEST" "$@"; }
 # Run a script as root in the guest. The password reaches sudo on stdin and the
 # script comes from a file, so the two never contend for stdin.
@@ -100,11 +100,11 @@ wait_ssh() {
 }
 serial_has() { "$VM" serial 2>/dev/null | grep -aqiE "$1"; }
 
-cleanup() { QOS_DISK="$DESKTOP" "$VM" stop >/dev/null 2>&1 || true; }
+cleanup() { TILO_DISK="$DESKTOP" "$VM" stop >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 say "boot the installer host ($DESKTOP, $TPM_FLAG)"
-QOS_DISK="$DESKTOP" "$VM" boot --2d "$TPM_FLAG" --attach "$TARGET" || exit 1
+TILO_DISK="$DESKTOP" "$VM" boot --2d "$TPM_FLAG" --attach "$TARGET" || exit 1
 wait_ssh || { echo "ssh never came up"; "$VM" serial | tail -60; exit 1; }
 
 say "guest facts"
@@ -113,7 +113,7 @@ ls -la /usr/lib/modules/*/initramfs.img 2>&1 || echo "NO INITRAMFS in /usr/lib/m
 ls /usr/lib/modules
 ls /dev/tpm* 2>&1 || echo "no tpm device"
 cat /etc/kernel/install.conf 2>&1 || echo "no /etc/kernel/install.conf (expected)"
-bash /usr/libexec/qos/boot-chain-test.sh 2>&1 || true
+bash /usr/libexec/tilo/boot-chain-test.sh 2>&1 || true
 ' 20 || echo "(facts step reported a non-zero status; continuing)"
 
 say "copy the booted image into guest container storage"
@@ -122,7 +122,7 @@ step copy "$OUT/01b-copy.txt" 'bootc image copy-to-storage' 3 \
 
 say "prepare the encrypted volume"
 step prepare "$OUT/02-prepare.txt" \
-  '/usr/libexec/qos-disk-encrypt prepare /dev/vdb --filesystem btrfs' 20 \
+  '/usr/libexec/tilo-disk-encrypt prepare /dev/vdb --filesystem btrfs' 20 \
   || die "prepare failed — see $OUT/02-prepare.txt"
 MNT=$(sed -n 's/^MNT=//p' "$OUT/02-prepare.txt" | tr -d '\r')
 LUKS=$(sed -n 's/^LUKS_PART=//p' "$OUT/02-prepare.txt" | tr -d '\r')
@@ -138,23 +138,23 @@ podman run --rm --privileged --pid=host --ipc=host \\
   -v /var/lib/containers:/var/lib/containers -v /dev:/dev -v $MNT:/target \\
   --security-opt label=type:unconfined_t localhost/bootc \\
   bootc install to-filesystem --root-mount-spec UUID=$RUUID $KARGARGS \\
-  --skip-finalize --target-imgref localhost/qos:latest /target
+  --skip-finalize --target-imgref localhost/tilo:latest /target
 " 25 || die "bootc install failed — see $OUT/03-install.txt"
 
 say "enrol factors"
 if [ -n "$PASSPHRASE" ]; then
   step enrol "$OUT/04-enrol.txt" "
-install -d -m 0700 /run/qos-install
-printf '%s' '$PASSPHRASE' > /run/qos-install/pin
-chmod 0600 /run/qos-install/pin
-/usr/libexec/qos-disk-encrypt enrol $LUKS --key-file $KEY --pin-file /run/qos-install/pin
-shred -u /run/qos-install/pin
+install -d -m 0700 /run/tilo-install
+printf '%s' '$PASSPHRASE' > /run/tilo-install/pin
+chmod 0600 /run/tilo-install/pin
+/usr/libexec/tilo-disk-encrypt enrol $LUKS --key-file $KEY --pin-file /run/tilo-install/pin
+shred -u /run/tilo-install/pin
 " 40 || die "enrolment failed — see $OUT/04-enrol.txt. The target has no usable
 unlock factor, so do not go on to boot it and conclude anything about early
 userspace: it would stop at a prompt no secret can answer."
 else
   step enrol "$OUT/04-enrol.txt" \
-    "/usr/libexec/qos-disk-encrypt enrol $LUKS --key-file $KEY" 40 \
+    "/usr/libexec/tilo-disk-encrypt enrol $LUKS --key-file $KEY" 40 \
     || die "enrolment failed — see $OUT/04-enrol.txt"
 fi
 
@@ -174,7 +174,7 @@ fi
 
 say "finish"
 step finish "$OUT/05-finish.txt" \
-  "/usr/libexec/qos-disk-encrypt finish $LUKS --key-file $KEY --mnt $MNT" 8 \
+  "/usr/libexec/tilo-disk-encrypt finish $LUKS --key-file $KEY --mnt $MNT" 8 \
   || die "finish failed — see $OUT/05-finish.txt"
 
 # Everything the target's own header says about its unlock factors, in full: this
@@ -227,9 +227,9 @@ run would have proved nothing about the state the image shipped in"
 fi
 
 say "stop the installer host, boot the installed disk"
-QOS_DISK="$DESKTOP" "$VM" stop
+TILO_DISK="$DESKTOP" "$VM" stop
 sleep 3
-QOS_DISK="$TARGET" "$VM" boot --2d "$TPM_FLAG" || exit 1
+TILO_DISK="$TARGET" "$VM" boot --2d "$TPM_FLAG" || exit 1
 
 # Before concluding anything about the prompt, establish whether the installed
 # console is visible at all. GRUB writes to the serial line via firmware, so the
@@ -296,9 +296,9 @@ fi
 
 sleep 5
 "$VM" serial > "$OUT/07-target-serial.txt" 2>&1 || true
-QOS_DISK="$TARGET" "$VM" shot "$LABEL-target" >/dev/null 2>&1 && \
+TILO_DISK="$TARGET" "$VM" shot "$LABEL-target" >/dev/null 2>&1 && \
   cp -f "$RUN/$LABEL-target.png" "$OUT/08-target-screen.png" 2>/dev/null || true
-QOS_DISK="$TARGET" "$VM" stop
+TILO_DISK="$TARGET" "$VM" stop
 
 say "verdict for $LABEL"
 grep -aiE 'luks|crypt|cannot open root|kernel panic|VFS: Unable|passphrase|reached target|greetd|failed to start|dracut|initramfs|no such device' \

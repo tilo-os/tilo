@@ -1,7 +1,7 @@
 //! Pure data model for the Themes app.
 //!
 //! A [`ThemeSpec`] is the editable, serialisable description of a single
-//! qOS theme: a set of colour tokens plus shape / spacing / typography
+//! Tilo theme: a set of colour tokens plus shape / spacing / typography
 //! knobs. It round-trips to JSON (for CRDT persistence and `Export`) and
 //! materialises into a live [`ui::theme::Theme`] via [`ThemeSpec::to_theme`]
 //! so the preview pane can render real widgets under it.
@@ -37,7 +37,7 @@ pub const FONTS: [&str; 5] = [
 ];
 
 /// Map a font-family name to a [`FontChoice`] the text renderer can shape
-/// with, so the live preview actually re-renders in the chosen family. A
+/// with, so the live preview re-renders in the chosen family. A
 /// monospace or serif family resolves to that generic class (a guaranteed
 /// visible change even when the exact face isn't installed); anything else
 /// targets the named family, falling back to the system sans face.
@@ -397,8 +397,8 @@ type PresetEntry = (
 );
 
 const PRESET_ENTRIES: &[PresetEntry] = &[
-    ("qos-dark", "qOS Dark", Theme::dark, true, "Inter"),
-    ("qos-blue", "qOS Blue", Theme::qos_blue, true, "Inter"),
+    ("tilo-dark", "Tilo Dark", Theme::dark, true, "Inter"),
+    ("tilo-blue", "Tilo Blue", Theme::tilo_blue, true, "Inter"),
     (
         "catppuccin-mocha",
         "Catppuccin Mocha",
@@ -468,10 +468,8 @@ pub fn presets() -> Vec<ThemeSpec> {
 }
 
 /// One editable theme for the demo catalog so a `--shots` capture shows the
-/// customizer editing a real custom theme. **Never** seeded into the live
-/// catalog: a fresh install ships the built-in presets (the product's themes)
-/// and no fabricated "your custom theme" — the user authors their own with New
-/// / Duplicate.
+/// customizer editing a custom theme. It is not seeded into the live catalog;
+/// users author their own themes with New / Duplicate.
 pub fn seed_custom() -> ThemeSpec {
     ThemeSpec {
         id: "sunset".to_string(),
@@ -497,9 +495,8 @@ pub fn seed_custom() -> ThemeSpec {
 }
 
 /// The live default catalog: the built-in presets only. These are the OS's
-/// shipped themes (the product), not fabricated user content — an empty theme
-/// picker would be wrong. A fresh install seeds exactly this; the user's own
-/// themes are added by New / Duplicate and persist alongside.
+/// shipped themes. A fresh install seeds exactly this; the user's own themes
+/// are added by New / Duplicate and persist alongside.
 pub fn default_catalog() -> Vec<ThemeSpec> {
     presets()
 }
@@ -610,8 +607,8 @@ mod tests {
         // blue, and the canonical presets the picker offers.
         let cat = default_catalog();
         for id in [
-            "qos-dark",
-            "qos-blue",
+            "tilo-dark",
+            "tilo-blue",
             "catppuccin-mocha",
             "catppuccin-latte",
             "dracula",

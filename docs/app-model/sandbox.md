@@ -1,6 +1,6 @@
 # The sandbox: what your manifest is granting
 
-Every qOS package is launched inside a nested sandbox with three
+Every Tilo package is launched inside a nested sandbox with three
 independent enforcement layers. This document maps the manifest's
 `[sandbox.*]` blocks onto the concrete mechanisms.
 
@@ -8,12 +8,12 @@ independent enforcement layers. This document maps the manifest's
 
 ```text
                       ┌────────────────────────────────────────┐
-                      │        qos-install run <pkg-id>         │
+                      │        tilo-install run <pkg-id>         │
                       └────────────────────┬───────────────────┘
                                            │ exec
                                            ▼
                       ┌────────────────────────────────────────┐
-                      │         qos-launcher run …             │
+                      │         tilo-launcher run …             │
                       │  (fork, open service sockets, plan     │
                       │   Landlock ruleset, build bwrap argv)  │
                       └────────────────────┬───────────────────┘
@@ -21,21 +21,21 @@ independent enforcement layers. This document maps the manifest's
                                            ▼
         ╭──────────────── Layer 1: bwrap namespaces ────────────────╮
         │  --unshare-all  (user, pid, uts, ipc, mount, [+ net])      │
-        │  --ro-bind payload → /var/qos-apps/<pkg-id>                │
-        │  --ro-bind runtime → /usr/lib/qos-runtime/<ver>            │
+        │  --ro-bind payload → /var/tilo-apps/<pkg-id>                │
+        │  --ro-bind runtime → /usr/lib/tilo-runtime/<ver>            │
         │  --tmpfs /tmp   --proc /proc   --dev /dev                  │
-        │  --setenv QOS_PACKAGE_ID=…  QOS_SVC_*_FD=…                 │
-        │  --file <fd>   /run/qos/services/<name>.sock              │
+        │  --setenv TILO_PACKAGE_ID=…  TILO_SVC_*_FD=…                 │
+        │  --file <fd>   /run/tilo/services/<name>.sock              │
         │  --seccomp <fd>  (Layer 2 filter installed by bwrap)      │
         │                                                            │
         │  --ro-bind-try × system read profile (fixed, see below)    │
-        │  --bind <data home>/qos-rooms/<room>/<pkg> → /run/qos/app  │
-        │  --setenv HOME=/run/qos/app  XDG_*=/run/qos/app/…          │
+        │  --bind <data home>/tilo-rooms/<room>/<pkg> → /run/tilo/app  │
+        │  --setenv HOME=/run/tilo/app  XDG_*=/run/tilo/app/…          │
         │                                                            │
         │       ╭───────── Layer 3: sandbox-exec shim ─────────╮    │
         │       │  install Landlock v3 ruleset:                 │    │
         │       │   • ro rules for the system read profile      │    │
-        │       │   • rw rules for /run/qos/app                 │    │
+        │       │   • rw rules for /run/tilo/app                 │    │
         │       │   • ro/rw rules for granted capabilities      │    │
         │       │   • network egress restriction if net = off   │    │
         │       │   • port allowlist scoped to [sandbox.net]    │    │
@@ -46,7 +46,7 @@ independent enforcement layers. This document maps the manifest's
 
 Each layer is defence-in-depth against the layer above. A kernel bug in
 namespace isolation still leaves seccomp and Landlock; a broken seccomp
-policy still leaves Landlock; and vice versa. The `qos-hello` demo below
+policy still leaves Landlock; and vice versa. The `tilo-hello` demo below
 proves both bwrap and Landlock are enforcing in a real run.
 
 ## Layer 1: bubblewrap
@@ -57,7 +57,7 @@ Driven entirely by `[sandbox]` fields.
 
 `--unshare-all` is always applied; the `namespaces` list is currently
 informational (the launcher unshares the full set by default). Include
-the ones you actually want unshared — omitting `net` in a future launcher
+the ones you want unshared — omitting `net` in a future launcher
 would leave the network namespace shared.
 
 ### FS bind mounts
@@ -76,10 +76,10 @@ reasonable.
 
 What the launcher composes instead:
 
-- `payload/` → `/var/qos-apps/<package-id>/` (read-only). Your entrypoint
-  is `/var/qos-apps/<package-id>/<entrypoint.bin>`.
-- Runtime bundle → `/usr/lib/qos-runtime/<version>/` (read-only), plus a
-  `LD_LIBRARY_PATH=/usr/lib/qos-runtime/<version>/lib` env var, plus
+- `payload/` → `/var/tilo-apps/<package-id>/` (read-only). Your entrypoint
+  is `/var/tilo-apps/<package-id>/<entrypoint.bin>`.
+- Runtime bundle → `/usr/lib/tilo-runtime/<version>/` (read-only), plus a
+  `LD_LIBRARY_PATH=/usr/lib/tilo-runtime/<version>/lib` env var, plus
   re-binds of the loader at its canonical path
   (`/lib64/ld-linux-x86-64.so.2` etc.) so the kernel's `INTERP` lookup
   works.
@@ -92,8 +92,8 @@ What the launcher composes instead:
   files (`/etc/resolv.conf`, `/etc/hosts`) are added only for a launch
   that shares the host network — an app under a host-scoped grant
   resolves through the egress gate instead.
-- **Your directory** → `--bind <data home>/qos-rooms/<room>/<package>
-  /run/qos/app`, read-write. See below.
+- **Your directory** → `--bind <data home>/tilo-rooms/<room>/<package>
+  /run/tilo/app`, read-write. See below.
 - `--tmpfs /tmp`, `--proc /proc`, `--dev /dev` always.
 - Anything else is a **capability** the user grants at runtime
   (`collab_types::caps`), bound with `--ro-bind-try` / `--bind-try` when
@@ -106,29 +106,29 @@ the location, creates it, and points the environment inside it:
 
 | Variable          | Value                            |
 |-------------------|----------------------------------|
-| `QOS_APP_DIR`     | `/run/qos/app`                   |
-| `HOME`            | `/run/qos/app`                   |
-| `XDG_DATA_HOME`   | `/run/qos/app/.local/share`      |
-| `XDG_STATE_HOME`  | `/run/qos/app/.local/state`      |
-| `XDG_CONFIG_HOME` | `/run/qos/app/.config`           |
-| `XDG_CACHE_HOME`  | `/run/qos/app/.cache`            |
+| `TILO_APP_DIR`     | `/run/tilo/app`                   |
+| `HOME`            | `/run/tilo/app`                   |
+| `XDG_DATA_HOME`   | `/run/tilo/app/.local/share`      |
+| `XDG_STATE_HOME`  | `/run/tilo/app/.local/state`      |
+| `XDG_CONFIG_HOME` | `/run/tilo/app/.config`           |
+| `XDG_CACHE_HOME`  | `/run/tilo/app/.cache`            |
 
 So `cli::standalone_state_dir`, `dirs::home_dir()` and a hard-coded
 `~/.local/share/<pkg>` all land inside with no change to your app.
 
-On the host it is `<data home>/qos-rooms/<room>/<package>`, where
+On the host it is `<data home>/tilo-rooms/<room>/<package>`, where
 `<room>` is the workspace the app was launched into. **Per-room
 partitioning falls out of the location**: two rooms are two directories,
 so an app opened in one room cannot read what it wrote in another, and
 there is no manifest field with which to opt out. A launch with no
-workspace (`qos-launcher run` from a shell, the CLI shim, a test) gets
+workspace (`tilo-launcher run` from a shell, the CLI shim, a test) gets
 the `personal` room, which is a room like any other and not a bypass.
-`plan/rooms.md` — "an app opened in a room starts empty" — is this
+`docs/architecture/rooms.md` — "an app opened in a room starts empty" — is this
 sentence, at the filesystem layer.
 
 `crates/packaging/launcher/tests/room_confinement.rs` proves it by
 reading: an app writes a record in room A and gets `ENOENT` for it in
-room B, under a real `bwrap`.
+room B, under `bwrap`.
 
 ### Portals
 
@@ -156,8 +156,8 @@ Portal names the launcher understands today:
 
 For every `[sandbox.services]` entry the launcher opens a connected Unix
 socket and passes the fd via bwrap's `--file <host-fd> <in-sandbox-path>`,
-plus a `QOS_SVC_<NAME>_FD=<child-fd>` env var. Your SDK code reads
-`QOS_SVC_COLLAB_FD` (or whatever) and takes it from there — see
+plus a `TILO_SVC_<NAME>_FD=<child-fd>` env var. Your SDK code reads
+`TILO_SVC_COLLAB_FD` (or whatever) and takes it from there — see
 [`runtime.md`](./runtime.md#portal--service-fds).
 
 If a service is `required` and the launcher can't resolve its
@@ -166,7 +166,7 @@ not pass an fd; your app then sees `NotAvailable::ServiceFdMissing`.
 
 ## Layer 2: seccomp
 
-Driven by `[sandbox].seccomp`. The only shipped profile is `qos-default`,
+Driven by `[sandbox].seccomp`. The only shipped profile is `tilo-default`,
 which blocks a small ring of syscalls (mount ops, kernel-module load, etc.)
 that a normal Rust GUI app has no reason to make. The seccomp filter is
 compiled by the launcher and installed via bwrap's `--seccomp <fd>` before
@@ -184,7 +184,7 @@ not name is visible and returns `EACCES` on every open, which reads from
 inside the app as a corrupted system rather than as a policy:
 
 - Each system-read-profile entry → RO access rights on that path.
-- `/run/qos/app` → RW access rights.
+- `/run/tilo/app` → RW access rights.
 - Each granted capability → RO or RW per the grant's verb.
 - `[sandbox.net] mode = "off"` → all outbound connections denied.
 - `[sandbox.net] mode = "allowlist"` → the app is pinned to the egress
@@ -194,30 +194,31 @@ inside the app as a corrupted system rather than as a policy:
   enforced. `landlock = "lax"` — warn but continue. `landlock = "off"` —
   skip the shim.
 
-You can see the landlock enforcement live in `qos-hello`'s probes:
+You can see the landlock enforcement live in `tilo-hello`'s probes:
 
 ```
 == sandbox probes ==
   read(        /proc/self/status): permission denied — blocked (bwrap or Landlock)
   read(              /etc/passwd): entity not found — blocked (bwrap or Landlock)
   stat(                     /tmp): OK
-  stat(            /qos-launcher): OK
-  write(/tmp/qos-hello-probe): OK
-  write(/var/qos-apps/probe): permission denied — blocked (bwrap or Landlock)
+  stat(            /tilo-launcher): OK
+  write(/tmp/tilo-hello-probe): OK
+  write(/var/tilo-apps/probe): permission denied — blocked (bwrap or Landlock)
 ```
 
 No manifest declares filesystem paths, so Landlock denies everything
 outside the launcher-provided base: the payload, the runtime, the system
-read profile, `/tmp`, and the app's own `/run/qos/app`.
+read profile, `/tmp`, and the app's own `/run/tilo/app`.
 
 Note the launcher's log line:
 
 ```
-qos-sandbox-exec: landlock: partially enforced (kernel ABI dropped some rights) (12 ro, 2 rw, net_restricted=true)
+tilo-sandbox-exec: landlock: partially enforced (kernel ABI dropped some rights) (12 ro, 2 rw, net_restricted=true)
 ```
 
-"partially enforced" is not a bug — Landlock supports up to ABI v5 today,
-and older kernel ABIs silently drop rights the kernel doesn't understand.
+"partially enforced" indicates that the kernel supports fewer Landlock rights
+than the profile requests — Landlock supports up to ABI v5 today, and older
+kernel ABIs silently drop rights they do not understand.
 The launcher records the count of successful rules and continues. On a
 kernel with Landlock v3+ the enforcement is total.
 
@@ -249,7 +250,7 @@ Three consequences worth knowing before you write networking code:
   and the sandbox's `127.0.0.1` is its own.
 
 A refused destination answers SOCKS5 `HOST_UNREACHABLE` / HTTP `502`, the
-same as a host that is genuinely unreachable. That is deliberate: handle it
+same as a host that is unreachable. That is deliberate: handle it
 as "offline", not as "ask the user to grant something".
 
 ### Denial is an absence, not a refusal
@@ -266,7 +267,7 @@ Where a denial can be expressed as a state your app already handles, it is:
 So `/var/workspace` is a **filtered view**: an app that enumerates it sees
 exactly what it was granted, as an ordinary directory. There is no entry
 that appears and then fails, and no errno that distinguishes "hidden" from
-"not there" — `fs/tests/integration_test.rs` compares the two for every
+"not there" — `crates/system/fs/tests/integration_test.rs` compares the two for every
 operation. Nothing here is a reason to prompt the user; if a path is not
 there, treat it as not there.
 
@@ -275,8 +276,8 @@ there, treat it as not there.
 An app can be granted read participation in a space: it sees shared
 documents and cannot originate a change to one. If that is your launch:
 
-- `QOS_PARTICIPATION=read-only` is set. Render a viewer.
-- **No identity broker is handed over**, so `QOS_IDENTITY_BROKER_FD` is unset
+- `TILO_PARTICIPATION=read-only` is set. Render a viewer.
+- **No identity broker is handed over**, so `TILO_IDENTITY_BROKER_FD` is unset
   and `runtime-identity::load()` finds nothing. You hold no signing authority, so
   there is no authored change for anything to reject.
 - The workspace is bound read-only and served read-only, and the document
@@ -296,7 +297,7 @@ capability question, not an environment one.
 
 After all three layers, your `main()` sees:
 
-- `argv[0]` = `/var/qos-apps/<pkg-id>/<entrypoint.bin>`.
+- `argv[0]` = `/var/tilo-apps/<pkg-id>/<entrypoint.bin>`.
 - CWD = your payload root inside the sandbox.
 - `PATH=/usr/local/bin:/usr/bin:/bin` — the sandbox's, not the user's. A
   session `PATH` names host directories that are not in your namespace, and
@@ -305,22 +306,22 @@ After all three layers, your `main()` sees:
   `LANGUAGE`, the `LC_*` set, and `TZ`. Plus `TERM` / `COLORTERM` for a CLI
   entrypoint. These describe the person rather than the session, which is
   why they are the one thing carried across rather than constructed.
-- `HOME=/run/qos/app`, and `XDG_DATA_HOME` / `XDG_STATE_HOME` /
-  `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` inside it. `QOS_APP_DIR` names the
+- `HOME=/run/tilo/app`, and `XDG_DATA_HOME` / `XDG_STATE_HOME` /
+  `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` inside it. `TILO_APP_DIR` names the
   same directory explicitly.
-- `LD_LIBRARY_PATH=/usr/lib/qos-runtime/<version>/lib`.
-- `QOS_PACKAGE_ID=<your reverse-DNS id>`.
-- `QOS_SVC_<NAME>_FD=<fd>` for every service the launcher opened.
+- `LD_LIBRARY_PATH=/usr/lib/tilo-runtime/<version>/lib`.
+- `TILO_PACKAGE_ID=<your reverse-DNS id>`.
+- `TILO_SVC_<NAME>_FD=<fd>` for every service the launcher opened.
 - `DBUS_SESSION_BUS_ADDRESS` (only if a portal is `via-host`).
-- `QOS_IDENTITY_BROKER_FD` — one inherited, connected signing capability,
+- `TILO_IDENTITY_BROKER_FD` — one inherited, connected signing capability,
   unless you are a read-only participant. It exposes public metadata and a
   bounded sign operation, never a key or host path.
-- `QOS_PARTICIPATION` — `read-only` or `author`, when a workspace-scoped
+- `TILO_PARTICIPATION` — `read-only` or `author`, when a workspace-scoped
   capability names you. Absent otherwise.
-- `HTTPS_PROXY` / `ALL_PROXY` / `QOS_NET_GATE` — only when your egress is
+- `HTTPS_PROXY` / `ALL_PROXY` / `TILO_NET_GATE` — only when your egress is
   filtered to a host allowlist.
-- `QOS_WORKSPACE_ID` — the workspace the compositor opened you into, as a
-  UUID. Two things read it: `runtime::is_qos_native()` only asks whether it
+- `TILO_WORKSPACE_ID` — the workspace the compositor opened you into, as a
+  UUID. Two things read it: `runtime::is_tilo_native()` only asks whether it
   is set, and the UI toolkit uses the value as the collaboration cluster id.
   Apps opened into the same workspace exchange CRDT deltas; apps in
   different workspaces are different rooms and never see each other's
@@ -333,7 +334,7 @@ After all three layers, your `main()` sees:
   workspace number, which means something different on every machine — a
   peer invited to the workspace adopts this same uuid, so their apps and
   yours address one cluster and your edits reach each other. Because
-  `is_qos_native()` now
+  `is_tilo_native()` now
   answers `true` inside a GUI launch, `cli::workspace_root()` resolves to
   `/var/workspace` there instead of the standalone
   `~/.local/share/<pkg-id>/` fallback; an app that writes through it needs
@@ -341,11 +342,11 @@ After all three layers, your `main()` sees:
 
 ## Debugging
 
-- `qos-install run <pkg> --no-services` skips service resolution entirely.
+- `tilo-install run <pkg> --no-services` skips service resolution entirely.
   Useful when a `required` service is what's preventing launch.
-- `qos-install run <pkg> --no-landlock` (hidden, debug-only) disables
+- `tilo-install run <pkg> --no-landlock` (hidden, debug-only) disables
   Layer 3. Layers 1 and 2 stay enforced.
-- `qos-pkg inspect <pkg>` shows the manifest without launching. Grep for
+- `tilo-pkg inspect <pkg>` shows the manifest without launching. Grep for
   `[sandbox.services]` and `[sandbox.portals]` first — they are the two
   blocks that decide whether the app can reach anything outside itself.
 

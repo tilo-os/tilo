@@ -44,13 +44,15 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+pub mod continuity;
 pub mod hardware;
 pub mod notification_policy;
+pub mod roaming_provenance;
 
-/// The file name under the qOS config root.
+/// The file name under the Tilo config root.
 const FILE: &str = "settings.json";
 
-/// The per-user qOS config root: `$XDG_CONFIG_HOME/qos`, else `$HOME/.config/qos`. `None`
+/// The per-user Tilo config root: `$XDG_CONFIG_HOME/tilo`, else `$HOME/.config/tilo`. `None`
 /// only when neither variable yields a usable path. Per the XDG spec, `XDG_CONFIG_HOME` is
 /// honoured only when set, non-empty **and absolute** — a relative value falls back to
 /// `$HOME`, and getting that rule wrong in one reader and right in another is what made this
@@ -60,12 +62,49 @@ pub fn config_root() -> Option<PathBuf> {
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty() && p.is_absolute())
         .or_else(|| dirs::home_dir().map(|h| h.join(".config")))?;
-    Some(base.join("qos"))
+    Some(base.join("tilo"))
+}
+
+/// Resolve one settings file, reusing an existing qOS file in place.
+/// Current Tilo files take precedence independently of unrelated config files.
+pub fn config_path(relative: &Path) -> Option<PathBuf> {
+    let root = config_root()?;
+    Some(compatible_config_path(root.parent()?, relative))
+}
+
+fn compatible_config_path(base: &Path, relative: &Path) -> PathBuf {
+    let current = base.join("tilo").join(relative);
+    let legacy = base.join("qos").join(relative);
+    if !current.exists() && legacy.exists() {
+        legacy
+    } else {
+        current
+    }
+}
+
+#[cfg(test)]
+mod rename_compatibility_tests {
+    use super::*;
+    #[test]
+    fn settings_survive_unrelated_new_directories_and_current_file_wins() {
+        let root = super::tests::tmpdir();
+        let relative = Path::new("settings.json");
+        let legacy = root.join("qos/settings.json");
+        let current = root.join("tilo/settings.json");
+        assert_eq!(compatible_config_path(&root, relative), current);
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, "{}").unwrap();
+        std::fs::create_dir_all(root.join("tilo/identity")).unwrap();
+        assert_eq!(compatible_config_path(&root, relative), legacy);
+        std::fs::write(&current, "{}").unwrap();
+        assert_eq!(compatible_config_path(&root, relative), current);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 /// The shared settings file: `<config root>/settings.json`.
 pub fn settings_path() -> Option<PathBuf> {
-    config_root().map(|r| r.join(FILE))
+    config_path(Path::new(FILE))
 }
 
 /// Read and parse the whole document. Returns an empty object for a missing, unreadable or
@@ -79,7 +118,7 @@ pub fn load() -> Map<String, Value> {
 }
 
 /// [`load`] from an explicit path. Exposed so tests can drive a scratch file without
-/// touching the real one.
+/// touching the configured settings file.
 pub fn load_at(path: &Path) -> Map<String, Value> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Map::new();
@@ -105,7 +144,7 @@ pub fn section(text: &str, name: &str) -> Map<String, Value> {
     }
 }
 
-/// Read one top-level section from the real settings file.
+/// Read one top-level section from the configured settings file.
 pub fn load_section(name: &str) -> Map<String, Value> {
     match load().get(name) {
         Some(Value::Object(m)) => m.clone(),
@@ -204,9 +243,9 @@ mod tests {
 
     static TMPDIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-    fn tmpdir() -> PathBuf {
+    pub(super) fn tmpdir() -> PathBuf {
         let p = std::env::temp_dir().join(format!(
-            "qos-settings-store-{}-{:?}-{}",
+            "tilo-settings-store-{}-{:?}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -226,8 +265,11 @@ mod tests {
         let dir = tmpdir();
         let prev = std::env::var_os("XDG_CONFIG_HOME");
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
-        assert_eq!(config_root(), Some(dir.join("qos")));
-        assert_eq!(settings_path(), Some(dir.join("qos").join("settings.json")));
+        assert_eq!(config_root(), Some(dir.join("tilo")));
+        assert_eq!(
+            settings_path(),
+            Some(dir.join("tilo").join("settings.json"))
+        );
         match prev {
             Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
             None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
@@ -254,7 +296,7 @@ mod tests {
             "a relative XDG_CONFIG_HOME must be ignored, got {root:?}"
         );
         let home = dirs::home_dir().expect("test needs a home dir");
-        assert_eq!(root, home.join(".config").join("qos"));
+        assert_eq!(root, home.join(".config").join("tilo"));
 
         match prev {
             Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
@@ -268,7 +310,7 @@ mod tests {
         let prev = std::env::var_os("XDG_CONFIG_HOME");
         unsafe { std::env::set_var("XDG_CONFIG_HOME", "") };
         let root = config_root().expect("falls back to $HOME/.config");
-        assert_eq!(root, dirs::home_dir().unwrap().join(".config").join("qos"));
+        assert_eq!(root, dirs::home_dir().unwrap().join(".config").join("tilo"));
         match prev {
             Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
             None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },

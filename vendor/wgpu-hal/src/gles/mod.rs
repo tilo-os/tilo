@@ -117,7 +117,7 @@ use alloc::{boxed::Box, string::String, string::ToString as _, sync::Arc, vec::V
 use core::{
     fmt,
     ops::Range,
-    sync::atomic::{AtomicU32, AtomicU8},
+    sync::atomic::{AtomicU8, AtomicU32},
 };
 use parking_lot::Mutex;
 
@@ -891,7 +891,10 @@ enum Command {
     },
     CopyBufferToTexture {
         src: Buffer,
-        #[allow(unused)]
+        #[allow(
+            unused,
+            reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+        )]
         src_target: BindTarget,
         dst: glow::Texture,
         dst_target: BindTarget,
@@ -903,7 +906,10 @@ enum Command {
         src_target: BindTarget,
         src_format: wgt::TextureFormat,
         dst: Buffer,
-        #[allow(unused)]
+        #[allow(
+            unused,
+            reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+        )]
         dst_target: BindTarget,
         copy: crate::BufferTextureCopy,
     },

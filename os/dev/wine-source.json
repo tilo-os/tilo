@@ -1,0 +1,13 @@
+{
+  "filename": "wine-11.0-3.fc44.src.rpm",
+  "sha256": "c4c777b791171cdfb34cefd787c1dba4a78791ce4dddfff0e78574e442ef4045",
+  "size": 42527080,
+  "fedora_key_sha256": "93642aec521a1e5e96dd715f7ae0ec0850ebc9de09a94ce03cae5263f26cc18a",
+  "spec_sha256": "55a61c216e6a4e86e5bae18180cc8d0f887d74e86867cca584a497d4f885a288",
+  "source_date_epoch": 1768778056,
+  "version": "11.0",
+  "release": "3.fc44",
+  "build_dist": ".fc44.tilo_traditional1",
+  "build_release": "3.fc44.tilo_traditional1",
+  "build_spec_sha256": "9285cf70e217bf57d8da3fdc18f3ec2f4e29820b25d2c540b2f473cad5b46b7f"
+}

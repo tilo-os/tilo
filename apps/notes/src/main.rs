@@ -1,7 +1,9 @@
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
+
 //! Thin binary entry point. All logic lives in the library.
 //!
 //! Collaboration: launched from the shell, the compositor's broker is
-//! reached through the `QOS_SVC_COLLAB_FD` descriptor the launcher injects —
+//! reached through the `TILO_SVC_COLLAB_FD` descriptor the launcher injects —
 //! nothing to configure. A raw process outside a session has no collaboration
 //! service; the descriptor is inherited rather than discovered by path.
 
@@ -50,15 +52,23 @@ const SHOT_SCENARIOS: &[&str] = &[
     "slash",
     "slash_applied",
     "heading",
+    "quote",
     "title_edit",
     "recipes",
     "formula",
+    "transclusion",
+    "external_link",
+    "table",
+    "image",
     "status",
     "saving",
     "save_error",
+    "import_success",
     "presence",
     "shortcuts",
     "tag_palette",
+    "scrolled",
+    "sidebar_scroll",
 ];
 
 /// # Errors
@@ -67,13 +77,13 @@ const SHOT_SCENARIOS: &[&str] = &[
 /// to spawn against its workspace.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
-        &LaunchSpec::new_with_args("dev.qos.notes", live_root)
-            .open_state_with_args(open_state)
+        &LaunchSpec::new_with_args("dev.tilo.notes", live_root)
             .allowed_live_flags(&["--import-legacy-stopped"])
             .allowed_live_options(&["--notebook-dir", "--notebook-state-dir"])
+            .max_positionals(1)
+            .prepare_legacy_with_args(prepare_launch)
             .shot_handler(render_shot)
-            .scenarios(SHOT_SCENARIOS)
-            .configure_app(configure_app),
+            .scenarios(SHOT_SCENARIOS),
     )?;
     Ok(())
 }
@@ -86,31 +96,38 @@ fn peer_id() -> &'static str {
 }
 
 fn live_root(args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchError> {
-    let root = args.value("--notebook-dir").map(std::path::PathBuf::from)
-        .or_else(notes::storage::default_root)
-        .ok_or_else(|| LaunchError::Operation("Notes notebook directory unavailable".into()))?;
-    let state_root = args.value("--notebook-state-dir")
+    let root = match args.value("--notebook-dir") {
+        Some(root) => std::path::PathBuf::from(root),
+        None => notes::storage::default_root()
+            .map_err(LaunchError::Operation)?
+            .ok_or_else(|| LaunchError::Operation("Notes notebook directory unavailable".into()))?,
+    };
+    let state_root = args
+        .value("--notebook-state-dir")
         .map_or_else(|| root.join(".qos-records"), std::path::PathBuf::from);
-    let notebook = notes::production::prepare_notebook(
-        &root, &state_root, &ui::collaboration::local_cluster_id().to_string(),
+    let notebook = notes::production::prepare_notebook_with_source(
+        &root,
+        &state_root,
+        &ui::collaboration::local_cluster_id().to_string(),
         args.has("--import-legacy-stopped"),
-    ).map_err(LaunchError::Operation)?;
+        args.positionals().first().map(String::as_str),
+    )
+    .map_err(LaunchError::Operation)?;
     Ok(Box::new(notebook.root))
 }
 
-fn open_state(_app_id: &'static str, _args: &LaunchArgs) -> (ui::State, ui::persist::Autosave) {
+fn prepare_launch(args: &LaunchArgs) -> Result<ui::launch::LegacyLaunchInputs, LaunchError> {
     let mut state = ui::State::new();
     state
         .doc
         .set_actor(automerge::ActorId::from(peer_id().as_bytes()));
-    (
-        state,
-        ui::persist::Autosave::disabled("Notes owns its canonical notebook persistence"),
-    )
-}
-
-fn configure_app(app: &mut ui::App) {
-    notes::actions::register(app.action_registry_mut());
+    let root = live_root(args)?;
+    let autosave = ui::persist::Autosave::disabled("Notes owns its canonical notebook persistence");
+    let mut registry = tilo_actions::ActionRegistry::new();
+    notes::actions::register(&mut registry);
+    Ok(ui::launch::LegacyLaunchInputs::new(state, root, autosave)
+        .with_registry(registry)
+        .with_widget_owned_persistence())
 }
 
 fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {

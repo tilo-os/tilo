@@ -1,0 +1,5 @@
+set(CMAKE_SYSTEM_PROCESSOR i686)
+set(CMAKE_C_COMPILER_TARGET i686-linux-gnu)
+set(CMAKE_CXX_COMPILER_TARGET i686-linux-gnu)
+set(TILO_FEX_LIBDIR lib)
+include(${CMAKE_CURRENT_LIST_DIR}/fex-cross-common.cmake)

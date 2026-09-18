@@ -3,11 +3,11 @@
 //! These carry things the earlier verbs could not express — the bytes
 //! behind a document's reference, an instruction addressed to another
 //! app's document, and the operations one app exports to the session —
-//! so each test drives a real client wrapper against a fake broker and
+//! so each test drives the client wrapper against an in-memory broker and
 //! asserts on what actually crossed the socket.
 //!
-//! No real broker; everything runs against a hand-rolled fake server
-//! over an in-memory `UnixStream` pair, as in `schema_v2.rs`.
+//! Everything runs against an in-memory server over a bounded in-memory byte stream,
+//! as in `schema_v2.rs`.
 
 // capnp's generated `Server` traits declare each verb as `-> impl Future`,
 // and these fakes return capnp's own `Promise`, which is the concrete type
@@ -26,13 +26,11 @@
 )]
 
 use std::cell::RefCell;
-use std::os::fd::IntoRawFd;
 use std::rc::Rc;
 
 use capnp::capability::Promise;
 use capnp::message::ReaderOptions;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
-use tokio::net::UnixStream;
 use tokio::task::LocalSet;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -40,7 +38,7 @@ use runtime_collab::raw::{
     action_input, action_stream, blob_stream, channel_handle, collab_service, invocation_stream,
 };
 use runtime_collab::{CollabClient, CollabServiceClient, ExportedAction, ExportedInput};
-use runtime_portal::UnixCapnpClient;
+use runtime_portal::CapnpClient;
 
 // shared capture state
 
@@ -371,10 +369,10 @@ impl collab_service::Server for FakeBroker {
 }
 
 fn stand_up_client(broker: FakeBroker) -> CollabClient {
-    let (server_side, client_side) = UnixStream::pair().unwrap();
+    let (server_side, client_side) = tokio::io::duplex(512);
 
     let broker_client: collab_service::Client = capnp_rpc::new_client(broker);
-    let (server_read, server_write) = server_side.into_split();
+    let (server_read, server_write) = tokio::io::split(server_side);
     let server_network = Box::new(twoparty::VatNetwork::new(
         server_read.compat(),
         server_write.compat_write(),
@@ -386,10 +384,8 @@ fn stand_up_client(broker: FakeBroker) -> CollabClient {
         let _ = server_rpc.await;
     });
 
-    let client_fd = client_side.into_std().unwrap().into_raw_fd();
-    let unix =
-        UnixCapnpClient::from_connected_fd(client_fd, rpc_twoparty_capnp::Side::Client).unwrap();
-    let client: CollabServiceClient = unix.bootstrap();
+    let connection = CapnpClient::from_connected_io(client_side, rpc_twoparty_capnp::Side::Client);
+    let client: CollabServiceClient = connection.bootstrap();
     CollabClient::from_raw(client)
 }
 

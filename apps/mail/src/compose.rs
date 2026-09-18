@@ -1,7 +1,7 @@
 //! The Compose window — a **movable, resizable, focus-capturing** floating
 //! panel for writing a message.
 //!
-//! ## Focus capture (the headline fix)
+//! ## Focus capture
 //! `ui`'s `App` has no modal/overlay focus-trap and `ModalDialog`'s "blocking"
 //! is only partially implemented, so a naive overlay lets clicks fall through
 //! to whatever is painted behind it, and embedded `TextInput`s never register a
@@ -20,12 +20,11 @@
 //! Geometry is clamped to a minimum size and kept on-screen. This works in any
 //! environment (it's all in-app drawing), so it's fully exercised by `--shots`.
 //!
-//! ## Detach (qOS pop-out)
+//! ## Detach (Tilo pop-out)
 //! [`DockState`] models two placements: `Docked` (centred in-app modal) and
 //! `Detached` (parked beside the app content, simulating a separate window).
-//! Both are movable + resizable. The Pop-out button toggles between them, so it
-//! performs a real, visible placement change. **True OS-window detach** — a real
-//! second top-level surface beside the app — needs the qOS compositor's
+//! Both are movable + resizable. The Pop-out button toggles between them. A
+//! second top-level surface beside the app needs the Tilo compositor's
 //! window-group / multi-window support (`shell`), which is not available through
 //! the single-window `ui::App`; when that lands, a detached draft is handed back
 //! via [`ComposeWindow::reattach`].
@@ -44,7 +43,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace, TextInput};
 
-use crate::model::{ComposeFormat, Draft, attachment_display_name};
+use crate::model::{ComposeFormat, Draft, DraftAttachment};
 use crate::wysiwyg::{BlockKind, InlineMark, Wysiwyg};
 
 /// Authored 1× bands; the measured rules ([`ComposeMetrics`]) never go below
@@ -149,19 +148,20 @@ impl ComposeMetrics {
             toolbar_h: (line(tr, TOOLBAR_GLYPH_SIZE, TextWeight::Bold) + 2.0 * s2 + 6.0)
                 .max(TOOLBAR_H),
             button_h: (line(tr, BUTTON_SIZE, TextWeight::Semibold) + 2.0 * s2).max(BUTTON_H),
-            cc_bcc_w: (width(tr, "mail-compose-cc-bcc", CHIP_SIZE, TextWeight::Regular)
-                + 2.0 * s3)
+            cc_bcc_w: (width(tr, "mail-compose-cc-bcc", CHIP_SIZE, TextWeight::Regular) + 2.0 * s3)
                 .max(d.cc_bcc_w),
-            attach_w: (width(tr, "mail-compose-attach", CHIP_SIZE, TextWeight::Regular)
-                + 2.0 * s3)
+            attach_w: (width(tr, "mail-compose-attach", CHIP_SIZE, TextWeight::Regular) + 2.0 * s3)
                 .max(d.attach_w),
             toggle_w: (f64::from(tr.measure("\u{25CF} HTML", CHIP_SIZE, None).0) + 2.0 * s4)
                 .max(d.toggle_w),
-            send_w: (width(tr, "mail-compose-send", BUTTON_SIZE, TextWeight::Semibold)
-                + 2.0 * s4)
+            send_w: (width(tr, "mail-compose-send", BUTTON_SIZE, TextWeight::Semibold) + 2.0 * s4)
                 .max(d.send_w),
-            draft_w: (width(tr, "mail-compose-save-draft", BUTTON_SIZE, TextWeight::Regular)
-                + 2.0 * s4)
+            draft_w: (width(
+                tr,
+                "mail-compose-save-draft",
+                BUTTON_SIZE,
+                TextWeight::Regular,
+            ) + 2.0 * s4)
                 .max(d.draft_w),
             discard_w: (width(tr, "mail-compose-discard", BUTTON_SIZE, TextWeight::Regular)
                 + 2.0 * s4)
@@ -174,6 +174,22 @@ impl ComposeMetrics {
                 .max(d.prompt_cancel_w),
         }
     }
+}
+
+struct DrawContext<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
+pub(crate) struct ComposeEventContext<'a> {
+    pub(crate) scale_factor: f64,
+    pub(crate) modifiers: winit::event::Modifiers,
+    pub(crate) state: &'a mut automerge::AutoCommit,
+    pub(crate) path: &'a automerge::ObjId,
+    pub(crate) node_id: taffy::NodeId,
+    pub(crate) taffy: &'a taffy::TaffyTree<()>,
 }
 
 /// Where the compose window is parked.
@@ -223,7 +239,7 @@ pub enum ComposeHit {
     Numbered,
     Quote,
     Link,
-    // inline prompt (Attach path / Link URL entry)
+    // inline URL prompt
     PromptField,
     PromptConfirm,
     PromptCancel,
@@ -232,17 +248,13 @@ pub enum ComposeHit {
 /// What the inline prompt bar is collecting.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PromptKind {
-    /// A filesystem path to attach as a real file.
-    Attach,
     /// A URL to link the current selection (or insert) to.
     Link,
 }
 
 /// A small inline entry bar shown inside the compose window when the user needs
-/// to type a value the app can't fabricate: a file path to attach, or a link
-/// target. Confirming an Attach reads the real file; confirming a Link applies
-/// the entered `href`. This exists because `ui` has no file-picker / URL-prompt
-/// primitive yet (see the app-level UI-gap notes).
+/// to type a link target. File attachments use the host portal, preserving the
+/// selected descriptor rather than accepting arbitrary host paths.
 struct ComposePrompt {
     kind: PromptKind,
     input: TextInput,
@@ -253,6 +265,7 @@ struct ComposePrompt {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ComposeAction {
     None,
+    RequestAttachment,
     Send,
     SaveDraft,
     Close,
@@ -306,14 +319,12 @@ pub struct ComposeWindow {
     // body
     format: ComposeFormat,
     editor: Wysiwyg,
-    /// Plain-text body (Text mode) — a shared multiline [`TextInput`], so the
-    /// body gets real caret/selection/clipboard/a11y for free instead of a
-    /// hand-rolled `String`.
+    /// Plain-text body (Text mode), backed by a shared multiline [`TextInput`].
     plain_body: TextInput,
 
-    /// Filesystem paths of staged attachments (real files read on send).
-    attachments: Vec<String>,
-    /// The inline path/URL prompt, when open.
+    /// Portable qdoc attachment references, never host paths.
+    attachments: Vec<DraftAttachment>,
+    /// The inline URL prompt, when open.
     prompt: Option<ComposePrompt>,
     focus: Field,
     drag: Option<Drag>,
@@ -411,10 +422,6 @@ impl ComposeWindow {
     /// Semantic mirror of the immediate-mode compose surface. Bounds come from
     /// the same hit map as pointer input and values come from the retained text
     /// fields, so screen readers and automation operate the editor users see.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the dialog's complete semantic tree is kept beside its visual control inventory to prevent drift"
-    )]
     pub fn accessibility_node(&self) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
         let rect_for = |hit| {
@@ -487,9 +494,39 @@ impl ComposeWindow {
                 ),
             );
         }
+        for (hit, name, target, checked) in self.accessibility_control_specs() {
+            let Some(rect) = rect_for(hit) else { continue };
+            let role = if checked.is_some() {
+                Role::ToggleButton
+            } else {
+                Role::Button
+            };
+            children.push(
+                AccessNode::new(role)
+                    .with_name(name)
+                    .with_bounds(rect)
+                    .with_action_target(format!("mail.compose:{target}"))
+                    .with_state(AccessState {
+                        focusable: true,
+                        checked,
+                        ..Default::default()
+                    }),
+            );
+        }
+        AccessNode::new(Role::Dialog)
+            .with_name("Compose email")
+            .with_description("Email composer")
+            .with_bounds(self.rect)
+            .with_state(AccessState::new().modal(true))
+            .with_children(children)
+    }
+
+    fn accessibility_control_specs(
+        &self,
+    ) -> Vec<(ComposeHit, &'static str, &'static str, Option<bool>)> {
         let marks = self.editor.active_marks();
         let block = self.editor.active_block_kind();
-        for (hit, name, target, checked) in [
+        vec![
             (ComposeHit::Send, "Send", "send", None),
             (ComposeHit::SaveDraft, "Save draft", "save", None),
             (ComposeHit::Discard, "Discard", "discard", None),
@@ -545,31 +582,7 @@ impl ComposeWindow {
                 Some(matches!(block, BlockKind::Quote)),
             ),
             (ComposeHit::Link, "Insert link", "link", None),
-        ] {
-            let Some(rect) = rect_for(hit) else { continue };
-            let role = if checked.is_some() {
-                Role::ToggleButton
-            } else {
-                Role::Button
-            };
-            children.push(
-                AccessNode::new(role)
-                    .with_name(name)
-                    .with_bounds(rect)
-                    .with_action_target(format!("mail.compose:{target}"))
-                    .with_state(AccessState {
-                        focusable: true,
-                        checked,
-                        ..Default::default()
-                    }),
-            );
-        }
-        AccessNode::new(Role::Dialog)
-            .with_name("Compose email")
-            .with_description("Email composer")
-            .with_bounds(self.rect)
-            .with_state(AccessState::new().modal(true))
-            .with_children(children)
+        ]
     }
 
     pub fn perform_semantic_action(
@@ -624,7 +637,9 @@ impl ComposeWindow {
                 self.close();
                 return Some(ComposeAction::Close);
             }
-            "attach" if matches!(action, Action::Activate) => self.open_prompt(PromptKind::Attach),
+            "attach" if matches!(action, Action::Activate) => {
+                return Some(ComposeAction::RequestAttachment);
+            }
             "cc-bcc" if matches!(action, Action::Activate | Action::ToggleCheck) => {
                 self.show_cc_bcc = !self.show_cc_bcc;
                 self.relayout_regions();
@@ -683,7 +698,6 @@ impl ComposeWindow {
     }
 
     /// Seed the window as a reply: recipient, subject, and a quoted body.
-    #[allow(clippy::too_many_arguments)]
     pub fn open_reply(&mut self, to: &str, subject: &str, quote: &str) {
         self.open_blank();
         self.to.set_text(to);
@@ -850,9 +864,29 @@ impl ComposeWindow {
             subject: self.subject.value().to_string(),
             body,
             html_body,
+            calendar_ics: None,
             attachments: self.attachments.clone(),
             in_reply_to: None,
         }
+    }
+
+    /// Add a verified portal-staged attachment, enforcing the same bounds the
+    /// replicated draft action will enforce on every collaborator.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when metadata is invalid/duplicate or attachment
+    /// count and total-byte bounds would be exceeded.
+    pub fn add_attachment(&mut self, attachment: DraftAttachment) -> Result<(), String> {
+        let mut next = self.attachments.clone();
+        next.push(attachment);
+        let bounded = crate::attachment_store::bounded(&next);
+        if bounded.len() != next.len() {
+            return Err("Attachment is invalid, duplicated, or exceeds Mail's draft limits".into());
+        }
+        self.attachments = bounded;
+        self.dirty = true;
+        Ok(())
     }
 
     // ---- focus ----
@@ -1015,10 +1049,8 @@ impl ComposeWindow {
                 ComposeHit::Quote,
                 ComposeHit::Link,
             ] {
-                self.hits.push((
-                    Rect::new(tx, toolbar_y, tx + tw, toolbar_y + tw),
-                    hit,
-                ));
+                self.hits
+                    .push((Rect::new(tx, toolbar_y, tx + tw, toolbar_y + tw), hit));
                 // Glyph squares are `s1` apart (they used to sit 2 px apart,
                 // touching at 1×); the inline-marks group ends with an extra
                 // `s2`, so the group gap is the `s3` sibling step (HIG §7b).
@@ -1054,12 +1086,7 @@ impl ComposeWindow {
         } else {
             30.0 * m.scale
         };
-        self.chips_band = Rect::new(
-            lx,
-            self.prompt_band.y0 - chips_h,
-            rx,
-            self.prompt_band.y0,
-        );
+        self.chips_band = Rect::new(lx, self.prompt_band.y0 - chips_h, rx, self.prompt_band.y0);
         let body = Rect::new(lx, y, rx, self.chips_band.y0 - PAD);
         self.hits.push((body, ComposeHit::Body));
         match self.format {
@@ -1122,22 +1149,13 @@ impl ComposeWindow {
     /// move to every input (and the prompt, if open) so their hover state
     /// tracks — required before a press will register a caret. Part of
     /// [`Self::handle_event`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a direct pass-through of handle_event's own event-forwarding parameters, which mirror Widget::handle_event's fixed shape"
-    )]
     fn handle_cursor_moved(
         &mut self,
         position: winit::dpi::PhysicalPosition<f64>,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
+        ctx: &mut ComposeEventContext<'_>,
     ) -> (bool, ComposeAction) {
-        let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
+        let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         self.last_mouse = pt;
         self.dirty = true;
         // Active move/resize drag.
@@ -1153,14 +1171,14 @@ impl ComposeWindow {
         for inp in [&mut self.to, &mut self.cc, &mut self.bcc, &mut self.subject] {
             inp.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
+                ctx.scale_factor,
+                &ctx.modifiers,
+                ctx.state,
+                ctx.path,
                 &mut h,
                 &mut ft,
-                node_id,
-                taffy,
+                ctx.node_id,
+                ctx.taffy,
             );
         }
         // Forward to the plain body too so its hover / drag-selection tracks
@@ -1168,27 +1186,27 @@ impl ComposeWindow {
         if matches!(self.format, ComposeFormat::Text) {
             self.plain_body.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
+                ctx.scale_factor,
+                &ctx.modifiers,
+                ctx.state,
+                ctx.path,
                 &mut h,
                 &mut ft,
-                node_id,
-                taffy,
+                ctx.node_id,
+                ctx.taffy,
             );
         }
         if let Some(p) = self.prompt.as_mut() {
             p.input.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
+                ctx.scale_factor,
+                &ctx.modifiers,
+                ctx.state,
+                ctx.path,
                 &mut h,
                 &mut ft,
-                node_id,
-                taffy,
+                ctx.node_id,
+                ctx.taffy,
             );
         }
         self.editor.on_cursor_moved(pt, false);
@@ -1197,37 +1215,18 @@ impl ComposeWindow {
         (self.rect.contains(pt), ComposeAction::None)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "deliberately shaped to match Widget::handle_event's own parameter list (event/scale_factor/modifiers/state/path/node_id/taffy), the convention every host call site in this codebase already expects"
-    )]
-    pub fn handle_event(
+    pub(crate) fn handle_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
+        ctx: &mut ComposeEventContext<'_>,
     ) -> (bool, ComposeAction) {
         if !self.open {
             return (false, ComposeAction::None);
         }
-        let shift = modifiers.state().shift_key();
-        let ctrl = modifiers.state().control_key();
-
         match event {
-            WindowEvent::CursorMoved { position, .. } => self.handle_cursor_moved(
-                *position,
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                path,
-                node_id,
-                taffy,
-            ),
+            WindowEvent::CursorMoved { position, .. } => {
+                self.handle_cursor_moved(*position, event, ctx)
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -1256,20 +1255,7 @@ impl ComposeWindow {
                     .find(|(r, _)| r.contains(pt))
                     .map(|(_, h)| *h);
                 if let Some(hit) = hit {
-                    return (
-                        true,
-                        self.dispatch_hit(
-                            hit,
-                            event,
-                            pt,
-                            scale_factor,
-                            *modifiers,
-                            state,
-                            path,
-                            node_id,
-                            taffy,
-                        ),
-                    );
+                    return (true, self.dispatch_hit(hit, event, pt, ctx));
                 }
                 (true, ComposeAction::None)
             }
@@ -1283,17 +1269,7 @@ impl ComposeWindow {
                 }
                 (self.rect.contains(self.last_mouse), ComposeAction::None)
             }
-            WindowEvent::KeyboardInput { .. } => self.handle_keyboard_input(
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                path,
-                node_id,
-                taffy,
-                shift,
-                ctrl,
-            ),
+            WindowEvent::KeyboardInput { .. } => self.handle_keyboard_input(event, ctx),
             _ => (self.rect.contains(self.last_mouse), ComposeAction::None),
         }
     }
@@ -1302,34 +1278,15 @@ impl ComposeWindow {
     /// (Esc cancels it, Enter confirms), then Esc closes the window, then the
     /// focused body editor or header field gets the key. Always consumed
     /// while the window is open (modal). Part of [`Self::handle_event`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a direct pass-through of handle_event's own event-forwarding parameters, which mirror Widget::handle_event's fixed shape, plus the two already-decoded modifier flags"
-    )]
     fn handle_keyboard_input(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
-        shift: bool,
-        ctrl: bool,
+        ctx: &mut ComposeEventContext<'_>,
     ) -> (bool, ComposeAction) {
         // The inline prompt captures keys while open: Esc cancels it (not the
         // window), Enter confirms, everything else edits the field.
         if self.prompt.is_some() {
-            return self.handle_prompt_key(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                node_id,
-                taffy,
-            );
+            return self.handle_prompt_key(event, ctx);
         }
         // Escape closes.
         if Self::is_escape_press(event) {
@@ -1338,21 +1295,11 @@ impl ComposeWindow {
         }
         // Body editor.
         if matches!(self.focus, Field::Body) {
-            self.handle_body_key(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                node_id,
-                taffy,
-                shift,
-                ctrl,
-            );
+            self.handle_body_key(event, ctx);
             return (true, ComposeAction::None);
         }
         // Header input.
-        self.handle_header_key(event, scale_factor, modifiers, state, path, node_id, taffy);
+        self.handle_header_key(event, ctx);
         // Always consume keyboard while open (modal).
         (true, ComposeAction::None)
     }
@@ -1360,19 +1307,10 @@ impl ComposeWindow {
     /// Keys while the inline prompt bar is open: Esc cancels it, Enter
     /// confirms, everything else edits the prompt's field. Part of
     /// [`Self::handle_keyboard_input`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a direct pass-through of handle_keyboard_input's own event-forwarding parameters"
-    )]
     fn handle_prompt_key(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
+        ctx: &mut ComposeEventContext<'_>,
     ) -> (bool, ComposeAction) {
         use winit::event::KeyEvent as WKeyEvent;
         use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
@@ -1404,14 +1342,14 @@ impl ComposeWindow {
         if let Some(p) = self.prompt.as_mut() {
             p.input.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
+                ctx.scale_factor,
+                &ctx.modifiers,
+                ctx.state,
+                ctx.path,
                 &mut h,
                 &mut ft,
-                node_id,
-                taffy,
+                ctx.node_id,
+                ctx.taffy,
             );
         }
         self.dirty = true;
@@ -1435,22 +1373,9 @@ impl ComposeWindow {
     /// Route a key to the HTML editor or the plain-text body input,
     /// depending on the active compose format. Part of
     /// [`Self::handle_keyboard_input`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a direct pass-through of handle_keyboard_input's own event-forwarding parameters"
-    )]
-    fn handle_body_key(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
-        shift: bool,
-        ctrl: bool,
-    ) {
+    fn handle_body_key(&mut self, event: &WindowEvent, ctx: &mut ComposeEventContext<'_>) {
+        let shift = ctx.modifiers.state().shift_key();
+        let ctrl = ctx.modifiers.state().control_key();
         match self.format {
             ComposeFormat::Html => {
                 self.editor.on_key(event, shift, ctrl);
@@ -1460,14 +1385,14 @@ impl ComposeWindow {
                 let mut ft: Option<taffy::NodeId> = None;
                 self.plain_body.handle_event(
                     event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
+                    ctx.scale_factor,
+                    &ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
                     &mut h,
                     &mut ft,
-                    node_id,
-                    taffy,
+                    ctx.node_id,
+                    ctx.taffy,
                 );
             }
         }
@@ -1476,50 +1401,31 @@ impl ComposeWindow {
 
     /// Forward a key to whichever header field (To/Cc/Bcc/Subject) has focus.
     /// Part of [`Self::handle_keyboard_input`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a direct pass-through of handle_keyboard_input's own event-forwarding parameters"
-    )]
-    fn handle_header_key(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
-    ) {
+    fn handle_header_key(&mut self, event: &WindowEvent, ctx: &mut ComposeEventContext<'_>) {
         let mut h = false;
         let mut ft: Option<taffy::NodeId> = None;
         if let Some(inp) = self.focused_input() {
             inp.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
+                ctx.scale_factor,
+                &ctx.modifiers,
+                ctx.state,
+                ctx.path,
                 &mut h,
                 &mut ft,
-                node_id,
-                taffy,
+                ctx.node_id,
+                ctx.taffy,
             );
         }
         self.dirty = true;
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn dispatch_hit(
         &mut self,
         hit: ComposeHit,
         event: &WindowEvent,
         pt: Point,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
+        ctx: &mut ComposeEventContext<'_>,
     ) -> ComposeAction {
         match hit {
             ComposeHit::TitleBar => {
@@ -1538,7 +1444,7 @@ impl ComposeWindow {
                 self.show_cc_bcc = !self.show_cc_bcc;
                 self.relayout_regions();
             }
-            ComposeHit::Attach => self.open_prompt(PromptKind::Attach),
+            ComposeHit::Attach => return ComposeAction::RequestAttachment,
             ComposeHit::FormatToggle => self.toggle_format(),
             ComposeHit::FieldTo
             | ComposeHit::FieldCc
@@ -1552,27 +1458,9 @@ impl ComposeWindow {
                     ComposeHit::FieldSubject => Field::Subject,
                     _ => Field::To,
                 };
-                self.focus_and_forward(
-                    field,
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    node_id,
-                    taffy,
-                );
+                self.focus_and_forward(field, event, ctx);
             }
-            ComposeHit::Body => self.dispatch_body_press(
-                pt,
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                node_id,
-                taffy,
-            ),
+            ComposeHit::Body => self.dispatch_body_press(pt, event, ctx),
             ComposeHit::Bold => self.editor.toggle_inline(InlineMark::Bold),
             ComposeHit::Italic => self.editor.toggle_inline(InlineMark::Italic),
             ComposeHit::Underline => self.editor.toggle_inline(InlineMark::Underline),
@@ -1591,14 +1479,14 @@ impl ComposeWindow {
                     let mut ft: Option<taffy::NodeId> = None;
                     p.input.handle_event(
                         event,
-                        scale_factor,
-                        &modifiers,
-                        state,
-                        path,
+                        ctx.scale_factor,
+                        &ctx.modifiers,
+                        ctx.state,
+                        ctx.path,
                         &mut h,
                         &mut ft,
-                        node_id,
-                        taffy,
+                        ctx.node_id,
+                        ctx.taffy,
                     );
                 }
             }
@@ -1611,20 +1499,11 @@ impl ComposeWindow {
     /// (HTML mode), or forward the real press so the plain-text body places
     /// its own caret at the click point (the preceding `CursorMoved` already
     /// set its hover). Part of [`Self::dispatch_hit`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a direct pass-through of dispatch_hit's own event-forwarding parameters, which mirror Widget::handle_event's fixed shape"
-    )]
     fn dispatch_body_press(
         &mut self,
         pt: Point,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
+        ctx: &mut ComposeEventContext<'_>,
     ) {
         self.set_focus(Field::Body);
         match self.format {
@@ -1638,21 +1517,21 @@ impl ComposeWindow {
                 let mut ft: Option<taffy::NodeId> = None;
                 self.plain_body.handle_event(
                     event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
+                    ctx.scale_factor,
+                    &ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
                     &mut h,
                     &mut ft,
-                    node_id,
-                    taffy,
+                    ctx.node_id,
+                    ctx.taffy,
                 );
             }
         }
     }
 
-    /// Open the inline prompt bar to collect a file path (Attach) or a URL
-    /// (Link). The body/header lose focus so keystrokes land in the prompt.
+    /// Open the inline prompt bar to collect a URL. File selection always
+    /// goes through the root's host-native portal boundary.
     fn open_prompt(&mut self, kind: PromptKind) {
         let mut input = TextInput::local();
         input.set_plain_chrome(true);
@@ -1685,43 +1564,16 @@ impl ComposeWindow {
                     }
                 }
             }
-            PromptKind::Attach => {
-                if val.is_empty() {
-                    return;
-                }
-                match std::fs::metadata(&val) {
-                    Ok(m) if m.is_file() => {
-                        self.attachments.push(val);
-                    }
-                    _ => {
-                        let mut input = TextInput::local();
-                        input.set_plain_chrome(true);
-                        input.set_text(&val);
-                        input.set_focus(true);
-                        self.prompt = Some(ComposePrompt {
-                            kind: PromptKind::Attach,
-                            input,
-                            error: Some("No readable file at that path".into()),
-                        });
-                    }
-                }
-            }
         }
         self.relayout_regions();
         self.dirty = true;
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn focus_and_forward(
         &mut self,
         field: Field,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
+        ctx: &mut ComposeEventContext<'_>,
     ) {
         self.set_focus(field);
         // Forward the *real* press the host just received so the input places
@@ -1733,14 +1585,14 @@ impl ComposeWindow {
         if let Some(inp) = self.focused_input() {
             inp.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
+                ctx.scale_factor,
+                &ctx.modifiers,
+                ctx.state,
+                ctx.path,
                 &mut h,
                 &mut ft,
-                node_id,
-                taffy,
+                ctx.node_id,
+                ctx.taffy,
             );
         }
     }
@@ -1849,7 +1701,15 @@ impl ComposeWindow {
         self.draw_prompt(scene, t, tr, theme, presence);
 
         // Buttons.
-        self.draw_action_button(scene, t, tr, theme, ComposeHit::Send, "mail-compose-send", true);
+        self.draw_action_button(
+            scene,
+            t,
+            tr,
+            theme,
+            ComposeHit::Send,
+            "mail-compose-send",
+            true,
+        );
         self.draw_action_button(
             scene,
             t,
@@ -1977,7 +1837,14 @@ impl ComposeWindow {
         // The body card's rest edge is derived from its base fill (HIG §9.5);
         // focus keeps the focus ring.
         if matches!(self.focus, Field::Body) {
-            pill(scene, t, body, c.surfaces.base, Some(c.border_focus), Some(8.0));
+            pill(
+                scene,
+                t,
+                body,
+                c.surfaces.base,
+                Some(c.border_focus),
+                Some(8.0),
+            );
         } else {
             card(scene, t, body, 8.0, c.surfaces.base);
         }
@@ -2100,7 +1967,7 @@ impl ComposeWindow {
         }
     }
 
-    /// Draw the staged-attachment chips (real files, shown by basename) above
+    /// Draw the staged-attachment chips (portable content, shown by filename) above
     /// the button row. Part of [`Self::draw`].
     fn draw_staged_attachment_chips(
         &self,
@@ -2122,7 +1989,7 @@ impl ComposeWindow {
         let mut ax = band.x0;
         let (gw, gh) = tr.measure("\u{1F4CE}", 12.0, None);
         for path in &self.attachments {
-            let name = attachment_display_name(path);
+            let name = &path.filename;
             let (lw, lh) = tr.measure(name, CHIP_SIZE, None);
             let chip = Rect::new(
                 ax,
@@ -2144,7 +2011,10 @@ impl ComposeWindow {
                 name,
                 CHIP_SIZE,
                 c.text_primary,
-                t * Affine::translate((chip.x0 + 7.0 + f64::from(gw) + 7.0, cy - f64::from(lh) / 2.0)),
+                t * Affine::translate((
+                    chip.x0 + 7.0 + f64::from(gw) + 7.0,
+                    cy - f64::from(lh) / 2.0,
+                )),
                 None,
             );
             ax = chip.x1 + 8.0;
@@ -2196,10 +2066,6 @@ impl ComposeWindow {
         );
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct, independently-meaningful piece of one small button's draw call (the universal scene/t/tr/theme quad plus this button's own identity/state); bundling them would just move the same count into a field list"
-    )]
     fn draw_chip_button(
         &self,
         scene: &mut Scene,
@@ -2424,7 +2290,6 @@ impl ComposeWindow {
             Some(9.0),
         );
         let label = crate::i18n::t(match kind {
-            PromptKind::Attach => "mail-compose-prompt-attach",
             PromptKind::Link => "mail-compose-prompt-link",
         });
         let (_, lh) = tr.measure(&label, LABEL_SIZE, None);
@@ -2510,10 +2375,6 @@ impl ComposeWindow {
         );
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct, independently-meaningful piece of one small button's draw call (the universal scene/t/tr/theme quad plus this button's own identity/state); bundling them would just move the same count into a field list"
-    )]
     fn draw_action_button(
         &self,
         scene: &mut Scene,
@@ -2622,7 +2483,10 @@ mod tests {
         let draft = hit_rect(&w, ComposeHit::SaveDraft);
         let discard = hit_rect(&w, ComposeHit::Discard);
         assert_eq!(to.height(), big.field_h);
-        assert!(subject.y0 >= to.y1, "the subject row starts under the To row");
+        assert!(
+            subject.y0 >= to.y1,
+            "the subject row starts under the To row"
+        );
         assert_eq!(send.width(), big.send_w);
         assert!(draft.x0 >= send.x1, "Save draft sits after Send");
         assert!(discard.x0 >= draft.x1, "Discard sits after Save draft");
@@ -2702,7 +2566,17 @@ mod tests {
         let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
         let node = taffy::NodeId::new(0);
         let mut send = |ev: &WindowEvent| {
-            w.handle_event(ev, 1.0, &m, &mut doc, &automerge::ROOT, node, &taffy);
+            w.handle_event(
+                ev,
+                &mut ComposeEventContext {
+                    scale_factor: 1.0,
+                    modifiers: m,
+                    state: &mut doc,
+                    path: &automerge::ROOT,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
         };
         send(&key(Key::Character(SmolStr::new("H")), Some("H")));
         send(&key(Key::Character(SmolStr::new("i")), Some("i")));
@@ -2767,13 +2641,33 @@ mod tests {
             device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         };
-        w.handle_event(&mv, 1.0, &m, &mut doc, &automerge::ROOT, node, &taffy);
+        w.handle_event(
+            &mv,
+            &mut ComposeEventContext {
+                scale_factor: 1.0,
+                modifiers: m,
+                state: &mut doc,
+                path: &automerge::ROOT,
+                node_id: node,
+                taffy: &taffy,
+            },
+        );
         let pr = WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         };
-        w.handle_event(&pr, 1.0, &m, &mut doc, &automerge::ROOT, node, &taffy)
+        w.handle_event(
+            &pr,
+            &mut ComposeEventContext {
+                scale_factor: 1.0,
+                modifiers: m,
+                state: &mut doc,
+                path: &automerge::ROOT,
+                node_id: node,
+                taffy: &taffy,
+            },
+        )
     }
 
     fn hit_rect(w: &ComposeWindow, hit: ComposeHit) -> Rect {
@@ -2785,51 +2679,17 @@ mod tests {
     }
 
     #[test]
-    fn attach_button_opens_prompt_and_stages_a_real_file() {
-        // Stage a real file to attach.
-        let path = std::env::temp_dir().join(format!("mail-compose-{}.txt", uuid::Uuid::new_v4()));
-        std::fs::write(&path, b"body").unwrap();
-
+    fn attach_button_requests_the_root_portal_boundary() {
         let mut w = win();
-        // Click the Attach button through the real hit path → opens the prompt
-        // (no fabricated filename is staged).
+        // The compose widget never accepts a typed path; its root owns the
+        // host portal and returns a descriptor-only staged attachment later.
         let attach = hit_rect(&w, ComposeHit::Attach);
-        let (consumed, _) = press_at(&mut w, attach.center());
+        let (consumed, action) = press_at(&mut w, attach.center());
         assert!(consumed);
-        assert!(w.prompt.is_some(), "Attach opens the path prompt");
-        assert!(w.attachments.is_empty(), "no fabricated attachment staged");
-
-        // Type the real path and confirm → the real file is staged.
-        w.prompt
-            .as_mut()
-            .unwrap()
-            .input
-            .set_text(&path.to_string_lossy());
-        w.confirm_prompt();
-        assert!(w.prompt.is_none(), "a valid path closes the prompt");
-        assert_eq!(w.attachments.len(), 1);
-        assert_eq!(
-            w.to_draft().attachments,
-            vec![path.to_string_lossy().to_string()]
-        );
-
-        std::fs::remove_file(&path).ok();
-    }
-
-    #[test]
-    fn attach_prompt_rejects_missing_path() {
-        let mut w = win();
-        w.open_prompt(PromptKind::Attach);
-        w.prompt
-            .as_mut()
-            .unwrap()
-            .input
-            .set_text("/no/such/mail/file-xyz");
-        w.confirm_prompt();
-        assert!(w.attachments.is_empty(), "a missing path stages nothing");
+        assert_eq!(action, ComposeAction::RequestAttachment);
         assert!(
-            w.prompt.as_ref().is_some_and(|p| p.error.is_some()),
-            "the prompt stays open showing an error"
+            w.attachments.is_empty(),
+            "no host path or fabricated attachment is staged"
         );
     }
 
@@ -2844,11 +2704,11 @@ mod tests {
             .as_mut()
             .unwrap()
             .input
-            .set_text("https://qos.example/docs");
+            .set_text("https://tilo.example/docs");
         w.confirm_prompt();
         let html = w.editor.to_html();
         assert!(
-            html.contains("href=\"https://qos.example/docs\""),
+            html.contains("href=\"https://tilo.example/docs\""),
             "got: {html}"
         );
         assert!(
@@ -2871,12 +2731,14 @@ mod tests {
         };
         let (consumed, action) = w.handle_event(
             &press,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &automerge::ROOT,
-            taffy::NodeId::new(0),
-            &taffy,
+            &mut ComposeEventContext {
+                scale_factor: 1.0,
+                modifiers,
+                state: &mut doc,
+                path: &automerge::ROOT,
+                node_id: taffy::NodeId::new(0),
+                taffy: &taffy,
+            },
         );
         assert!(
             consumed,

@@ -288,7 +288,7 @@ impl SetupApp {
                 selection: fixture_desktop_selection(false),
                 result: super::desktop_install::InstalledDesktop {
                     version: "0.1.9-1.fc44".into(),
-                    session_entry: "/usr/share/wayland-sessions/qos.desktop".into(),
+                    session_entry: "/usr/share/wayland-sessions/tilo.desktop".into(),
                 },
             });
             app.status =

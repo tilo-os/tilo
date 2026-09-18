@@ -39,17 +39,20 @@ fn welcome_body_contains_every_block_kind() {
     for b in &parsed {
         let tag = match b {
             BlockSpec::Paragraph(_) => "paragraph",
+            BlockSpec::Quote(_) => "quote",
             BlockSpec::Heading { .. } => "heading",
             BlockSpec::Bullet { .. } => "bullet",
             BlockSpec::Numbered { .. } => "numbered",
             BlockSpec::Checklist { .. } => "checklist",
             BlockSpec::CodeBlock { .. } => "code",
+            BlockSpec::Table { .. } => "table",
             BlockSpec::Divider => "divider",
         };
         seen.insert(tag);
     }
     for kind in [
         "paragraph",
+        "quote",
         "heading",
         "bullet",
         "numbered",

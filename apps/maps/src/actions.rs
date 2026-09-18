@@ -39,13 +39,15 @@
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionContract, ActionError, ActionRegistry, ActionSpec, ConfirmationPolicy, Doc,
     EncodedAction, ExecutionLocus, Resource, ResourceProvider, RetryPolicy, RiskLevel,
 };
 
 use crate::doc::MapsDoc;
-use crate::model::{DownloadedRegion, LatLon, MapModel, Place, Route, TransitJourney, TravelMode};
+use crate::model::{
+    DownloadedRegion, LatLon, MapModel, Place, Route, TransitJourney, TransitTime, TravelMode,
+};
 
 /// Registry `type_id` for every Maps action.
 pub const MAPS_ACTION_TYPE: &str = "maps.action";
@@ -71,6 +73,12 @@ pub enum MapsAction {
     /// Clear the shared search history. Search history is workspace state, not
     /// an unaddressable presentation cache, so this remains undoable/replayable.
     ClearRecents,
+    /// Set the shared directions preference absolutely. The resulting route is
+    /// still accepted separately once external planning completes.
+    SetTravelMode { mode: TravelMode },
+    /// Set the complete depart/arrive anchor absolutely (never an increment),
+    /// so replay is independent of a replica's previous local value.
+    SetTransitTime { value: TransitTime },
     /// Drop the active road route through the same canonical path that accepts
     /// a completed routing result.
     ClearRoute,
@@ -116,6 +124,8 @@ impl Action for MapsAction {
             MapsAction::SetPlaceSaved { id, saved } => MapsDoc::set_place_saved(doc, id, *saved),
             MapsAction::CommitSearch { query } => MapsDoc::commit_search(doc, query),
             MapsAction::ClearRecents => MapsDoc::clear_recents(doc),
+            MapsAction::SetTravelMode { mode } => MapsDoc::set_travel_mode(doc, *mode),
+            MapsAction::SetTransitTime { value } => MapsDoc::set_transit_time(doc, *value),
             MapsAction::ClearRoute => MapsDoc::clear_route(doc),
             MapsAction::SetRoute {
                 route,
@@ -125,8 +135,15 @@ impl Action for MapsAction {
                 dest_name,
                 mode,
             } => {
-                MapsDoc::set_route_context(doc, *origin, origin_name, *dest, dest_name, *mode);
-                MapsDoc::set_route(doc, route);
+                MapsDoc::set_active_route(
+                    doc,
+                    route,
+                    *origin,
+                    origin_name,
+                    *dest,
+                    dest_name,
+                    *mode,
+                );
             }
             MapsAction::SetTransit {
                 transit,
@@ -135,15 +152,7 @@ impl Action for MapsAction {
                 dest,
                 dest_name,
             } => {
-                MapsDoc::set_route_context(
-                    doc,
-                    *origin,
-                    origin_name,
-                    *dest,
-                    dest_name,
-                    crate::model::TravelMode::Transit,
-                );
-                MapsDoc::set_transit(doc, transit);
+                MapsDoc::set_active_transit(doc, transit, *origin, origin_name, *dest, dest_name);
             }
             MapsAction::ClearTransit => MapsDoc::clear_transit(doc),
             MapsAction::AddRegion(region) => MapsDoc::add_region(doc, region),
@@ -183,6 +192,8 @@ impl MapsAction {
             MapsAction::ClearRecents => {
                 model.recents.clear();
             }
+            MapsAction::SetTravelMode { mode } => model.mode = *mode,
+            MapsAction::SetTransitTime { value } => model.transit_time = *value,
             MapsAction::ClearRoute => {
                 model.route = None;
             }
@@ -333,7 +344,7 @@ fn history_resource(query: &str) -> Resource {
     if let Ok(action) = ActionSpec::operation(
         "search-again",
         "Search again",
-        qos_actions::OperationKind::View,
+        tilo_actions::OperationKind::View,
         "maps.search",
         &query.to_string(),
     ) {
@@ -377,6 +388,44 @@ fn transit_resource(model: &MapModel) -> Resource {
         "Clear transit options",
         &MapsAction::ClearTransit,
     ))
+}
+
+fn plan_settings_resource(model: &MapModel) -> Resource {
+    let mut resource = Resource::new(
+        "maps.plan-settings",
+        "maps.plan-settings",
+        "Route planning settings",
+    );
+    for mode in TravelMode::ALL {
+        resource = resource.with_action(immediate(
+            &format!("travel-mode-{}", mode.label().to_ascii_lowercase()),
+            format!("Travel by {}", mode.label()),
+            &MapsAction::SetTravelMode { mode },
+        ));
+    }
+    for (id, label, value) in [
+        (
+            "travel-time-earlier",
+            "Plan 15 minutes earlier",
+            TransitTime {
+                offset_min: (model.transit_time.offset_min - 15).clamp(0, 1440),
+                ..model.transit_time
+            },
+        ),
+        ("travel-time-now", "Leave now", TransitTime::default()),
+        (
+            "travel-time-later",
+            "Plan 15 minutes later",
+            TransitTime {
+                offset_min: (model.transit_time.offset_min + 15).clamp(0, 1440),
+                ..model.transit_time
+            },
+        ),
+    ] {
+        resource =
+            resource.with_action(immediate(id, label, &MapsAction::SetTransitTime { value }));
+    }
+    resource
 }
 
 fn region_resource(region: &DownloadedRegion) -> Resource {
@@ -430,7 +479,7 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
         "Search maps",
         "Place, address, or category",
         "e.g. museum near me",
-        qos_actions::OperationKind::View,
+        tilo_actions::OperationKind::View,
         "maps.search",
         |query| {
             EncodedAction::encode_operation("maps.search", &query.trim().to_string())
@@ -475,6 +524,7 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
     for region in model.regions.iter().take(EAGER_PER_KIND_LIMIT) {
         root = root.with_child(region_resource(region));
     }
+    root = root.with_child(plan_settings_resource(&model));
 
     vec![root]
 }
@@ -494,6 +544,9 @@ impl ResourceProvider for crate::app::MapsApp {
         }
         if id == "maps.transit:active" {
             return (!model.transit.is_empty()).then(|| transit_resource(&model));
+        }
+        if id == "maps.plan-settings" {
+            return Some(plan_settings_resource(&model));
         }
         if let Some(query) = id.strip_prefix("maps.search-history:") {
             return model
@@ -524,7 +577,8 @@ impl ResourceProvider for crate::app::MapsApp {
 mod tests {
     use super::*;
     use crate::model::{Category, LatLon, Place, Route, TravelMode};
-    use qos_actions::{ActionInput, LocalTransport};
+    use automerge::ActorId;
+    use tilo_actions::{ActionInput, LocalTransport};
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -817,7 +871,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert!(
@@ -865,8 +919,8 @@ mod tests {
         };
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -891,6 +945,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn divergent_encoded_route_acceptances_converge_without_torn_context() {
+        let mut seed = seeded(&full_model());
+        seed.commit();
+        let bytes = seed.save();
+        let mut a = AutoCommit::load(&bytes).unwrap();
+        a.set_actor(ActorId::from([1; 16].as_slice()));
+        let mut b = AutoCommit::load(&bytes).unwrap();
+        b.set_actor(ActorId::from([2; 16].as_slice()));
+
+        let mut route_a = full_model().route.unwrap();
+        route_a.distance_m = 1_111.0;
+        let mut route_b = route_a.clone();
+        route_b.distance_m = 2_222.0;
+        for (doc, action) in [
+            (
+                &mut a,
+                MapsAction::SetRoute {
+                    route: route_a,
+                    origin: Some(LatLon::new(1.0, 1.0)),
+                    origin_name: "Alpha origin".into(),
+                    dest: Some(LatLon::new(2.0, 2.0)),
+                    dest_name: "Alpha destination".into(),
+                    mode: TravelMode::Car,
+                },
+            ),
+            (
+                &mut b,
+                MapsAction::SetRoute {
+                    route: route_b,
+                    origin: Some(LatLon::new(3.0, 3.0)),
+                    origin_name: "Beta origin".into(),
+                    dest: Some(LatLon::new(4.0, 4.0)),
+                    dest_name: "Beta destination".into(),
+                    mode: TravelMode::Foot,
+                },
+            ),
+        ] {
+            let encoded = encode(&action);
+            registry().decode(&encoded).unwrap().apply(doc).unwrap();
+        }
+
+        a.merge(&mut b).unwrap();
+        b.merge(&mut a).unwrap();
+        let left = MapsDoc::load(&a).unwrap();
+        let right = MapsDoc::load(&b).unwrap();
+        assert_eq!(left, right, "both merge directions project identically");
+        let distance = left.route.unwrap().distance_m;
+        assert!(
+            (distance == 1_111.0
+                && left.origin_name == "Alpha origin"
+                && left.dest_name == "Alpha destination"
+                && left.mode == TravelMode::Car)
+                || (distance == 2_222.0
+                    && left.origin_name == "Beta origin"
+                    && left.dest_name == "Beta destination"
+                    && left.mode == TravelMode::Foot),
+            "the winning route and its labels/mode must remain one atomic acceptance"
+        );
+    }
+
     /// Adding a region replays byte-identically too — the create path, carrying a
     /// pre-minted id so `apply` needs no RNG.
     #[test]
@@ -902,8 +1017,8 @@ mod tests {
 
         let action = MapsAction::AddRegion(region("r2", "Schwabing"));
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(a.get_heads(), b.get_heads(), "add replayed identically");
         assert!(

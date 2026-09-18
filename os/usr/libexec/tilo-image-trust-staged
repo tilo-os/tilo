@@ -1,0 +1,145 @@
+#!/usr/bin/bash
+# Enforce an owner identity -> device -> staged-image endorsement when enabled.
+set -euo pipefail
+
+TRUST_DIR="${TILO_IMAGE_TRUST_DIR:-/var/lib/tilo/image-trust}"
+BOOT="${TILO_IMAGE_TRUST_BOOT:-/boot}"
+BOOTC="${TILO_IMAGE_TRUST_BOOTC:-/usr/bin/bootc}"
+UKI_CMDLINE="${TILO_IMAGE_TRUST_UKI_CMDLINE:-/usr/libexec/tilo-uki-cmdline}"
+CHRONYC="${TILO_IMAGE_TRUST_CHRONYC:-/usr/bin/chronyc}"
+CHRONY_CONFIG="${TILO_IMAGE_TRUST_CHRONY_CONFIG:-/etc/chrony.conf}"
+REQUIRE_STAGED=0
+TRUST_OWNER_UID="${TILO_IMAGE_TRUST_OWNER_UID:-0}"
+[ "${1:-}" != --require-staged ] || REQUIRE_STAGED=1
+[ $# -le 1 ] || { echo 'tilo-image-trust-staged: unexpected arguments' >&2; exit 2; }
+
+# Installing this root-owned marker opts the machine into the additional owner
+# chain. Without it, the mandatory containers-policy Cosign gate remains the
+# update authority and this helper is deliberately inert.
+[ -e "$TRUST_DIR/required" ] || [ -L "$TRUST_DIR/required" ] || exit 0
+[ -d "$TRUST_DIR" ] && [ ! -L "$TRUST_DIR" ] \
+  || { echo 'tilo-image-trust-staged: trust store is not a real directory' >&2; exit 1; }
+[ "$(stat -c '%u:%a' "$TRUST_DIR" 2>/dev/null)" = "$TRUST_OWNER_UID:700" ] \
+  || { echo 'tilo-image-trust-staged: trust store must be root-owned mode 0700' >&2; exit 1; }
+marker="$TRUST_DIR/required"
+[ -f "$marker" ] && [ ! -L "$marker" ] \
+  && [ "$(stat -c '%u:%a:%h' "$marker" 2>/dev/null)" = "$TRUST_OWNER_UID:600:1" ] \
+  && [ "$(wc -c <"$marker" 2>/dev/null)" = 6 ] \
+  && grep -Fqx armed "$marker" \
+  || { echo 'tilo-image-trust-staged: required marker is malformed or unsafe' >&2; exit 1; }
+
+status=""
+exec {status_fd}< <("$BOOTC" status --format json)
+status_pid=$!
+IFS= read -r -d '' -n 1048577 status <&"$status_fd" || :
+exec {status_fd}<&-
+[ "${#status}" -le 1048576 ] \
+  || { echo 'tilo-image-trust-staged: bootc status exceeds 1 MiB' >&2; exit 1; }
+wait "$status_pid" \
+  || { echo 'tilo-image-trust-staged: bootc status failed' >&2; exit 1; }
+parsed="$(tilo-image-trust parse-bootc-status <<<"$status")" \
+  || { echo 'tilo-image-trust-staged: bootc returned malformed status' >&2; exit 1; }
+readarray -t staged <<<"$parsed"
+if [ "${staged[0]}" = NONE ]; then
+  [ "$REQUIRE_STAGED" -eq 0 ] && exit 0
+  exit 3
+fi
+[ -n "${staged[0]}" ] \
+  || { echo 'tilo-image-trust-staged: staged deployment has no image identity' >&2; exit 1; }
+
+digest="${staged[0]}"
+case "$digest" in
+  sha256:????????????????????????????????????????????????????????????????) ;;
+  *) echo 'tilo-image-trust-staged: staged image digest is malformed' >&2; exit 1 ;;
+esac
+case "${digest#sha256:}" in *[!0-9a-f]*) echo 'tilo-image-trust-staged: staged image digest is malformed' >&2; exit 1 ;; esac
+
+verity="${staged[1]:-}"; verity="${verity#sha512:}"
+case "$verity" in
+  ????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????) ;;
+  *) echo 'tilo-image-trust-staged: staged composefs digest is malformed' >&2; exit 1 ;;
+esac
+case "$verity" in *[!0-9a-f]*) echo 'tilo-image-trust-staged: staged composefs digest is malformed' >&2; exit 1 ;; esac
+validate_boot_directory() {
+  local directory="$1" metadata owner mode
+  [ -d "$directory" ] && [ ! -L "$directory" ] \
+    || { echo "tilo-image-trust-staged: unsafe boot directory: $directory" >&2; return 1; }
+  metadata="$(stat -c '%u:%a' "$directory" 2>/dev/null)" \
+    || { echo "tilo-image-trust-staged: cannot inspect boot directory: $directory" >&2; return 1; }
+  owner="${metadata%%:*}"; mode="${metadata#*:}"
+  [ "$owner" = "$TRUST_OWNER_UID" ] && [ $((8#$mode & 8#022)) -eq 0 ] \
+    || { echo "tilo-image-trust-staged: boot directory has unsafe ownership or mode: $directory" >&2; return 1; }
+}
+validate_boot_directory "$BOOT"
+validate_boot_directory "$BOOT/EFI"
+validate_boot_directory "$BOOT/EFI/Linux"
+if [ -e "$BOOT/EFI/Linux/bootc" ] || [ -L "$BOOT/EFI/Linux/bootc" ]; then
+  validate_boot_directory "$BOOT/EFI/Linux/bootc"
+fi
+boot_real="$(readlink -f -- "$BOOT")" \
+  || { echo 'tilo-image-trust-staged: cannot resolve boot store' >&2; exit 1; }
+generation=""
+for uki in "$BOOT"/EFI/Linux/bootc/*.efi "$BOOT"/EFI/Linux/*.efi; do
+  [ -f "$uki" ] && [ ! -L "$uki" ] || continue
+  uki_real="$(readlink -f -- "$uki")" \
+    || { echo 'tilo-image-trust-staged: cannot resolve staged UKI' >&2; exit 1; }
+  case "$uki_real" in "$boot_real"/EFI/Linux/*.efi|"$boot_real"/EFI/Linux/bootc/*.efi) ;; \
+    *) echo 'tilo-image-trust-staged: staged UKI escapes the boot store' >&2; exit 1 ;; esac
+  uki_metadata="$(stat -c '%u:%a:%h:%s' "$uki" 2>/dev/null)" \
+    || { echo 'tilo-image-trust-staged: cannot inspect staged UKI' >&2; exit 1; }
+  uki_owner="${uki_metadata%%:*}"
+  uki_rest="${uki_metadata#*:}"; uki_mode="${uki_rest%%:*}"
+  uki_rest="${uki_rest#*:}"; uki_links="${uki_rest%%:*}"; uki_size="${uki_rest#*:}"
+  [ "$uki_owner" = "$TRUST_OWNER_UID" ] && [ "$uki_links" = 1 ] \
+    && [ "$uki_size" -gt 0 ] && [ "$uki_size" -le 1073741824 ] \
+    || { echo 'tilo-image-trust-staged: staged UKI has unsafe ownership, links, or size' >&2; exit 1; }
+  [ $((8#$uki_mode & 8#022)) -eq 0 ] \
+    || { echo 'tilo-image-trust-staged: staged UKI is writable outside its owner' >&2; exit 1; }
+  cmdline=""
+  exec {cmdline_fd}< <("$UKI_CMDLINE" show "$uki" 2>/dev/null)
+  cmdline_pid=$!
+  IFS= read -r -d '' -n 65537 cmdline <&"$cmdline_fd" || :
+  exec {cmdline_fd}<&-
+  [ "${#cmdline}" -le 65536 ] \
+    || { echo 'tilo-image-trust-staged: staged UKI command line exceeds 64 KiB' >&2; exit 1; }
+  wait "$cmdline_pid" || cmdline=""
+  uki_verities="$(printf '%s\n' "$cmdline" | tr ' ' '\n' | sed -n 's/^composefs=\(sha512:\)\{0,1\}//p')"
+  printf '%s\n' "$uki_verities" | grep -Fqx "$verity" || continue
+  [ "$(printf '%s\n' "$uki_verities" | grep -c .)" -eq 1 ] \
+    || { echo 'tilo-image-trust-staged: staged UKI has ambiguous composefs arguments' >&2; exit 1; }
+  generations="$(printf '%s\n' "$cmdline" | tr ' ' '\n' | sed -n 's/^tilo\.generation=//p')"
+  [ "$(printf '%s\n' "$generations" | grep -c .)" -eq 1 ] \
+    || { echo 'tilo-image-trust-staged: staged UKI has ambiguous generation arguments' >&2; exit 1; }
+  candidate="$generations"
+  case "$candidate" in ''|*[!0-9]*) \
+    echo 'tilo-image-trust-staged: staged UKI generation is malformed' >&2; exit 1 ;; esac
+  [ -z "$generation" ] \
+    || { echo 'tilo-image-trust-staged: staged deployment has ambiguous UKIs' >&2; exit 1; }
+  generation="$candidate"
+done
+[ -n "$generation" ] \
+  || { echo 'tilo-image-trust-staged: cannot bind staged image to a measured generation' >&2; exit 1; }
+
+# Endorsement expiry and time.state use wall time. Refuse to consume the RTC
+# until Chrony has selected the immutable NTS-only source set and reduced the
+# remaining correction below 100 ms; otherwise an unsynchronised future RTC
+# could permanently advance the rollback-resistant time floor.
+[ -f "$CHRONY_CONFIG" ] && [ ! -L "$CHRONY_CONFIG" ] \
+  && [ "$(stat -c '%u:%a:%h' "$CHRONY_CONFIG" 2>/dev/null)" = "$TRUST_OWNER_UID:644:1" ] \
+  && grep -Fqx 'authselectmode require' "$CHRONY_CONFIG" \
+  && [ "$(grep -Ec '^server [^ ]+ .*\bnts\b' "$CHRONY_CONFIG")" -ge 3 ] \
+  && ! grep -E '^server ' "$CHRONY_CONFIG" | grep -Ev '\bnts\b' >/dev/null \
+  && ! grep -Eq '^[[:space:]]*(pool|peer|sourcedir|confdir)[[:space:]]' "$CHRONY_CONFIG" \
+  || { echo 'tilo-image-trust-staged: authenticated time configuration is unsafe' >&2; exit 1; }
+LC_ALL=C "$CHRONYC" -n waitsync 1 0.1 >/dev/null 2>&1 \
+  || { echo 'tilo-image-trust-staged: authenticated wall clock is not synchronized within 100 ms' >&2; exit 1; }
+
+if ! tilo-image-trust verify-and-record \
+    "$TRUST_DIR/root.pub" "$TRUST_DIR/revocations.bin" \
+    "$TRUST_DIR/endorsement.bin" "$digest" "$generation" \
+    "$(date +%s%N)" "$TRUST_DIR/generation.state" "$TRUST_DIR/time.state"; then
+  echo 'tilo-image-trust-staged: owner endorsement rejected; downloaded image was not activated' >&2
+  exit 1
+fi
+
+printf 'tilo-image-trust-staged: accepted %s generation %s\n' "$digest" "$generation"

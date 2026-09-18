@@ -1,4 +1,6 @@
-//! Slides — standard qOS application entry point.
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
+
+//! Slides — standard Tilo application entry point.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -27,7 +29,7 @@ use ui::widget::Widget;
 const NARROW_VIEWPORT: (u32, u32) = (820, 800);
 
 // The signature is fixed by `ui::launch::ShotFactory`: other apps' shot roots
-// genuinely can fail, so the alias is fallible even where this one isn't.
+// may fail, so the alias is fallible even where this one isn't.
 #[allow(
     clippy::unnecessary_wraps,
     reason = "signature is dictated by ui::launch::ShotFactory, which other apps' fallible shot roots need"
@@ -59,7 +61,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     let theme = ui::launch::shot_theme(args);
     ui::headless::FrameHarness::new_with_theme(ui::State::new(), shot_root(args)?, viewport, theme)
         .render_png(out);
-    println!("dev.qos.slides: wrote shot to {}", out.display());
+    println!("dev.tilo.slides: wrote shot to {}", out.display());
     Ok(())
 }
 
@@ -68,7 +70,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.slides", slides::app_root)
+        &LaunchSpec::new("dev.tilo.slides", slides::app_root)
             .history(&slides::framework_history::HISTORY)
             .shot_handler(render_shot)
             .scenarios(&[

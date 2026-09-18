@@ -17,10 +17,10 @@ was wrong.
 
 ## P0-1 — The identity ceremony persists a key that cannot sign
 
-`ui/src/widget/identity_flow/mod.rs:180-191`
+`crates/sdk/ui-core/src/widget/identity_flow/mod.rs:180-191`
 
 `SerializableIdentity::from_identity` cannot reach into `frost_ed25519`'s `SigningKey`, so it
-persists `SHA-512("qos-identity-flow-v1-placeholder-key" ‖ group_public_key)` as `secret_bytes`.
+persists `SHA-512("tilo-identity-flow-v1-placeholder-key" ‖ group_public_key)` as `secret_bytes`.
 The in-source comment says it outright: *"clearly NOT useful for signing."*
 
 Any identity minted through the UI ceremony produces signatures that do not verify against its own
@@ -30,7 +30,7 @@ Compounding: `crates/runtime/runtime-identity/src/lib.rs:270-297` detects the pu
 mismatch and **deliberately does not fail** — the only signal is a
 `#[cfg(debug_assertions)] eprintln!`. In a release build the failure is silent.
 
-`shell/src/firstboot.rs:190-226` correctly bypasses this path and writes the real dalek seed via
+`crates/session/shell/src/firstboot.rs:190-226` correctly bypasses this path and writes the real dalek seed via
 `ThresholdIdentity::bootstrap_single_device_seed`. So firstboot-minted identities are valid and
 ceremony-minted identities are not, with the same on-disk format and no way to tell them apart.
 
@@ -42,7 +42,7 @@ the ceremony persists that seed, and `IdentityRecord::into_threshold_identity` r
 whose secret does not derive its recorded public key. The mismatch is fatal in `runtime-identity`
 in every build profile. Firstboot now goes through the same encoder, so there is one writer of
 the format. Held by
-`ui/src/widget/identity_flow/mod.rs::tests::ceremony_minted_record_signs_for_its_own_recorded_public_key`
+`crates/sdk/ui-core/src/widget/identity_flow/mod.rs::tests::ceremony_minted_record_signs_for_its_own_recorded_public_key`
 and
 `crates/runtime/runtime-identity/src/lib.rs::tests::secret_that_does_not_derive_the_recorded_pubkey_is_refused`.
 
@@ -50,9 +50,9 @@ and
 
 ## P0-2 — The FUSE replication path performs no authentication
 
-`fs/src/sync.rs:159-195`
+`crates/system/fs/src/sync.rs:159-195`
 
-`SyncProtocol::accept` takes any connection on `QOS_FS_SYNC_ALPN` and:
+`SyncProtocol::accept` takes any connection on `TILO_FS_SYNC_ALPN` and:
 
 - `MODE_FULL` → serialises the entire namespace document to the caller (`sync.rs:169-171`)
 - `MODE_SYNC` → feeds inbound bytes directly into `sync_receive` (`sync.rs:179-183`)
@@ -61,9 +61,9 @@ There is no identity check, no ACL consultation, and no signature verification o
 The same applies to `fetch_remote_doc` (`sync.rs:104-113`) and the anti-entropy full-document merge
 (`sync.rs:317`).
 
-The ACL in `fs/src/acl.rs` is well-built — fail-closed, deny-biased, delegating to
+The ACL in `crates/system/fs/src/acl.rs` is well-built — fail-closed, deny-biased, delegating to
 `collab_types::decide_capability`, and it aborts the mount rather than serving unenforced. But it is
-consulted only on the FUSE syscall path (`fs/src/fs.rs:432`, `:456`, `:561`), i.e. against local
+consulted only on the FUSE syscall path (`crates/system/fs/src/fs.rs:432`, `:456`, `:561`), i.e. against local
 processes. **It is not a replication boundary.**
 
 Any peer that can reach the endpoint and speak the ALPN can read and rewrite the whole namespace.
@@ -75,31 +75,31 @@ ACL per-connection. Depends on a real, persistent device identity existing first
 
 ## P0-3 — The iroh node key is ephemeral, so FS attribution and ACL subject rotate every boot
 
-`fs/src/sync.rs:89-96` builds the endpoint without ever passing a `secret_key`, so the iroh NodeId
+`crates/system/fs/src/sync.rs:89-96` builds the endpoint without ever passing a `secret_key`, so the iroh NodeId
 is freshly random on every process start.
 
 Consequences:
 
-- `fs/src/main.rs:221,286` sets `author = endpoint.id().to_string()` — authorship attribution is a
+- `crates/system/fs/src/main.rs:221,286` sets `author = endpoint.id().to_string()` — authorship attribution is a
   new anonymous string each mount.
-- `fs/src/main.rs:219,283` resolves the default ACL subject from the same key, so **any ACL grant
+- `crates/system/fs/src/main.rs:219,283` resolves the default ACL subject from the same key, so **any ACL grant
   written against the default subject is dead on the next boot**.
-- The node-id-reuse guard at `fs/src/namespace.rs:147-152` ("a restart with the same author can't
+- The node-id-reuse guard at `crates/system/fs/src/namespace.rs:147-152` ("a restart with the same author can't
   reuse a node id") never engages, because the author is never the same twice.
 
 **Resolved.** The mount binds under the machine's device key, so the `NodeId` *is* the device's
 Ed25519 public key and is unchanged across a remount; a device key that will not load fails the
 mount rather than falling back to a random one. `bind_endpoint` is split into
 `bind_endpoint_with_key` and `bind_ephemeral_endpoint` so the random-identity path is named at
-every call site. Held by `fs/src/identity.rs::tests::bound_endpoint_is_named_by_the_device_key`
+every call site. Held by `crates/system/fs/src/identity.rs::tests::bound_endpoint_is_named_by_the_device_key`
 and `::identity_survives_a_restart`.
 
 ---
 
 ## P0-4 — The image cannot be installed, so no boot-chain claim in this file was ever testable
 
-`os/usr/lib/bootc/install/40-qos.toml` sets `bootloader = "systemd"`. Every `bootc install` against
-a qOS image therefore ends at the bootloader step:
+`os/usr/lib/bootc/install/40-tilo.toml` sets `bootloader = "systemd"`. Every `bootc install` against
+a Tilo image therefore ends at the bootloader step:
 
 ```
 Bootloader: systemd
@@ -107,13 +107,13 @@ error: Installing to filesystem: bootupd is required for ostree-based installs
 ```
 
 bootc has two install backends and only the **composefs** one can plant systemd-boot. The
-**ostree** backend — what bootc-image-builder, Anaconda's `ostreecontainer`, and `qos-install` all
+**ostree** backend — what bootc-image-builder, Anaconda's `ostreecontainer`, and `tilo-install` all
 drive — matches on the resolved bootloader in `install_with_sysroot()` and, for `Systemd`, does
 nothing but `anyhow::bail!("bootupd is required for ostree-based installs")`. The single caller of
 bootc's `install_systemd_boot()` is `crates/lib/src/bootc_composefs/boot.rs`. This is unchanged on
 bootc `main`, so it is not a version to wait out. bootc-image-builder exposes no
 `--composefs-backend` flag, and that backend is otherwise only auto-selected for a unified kernel
-image, which the qOS kernel is not.
+image, which the Tilo kernel is not.
 
 So `bootloader = "systemd"` is not a slower path or a fallback — it is an image that cannot be
 installed, on a VM or on hardware.
@@ -148,7 +148,7 @@ swap, and a decision to take deliberately.
 bootc-image-builder runs to `Build complete!` and writes a qcow2: bootc reports `Bootloader: grub`,
 `Installing bootloader via bootupd`, `Installation complete!`, and the ESP carries
 `EFI/fedora/{shimx64,grubx64,mmx64}.efi` + `grub.cfg` + `EFI/BOOT/BOOTX64.EFI`. That disk boots
-under OVMF through GRUB 2.12 into the qOS kernel (`Linux version 7.0.14 (qos@qos-build)`, with the
+under OVMF through GRUB 2.12 into the Tilo kernel (`Linux version 7.0.14 (tilo@tilo-build)`, with the
 `kargs.d` hardening set applied) and reaches `multi-user.target` and `graphical.target`, with
 `greetd` and `fs.service` up. An encrypted install driven from that booted image
 (`os/dev/test-encrypted-install.sh`) also completes — LUKS2 root, `rd.luks.uuid=…tpm2-device=auto`
@@ -189,7 +189,7 @@ Falling back to the recovery key is the correct behaviour for a volume with no T
 
 ## P1-2a — `enrol` exits after the recovery key, so every later factor is silently skipped
 
-**FIXED.** `os/usr/libexec/qos-disk-encrypt`, `cmd_enrol`. The recovery key was read back out of
+**FIXED.** `os/usr/libexec/tilo-disk-encrypt`, `cmd_enrol`. The recovery key was read back out of
 `systemd-cryptenroll` by matching eight groups of six lowercase letters:
 
 ```bash
@@ -299,9 +299,10 @@ volume; `P1-2b` and `P1-2c` are proved structurally, not through a boot.
 
 ## P1-2d — the image build corrupts its own rpmdb, reproducibly, and blocks every boot proof
 
-**OPEN**, and unrelated to disk encryption other than by blocking its verification. Four
-consecutive `podman build` runs of `os/Containerfile` on the development host failed in the OS
-assembly stage, three of them at the same step:
+**MITIGATION IMPLEMENTED; full pinned-image proof pending.** This is unrelated to disk encryption
+other than by blocking its verification. Four consecutive historical `podman build` runs of
+`os/Containerfile` on the development host failed in the OS assembly stage, three of them at the
+same step:
 
 ```
 Transaction failed: Rpm transaction failed.
@@ -332,14 +333,22 @@ rebuilds indexes from headers that are themselves missing.
 The near-miss worth recording: this is the failure mode `os/dev/build-image.sh` already documents
 as *"a disk that fills mid-build can leave a cached layer holding a corrupt RPM database, which then
 surfaces as dnf insisting that packages the base image plainly has are missing"*, with
-`QOS_BUILD_ARGS=--no-cache` offered as the way out. `--no-cache` does **not** help: it prevents
+`TILO_BUILD_ARGS=--no-cache` offered as the way out. `--no-cache` does **not** help: it prevents
 inheriting a corrupt layer but not producing one.
 
-**Fix direction:** stop the sqlite sidecars from entering a layer — checkpoint or remove
-`rpmdb.sqlite-{wal,shm}` at the end of each `dnf` step, or collapse the twelve consecutive
-`dnf install` layers into fewer transactions. A build-time assertion that
-`rpm -q --whatprovides` still resolves a package installed in the previous step would catch it
-where it happens rather than three steps later.
+**Implemented mitigation:** every rootfs RPM transaction now ends in
+`os/scripts/finalize-rpmdb.sh`. It rebuilds the SQLite database onto a fresh inode, verifies it,
+proves the file index still maps `/usr/bin/basename` to `coreutils`, and removes WAL/SHM only after
+the last RPM reader exits. The finished image repeats the database/file-index checks and rejects
+either sidecar. A clean Fedora 44 container probe on 2026-09-17 exercised the helper against the
+real RPM backend and passed the rebuild, ownership lookup, sidecar-absence, and `rpm --verifydb`
+checks.
+
+What remains unproved is the original failure boundary: a complete Tilo image assembly followed by
+the encrypted three-mode boot proof. Local assembly currently stops earlier because the pinned
+Tilo RPM/kernel registry requires credentials unavailable to the development container; CI remains
+the authoritative end-to-end exercise. Do not call this defect closed until that build crosses
+multiple layer boundaries and boots the resulting image.
 
 ---
 
@@ -356,7 +365,7 @@ Knock-on effects:
   enters lockdown from firmware only under Secure Boot.
 - TPM PCR 7 measures Secure Boot state, so binding LUKS to it carries no meaning as configured.
   No `--tpm2-pcrs` is set anywhere; the `bootc` default policy is inherited unexamined.
-- `keys/tpm2-pcr-signing.public.pem` is baked to `/usr/share/qos/` (`os/Containerfile:427`) and
+- `keys/tpm2-pcr-signing.public.pem` is baked to `/usr/share/tilo/` (`os/Containerfile:427`) and
   read by nothing.
 - `docs/security/boot-chain.md` describes a chain — *"firmware → shim (MS-signed) → GRUB (Fedora-signed) →
   kernel (Fedora-signed)"* — that the image explicitly deletes. The document is stale and
@@ -366,8 +375,8 @@ Knock-on effects:
 
 ## P1-2 — Disk encryption is opt-in, TPM-mandatory, and conflicts with the initrd-less kernel
 
-`os/usr/libexec/qos-install:276-289` — `BLOCK_SETUP` defaults to `direct`; encryption requires
-`--encrypt`. `qos-install:176-178` aborts if neither `/dev/tpmrm0` nor `/dev/tpm0` exists, so there
+`os/usr/libexec/tilo-install:276-289` — `BLOCK_SETUP` defaults to `direct`; encryption requires
+`--encrypt`. `tilo-install:176-178` aborts if neither `/dev/tpmrm0` nor `/dev/tpm0` exists, so there
 is **no passphrase-only encryption path** — a machine without a TPM gets no encryption at all.
 
 Separately, `os/etc/kernel/install.conf` sets `initrd_generator=none` and `os/Containerfile:654`
@@ -431,15 +440,15 @@ intentionally not that adapter; it must never broadcast Welcome bytes.
 
 The 8-step (extended to 9) validation pipeline in
 `crates/collab/collab-types/src/validator.rs:589` is implemented and thoroughly tested, and the
-broker's default state is correctly fail-closed (`shell/src/shell/collab_broker.rs:797-800`: an
+broker's default state is correctly fail-closed (`crates/session/shell/src/shell/collab_broker.rs:797-800`: an
 empty `authorised_signers` rejects every signed op).
 
 But `register_channel_state` has no non-test caller, and no production path mints a
 `RoleAttestation`. `CollaborationManager::set_identity` / `with_identity` likewise have no callers
-in `shell/`, `ui/`, or `apps/`. Roles are therefore advisory in practice.
+in `crates/session/shell/`, `crates/sdk/ui-core/`, or `apps/`. Roles are therefore advisory in practice.
 
 `Space` (`crates/collab/collab-types/src/space.rs`) has zero consumers outside its own crate and
-tests. `ui/src/widget/channel_browser.rs` is a complete widget with no shell call site.
+tests. `crates/sdk/ui-core/src/widget/channel_browser.rs` is a complete widget with no shell call site.
 
 **Resolved.** Both production ingress paths now call
 `validate_admitted_inbound_op` before recording or fanning out an operation.
@@ -462,14 +471,14 @@ Nothing locks the session before sleep or on resume, so suspend-then-open-lid la
 session. `crates/system/power/src/logind.rs:19-20` documents this as working — *"so the compositor
 can lock before the machine sleeps"* — which is not implemented.
 
-`shell/src/compositor/idle.rs:107-113` defaults `lock_timeout` to `None`; idle auto-lock is
-reachable only via `QOS_IDLE_LOCK_SECS`.
+`crates/session/shell/src/compositor/idle.rs:107-113` defaults `lock_timeout` to `None`; idle auto-lock is
+reachable only via `TILO_IDLE_LOCK_SECS`.
 
 **Resolved.** `PrepareForSleep(true)` is now mapped to the mandatory
 `PowerSignal::Lock` before sleep, while the resume edge resets idle state.
 The compositor defaults both blanking and locking to five minutes; an explicit
-`QOS_IDLE_LOCK_SECS=0` remains the documented opt-out. Unit coverage pins the
-sleep-edge mapping and secure default, and `shell/tests/session_lock_e2e.rs`
+`TILO_IDLE_LOCK_SECS=0` remains the documented opt-out. Unit coverage pins the
+sleep-edge mapping and secure default, and `crates/session/shell/tests/session_lock_e2e.rs`
 drives idle lock plus failed and successful unlock through the live loop.
 
 ---
@@ -524,7 +533,7 @@ integrity rests on the pin being real rather than aspirational: a pin that relia
 "just point it at whatever resolves today" away from becoming an unpinned build under deadline
 pressure, and the frozen RPM set would then be resolved against an unrecorded base.
 
-**Fix direction:** mirror the base into `code.podesta.ai/qos/fedora-bootc` and pin against the
+**Fix direction:** mirror the base into `code.podesta.ai/tilo/fedora-bootc` and pin against the
 mirror — the same shape `os/Containerfile.rpms` + `snapshot-rpms` already use for packages, since
 our registry collects nothing. Copy with the multi-arch index intact. Fixed on this branch: the
 `mirror-base` workflow plus `os/base-snapshot.env` (`BASE_REF`), consumed by every Containerfile
@@ -532,16 +541,16 @@ as a `--build-arg`.
 
 Two adjacent holes in the same guarantee were found alongside it:
 
-- `os/containers/qos-relay/Containerfile:74` builds its runtime stage `FROM
+- `os/containers/tilo-relay/Containerfile:74` builds its runtime stage `FROM
   quay.io/fedora/fedora-minimal:44`, a floating tag — it never breaks, it just silently changes,
   so the relay image is not reproducible across time. **Still open**, and not a one-line pin:
   `BASE_REF` is the bootc base, ~1 GB with a kernel in it, so reusing it for a runtime stage whose
   whole point is to be small is not the fix. A digest against quay.io expires the same way the
   bootc pin did, so this needs its own mirrored image — and `mirror-base` cannot mirror it as
-  written (it hardcodes the `qos/fedora-bootc` destination and asserts an `ostree.linux` label
+  written (it hardcodes the `tilo/fedora-bootc` destination and asserts an `ostree.linux` label
   fedora-minimal does not carry). Parameterise that workflow over source/destination, mirror
   fedora-minimal, and add a second ref to `os/base-snapshot.env` that
-  `.forgejo/workflows/qos-relay.yaml` passes alongside `BASE_REF`.
+  `.forgejo/workflows/tilo-relay.yaml` passes alongside `BASE_REF`.
 - `os/Containerfile`'s `wpe-builder` stage installs its build deps with `dnf builddep
   webkitgtk6.0` against live Fedora repos, a deliberate exception noted in the file. That much is
   still open. The stage was also **entirely broken**, and unpinned turned out to mean unwatched in
@@ -587,8 +596,8 @@ Two adjacent holes in the same guarantee were found alongside it:
 
 ## P1-8 — `catch_unwind` soft-fails are inert in release, so the compositor aborts at startup with no GPU adapter
 
-`ui/src/warmup.rs:191`, `shell/src/compositor/native.rs:707`,
-`shell/src/compositor/backend/headless.rs:77` (line numbers as found; now fixed)
+`crates/sdk/ui-core/src/warmup.rs:191`, `crates/session/shell/src/compositor/native.rs:707`,
+`crates/session/shell/src/compositor/backend/headless.rs:77` (line numbers as found; now fixed)
 
 Three call sites wrapped `ui::offscreen::OffscreenRenderer::new` in `std::panic::catch_unwind` to
 degrade gracefully when wgpu finds no adapter. `[profile.release]` sets `panic = "abort"`
@@ -598,7 +607,7 @@ catching, ever begins. All three guards were inert in exactly the configuration 
 `OffscreenRenderer::new`'s own doc comment told callers to use the mechanism that does not work.
 
 The load-bearing one is `ui::warmup::spawn_warmup`, called on the compositor's real startup path
-(`shell/src/main.rs:129`) from a `qos-startup-warmup` thread. Its comment claimed *"A missing
+(`crates/session/shell/src/main.rs:129`) from a `tilo-startup-warmup` thread. Its comment claimed *"A missing
 adapter isn't fatal to the shell — the compositor's real backend surfaces its own adapter error
 later — so we swallow it here."* In a release build nothing is swallowed: on a machine where
 adapter enumeration fails the shell aborts before it ever reaches the backend that was supposed to
@@ -612,13 +621,13 @@ panic strategy the release profile actually sets.
 **Fix direction (applied):** `OffscreenRenderer::try_new` returns `OffscreenError` instead of
 panicking; `new` is retained for its many test/example callers and panics through it. All three
 sites take the `Result`. `panic = "abort"` is unchanged. Pinned by
-`warmup_degrades_silently_when_no_wgpu_adapter_exists` (`ui/tests/warmup_no_adapter.rs`), which
+`warmup_degrades_silently_when_no_wgpu_adapter_exists` (`crates/sdk/ui-core/tests/warmup_no_adapter.rs`), which
 re-executes itself as a child with an empty wgpu backend set and an aborting panic hook — cargo
 ignores `panic` on the test profile, so the strategy has to be emulated — and fails if the child
 dies by signal rather than exiting. It first asserts no adapter is reachable, so it cannot pass
 vacuously on a GPU host. Against the previous code the child dies with SIGABRT.
 
-**Residual:** `OffscreenRenderer::render` still `expect`s internally (`ui/src/offscreen.rs`, the
+**Residual:** `OffscreenRenderer::render` still `expect`s internally (`crates/sdk/ui-core/src/offscreen.rs`, the
 `render_to_texture` and buffer-map paths). Those were nominally inside the same dead
 `catch_unwind`s, so nothing regressed, but a mid-render driver failure still aborts a release
 build. The `catch_unwind` pair in `crates/collab/channel-crypto/src/group.rs:237,379` was checked
@@ -629,9 +638,9 @@ debug builds, which is where `catch_unwind` works.
 
 ## P2-1 — `PeerId` is a 64-bit fold of the public key
 
-`shell/src/network/behaviour.rs:98-107` derives the wire `PeerId` as a 64-bit FNV-1a fold of the
+`crates/session/shell/src/network/behaviour.rs:98-107` derives the wire `PeerId` as a 64-bit FNV-1a fold of the
 public key, and it is used as the `PeerIdentityStore` key. 64 bits is collision-findable. Note the
-newer `PeerOrigin` (`shell/src/shell/state.rs:109-127`) correctly carries the full base58 peer id —
+newer `PeerOrigin` (`crates/session/shell/src/shell/state.rs:109-127`) correctly carries the full base58 peer id —
 the fold is the older path.
 
 **Resolved.** `PeerIdentityStore` keys on `PeerOrigin`. The `u64` that remains on the wire is named
@@ -639,12 +648,12 @@ the fold is the older path.
 actor and the shell instead of two copies of `DefaultHasher` — whose output std does not promise
 across Rust releases, so two peers on different toolchains would have stopped recognising each
 other's publishes. Held by
-`shell/src/network/identity.rs::tests::distinct_peers_never_share_an_entry` and
-`shell/src/network/behaviour.rs::tests::peer_liveness_handle_is_pinned_to_the_peer_id`.
+`crates/session/shell/src/network/identity.rs::tests::distinct_peers_never_share_an_entry` and
+`crates/session/shell/src/network/behaviour.rs::tests::peer_liveness_handle_is_pinned_to_the_peer_id`.
 
 ## P2-2 — Corrupt peer-key file silently rotates identity
 
-`shell/src/network/behaviour.rs:122-127` — if `/var/lib/qos-fs/peer-key` exists but does not parse,
+`crates/session/shell/src/network/behaviour.rs:122-127` — if `/var/lib/tilo-fs/peer-key` exists but does not parse,
 it is overwritten with a fresh keypair rather than raising. Identity loss becomes indistinguishable
 from first run. The same function documents a known TOCTOU window between write and `chmod 0600`
 (`:142-146`).
@@ -654,13 +663,13 @@ compositor leaves peer sync off rather than syncing an unsalted id space. The ke
 machine's one device key, so the compositor no longer keeps a network identity of its own; an
 an existing installation's transport key is adopted seed-and-all so the machine keeps its Iroh `EndpointId`.
 The write goes through an atomic write-with-mode, closing the TOCTOU window. Held by
-`shell/src/network/behaviour.rs::tests::unreadable_key_file_raises_instead_of_rotating_identity`
+`crates/session/shell/src/network/behaviour.rs::tests::unreadable_key_file_raises_instead_of_rotating_identity`
 and `::key_reachable_outside_the_trust_group_raises_instead_of_rotating`.
 
 ## P2-3 — Revocation is modelled but undeliverable
 
-`crates/identity/qos-user-identity/src/revocation.rs` implements signed revocation entries with
-correct before/after-cutoff semantics (tested at `shell/src/network/identity.rs:364-406`), but
+`crates/collab/tilo-user-identity/src/revocation.rs` implements signed revocation entries with
+correct before/after-cutoff semantics (tested at `crates/session/shell/src/network/identity.rs:364-406`), but
 `PeerIdentityStore::set_revocations` has no non-test caller and there is no distribution mechanism.
 
 **Resolved.** Each workspace heartbeat now starts with an `IdentityHello` carrying the sender's
@@ -684,9 +693,9 @@ The code has no DNS proxy — `dns-only` resolves to `EgressDecision::Blocked`
 The code is correct; the document is stale. Recorded because a stale doc describing a weaker
 mechanism is how a strong one gets "simplified" later.
 
-## P2-5 — `qos-security-audit` cannot fail
+## P2-5 — `tilo-security-audit` cannot fail
 
-`os/usr/libexec/qos-security-audit` exits 0 unconditionally (`:5`, `:86`) and the unit sets
+`os/usr/libexec/tilo-security-audit` exits 0 unconditionally (`:5`, `:86`) and the unit sets
 `SuccessExitStatus=0 1`. It reports; it never gates a boot. Its image-signing check greps
 `policy.json` for the string `sigstoreSigned` (`:63-67`) rather than verifying anything.
 
@@ -694,13 +703,13 @@ mechanism is how a strong one gets "simplified" later.
 health result. The unit is wanted rather than required, so this remains
 diagnostic and cannot strand the user during boot, but system health, logs and
 agents can no longer mistake a failed audit for success. The image-policy check
-binds the qOS registry scope, `sigstoreSigned` rule, pinned key path and the
+binds the Tilo registry scope, `sigstoreSigned` rule, pinned key path and the
 installed non-empty verification key instead of accepting an unrelated string.
 Held by `os/tests/kernel_hardening_invariants.sh`.
 
 ## P2-6 — `insecureAcceptAnything` is the container policy default
 
-`os/etc/containers/policy.json:2-4`. Signature enforcement is scoped to `code.podesta.ai/qos/qos`
+`os/etc/containers/policy.json:2-4`. Signature enforcement is scoped to `code.podesta.ai/tilo/tilo`
 only; every other image reference is unverified.
 
 ---
@@ -709,14 +718,14 @@ only; every other image reference is unverified.
 
 These are load-bearing and correct. Changing them requires understanding why they are as they are.
 
-- `shell/src/shell/state.rs:2085-2093` — `apply_room_changes` merges into a **copy** first, because
+- `crates/session/shell/src/shell/state.rs:2085-2093` — `apply_room_changes` merges into a **copy** first, because
   *"a check that runs after the merge has already happened is not a check."* Whole batches are
   refused rather than partially applied.
-- `shell/src/shell/state.rs:109-127` — `PeerOrigin` is *"named as the transport authenticated it —
+- `crates/session/shell/src/shell/state.rs:109-127` — `PeerOrigin` is *"named as the transport authenticated it —
   not as the message claims."*
-- `shell/src/shell/state.rs:1750-1753` — re-pinning room authority is refused, because otherwise
+- `crates/session/shell/src/shell/state.rs:1750-1753` — re-pinning room authority is refused, because otherwise
   *"send the guest another invite"* becomes a way to re-point them at an attacker.
-- `shell/src/shell/state.rs:1078-1084` — a role **is** the verb on the membership capability, not a
+- `crates/session/shell/src/shell/state.rs:1078-1084` — a role **is** the verb on the membership capability, not a
   separately stored field, so the two cannot drift.
 - `crates/packaging/launcher/src/netgate.rs` — egress is fail-closed: if the gate cannot start the
   launch is refused, not downgraded.

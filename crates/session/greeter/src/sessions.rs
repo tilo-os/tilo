@@ -6,11 +6,11 @@
 //! an argv vector suitable for greetd's `StartSession { cmd, env }`.
 //!
 //! `Name` is the label the greeter shows. The internal `DesktopNames=` id
-//! is deliberately not read for display: it is a machine-facing contract
-//! with the portal (`UseIn=nirios`), not something to put in front of
+//! is not read for display: it is a machine-facing contract
+//! with the portal (`UseIn=tilo`), not something to put in front of
 //! someone logging in.
 //!
-//! This is deliberately a *minimal* desktop-entry parser: we only need
+//! This is a *minimal* desktop-entry parser: it reads
 //! `Name` and `Exec` from the `[Desktop Entry]` group, and the session
 //! files we ship are simple (no `%`-field codes, no quoting). It ignores
 //! localized `Name[xx]=` keys and keeps the first unlocalized `Name=`.
@@ -112,37 +112,37 @@ mod tests {
     use super::*;
 
     // The two real entries shipped in os/usr/share/wayland-sessions/.
-    const NIRIOS: &str = "\
+    const TILO: &str = "\
 [Desktop Entry]
-Name=qOS
+Name=Tilo
 GenericName=Desktop
 Comment=Collaborative spatial desktop environment
 Exec=/usr/bin/shell --backend drm
 Type=Application
-DesktopNames=nirios
+DesktopNames=tilo
 ";
 
-    const NIRIOS_PEER_SYNC: &str = "\
+    const TILO_PEER_SYNC: &str = "\
 [Desktop Entry]
-Name=qOS with peer sync
+Name=Tilo with peer sync
 GenericName=Desktop
 Comment=Collaborative session with Iroh peer discovery enabled
 Exec=/usr/bin/shell --backend drm --enable-peer-sync
 Type=Application
-DesktopNames=nirios
+DesktopNames=tilo
 ";
 
     #[test]
-    fn parses_default_nirios_session() {
-        let s = parse_desktop_entry(NIRIOS).expect("should parse");
-        assert_eq!(s.name, "qOS");
+    fn parses_default_tilo_session() {
+        let s = parse_desktop_entry(TILO).expect("should parse");
+        assert_eq!(s.name, "Tilo");
         assert_eq!(s.argv, vec!["/usr/bin/shell", "--backend", "drm"]);
     }
 
     #[test]
     fn parses_peer_sync_session() {
-        let s = parse_desktop_entry(NIRIOS_PEER_SYNC).expect("should parse");
-        assert_eq!(s.name, "qOS with peer sync");
+        let s = parse_desktop_entry(TILO_PEER_SYNC).expect("should parse");
+        assert_eq!(s.name, "Tilo with peer sync");
         assert_eq!(
             s.argv,
             vec!["/usr/bin/shell", "--backend", "drm", "--enable-peer-sync"]
@@ -171,10 +171,11 @@ Exec=/usr/bin/foo --bar
 
     #[test]
     fn read_sessions_reads_a_directory() {
-        let dir = std::env::temp_dir().join(format!("qos-greeter-sessions-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("tilo-greeter-sessions-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("a.desktop"), NIRIOS).unwrap();
-        std::fs::write(dir.join("b.desktop"), NIRIOS_PEER_SYNC).unwrap();
+        std::fs::write(dir.join("a.desktop"), TILO).unwrap();
+        std::fs::write(dir.join("b.desktop"), TILO_PEER_SYNC).unwrap();
         // A non-.desktop file must be skipped.
         std::fs::write(dir.join("README.txt"), "ignore me").unwrap();
 
@@ -182,14 +183,14 @@ Exec=/usr/bin/foo --bar
         let _ = std::fs::remove_dir_all(&dir);
 
         assert_eq!(sessions.len(), 2);
-        // Sorted by name: "qOS" before "qOS with peer sync".
-        assert_eq!(sessions[0].name, "qOS");
-        assert_eq!(sessions[1].name, "qOS with peer sync");
+        // Sorted by name: "Tilo" before "Tilo with peer sync".
+        assert_eq!(sessions[0].name, "Tilo");
+        assert_eq!(sessions[1].name, "Tilo with peer sync");
     }
 
     #[test]
     fn missing_directory_is_empty() {
-        let sessions = read_sessions(Path::new("/nonexistent/qos/sessions/dir"));
+        let sessions = read_sessions(Path::new("/nonexistent/tilo/sessions/dir"));
         assert!(sessions.is_empty());
     }
 }

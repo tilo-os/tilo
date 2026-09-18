@@ -15,7 +15,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
-const REPOSITORY_DIR: &str = ".qos-backups";
+const REPOSITORY_DIR: &str = ".tilo-backups";
 const SNAPSHOTS_DIR: &str = "snapshots";
 const MANIFEST: &str = "manifest.json";
 
@@ -361,34 +361,93 @@ pub fn restore_snapshot(
     let root = repository_path(destination).join(SNAPSHOTS_DIR).join(id);
     reject_symlink(&root, "Snapshot")?;
     let manifest = read_manifest(&root)?;
-    if restore_to.exists() {
-        if !restore_to.is_dir() {
-            return Err(BackupError::UnsafeDestination(
-                "Restore destination is not a folder".into(),
-            ));
-        }
-        if !overwrite && fs::read_dir(restore_to)?.next().is_some() {
-            return Err(BackupError::UnsafeDestination(
-                "Choose an empty restore folder, or explicitly allow replacement".into(),
-            ));
-        }
-    } else {
-        fs::create_dir_all(restore_to)?;
-    }
-    let restore_to = restore_to.canonicalize()?;
     let repo = repository_path(destination).canonicalize()?;
-    if restore_to.starts_with(&repo) || repo.starts_with(&restore_to) {
+    let restore_to = prepare_restore_target(restore_to, &repo, overwrite)?;
+    let stage = create_restore_stage(&restore_to)?;
+    let result = restore_into_stage(&root, &manifest, &stage, &mut on_progress);
+    match result {
+        Ok(verification) => match publish_restored_snapshot(&stage, &restore_to, overwrite) {
+            Ok(()) => Ok(verification),
+            Err(error) => {
+                let _ = fs::remove_dir_all(&stage);
+                Err(error)
+            }
+        },
+        Err(error) => {
+            let _ = fs::remove_dir_all(&stage);
+            Err(error)
+        }
+    }
+}
+
+/// Resolve a final restore target without creating it.  A failed verification
+/// must not leave even a partially populated recovery directory behind.
+fn prepare_restore_target(restore_to: &Path, repo: &Path, overwrite: bool) -> Result<PathBuf> {
+    let parent = restore_to.parent().ok_or_else(|| {
+        BackupError::UnsafeDestination("Restore destination has no parent folder".into())
+    })?;
+    let name = restore_to.file_name().ok_or_else(|| {
+        BackupError::UnsafeDestination("Restore destination must name a folder".into())
+    })?;
+    fs::create_dir_all(parent)?;
+    let parent = parent.canonicalize()?;
+    let target = parent.join(name);
+    if target.starts_with(repo) || repo.starts_with(&target) {
         return Err(BackupError::UnsafeDestination(
             "Restore outside the backup repository".into(),
         ));
     }
+    match fs::symlink_metadata(&target) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(BackupError::UnsafeDestination(
+            "Restore destination must not be a symbolic link".into(),
+        )),
+        Ok(metadata) if !metadata.is_dir() => Err(BackupError::UnsafeDestination(
+            "Restore destination is not a folder".into(),
+        )),
+        Ok(_) if !overwrite && fs::read_dir(&target)?.next().is_some() => {
+            Err(BackupError::UnsafeDestination(
+                "Choose an empty restore folder, or explicitly allow replacement".into(),
+            ))
+        }
+        Ok(_) => Ok(target),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(target),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn create_restore_stage(target: &Path) -> Result<PathBuf> {
+    let parent = target.parent().ok_or_else(|| {
+        BackupError::UnsafeDestination("Restore destination has no parent folder".into())
+    })?;
+    for suffix in 0_u32..1024 {
+        let stage = parent.join(format!(
+            ".tilo-restore-{}-{suffix}.partial",
+            std::process::id()
+        ));
+        match fs::create_dir(&stage) {
+            Ok(()) => return Ok(stage),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(BackupError::UnsafeDestination(
+        "Could not reserve a private restore staging folder".into(),
+    ))
+}
+
+fn restore_into_stage(
+    root: &Path,
+    manifest: &BackupManifest,
+    stage: &Path,
+    on_progress: &mut impl FnMut(&Progress),
+) -> Result<Verification> {
     let mut progress = Progress::default();
     for entry in &manifest.entries {
         validate_relative(&entry.path)?;
-        ensure_no_symlink_ancestors(&restore_to, &entry.path)?;
+        ensure_no_symlink_ancestors(stage, &entry.path)?;
         ensure_no_symlink_ancestors(&root.join("data"), &entry.path)?;
         let from = root.join("data").join(&entry.path);
-        let to = restore_to.join(&entry.path);
+        let to = stage.join(&entry.path);
         match entry.kind {
             EntryKind::Directory => {
                 if let Ok(metadata) = fs::symlink_metadata(&to)
@@ -399,12 +458,6 @@ pub fn restore_snapshot(
                 fs::create_dir_all(&to)?;
             }
             EntryKind::Symlink => {
-                if to.exists() || fs::symlink_metadata(&to).is_ok() {
-                    if !overwrite {
-                        return integrity(&entry.path, "restore target already exists");
-                    }
-                    remove_existing(&to)?;
-                }
                 if let Some(parent) = to.parent() {
                     fs::create_dir_all(parent)?;
                 }
@@ -415,20 +468,14 @@ pub fn restore_snapshot(
                 create_symlink(link, &to)?;
             }
             EntryKind::File => {
-                if to.exists() && !overwrite {
-                    return integrity(&entry.path, "restore target already exists");
-                }
                 if let Some(parent) = to.parent() {
                     fs::create_dir_all(parent)?;
                 }
-                let temporary = to.with_extension(format!("qos-restore-{}", std::process::id()));
+                let temporary = to.with_extension(format!("tilo-restore-{}", std::process::id()));
                 let (size, digest) = copy_and_hash(&from, &temporary)?;
                 if size != entry.size || Some(digest) != entry.sha256 {
                     let _ = fs::remove_file(&temporary);
                     return integrity(&entry.path, "stored file failed verification");
-                }
-                if to.exists() {
-                    remove_existing(&to)?;
                 }
                 fs::rename(&temporary, &to)?;
                 progress.files = progress.files.saturating_add(1);
@@ -447,6 +494,82 @@ pub fn restore_snapshot(
         files: progress.files,
         bytes: progress.bytes,
     })
+}
+
+fn publish_restored_snapshot(stage: &Path, target: &Path, overwrite: bool) -> Result<()> {
+    match fs::symlink_metadata(target) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(BackupError::UnsafeDestination(
+            "Restore destination changed into a symbolic link".into(),
+        )),
+        Ok(metadata) if !metadata.is_dir() => Err(BackupError::UnsafeDestination(
+            "Restore destination is no longer a folder".into(),
+        )),
+        Ok(_) if !overwrite && fs::read_dir(target)?.next().is_some() => {
+            Err(BackupError::UnsafeDestination(
+                "Restore destination changed while recovery was running".into(),
+            ))
+        }
+        Ok(_) => publish_restore_swap(stage, target, overwrite, &mut |from, to| {
+            fs::rename(from, to)
+        }),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            fs::rename(stage, target)?;
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Replace an existing target only after the staged recovery point is ready.
+/// If publishing the stage fails, put the original target back before
+/// returning the error.  This matters for explicit `overwrite` callers, but
+/// also makes the empty-folder UI promise robust against a full disk or a
+/// concurrent rename at exactly the wrong moment.
+fn publish_restore_swap(
+    stage: &Path,
+    target: &Path,
+    overwrite: bool,
+    rename: &mut impl FnMut(&Path, &Path) -> io::Result<()>,
+) -> Result<()> {
+    let previous = reserve_previous_restore_path(target)?;
+    rename(target, &previous)?;
+    if let Err(publish_error) = rename(stage, target) {
+        return match rename(&previous, target) {
+            Ok(()) => Err(publish_error.into()),
+            Err(rollback_error) => Err(BackupError::UnsafeDestination(format!(
+                "Restore publish failed ({publish_error}); could not restore the previous target ({rollback_error})"
+            ))),
+        };
+    }
+    // The new tree is now published. A failed cleanup leaves a sibling the
+    // user can still recover from; it must not turn a completed restore into
+    // a misleading failure.
+    let _ = if overwrite {
+        fs::remove_dir_all(previous)
+    } else {
+        fs::remove_dir(previous)
+    };
+    Ok(())
+}
+
+fn reserve_previous_restore_path(target: &Path) -> Result<PathBuf> {
+    let parent = target.parent().ok_or_else(|| {
+        BackupError::UnsafeDestination("Restore destination has no parent folder".into())
+    })?;
+    for suffix in 0_u32..1024 {
+        let previous = parent.join(format!(
+            ".tilo-restore-{}-{suffix}.previous",
+            std::process::id()
+        ));
+        match fs::symlink_metadata(&previous) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(previous),
+            Ok(_) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(BackupError::UnsafeDestination(
+        "Could not reserve a rollback location for the restore target".into(),
+    ))
 }
 
 fn read_manifest(snapshot: &Path) -> Result<BackupManifest> {
@@ -592,16 +715,6 @@ fn integrity<T>(path: &Path, message: &str) -> Result<T> {
     )))
 }
 
-fn remove_existing(path: &Path) -> Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.is_dir() {
-        fs::remove_dir_all(path)?;
-    } else {
-        fs::remove_file(path)?;
-    }
-    Ok(())
-}
-
 #[cfg(unix)]
 fn create_symlink(target: &Path, path: &Path) -> Result<()> {
     std::os::unix::fs::symlink(target, path)?;
@@ -685,6 +798,30 @@ mod tests {
         let restored = temp.path().join("restored");
         assert!(restore_snapshot(&destination, &manifest.id, &restored, false, |_| {}).is_err());
         assert!(!restored.join("important").exists());
+        assert!(
+            !restored.exists(),
+            "failed verification never publishes a partial recovery folder"
+        );
+    }
+
+    #[test]
+    fn restore_refuses_a_target_inside_the_repository_before_writing_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("important"), b"original").unwrap();
+        let manifest = create_snapshot(&source, &destination, |_| {}).unwrap();
+        let inside_repo = repository_path(&destination).join("recovery");
+
+        assert!(matches!(
+            restore_snapshot(&destination, &manifest.id, &inside_repo, false, |_| {}),
+            Err(BackupError::UnsafeDestination(_))
+        ));
+        assert!(
+            !inside_repo.exists(),
+            "a refused target must not leave a directory in the repository"
+        );
     }
 
     #[test]
@@ -703,6 +840,29 @@ mod tests {
             Err(BackupError::UnsafeDestination(_))
         ));
         assert_eq!(fs::read(restored.join("file")).unwrap(), b"existing");
+    }
+
+    #[test]
+    fn failed_stage_publish_restores_the_previous_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("restore");
+        let stage = temp.path().join("stage");
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&stage).unwrap();
+        fs::write(target.join("previous"), b"keep me").unwrap();
+        fs::write(stage.join("restored"), b"new data").unwrap();
+        let mut calls = 0_u8;
+        let result = publish_restore_swap(&stage, &target, true, &mut |from, to| {
+            calls = calls.saturating_add(1);
+            if calls == 2 {
+                return Err(io::Error::other("injected stage publish failure"));
+            }
+            fs::rename(from, to)
+        });
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(target.join("previous")).unwrap(), b"keep me");
+        assert!(stage.join("restored").exists());
     }
 
     #[cfg(unix)]
@@ -734,7 +894,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn malicious_symlink_ancestor_cannot_escape_restore_root() {
+    fn overwrite_replaces_a_malicious_symlink_ancestor_without_following_it() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
         let destination = temp.path().join("destination");
@@ -746,8 +906,9 @@ mod tests {
         fs::create_dir_all(&outside).unwrap();
         let manifest = create_snapshot(&source, &destination, |_| {}).unwrap();
         std::os::unix::fs::symlink(&outside, restore.join("folder")).unwrap();
-        assert!(restore_snapshot(&destination, &manifest.id, &restore, true, |_| {}).is_err());
+        restore_snapshot(&destination, &manifest.id, &restore, true, |_| {}).unwrap();
         assert!(!outside.join("file").exists());
+        assert_eq!(fs::read(restore.join("folder/file")).unwrap(), b"safe");
     }
 
     #[cfg(unix)]

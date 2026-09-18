@@ -25,7 +25,7 @@
 #   Pulling image into composefs repository: Opening stream '':
 #   Creating new splitstream reader: Invalid splitstream content type
 #
-# Pulling the same image over HTTP works. That is a real constraint on replacing
+# Pulling the same image over HTTP works. That is a constraint on replacing
 # bib: the disk step needs a registry the installer can reach, so a local one is
 # started here rather than assumed.
 set -euo pipefail
@@ -44,42 +44,42 @@ for a in "$@"; do
   esac
 done
 
-IMAGE="$QOS_CFS_IMAGE:gen$GEN"
-DISK="$QOS_CFS_RUN/gen$GEN.raw"
-MNT="$QOS_CFS_RUN/mnt"
+IMAGE="$TILO_CFS_IMAGE:gen$GEN"
+DISK="$TILO_CFS_RUN/gen$GEN.raw"
+MNT="$TILO_CFS_RUN/mnt"
 
-mkdir -p "$QOS_CFS_RUN"
+mkdir -p "$TILO_CFS_RUN"
 podman image exists "$IMAGE" || die "$IMAGE not built (run build.sh $GEN)"
 
 # --- a registry the installer can pull from ----------------------------------
-if ! podman container exists qos-cfs-registry 2>/dev/null; then
-  msg "starting a registry on :$QOS_CFS_REG_PORT"
-  podman run -d --name qos-cfs-registry \
-    -p "$QOS_CFS_REG_PORT:5000" docker.io/library/registry:2 >/dev/null
-elif [ "$(podman inspect -f '{{.State.Running}}' qos-cfs-registry)" != true ]; then
-  podman start qos-cfs-registry >/dev/null
+if ! podman container exists tilo-cfs-registry 2>/dev/null; then
+  msg "starting a registry on :$TILO_CFS_REG_PORT"
+  podman run -d --name tilo-cfs-registry \
+    -p "$TILO_CFS_REG_PORT:5000" docker.io/library/registry:2 >/dev/null
+elif [ "$(podman inspect -f '{{.State.Running}}' tilo-cfs-registry)" != true ]; then
+  podman start tilo-cfs-registry >/dev/null
 fi
 for _ in $(seq 1 30); do
-  curl -sf "http://$QOS_CFS_REG_HOST/v2/" >/dev/null && break
+  curl -sf "http://$TILO_CFS_REG_HOST/v2/" >/dev/null && break
   sleep 1
 done
-curl -sf "http://$QOS_CFS_REG_HOST/v2/" >/dev/null \
-  || die "registry did not come up on $QOS_CFS_REG_HOST"
+curl -sf "http://$TILO_CFS_REG_HOST/v2/" >/dev/null \
+  || die "registry did not come up on $TILO_CFS_REG_HOST"
 
-msg "publishing $IMAGE as $QOS_CFS_REG_HOST/$QOS_CFS_REPO:latest"
-podman push --tls-verify=false "$IMAGE" "$QOS_CFS_REG_HOST/$QOS_CFS_REPO:latest"
+msg "publishing $IMAGE as $TILO_CFS_REG_HOST/$TILO_CFS_REPO:latest"
+podman push --tls-verify=false "$IMAGE" "$TILO_CFS_REG_HOST/$TILO_CFS_REPO:latest"
 
 # The installing container needs the registry marked insecure. The image carries
 # a drop-in for the address the *guest* uses (10.0.2.2:5000); this adds the one
 # the host uses.
-REGCONF="$QOS_CFS_RUN/98-local-registry.conf"
-printf '[[registry]]\nlocation = "%s"\ninsecure = true\n' "$QOS_CFS_REG_HOST" > "$REGCONF"
+REGCONF="$TILO_CFS_RUN/98-local-registry.conf"
+printf '[[registry]]\nlocation = "%s"\ninsecure = true\n' "$TILO_CFS_REG_HOST" > "$REGCONF"
 
 # bootc runs *out of* the image being installed, so root podman needs it too.
 # Rather than move it across with save|load — which is the transfer that breaks
 # the composefs pull — run the copy that is already in the registry. One
 # reference then serves as both the container to run and the install source.
-RUNREF="$QOS_CFS_REG_HOST/$QOS_CFS_REPO:latest"
+RUNREF="$TILO_CFS_REG_HOST/$TILO_CFS_REPO:latest"
 
 cleanup() {
   sudo -n umount -R "$MNT" 2>/dev/null || true
@@ -87,29 +87,29 @@ cleanup() {
 }
 trap cleanup EXIT
 
-msg "creating $DISK ($QOS_CFS_DISK_SIZE)"
+msg "creating $DISK ($TILO_CFS_DISK_SIZE)"
 rm -f "$DISK"
-truncate -s "$QOS_CFS_DISK_SIZE" "$DISK"
+truncate -s "$TILO_CFS_DISK_SIZE" "$DISK"
 
 if [ "$MODE" = to-disk ]; then
   msg "bootc install to-disk --via-loopback --composefs-backend --bootloader systemd"
   sudo -n podman run --rm --privileged --pid=host --network host \
     --security-opt label=type:unconfined_t \
     -v /var/lib/containers:/var/lib/containers \
-    -v /dev:/dev -v "$QOS_CFS_RUN:$QOS_CFS_RUN" \
+    -v /dev:/dev -v "$TILO_CFS_RUN:$TILO_CFS_RUN" \
     -v "$REGCONF:/etc/containers/registries.conf.d/98-local.conf:ro" \
     --tls-verify=false "$RUNREF" \
     bootc install to-disk --via-loopback --composefs-backend \
       --bootloader systemd --filesystem btrfs --wipe --skip-fetch-check \
-      --source-imgref "docker://$QOS_CFS_REG_HOST/$QOS_CFS_REPO:latest" \
-      --target-imgref "$QOS_CFS_REG_GUEST/$QOS_CFS_REPO:latest" \
+      --source-imgref "docker://$TILO_CFS_REG_HOST/$TILO_CFS_REPO:latest" \
+      --target-imgref "$TILO_CFS_REG_GUEST/$TILO_CFS_REPO:latest" \
       "$DISK"
 else
   msg "systemd-repart: ESP 2G (vfat) + root (btrfs)"
   sudo -n systemd-repart \
     --empty=force --dry-run=no --discard=no --offline=false \
     --definitions="$HERE/repart.d" \
-    --size="$QOS_CFS_DISK_SIZE" \
+    --size="$TILO_CFS_DISK_SIZE" \
     "$DISK"
 
   LOOP="$(sudo -n losetup -fP --show "$DISK")"
@@ -137,8 +137,8 @@ else
       --composefs-backend \
       --bootloader systemd \
       --skip-fetch-check \
-      --source-imgref "docker://$QOS_CFS_REG_HOST/$QOS_CFS_REPO:latest" \
-      --target-imgref "$QOS_CFS_REG_GUEST/$QOS_CFS_REPO:latest" \
+      --source-imgref "docker://$TILO_CFS_REG_HOST/$TILO_CFS_REPO:latest" \
+      --target-imgref "$TILO_CFS_REG_GUEST/$TILO_CFS_REPO:latest" \
       "/run/host$MNT"
 
   msg "installed tree:"

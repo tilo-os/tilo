@@ -1,7 +1,7 @@
-//! `app-host` — the runtime backbone for qOS's native app model.
+//! `app-host` — the runtime service for Tilo's native app model.
 //!
 //! The daemon owns the local content-addressed package store at
-//! `~/.local/share/qos-apps/store/`, maintains a `Pinned` vs `LRU
+//! `~/.local/share/tilo-apps/store/`, maintains a `Pinned` vs `LRU
 //! (Tried)` registry, runs size-pressure GC, and exposes a Cap'n Proto
 //! control socket the launcher (and a future App Tray UI) calls.
 //!
@@ -20,7 +20,7 @@
 //! - [`transport`] — Unix-domain socket bind + accept loop (matches
 //!   the shape used by `format-host`).
 //!
-//! The crate exposes both a daemon binary (`qos-app-host`) and the
+//! The crate exposes both a daemon binary (`tilo-app-host`) and the
 //! library surface, so tests can drive the service in-process without
 //! spawning the binary.
 
@@ -87,14 +87,14 @@ pub fn default_store_root() -> PathBuf {
         // fall back to a per-user temp dir.
         std::env::temp_dir()
     });
-    // Deliberately distinct from qos-install's legacy `qos-apps/registry.toml`:
+    // Deliberately distinct from tilo-install's legacy `tilo-apps/registry.toml`:
     // the two registries have different schemas and sharing the path makes the
     // daemon fail at boot on any machine that used the old CLI.
-    base.join("qos-app-host")
+    base.join("tilo-app-host")
 }
 
-/// Default socket path: `$XDG_RUNTIME_DIR/qos/services/app-host.sock`.
+/// Default socket path: `$XDG_RUNTIME_DIR/tilo/services/app-host.sock`.
 pub fn default_socket_path() -> PathBuf {
     let base = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
-    base.join("qos").join("services").join("app-host.sock")
+    base.join("tilo").join("services").join("app-host.sock")
 }

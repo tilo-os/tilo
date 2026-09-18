@@ -2,30 +2,44 @@
 //! filesystem locations the import/export actions use.
 //!
 //! The whole calendar (projects / events / tasks and every item's
-//! rich-text notes) lives in one Automerge document. Persistence is just
-//! that document's `save()` bytes written atomically to a single file, so
-//! a user's events and notes survive a restart and two peers can still
-//! converge on the same bytes. There is **no** sample content here — a
-//! fresh machine loads nothing and starts empty.
+//! rich-text notes) lives in one Automerge document. The document's `save()`
+//! bytes are written atomically to a single file, so events and notes survive
+//! a restart and peers can converge on the same bytes. A fresh machine starts
+//! with an empty document.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
 use automerge::AutoCommit;
 
-/// Where the calendar document is stored. Honors `QOS_CALENDAR_DATA` (used
+/// Open Calendar through the shared host persistence lifecycle, preserving
+/// documents written by the former widget-owned store. The source is retained;
+/// merging its unchanged history again cannot resurrect a subsequently deleted
+/// event or replace a newer edit.
+pub fn open_state(app_id: &'static str) -> (ui::State, ui::persist::Autosave) {
+    match default_path() {
+        Some(legacy) => ui::persist::open_migrating(app_id, &legacy),
+        None => ui::persist::open(app_id),
+    }
+}
+
+/// Where the legacy calendar document is stored. Honors `TILO_CALENDAR_DATA` (used
 /// by tests and by callers who want an explicit location), then
 /// `XDG_DATA_HOME`, then `$HOME/.local/share`. Returns `None` only when no
 /// home can be resolved, in which case the app simply runs without
-/// persistence.
+/// legacy migration. New writes use the shared host store on every platform.
 pub fn default_path() -> Option<PathBuf> {
-    if let Some(over) = std::env::var_os("QOS_CALENDAR_DATA") {
+    if let Some(over) = std::env::var_os("TILO_CALENDAR_DATA") {
         return Some(PathBuf::from(over));
     }
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/share")))?;
-    Some(base.join("qos").join("calendar").join("calendar.automerge"))
+    Some(
+        base.join("tilo")
+            .join("calendar")
+            .join("calendar.automerge"),
+    )
 }
 
 /// Load a previously-saved calendar document. Returns `None` when the file
@@ -49,19 +63,18 @@ pub fn save(path: &Path, doc: &mut AutoCommit) -> io::Result<()> {
     atomic_file::write(path, &doc.save())
 }
 
-/// Directory the import/export actions read from and write to. A real
-/// calendar client opens a file picker; with none available here we use the
-/// user's `Downloads` folder (overridable via `QOS_CALENDAR_IMPORT_DIR`),
+/// Directory the import/export actions read from and write to. In place of a
+/// file picker, use the
+/// user's `Downloads` folder (overridable via `TILO_CALENDAR_IMPORT_DIR`),
 /// which is where downloaded `.ics` invites and exported files naturally
 /// live.
 pub fn transfer_dir() -> PathBuf {
-    if let Some(over) = std::env::var_os("QOS_CALENDAR_IMPORT_DIR") {
+    if let Some(over) = std::env::var_os("TILO_CALENDAR_IMPORT_DIR") {
         return PathBuf::from(over);
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        return Path::new(&home).join("Downloads");
-    }
-    std::env::temp_dir()
+    ui::sysdirs::UserDirs::from_system()
+        .downloads
+        .unwrap_or_else(std::env::temp_dir)
 }
 
 /// The most-recently-modified `.ics` file in `dir`, if any. Backs the
@@ -78,10 +91,13 @@ pub fn newest_ics(dir: &Path) -> Option<PathBuf> {
         if !is_ics {
             continue;
         }
-        let modified = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .unwrap_or(std::time::UNIX_EPOCH);
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let modified = metadata.modified().unwrap_or(std::time::UNIX_EPOCH);
         if best.as_ref().is_none_or(|(m, _)| modified > *m) {
             best = Some((modified, path));
         }
@@ -134,5 +150,15 @@ mod tests {
         let picked = newest_ics(&dir).expect("an ics file");
         assert_eq!(picked.file_name().unwrap(), "b.ics");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn newest_ics_ignores_directories_named_like_calendar_files() {
+        let dir = tmp_dir();
+        let file = dir.join("invite.ICS");
+        std::fs::write(&file, "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n").unwrap();
+        std::fs::create_dir(dir.join("newer.ics")).unwrap();
+        assert_eq!(newest_ics(&dir), Some(file));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

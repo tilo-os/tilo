@@ -65,7 +65,10 @@ impl<A: hal::Api> ExecutionContext<A> {
     }
 }
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+)]
 struct Example<A: hal::Api> {
     instance: A::Instance,
     adapter: A::Adapter,

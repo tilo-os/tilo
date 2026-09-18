@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
+
 //! Calculator — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
@@ -5,13 +7,9 @@
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit
 //!     (headless screenshot; identical passes to the live app).
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
+// Apps run in isolated processes, so app-local arithmetic checks are relaxed.
+// Panic-producing lints remain denied; shared crates retain the full lint set
+// because a fault there can affect the session or every app.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -66,13 +64,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // production `handle_event` path and times each event + repaint frame,
     // printing per-click the expression length, handle-event µs, frame µs and
     // CRDT document size — so a runaway (freeze) shows up as a climbing number.
-    if args.iter().any(|a| a == "--bench-clicks") {
+    if args
+        .iter()
+        .any(|a| a == "--bench-clicks" || a.starts_with("--bench-clicks="))
+    {
         let n = parse_bench_n(&args).unwrap_or(400);
         return run_clicks_bench(shots_viewport(), n);
     }
-    ui::launch::run(
-        &launch_spec(),
-    )?;
+    ui::launch::run(&launch_spec())?;
     Ok(())
 }
 
@@ -87,24 +86,24 @@ fn configure_app(app: &mut ui::App) {
 fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     let out = args.shots.as_deref().ok_or(LaunchError::ShotsUnsupported)?;
     // The live app starts empty; screenshots default to a populated state.
-    let root: Box<dyn Widget> = if std::env::var_os("QOS_CALC_EMPTY").is_some() {
+    let root: Box<dyn Widget> = if std::env::var_os("TILO_CALC_EMPTY").is_some() {
         calculator::app_root()
     } else {
         let mut app = calculator::CalculatorApp::seeded();
-        match std::env::var("QOS_CALC_MODE").ok().as_deref() {
+        match std::env::var("TILO_CALC_MODE").ok().as_deref() {
             Some("2d" | "graph2d") => app.shots_set_mode(calculator::model::Mode::Graph2d),
             Some("3d" | "graph3d") => app.shots_set_mode(calculator::model::Mode::Graph3d),
             _ => {}
         }
-        match std::env::var("QOS_CALC_HISTORY").ok().as_deref() {
+        match std::env::var("TILO_CALC_HISTORY").ok().as_deref() {
             Some("open") => app.shots_set_history_open(true),
             Some("closed" | "collapsed") => app.shots_set_history_open(false),
             _ => {}
         }
         Box::new(app)
     };
-    // The shared screenshot policy resolves `QOS_SHOTS_THEME`,
-    // `QOS_SHOTS_TEXT_SCALE` / `--text-scale` and the motion preference
+    // The shared screenshot policy resolves `TILO_SHOTS_THEME`,
+    // `TILO_SHOTS_TEXT_SCALE` / `--text-scale` and the motion preference
     // exactly as every other first-party renderer does, so a light-theme
     // request cannot be honoured here and ignored there.
     render_shot_to_png(
@@ -350,8 +349,7 @@ fn bench_run_click_loop(
             continue;
         };
         let Some(pt) = app.bench_calc_key_center(label) else {
-            eprintln!("click {idx}: key {label:?} not found in layout");
-            continue;
+            return Err(format!("click {idx}: key {label:?} not found in layout").into());
         };
         let handle_us = bench_dispatch(app, state, &taffy, child, &synth_cursor(pt.x, pt.y))
             + bench_dispatch(
@@ -394,10 +392,10 @@ fn bench_run_click_loop(
 }
 
 /// Viewport for the headless screenshot. Defaults to a wide desktop frame;
-/// `QOS_CALC_SHOTS_SIZE=WxH` overrides it (e.g. to capture the compact keypad
+/// `TILO_CALC_SHOTS_SIZE=WxH` overrides it (e.g. to capture the compact keypad
 /// + overlay-history behaviour at a narrow size).
 fn shots_viewport() -> (u32, u32) {
-    if let Some(s) = std::env::var_os("QOS_CALC_SHOTS_SIZE") {
+    if let Some(s) = std::env::var_os("TILO_CALC_SHOTS_SIZE") {
         let s = s.to_string_lossy();
         if let Some((w, h)) = s.split_once(['x', 'X', '*'])
             && let (Ok(w), Ok(h)) = (w.trim().parse(), h.trim().parse())
@@ -420,7 +418,7 @@ fn render_shot_to_png(
     let mut presence = PresenceCtx::empty();
     // Shots-only: seed a remote collaborator's cursor at `x,y` so the headless
     // frame shows a peer caret mapped into the active math field's 2D layout.
-    if let Some(spec) = std::env::var_os("QOS_CALC_REMOTE_CURSOR") {
+    if let Some(spec) = std::env::var_os("TILO_CALC_REMOTE_CURSOR") {
         let spec = spec.to_string_lossy();
         if let Some((sx, sy)) = spec.split_once(',')
             && let (Ok(x), Ok(y)) = (sx.trim().parse::<f32>(), sy.trim().parse::<f32>())
@@ -488,7 +486,7 @@ fn render_shot_to_png(
 }
 
 fn launch_spec() -> LaunchSpec {
-    LaunchSpec::new("dev.qos.calculator", calculator::app_root)
+    LaunchSpec::new("dev.tilo.calculator", calculator::app_root)
         .history(&calculator::framework_history::HISTORY)
         .shot_handler(render_shot)
         .configure_app(configure_app)

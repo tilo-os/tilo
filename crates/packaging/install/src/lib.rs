@@ -1,7 +1,7 @@
-//! Library surface of `qos-install`.
+//! Library surface of `tilo-install`.
 //!
 //! Everything the CLI in `main.rs` does that is pure logic lives
-//! here so it is unit-testable without spawning a real `.qpkg`
+//! here so it is unit-testable without spawning a `.qpkg`
 //! install. The registry serde types stay in `main.rs` because they
 //! are the shape of the CLI's on-disk contract, not something re-used
 //! elsewhere.
@@ -37,4 +37,4 @@ pub use shim::{
 
 /// The name of the binary as registered with Cargo. Exposed for
 /// integration tests that want to invoke it via `CARGO_BIN_EXE_*`.
-pub const BINARY_NAME: &str = "qos-install";
+pub const BINARY_NAME: &str = "tilo-install";

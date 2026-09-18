@@ -1,8 +1,5 @@
-//! Reproduce the "page goes blank ~5s after load" bug by isolating the
-//! ad blocker. Loads a page, captures it, then installs (a) the content
-//! filter, (b) the user scripts, or (c) both — per the arg — waits, and
-//! captures again. If the "after" frame is blank, that component is the
-//! culprit.
+//! Isolate ad-blocker-related blank frames. The example loads a page, reports
+//! its frame uniformity, then installs content filters, user scripts, or both.
 //!
 //! Run:
 //!   WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 \
@@ -13,8 +10,6 @@ use std::time::{Duration, Instant};
 
 use ui::webview::wpe::WpeEngine;
 use ui::webview::{SharedEngine, WebViewCommand, WebViewEngine};
-
-const OUT: &str = "/tmp/claude-1000/-var-home-quinten-Development-quickdesktop/4b954627-69cb-4365-8ed0-231ae0028e62/scratchpad";
 
 fn latest(engine: &dyn WebViewEngine) -> Option<(Arc<Vec<u8>>, u32, u32)> {
     engine
@@ -40,8 +35,7 @@ fn uniformity(rgba: &[u8]) -> f64 {
     same as f64 / total.max(1) as f64
 }
 
-fn save(engine: &dyn WebViewEngine, name: &str) {
-    let _ = OUT;
+fn report(engine: &dyn WebViewEngine, name: &str) {
     match latest(engine) {
         Some((rgba, w, h)) => {
             let u = uniformity(&rgba) * 100.0;
@@ -85,7 +79,7 @@ fn main() {
         std::thread::sleep(Duration::from_millis(50));
     }
     println!("== before ad blocker ==");
-    save(&*engine, "adblock-1-before.png");
+    report(&*engine, "before install");
 
     // Optional 3rd arg: install only the first N compiled chunks (to find
     // whether it's a volume limit). Default: all, via the real loader.
@@ -105,7 +99,7 @@ fn main() {
                 let want = std::env::var("REPRO_LISTS").unwrap_or_default();
                 let dir = dirs::cache_dir()
                     .unwrap()
-                    .join("qos-browser")
+                    .join("tilo-browser")
                     .join("filters");
                 let texts: Vec<String> = std::fs::read_dir(&dir)
                     .unwrap()
@@ -161,7 +155,7 @@ fn main() {
         }
     }
     println!("== after install ==");
-    save(&*engine, "adblock-2-after.png");
+    report(&*engine, "after install");
 
     // The user's actual repro: RELOAD with the filter already active (a
     // page *loading* with the filter, vs the filter applied post-load).
@@ -176,7 +170,7 @@ fn main() {
             println!("  reload t+{i}s uniformity {u:.1}%");
         }
     }
-    save(&*engine, "adblock-3-reload.png");
+    report(&*engine, "after reload");
 
     // Also test a fresh Navigate to the same URL with the filter active.
     println!("== NAVIGATE with filter active ==");
@@ -190,7 +184,7 @@ fn main() {
             println!("  navigate t+{i}s uniformity {u:.1}%");
         }
     }
-    save(&*engine, "adblock-4-navigate.png");
+    report(&*engine, "after navigate");
     println!("done");
 }
 
@@ -203,7 +197,7 @@ fn analyze() {
     let want = std::env::var("REPRO_LISTS").unwrap_or_default();
     let dir = dirs::cache_dir()
         .unwrap()
-        .join("qos-browser")
+        .join("tilo-browser")
         .join("filters");
     let mut texts = Vec::new();
     let mut names = Vec::new();

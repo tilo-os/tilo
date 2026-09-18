@@ -1,4 +1,5 @@
-//! Bounded, cursor-paged global search for browser history and bookmarks.
+//! Bounded, cursor-paged global search for browser history, bookmarks, and
+//! device-local download resources.
 //!
 //! The retained index is refreshed only after a durable corpus revision.
 //! Providers then clone it cheaply, so opening global search does not clone
@@ -6,7 +7,7 @@
 //! against the current index, which refuses an address that went stale after
 //! the result was rendered.
 
-use qos_actions::{
+use tilo_actions::{
     ActionAddress, ActionContract, ActionSpec, ExecutionMode, OperationKind, Resource, ResultSpec,
     RetryPolicy,
 };
@@ -32,6 +33,7 @@ struct Row {
 struct IndexState {
     history_revision: u64,
     bookmark_revision: u64,
+    download_revision: u64,
     catalog: SearchCatalog,
     rows: std::collections::BTreeMap<String, Row>,
 }
@@ -41,6 +43,7 @@ impl Default for IndexState {
         Self {
             history_revision: u64::MAX,
             bookmark_revision: u64::MAX,
+            download_revision: u64::MAX,
             catalog: SearchCatalog::new("Browser"),
             rows: std::collections::BTreeMap::new(),
         }
@@ -63,17 +66,29 @@ impl BrowserSearchIndex {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.history_revision = u64::MAX;
         state.bookmark_revision = u64::MAX;
+        state.download_revision = u64::MAX;
     }
 
     pub fn sync(&self, history: &crate::history::History, bookmarks: &crate::library::Bookmarks) {
+        self.sync_all(history, bookmarks, &crate::downloads::Downloads::default());
+    }
+
+    pub fn sync_all(
+        &self,
+        history: &crate::history::History,
+        bookmarks: &crate::library::Bookmarks,
+        downloads: &crate::downloads::Downloads,
+    ) {
         let history_revision = history.revision();
         let bookmark_revision = bookmarks.revision();
+        let download_revision = downloads.revision();
         let current = self
             .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let unchanged = current.history_revision == history_revision
-            && current.bookmark_revision == bookmark_revision;
+            && current.bookmark_revision == bookmark_revision
+            && current.download_revision == download_revision;
         drop(current);
         if unchanged {
             return;
@@ -109,6 +124,27 @@ impl BrowserSearchIndex {
             };
             Self::index_row(&catalog, &mut rows, row);
         }
+        for entry in downloads.entries() {
+            let destination = entry
+                .destination
+                .as_deref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default();
+            let row = Row {
+                resource_id: entry.resource_id(),
+                title: entry.display_name().to_string(),
+                url: format!("{} {destination}", entry.source_url),
+                resource_kind: "browser.download",
+                search_kind: "Downloads",
+                icon: Icon::Download,
+                score: if entry.status == crate::downloads::DownloadStatus::Completed {
+                    35
+                } else {
+                    20
+                },
+            };
+            Self::index_row(&catalog, &mut rows, row);
+        }
 
         let mut state = self
             .state
@@ -116,6 +152,7 @@ impl BrowserSearchIndex {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.history_revision = history_revision;
         state.bookmark_revision = bookmark_revision;
+        state.download_revision = download_revision;
         state.catalog = catalog;
         state.rows = rows;
     }
@@ -128,7 +165,14 @@ impl BrowserSearchIndex {
         let result = SearchResult::for_action(
             row.search_kind,
             &row.title,
-            ActionAddress::new(&row.resource_id, "open"),
+            ActionAddress::new(
+                &row.resource_id,
+                if row.resource_kind == "browser.download" {
+                    "show"
+                } else {
+                    "open"
+                },
+            ),
         )
         .with_subtitle(&row.url)
         .with_icon(row.icon)
@@ -157,17 +201,29 @@ pub struct BrowserSearchProvider {
 impl BrowserSearchProvider {
     fn row_resource(row: &Row) -> Resource {
         let mut resource = Resource::new(&row.resource_id, row.resource_kind, &row.title);
-        let payload = serde_json::json!({ "operation": "navigate", "url": row.url });
+        let (action, label, payload, contract) = if row.resource_kind == "browser.download" {
+            (
+                "show",
+                "Show download",
+                serde_json::json!({ "operation": "show-library", "section": "downloads" }),
+                ActionContract::view(),
+            )
+        } else {
+            (
+                "open",
+                "Open page",
+                serde_json::json!({ "operation": "navigate", "url": row.url }),
+                navigation_contract(),
+            )
+        };
         if let Ok(spec) = ActionSpec::operation(
-            "open",
-            "Open page",
+            action,
+            label,
             OperationKind::Effect,
             "browser.operation",
             &payload,
         ) {
-            resource
-                .actions
-                .push(spec.with_contract(navigation_contract()));
+            resource.actions.push(spec.with_contract(contract));
         }
         resource
     }
@@ -245,16 +301,20 @@ impl SearchProvider for BrowserSearchProvider {
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
-        if address.action != "open" {
-            return None;
-        }
-        self.index
+        let row = self
+            .index
             .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .rows
             .get(&address.resource)
-            .map(Self::row_resource)
+            .cloned()?;
+        let expected = if row.resource_kind == "browser.download" {
+            "show"
+        } else {
+            "open"
+        };
+        (address.action == expected).then(|| Self::row_resource(&row))
     }
 }
 
@@ -325,5 +385,35 @@ mod tests {
             resource.actions[0].contract.execution,
             ExecutionMode::Background { cancellable: false }
         ));
+    }
+
+    #[test]
+    fn completed_downloads_are_searchable_by_name_source_and_destination() {
+        let mut downloads = crate::downloads::Downloads::default();
+        assert!(downloads.requested(
+            "stable-download".into(),
+            "https://example.test/sdk".into(),
+            "Tilo-SDK.tar.zst",
+        ));
+        downloads.finished(
+            "stable-download",
+            "/home/alex/Downloads/Tilo-SDK.tar.zst".into(),
+        );
+        let index = BrowserSearchIndex::default();
+        index.sync_all(
+            &crate::history::History::new(),
+            &crate::library::Bookmarks::default(),
+            &downloads,
+        );
+        let provider = index.provider();
+        let hit = provider.search_limited("Tilo-SDK", 1).pop().unwrap();
+        let address = hit.action_address().unwrap();
+        assert_eq!(address.resource, "browser.download.stable-download");
+        assert_eq!(address.action, "show");
+        let resource = provider.resolve_action_resource(&address).unwrap();
+        assert_eq!(resource.kind, "browser.download");
+        assert_eq!(resource.actions[0].id, "show");
+        assert!(!provider.search_limited("example.test/sdk", 1).is_empty());
+        assert!(!provider.search_limited("home/alex/Downloads", 1).is_empty());
     }
 }

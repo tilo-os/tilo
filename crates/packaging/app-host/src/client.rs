@@ -24,6 +24,9 @@ pub struct InstalledPackage {
     pub app_id: String,
     pub version: String,
     pub pinned: bool,
+    /// True for packages in the per-user mutable store. System packages are
+    /// read-only but remain launchable through the same capability.
+    pub user_managed: bool,
 }
 
 pub struct BlockingClient {
@@ -117,6 +120,7 @@ impl BlockingClient {
                 app_id: manifest.package.id,
                 version: manifest.package.version,
                 pinned: entry.get_pinning().map_err(|e| e.to_string())? == WirePinning::Pinned,
+                user_managed: entry.get_user_managed(),
             });
         }
         Ok(out)

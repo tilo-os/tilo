@@ -27,7 +27,7 @@ use lru::LruCache;
 use crate::store::{BlobError, BlobStore, narrow_u32, narrow_usize};
 
 /// The cache's page size. Matches the kernel page size on the
-/// architectures qOS supports.
+/// architectures Tilo supports.
 pub const PAGE_SIZE: u32 = 4096;
 
 /// LRU page cache wrapping a [`BlobStore`].

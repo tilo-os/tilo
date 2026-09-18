@@ -1,5 +1,6 @@
-//! Feeds — standard qOS application entry point.
+//! Feeds — standard Tilo application entry point.
 
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -37,9 +38,23 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
+fn install_locales() -> Result<(), ui::i18n::I18nError> {
+    ui::i18n::I18nManager::install_system(
+        "en-US",
+        &[
+            ("en-US", include_str!("../locales/en-US.ftl")),
+            ("de-DE", include_str!("../locales/de-DE.ftl")),
+        ],
+    )
+}
+
 pub fn main() {
+    if let Err(error) = install_locales() {
+        eprintln!("Feeds locale initialization failed: {error}");
+        std::process::exit(1);
+    }
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.feeds", feeds::app_root)
+        &LaunchSpec::new("dev.tilo.feeds", feeds::app_root)
             .shot_root(shot_root)
             .scenarios(&[
                 "sidebar-open",
@@ -53,6 +68,34 @@ pub fn main() {
                 "add-subscription",
                 "tags",
             ])
-            .configure_app(|app| feeds::actions::register(app.action_registry_mut())),
+            .configure_app(|app| {
+                app.set_window_title(Some("Feeds".into()));
+                feeds::actions::register(app.action_registry_mut());
+            }),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn native_startup_installs_link_status_catalog() {
+        super::install_locales().unwrap();
+        for (key, value) in [
+            (
+                "feeds-open-link-invalid",
+                ui::i18n!("feeds-open-link-invalid"),
+            ),
+            (
+                "feeds-open-link-started",
+                ui::i18n!("feeds-open-link-started"),
+            ),
+            (
+                "feeds-open-link-failed",
+                ui::i18n!("feeds-open-link-failed"),
+            ),
+        ] {
+            assert_ne!(key, value);
+            assert!(!value.is_empty());
+        }
+    }
 }

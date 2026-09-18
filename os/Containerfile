@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1.7
 # ============================================================================
-# qOS bootc image — multi-stage build
+# Tilo bootc image — multi-stage build
 # ----------------------------------------------------------------------------
 # Stage 1 (builder): compiles the Rust workspace binaries INSIDE the image
 #   build, on a Fedora 44 base whose glibc matches the runtime. This removes
 #   the old host-build + `COPY shell`/`COPY fs` hack and the F43->F44 glibc
 #   coupling it caused.
-# Stage 2 (final): the actual fedora-bootc:44 OS image. Installs the runtime
+# Stage 2 (final): the fedora-bootc:44 OS image. Installs the runtime
 #   packages + configs + systemd units and copies the binaries out of the
 #   builder. None of the builder's toolchain/-devel deps land here.
 #
@@ -14,7 +14,7 @@
 # source). The OS config files live under os/, so their COPY sources are
 # `os/`-prefixed:
 #
-#     podman build -f os/Containerfile -t localhost/qos:latest <repo-root>
+#     podman build -f os/Containerfile -t localhost/tilo:latest <repo-root>
 #
 # `.containerignore` at the repo root trims target/, os/output and .git from
 # the context. See os/dev/build-image.sh and os/build.sh.
@@ -23,7 +23,7 @@
 
 # ---- Frozen RPM repo (cross-time reproducibility) --------------------------
 # Every `dnf install` below installs ONLY from this digest-pinned snapshot of
-# the exact RPM set (built by os/dev/snapshot-rpms.sh / the snapshot-rpms CI
+# the exact RPM set (built by os/Containerfile.rpms / the snapshot-rpms CI
 # job), never live Fedora mirrors — so the same source rebuilds the same image
 # regardless of when. RPMS_REF (code.podesta.ai/qos/rpms@sha256:...) comes from
 # os/rpms-snapshot.env via the build scripts.
@@ -45,18 +45,31 @@ ARG BASE_REF
 ARG RPMS_REF
 ARG KERNEL_RPMS_REF
 ARG WPE_BUILDROOT_REF
+ARG TILO_WINDOWS_ARCH=x86_64
+# Scratch is only a parseable placeholder for the unselected x86_64 branch.
+# ARM validation rejects it; no diagnostic payload or mutable tag is a fallback.
+ARG FEX_PAYLOAD_REF=scratch
+ARG WINDOWS_GUEST_REF=scratch
 
-# QOS_WITH_BROWSER=0 builds the image without the browser: no WPE WebKit engine
+# TILO_WITH_BROWSER=0 builds the image without the browser: no WPE WebKit engine
 # stage, no `browser` binary. Default 1 — a normal build is unchanged.
 #
-# The engine stage compiles libwpe + wpebackend-fdo + wpewebkit from source and
-# takes ~45 of the ~60 minutes a cold build costs. Nothing about the boot chain
+# The engine stage compiles libwpe + wpebackend-fdo + wpewebkit from source.
+# Measure cold and warm durations on the selected native runner; no universal
+# build-time estimate applies across hardware. Nothing about the boot chain
 # (kernel, initramfs, LUKS/TPM unlock, greeter, installer, rollback) depends on
 # it, so an engine failure should not be able to block boot verification. Opting
 # out is how you get an image to boot-test in minutes while the browser's own
 # build is being repaired.
-ARG QOS_WITH_BROWSER=1
+ARG TILO_WITH_BROWSER=1
+FROM scratch AS public-trust
+COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem /
+
 FROM ${RPMS_REF} AS rpms
+
+# Public trust parsing is a build-only operation. The pinned base supplies the
+# OpenSSL CLI while its ABI libraries remain part of the runtime package policy.
+FROM ${BASE_REF} AS public-trust-tools
 
 # ---- Custom kernel repo ----------------------------------------------------
 # Same "OCI image with /repo" shape as the frozen RPM repo (see
@@ -65,22 +78,54 @@ FROM ${RPMS_REF} AS rpms
 # HZ=1000 + THP=always + trimmed debuginfo).  Built by
 # .forgejo/workflows/build-kernel.yml and pinned by digest via
 # os/kernel-snapshot.env — the runtime stage below swaps kernel-core for
-# qos-kernel-core out of it.
+# tilo-kernel-core out of it.
 FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 
 # CI restores these checksum-pinned files from persistent storage before the
 # build; local builds use the same resumable verifier.
-FROM github-assets AS github-assets
+FROM scratch AS external-assets
+COPY --from=github-assets / /
+
+FROM --platform=linux/arm64 ${FEX_PAYLOAD_REF} AS windows-fex-input
+FROM --platform=linux/amd64 ${WINDOWS_GUEST_REF} AS windows-guest-input
+
+FROM ${BASE_REF} AS windows-provider-aarch64
+ARG FEX_PAYLOAD_REF
+ARG WINDOWS_GUEST_REF
+COPY os/dev/windows_provider.py os/dev/validate-fex-payload.py os/dev/validate-windows-guest.py os/dev/apply-fex-patches.py /tilo/
+COPY os/external-assets/fex-source.env os/dev/wine-source.json /tilo/
+COPY os/external-assets/fex-patches/ /tilo/fex-patches/
+RUN --network=none \
+    --mount=type=bind,from=windows-fex-input,source=/,target=/fex,ro \
+    --mount=type=bind,from=windows-guest-input,source=/,target=/guest,ro \
+    test "$(uname -m)" = aarch64 \
+    && mkdir -p /out/usr/share/tilo/windows /out/usr/lib/tilo/windows-runners \
+    && python3 /tilo/windows_provider.py validate \
+      --fex-ref "$FEX_PAYLOAD_REF" --guest-ref "$WINDOWS_GUEST_REF" \
+      --fex-root /fex --guest-root /guest/rootfs \
+      --source-pin /tilo/fex-source.env --wine-pin /tilo/wine-source.json \
+      > /out/usr/share/tilo/windows/provider.json \
+    && cp -a /fex/usr/. /out/usr/ \
+    && cp -a /guest/rootfs /out/usr/lib/tilo/windows-runners/x86
+
+FROM ${BASE_REF} AS windows-provider-x86_64
+COPY os/dev/windows_provider.py /tilo/
+RUN --network=none test "$(uname -m)" = x86_64 \
+    && mkdir -p /out/usr/share/tilo/windows \
+    && python3 /tilo/windows_provider.py inputs --arch x86_64 \
+       > /out/usr/share/tilo/windows/provider.json
+
+FROM windows-provider-${TILO_WINDOWS_ARCH} AS windows-provider
 
 
 # ---- Minimal Windows paravirtual driver media -----------------------------
 # Fedora's pinned virtio-win RPM expands to almost 2 GiB because it contains
-# the same driver tree in several layouts. qOS only consumes the bootable ISO
+# the same driver tree in several layouts. Tilo only consumes the bootable ISO
 # and the signed guest-tools installer. Extract and authenticate those exact
 # payloads in a throwaway stage instead of installing all duplicated files in
 # the immutable OS. Keep the RPM in the frozen snapshot so this remains an
 # offline, digest-pinned build input.
-# qos-rpm-snapshot-package: virtio-win
+# tilo-rpm-snapshot-package: virtio-win
 FROM ${BASE_REF} AS virtio-win-media
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo,ro \
     /bin/bash -euo pipefail -c '\
@@ -108,36 +153,44 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo,ro \
 # UMU is the upstream-supported way to run Proton outside Steam. Keep the
 # launcher and the default Proton build as independently pinned artifacts:
 # catalogues may select another installed runner, while a fresh image is still
-# able to create a game capsule without downloading Proton first. The Steam
-# Linux Runtime container remains UMU-owned and is populated in the capsule's
-# content-addressed cache when a game first needs that particular runtime.
+# able to provision an offline game capsule. Ship the matching Steam runtime
+# as immutable content; UMU metadata, runtime locks, and variable state belong
+# to each capsule. See os/docs/proton-runtime-validation.md for that contract.
 FROM ${BASE_REF} AS windows-compat-artifacts
 ## Bottles' upstream program records improve catalogue matching. They are data,
-## never an instruction source: qOS imports identity/runner hints only and does
+## never an instruction source: Tilo imports identity/runner hints only and does
 ## not execute a record's Steps, URLs, shell snippets, or dependencies.
-RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
-    mkdir -p /out/bin /out/proton \
-    && install -D -m 0644 /qos-assets/umu-database-8297d420.csv /out/catalogues/umu-database.csv \
-    && tar -xf /qos-assets/umu-launcher-1.4.0.tar -C /tmp \
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    mkdir -p /out/bin /out/proton /out/steam-runtime \
+    && install -D -m 0644 /tilo-assets/umu-database-8297d420.csv /out/catalogues/umu-database.csv \
+    && tar -xf /tilo-assets/umu-launcher-1.4.0.tar -C /tmp \
     && install -m 0755 /tmp/umu/umu-run /out/bin/umu-run \
     && install -m 0644 /tmp/umu/umu_run.py /out/bin/umu_run.py \
-    && tar -xzf /qos-assets/umu-proton-10.0-4.tar.gz -C /out/proton \
+    && tar -xzf /tilo-assets/umu-proton-10.0-4.tar.gz -C /out/proton \
     && test -x /out/proton/UMU-Proton-10.0-4/proton \
+    && tar -xJf /tilo-assets/steam-runtime-sniper-3.0.20260805.254768.tar.xz -C /out/steam-runtime \
+    && case "$(uname -m)" in \
+         x86_64) pv=pressure-vessel ;; \
+         aarch64) pv=pressure-vessel-arm64 ;; \
+         *) echo "unsupported Steam runtime host architecture: $(uname -m)" >&2; exit 1 ;; \
+       esac \
+    && /out/steam-runtime/SteamLinuxRuntime_sniper/${pv}/bin/pv-verify /out/steam-runtime/SteamLinuxRuntime_sniper \
+    && touch /out/steam-runtime/SteamLinuxRuntime_sniper/sniper_platform_3.0.20260805.254768/files/.ref \
     && mkdir -p /out/catalogues/bottles-programs \
-    && tar -xzf /qos-assets/bottles-programs-d1160b8.tar.gz --strip-components=1 -C /out/catalogues/bottles-programs \
+    && tar -xzf /tilo-assets/bottles-programs-d1160b8.tar.gz --strip-components=1 -C /out/catalogues/bottles-programs \
     && chmod -R a-w /out/catalogues/bottles-programs
 
 
-# ---- Modern AirPlay sender -------------------------------------------------
+# ---- AirPlay sender ---------------------------------------------------------
 # Doubletake's current protocol implementation is newer than its last binary
 # release: it includes the CoreUtils/HAP pairing path required by current
 # AirPlay receivers. Build one audited commit, run its hardware-free protocol
 # suite, and copy only the static sender into the OS image.
 FROM docker.io/library/golang:1.25.0-bookworm@sha256:81dc45d05a7444ead8c92a389621fafabc8e40f8fd1a19d7e5df14e61e98bc1a AS doubletake-builder
 ENV GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org
-RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     mkdir -p /src /out \
-    && tar -xzf /qos-assets/doubletake-ae06722.tar.gz --strip-components=1 -C /src
+    && tar -xzf /tilo-assets/doubletake-ae06722.tar.gz --strip-components=1 -C /src
 WORKDIR /src
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
@@ -155,9 +208,9 @@ FROM ${BASE_REF} AS fluxcast-builder
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     dnf install -y --setopt=reposdir=/repo python3 \
     && dnf clean all
-RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     mkdir -p /src \
-    && tar -xzf /qos-assets/fluxcast-a74f39f.tar.gz --strip-components=1 -C /src
+    && tar -xzf /tilo-assets/fluxcast-a74f39f.tar.gz --strip-components=1 -C /src
 COPY os/tests/fluxcast-rtsp-receiver.py /fluxcast-rtsp-receiver.py
 RUN PYTHONPATH=/src/src python3 -m unittest discover -s /src/tests -p 'test_wfd.py' \
     && PYTHONPATH=/src/src python3 /fluxcast-rtsp-receiver.py
@@ -175,37 +228,45 @@ RUN PYTHONPATH=/src/src python3 -m unittest discover -s /src/tests -p 'test_wfd.
 # buildroot snapshot workflow. Production builds consume that per-architecture
 # image by digest and therefore have no Fedora mirror path in this stage.
 FROM ${WPE_BUILDROOT_REF} AS wpe-builder-1
-RUN test -s /usr/lib/qos/wpe-buildroot-packages.txt \
-    && test "$(cat /usr/lib/qos/wpe-buildroot-arch)" = "$(uname -m)"
+ARG WPE_BUILD_JOBS=8
+# Dependency builds can use a stable epoch independently of the OS release.
+# Expose it to compiler/build tools as well as the layer timestamp normalizer.
+ARG SOURCE_DATE_EPOCH=0
+ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
+RUN test -s /usr/lib/tilo/wpe-buildroot-packages.txt \
+    && test "$(cat /usr/lib/tilo/wpe-buildroot-arch)" = "$(uname -m)"
 
 COPY os/dev/build-wpe.sh /build-wpe.sh
 RUN --mount=type=cache,target=/wpe-cache \
-    --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
-    QOS_WPE_CACHE=/wpe-cache QOS_WPE_SOURCE_DIR=/qos-assets QOS_WPE_OFFLINE=1 \
-    QOS_WPE_PREFIX=/usr QOS_WPE_DESTDIR=/wpe \
+    --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    started=$(date +%s) \
+    && trap 'status=$?; printf "TILO_BUILD_TIMING phase=wpe elapsed_seconds=%s exit_code=%s\n" "$(( $(date +%s) - started ))" "$status"; exit "$status"' EXIT \
+    && TILO_WPE_CACHE=/wpe-cache TILO_WPE_SOURCE_DIR=/tilo-assets TILO_WPE_OFFLINE=1 \
+    TILO_WPE_PREFIX=/usr TILO_WPE_DESTDIR=/wpe \
+    JOBS="$WPE_BUILD_JOBS" \
     bash /build-wpe.sh build \
     && { [ ! -L /wpe/usr/lib ] || rm /wpe/usr/lib; }
 
 
 # ---- Stage 1a-off: the same stage with no engine in it ----------------------
-# Selected when QOS_WITH_BROWSER=0. It only has to satisfy the two
+# Selected when TILO_WITH_BROWSER=0. It only has to satisfy the two
 # `COPY --from=wpe-builder /wpe/ /` instructions below — copying the contents of
 # an empty directory is a no-op, so both overlays vanish without either COPY
 # needing to be conditional (a Containerfile has no conditional COPY).
 FROM ${BASE_REF} AS wpe-builder-0
 RUN mkdir -p /wpe
 
-# Whichever of the two above QOS_WITH_BROWSER names becomes `wpe-builder`. The
+# Whichever of the two above TILO_WITH_BROWSER names becomes `wpe-builder`. The
 # other is never built: an unreferenced stage is pruned from the build graph by
-# both buildkit and buildah, so QOS_WITH_BROWSER=0 skips the engine compile
+# both buildkit and buildah, so TILO_WITH_BROWSER=0 skips the engine compile
 # rather than building and discarding it.
-FROM wpe-builder-${QOS_WITH_BROWSER} AS wpe-builder
+FROM wpe-builder-${TILO_WITH_BROWSER} AS wpe-builder
 
 
 # ---- Stage 1: builder ------------------------------------------------------
 # Base pinned by digest against our own mirror (BASE_REF, os/base-snapshot.env):
 # a tag can be repointed, a digest can't — but upstream deletes the manifest a
-# digest points at within about a day, so the pin only stays real if we hold a
+# digest points at within about a day, so the pin remains usable only if we hold a
 # copy. Builder and final share BASE_REF, so their glibc matches by
 # construction. Bump deliberately: re-run `mirror-base`, commit the new
 # BASE_REF, re-run `snapshot-rpms`.
@@ -213,7 +274,7 @@ FROM ${BASE_REF} AS builder
 
 # Rust toolchain + the C/-devel deps the workspace's *-sys crates link or build
 # against. Superset of the my-distrobox dev deps (repo CLAUDE.md) plus the base
-# toolchain a minimal bootc image lacks: cmake/perl/clang/openssl etc. that
+# toolchain a minimal bootc image lacks: cmake/perl/clang etc. that
 # vendored crates (aws-lc-sys, the freetype/harfbuzz/fontconfig font stack,
 # jemalloc, sqlite) need to build. `sccache` honours the project's
 # .cargo/config.toml `rustc-wrapper`. Throwaway stage — nothing here ships.
@@ -224,7 +285,7 @@ FROM ${BASE_REF} AS builder
 #   * glib2-devel + libsoup3-devel supply .pc files. `wpe-webkit-2.0.pc`
 #     declares `Requires: glib-2.0 libsoup-3.0 wpe-1.0 wpe-platform-2.0`, and
 #     pkg-config fails the whole lookup when any link in that chain is missing
-#     — which ui/build.rs reports as the unhelpful "wpe-webkit-2.0 was not
+#     — which crates/sdk/ui-core/build.rs reports as the unhelpful "wpe-webkit-2.0 was not
 #     found".
 #   * The rest supply plain shared objects. libWPEWebKit-2.0.so records them in
 #     DT_NEEDED, so linking `browser` against it makes ld open each one to
@@ -241,7 +302,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         mesa-libgbm-devel mesa-libGL-devel mesa-libEGL-devel \
         pipewire-devel \
         ffmpeg-free-devel libva-devel \
-        openssl-devel sqlite-devel zlib-ng-compat-devel \
+        sqlite-devel zlib-ng-compat-devel \
         fontconfig-devel freetype-devel harfbuzz-devel expat-devel \
         glib2-devel libsoup3-devel \
         atk at-spi2-atk gstreamer1 gstreamer1-plugins-base \
@@ -257,15 +318,15 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 ARG SCCACHE_VERSION=0.17.0
 ARG SCCACHE_SHA256_X86_64=67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006
 ARG SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77
-RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     case "$(uname -m)" in \
       x86_64) sccache_arch=x86_64; sccache_sha="$SCCACHE_SHA256_X86_64" ;; \
       aarch64) sccache_arch=aarch64; sccache_sha="$SCCACHE_SHA256_AARCH64" ;; \
       *) echo "unsupported sccache architecture: $(uname -m)" >&2; exit 1 ;; \
     esac \
     && archive="sccache-v${SCCACHE_VERSION}-${sccache_arch}-unknown-linux-musl.tar.gz" \
-    && echo "${sccache_sha}  /qos-assets/${archive}" | sha256sum -c - \
-    && tar -xzf "/qos-assets/${archive}" -C /tmp \
+    && echo "${sccache_sha}  /tilo-assets/${archive}" | sha256sum -c - \
+    && tar -xzf "/tilo-assets/${archive}" -C /tmp \
     && install -m 0755 \
        "/tmp/sccache-v${SCCACHE_VERSION}-${sccache_arch}-unknown-linux-musl/sccache" \
        /usr/local/bin/sccache \
@@ -285,7 +346,7 @@ ARG SOURCE_DATE_EPOCH=0
 ARG SCCACHE_BUCKET=""
 ARG SCCACHE_ENDPOINT=""
 ARG SCCACHE_REGION="auto"
-ARG SCCACHE_S3_KEY_PREFIX="quickdesktop/image/v1"
+ARG SCCACHE_S3_KEY_PREFIX="tilo/image/v1"
 ARG SCCACHE_S3_USE_SSL="false"
 ENV CARGO_HOME=/build/.cargo-home \
     SCCACHE_DIR=/build/.sccache \
@@ -315,7 +376,8 @@ COPY . /build
 # Compile the binaries the OS images need. Cache mounts persist cargo's
 # registry + git checkouts (CARGO_HOME), the target dir, and the sccache store
 # across rebuilds; a cache-mounted target/ isn't in any layer, so the binaries
-# are cp'd to /out (a real path) in the same RUN for the final stage to COPY.
+# are cp'd to /out (outside the cache mount) in the same RUN for the final stage
+# to COPY.
 #
 # Two CI guards (the image builds under buildkit, not just podman/buildah):
 #  - The resolve comes from the tracked `Cargo.lock`, which is why that file is
@@ -329,7 +391,7 @@ COPY . /build
 #    instead of being swallowed by `|| true` (which masked a cargo failure as a
 #    confusing downstream "COPY --from /out: not found").
 #
-# The browser is the one optional binary (QOS_WITH_BROWSER, top of file). It is
+# The browser is the one optional binary (TILO_WITH_BROWSER, top of file). It is
 # staged into /out/optional/ rather than /out/ so the final image can copy the
 # directory's contents unconditionally: empty means no browser, and no COPY
 # needs a condition it cannot express.
@@ -340,11 +402,11 @@ COPY . /build
 # file was silent. Deriving it means a new `apps/<name>/` is shipped by the
 # build that follows it, and an empty match is a hard failure rather than an
 # image with no apps. The browser is filtered out only because it alone needs
-# the `wpe` feature and the QOS_WITH_BROWSER condition.
+# the `wpe` feature and the TILO_WITH_BROWSER condition.
 #
-# `pkg-cli`, `install` and `cli-shim` build the packaging tools: `qos-pkg` and
-# `qos-install` pack and install those apps into the image-wide store below,
-# and `qos-install` ships so the running system can install and remove
+# `pkg-cli`, `install` and `cli-shim` build the packaging tools: `tilo-pkg` and
+# `tilo-install` pack and install those apps into the image-wide store below,
+# and `tilo-install` ships so the running system can install and remove
 # packages of its own.
 # Every media engine in this tree sits behind a cargo feature that is OFF by
 # default, and deliberately so: `--shots`, the offline tests and CI must build
@@ -360,12 +422,12 @@ COPY . /build
 # contain crate hashes, so separate Cargo invocations are not ABI-compatible.
 #
 # `mail/html-webview` is deliberately NOT here: it pulls ui/webview-wpe, and the
-# engine behind it is the browser's, which QOS_WITH_BROWSER=0 does not build.
+# engine behind it is the browser's, which TILO_WITH_BROWSER=0 does not build.
 #
-# `video_editor` takes decode and gst but no `portal`, because it has no such
+# `video-editor` takes decode and gst but no `portal`, because it has no such
 # feature to take: it depends on `ui` with features = ["portal"] unconditionally,
 # so its file chooser is compiled in on every build including --shots. Asking for
-# `video_editor/portal` is not a no-op — cargo refuses the whole invocation with
+# `video-editor/portal` is not a no-op — cargo refuses the whole invocation with
 # "none of the selected packages contains these features", which fails the image
 # build after the package install and the cold Rust compile have already run.
 # os/tests/app_store.sh checks each pair against cargo metadata for that reason.
@@ -373,15 +435,19 @@ COPY . /build
 # Fat LTO with one codegen unit serialized the final links for roughly fifty
 # binaries and made a warm image rebuild spend over an hour in this step.
 # The image-only Cargo overrides below use thin LTO, retaining cross-crate
-# optimization while allowing LLVM to use the runner cores. Other release
-# artifacts keep the workspace's stricter profile unchanged.
+# optimization while allowing LLVM to use the runner cores. Eight codegen
+# units also bound concurrent thin-LTO scratch data on the image runner.
+# Other release artifacts keep the workspace's stricter profile unchanged.
 # Layer timestamp rewriting can make a restored target cache newer than changed
 # workspace sources. Profiles are cleaned before fingerprinting so Cargo never
 # accepts a stale path-dependency rlib; sccache still reuses compiler objects.
-ARG QOS_WITH_BROWSER
-ARG QOS_PREBUILT_APPS=0
-ARG QOS_PREBUILT_DESKTOP=0
-ARG QOS_APP_COLLECTION_PUBLISHER=""
+ARG TILO_WITH_BROWSER
+ARG TILO_PREBUILT_APPS=0
+ARG TILO_PREBUILT_DESKTOP=0
+ARG TILO_CARGO_BUILD_JOBS=4
+ARG TILO_REQUIRE_COMPILER_CACHE=0
+ENV CARGO_BUILD_JOBS=${TILO_CARGO_BUILD_JOBS}
+ARG TILO_APP_COLLECTION_PUBLISHER=""
 RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/build/.sccache \
@@ -389,106 +455,129 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=secret,id=aws_secret_access_key \
     export AWS_ACCESS_KEY_ID="$(cat /run/secrets/aws_access_key_id 2>/dev/null || true)" \
     && export AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/aws_secret_access_key 2>/dev/null || true)" \
+    && phase=rust-setup && started=$(date +%s) \
+    && build_phase() { \
+         now=$(date +%s); \
+         printf 'TILO_BUILD_TIMING phase=%s elapsed_seconds=%s exit_code=0\n' "$phase" "$((now - started))"; \
+         phase=$1; started=$now; \
+       } \
+    && trap 'status=$?; printf "TILO_BUILD_TIMING phase=%s elapsed_seconds=%s exit_code=%s\n" "$phase" "$(( $(date +%s) - started ))" "$status"; sccache --show-stats 2>/dev/null || true; exit "$status"' EXIT \
+    && case "$TILO_REQUIRE_COMPILER_CACHE" in \
+         0) ;; \
+         1) export SCCACHE_IGNORE_SERVER_IO_ERROR=0 ;; \
+         *) printf '%s\n' 'TILO_REQUIRE_COMPILER_CACHE must be 0 or 1' >&2; exit 1 ;; \
+       esac \
     && if ! sccache --start-server; then \
+         if [ "$TILO_REQUIRE_COMPILER_CACHE" = 1 ]; then \
+           printf '%s\n' 'Required compiler cache is unavailable; refusing an uncached build' >&2; exit 1; \
+         fi; \
          export RUSTC_WRAPPER=; \
          printf '%s\n' 'sccache backend unavailable; compiling normally' >&2; \
        fi \
+    && { sccache --zero-stats 2>/dev/null || true; } \
     && cargo clean --release \
     && cargo clean --profile thin-app \
-    && if [ "${QOS_WITH_BROWSER}" = "0" ]; then \
+    && if [ "${TILO_WITH_BROWSER}" = "0" ]; then \
          BROWSER_PKG=""; THIN_EXCLUDES="browser"; THIN_BROWSER_FEATURE=""; \
        else \
-         BROWSER_PKG="-p browser --features browser/wpe"; \
+         BROWSER_PKG="-p browser --bin browser --features browser/wpe"; \
          THIN_EXCLUDES=""; THIN_BROWSER_FEATURE=",browser/wpe"; \
        fi \
-    && APP_FEATURES="music/audio,music/streaming,music/live,video-player/decode,video-player/portal,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,chat/live-media,mail/live,disks/live,video_editor/decode,video_editor/gst" \
-    && if [ "${QOS_PREBUILT_DESKTOP}" = 1 ]; then \
+    && APP_FEATURES="music/audio,music/live,video-player/decode,video-player/portal,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,chat/live-media,mail/live,disks/live,video-editor/decode,video-editor/gst" \
+    && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \
-         DESKTOP_RELEASE_ARGS="-p shell -p launcher -p qos-unlock-helper"; \
+         DESKTOP_RELEASE_ARGS="-p shell --bin shell -p launcher --bin tilo-launcher -p tilo-unlock-helper --bin tilo-unlock-helper"; \
        fi \
-    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p qos-power -p qos-rollback -p qos-cli -p ush -p qos-projector -p pkg-cli -p install -p cli-shim -p app-host -p local-model-service -p qos-model-gateway -p system-extension" \
+    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p tilo-rollback -p tilo-crypto -p tilo-user-identity -p tilo-cli -p ush -p tilo-projector -p pkg-cli -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p system-extension -p compat-service" \
+    # Select the shipped executables explicitly: --bins also links shell dev tools.
+    && RELEASE_BINS="--bin fs --bin terminal --bin file-explorer --bin settings --bin tilo-model-manager --bin tilo-model-gateway --bin tilo-greeter --bin tilo-installer --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin tilo-pkg --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control" \
+    && build_phase rust-release \
     && CARGO_PROFILE_RELEASE_LTO=thin \
-       CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
-       cargo build --release ${RELEASE_ARGS} -p qos-relay --bins ${BROWSER_PKG} \
+       CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
+       cargo build --release ${RELEASE_ARGS} -p tilo-relay ${RELEASE_BINS} ${BROWSER_PKG} \
+    && build_phase rust-windows-vm \
     && CARGO_PROFILE_RELEASE_LTO=thin \
-       CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+       CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
        cargo build --release -p windows-vm \
-         --bin qos-windows-vm-control --bin qos-windows-rail \
+         --bin tilo-windows-vm-control --bin tilo-windows-rail \
+    && build_phase rust-output-validation \
     && missing=0 \
-    && for b in shell qos-projector fs qos-relay qos-relay-admin qos-enroll qos-home-peer-control terminal file-explorer settings qos-model-manager qos-model-gateway qos-greeter qos-installer qos-runtime-bundle qos-launcher qos-app-host qos-power qos-unlock-helper qos-rollback qos qos-pkg qos-install qos-cli-shim qos-ush qos-system-extension-manager qos-windows-vm-control qos-windows-rail; do \
-         case "${QOS_PREBUILT_DESKTOP}:$b" in 1:shell|1:qos-launcher|1:qos-unlock-helper) continue ;; esac; \
-         [ -x "target/release/$b" ] || missing=1; \
+    && for b in shell tilo-projector fs tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control terminal file-explorer settings tilo-model-manager tilo-model-gateway tilo-greeter tilo-installer tilo-runtime-bundle tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-crypto tilo-image-trust tilo-device-key-init tilo tilo-pkg tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime; do \
+         case "${TILO_PREBUILT_DESKTOP}:$b" in 1:shell|1:tilo-launcher|1:tilo-unlock-helper) continue ;; esac; \
+         if [ ! -x "target/release/$b" ]; then \
+           printf 'Required build output is missing: %s\n' "$b" >&2; missing=1; \
+         fi; \
        done \
-    && { [ "${QOS_WITH_BROWSER}" = "0" ] || [ -x target/release/browser ] || missing=1; } \
-    && if [ "$missing" = 1 ]; then \
-         cargo clean --release \
-         && CARGO_PROFILE_RELEASE_LTO=thin \
-            CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
-             cargo build --release ${RELEASE_ARGS} -p qos-relay --bins ${BROWSER_PKG} \
-         && CARGO_PROFILE_RELEASE_LTO=thin \
-            CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
-            cargo build --release -p windows-vm \
-              --bin qos-windows-vm-control --bin qos-windows-rail; \
+    && if [ "${TILO_WITH_BROWSER}" != "0" ] && [ ! -x target/release/browser ]; then \
+         printf '%s\n' 'Required build output is missing: browser' >&2; missing=1; \
        fi \
+    # Profiles were already cleaned before compilation. A missing output now
+    # indicates a build contract error; repeating the same full build hides it.
+    && [ "$missing" = 0 ] \
+    && build_phase rust-stage-outputs \
     && mkdir -p /out /out/optional /out/thin-apps \
-    && if [ "${QOS_PREBUILT_DESKTOP}" = 1 ]; then \
+    && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          cp /build/os/desktop-artifacts/shell \
-            /build/os/desktop-artifacts/qos-launcher \
-            /build/os/desktop-artifacts/qos-unlock-helper \
+            /build/os/desktop-artifacts/tilo-launcher \
+            /build/os/desktop-artifacts/tilo-unlock-helper \
             /out/; \
        else \
          cp target/release/shell \
-            target/release/qos-launcher \
-            target/release/qos-unlock-helper \
+            target/release/tilo-launcher \
+            target/release/tilo-unlock-helper \
             /out/; \
        fi \
-    && { [ "${QOS_WITH_BROWSER}" = "0" ] \
+    && { [ "${TILO_WITH_BROWSER}" = "0" ] \
          || cp target/release/browser /out/optional/browser; } \
-    && cp target/release/qos-projector \
+    && cp target/release/tilo-projector \
           target/release/fs \
-          target/release/qos-relay \
-          target/release/qos-relay-admin \
-          target/release/qos-enroll \
-          target/release/qos-home-peer-control \
+          target/release/tilo-relay \
+          target/release/tilo-relay-admin \
+          target/release/tilo-enroll \
+          target/release/tilo-home-peer-control \
           target/release/terminal \
           target/release/file-explorer \
           target/release/settings \
-          target/release/qos-model-manager \
-          target/release/qos-model-gateway \
-          target/release/qos-system-extension-manager \
-          target/release/qos-greeter \
-          target/release/qos-installer \
-          target/release/qos-runtime-bundle \
-          target/release/qos-app-host \
-          target/release/qos-power \
-          target/release/qos-rollback \
-          target/release/qos \
-          target/release/qos-pkg \
-          target/release/qos-install \
-          target/release/qos-cli-shim \
-          target/release/qos-ush \
-          target/release/qos-windows-vm-control \
-          target/release/qos-windows-rail \
+          target/release/tilo-model-manager \
+          target/release/tilo-model-gateway \
+          target/release/tilo-system-extension-manager \
+          target/release/tilo-greeter \
+          target/release/tilo-installer \
+          target/release/tilo-runtime-bundle \
+          target/release/tilo-app-host \
+          target/release/tilo-rollback \
+          target/release/tilo-crypto \
+          target/release/tilo-image-trust \
+          target/release/tilo-device-key-init \
+          target/release/tilo \
+          target/release/tilo-pkg \
+          target/release/tilo-install \
+          target/release/tilo-cli-shim \
+          target/release/tilo-ush \
+          target/release/tilo-windows-vm-control \
+          target/release/tilo-windows-rail \
+          target/release/tilo-windows-runtime \
           /out/ \
     # Files is also a privileged, directly-invoked system recovery surface.
     # In source mode package that standalone binary. With a release collection,
     # every qpkg already contains its independently built app binary.
-    && if [ "${QOS_PREBUILT_APPS}" = 1 ]; then \
+    && build_phase rust-thin-apps \
+    && if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
          mkdir -p /out/prebuilt-apps /out/browser-app \
          && cp /build/os/app-artifacts/*.qpkg /out/prebuilt-apps/ \
-         && cp -a /build/os/app-runtime/qos-runtime /usr/lib/ \
+         && cp -a /build/os/app-runtime/tilo-runtime /usr/lib/ \
          && cp /build/os/app-runtime/runtime-bundle-publisher.hex /out/ \
-         && RUNTIME_DYLIB="$(find /usr/lib/qos-runtime -name libruntime_dylib.so -print -quit)" \
+         && RUNTIME_DYLIB="$(find /usr/lib/tilo-runtime -name libruntime_dylib.so -print -quit)" \
          && [ -n "$RUNTIME_DYLIB" ] \
          && cp "$RUNTIME_DYLIB" /out/libruntime_dylib.so \
-         && { [ "${QOS_WITH_BROWSER}" = 0 ] \
+         && { [ "${TILO_WITH_BROWSER}" = 0 ] \
               || cp /out/optional/browser /out/browser-app/browser; }; \
        else \
          EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
          APP_FEATURES="${APP_FEATURES}${THIN_BROWSER_FEATURE}" \
            /build/os/scripts/build-thin-apps.sh \
-         && for m in /build/apps/*/qos-app.toml; do \
+         && for m in /build/apps/*/tilo-app.toml; do \
               p="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$(dirname "$m")/Cargo.toml" | head -1)"; \
               b="$(basename "$(sed -n 's/^bin  *= *"\([^"]*\)".*/\1/p' "$m" | head -1)")"; \
               case " ${THIN_EXCLUDES} " in *" $p "*) continue ;; esac; \
@@ -500,7 +589,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          && [ -n "${LIBSTD}" ] \
          && cp "${LIBSTD}" /out/; \
        fi \
-    && { sccache --show-stats 2>/dev/null || true; } \
+    && build_phase rust-cleanup \
     # Every build product needed below now lives in /out. The target cache is
     # deliberately disposable (sccache holds reusable compiler objects); keep
     # it from starving the later, large Windows compatibility RPM transaction.
@@ -511,62 +600,62 @@ RUN --mount=type=cache,target=/build/.cargo-home \
 # ships — a dropped linker argument or a target change is otherwise invisible
 # until someone runs readelf on a released image. Fails the build, on purpose.
 RUN /build/os/scripts/verify-elf-hardening.sh /out \
-    && { [ "${QOS_PREBUILT_APPS}" = 1 ] \
+    && { [ "${TILO_PREBUILT_APPS}" = 1 ] \
          || /build/os/scripts/verify-elf-hardening.sh /out/thin-apps; } \
     && /build/os/scripts/verify-elf-hardening.sh /out/libruntime_dylib.so
 
 # ---- Bake a signed runtime bundle from THIS image's rootfs -----------------
 # Runs at image-build time so the produced OS image ships a pre-mounted
-# /usr/lib/qos-runtime/<RUNTIME_VERSION>/ that the launcher can find
-# without a post-boot `qos-install runtime install`.
+# /usr/lib/tilo-runtime/<RUNTIME_VERSION>/ that the launcher can find
+# without a post-boot `tilo-install runtime install`.
 #
 # The signing key is generated fresh per build. Its pubkey is baked into
-# /usr/share/qos/runtime-bundle-trusted-publishers.txt so the launcher's
+# /usr/share/tilo/runtime-bundle-trusted-publishers.txt so the launcher's
 # signature-verify step accepts this bake. The private key is discarded
 # once the bundle is signed — this is fine for a build-time attestation
 # (nothing else ever needs to sign as this identity again).
-# Must match the `runtime = "qos-runtime/<version>"` every app manifest under
+# Must match the `runtime = "tilo-runtime/<version>"` every app manifest under
 # apps/ declares: the launcher resolves that literal version to
-# /usr/lib/qos-runtime/<version>/ and refuses to start the app when it is not
+# /usr/lib/tilo-runtime/<version>/ and refuses to start the app when it is not
 # there. Baking "1" while the fleet asked for 2026.07 meant every packaged app
 # failed at launch with RuntimeBundleMissing.
 #
-# Baked at /usr/lib/qos-runtime/<version>/ — the path it will occupy on the
+# Baked at /usr/lib/tilo-runtime/<version>/ — the path it will occupy on the
 # booted system — and not into a staging directory, for the same reason the app
-# store below is written at its final path. `qos-install` refuses to install a
+# store below is written at its final path. `tilo-install` refuses to install a
 # package whose declared runtime is absent, and it looks for exactly two places:
 # the per-user bundle dir and this system one (runtime_status ->
 # runtime_bundle::system_bundle_path). Staging the bake somewhere else and
 # relocating it in the rootfs stage left that lookup failing during pack-apps,
 # so every packaged app was refused at *install* time with the message telling
-# the operator to run `qos-install runtime install` — 46 of them, and no image.
+# the operator to run `tilo-install runtime install` — 46 of them, and no image.
 ARG RUNTIME_VERSION=2026.07
 ENV RUNTIME_VERSION=${RUNTIME_VERSION}
-RUN if [ "${QOS_PREBUILT_APPS}" = 1 ]; then \
+RUN if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
       test -s /out/runtime-bundle-publisher.hex \
-      && /out/qos-runtime-bundle verify \
-        "/usr/lib/qos-runtime/${RUNTIME_VERSION}" \
+      && /out/tilo-runtime-bundle verify \
+        "/usr/lib/tilo-runtime/${RUNTIME_VERSION}" \
         --require-publisher "$(cat /out/runtime-bundle-publisher.hex)"; \
     else \
-      /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json \
+      /out/tilo-runtime-bundle key generate --out /out/runtime-bundle-identity.json \
       && RUST_LIBSTD="$(find /out -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
       && [ -n "${RUST_LIBSTD}" ] \
       && /bin/bash -eu -o pipefail -c ' \
-        args=(/out/qos-runtime-bundle build \
+        args=(/out/tilo-runtime-bundle build \
           --version "${RUNTIME_VERSION}" --arch "$(uname -m)" --from / \
           --include /out/libruntime_dylib.so \
           --identity /out/runtime-bundle-identity.json \
-          --out "/usr/lib/qos-runtime/${RUNTIME_VERSION}"); \
+          --out "/usr/lib/tilo-runtime/${RUNTIME_VERSION}"); \
         while IFS= read -r dependency; do args+=(--include "$dependency"); done \
           < <(ldd /out/libruntime_dylib.so \
               | awk '\''{ for (i=1; i<=NF; i++) if ($i ~ /^\//) print $i }'\'' \
               | sort -u); \
         "${args[@]}"' \
-      && /out/qos-runtime-bundle key pubkey \
+      && /out/tilo-runtime-bundle key pubkey \
         --identity /out/runtime-bundle-identity.json \
         > /out/runtime-bundle-publisher.hex \
-      && /out/qos-runtime-bundle verify \
-        "/usr/lib/qos-runtime/${RUNTIME_VERSION}" \
+      && /out/tilo-runtime-bundle verify \
+        "/usr/lib/tilo-runtime/${RUNTIME_VERSION}" \
         --require-publisher "$(cat /out/runtime-bundle-publisher.hex)" \
       && rm -f /out/runtime-bundle-identity.json; \
     fi
@@ -577,32 +666,135 @@ RUN if [ "${QOS_PREBUILT_APPS}" = 1 ]; then \
 # app binaries the image contains.
 #
 # The store is written at the path it will occupy on the booted system:
-# `qos-install` records absolute payload paths in registry.toml, so staging it
+# `tilo-install` records absolute payload paths in registry.toml, so staging it
 # elsewhere and relocating it afterwards would leave every row dangling.
 #
-# Packages take the ordinary route — `qos-pkg pack` then `qos-install install`
+# Packages take the ordinary route — `tilo-pkg pack` then `tilo-install install`
 # — so a preinstalled app is described exactly as a user-installed one is, and
 # the launcher grants it exactly the same thing. See os/scripts/pack-apps.sh.
 RUN BIN_DIR=/out/thin-apps \
     QPKG_DIR=/out/prebuilt-apps \
-    EXPECTED_PUBKEY="${QOS_APP_COLLECTION_PUBLISHER}" \
-    PKG_BIN=/out/qos-pkg \
-    INSTALL_BIN=/out/qos-install \
-    BUNDLE_BIN=/out/qos-runtime-bundle \
-    SHIM_BIN=/out/qos-cli-shim \
+    EXPECTED_PUBKEY="${TILO_APP_COLLECTION_PUBLISHER}" \
+    PKG_BIN=/out/tilo-pkg \
+    INSTALL_BIN=/out/tilo-install \
+    BUNDLE_BIN=/out/tilo-runtime-bundle \
+    SHIM_BIN=/out/tilo-cli-shim \
     PUBKEY_OUT=/out/app-publisher.hex \
     /build/os/scripts/pack-apps.sh \
-    && { [ "${QOS_PREBUILT_APPS}" != 1 ] \
-         || [ "${QOS_WITH_BROWSER}" = 0 ] \
+    && { [ "${TILO_PREBUILT_APPS}" != 1 ] \
+         || [ "${TILO_WITH_BROWSER}" = 0 ] \
          || BIN_DIR=/out/browser-app \
             QPKG_DIR= \
-            PKG_BIN=/out/qos-pkg \
-            INSTALL_BIN=/out/qos-install \
-            BUNDLE_BIN=/out/qos-runtime-bundle \
-            SHIM_BIN=/out/qos-cli-shim \
+            PKG_BIN=/out/tilo-pkg \
+            INSTALL_BIN=/out/tilo-install \
+            BUNDLE_BIN=/out/tilo-runtime-bundle \
+            SHIM_BIN=/out/tilo-cli-shim \
             REQUIRE_MIN=1 \
             PUBKEY_OUT=/out/browser-publisher.hex \
             /build/os/scripts/pack-apps.sh; }
+
+# Enumerated artifact overlays keep the expensive rootfs stage shallow without
+# bulk-copying os/usr (which would accidentally ship development/test-only
+# files). Their internal COPY layers are cheap scratch-tree commits; each is
+# applied to the multi-gigabyte bootc rootfs once, at the same logical boundary
+# where its individual files were previously copied.
+FROM scratch AS native-builder-payload
+COPY --from=builder /out/ /out/
+COPY --from=builder /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/
+COPY --from=builder /usr/share/tilo-apps/ /usr/share/tilo-apps/
+
+FROM scratch AS desktop-binaries
+COPY --from=builder \
+    /out/shell /out/fs /out/terminal /out/file-explorer /out/settings \
+    /out/tilo-model-manager /out/tilo-model-gateway \
+    /out/tilo-relay /out/tilo-relay-admin /out/tilo-enroll \
+    /out/tilo-greeter /out/tilo-installer /out/tilo-launcher \
+    /out/tilo-runtime-bundle /out/tilo-install /out/tilo-pkg /out/tilo-crypto \
+    /out/tilo-image-trust /out/tilo-device-key-init \
+    /usr/bin/
+COPY --from=builder /out/optional/ /usr/bin/
+COPY --chmod=0755 --from=builder \
+    /out/tilo-system-extension-manager /out/tilo-home-peer-control \
+    /out/tilo-cli-shim /out/tilo-unlock-helper /out/tilo-ush /out/tilo-projector \
+    /out/tilo-app-host \
+    /usr/libexec/
+COPY --from=doubletake-builder /out/doubletake /usr/libexec/tilo-doubletake
+COPY --from=doubletake-builder /out/doubletake-test-receiver /usr/libexec/tilo-doubletake-test-receiver
+COPY --from=fluxcast-builder /src/src /usr/libexec/tilo-fluxcast-src
+
+FROM scratch AS remote-capture-files
+COPY os/etc/tilo/desktop.toml /etc/tilo/desktop.toml
+COPY os/etc/modprobe.d/tilo-remote-camera.conf /etc/modprobe.d/tilo-remote-camera.conf
+COPY os/etc/modules-load.d/tilo-remote-camera.conf /etc/modules-load.d/tilo-remote-camera.conf
+
+FROM scratch AS rollback-files
+COPY --from=builder /out/tilo-rollback /usr/bin/tilo-rollback
+COPY \
+    os/usr/libexec/tilo-rollback-common \
+    os/usr/libexec/tilo-rollback-confirm \
+    os/usr/libexec/tilo-rollback-harden \
+    os/usr/libexec/tilo-rollback-initrd-unlock \
+    os/usr/libexec/tilo-root-discover \
+    /usr/libexec/
+COPY \
+    os/usr/lib/systemd/system-generators/tilo-rollback-unlock-generator \
+    os/usr/lib/systemd/system-generators/tilo-root-generator \
+    /usr/lib/systemd/system-generators/
+COPY os/usr/lib/dracut/modules.d/91tilo-rollback /usr/lib/dracut/modules.d/91tilo-rollback
+COPY \
+    os/usr/lib/systemd/system/tilo-rollback-confirm.service \
+    os/usr/lib/systemd/system/tilo-rollback-confirm.timer \
+    os/usr/lib/systemd/system/tilo-rollback-harden.service \
+    os/usr/lib/systemd/system/tilo-rollback-harden.timer \
+    /usr/lib/systemd/system/
+COPY os/tests/rollback-boot-check.sh /usr/libexec/tilo-rollback-boot-check
+
+FROM scratch AS recovery-files
+COPY --chmod=0755 --from=builder /out/tilo /usr/bin/tilo
+COPY --chmod=0755 \
+    os/usr/libexec/tilo-deployment \
+    os/usr/libexec/tilo-system-extension-activate \
+    os/usr/libexec/tilo-system-extension-dispatch \
+    os/usr/libexec/tilo-boot-health \
+    os/usr/libexec/tilo-repair \
+    os/usr/libexec/tilo-recovery \
+    os/usr/libexec/tilo-update-policy-set \
+    os/usr/libexec/tilo-update-policy-check \
+    /usr/libexec/
+COPY --chmod=0755 os/dev/uki-cmdline.py /usr/libexec/tilo-uki-cmdline
+COPY --chmod=0755 os/usr/lib/systemd/system-generators/tilo-boot-mode-generator /usr/lib/systemd/system-generators/tilo-boot-mode-generator
+COPY \
+    os/usr/lib/systemd/system/tilo-boot-entries.service \
+    os/usr/lib/systemd/system/tilo-boot-entries.timer \
+    os/usr/lib/systemd/system/tilo-boot-health.service \
+    os/usr/lib/systemd/system/tilo-repair.target \
+    os/usr/lib/systemd/system/tilo-repair@.service \
+    os/usr/lib/systemd/system/tilo-deployment-rollback.service \
+    os/usr/lib/systemd/system/tilo-deployment-update.service \
+    os/usr/lib/systemd/system/tilo-system-extension-userspace.service \
+    os/usr/lib/systemd/system/tilo-system-extension-boot-stage.service \
+    os/usr/lib/systemd/system/tilo-system-extension-boot-pack-status.service \
+    os/usr/lib/systemd/system/tilo-system-extension-boot-pack-status.timer \
+    os/usr/lib/systemd/system/tilo-system-extension-boot-pack-stage.path \
+    os/usr/lib/systemd/system/tilo-system-extension-boot-pack-stage.service \
+    os/usr/lib/systemd/system/tilo-local-model.service \
+    os/usr/lib/systemd/system/tilo-system-extension-dispatcher.socket \
+    os/usr/lib/systemd/system/tilo-system-extension-dispatcher@.service \
+    /usr/lib/systemd/system/
+COPY \
+    os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/10-tilo-boot-entries.conf \
+    os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/20-tilo-update-policy.conf \
+    os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/30-tilo-background-resources.conf \
+    /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/
+COPY os/usr/lib/systemd/system/tilo-update-policy@.service /usr/lib/systemd/system/tilo-update-policy@.service
+COPY os/etc/polkit-1/rules.d/49-tilo-updates.rules /etc/polkit-1/rules.d/49-tilo-updates.rules
+COPY os/usr/share/tilo/system-extensions /usr/share/tilo/system-extensions
+COPY \
+    os/usr/share/doc/tilo/system-extensions.md \
+    docs/recovery.md \
+    docs/security/repair-mode.md \
+    /usr/share/doc/tilo/
+COPY --chmod=0755 os/tests/recovery-boot-check.sh /usr/libexec/tilo-recovery-boot-check
 
 
 # ---- Stage 2: rootfs (the OS filesystem) ------------------------------------
@@ -621,7 +813,7 @@ FROM ${BASE_REF} AS rootfs
 # carries data, and neither survives correctly across a container layer.
 #
 # Every layer boundary is where that bites. The fedora-bootc base ships neither
-# file; every qOS image built so far shipped both, and every dnf step here left
+# file; every Tilo image built so far shipped both, and every dnf step here left
 # a fresh pair in its layer. Reading such a layer back in the following RUN
 # yields a structurally corrupt database — duplicate b-tree page references and
 # wrong index entry counts under `pragma integrity_check`, with `rpm -qa` and
@@ -682,9 +874,8 @@ FROM ${BASE_REF} AS rootfs
 # so the helper performs a checked single-file replacement within that existing
 # directory. This avoids asking the layer diff to capture a heavily rewritten
 # database inode and turns corruption into an immediate failure.
-COPY os/scripts/finalize-rpmdb.sh /usr/libexec/qos/finalize-rpmdb
-RUN chmod 0755 /usr/libexec/qos/finalize-rpmdb
-ARG FINALIZE_RPMDB="/usr/libexec/qos/finalize-rpmdb"
+COPY --chmod=0755 os/scripts/finalize-rpmdb.sh /usr/libexec/tilo/finalize-rpmdb
+ARG FINALIZE_RPMDB="/usr/libexec/tilo/finalize-rpmdb"
 
 # Graphics stack. `at-spi2-core` supplies the D-Bus-activated org.a11y.Bus
 # service discovered by AccessKit providers at runtime. Keep it explicit so
@@ -701,11 +892,14 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     plymouth-scripts \
     && dnf clean all && ${FINALIZE_RPMDB}
 
-# Keep encrypted-root unlock in the same branded visual path as the UKI splash.
+# Keep encrypted-root unlock in the same visual path as the UKI splash.
 # Assets are generated at build time so the source remains reviewable and the
 # initramfs does not depend on a desktop image stack.
-COPY os/usr/share/plymouth/themes/qos/ /usr/share/plymouth/themes/qos/
-COPY os/dev/make-plymouth-assets.py /usr/local/bin/make-plymouth-assets.py
+COPY os/usr/share/plymouth/themes/tilo/ /usr/share/plymouth/themes/tilo/
+COPY \
+    os/dev/make-plymouth-assets.py \
+    os/scripts/verify-runtime-crypto-packages.sh \
+    /usr/local/bin/
 
 # Audio/Video
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
@@ -713,6 +907,11 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     pipewire-pulseaudio \
     pipewire-utils \
     wireplumber \
+    v4l-utils \
+    sane-backends \
+    sane-backends-drivers-scanners \
+    tesseract \
+    tesseract-langpack-eng \
     libcanberra-gtk3 \
     sound-theme-freedesktop \
     && dnf clean all && ${FINALIZE_RPMDB}
@@ -730,17 +929,13 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     gstreamer1-plugin-libav \
     gstreamer1-plugin-openh264 \
     ffmpeg-free \
-    yt-dlp \
     python3 \
-    python3-dbus-next \
-    python3-gobject \
     && dnf clean all && ${FINALIZE_RPMDB} \
     && gst-inspect-1.0 openh264enc >/dev/null \
     && gst-inspect-1.0 h264parse >/dev/null \
     && gst-inspect-1.0 rtph264pay >/dev/null \
     && gst-inspect-1.0 rtponviftimestamp >/dev/null \
-    && gst-inspect-1.0 rtpstreampay >/dev/null \
-    && yt-dlp --version >/dev/null
+    && gst-inspect-1.0 rtpstreampay >/dev/null
 
 # Display manager + fingerprint auth (pam_fprintd for the greeter; the
 # greeter's PAM stack references it via a tolerant `-auth` line).
@@ -748,57 +943,76 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # `polkit` is required so the greeter's Reboot / Shut down buttons can drive
 # logind: `systemctl reboot` / `poweroff` issue the
 # `org.freedesktop.login1.{reboot,power-off}` actions, which polkit authorises
-# for the `greetd` user via etc/polkit-1/rules.d/49-qos-greeter-power.rules.
+# for the `greetd` user via etc/polkit-1/rules.d/49-tilo-greeter-power.rules.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     greetd \
-    greetd-tuigreet \
     fprintd \
     fprintd-pam \
     polkit \
     && dnf clean all && ${FINALIZE_RPMDB}
 
-# System utilities.
+# System utilities. Wi-Fi needs NetworkManager's separately packaged plugin
+# and cfg80211's signed regulatory database; neither is supplied by the base
+# image's NetworkManager package. Keep both in the frozen snapshot roots.
 #
 # `xdg-dbus-proxy` (Fedora package name) is the filtered D-Bus proxy
-# `qos-launcher` spawns per-sandbox so an app that declares
+# `tilo-launcher` spawns per-sandbox so an app that declares
 # `[sandbox.portals] X = "via-host"` reaches only the portal + fd.o
 # notifications + MPRIS interfaces on the session bus (instead of the
 # full bus surface). Without this package the launcher logs a warning
 # and falls back to a direct bind of the raw session bus — degraded
 # security, no functional regression.
 #
-# `git` is here because it was only ever in the throwaway builder stage: the
-# shipped system had none, so a developer on this machine could not clone the
-# repository the machine is built from. The Git client app does not need it —
-# it links a vendored libgit2 — so this is for the command line only.
+# The developer Git CLI is intentionally absent from the immutable host. It
+# pulls libcurl/OpenSSL into the trusted OS for a convenience already provided
+# by the sandboxed Git app, which embeds its own Rust-managed libgit2 path.
+# Development shells can install Git inside distrobox without expanding PID 1's
+# image-wide crypto surface.
 #
 # `cups` brings cups-client with it, which is what apps/settings' printers pane
 # actually calls: `lpstat -p -d` for the printer list, `lpstat -o` for the queue
 # and `cancel` per job. The pane already degrades honestly when lpstat is absent,
 # so the image shipped a printers pane that was permanently empty and correct
 # about it. The socket below is what makes those calls reach a daemon.
+#
+# NetworkManager is Tilo's sole network and DNS authority. The Fedora bootc
+# base may also carry systemd-networkd and systemd-resolved, adding duplicate
+# network state machines (and a direct libssl consumer) without serving a Tilo
+# path. Remove both subpackages and consume NetworkManager's resolver state.
+# Switch the symlink first: resolved's preun script otherwise tries to migrate
+# live resolver state that does not exist while constructing an offline image.
+# Filter the installed inventory; querying absent names emits diagnostics on
+# stdout, which must never become removal arguments. Removal needs no mirrors.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     bubblewrap \
     flatpak \
     xdg-dbus-proxy \
     distrobox \
-    git \
     cups \
     cups-ipptool \
     podman \
     foot \
     wl-clipboard \
     NetworkManager \
-    NetworkManager-openvpn \
+    NetworkManager-wifi \
+    wireless-regdb \
     ModemManager \
     fwupd \
     fuse3 \
     cage \
+    && dnf clean all && ${FINALIZE_RPMDB} \
+    && ln -sfn ../run/NetworkManager/resolv.conf /etc/resolv.conf \
+    && installed="$(rpm -qa --qf '%{NAME}\n')" \
+    && printf '%s\n' "$installed" | awk '/^systemd-(coredump|networkd|resolved)$/' \
+           | xargs -r dnf --disablerepo='*' remove -y \
+    && test "$(readlink /etc/resolv.conf)" = ../run/NetworkManager/resolv.conf \
+    && installed="$(rpm -qa --qf '%{NAME}\n')" \
+    && ! printf '%s\n' "$installed" | grep -Eq '^systemd-(coredump|networkd|resolved)$' \
     && dnf clean all && ${FINALIZE_RPMDB}
 
 # xdg-desktop-portal — the frontend that proxies sandboxed-app
 # capability requests (FileChooser, ScreenCast, Camera) to our
-# qOS backend (Sandbox Phase 4.3).
+# Tilo backend (Sandbox Phase 4.3).
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     xdg-desktop-portal \
     && dnf clean all && ${FINALIZE_RPMDB}
@@ -878,130 +1092,127 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     google-noto-sans-thai-fonts \
     && dnf clean all && ${FINALIZE_RPMDB}
 
-# Wayland runtime libraries (needed by compositor)
+# The frozen snapshot already resolves these development specs and their exact
+# runtime library closure. Erase the header/pkg-config payloads in the same
+# layer; their runtime dependencies remain for the copied compositor binaries.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     wayland-devel \
     libxkbcommon-devel \
     libinput-devel \
+    && rpm -e --nodeps wayland-devel libxkbcommon-devel libinput-devel \
+    && installed="$(rpm -qa --qf '%{NAME}\n')" \
+    && printf '%s\n' "$installed" | awk '/^(pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf)$/' \
+           | xargs -r rpm -e --nodeps \
+    && installed="$(rpm -qa --qf '%{NAME}\n')" \
+    && ! printf '%s\n' "$installed" | grep -Eq '^(wayland-devel|libxkbcommon-devel|libinput-devel|pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf)$' \
     && dnf clean all && ${FINALIZE_RPMDB}
 
 # ---------------------------------------------------------------------------
-# Compiled qOS binaries (built in the `builder` stage above)
+# Compiled Tilo binaries (built in the `builder` stage above)
 # ---------------------------------------------------------------------------
-# Compositor
-COPY --from=builder /out/shell /usr/bin/shell
-# FUSE driver
-COPY --from=builder /out/fs /usr/bin/fs
-# System apps
-COPY --from=builder /out/terminal /usr/bin/terminal
-COPY --from=builder /out/file-explorer /usr/bin/file-explorer
+# Compositor, FUSE driver, system apps, settings and model services. The
+# enumerated scratch overlay preserves their individual paths and metadata but
+# costs this large rootfs only one commit.
 # Settings. Everything the compositor's quick-settings popover cannot
 # reach lives here — Wi-Fi profiles, audio device routing, display scale,
 # keyboard layout, power policy, touchpad — so an image without it is an
 # image where those are unreachable on real hardware.
-COPY --from=builder /out/settings /usr/bin/settings
-COPY --from=builder /out/qos-model-manager /usr/bin/qos-model-manager
-COPY --from=builder /out/qos-model-gateway /usr/bin/qos-model-gateway
-COPY --from=builder /out/qos-system-extension-manager /usr/libexec/qos-system-extension-manager
-COPY os/usr/lib/systemd/user/qos-model-manager.service /usr/lib/systemd/user/qos-model-manager.service
-COPY os/usr/lib/systemd/user/qos-model-gateway.service /usr/lib/systemd/user/qos-model-gateway.service
-COPY --from=builder /out/qos-relay /usr/bin/qos-relay
-COPY --from=builder /out/qos-relay-admin /usr/bin/qos-relay-admin
-COPY --from=builder /out/qos-enroll /usr/bin/qos-enroll
-COPY --from=builder /out/qos-home-peer-control /usr/libexec/qos-home-peer-control
-COPY os/usr/lib/systemd/system/qos-relay.service /usr/lib/systemd/system/qos-relay.service
-COPY os/usr/lib/systemd/system/qos-fs-replica.service /usr/lib/systemd/system/qos-fs-replica.service
-COPY os/usr/lib/systemd/system/qos-relay-firstboot.service /usr/lib/systemd/system/qos-relay-firstboot.service
-COPY os/usr/libexec/qos-relay-firstboot /usr/libexec/qos-relay-firstboot
-COPY os/usr/share/polkit-1/actions/org.qos.home-peer.policy /usr/share/polkit-1/actions/org.qos.home-peer.policy
-COPY os/etc/polkit-1/rules.d/49-qos-home-peer.rules /etc/polkit-1/rules.d/49-qos-home-peer.rules
-RUN chmod 0755 /usr/bin/qos-relay /usr/bin/qos-relay-admin /usr/bin/qos-enroll /usr/libexec/qos-home-peer-control /usr/libexec/qos-relay-firstboot
+COPY --from=desktop-binaries / /
+COPY \
+    os/usr/lib/systemd/user/tilo-models.service \
+    os/usr/lib/systemd/user/tilo-models.socket \
+    os/usr/lib/systemd/user/tilo-model-gateway.service \
+    os/usr/lib/systemd/user/tilo-model-gateway.socket \
+    os/usr/lib/systemd/user/tilo-app-host.service \
+    os/usr/lib/systemd/user/tilo-app-host.socket \
+    /usr/lib/systemd/user/
+COPY \
+    os/usr/lib/systemd/system/tilo-relay.service \
+    os/usr/lib/systemd/system/tilo-fs-replica.service \
+    os/usr/lib/systemd/system/tilo-relay-firstboot.service \
+    os/usr/lib/systemd/system/tilo-network-start.timer \
+    os/usr/lib/systemd/system/tilo-network-start.target \
+    /usr/lib/systemd/system/
+COPY os/usr/lib/systemd/system/NetworkManager.service.d/20-tilo-firewall-first.conf \
+    /usr/lib/systemd/system/NetworkManager.service.d/20-tilo-firewall-first.conf
+COPY os/usr/libexec/tilo-relay-firstboot /usr/libexec/tilo-relay-firstboot
+COPY os/usr/share/polkit-1/actions/org.tilo.home-peer.policy /usr/share/polkit-1/actions/org.tilo.home-peer.policy
+COPY \
+    os/etc/polkit-1/rules.d/49-tilo-home-peer.rules \
+    os/etc/polkit-1/rules.d/49-tilo-greeter-power.rules \
+    os/etc/polkit-1/rules.d/49-tilo-greeter-fingerprint.rules \
+    /etc/polkit-1/rules.d/
+RUN chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enroll /usr/libexec/tilo-home-peer-control /usr/libexec/tilo-relay-firstboot
 # Browser: chrome over the ui toolkit's WebView widget, engine = WPE WebKit
 # (built in the wpe-builder stage; its libs + WebProcess binaries are copied
 # into this rootfs below). Copied as the contents of /out/optional/ because the
-# browser is omitted under QOS_WITH_BROWSER=0, and that leaves the directory
+# browser is omitted under TILO_WITH_BROWSER=0, and that leaves the directory
 # empty rather than leaving this COPY pointing at a path that does not exist.
-COPY --from=builder /out/optional/ /usr/bin/
 # Graphical login greeter (ui-toolkit based). Launched at the greetd VT inside
 # `cage` — see etc/greetd/config.toml.
-COPY --from=builder /out/qos-greeter /usr/bin/qos-greeter
 # Graphical installer. Primarily consumed by the layered installer image
 # (Containerfile.installer); bundled here so it no longer needs a host build.
-COPY --from=builder /out/qos-installer /usr/bin/qos-installer
-# App launcher + runtime-bundle CLI. `qos-launcher` is what actually
+# App launcher + runtime-bundle CLI. `tilo-launcher` is what actually
 # execs installed / declared packages inside their bwrap sandbox;
-# `qos-runtime-bundle` is the CLI over the same crate that produced
+# `tilo-runtime-bundle` is the CLI over the same crate that produced
 # the baked bundle at image-build time — shipping it lets operators
 # `verify` or extend the bundle from a running system.
-COPY --from=builder /out/qos-launcher /usr/bin/qos-launcher
-COPY --from=builder /out/qos-runtime-bundle /usr/bin/qos-runtime-bundle
-COPY --from=builder /out/qos-app-host /usr/libexec/qos-app-host
-COPY os/usr/lib/systemd/user/qos-app-host.service /usr/lib/systemd/user/qos-app-host.service
-# Package management on the running system: `qos-install` installs, lists and
-# removes `.qpkg`s into the user's own store, `qos-pkg` packs and verifies
-# them, and `qos-cli-shim` is what `qos-install` drops on $PATH for a package
+# Package management on the running system: `tilo-install` installs, lists and
+# removes `.qpkg`s into the user's own store, `tilo-pkg` packs and verifies
+# them, and `tilo-cli-shim` is what `tilo-install` drops on $PATH for a package
 # that declares CLI commands. Without these in the image the only apps a user
 # could ever have are the ones the image shipped.
-COPY --from=builder /out/qos-install /usr/bin/qos-install
-COPY --from=builder /out/qos-pkg /usr/bin/qos-pkg
-COPY --from=builder /out/qos-cli-shim /usr/libexec/qos-cli-shim
-COPY --from=builder /out/qos-power /usr/bin/qos-power
 # The session-unlock verify helper: the compositor spawns it while the session
-# is locked to verify the user's password via PAM (see os/etc/pam.d/qos-unlock).
+# is locked to verify the user's password via PAM (see os/etc/pam.d/tilo-unlock).
 # It lives under /usr/libexec (not on $PATH) since only the compositor invokes
 # it, and matches the compositor's DEFAULT_UNLOCK_HELPER path.
-COPY --from=builder /out/qos-unlock-helper /usr/libexec/qos-unlock-helper
 # The confined shell runtime. Apps declare `ush = "required@<v>"` under
 # [sandbox.services] and the launcher refuses to start them when its socket is
 # absent — apps/terminal does, so without this binary and the user unit below
 # the packaged Terminal cannot launch. /usr/libexec because the terminal's own
-# lookup order is $QOS_USH_BIN, then /usr/libexec/qos-ush, then $PATH.
-COPY --from=builder /out/qos-ush /usr/libexec/qos-ush
-COPY --from=builder /out/qos-projector /usr/libexec/qos-projector
-# Modern AirPlay 2 mirroring (FairPlay SAP, HAP pairing, encrypted video and
+# lookup order is $TILO_USH_BIN, then /usr/libexec/tilo-ush, then $PATH.
+# AirPlay 2 mirroring (FairPlay SAP, HAP pairing, encrypted video and
 # system audio) is delegated to the source-pinned, tested build above.
-COPY --from=doubletake-builder /out/doubletake /usr/libexec/qos-doubletake
-COPY --from=doubletake-builder /out/doubletake-test-receiver /usr/libexec/qos-doubletake-test-receiver
 # Miracast/Wi-Fi Display sender: full NetworkManager P2P, RTSP negotiation and
 # H.264/AAC RTP media, copied from the architecture-neutral tested source stage.
-COPY --from=fluxcast-builder /src/src /usr/libexec/qos-fluxcast-src
-COPY os/usr/libexec/qos-fluxcast /usr/libexec/qos-fluxcast
-RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
-    install -D -m 0644 /qos-assets/doubletake-ae06722-LICENSE \
-      /usr/share/licenses/qos-doubletake/LICENSE \
-    && install -D -m 0644 /qos-assets/fluxcast-a74f39f-LICENSE \
-      /usr/share/licenses/qos-fluxcast/LICENSE
-COPY os/usr/share/dbus-1/system.d/zz-qos-projector-wifi-direct.conf \
-     /usr/share/dbus-1/system.d/zz-qos-projector-wifi-direct.conf
-COPY os/usr/lib/systemd/user/qos-ush.service /usr/lib/systemd/user/qos-ush.service
-COPY os/usr/lib/systemd/user/qos-fs-recipient.service /usr/lib/systemd/user/qos-fs-recipient.service
+COPY os/usr/libexec/tilo-fluxcast /usr/libexec/tilo-fluxcast
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    install -D -m 0644 /tilo-assets/doubletake-ae06722-LICENSE \
+      /usr/share/licenses/tilo-doubletake/LICENSE \
+    && install -D -m 0644 /tilo-assets/fluxcast-a74f39f-LICENSE \
+      /usr/share/licenses/tilo-fluxcast/LICENSE
+COPY os/usr/share/dbus-1/system.d/zz-tilo-projector-wifi-direct.conf \
+     /usr/share/dbus-1/system.d/zz-tilo-projector-wifi-direct.conf
+COPY \
+    os/usr/lib/systemd/user/tilo-ush.service \
+    os/usr/lib/systemd/user/tilo-ush.socket \
+    os/usr/lib/systemd/user/tilo-fs-recipient.service \
+    os/usr/lib/systemd/user/tilo-fs-recipient.socket \
+    /usr/lib/systemd/user/
 RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
-              /usr/bin/file-explorer /usr/bin/qos-greeter \
-              /usr/bin/qos-installer /usr/bin/qos-launcher /usr/bin/qos-runtime-bundle \
-              /usr/bin/qos-install /usr/bin/qos-pkg /usr/libexec/qos-cli-shim \
-              /usr/bin/qos-power /usr/libexec/qos-unlock-helper /usr/libexec/qos-ush \
-              /usr/libexec/qos-projector /usr/libexec/qos-doubletake \
-              /usr/libexec/qos-doubletake-test-receiver \
-              /usr/libexec/qos-fluxcast \
+              /usr/bin/file-explorer /usr/bin/tilo-greeter \
+              /usr/bin/tilo-installer /usr/bin/tilo-launcher /usr/bin/tilo-runtime-bundle \
+              /usr/bin/tilo-install /usr/bin/tilo-pkg /usr/libexec/tilo-cli-shim \
+              /usr/libexec/tilo-unlock-helper /usr/libexec/tilo-ush \
+              /usr/libexec/tilo-projector /usr/libexec/tilo-doubletake \
+              /usr/libexec/tilo-doubletake-test-receiver \
+              /usr/libexec/tilo-fluxcast \
     && { [ ! -e /usr/bin/browser ] || chmod 755 /usr/bin/browser; } \
-    && /usr/libexec/qos-doubletake -h >/dev/null \
-    && /usr/libexec/qos-fluxcast --help >/dev/null
+    && /usr/libexec/tilo-doubletake -h >/dev/null \
+    && /usr/libexec/tilo-fluxcast --help >/dev/null
 
-# Exercise the exact modern-AirPlay CLI path that ships: PIN pairing,
-# FairPlay setup, encrypted RTSP/video transport and real H.264 media into the
+# Exercise the AirPlay CLI path that ships: PIN pairing, FairPlay setup,
+# encrypted RTSP/video transport and H.264 media into the
 # source-pinned receiver simulator. No receiver hardware or live network is
 # involved, but an empty/control-plane-only session fails the stats assertions.
-COPY os/tests/airplay-encrypted-session.sh /usr/libexec/qos/airplay-encrypted-session-test.sh
-COPY os/tests/projection-boot-check.sh /usr/libexec/qos/projection-boot-check.sh
-# The media sender has a bounded graceful-shutdown path. Immediately after a
-# full-workspace LTO build, host CPU/I/O pressure can make that cleanup miss
-# its deadline even though pairing, FairPlay and encrypted video all succeeded.
-# Retry the complete contract once; each attempt retains every protocol, media
-# and teardown assertion.
-RUN chmod 0755 /usr/libexec/qos/airplay-encrypted-session-test.sh \
-        /usr/libexec/qos/projection-boot-check.sh \
-    && ( /usr/libexec/qos/airplay-encrypted-session-test.sh \
-         || /usr/libexec/qos/airplay-encrypted-session-test.sh )
+COPY os/tests/airplay-encrypted-session.sh /usr/libexec/tilo/airplay-encrypted-session-test.sh
+COPY os/tests/projection-boot-check.sh /usr/libexec/tilo/projection-boot-check.sh
+# Optional AirPlay media acceptance runs against the assembled image separately.
+# Its setup/probe timing is not an installation prerequisite. Keep the full
+# protocol/media/teardown test available; omitting it here does not claim success.
+# Native protocol tests and the GStreamer plugin checks above remain required.
+RUN chmod 0755 /usr/libexec/tilo/airplay-encrypted-session-test.sh \
+          /usr/libexec/tilo/projection-boot-check.sh
 
 # ---- WPE WebKit runtime (browser engine) ------------------------------------
 # Engine libraries + the WebKit helper processes (WPEWebProcess,
@@ -1014,7 +1225,7 @@ RUN chmod 0755 /usr/libexec/qos/airplay-encrypted-session-test.sh \
 # are there because the engine is built with accessibility, gamepad and XSLT
 # support; they arrive via no other package in this image.
 #
-# Copies nothing under QOS_WITH_BROWSER=0 (the stage is an empty /wpe then). The
+# Copies nothing under TILO_WITH_BROWSER=0 (the stage is an empty /wpe then). The
 # dnf list below still runs: those are ordinary frozen-repo packages that cost
 # seconds, and installing them either way keeps the two images' package sets —
 # and this layer's cache entry — identical.
@@ -1046,27 +1257,27 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 
 # ---- Baked signed runtime bundle -------------------------------------------
 # The builder stage produced a signed content-addressed bundle from THIS
-# image's own rootfs at /usr/lib/qos-runtime/${RUNTIME_VERSION} — the same
-# path it takes here, because `qos-install` had to find it there while
+# image's own rootfs at /usr/lib/tilo-runtime/${RUNTIME_VERSION} — the same
+# path it takes here, because `tilo-install` had to find it there while
 # packing the app store — and wrote its publisher pubkey to
 # /out/runtime-bundle-publisher.hex. Install both here so:
-#   * The launcher's `/usr/lib/qos-runtime/<v>/` lookup succeeds out
-#     of the box — no `qos-install runtime install --from-host` needed
+#   * The launcher's `/usr/lib/tilo-runtime/<v>/` lookup succeeds out
+#     of the box — no `tilo-install runtime install --from-host` needed
 #     after first boot.
 #   * The signature check the launcher performs before every mount
 #     accepts this bake (the pubkey is the trust root).
-COPY --from=builder /usr/lib/qos-runtime/ /usr/lib/qos-runtime/
-COPY --from=builder /out/runtime-bundle-publisher.hex /usr/share/qos/runtime-bundle-publisher.hex
+COPY --from=builder /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/
+COPY --from=builder /out/runtime-bundle-publisher.hex /usr/share/tilo/runtime-bundle-publisher.hex
 # Trust list read by the launcher — one hex pubkey per line, `#` for
 # comments. The baked publisher is the only entry by default; operators
-# can extend it via `echo <hex> >> /etc/qos/runtime-bundle-trusted-publishers.txt`.
-RUN mkdir -p /etc/qos \
-    && cat /usr/share/qos/runtime-bundle-publisher.hex \
-        > /etc/qos/runtime-bundle-trusted-publishers.txt
+# can extend it via `echo <hex> >> /etc/tilo/runtime-bundle-trusted-publishers.txt`.
+RUN mkdir -p /etc/tilo \
+    && cat /usr/share/tilo/runtime-bundle-publisher.hex \
+        > /etc/tilo/runtime-bundle-trusted-publishers.txt
 
 # ---- Preinstalled application store -----------------------------------------
-# The registry + unpacked payloads the builder produced with `qos-pkg pack` and
-# `qos-install install`. The launcher reads this store alongside the per-user
+# The registry + unpacked payloads the builder produced with `tilo-pkg pack` and
+# `tilo-install install`. The launcher reads this store alongside the per-user
 # one (crates/packaging/launcher/src/registry.rs), so the command palette lists
 # these apps on a first boot with nobody having installed anything, and a user
 # installing their own build of the same id shadows the preinstalled row rather
@@ -1076,122 +1287,117 @@ RUN mkdir -p /etc/qos \
 # differ from a user's: the sandbox is still built from the manifest, the
 # payload is still ro-bound, and the single writable directory still comes from
 # the launcher's per-room app dir. Nothing here is trusted for being shipped.
-COPY --from=builder /usr/share/qos-apps/ /usr/share/qos-apps/
+COPY --from=builder /usr/share/tilo-apps/ /usr/share/tilo-apps/
 # Which key signed them, for auditing a built image. Not a trust root: package
-# trust is the user's `~/.config/qos/trusted-attestors.toml`, and this key is
+# trust is the user's `~/.config/tilo/trusted-attestors.toml`, and this key is
 # deliberately absent from it — a preinstalled package is self-signed by the
 # image build, and claims nothing more.
-COPY --from=builder /out/app-publisher.hex /usr/share/qos/app-publisher.hex
+COPY --from=builder /out/app-publisher.hex /usr/share/tilo/app-publisher.hex
 # Put both stores' command shims on PATH, so a package that declares CLI
 # commands can be run by name — the only way a CLI package is meant to be run.
-COPY os/etc/profile.d/qos-apps.sh /etc/profile.d/qos-apps.sh
+COPY os/etc/profile.d/tilo-apps.sh /etc/profile.d/tilo-apps.sh
 
 # FUSE mount service
-COPY os/usr/lib/systemd/system/fs.service /usr/lib/systemd/system/fs.service
-COPY os/usr/lib/systemd/system/fs-identity.path /usr/lib/systemd/system/fs-identity.path
+COPY \
+    os/usr/lib/systemd/system/fs.service \
+    os/usr/lib/systemd/system/tilo-fs-start.timer \
+    os/usr/lib/systemd/system/fs-identity.path \
+    os/usr/lib/systemd/system/tilo-device-key-init.service \
+    os/usr/lib/systemd/system/tilo-growfs-sysroot.service \
+    os/usr/lib/systemd/system/tilo-growfs-sysroot.timer \
+    /usr/lib/systemd/system/
 # A measured installer UKI must not try to persist its transient TPM identity
 # to the read-only live ESP. These conditions stop both systemd setup phases
-# only while the sealed command line carries qos.install.
-COPY os/usr/lib/systemd/system/systemd-tpm2-setup.service.d/10-qos-live-installer.conf /usr/lib/systemd/system/systemd-tpm2-setup.service.d/10-qos-live-installer.conf
-COPY os/usr/lib/systemd/system/systemd-tpm2-setup-early.service.d/10-qos-live-installer.conf /usr/lib/systemd/system/systemd-tpm2-setup-early.service.d/10-qos-live-installer.conf
+# only while the sealed command line carries tilo.install.
+COPY os/usr/lib/systemd/system/systemd-tpm2-setup.service.d/10-tilo-live-installer.conf /usr/lib/systemd/system/systemd-tpm2-setup.service.d/10-tilo-live-installer.conf
+COPY os/usr/lib/systemd/system/systemd-tpm2-setup-early.service.d/10-tilo-live-installer.conf /usr/lib/systemd/system/systemd-tpm2-setup-early.service.d/10-tilo-live-installer.conf
 # The capability list that mount enforces. Shipped read-only under /usr;
-# tmpfiles.d copies it to /var/lib/qos on first boot, where it can be
+# tmpfiles.d copies it to /var/lib/tilo on first boot, where it can be
 # edited and survives image updates. See fs.service for why the subject
 # is a principal rather than a key.
-COPY os/usr/share/qos/fs-capabilities.json /usr/share/qos/fs-capabilities.json
+COPY os/usr/share/tilo/fs-capabilities.json /usr/share/tilo/fs-capabilities.json
 
 # Wayland session desktop entries. Two files land here:
 #   - shell.desktop          — default session (no peer-sync)
 #   - shell-peer-sync.desktop — opt-in session (Iroh enabled)
-# tuigreet lists both at the login prompt; see docs/peer-sync.md.
-COPY os/usr/share/wayland-sessions/shell.desktop /usr/share/wayland-sessions/shell.desktop
-COPY os/usr/share/wayland-sessions/shell-peer-sync.desktop /usr/share/wayland-sessions/shell-peer-sync.desktop
-COPY os/usr/libexec/qos-session /usr/libexec/qos-session
-COPY os/usr/lib/systemd/user/qos-graphical-session.target /usr/lib/systemd/user/qos-graphical-session.target
-RUN chmod 0755 /usr/libexec/qos-session
+# The custom graphical greeter lists both at the login prompt; see
+# docs/peer-sync.md. The separate text-mode tuigreet package is intentionally
+# absent from this image.
+COPY \
+    os/usr/share/wayland-sessions/shell.desktop \
+    os/usr/share/wayland-sessions/shell-peer-sync.desktop \
+    /usr/share/wayland-sessions/
+COPY --chmod=0755 \
+    os/usr/libexec/tilo-session \
+    os/usr/libexec/tilo-security-audit \
+    /usr/libexec/
+COPY os/usr/lib/systemd/user/tilo-graphical-session.target /usr/lib/systemd/user/tilo-graphical-session.target
 
-# Default compositor config
-COPY os/etc/qos/desktop.toml /etc/qos/desktop.toml
+# Default compositor config plus one fixed, signed loopback camera for
+# consented personal-device capture. The shell recognizes only this exact card
+# label; arbitrary local V4L2 nodes are never advertised as remote receivers.
+COPY --from=remote-capture-files / /
 
 # greetd display manager config
 COPY os/etc/greetd/config.toml /etc/greetd/config.toml
 
 # PAM stack for the greetd auth service (adds tolerant pam_fprintd so a
 # fingerprint can satisfy login; falls back to password-auth).
-COPY os/etc/pam.d/greetd /etc/pam.d/greetd
-# PAM stack for in-session unlock (qos-unlock-helper). Auth + account only.
-COPY os/etc/pam.d/qos-unlock /etc/pam.d/qos-unlock
+# PAM stack for in-session unlock (tilo-unlock-helper). Auth + account only.
+COPY \
+    os/etc/pam.d/greetd \
+    os/etc/pam.d/tilo-unlock \
+    /etc/pam.d/
 
 # polkit rule authorising the greeter's Reboot / Shut down buttons. Lets the
 # `greetd` user issue org.freedesktop.login1.{reboot,power-off} via logind
 # from the pre-login screen (see the rule's header for the rationale).
-COPY os/etc/polkit-1/rules.d/49-qos-greeter-power.rules /etc/polkit-1/rules.d/49-qos-greeter-power.rules
+
+# Narrow fprintd account-selection grant for the pre-login `greetd` user.
+# Verification remains in PAM; enrollment/deletion stays privileged.
 
 # udev rule handing /sys/class/backlight/*/brightness to the `video`
 # group, so the compositor's brightness keys and quick-settings slider
 # can actually dim the panel from an unprivileged session. This is the
-# rule `brightnessctl` would have brought with it; qOS writes the sysfs
+# rule `brightnessctl` would have brought with it; Tilo writes the sysfs
 # attribute directly (no fork per keypress — brightness keys autorepeat)
 # and therefore ships the rule rather than the package.
-COPY os/usr/lib/udev/rules.d/90-qos-backlight.rules /usr/lib/udev/rules.d/90-qos-backlight.rules
+COPY os/usr/lib/udev/rules.d/90-tilo-backlight.rules os/usr/lib/udev/rules.d/60-tilo-io-scheduler.rules /usr/lib/udev/rules.d/
 
-# --- Signing trust roots (security plan §9 image signing, §4 measured boot) ---
-# Public keys only (the private keys are git-excluded; see keys/README.md).
-#  - cosign.pub verifies the OS image signature before `bootc upgrade` applies
-#    it (policy.json below). CI signs each pushed image (see .forgejo/workflows).
-#  - tpm2-pcr-signing.public.pem is the trust root for SIGNED PCR policies, and
-#    nothing reads it yet. LUKS binds to PCR 7 (the Secure Boot policy) because
-#    that value is stable across OS updates; binding to PCR 4 — the boot
-#    artefacts themselves — needs a signed prediction, or every update would
-#    break the seal. This key is what such a prediction would verify against.
-#    See docs/security/boot-chain.md.
-COPY keys/cosign.pub /usr/share/qos/cosign.pub
-COPY keys/tpm2-pcr-signing.public.pem /usr/share/qos/tpm2-pcr-signing.public.pem
-
-# Container signature policy: REQUIRE a valid cosign signature for
-# code.podesta.ai/qos/qos (everything else stays permissive), so a tampered or
-# unsigned OS image is refused at `bootc upgrade`. registries.d points the
-# verifier at cosign's sigstore attachment in the same repo.
-COPY os/etc/containers/policy.json /etc/containers/policy.json
-COPY os/etc/containers/registries.d/code.podesta.ai.yaml /etc/containers/registries.d/code.podesta.ai.yaml
-
-# First-boot setup service
-COPY os/usr/lib/systemd/system/shell-firstboot.service /usr/lib/systemd/system/shell-firstboot.service
-COPY os/usr/lib/systemd/system/qos-power.service /usr/lib/systemd/system/qos-power.service
-
-# Grow the real filesystem at /sysroot. The stock systemd-growfs-root.service
+# Grow the block-backed filesystem at /sysroot. The stock systemd-growfs-root.service
 # targets `/`, which is a composefs overlay here and cannot be grown; the
 # drop-in stands it down on this layout so the two never both apply.
-COPY os/usr/lib/systemd/system/qos-growfs-sysroot.service /usr/lib/systemd/system/qos-growfs-sysroot.service
-COPY os/usr/lib/systemd/system/systemd-growfs-root.service.d/10-qos-composefs.conf /usr/lib/systemd/system/systemd-growfs-root.service.d/10-qos-composefs.conf
+COPY os/usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf /usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf
 
 # systemd-tmpfiles snippets — pre-create /var/workspace and
 # /var/cache/quick-fs at boot. bootc images mount the root r/o, so
 # this is the only sanctioned way to materialise persistent dirs.
-COPY os/usr/lib/tmpfiles.d/qos.conf /usr/lib/tmpfiles.d/qos.conf
-COPY os/usr/lib/user-tmpfiles.d/qos-model-manager.conf /usr/lib/user-tmpfiles.d/qos-model-manager.conf
-COPY os/usr/lib/sysusers.d/qos-local-model.conf /usr/lib/sysusers.d/qos-local-model.conf
+COPY os/usr/lib/tmpfiles.d/tilo.conf /usr/lib/tmpfiles.d/tilo.conf
+COPY os/usr/lib/user-tmpfiles.d/tilo-model-manager.conf /usr/lib/user-tmpfiles.d/tilo-model-manager.conf
 
 # The device-trust group, which must exist before tmpfiles-setup runs so
 # the identity directory can be created with it. See the snippet for why
 # the device key is group-owned rather than owned by one component.
-COPY os/usr/lib/sysusers.d/qos-identity.conf /usr/lib/sysusers.d/qos-identity.conf
-RUN systemd-sysusers /usr/lib/sysusers.d/qos-identity.conf \
- && systemd-sysusers /usr/lib/sysusers.d/qos-local-model.conf
+COPY \
+    os/usr/lib/sysusers.d/tilo-local-model.conf \
+    os/usr/lib/sysusers.d/tilo-identity.conf \
+    /usr/lib/sysusers.d/
+RUN systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf \
+ && systemd-sysusers /usr/lib/sysusers.d/tilo-local-model.conf
 
-# The user unit that read-only verifies the identity after qos-session's
+# The user unit that read-only verifies the identity after tilo-session's
 # first-login ceremony, `--global` enabled further down.
 # It has to be installed here and not only exist in the source tree:
 # `systemctl --global enable` resolves the unit file at build time, so a unit
 # that was never copied in fails the build outright with "does not exist" —
 # which is what a unit whose ExecStart is wrong looks like too.
-COPY os/usr/lib/systemd/user/qos-identity.service /usr/lib/systemd/user/qos-identity.service
+COPY os/usr/lib/systemd/user/tilo-identity.service /usr/lib/systemd/user/tilo-identity.service
 
 # xdg-desktop-portal backend registration.
 #
-# One file now: qos.portal, which tells xdg-desktop-portal which
+# One file now: tilo.portal, which tells xdg-desktop-portal which
 # interfaces we provide and what `UseIn` desktop string activates us.
-# The compositor itself owns `org.freedesktop.impl.portal.desktop.qos`
+# The compositor itself owns `org.freedesktop.impl.portal.desktop.tilo`
 # on the session bus — see `compositor::native::start_portal_backend`.
 #
 # The D-Bus activation file and shell-portal.service used to start a
@@ -1201,33 +1407,36 @@ COPY os/usr/lib/systemd/user/qos-identity.service /usr/lib/systemd/user/qos-iden
 # the running session; and D-Bus allows one owner per name, so with the
 # compositor also serving, whichever lost the race left a portal that
 # answered nothing while looking healthy.
-COPY os/usr/share/xdg-desktop-portal/portals/qos.portal /usr/share/xdg-desktop-portal/portals/qos.portal
+COPY os/usr/share/xdg-desktop-portal/portals/tilo.portal /usr/share/xdg-desktop-portal/portals/tilo.portal
 
 # Opt-in peer-sync user service. NOT enabled by default — users opt
 # in via `systemctl --user enable shell-peer-sync` or by
-# picking the "qOS (peer-sync)" session entry at the greetd
-# prompt. See /usr/share/doc/qos/peer-sync.md for the
+# picking the "Tilo (peer-sync)" session entry at the greetd
+# prompt. See /usr/share/doc/tilo/peer-sync.md for the
 # privacy / discovery trade-off.
 COPY os/usr/lib/systemd/user/shell-peer-sync.service /usr/lib/systemd/user/shell-peer-sync.service
 
 # OS infra config (C3 zram swap, C4 locale).
 COPY os/etc/systemd/zram-generator.conf /etc/systemd/zram-generator.conf
 COPY os/etc/locale.conf /etc/locale.conf
+COPY os/etc/chrony.conf /etc/chrony.conf
 
 # Bundled documentation (the README in the OS submodule, plus the
 # peer-sync trade-off doc users are pointed at from the .desktop
 # Comment field and the systemd unit Documentation= line).
-COPY os/docs/peer-sync.md /usr/share/doc/qos/peer-sync.md
 # The Secure Boot + disk-encryption procedure. On-image because the enrolment
 # sequence has to be readable from the machine being enrolled, which is the one
 # place a wrong step stops it from booting.
-# The boot-chain document the Secure Boot units and qos-security-audit point at.
+# The boot-chain document the Secure Boot units and tilo-security-audit point at.
 # It used to be copied from docs/secure-boot.md, which was folded into
 # docs/security/ — and the COPY was not updated, so every image build since has
 # failed at this line with `"/docs/secure-boot.md": not found`. Installed under its
-# real name, and the Documentation= lines that referenced the old one follow it.
-COPY docs/security/boot-chain.md /usr/share/doc/qos/boot-chain.md
-COPY docs/security/rollback.md /usr/share/doc/qos/rollback.md
+# new name, and the Documentation= lines that referenced the old one follow it.
+COPY \
+    os/docs/peer-sync.md \
+    docs/security/boot-chain.md \
+    docs/security/rollback.md \
+    /usr/share/doc/tilo/
 
 # ---------------------------------------------------------------------------
 # Bootloader — swap GRUB for systemd-boot
@@ -1237,8 +1446,8 @@ COPY docs/security/rollback.md /usr/share/doc/qos/rollback.md
 # kernel handoff is measurably shorter. bootc chooses which bootloader to
 # plant on the ESP at install time based on the `bootloader` key in the
 # /usr/lib/bootc/install/*.toml drop-ins baked into this image (see the
-# 40-qos.toml file below). The `systemd-boot-unsigned` package supplies the
-# actual EFI binaries + BLS layout that bootc/bootupd copy across.
+# 40-tilo.toml file below). The `systemd-boot-unsigned` package supplies the
+# EFI binaries + BLS layout that bootc/bootupd copy across.
 #
 # The GRUB stack (grub2 + shim + bootupd's grub2 side) is pulled in by the
 # fedora-bootc base and would otherwise still ship on the rootfs, wasting
@@ -1252,19 +1461,18 @@ COPY docs/security/rollback.md /usr/share/doc/qos/rollback.md
 # exist" invariant, so shell out to `rpm -e --nodeps` for the protected
 # ones — dnf handles the unprotected ones on the same pass.
 #
-# sbsigntools and efitools are what replaces the trust that removal takes away.
-# Deleting shim and GRUB, and building our own kernel, leaves nothing on the boot
+# Tilo's narrow Rust crypto tool replaces the trust that removal takes away.
+# Deleting shim and GRUB, and building a custom kernel, leaves nothing on the boot
 # path that a distribution key covers — so the machine has to be able to sign its
-# own artefacts and enrol its own Platform Key. sbsign/sbverify do the signing,
-# cert-to-efi-sig-list/efi-updatevar/efi-readvar the enrolment; without them
-# /usr/libexec/qos-secureboot can only refuse. See docs/security/boot-chain.md.
+# own artefacts and enrol its own Platform Key. tilo-crypto does the signing,
+# verification, and bounded efivarfs enrollment. See docs/security/boot-chain.md.
 # bootupd goes with them, and that is a requirement of the sealed layout rather
 # than tidiness: bootc refuses to seal an image that still offers a bootupd
 # install path, because bootupd only ever plants GRUB. Its payload directory and
 # the legacy ostree boot dir have to go too — bootc finds the path through either.
 # Nothing on this image needs it: with a UKI there is exactly one PE binary on the
-# boot path, /usr/libexec/qos-secureboot signs it with sbsign, and
-# qos-secureboot-sign.path already watches /boot/EFI/Linux for a newly staged one.
+# boot path, /usr/libexec/tilo-secureboot signs it with tilo-crypto, and
+# tilo-secureboot-sign.path already watches /boot/EFI/Linux for a newly staged one.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         systemd-boot-unsigned \
     && rpm -qa | grep -E '^(shim-(x64|aa64)|grub2-)' | xargs -r rpm -e --nodeps \
@@ -1272,41 +1480,33 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && rm -rf /usr/lib/bootupd /usr/lib/ostree-boot \
     && dnf clean all && ${FINALIZE_RPMDB}
 
-# The signing tools, in their own transaction and allowed to be absent.
-#
-# They are named here so the snapshot job keeps resolving them into the frozen
-# package set, but a snapshot that predates them must not fail the whole image
-# build: nothing on the boot path needs them, and the one thing that does —
-# /usr/libexec/qos-secureboot — already refuses every command with the exact
-# remedy when they are missing. The safety property lives in the tool failing
-# closed, not in the build failing open. systemd-boot-unsigned above stays in a
-# strict transaction, because an image with no bootloader IS a broken image.
-# systemd-ukify joins them for the same reason and with the same tolerance. It
-# builds the Unified Kernel Image that seals the kernel, initramfs and command
-# line into one signed artefact — which is what puts `qos.generation=` inside a
-# signature and into PCR 11, where the rollback policy can bind to it. A bare
-# kernel plus a loader entry cannot: the command line sits beside it as an
-# editable file.
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --skip-unavailable --setopt=reposdir=/repo \
-        sbsigntools \
-        efitools \
+# Splash rendering needs Pillow once. The frozen snapshot already carries it
+# through the ukify build spec, so use that existing transaction, render the
+# immutable PNGs, then remove both packages in the same layer. UKI construction
+# later uses its own throwaway uki-tools stage.
+# Retain the base's openssh and openssh-clients: virt-viewer requires them later,
+# and the frozen RPM transaction assumes dependencies already in the base remain
+# installed. The SSH server remains forbidden by the runtime crypto policy.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         systemd-ukify \
+    && python3 /usr/local/bin/make-plymouth-assets.py /usr/share/plymouth/themes/tilo \
+    && plymouth-set-default-theme tilo \
+    && test "$(plymouth-set-default-theme)" = tilo \
+    && dnf --disablerepo='*' remove -y systemd-ukify python3-pillow \
+    && installed="$(rpm -qa --qf '%{NAME}\n')" \
+    && printf '%s\n' "$installed" | awk '/^(systemd-ukify|openssl|sbsigntools|efitools|mokutil|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh-server)$/' \
+           | xargs -r dnf --disablerepo='*' remove -y \
+    && installed="$(rpm -qa --qf '%{NAME}\n')" \
+    && ! printf '%s\n' "$installed" | grep -Eq '^(python3-pillow|systemd-ukify|openssl|sbsigntools|efitools|mokutil|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh-server)$' \
+    && rpm -q openssh openssh-clients \
     && dnf clean all && ${FINALIZE_RPMDB}
-
-# systemd-ukify's pinned dependency set now provides Pillow, while the font
-# transaction above provides Noto Sans. Render the unlock copy only once both
-# are present; the resulting PNGs, not either desktop dependency, are what the
-# initramfs theme consumes.
-RUN python3 /usr/local/bin/make-plymouth-assets.py /usr/share/plymouth/themes/qos \
- && plymouth-set-default-theme qos \
- && test "$(plymouth-set-default-theme)" = qos
 
 # The install-config drop-in that flips bootc's bootloader choice to
 # systemd-boot. Lives at /usr/lib/bootc/install/*.toml — a drop-in dir bootc
 # merges at every `bootc install {to-disk,to-filesystem}` invocation. bib
 # runs the same install code path, so this covers the disk-image step
 # (os/dev/disk-image.sh) and the installer's `bootc install to-disk` alike.
-COPY os/usr/lib/bootc/install/40-qos.toml /usr/lib/bootc/install/40-qos.toml
+COPY os/usr/lib/bootc/install/40-tilo.toml /usr/lib/bootc/install/40-tilo.toml
 
 # ---------------------------------------------------------------------------
 # Kernel/userspace hardening (security plan §11 — "table stakes")
@@ -1316,22 +1516,27 @@ COPY os/usr/lib/bootc/install/40-qos.toml /usr/lib/bootc/install/40-qos.toml
 # install/upgrade, and `bootc container ukify` seals it into the UKI command line
 # at build time — which is what makes this set measured rather than merely
 # applied. 03-boot.toml carries the arguments the install step used to inject.
-COPY os/usr/lib/bootc/kargs.d/01-hardening.toml /usr/lib/bootc/kargs.d/01-hardening.toml
-COPY os/usr/lib/bootc/kargs.d/03-boot.toml /usr/lib/bootc/kargs.d/03-boot.toml
-# Which mode the sealed command line boots into. `qos.mode=repair` is what the
+COPY \
+    os/usr/lib/bootc/kargs.d/01-hardening.toml \
+    os/usr/lib/bootc/kargs.d/00-root.toml \
+    os/usr/lib/bootc/kargs.d/03-boot.toml \
+    os/usr/lib/bootc/kargs.d/04-mode.toml \
+    /usr/lib/bootc/kargs.d/
+# Which mode the sealed command line boots into. `tilo.mode=repair` is what the
 # repair entry carries, and it can only come from inside the signature — see the
 # file's own header for why the two values have to stay the same length.
-COPY os/usr/lib/bootc/kargs.d/04-mode.toml /usr/lib/bootc/kargs.d/04-mode.toml
 
 # Disk-encryption block work: partitioning + LUKS2 + unlock-factor enrolment.
-# Used by the installer (os/Containerfile.installer layers qos-install on top of
+# Used by the installer (os/Containerfile.installer layers tilo-install on top of
 # this image), and afterwards on the installed system — `enrol` is also how a
 # volume is re-sealed to a replaced TPM, which is exactly the case where the
 # machine can only be reached with the recovery key.
-COPY os/usr/libexec/qos-disk-encrypt /usr/libexec/qos-disk-encrypt
-RUN chmod 0755 /usr/libexec/qos-disk-encrypt
+COPY --chmod=0755 \
+    os/usr/libexec/tilo-disk-encrypt \
+    os/usr/libexec/tilo-verified-boot-install-preflight \
+    /usr/libexec/
 
-# Owner-enrolled Secure Boot. qOS builds its own kernel, so the base image's
+# Owner-enrolled Secure Boot. Tilo builds its own kernel, so the base image's
 # Fedora/Microsoft-signed chain cannot cover it; the machine generates its own
 # Platform Key instead, which is also what keeps a self-built image attestable
 # to a collaborator who trusts that key.
@@ -1342,42 +1547,53 @@ RUN chmod 0755 /usr/libexec/qos-disk-encrypt
 # enrolled; it is a no-op until keys exist (ConditionPathExists). Getting that
 # order wrong — keys enrolled, signing hook missing — is what leaves a machine
 # refusing its own kernel.
-COPY os/usr/libexec/qos-secureboot /usr/libexec/qos-secureboot
-COPY os/usr/lib/systemd/system/qos-secureboot-sign.service /usr/lib/systemd/system/qos-secureboot-sign.service
-COPY os/usr/lib/systemd/system/qos-secureboot-sign.path /usr/lib/systemd/system/qos-secureboot-sign.path
-COPY os/usr/lib/systemd/system/qos-secureboot-sign-shutdown.service /usr/lib/systemd/system/qos-secureboot-sign-shutdown.service
-RUN chmod 0755 /usr/libexec/qos-secureboot \
-    && systemctl enable qos-secureboot-sign.service qos-secureboot-sign.path \
-                        qos-secureboot-sign-shutdown.service
+COPY os/usr/libexec/tilo-secureboot /usr/libexec/tilo-secureboot
+COPY --chmod=0755 \
+    os/usr/libexec/tilo-image-trust-staged \
+    os/usr/libexec/tilo-verified-update \
+    /usr/libexec/
+COPY \
+    os/usr/lib/systemd/system/tilo-secureboot-sign.service \
+    os/usr/lib/systemd/system/tilo-secureboot-sign.timer \
+    os/usr/lib/systemd/system/tilo-secureboot-sign.path \
+    os/usr/lib/systemd/system/tilo-secureboot-sign-shutdown.service \
+    /usr/lib/systemd/system/
+RUN chmod 0755 /usr/libexec/tilo-secureboot \
+    && systemctl enable tilo-secureboot-sign.timer tilo-secureboot-sign.path \
+                        tilo-secureboot-sign-shutdown.service
 
 # Runtime tunables: no cross-process debugging, no kernel pointers or ring
-# buffer for unprivileged readers, no unprivileged BPF, no kexec, no io_uring
-# or userfaultfd, plus the /tmp symlink-race and LAN-spoofing settings. Under
+# buffer for unprivileged readers, no unprivileged BPF, plus the /tmp
+# symlink-race and LAN-spoofing settings. Under
 # /usr/lib because it is part of the image; /etc/sysctl.d/ with a higher number
 # still wins for a machine that needs to differ. The file's header explains why
 # unprivileged user namespaces are NOT disabled — bubblewrap, hence the whole
 # app sandbox, needs them.
-COPY os/usr/lib/sysctl.d/60-qos-hardening.conf /usr/lib/sysctl.d/60-qos-hardening.conf
+COPY os/usr/lib/sysctl.d/60-tilo-hardening.conf /usr/lib/sysctl.d/60-tilo-hardening.conf
+COPY os/usr/lib/sysctl.d/70-tilo-performance.conf /usr/lib/sysctl.d/70-tilo-performance.conf
 
 # Which sandboxed packages get the expensive protections (hardened allocator +
-# hardware shadow stacks). Read by qos-launcher at launch; scoped rather than
+# hardware shadow stacks). Read by tilo-launcher at launch; scoped rather than
 # image-wide because the allocator costs multiples on allocation-heavy work and
 # most of this system is Rust, which does not produce the bugs it catches. The
 # image owns the list — an app manifest can neither request nor decline it.
-COPY os/usr/lib/qos/untrusted-parsers.conf /usr/lib/qos/untrusted-parsers.conf
 
 # Which sandboxed packages may map memory writable and executable at once.
-# Read by qos-launcher when it compiles the syscall filter. Same reasoning as
+# Read by tilo-launcher when it compiles the syscall filter. Same reasoning as
 # the file above and the same format: a package that could name its own
 # profile would be lifting a protection off itself, so the image decides and
 # the manifest only asks.
-COPY os/usr/lib/qos/jit-entitled.conf /usr/lib/qos/jit-entitled.conf
+COPY \
+    os/usr/lib/tilo/untrusted-parsers.conf \
+    os/usr/lib/tilo/jit-entitled.conf \
+    /usr/lib/tilo/
 
 # hidepid on /proc + the boot self-check that ASSERTS what's actually active.
-COPY os/usr/libexec/qos-security-audit /usr/libexec/qos-security-audit
-COPY os/usr/lib/systemd/system/qos-security-audit.service /usr/lib/systemd/system/qos-security-audit.service
-COPY os/usr/lib/systemd/system/qos-hidepid.service /usr/lib/systemd/system/qos-hidepid.service
-RUN chmod 0755 /usr/libexec/qos-security-audit
+COPY \
+    os/usr/lib/systemd/system/tilo-security-audit.service \
+    os/usr/lib/systemd/system/tilo-security-audit.timer \
+    os/usr/lib/systemd/system/tilo-hidepid.service \
+    /usr/lib/systemd/system/
 
 # ---------------------------------------------------------------------------
 # Bounded rollback protection
@@ -1389,7 +1605,7 @@ RUN chmod 0755 /usr/libexec/qos-security-audit
 # The generation number this image carries. It MUST be a dense monotonic integer
 # (+1 per published image), because the retention window is arithmetic on it —
 # "the last three generations" is meaningless if the numbering is a timestamp, and
-# moving the floor costs one TPM NV write per step (qos-rollback refuses an
+# moving the floor costs one TPM NV write per step (tilo-rollback refuses an
 # advance of more than MAX_INCREMENTS_PER_ADVANCE at all). os/dev/build-image.sh
 # resolves it from the published series; the CI job that publishes an image
 # derives it the same way and tags the result `gen<N>`.
@@ -1402,7 +1618,7 @@ RUN chmod 0755 /usr/libexec/qos-security-audit
 #       is the authoritative copy — inside the signature, measured, and therefore
 #       the one an unseal can be bound to. A number the bootloader assembled from
 #       an editable file would look identical and be worth nothing.
-#   /usr/lib/qos/generation
+#   /usr/lib/tilo/generation
 #       A plain file holding the same number, for the one question the command
 #       line cannot answer: what generation is the deployment that has been
 #       *staged* but never booted? Its keyslot has to be sealed before the reboot
@@ -1416,20 +1632,20 @@ RUN chmod 0755 /usr/libexec/qos-security-audit
 # a caller forgets the argument, and an image that silently ships generation 0 is
 # one whose rollback floor can never move — the failure would appear months later
 # as a machine that will not unseal.
-ARG QOS_GENERATION
-RUN case "${QOS_GENERATION}" in \
+ARG TILO_GENERATION
+RUN case "${TILO_GENERATION}" in \
       ''|*[!0-9]*) \
-        echo "QOS_GENERATION must be a decimal integer; got '${QOS_GENERATION}'." >&2; \
+        echo "TILO_GENERATION must be a decimal integer; got '${TILO_GENERATION}'." >&2; \
         echo "It is the generation this image carries: +1 per published image, sealed" >&2; \
         echo "onto the UKI command line. os/dev/build-image.sh resolves it from the" >&2; \
-        echo "published series; pass QOS_GENERATION=<N> to build one by hand." >&2; \
+        echo "published series; pass TILO_GENERATION=<N> to build one by hand." >&2; \
         exit 1 ;; \
     esac \
- && install -d -m 0755 /usr/lib/qos \
- && printf '%s\n' "${QOS_GENERATION}" > /usr/lib/qos/generation \
- && printf '# Written by the image build from the QOS_GENERATION build argument.\nkargs = ["qos.generation=%s"]\n' \
-      "${QOS_GENERATION}" > /usr/lib/bootc/kargs.d/02-generation.toml \
- && echo "generation ${QOS_GENERATION}: sealed via kargs.d, readable at /usr/lib/qos/generation"
+ && install -d -m 0755 /usr/lib/tilo \
+ && printf '%s\n' "${TILO_GENERATION}" > /usr/lib/tilo/generation \
+ && printf '# Written by the image build from the TILO_GENERATION build argument.\nkargs = ["tilo.generation=%s"]\n' \
+      "${TILO_GENERATION}" > /usr/lib/bootc/kargs.d/02-generation.toml \
+ && echo "generation ${TILO_GENERATION}: sealed via kargs.d, readable at /usr/lib/tilo/generation"
 
 # tpm2-tools: the NV counter, the policy sessions and TPM2_NV_Certify are driven
 # through it. Also reachable from recovery mode, which is where someone will need
@@ -1438,23 +1654,15 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         tpm2-tools \
     && dnf clean all && ${FINALIZE_RPMDB} && rm -rf /var/cache/dnf /var/log/dnf* /var/lib/dnf
 
-COPY --from=builder /out/qos-rollback /usr/bin/qos-rollback
-COPY os/usr/libexec/qos-rollback-common /usr/libexec/qos-rollback-common
-COPY os/usr/libexec/qos-rollback-confirm /usr/libexec/qos-rollback-confirm
-COPY os/usr/libexec/qos-rollback-harden /usr/libexec/qos-rollback-harden
-COPY os/usr/libexec/qos-rollback-initrd-unlock /usr/libexec/qos-rollback-initrd-unlock
-COPY os/usr/lib/systemd/system-generators/qos-rollback-unlock-generator /usr/lib/systemd/system-generators/qos-rollback-unlock-generator
-COPY os/usr/lib/dracut/modules.d/91qos-rollback /usr/lib/dracut/modules.d/91qos-rollback
-COPY os/usr/lib/systemd/system/qos-rollback-confirm.service /usr/lib/systemd/system/qos-rollback-confirm.service
-COPY os/usr/lib/systemd/system/qos-rollback-confirm.timer /usr/lib/systemd/system/qos-rollback-confirm.timer
-COPY os/usr/lib/systemd/system/qos-rollback-harden.service /usr/lib/systemd/system/qos-rollback-harden.service
-COPY os/tests/rollback-boot-check.sh /usr/libexec/qos-rollback-boot-check
-RUN chmod 0755 /usr/libexec/qos-rollback-common /usr/libexec/qos-rollback-confirm \
-        /usr/libexec/qos-rollback-initrd-unlock \
-        /usr/lib/systemd/system-generators/qos-rollback-unlock-generator \
-        /usr/lib/dracut/modules.d/91qos-rollback/module-setup.sh \
-        /usr/libexec/qos-rollback-harden /usr/libexec/qos-rollback-boot-check \
- && install -d -m 0755 /usr/share/qos/pcr-predictions
+COPY --from=rollback-files / /
+RUN chmod 0755 /usr/libexec/tilo-rollback-common /usr/libexec/tilo-rollback-confirm \
+        /usr/libexec/tilo-rollback-initrd-unlock \
+        /usr/libexec/tilo-root-discover \
+        /usr/lib/systemd/system-generators/tilo-rollback-unlock-generator \
+        /usr/lib/systemd/system-generators/tilo-root-generator \
+        /usr/lib/dracut/modules.d/91tilo-rollback/module-setup.sh \
+        /usr/libexec/tilo-rollback-harden /usr/libexec/tilo-rollback-boot-check \
+ && install -d -m 0755 /usr/share/tilo/pcr-predictions
 
 # ---------------------------------------------------------------------------
 # Getting back from a bad update: boot assessment, rollback, repair mode
@@ -1463,80 +1671,44 @@ RUN chmod 0755 /usr/libexec/qos-rollback-common /usr/libexec/qos-rollback-confir
 # is the other half — the part that notices a generation is bad and gets the
 # machine off it.
 #
-#   qos-boot-entries.service   gives every not-yet-proven deployment a systemd-boot
-#                              try counter, and derives the repair entry.
-#   qos-boot-health.service    ordered before boot-complete.target, so a boot that
+#   tilo-boot-entries.timer     schedules non-blocking maintenance that gives every
+#                              not-yet-proven deployment a systemd-boot try counter
+#                              and derives the repair entry.
+#   tilo-boot-health.service    ordered before boot-complete.target, so a boot that
 #                              never reaches a login is never blessed and the
 #                              counter it spent stays spent.
-#   qos-boot-mode-generator    turns `qos.mode=repair` on the SEALED command line
+#   tilo-boot-mode-generator    turns `tilo.mode=repair` on the SEALED command line
 #                              into a boot that comes up at the repair console
 #                              instead of the desktop.
 #
 # `bootc rollback` is the command that should do this and it is not dependable on
-# the composefs backend (bootc#2208), so /usr/libexec/qos-deployment verifies what
+# the composefs backend (bootc#2208), so /usr/libexec/tilo-deployment verifies what
 # it did and falls back to the boot loader's own default entry.
 #
-# uki-cmdline.py ships as qos-uki-cmdline because the repair entry is DERIVED from
+# uki-cmdline.py ships as tilo-uki-cmdline because the repair entry is DERIVED from
 # the installed UKI rather than built: a second UKI inside the rootfs would change
-# the composefs digest it has to name. It rewrites `qos.mode=normal` to
-# `qos.mode=repair` in place, same length, so every following PE section keeps its
+# the composefs digest it has to name. It rewrites `tilo.mode=normal` to
+# `tilo.mode=repair` in place, same length, so every following PE section keeps its
 # offset and the image still loads.
-# The user-facing command. Thin: the work is in qos-deployment, and this is the
+# The user-facing command. Thin: the work is in tilo-deployment, and this is the
 # part that decides how to become root to run it — directly when already root,
 # through the polkit-authorised unit from a desktop session, and saying to use
 # sudo rather than failing with a permission error from three layers down.
-COPY --from=builder /out/qos /usr/bin/qos
-COPY os/usr/libexec/qos-deployment /usr/libexec/qos-deployment
-COPY os/usr/libexec/qos-system-extension-activate /usr/libexec/qos-system-extension-activate
-COPY os/usr/libexec/qos-system-extension-dispatch /usr/libexec/qos-system-extension-dispatch
-COPY os/usr/libexec/qos-boot-health /usr/libexec/qos-boot-health
-COPY os/usr/libexec/qos-repair /usr/libexec/qos-repair
-COPY os/usr/libexec/qos-recovery /usr/libexec/qos-recovery
-COPY os/dev/uki-cmdline.py /usr/libexec/qos-uki-cmdline
-COPY os/usr/lib/systemd/system-generators/qos-boot-mode-generator /usr/lib/systemd/system-generators/qos-boot-mode-generator
-COPY os/usr/lib/systemd/system/qos-boot-entries.service /usr/lib/systemd/system/qos-boot-entries.service
-COPY os/usr/lib/systemd/system/qos-boot-health.service /usr/lib/systemd/system/qos-boot-health.service
-COPY os/usr/lib/systemd/system/qos-repair.target /usr/lib/systemd/system/qos-repair.target
-COPY os/usr/lib/systemd/system/qos-repair@.service /usr/lib/systemd/system/qos-repair@.service
-COPY os/usr/lib/systemd/system/qos-deployment-rollback.service /usr/lib/systemd/system/qos-deployment-rollback.service
-COPY os/usr/lib/systemd/system/qos-deployment-update.service /usr/lib/systemd/system/qos-deployment-update.service
-COPY os/usr/lib/systemd/system/qos-system-extension-userspace.service /usr/lib/systemd/system/qos-system-extension-userspace.service
-COPY os/usr/lib/systemd/system/qos-system-extension-boot-stage.service /usr/lib/systemd/system/qos-system-extension-boot-stage.service
-COPY os/usr/lib/systemd/system/qos-system-extension-boot-pack-status.service /usr/lib/systemd/system/qos-system-extension-boot-pack-status.service
-COPY os/usr/lib/systemd/system/qos-system-extension-boot-pack-stage.path /usr/lib/systemd/system/qos-system-extension-boot-pack-stage.path
-COPY os/usr/lib/systemd/system/qos-system-extension-boot-pack-stage.service /usr/lib/systemd/system/qos-system-extension-boot-pack-stage.service
-COPY os/usr/lib/systemd/system/qos-local-model.service /usr/lib/systemd/system/qos-local-model.service
-COPY os/usr/lib/systemd/system/qos-system-extension-dispatcher.socket /usr/lib/systemd/system/qos-system-extension-dispatcher.socket
-COPY os/usr/lib/systemd/system/qos-system-extension-dispatcher@.service /usr/lib/systemd/system/qos-system-extension-dispatcher@.service
-COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/10-qos-boot-entries.conf /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/10-qos-boot-entries.conf
-COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/20-qos-update-policy.conf /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/20-qos-update-policy.conf
-COPY os/usr/lib/systemd/system/qos-update-policy@.service /usr/lib/systemd/system/qos-update-policy@.service
-COPY os/usr/libexec/qos-update-policy-set /usr/libexec/qos-update-policy-set
-COPY os/usr/libexec/qos-update-policy-check /usr/libexec/qos-update-policy-check
+COPY --from=recovery-files / /
 # The narrow polkit grant that makes Settings' rollback control and its automatic
 # -updates switch able to do what they say. See the rule for how narrow.
-COPY os/etc/polkit-1/rules.d/49-qos-updates.rules /etc/polkit-1/rules.d/49-qos-updates.rules
-COPY os/usr/share/qos/system-extensions /usr/share/qos/system-extensions
-COPY os/usr/share/doc/qos/system-extensions.md /usr/share/doc/qos/system-extensions.md
-COPY docs/recovery.md /usr/share/doc/qos/recovery.md
-COPY docs/security/repair-mode.md /usr/share/doc/qos/repair-mode.md
 # The boot-side check, bundled so it can be re-run on a live machine. It is the
 # only place several of these facts can be established at all — see its header.
-COPY os/tests/recovery-boot-check.sh /usr/libexec/qos-recovery-boot-check
-RUN chmod 0755 /usr/libexec/qos-deployment /usr/libexec/qos-system-extension-manager /usr/libexec/qos-system-extension-activate /usr/libexec/qos-system-extension-dispatch /usr/libexec/qos-boot-health \
-        /usr/libexec/qos-repair /usr/libexec/qos-recovery /usr/libexec/qos-uki-cmdline \
-        /usr/libexec/qos-update-policy-set /usr/libexec/qos-update-policy-check \
-        /usr/libexec/qos-recovery-boot-check /usr/bin/qos \
-        /usr/lib/systemd/system-generators/qos-boot-mode-generator
 
 # The signed PCR predictions this image was built with go in
-# /usr/share/qos/pcr-predictions/generation-<N>*.json, produced by
-# `qos-rollback sign-prediction` on the build host — the private half of
+# /usr/share/tilo/pcr-predictions/generation-<N>*.json, produced by
+# `tilo-rollback sign-prediction` on the build host — the private half of
 # keys/tpm2-pcr-signing.pem is deliberately not in the image, so a device cannot
-# sign its own expected measurements. Until the UKI is built and measured there is
-# nothing meaningful to predict, so the directory ships empty and the enrollment
-# path refuses to seal a keyslot without a prediction rather than sealing one that
-# can never open.
+# sign its own expected measurements. This layer is necessarily empty because
+# the final composefs-resealed UKI does not exist yet. build-image.sh measures
+# that exact UKI with its paired systemd-measure and adds authority-verified
+# prediction sidecars in a /boot-only layer; published builds fail closed if the
+# protected signer is unavailable.
 
 # Hardened userspace allocator (scudo, from compiler-rt) LD_PRELOADed into the
 # trusted-base daemon fs.service. Resolve the lib path at build time and bake a
@@ -1551,14 +1723,20 @@ RUN chmod 0755 /usr/libexec/qos-deployment /usr/libexec/qos-system-extension-man
 # parses bytes that arrived from a peer. Measured cost on an allocation-heavy
 # loop: about 8%. If the CPU, the kernel or any loaded library cannot support
 # it, glibc leaves shadow stacks off rather than failing, and
-# qos-security-audit reports which processes actually got them.
+# tilo-security-audit reports which processes actually got them.
 #
-# compiler-rt also has to be present for qos-launcher's scoped hardening, which
-# preloads the same library into the packages listed in
-# /usr/lib/qos/untrusted-parsers.conf.
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo compiler-rt && dnf clean all && ${FINALIZE_RPMDB} && \
+# Only Scudo has to remain for tilo-launcher's scoped hardening. Copy that one
+# DSO to a stable image-owned path, then erase compiler-rt's other sanitizers,
+# runtimes, headers, and versioned toolchain tree.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo compiler-rt && \
     scudo="$(find /usr/lib /usr/lib64 -name 'libclang_rt.scudo_standalone.so' 2>/dev/null | head -1)" && \
     test -n "$scudo" && \
+    install -D -m 0755 "$scudo" /usr/lib/tilo/libclang_rt.scudo_standalone.so && \
+    rpm -e --nodeps compiler-rt clang-resource-filesystem && \
+    ! rpm -q compiler-rt clang-resource-filesystem >/dev/null 2>&1 && \
+    test -s /usr/lib/tilo/libclang_rt.scudo_standalone.so && \
+    dnf clean all && ${FINALIZE_RPMDB} && \
+    scudo=/usr/lib/tilo/libclang_rt.scudo_standalone.so && \
     mkdir -p /usr/lib/systemd/system/fs.service.d && \
     printf '[Service]\n# Hardened userspace allocator; path resolved at image build.\nEnvironment=LD_PRELOAD=%s\n# Hardware shadow stacks. The ELF marking alone does not enable them.\nEnvironment=GLIBC_TUNABLES=glibc.cpu.hwcaps=SHSTK\n' "$scudo" \
       > /usr/lib/systemd/system/fs.service.d/10-hardened-malloc.conf && \
@@ -1572,17 +1750,40 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # copied below for non-Steam games. The appliance packages provide one
 # KVM-accelerated, TPM-backed Windows fallback. Changing this list requires
 # refreshing RPMS_REF (see the file header).
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
-    wine \
-    wine-dxvk \
-    gamescope \
+# tilo-rpm-snapshot-package[x86_64]: edk2-ovmf
+# tilo-rpm-snapshot-package[x86_64]: wine
+# tilo-rpm-snapshot-package[x86_64]: wine-dxvk
+# tilo-rpm-snapshot-package[aarch64]: edk2-aarch64
+# Native FEX executable/Qt frontend dependencies and host graphics/audio thunks.
+# tilo-rpm-snapshot-package[aarch64]: glibc
+# tilo-rpm-snapshot-package[aarch64]: libgcc
+# tilo-rpm-snapshot-package[aarch64]: libstdc++
+# tilo-rpm-snapshot-package[aarch64]: libglvnd-glx
+# tilo-rpm-snapshot-package[aarch64]: libglvnd-opengl
+# tilo-rpm-snapshot-package[aarch64]: libglvnd-egl
+# tilo-rpm-snapshot-package[aarch64]: qt6-qtbase
+# tilo-rpm-snapshot-package[aarch64]: qt6-qtbase-gui
+# tilo-rpm-snapshot-package[aarch64]: qt6-qtdeclarative
+# tilo-rpm-snapshot-package[aarch64]: alsa-lib
+# tilo-rpm-snapshot-package[aarch64]: libdrm
+# tilo-rpm-snapshot-package[aarch64]: libwayland-client
+# tilo-rpm-snapshot-package[aarch64]: vulkan-loader
+ARG TILO_WINDOWS_ARCH
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    test "$(uname -m)" = "$TILO_WINDOWS_ARCH" && \
+    case "$(uname -m)" in \
+      x86_64) vm_firmware=edk2-ovmf; windows_packages='wine wine-dxvk' ;; \
+      aarch64) vm_firmware=edk2-aarch64; windows_packages='glibc libgcc libstdc++ libglvnd-glx libglvnd-opengl libglvnd-egl qt6-qtbase qt6-qtbase-gui qt6-qtdeclarative alsa-lib libdrm libwayland-client vulkan-loader' ;; \
+      *) echo 'unsupported Windows VM firmware architecture' >&2; exit 1 ;; \
+    esac && dnf install -y --setopt=reposdir=/repo \
+    $windows_packages \
     qemu-kvm \
     libvirt-client \
     libvirt-daemon-kvm \
     libvirt-daemon-config-nwfilter \
     swtpm \
     swtpm-tools \
-    edk2-ovmf \
+    "$vm_firmware" \
     freerdp \
     xwayland-satellite \
     virt-viewer \
@@ -1591,39 +1792,53 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     udftools \
     && dnf clean all && ${FINALIZE_RPMDB}
 
+COPY --from=windows-provider /out/usr/ /usr/
+RUN --network=none --mount=type=bind,source=os/dev/windows_provider.py,target=/tilo-windows-provider.py,ro \
+    python3 /tilo-windows-provider.py host --manifest /usr/share/tilo/windows/provider.json
 COPY --from=virtio-win-media /out/virtio-win.iso /usr/share/virtio-win/virtio-win.iso
 COPY --from=virtio-win-media /out/installer/virtio-win-guest-tools.exe /usr/share/virtio-win/installer/virtio-win-guest-tools.exe
 
-COPY --from=windows-compat-artifacts /out/bin/umu-run /usr/libexec/qos-umu-run
+COPY --from=windows-compat-artifacts /out/bin/umu-run /usr/libexec/tilo-umu-run
 COPY --from=windows-compat-artifacts /out/bin/umu_run.py /usr/libexec/umu_run.py
-COPY --from=windows-compat-artifacts /out/proton/ /usr/lib/qos/windows-runners/proton/
-COPY --from=windows-compat-artifacts /out/catalogues/ /usr/share/qos/windows/catalogues/
+COPY --from=windows-compat-artifacts /out/proton/ /usr/lib/tilo/windows-runners/proton/
+COPY --from=windows-compat-artifacts /out/steam-runtime/ /usr/lib/tilo/windows-runners/steam-runtime/
+COPY --from=windows-compat-artifacts /out/catalogues/ /usr/share/tilo/windows/catalogues/
+COPY os/usr/share/tilo/windows/fex-emulator.json os/usr/share/tilo/windows/fex-graphics-provider.json /usr/share/tilo/windows/
 # The VM is defined only after an owner supplies installation media. These
 # immutable host/guest contracts deliberately ship no Windows image or key.
-COPY os/usr/libexec/qos-windows-vm-network /usr/libexec/qos-windows-vm-network
-COPY os/usr/libexec/qos-windows-provision /usr/libexec/qos-windows-provision
-COPY os/usr/libexec/qos-windows-owner /usr/libexec/qos-windows-owner
-COPY os/usr/libexec/qos-windows-recovery-console /usr/libexec/qos-windows-recovery-console
-COPY --from=builder /out/qos-windows-vm-control /usr/libexec/qos-windows-vm-control
-COPY --from=builder /out/qos-windows-rail /usr/libexec/qos-windows-rail
-COPY os/usr/share/qos/windows/ /usr/share/qos/windows/
-COPY os/usr/share/polkit-1/actions/org.qos.windows.policy /usr/share/polkit-1/actions/org.qos.windows.policy
-COPY os/etc/polkit-1/rules.d/49-qos-windows.rules /etc/polkit-1/rules.d/49-qos-windows.rules
-COPY os/usr/lib/systemd/system/qos-windows-vm-network.service /usr/lib/systemd/system/qos-windows-vm-network.service
-COPY os/usr/lib/systemd/system/qos-windows-vm-egress-reaper.service /usr/lib/systemd/system/qos-windows-vm-egress-reaper.service
-COPY os/usr/lib/systemd/system/qos-windows-vm-egress-reaper.timer /usr/lib/systemd/system/qos-windows-vm-egress-reaper.timer
-COPY docs/windows-vm.md /usr/share/doc/qos/windows-vm.md
-COPY docs/windows-presentation.md /usr/share/doc/qos/windows-presentation.md
-RUN chmod 0755 /usr/libexec/qos-windows-vm-network /usr/libexec/qos-windows-provision /usr/libexec/qos-windows-owner \
-              /usr/libexec/qos-windows-recovery-console /usr/libexec/qos-windows-vm-control \
-              /usr/libexec/qos-windows-rail \
-    && systemctl enable qos-windows-vm-network.service qos-windows-vm-egress-reaper.timer
+COPY \
+    os/usr/libexec/tilo-windows-vm-network \
+    os/usr/libexec/tilo-windows-provision \
+    os/usr/libexec/tilo-windows-owner \
+    os/usr/libexec/tilo-windows-recovery-console \
+    /usr/libexec/
+COPY --from=builder \
+    /out/tilo-windows-vm-control \
+    /out/tilo-windows-rail \
+    /out/tilo-windows-runtime \
+    /usr/libexec/
+COPY os/usr/share/tilo/windows/ /usr/share/tilo/windows/
+COPY os/usr/share/polkit-1/actions/org.tilo.windows.policy /usr/share/polkit-1/actions/org.tilo.windows.policy
+COPY os/etc/polkit-1/rules.d/49-tilo-windows.rules /etc/polkit-1/rules.d/49-tilo-windows.rules
+COPY \
+    os/usr/lib/systemd/system/tilo-windows-vm-network.service \
+    os/usr/lib/systemd/system/tilo-windows-vm-egress-reaper.service \
+    os/usr/lib/systemd/system/tilo-windows-vm-egress-reaper.timer \
+    /usr/lib/systemd/system/
+COPY \
+    docs/windows-vm.md \
+    docs/windows-presentation.md \
+    /usr/share/doc/tilo/
+RUN chmod 0755 /usr/libexec/tilo-windows-vm-network /usr/libexec/tilo-windows-provision /usr/libexec/tilo-windows-owner \
+              /usr/libexec/tilo-windows-recovery-console /usr/libexec/tilo-windows-vm-control \
+              /usr/libexec/tilo-windows-rail \
+    && systemctl enable tilo-windows-vm-egress-reaper.timer
 
 # Confine the collaborative filesystem daemon in its own SELinux domain
-# (qos_fs_t) instead of unconfined_service_t. Shipped permissive so it can't
+# (tilo_fs_t) instead of unconfined_service_t. Shipped permissive so it can't
 # break the working daemon; tightens to enforcing from captured AVCs (see the
 # module header). The drop-in runs fs.service in the domain via SELinuxContext.
-COPY os/usr/share/qos/selinux/qos-base.cil /usr/share/qos/selinux/qos-base.cil
+COPY os/usr/share/tilo/selinux/tilo-base.cil /usr/share/tilo/selinux/tilo-base.cil
 COPY os/usr/lib/systemd/system/fs.service.d/20-selinux.conf /usr/lib/systemd/system/fs.service.d/20-selinux.conf
 # `libsemanage` writes a sandbox at /etc/selinux/targeted/tmp during
 # install and fails "File exists" if any prior partial state carried
@@ -1643,28 +1858,28 @@ COPY os/usr/lib/systemd/system/fs.service.d/20-selinux.conf /usr/lib/systemd/sys
 # add-on policy archive after copying up the store. Keeping this generic matters:
 # optional desktop/virtualization packages can add a policy archive without also
 # changing this Containerfile.
-RUN cp -a /etc/selinux/targeted /var/tmp/qos-sestore \
+RUN cp -a /etc/selinux/targeted /var/tmp/tilo-sestore \
  && rm -rf /etc/selinux/targeted \
- && mv /var/tmp/qos-sestore /etc/selinux/targeted \
+ && mv /var/tmp/tilo-sestore /etc/selinux/targeted \
  && rm -rf /etc/selinux/targeted/tmp \
  && find /usr/share/selinux/packages -type f \( -name '*.pp' -o -name '*.pp.bz2' \) -print \
       | sort \
       | while IFS= read -r policy; do \
           semodule -n -s targeted -X 200 -i "$policy" || exit 1; \
         done \
- && semodule -i /usr/share/qos/selinux/qos-base.cil \
- && semodule -s targeted -lfull > /var/tmp/qos-active-selinux-modules \
+ && semodule -i /usr/share/tilo/selinux/tilo-base.cil \
+ && semodule -s targeted -lfull > /var/tmp/tilo-active-selinux-modules \
  && find /usr/share/selinux/packages -type f \( -name '*.pp' -o -name '*.pp.bz2' \) -print \
       | sort \
       | while IFS= read -r policy; do \
           module="$(basename "$policy")"; module="${module%.bz2}"; module="${module%.pp}"; \
           awk -v module="$module" '$1 == "200" && $2 == module { found=1 } END { exit !found }' \
-            /var/tmp/qos-active-selinux-modules || exit 1; \
+            /var/tmp/tilo-active-selinux-modules || exit 1; \
         done \
- && semodule -s targeted -lfull | grep -Eq '^400[[:space:]]+qos-base[[:space:]]' \
- && rm -f /var/tmp/qos-active-selinux-modules \
- && restorecon -v /usr/lib/systemd/user/qos-graphical-session.target \
- && echo "all packaged add-on and qos-base SELinux modules loaded"
+ && semodule -s targeted -lfull | grep -Eq '^400[[:space:]]+tilo-base[[:space:]]' \
+ && rm -f /var/tmp/tilo-active-selinux-modules \
+ && restorecon -v /usr/lib/systemd/user/tilo-graphical-session.target \
+ && echo "all packaged add-on and tilo-base SELinux modules loaded"
 
 # ---------------------------------------------------------------------------
 # Enable services
@@ -1674,72 +1889,48 @@ RUN cp -a /etc/selinux/targeted /var/tmp/qos-sestore \
 # `shell-peer-sync.service` is pointedly **NOT** enabled — that's the
 # user-opt-in part.
 #
-# `qos-ush.service` is `--global` enabled too, and has to be: it owns the
-# `ush` service socket that every app declaring `ush = "required@<v>"` is
-# refused without, which today is the Terminal.
+# `tilo-ush.socket` is globally enabled: every app declaring
+# `ush = "required@<v>"` is refused without that endpoint, while socket
+# activation keeps the supervisor itself off the login path until first use.
+#
+# Keep service activation in one transaction. On rootless Podman, each RUN
+# otherwise commits a tiny layer by walking the complete bootc rootfs; measured
+# cycle-6 commits took 90--120 seconds apiece. This remains late in the file so
+# all unit-presence checks are unchanged, while earlier package/builder layers
+# retain their useful cache boundaries.
 #
 # C6 audio: enable the PipeWire user stack for every account (socket-activated
-# pipewire + pipewire-pulse, plus the wireplumber session manager).
+# pipewire + pipewire-pulse, plus the wireplumber session manager). Printing is
+# socket-activated rather than always-on. Time sync, firewall, Bluetooth,
+# modem, power, homed, hardening, boot assessment, automatic bootc updates and
+# NetworkManager are system services/timers.
 RUN systemctl enable greetd.service && \
+    systemctl disable NetworkManager.service firewalld.service chronyd.service && \
+    systemctl enable tilo-device-key-init.service && \
     systemctl set-default graphical.target && \
-    systemctl enable shell-firstboot.service && \
-    systemctl enable qos-growfs-sysroot.service && \
-    systemctl enable fs.service fs-identity.path && \
-    systemctl enable qos-system-extension-dispatcher.socket && \
-    systemctl enable qos-system-extension-boot-pack-status.service && \
-    systemctl enable qos-system-extension-boot-pack-stage.path && \
-    systemctl --global enable qos-identity.service && \
-    systemctl --global enable qos-model-manager.service && \
-    systemctl --global enable qos-model-gateway.service && \
-    systemctl --global enable qos-app-host.service && \
-    systemctl --global enable qos-ush.service && \
-    systemctl --global enable qos-fs-recipient.service && \
-    systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service
-
-# C2 time sync, C5 firewall, C7 bluetooth, C8 power — system services.
-# Printing is socket-activated rather than always-on: cupsd starts when
-# something first talks to it (the settings pane's lpstat, or a print dialog)
-# and costs nothing on a machine that never prints.
-RUN systemctl enable cups.socket
-
-RUN systemctl enable chronyd.service && \
-    systemctl enable firewalld.service && \
-    systemctl enable bluetooth.service && \
-    systemctl enable ModemManager.service && \
-    systemctl enable power-profiles-daemon.service && \
-    systemctl enable systemd-homed.service && \
-    systemctl enable qos-power.service
-
-# C9 printing. The *socket*, not the service: cupsd starts on first use and
-# stays stopped on a machine that never prints, so the IPP parser is not
-# running for most of the fleet's uptime. cups-browsed is not installed, so
-# there is nothing to disable.
-RUN systemctl enable cups.socket
-
-# §11 hardening services: hidepid remount + the boot security self-check.
-RUN systemctl enable qos-hidepid.service && \
-    systemctl enable qos-security-audit.service && \
-    systemctl enable qos-rollback-harden.service && \
-    systemctl enable qos-rollback-confirm.timer
-
-# Boot assessment. qos-boot-health.service installs itself RequiredBy
-# boot-complete.target, which systemd only starts when the boot loader passed a
-# try counter — so on an entry that has already been blessed neither unit runs.
-RUN systemctl enable qos-boot-entries.service && \
-    systemctl enable qos-boot-health.service
-
-# A3: automatic bootc updates. The timer pulls + applies the image at
-# QOS_TARGET_IMGREF (code.podesta.ai/qos/qos:latest, baked at install by
-# qos-install) on a schedule, so installed systems stay current.
-RUN systemctl enable bootc-fetch-apply-updates.timer
-
-# The installer and first-login experience expose NetworkManager-backed
-# connectivity controls. Enable it explicitly instead of depending on a base
-# image preset that may change independently of qOS.
-RUN systemctl enable NetworkManager.service
+    systemctl enable tilo-growfs-sysroot.timer && \
+    systemctl enable tilo-fs-start.timer fs-identity.path && \
+    systemctl enable tilo-system-extension-dispatcher.socket && \
+    systemctl enable tilo-system-extension-boot-pack-status.timer && \
+    systemctl enable tilo-system-extension-boot-pack-stage.path && \
+    systemctl --global enable tilo-identity.service && \
+    systemctl --global enable tilo-models.socket && \
+    systemctl --global enable tilo-model-gateway.socket && \
+    systemctl --global enable tilo-app-host.socket && \
+    systemctl --global enable tilo-ush.socket && \
+    systemctl --global enable tilo-fs-recipient.socket && \
+    systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service && \
+    systemctl enable cups.socket && \
+    systemctl enable tilo-hidepid.service && \
+    systemctl enable tilo-security-audit.timer && \
+    systemctl enable tilo-rollback-harden.timer && \
+    systemctl enable tilo-rollback-confirm.timer && \
+    systemctl enable tilo-boot-entries.timer tilo-boot-health.service && \
+    systemctl enable bootc-fetch-apply-updates.timer && \
+    systemctl enable tilo-network-start.timer
 
 # Boot-time prune. These units sit on the critical chain but their work
-# is either irrelevant to a desktop qOS (offline man-db caching), or a
+# is either irrelevant to a desktop Tilo (offline man-db caching), or a
 # `Wants=network-online.target` wait we don't need (nothing on the boot
 # path blocks on a routable interface — the shell + peer sync tolerate
 # late network). Masking (not just disabling) makes them
@@ -1747,9 +1938,26 @@ RUN systemctl enable NetworkManager.service
 #
 # `|| true` because the unit is only present when its package is
 # installed — we don't fail the image build if a mask target is absent.
+# Fedora also presets systemd-pcrlock collectors at sysinit. Tilo does not use
+# pcrlock credentials: its encrypted-root policy is the authority-signed PCR11
+# generation flow in tilo-rollback. Running both performs redundant TPM/NV and
+# filesystem scans before login and creates a second policy state machine.
 RUN for u in \
         NetworkManager-wait-online.service \
         systemd-networkd-wait-online.service \
+        systemd-network-generator.service \
+        systemd-timesyncd.service \
+        systemd-coredump.socket \
+        systemd-coredump@.service \
+        systemd-binfmt.service \
+        systemd-pstore.service \
+        systemd-pcrlock-file-system.service \
+        systemd-pcrlock-firmware-code.service \
+        systemd-pcrlock-firmware-config.service \
+        systemd-pcrlock-machine-id.service \
+        systemd-pcrlock-make-policy.service \
+        systemd-pcrlock-secureboot-authority.service \
+        systemd-pcrlock-secureboot-policy.service \
         man-db-cache-update.timer \
         man-db-cache-update.service \
         systemd-update-utmp.service \
@@ -1763,28 +1971,75 @@ RUN for u in \
 #
 # Printing adds NO service here, deliberately. `ipp` (631/tcp) would expose
 # the scheduler, and `ipp-client` would open the door for the DNS-SD printer
-# announcements qOS does not listen for. Printing on this image is outbound
+# announcements Tilo does not listen for. Printing on this image is outbound
 # only — the desktop talks to a printer, nothing talks to the desktop — and
 # the FedoraWorkstation zone already permits the outbound side. Adding either
 # service is a decision to be argued for, not a default.
 RUN firewall-offline-cmd --set-default-zone=FedoraWorkstation
 
+# Keep per-run public trust late: new development public keys must not
+# invalidate the invariant desktop/Windows/SELinux assembly prefix. It must
+# still precede board-origin validation and dracut's embedded PCR public key.
+# --- Signing trust roots (security plan §9 image signing, §4 measured boot) ---
+# Public keys only (the private keys are git-excluded; see keys/README.md).
+#  - cosign.pub verifies the OS image signature before `bootc upgrade` applies
+#    it (policy.json below). CI signs each pushed image (see .forgejo/workflows).
+#  - tpm2-pcr-signing.public.pem is the trust root for SIGNED PCR policies, and
+#    nothing reads it yet. LUKS binds to PCR 7 (the Secure Boot policy) because
+#    that value is stable across OS updates; binding to PCR 4 — the boot
+#    artefacts themselves — needs a signed prediction, or every update would
+#    break the seal. This key is what such a prediction would verify against.
+#    See docs/security/boot-chain.md.
+# The named context can override only this public bundle. The separate tracked
+# reference below binds production mode to the unchanged official keys.
+ARG TILO_PUBLIC_TRUST_MODE=production
+ARG TILO_PUBLIC_TRUST_MANIFEST_SHA256
+ARG TILO_TARGET_IMGREF
+ARG TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY
+COPY --from=public-trust / /run/tilo-public-trust/
+# One temporary directory avoids four full-OS snapshots for tiny static inputs.
+# Install individual files below so existing parent-directory modes stay intact.
+COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem \
+    os/dev/development-trust.py os/dev/install-public-trust.py os/dev/hardware_profile.py \
+    os/etc/containers/policy.json os/etc/containers/registries.d/code.podesta.ai.yaml \
+    /run/tilo-trust-inputs/
+RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/run/tilo-build-tools/openssl,ro \
+    mkdir -p /run/tilo-official-trust /run/tilo-trust-tools /etc/containers/registries.d \
+ && cp -a /run/tilo-trust-inputs/cosign.pub /run/tilo-trust-inputs/tpm2-pcr-signing.public.pem /run/tilo-official-trust/ \
+ && cp -a /run/tilo-trust-inputs/*.py /run/tilo-trust-tools/ \
+ && cp -a /run/tilo-trust-inputs/policy.json /etc/containers/policy.json \
+ && cp -a /run/tilo-trust-inputs/code.podesta.ai.yaml /etc/containers/registries.d/code.podesta.ai.yaml \
+ && PATH="/run/tilo-build-tools:$PATH" python3 /run/tilo-trust-tools/install-public-trust.py \
+      --source /run/tilo-public-trust --official /run/tilo-official-trust \
+      --destination /usr/share/tilo --mode "$TILO_PUBLIC_TRUST_MODE" \
+      --manifest-sha256 "$TILO_PUBLIC_TRUST_MANIFEST_SHA256" \
+      --registry-owner "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" \
+      --target-ref "$TILO_TARGET_IMGREF" --image-root / \
+ && rm -rf /run/tilo-public-trust /run/tilo-official-trust /run/tilo-trust-tools /run/tilo-trust-inputs
+
+# Container signature policy: REQUIRE a valid cosign signature for
+# code.podesta.ai/qos/tilo (everything else stays permissive), so a tampered or
+# unsigned OS image is refused at `bootc upgrade`. registries.d points the
+# verifier at cosign's sigstore attachment in the same repo.
+
+
 # ---------------------------------------------------------------------------
-# Custom qOS kernel: swap Fedora's kernel-core for our tuned qos-kernel-core.
+# Custom Tilo kernel: swap Fedora's kernel-core for our tuned tilo-kernel-core.
 # ---------------------------------------------------------------------------
 # The kernel image (see os/kernel/Containerfile + .forgejo/workflows/
 # build-kernel.yml) rebuilds Fedora's kernel with a config fragment that:
-#   * links the storage/net/USB/HID boot-path drivers statically, so the
+#   * links storage/USB/HID boot-path drivers statically while keeping network
+#     drivers signed and modular because networking is off the login path, so the
 #     boot path needs no module loading to reach the root device, and
-#   * tunes for interactive throughput (PREEMPT + HZ=1000 + THP=always +
+#   * tunes for interactive latency (PREEMPT + HZ=1000 + THP=madvise +
 #     SCHED_MC), and
 #   * drops DEBUG_INFO so the RPM doesn't carry ~800 MB of debuginfo.
 #
-# Because the qos-kernel repo is a distinct OCI image (KERNEL_RPMS_REF),
+# Because the tilo-kernel repo is a distinct OCI image (KERNEL_RPMS_REF),
 # we mount it alongside the frozen repo, write a two-repo dnf config on
-# the fly, and swap kernel-core → qos-kernel-core.  --nogpgcheck: our
+# the fly, and swap kernel-core → tilo-kernel-core.  --nogpgcheck: our
 # in-house RPMs aren't signed by Fedora's key; provenance for the whole
-# image is verified via cosign against code.podesta.ai/qos/qos-kernel
+# image is verified via cosign against the existing code.podesta.ai/qos/qos-kernel repository
 # (see os/etc/containers/policy.json).
 #
 # An initramfs is mandatory, and the static drivers do not remove the need
@@ -1796,24 +2051,30 @@ RUN firewall-offline-cmd --set-default-zone=FedoraWorkstation
 # initramfs generation — hence the explicit dracut call below. The base's
 # dracut drop-ins (/usr/lib/dracut/dracut.conf.d/*bootc*) already add the
 # crypt, systemd-cryptsetup, tpm2-tss and clevis modules.
+ARG TILO_HARDWARE_PROFILE=generic
+ARG TILO_TARGET_IMGREF=
 RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     --mount=type=bind,from=kernel-rpms,source=/repo,target=/qkernel-repo \
+    --mount=type=bind,source=os/hardware/firmware,target=/run/tilo-hardware-firmware \
+    --mount=type=bind,source=os/dev/prepare-hardware-profile.py,target=/run/tilo-prepare-hardware-profile.py \
+    --mount=type=bind,source=os/dev/hardware_profile.py,target=/run/hardware_profile.py \
+    --mount=type=bind,source=os/hardware/profiles,target=/run/tilo-hardware-profiles \
     set -eux; \
-    mkdir -p /etc/qos-swap.d; \
+    mkdir -p /etc/tilo-swap.d; \
     printf '[frozen]\nname=frozen\nbaseurl=file:///frozen-repo\ngpgcheck=0\nenabled=1\n' \
-        > /etc/qos-swap.d/frozen.repo; \
-    printf '[qos-kernel]\nname=qos-kernel\nbaseurl=file:///qkernel-repo\ngpgcheck=0\nenabled=1\n' \
-        > /etc/qos-swap.d/qos-kernel.repo; \
+        > /etc/tilo-swap.d/frozen.repo; \
+    printf '[tilo-kernel]\nname=tilo-kernel\nbaseurl=file:///qkernel-repo\ngpgcheck=0\nenabled=1\n' \
+        > /etc/tilo-swap.d/tilo-kernel.repo; \
     # --allowerasing lets the swap drop the base's `kernel` meta-package
     # (it hard-requires kernel-core-uname-r = <exact-fedora-version>,
-    # which our qos-kernel-core doesn't satisfy since it carries a
-    # different Release tag). qos-kernel-core Provides: kernel so nothing
+    # which our tilo-kernel-core doesn't satisfy since it carries a
+    # different Release tag). tilo-kernel-core Provides: kernel so nothing
     # downstream loses a dependency.
-    dnf swap -y --setopt=reposdir=/etc/qos-swap.d --nogpgcheck --allowerasing \
-        kernel-core qos-kernel-core; \
-    rm -rf /etc/qos-swap.d; \
+    dnf swap -y --setopt=reposdir=/etc/tilo-swap.d --nogpgcheck --allowerasing \
+        kernel-core tilo-kernel-core; \
+    rm -rf /etc/tilo-swap.d; \
     # Which kernel version did the swap leave behind? Ask the filesystem: rpm is
-    # no help here, because qos-kernel-core provides no kernel-uname-r and its
+    # no help here, because tilo-kernel-core provides no kernel-uname-r and its
     # file list records /lib/modules/... where a query would say /usr/lib/... .
     #
     # Count kernel IMAGES, not directories. Removing kernel-core does not remove
@@ -1825,7 +2086,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     # this layer from cache.
     #
     # A kernel image is /usr/lib/modules/<kver>/vmlinuz (Fedora's layout) or
-    # /boot/vmlinuz-<kver> (qos-kernel-core's, moved into place below). The
+    # /boot/vmlinuz-<kver> (tilo-kernel-core's, moved into place below). The
     # leftover directory has neither, because its vmlinuz belonged to the package
     # that was just removed.
     kver=""; n=0; \
@@ -1840,7 +2101,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
       ls -la /usr/lib/modules/ /boot >&2 || true; \
       exit 1; \
     fi; \
-    # qos-kernel-core installs its kernel as /boot/vmlinuz-<kver>, not into the
+    # tilo-kernel-core installs its kernel as /boot/vmlinuz-<kver>, not into the
     # modules directory the way Fedora's kernel-core does. ostree does find it
     # there — it falls back to /boot/vmlinuz-<kver> — which is why nobody noticed,
     # but it means the image carried a kernel and no initramfs beside it, and
@@ -1856,12 +2117,37 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     for d in /usr/lib/modules/*; do \
       [ "$d" = "/usr/lib/modules/$kver" ] || rm -rf "$d"; \
     done; \
+    # Stage model firmware and the hashed device-tree profile before dracut and
+    # the rootfs split. The UKI builder then embeds that exact device tree.
+    install -Dm0644 /run/hardware_profile.py /usr/lib/tilo/hardware_profile.py; \
+    python3 /run/tilo-prepare-hardware-profile.py \
+        --profile "$TILO_HARDWARE_PROFILE" --root / --kernel-version "$kver" \
+        --profiles-dir /run/tilo-hardware-profiles \
+        --firmware-dir "/run/tilo-hardware-firmware/$TILO_HARDWARE_PROFILE" \
+        --target-update-ref "$TILO_TARGET_IMGREF"; \
     # --add rather than trusting the base's drop-ins to pull these in: the same
     # invocation produced an initramfs WITH the crypt modules locally and WITHOUT
     # them under the CI builder, silently, and a missing module here is a root
     # that cannot be unlocked. Naming them makes dracut fail instead of omit.
-    dracut --force --reproducible -v --kver "$kver" \
-        --add "crypt systemd-cryptsetup tpm2-tss plymouth qos-rollback" \
+    # Tilo installs only onto a local block device and supports passphrase,
+    # TPM2, and FIDO2 unlock. Network roots and network-bound disk encryption
+    # add DHCP/TLS/NFS/iSCSI parsers plus startup work to every signed UKI with
+    # no supported way to use them. The supported root is Btrfs; keep Ext4 and
+    # XFS as signed modules for rescue/secondary filesystems after pivot_root,
+    # but do not copy either parser into the pre-authentication initramfs.
+    # Omit the consumers as well as their parents: bootc explicitly adds
+    # clevis-pin-tpm2, and dracut can auto-select the other Clevis pins and
+    # network-root transports. Omitting only clevis/network leaves their
+    # dependencies unsatisfied. Local TPM unlock uses systemd-cryptsetup and
+    # tpm2-tss; local NVMe does not require the nvmf network-root module.
+    find "/usr/lib/modules/$kver" -type f -path '*/fs/ext4/ext4.ko*' -print -quit \
+      | grep -q . || { echo 'signed Ext4 rescue module is missing' >&2; exit 1; }; \
+    find "/usr/lib/modules/$kver" -type f -path '*/fs/xfs/xfs.ko*' -print -quit \
+      | grep -q . || { echo 'signed XFS rescue module is missing' >&2; exit 1; }; \
+    dracut --force --reproducible --compress zstd -v --kver "$kver" \
+        --omit "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh" \
+        --omit-drivers "ext4 xfs" \
+        --add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback" \
         "/usr/lib/modules/$kver/initramfs.img" > /tmp/dracut.log 2>&1 \
       || { cat /tmp/dracut.log >&2; exit 1; }; \
     test -s "/usr/lib/modules/$kver/initramfs.img"; \
@@ -1871,13 +2157,18 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     # artefact reports "no cryptsetup" for an initramfs that has it. dracut's own
     # report is the same fact without the privilege dependency, and shipping the
     # list lets the runtime check use it too.
-    mkdir -p /usr/lib/qos; \
+    mkdir -p /usr/lib/tilo; \
     sed -n 's/.*Including module: \([a-z0-9_-]*\).*/\1/p' /tmp/dracut.log \
-      | sort -u > /usr/lib/qos/initramfs-modules.txt; \
-    for m in crypt systemd-cryptsetup tpm2-tss plymouth qos-rollback; do \
-      grep -qx "$m" /usr/lib/qos/initramfs-modules.txt || { \
+      | sort -u > /usr/lib/tilo/initramfs-modules.txt; \
+    printf '%s\n' ext4 xfs > /usr/lib/tilo/initramfs-omitted-drivers.txt; \
+    for m in crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback; do \
+      grep -qx "$m" /usr/lib/tilo/initramfs-modules.txt || { \
         echo "dracut did not include the $m module; an encrypted root could not be opened" >&2; \
-        cat /usr/lib/qos/initramfs-modules.txt >&2; exit 1; }; \
+        cat /usr/lib/tilo/initramfs-modules.txt >&2; exit 1; }; \
+    done; \
+    for m in network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh; do \
+      ! grep -qx "$m" /usr/lib/tilo/initramfs-modules.txt || { \
+        echo "unsupported initramfs module $m was included" >&2; exit 1; }; \
     done; \
     rm -f /tmp/dracut.log; \
     # /boot belongs to the deployment, not the image: whatever the kernel
@@ -1907,38 +2198,44 @@ RUN owner="$(rpm -qf /usr/bin/basename 2>&1 || true)" \
         || { echo "rpmdb.sqlite-shm is in the image; see FINALIZE_RPMDB" >&2; exit 1; } )
 
 # Boot-chain invariants, asserted at BUILD time so the image cannot ship in the
-# state it once did: offering `qos-install --encrypt` while carrying no
+# state it once did: offering `tilo-install --encrypt` while carrying no
 # initramfs, which leaves the kernel able to see the LUKS device and unable to
 # open it. Also bundled so an operator can re-run it on a live machine.
-COPY os/tests/boot_chain_invariants.sh /usr/libexec/qos/boot-chain-test.sh
-RUN chmod 0755 /usr/libexec/qos/boot-chain-test.sh \
-    && OS_ROOT=/ bash /usr/libexec/qos/boot-chain-test.sh
+COPY os/tests/boot_chain_invariants.sh /usr/libexec/tilo/boot-chain-test.sh
+COPY os/tests/boot_performance_gate.sh /usr/libexec/tilo/boot-performance-gate.sh
+RUN chmod 0755 /usr/libexec/tilo/boot-chain-test.sh \
+        /usr/libexec/tilo/boot-performance-gate.sh \
+    && OS_ROOT=/ bash /usr/libexec/tilo/boot-chain-test.sh
 
 # Public marketplace trust input. The private owner key never enters the image
 # or serving process. Releases may rotate this build input, but empty, malformed,
 # or all-zero anchors fail the image build instead of silently enabling TOFU.
-ARG QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY
-RUN if ! printf '%s\n' "$QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY" | grep -Eq '^[0-9a-fA-F]{64}$' \
-      || [ "$QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY" = 0000000000000000000000000000000000000000000000000000000000000000 ]; then \
-      echo "QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY must be a non-placeholder 32-byte hex key" >&2; exit 1; \
+ARG TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY
+RUN if ! printf '%s\n' "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" | grep -Eq '^[0-9a-fA-F]{64}$' \
+      || [ "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" = 0000000000000000000000000000000000000000000000000000000000000000 ]; then \
+      echo "TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY must be a non-placeholder 32-byte hex key" >&2; exit 1; \
     fi \
- && install -d -m 0755 /usr/share/qos/trust \
- && printf '%s\n' "$QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY" > /usr/share/qos/trust/qos-main-registry-owner.pub \
- && chmod 0644 /usr/share/qos/trust/qos-main-registry-owner.pub
+ && install -d -m 0755 /usr/share/tilo/trust \
+ && printf '%s\n' "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" > /usr/share/tilo/trust/tilo-main-registry-owner.pub \
+ && chmod 0644 /usr/share/tilo/trust/tilo-main-registry-owner.pub
 
 # Collaborative Files installed-image contract.  This is deliberately inside
 # the production rootfs build rather than a source-tree lint: it inspects the
-# actual copied binaries, enabled system/user units, FUSE package/config,
+# copied binaries, enabled system/user units, FUSE package/config,
 # tmpfiles/ACL seed, and the Files package as installed in the launcher's
 # immutable registry.  The same script's runtime mode is run after a bootc
 # install + graphical login by build-image.yml.
-COPY os/tests/collaborative-files-image-contract.sh /usr/libexec/qos/collaborative-files-image-contract.sh
-COPY apps/file-explorer/tests/atspi_smoke.sh /usr/libexec/qos/files-atspi-smoke.sh
-COPY shell/tests/native_atspi_smoke.sh /usr/libexec/qos/native-atspi-smoke.sh
-RUN chmod 0755 /usr/libexec/qos/collaborative-files-image-contract.sh \
-        /usr/libexec/qos/files-atspi-smoke.sh \
-        /usr/libexec/qos/native-atspi-smoke.sh \
-    && OS_ROOT=/ /usr/libexec/qos/collaborative-files-image-contract.sh image
+COPY os/tests/collaborative-files-image-contract.sh /usr/libexec/tilo/collaborative-files-image-contract.sh
+COPY apps/file-explorer/tests/atspi_smoke.sh /usr/libexec/tilo/files-atspi-smoke.sh
+COPY crates/session/shell/tests/native_atspi_smoke.sh /usr/libexec/tilo/native-atspi-smoke.sh
+COPY tools/atspi_external_client.py /usr/libexec/tilo/atspi-external-client.py
+COPY os/tests/installed_atspi_apps.sh /usr/libexec/tilo/installed-atspi-apps.sh
+RUN chmod 0755 /usr/libexec/tilo/collaborative-files-image-contract.sh \
+        /usr/libexec/tilo/files-atspi-smoke.sh \
+        /usr/libexec/tilo/native-atspi-smoke.sh \
+        /usr/libexec/tilo/atspi-external-client.py \
+        /usr/libexec/tilo/installed-atspi-apps.sh \
+    && OS_ROOT=/ /usr/libexec/tilo/collaborative-files-image-contract.sh image
 
 # Enrolment invariants, likewise at BUILD time. A build container has no
 # /dev/tpm*, which is exactly the path this needs to exercise: the machine with
@@ -1947,9 +2244,9 @@ RUN chmod 0755 /usr/libexec/qos/collaborative-files-image-contract.sh \
 # so the volume it produced could not be opened by the secret it had just asked
 # for and printed no usable recovery key either. Runs against a throwaway sparse
 # file, needs no device-mapper, and takes about ten seconds.
-COPY os/tests/luks_enrolment.sh /usr/libexec/qos/luks-enrolment-test.sh
-RUN chmod 0755 /usr/libexec/qos/luks-enrolment-test.sh \
-    && bash /usr/libexec/qos/luks-enrolment-test.sh
+COPY os/tests/luks_enrolment.sh /usr/libexec/tilo/luks-enrolment-test.sh
+RUN chmod 0755 /usr/libexec/tilo/luks-enrolment-test.sh \
+    && bash /usr/libexec/tilo/luks-enrolment-test.sh
 
 # Validate.
 #
@@ -1963,7 +2260,47 @@ RUN chmod 0755 /usr/libexec/qos/luks-enrolment-test.sh \
 # /usr/lib/modules/$kver *directories*, and the split leaves that directory in
 # place, so one kernel is still one kernel; `nonempty-boot` is a warning, not a
 # fatal, so a UKI in /boot does not fail it either.
-RUN bootc container lint
+# Fedora's OpenSSL libraries carry optional legacy-provider and ENGINE DSOs for
+# compatibility with old applications. The GStreamer bad-free bundle also
+# carries OpenSSL-backed DTLS, curl, and Icecast/Shoutcast plugins; its WebRTC,
+# ICE and SRTP companions are unusable here and likewise serve no Tilo path.
+# libevent's OpenSSL adapter is a separate optional DSO; retain the event-loop
+# libraries for distro consumers but remove that unused TLS integration. Qt's ARM compatibility frontend is also
+# offline and does not need its optional OpenSSL TLS backend. Rust-native code
+# owns network security, while foundational distro consumers use the built-in
+# provider. The Shoutcast library has no remaining consumer after its plugin is
+# removed, so delete its payload and package metadata too. The aggregate
+# GStreamer bundle retains a dependency on libshout for the deleted plugin;
+# `--nodeps` is therefore intentional and bounded by the absence audit below.
+# Delete these loadable surfaces before the composefs root is sealed.
+RUN find /usr/lib /usr/lib64 \
+      \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
+         -o -name 'libshout.so*' \
+         -o -name 'libevent_openssl.so*' \
+         -o -path '*/gstreamer-1.0/libgstdtls.so' \
+         -o -path '*/gstreamer-1.0/libgstcurl.so' \
+         -o -path '*/gstreamer-1.0/libgstshout2.so' \
+         -o -path '*/gstreamer-1.0/libgstwebrtc.so' \
+         -o -path '*/gstreamer-1.0/libgstnice.so' \
+         -o -path '*/gstreamer-1.0/libgstsrtp.so' \
+         -o -path '*/qt6/plugins/tls/libqopensslbackend.so' \) \
+      \( -type f -o -type l \) -delete \
+    && rpm -e --nodeps libshout \
+    && ! find /usr/lib /usr/lib64 \
+      \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
+         -o -name 'libshout.so*' \
+         -o -name 'libevent_openssl.so*' \
+         -o -path '*/gstreamer-1.0/libgstdtls.so' \
+         -o -path '*/gstreamer-1.0/libgstcurl.so' \
+         -o -path '*/gstreamer-1.0/libgstshout2.so' \
+         -o -path '*/gstreamer-1.0/libgstwebrtc.so' \
+         -o -path '*/gstreamer-1.0/libgstnice.so' \
+         -o -path '*/gstreamer-1.0/libgstsrtp.so' \
+         -o -path '*/qt6/plugins/tls/libqopensslbackend.so' \) \
+      \( -type f -o -type l \) -print -quit | grep -q . \
+    && bash /usr/local/bin/verify-runtime-crypto-packages.sh \
+    && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh \
+    && bootc container lint
 
 # ---------------------------------------------------------------------------
 # The sealed layout: split the kernel out, build the UKI over what remains
@@ -1997,21 +2334,20 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         systemd-boot-unsigned \
         binutils \
     && dnf clean all
-COPY os/dev/uki.sh /usr/local/bin/uki.sh
-COPY os/dev/make-boot-splash.py /usr/local/bin/make-boot-splash.py
+COPY os/dev/uki.sh os/dev/uki-hardware-profile.py os/dev/hardware_profile.py os/dev/make-boot-splash.py /usr/local/bin/
 
 FROM uki-tools AS uki
 # The first pass uses a deterministic all-zero placeholder. `bootc install`
 # computes the authoritative digest and os/dev/build-image.sh rewrites only the
 # UKI under /boot before retrying. This avoids constructing a rootfs-sized
 # composefs scratch repository merely to obtain a provisional value.
-ARG QOS_CFS_DIGEST=
-ENV CFS_DIGEST=${QOS_CFS_DIGEST}
+ARG TILO_CFS_DIGEST=
+ENV CFS_DIGEST=${TILO_CFS_DIGEST}
 # The negative control: 0 builds a UKI that measures perfectly and carries no
 # generation, which is what proves rollback-boot-check.sh fails on the generation
-# assertions rather than on "nothing measured". Always 1 for a real image.
-ARG QOS_SEAL_GENERATION=1
-ENV QOS_SEAL_GENERATION=${QOS_SEAL_GENERATION}
+# assertions rather than on "nothing measured". Always 1 for a built image.
+ARG TILO_SEAL_GENERATION=1
+ENV TILO_SEAL_GENERATION=${TILO_SEAL_GENERATION}
 # /tmp and /run are tmpfs because ukify needs ordinary build scratch but none of
 # it belongs in the image layer. The authoritative composefs digest comes from
 # the install gate, so this stage no longer needs a rootfs-sized /var/tmp cache.
@@ -2029,7 +2365,7 @@ RUN --mount=type=tmpfs,target=/tmp \
 # they are sections of the UKI it inherited.
 #
 # So `os/Containerfile.test` and `os/Containerfile.installer`, which both do
-# `FROM localhost/qos:latest`, have to be built from the UNSEALED rootfs and sealed
+# `FROM localhost/tilo:latest`, have to be built from the UNSEALED rootfs and sealed
 # themselves — `podman build --target rootfs` gives them that. Until they are, the
 # disk step for those two images fails at the digest check with the message
 # os/dev/disk-image.sh prints, rather than producing something that boots wrong.

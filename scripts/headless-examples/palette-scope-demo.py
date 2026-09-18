@@ -11,7 +11,7 @@ so `click_named` cannot reach them. Clicking the "Everywhere" chip by
 coordinate and re-querying returns what you expected all along:
 
     APPLICATIONS  1
-      Open Files          System · dev.qos.file-explorer
+      Open Files          System · dev.tilo.file-explorer
     FILES        40
       ...
 
@@ -44,7 +44,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from _control import call, require_ok  # noqa: E402
 
 OUT = sys.argv[1] if len(sys.argv) > 1 else "/tmp/palette-scope.png"
-SOCKET = sys.argv[2] if len(sys.argv) > 2 else "/tmp/nirios-palette-scope.sock"
+SOCKET = sys.argv[2] if len(sys.argv) > 2 else "/tmp/tilo-palette-scope.sock"
 BINARY = (pathlib.Path(__file__).resolve().parent / ".." / ".." / "target" / "debug" / "shell").resolve()
 
 # The "Everywhere" chip, in the default 1600x900 headless render. The chips are
@@ -65,7 +65,7 @@ def main() -> int:
     except FileNotFoundError:
         pass
 
-    env = {**os.environ, "QOS_TEST_CONTROL": SOCKET}
+    env = {**os.environ, "TILO_TEST_CONTROL": SOCKET}
     env.pop("DISPLAY", None)
     env.pop("WAYLAND_DISPLAY", None)
     proc = subprocess.Popen(

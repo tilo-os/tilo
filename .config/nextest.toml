@@ -1,9 +1,5 @@
-# One process per test, which is what makes a single consolidated test binary
-# safe: tests that set environment variables or touch process state no longer
-# share a process with the rest of the file.
-
 [profile.default]
-# A hung test should name itself rather than stall the run.
+# Report and terminate hung tests.
 slow-timeout = { period = "60s", terminate-after = 4 }
 failure-output = "immediate-final"
 fail-fast = false
@@ -12,33 +8,20 @@ fail-fast = false
 slow-timeout = { period = "120s", terminate-after = 4 }
 failure-output = "immediate-final"
 fail-fast = false
-# GPU and socket tests are timing-sensitive under a loaded runner; a single
-# retry distinguishes a flake from a break without hiding a real failure.
+# Permit one retry for timing-sensitive GPU and socket tests.
 retries = 1
 status-level = "fail"
 
 [profile.ci.junit]
 path = "junit.xml"
 
-# Tests that spawn a real compositor process, or drive the GPU through the
-# offscreen renderer, cannot all run at once: `clipboard_e2e` starts a whole
-# `shell` binary plus two Wayland clients and waits 25 s for a drop, which is
-# comfortable alone and not comfortable against two thousand other tests.
-#
-# The in-file `TEST_LOCK` some of these hold does not help — nextest gives each
-# test its own process, so a mutex inside one serialises nothing. This does.
+# Process-isolated compositor, GPU, and collaboration tests need shared limits.
 [test-groups]
 compositor = { max-threads = 2 }
 gpu-golden = { max-threads = 1 }
 agent-collaboration = { max-threads = 1 }
 
-# Golden images must be rendered one at a time across *all* test binaries.
-# A Rust mutex cannot provide that guarantee because nextest launches each
-# test in its own process. The group serializes goldens with one another, but
-# it is not exclusive of ordinary tests. CI therefore removes this filter from
-# its parallel suites and runs it as an isolated nightly tail; the group still
-# protects that tail and direct/local nextest invocations from multiple Vulkan
-# contexts racing one another.
+# Golden rendering shares Vulkan resources across test processes.
 [[profile.default.overrides]]
 filter = '(package(ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or (package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))'
 test-group = "gpu-golden"
@@ -55,12 +38,7 @@ test-group = "compositor"
 filter = 'binary(it) and (test(clipboard_e2e::) or test(interaction_test::) or test(wayland_test::))'
 test-group = "compositor"
 
-# These integration binaries each start a production Cap'n Proto broker and
-# several blocking collaboration clients with wall-clock protocol deadlines.
-# nextest runs every test in a separate process, so an in-process lock or
-# serial_test attribute cannot coordinate them across binaries. Keep the real
-# socket tests serialized with one another while allowing the agent's pure
-# unit tests to remain parallel.
+# Collaboration binaries share bounded socket resources.
 [[profile.default.overrides]]
 filter = 'package(agent) and (binary(presence_semantics) or binary(relay_roundtrip) or binary(discovered_operations) or binary(concurrent_edit))'
 test-group = "agent-collaboration"
@@ -71,12 +49,7 @@ filter = 'package(agent) and (binary(presence_semantics) or binary(relay_roundtr
 test-group = "agent-collaboration"
 threads-required = "num-cpus"
 
-# This is a real-time codec budget test: it must decode at least 30 frames in
-# three wall-clock seconds while keeping every frame below the latency ceiling.
-# Letting the rest of the suite contend for its CPU makes the result measure
-# nextest scheduling pressure rather than the share pipeline. Requiring every
-# test thread gives the benchmark a controlled local CPU budget without
-# relaxing either performance assertion.
+# This real-time codec test needs an uncontended CPU budget.
 [[profile.default.overrides]]
 filter = 'package(shell) and binary(it) and test(flatpak_share_e2e::session_delivers_30_frames_in_3_seconds_at_bounded_latency)'
 threads-required = "num-cpus"
@@ -85,16 +58,13 @@ threads-required = "num-cpus"
 filter = 'package(shell) and binary(it) and test(flatpak_share_e2e::session_delivers_30_frames_in_3_seconds_at_bounded_latency)'
 threads-required = "num-cpus"
 
-# Native-4K retained-scene oracles render and read back full 3840×2160 frames.
-# They compare the same assertions and timeouts under a controlled CPU budget,
-# rather than competing with the rest of the large shell suite for software/GPU
-# renderer time. The workspace-root boundary test shares that renderer path.
+# Native-4K renderer tests need an uncontended CPU budget.
 [[profile.default.overrides]]
-filter = 'package(shell) and (test(shell::frame::retained_tests::native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycle) or test(shell::frame::retained_tests::native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dense) or test(shell::frame::retained_tests::workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels) or test(native_4k_retained_pixels_match_dense_oracle_for_benchmark_actions))'
+filter = 'package(shell) and (test(shell::frame::retained_tests::native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycle) or test(shell::frame::retained_tests::native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dense) or test(shell::frame::retained_tests::workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels) or test(native_4k_framebuilder_actions_match_current_staging_for_one_and_two_targets) or test(native_4k_retained_pixels_match_dense_oracle_for_benchmark_actions))'
 threads-required = "num-cpus"
 
 [[profile.ci.overrides]]
-filter = 'package(shell) and (test(shell::frame::retained_tests::native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycle) or test(shell::frame::retained_tests::native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dense) or test(shell::frame::retained_tests::workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels) or test(native_4k_retained_pixels_match_dense_oracle_for_benchmark_actions))'
+filter = 'package(shell) and (test(shell::frame::retained_tests::native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycle) or test(shell::frame::retained_tests::native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dense) or test(shell::frame::retained_tests::workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels) or test(native_4k_framebuilder_actions_match_current_staging_for_one_and_two_targets) or test(native_4k_retained_pixels_match_dense_oracle_for_benchmark_actions))'
 threads-required = "num-cpus"
 
 # Shared GPU targets use real devices and deterministic completion fault seams. Keep their

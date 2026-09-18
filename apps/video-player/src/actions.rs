@@ -1,17 +1,34 @@
 //! Discoverable effect/view operations for the local video player.
 
 use automerge::AutoCommit;
-use qos_actions::{
-    ActionArgs, ActionContract, ActionParam, ActionSpec, EncodedAction, ExecutionMode,
-    OperationKind, ParamType, Resource, ResultSpec, RetryPolicy,
-};
 use serde::{Deserialize, Serialize};
+use tilo_actions::{
+    ActionArgs, ActionContract, ActionParam, ActionRegistry, ActionSpec, EncodedAction,
+    ExecutionMode, OperationKind, ParamType, Resource, ResultSpec, RetryPolicy,
+};
+
+use crate::shared::SharedAction;
 
 pub const OPERATION_TYPE: &str = "video-player.operation";
 /// The contextual resource snapshot remains responsive even for containers
 /// with an unusually large number of streams or chapters. Stable IDs still let
 /// a host resolve a specific omitted item on demand.
 pub const CONTEXTUAL_CHILD_LIMIT: usize = 32;
+
+/// The player library is a device-local presentation. Its explicit navigation
+/// operations are safe to repeat after a delayed host response; they neither
+/// replay a document mutation nor touch a decoder, portal, or external device.
+fn local_presentation_contract() -> ActionContract {
+    ActionContract {
+        tags: vec!["device-local".into(), "media".into(), "presentation".into()],
+        ..ActionContract::view()
+    }
+}
+
+/// Register every durable document action published by Video Player.
+pub fn register(registry: &mut ActionRegistry) {
+    crate::shared::register(registry);
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PlayerOperation {
@@ -30,6 +47,11 @@ pub enum PlayerOperation {
     ClearRecentHistory,
     /// Reveal the device-local queue and recent-history panel.
     RevealLibrary,
+    /// Reveal the recent-history view of the device-local library.
+    RevealRecentLibrary,
+    RevealSharedLibrary,
+    /// Close the app-owned library panel without changing media state.
+    HideLibrary,
     Close,
     TogglePlayback,
     ToggleMute,
@@ -65,8 +87,18 @@ pub enum PlayerOperation {
         id: String,
         seconds: f64,
     },
+    /// Navigate to a collaborative review marker that belongs to the media
+    /// currently open on this device. The durable annotation is checked again
+    /// against the document before seeking, so search results cannot send a
+    /// later video to a stale timestamp.
+    JumpToAnnotation {
+        id: String,
+        media_ref: String,
+        time_ms: u64,
+    },
     /// Set the shared transport speed in the bounded player range.
     SetPlaybackRate(f64),
+    OpenPictureInPicture,
     ToggleFullscreen,
 }
 
@@ -87,7 +119,9 @@ impl PlayerOperation {
                 | Self::SelectAudioTrack { .. }
                 | Self::SelectSubtitleTrack { .. }
                 | Self::JumpToChapter { .. }
+                | Self::JumpToAnnotation { .. }
                 | Self::SetPlaybackRate(_)
+                | Self::OpenPictureInPicture
         )
     }
 }
@@ -120,6 +154,10 @@ pub struct MediaAvailability {
     /// Exact identity of the currently-open source. Dynamic targets are never
     /// published without it, so an old action cannot act on a later file.
     pub source_id: Option<String>,
+    /// Stable opaque identity for the underlying source. Unlike `source_id`,
+    /// this intentionally survives closing and reopening the same local media
+    /// so collaborative bookmarks remain useful without publishing a path.
+    pub media_ref: Option<String>,
     /// Whether this peer may change shared transport state.
     pub can_control_transport: bool,
 }
@@ -210,6 +248,21 @@ pub fn recent_item_resource_id(item_id: &str) -> String {
     )
 }
 
+pub fn playlist_resource_id(id: &str) -> String {
+    format!("video-player.playlist.{}", identity_token_for_action(id))
+}
+
+pub fn playlist_item_resource_id(id: &str) -> String {
+    format!(
+        "video-player.playlist-item.{}",
+        identity_token_for_action(id)
+    )
+}
+
+pub fn annotation_resource_id(id: &str) -> String {
+    format!("video-player.annotation.{}", identity_token_for_action(id))
+}
+
 /// A stable chapter address and its playback target.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChapterState {
@@ -229,7 +282,7 @@ fn encode(op: &PlayerOperation) -> EncodedAction {
     clippy::too_many_lines,
     reason = "the small resource tree is kept together so labels, contracts, and hierarchy cannot drift"
 )]
-pub fn resources(ctx: &PlayerResourceCtx<'_>, _doc: &AutoCommit) -> Vec<Resource> {
+pub fn resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource> {
     let open_contract = ActionContract {
         retry: RetryPolicy::AtMostOnce,
         // A portal-granted path and its decoder/cache state are meaningful
@@ -271,7 +324,7 @@ pub fn resources(ctx: &PlayerResourceCtx<'_>, _doc: &AutoCommit) -> Vec<Resource
         .with_contract(ActionContract {
             execution: ExecutionMode::Background { cancellable: false },
             result: ResultSpec::Job,
-            permission: qos_actions::PermissionRequirement::Read,
+            permission: tilo_actions::PermissionRequirement::Read,
             ..open_contract
         }),
     );
@@ -735,6 +788,19 @@ pub fn resources(ctx: &PlayerResourceCtx<'_>, _doc: &AutoCommit) -> Vec<Resource
         // Retrying an edge-triggered fullscreen toggle would exit again.
         presentation = presentation.with_action(fullscreen.retry_policy(RetryPolicy::AtMostOnce));
     }
+    if let Ok(pip) = ActionSpec::operation(
+        "picture-in-picture",
+        "Open Picture in Picture",
+        OperationKind::View,
+        OPERATION_TYPE,
+        &PlayerOperation::OpenPictureInPicture,
+    ) {
+        presentation = presentation.with_action(if ctx.media.has_media {
+            pip.retry_policy(RetryPolicy::AtMostOnce)
+        } else {
+            pip.unavailable("no_media", "Open a video before using Picture in Picture")
+        });
+    }
 
     let mut media = Resource::new("video-player.media.current", "media.video", ctx.title);
     if let Ok(close) = ActionSpec::operation(
@@ -763,6 +829,10 @@ pub fn resources(ctx: &PlayerResourceCtx<'_>, _doc: &AutoCommit) -> Vec<Resource
         tags: vec!["device-local".into(), "media".into()],
         ..ActionContract::default()
     };
+    // Presentational navigation has no hardware, file-system or document
+    // effect. It is safe—and useful—to retry it after a delayed host response,
+    // unlike queue/history mutation which remains at-most-once above.
+    let local_presentation_contract = local_presentation_contract();
     let mut queue = Resource::new(
         "video-player.queue.local",
         "media.queue",
@@ -877,17 +947,413 @@ pub fn resources(ctx: &PlayerResourceCtx<'_>, _doc: &AutoCommit) -> Vec<Resource
         OPERATION_TYPE,
         &PlayerOperation::RevealLibrary,
     ) {
-        app = app.with_action(reveal_library.with_contract(local_library_contract));
+        app = app.with_action(reveal_library.with_contract(local_presentation_contract.clone()));
     }
-    app = app.with_child(media).with_child(queue).with_child(recent);
+    if let Ok(hide_library) = ActionSpec::operation(
+        "hide-library",
+        "Close library",
+        OperationKind::View,
+        OPERATION_TYPE,
+        &PlayerOperation::HideLibrary,
+    ) {
+        app = app.with_action(hide_library.with_contract(local_presentation_contract.clone()));
+    }
+    if let Ok(show_queue) = ActionSpec::operation(
+        "show",
+        "Show queue",
+        OperationKind::View,
+        OPERATION_TYPE,
+        &PlayerOperation::RevealLibrary,
+    ) {
+        queue = queue.with_action(show_queue.with_contract(local_presentation_contract.clone()));
+    }
+    if let Ok(show_recent) = ActionSpec::operation(
+        "show",
+        "Show recent videos",
+        OperationKind::View,
+        OPERATION_TYPE,
+        &PlayerOperation::RevealRecentLibrary,
+    ) {
+        recent = recent.with_action(show_recent.with_contract(local_presentation_contract));
+    }
+    let shared = shared_resources(ctx, doc, CONTEXTUAL_CHILD_LIMIT);
+    app = app
+        .with_child(media)
+        .with_child(queue)
+        .with_child(recent)
+        .with_child(shared);
     vec![app]
+}
+
+fn encode_shared(action: &SharedAction) -> EncodedAction {
+    EncodedAction::encode(crate::shared::ACTION_TYPE, action).unwrap_or_else(|_| EncodedAction {
+        type_id: crate::shared::ACTION_TYPE.into(),
+        payload: Vec::new(),
+    })
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "playlist and annotation action contracts stay adjacent to their resource hierarchy"
+)]
+fn shared_resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit, limit: usize) -> Resource {
+    let state = crate::shared::read(doc);
+    let mut playlists = Resource::new(
+        "video-player.playlists.shared",
+        "media.playlists",
+        format!("Shared playlists · {}", state.playlists.len()),
+    );
+    if let Ok(show) = ActionSpec::operation(
+        "show",
+        "Show shared library",
+        OperationKind::View,
+        OPERATION_TYPE,
+        &PlayerOperation::RevealSharedLibrary,
+    ) {
+        playlists
+            .actions
+            .push(show.with_contract(local_presentation_contract()));
+    }
+    playlists.actions.push(
+        ActionSpec::typed(
+            "create",
+            "Create shared playlist",
+            "name",
+            tilo_actions::ExecutionLocus::ClientLocal,
+            vec![
+                ActionParam::required_owned(
+                    "id",
+                    ParamType::Text,
+                    "Globally unique stable playlist ID",
+                ),
+                ActionParam::required_owned("name", ParamType::Text, "Playlist name"),
+            ],
+            |args| {
+                encode_shared(&SharedAction::CreatePlaylist {
+                    id: args.text("id").unwrap_or_default().into(),
+                    name: args.text("name").unwrap_or_default().into(),
+                })
+            },
+        )
+        .reversible(),
+    );
+    for playlist in state.playlists.iter().take(limit) {
+        let mut resource = Resource::new(
+            playlist_resource_id(&playlist.id),
+            "media.playlist",
+            playlist.name.clone(),
+        );
+        if let Ok(show) = ActionSpec::operation(
+            "show",
+            "Show shared playlist",
+            OperationKind::View,
+            OPERATION_TYPE,
+            &PlayerOperation::RevealSharedLibrary,
+        ) {
+            resource.actions.push(show);
+        }
+        let id = playlist.id.clone();
+        let before = playlist.name.clone();
+        resource.actions.push(
+            ActionSpec::typed(
+                "rename",
+                "Rename playlist",
+                "name",
+                tilo_actions::ExecutionLocus::ClientLocal,
+                vec![ActionParam::required_owned(
+                    "name",
+                    ParamType::Text,
+                    "New playlist name",
+                )],
+                move |args| {
+                    encode_shared(&SharedAction::RenamePlaylist {
+                        id: id.clone(),
+                        before: before.clone(),
+                        after: args.text("name").unwrap_or_default().into(),
+                    })
+                },
+            )
+            .reversible(),
+        );
+        if let Ok(delete) = ActionSpec::immediate(
+            "delete",
+            "Delete playlist",
+            crate::shared::ACTION_TYPE,
+            &SharedAction::DeletePlaylist {
+                id: playlist.id.clone(),
+                observed_item_ids: state
+                    .items
+                    .iter()
+                    .filter(|item| item.playlist_id == playlist.id)
+                    .map(|item| item.id.clone())
+                    .collect(),
+            },
+        ) {
+            resource.actions.push(delete.destructive().reversible());
+        }
+        resource.actions.push(
+            ActionSpec::typed(
+                "add-item",
+                "Add media to playlist",
+                "title",
+                tilo_actions::ExecutionLocus::ClientLocal,
+                vec![
+                    ActionParam::required_owned(
+                        "id",
+                        ParamType::Text,
+                        "Globally unique stable item ID",
+                    ),
+                    ActionParam::required_owned(
+                        "media_ref",
+                        ParamType::Text,
+                        "Opaque shareable media identity; never a device path",
+                    ),
+                    ActionParam::required_owned("title", ParamType::Text, "Media title"),
+                    ActionParam::required_owned(
+                        "position",
+                        ParamType::Number,
+                        "Absolute sortable position",
+                    ),
+                ],
+                {
+                    let playlist_id = playlist.id.clone();
+                    move |args| {
+                        encode_shared(&SharedAction::AddPlaylistItem {
+                            id: args.text("id").unwrap_or_default().into(),
+                            playlist_id: playlist_id.clone(),
+                            media_ref: args.text("media_ref").unwrap_or_default().into(),
+                            title: args.text("title").unwrap_or_default().into(),
+                            position: args.number("position").unwrap_or_default() as i64,
+                        })
+                    }
+                },
+            )
+            .reversible(),
+        );
+        for item in state
+            .items
+            .iter()
+            .filter(|item| item.playlist_id == playlist.id)
+            .take(limit)
+        {
+            let mut child = Resource::new(
+                playlist_item_resource_id(&item.id),
+                "media.playlist-item",
+                item.title.clone(),
+            );
+            let id = item.id.clone();
+            let before = item.position;
+            child.actions.push(
+                ActionSpec::typed(
+                    "move",
+                    "Move playlist item",
+                    "position",
+                    tilo_actions::ExecutionLocus::ClientLocal,
+                    vec![ActionParam::required_owned(
+                        "position",
+                        ParamType::Number,
+                        "New absolute sortable position",
+                    )],
+                    move |args| {
+                        encode_shared(&SharedAction::MovePlaylistItem {
+                            id: id.clone(),
+                            before,
+                            after: args.number("position").unwrap_or(before as f64) as i64,
+                        })
+                    },
+                )
+                .reversible(),
+            );
+            if let Ok(remove) = ActionSpec::immediate(
+                "remove",
+                "Remove from playlist",
+                crate::shared::ACTION_TYPE,
+                &SharedAction::RemovePlaylistItem {
+                    id: item.id.clone(),
+                },
+            ) {
+                child.actions.push(remove.destructive().reversible());
+            }
+            resource.children.push(child);
+        }
+        playlists.children.push(resource);
+    }
+    let mut annotations = Resource::new(
+        "video-player.annotations.shared",
+        "media.annotations",
+        format!("Timestamp annotations · {}", state.annotations.len()),
+    );
+    annotations.actions.push(
+        ActionSpec::typed(
+            "create",
+            "Add timestamp annotation",
+            "text",
+            tilo_actions::ExecutionLocus::ClientLocal,
+            vec![
+                ActionParam::required_owned(
+                    "id",
+                    ParamType::Text,
+                    "Globally unique stable annotation ID",
+                ),
+                ActionParam::required_owned(
+                    "media_ref",
+                    ParamType::Text,
+                    "Opaque shareable media identity; never a device path",
+                ),
+                ActionParam::required_owned(
+                    "time_ms",
+                    ParamType::Number,
+                    "Absolute timestamp in milliseconds",
+                ),
+                ActionParam::required_owned(
+                    "text",
+                    ParamType::Text,
+                    "Annotation text; empty creates a bookmark",
+                ),
+            ],
+            |args| {
+                encode_shared(&SharedAction::CreateAnnotation {
+                    id: args.text("id").unwrap_or_default().into(),
+                    media_ref: args.text("media_ref").unwrap_or_default().into(),
+                    time_ms: args.number("time_ms").unwrap_or_default().max(0.0) as u64,
+                    text: args.text("text").unwrap_or_default().into(),
+                })
+            },
+        )
+        .reversible(),
+    );
+    for annotation in state.annotations.iter().take(limit) {
+        let label = if annotation.text.is_empty() {
+            format!("Bookmark · {}ms", annotation.time_ms)
+        } else {
+            format!("{} · {}ms", annotation.text, annotation.time_ms)
+        };
+        let mut resource = Resource::new(
+            annotation_resource_id(&annotation.id),
+            "media.annotation",
+            label,
+        );
+        if let Ok(show) = ActionSpec::operation(
+            "show",
+            "Show timestamp annotation",
+            OperationKind::View,
+            OPERATION_TYPE,
+            &PlayerOperation::RevealSharedLibrary,
+        ) {
+            resource.actions.push(show);
+        }
+        let jump = ActionSpec::typed_operation(
+            "jump",
+            "Jump to timestamp",
+            "Seek to this review marker in the matching video on this device",
+            OperationKind::View,
+            OPERATION_TYPE,
+            Vec::new(),
+            {
+                let id = annotation.id.clone();
+                let media_ref = annotation.media_ref.clone();
+                let time_ms = annotation.time_ms;
+                move |_| {
+                    encode(&PlayerOperation::JumpToAnnotation {
+                        id: id.clone(),
+                        media_ref: media_ref.clone(),
+                        time_ms,
+                    })
+                }
+            },
+        )
+        .retry_policy(RetryPolicy::AtMostOnce);
+        resource.actions.push(if !ctx.media.has_media {
+            jump.unavailable(
+                "no_media",
+                "Open the matching video before jumping to this marker",
+            )
+        } else if ctx.media.media_ref.as_deref() != Some(annotation.media_ref.as_str()) {
+            jump.unavailable(
+                "different_media",
+                "This marker belongs to a different video on this device",
+            )
+        } else if !ctx.media.can_control_transport {
+            jump.unavailable(
+                "following_host",
+                "The collaborative host controls timeline navigation",
+            )
+        } else {
+            jump
+        });
+        let id = annotation.id.clone();
+        let before = annotation.text.clone();
+        resource.actions.push(
+            ActionSpec::typed(
+                "edit",
+                "Edit annotation",
+                "text",
+                tilo_actions::ExecutionLocus::ClientLocal,
+                vec![ActionParam::required_owned(
+                    "text",
+                    ParamType::Text,
+                    "New annotation text; empty is a bookmark",
+                )],
+                move |args| {
+                    encode_shared(&SharedAction::EditAnnotation {
+                        id: id.clone(),
+                        before: before.clone(),
+                        after: args.text("text").unwrap_or_default().into(),
+                    })
+                },
+            )
+            .reversible(),
+        );
+        let id = annotation.id.clone();
+        let before_ms = annotation.time_ms;
+        resource.actions.push(
+            ActionSpec::typed(
+                "move",
+                "Move annotation",
+                "time_ms",
+                tilo_actions::ExecutionLocus::ClientLocal,
+                vec![ActionParam::required_owned(
+                    "time_ms",
+                    ParamType::Number,
+                    "New absolute timestamp in milliseconds",
+                )],
+                move |args| {
+                    encode_shared(&SharedAction::MoveAnnotation {
+                        id: id.clone(),
+                        before_ms,
+                        after_ms: args.number("time_ms").unwrap_or(before_ms as f64).max(0.0)
+                            as u64,
+                    })
+                },
+            )
+            .reversible(),
+        );
+        if let Ok(delete) = ActionSpec::immediate(
+            "delete",
+            "Delete annotation",
+            crate::shared::ACTION_TYPE,
+            &SharedAction::DeleteAnnotation {
+                id: annotation.id.clone(),
+            },
+        ) {
+            resource.actions.push(delete.destructive().reversible());
+        }
+        annotations.children.push(resource);
+    }
+    Resource::new(
+        "video-player.shared-library",
+        "media.shared-library",
+        "Shared library",
+    )
+    .with_child(playlists)
+    .with_child(annotations)
 }
 
 /// Lazily resolve one stable resource address omitted from the bounded
 /// contextual snapshot. A caller receives the exact same resource/action
 /// contract it would have received in the snapshot, and a stale stream or
 /// chapter ID simply refuses to resolve.
-pub fn resource(ctx: &PlayerResourceCtx<'_>, id: &str) -> Option<Resource> {
+pub fn resource(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit, id: &str) -> Option<Resource> {
     fn find(resources: &[Resource], id: &str) -> Option<Resource> {
         for resource in resources {
             if resource.id.0 == id {
@@ -900,8 +1366,13 @@ pub fn resource(ctx: &PlayerResourceCtx<'_>, id: &str) -> Option<Resource> {
         None
     }
 
-    let doc = AutoCommit::new();
-    if let Some(found) = find(&resources(ctx, &doc), id) {
+    if let Some(found) = find(&resources(ctx, doc), id) {
+        return Some(found);
+    }
+    if let Some(found) = find(
+        &[shared_resources(ctx, doc, crate::shared::MAX_SHARED_ROWS)],
+        id,
+    ) {
         return Some(found);
     }
     let one_track = |audio: bool, tracks: &[TrackState]| -> Option<Resource> {
@@ -920,6 +1391,7 @@ pub fn resource(ctx: &PlayerResourceCtx<'_>, id: &str) -> Option<Resource> {
             media: MediaAvailability {
                 has_media: ctx.media.has_media,
                 source_id: ctx.media.source_id.clone(),
+                media_ref: ctx.media.media_ref.clone(),
                 can_control_transport: ctx.media.can_control_transport,
             },
             settings: PlaybackSettingsState {
@@ -932,7 +1404,7 @@ pub fn resource(ctx: &PlayerResourceCtx<'_>, id: &str) -> Option<Resource> {
             chapters: &[],
             library: LocalLibraryState::default(),
         };
-        find(&resources(&isolated, &doc), id)
+        find(&resources(&isolated, doc), id)
     };
     one_track(true, ctx.audio_tracks)
         .or_else(|| one_track(false, ctx.subtitle_tracks))
@@ -948,6 +1420,7 @@ pub fn resource(ctx: &PlayerResourceCtx<'_>, id: &str) -> Option<Resource> {
                 media: MediaAvailability {
                     has_media: ctx.media.has_media,
                     source_id: ctx.media.source_id.clone(),
+                    media_ref: ctx.media.media_ref.clone(),
                     can_control_transport: ctx.media.can_control_transport,
                 },
                 settings: PlaybackSettingsState {
@@ -960,7 +1433,7 @@ pub fn resource(ctx: &PlayerResourceCtx<'_>, id: &str) -> Option<Resource> {
                 chapters: &one,
                 library: LocalLibraryState::default(),
             };
-            find(&resources(&isolated, &doc), id)
+            find(&resources(&isolated, doc), id)
         })
 }
 
@@ -982,6 +1455,7 @@ pub fn decode(type_id: &str, payload: &[u8]) -> Result<Option<PlayerOperation>, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_actions::Action;
 
     fn ctx(has_media: bool) -> PlayerResourceCtx<'static> {
         PlayerResourceCtx {
@@ -989,6 +1463,7 @@ mod tests {
             media: MediaAvailability {
                 has_media,
                 source_id: has_media.then(|| "fixture://clip".to_string()),
+                media_ref: has_media.then(|| "fixture-media://clip".to_string()),
                 can_control_transport: true,
             },
             settings: PlaybackSettingsState {
@@ -1014,10 +1489,10 @@ mod tests {
         let open = actions.iter().find(|a| a.id == "open").unwrap();
         assert_eq!(
             open.contract.execution,
-            qos_actions::ExecutionMode::Background { cancellable: false }
+            tilo_actions::ExecutionMode::Background { cancellable: false }
         );
-        assert_eq!(open.contract.result, qos_actions::ResultSpec::Job);
-        assert_eq!(open.locus, qos_actions::ExecutionLocus::ClientLocal);
+        assert_eq!(open.contract.result, tilo_actions::ResultSpec::Job);
+        assert_eq!(open.locus, tilo_actions::ExecutionLocus::ClientLocal);
         assert!(open.contract.tags.iter().any(|tag| tag == "device-local"));
         assert!(
             open.contract.tags.iter().any(|tag| tag == "sensitive-path"),
@@ -1150,7 +1625,7 @@ mod tests {
             .iter()
             .find(|action| action.id == "play")
             .unwrap();
-        assert_eq!(play.locus, qos_actions::ExecutionLocus::ClientLocal);
+        assert_eq!(play.locus, tilo_actions::ExecutionLocus::ClientLocal);
         assert_eq!(
             play.contract.execution,
             ExecutionMode::Background { cancellable: false }
@@ -1165,6 +1640,36 @@ mod tests {
         assert_eq!(
             recent.children[0].id.0,
             recent_item_resource_id("local-queue-local-media-9f3c-open-0")
+        );
+    }
+
+    #[test]
+    fn matching_shared_marker_exposes_a_canonical_timeline_jump() {
+        let mut doc = AutoCommit::new();
+        SharedAction::CreateAnnotation {
+            id: "review-cut".into(),
+            media_ref: "fixture-media://clip".into(),
+            time_ms: 12_500,
+            text: "Check the edit".into(),
+        }
+        .apply(&mut doc)
+        .expect("fixture marker writes");
+        let resource = resource(&ctx(true), &doc, &annotation_resource_id("review-cut"))
+            .expect("annotation resource resolves");
+        let jump = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "jump")
+            .expect("matching marker can jump");
+        assert!(jump.contract.availability.is_available());
+        let encoded = jump.build_json(&serde_json::Map::new()).unwrap();
+        assert_eq!(
+            decode(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(PlayerOperation::JumpToAnnotation {
+                id: "review-cut".into(),
+                media_ref: "fixture-media://clip".into(),
+                time_ms: 12_500,
+            })
         );
     }
 
@@ -1193,11 +1698,16 @@ mod tests {
             "fixture://clip",
             &format!("audio-stream-{}", CONTEXTUAL_CHILD_LIMIT + 1),
         );
-        let resolved = resource(&context, &target).expect("lazy audio resource");
+        let doc = AutoCommit::new();
+        let resolved = resource(&context, &doc, &target).expect("lazy audio resource");
         assert_eq!(resolved.id.0, target);
-        assert!(resource(&context, "video-player.tracks.audio.999").is_none());
-        let chapter = resource(&context, &chapter_resource_id("fixture://clip", "intro-夏"))
-            .expect("chapter");
+        assert!(resource(&context, &doc, "video-player.tracks.audio.999").is_none());
+        let chapter = resource(
+            &context,
+            &doc,
+            &chapter_resource_id("fixture://clip", "intro-夏"),
+        )
+        .expect("chapter");
         assert_eq!(chapter.label, "Introduction 夏 · 12.5s");
     }
 
@@ -1228,6 +1738,51 @@ mod tests {
                 expected_stream_id: Some("caption-en".into()),
                 expected_index: Some(3),
             })
+        );
+    }
+
+    #[test]
+    fn shared_entities_are_bounded_and_lazily_materialized_with_typed_actions() {
+        let mut doc = AutoCommit::new();
+        for index in 0..(CONTEXTUAL_CHILD_LIMIT + 2) {
+            SharedAction::CreatePlaylist {
+                id: format!("p-{index}"),
+                name: format!("Playlist {index}"),
+            }
+            .apply(&mut doc)
+            .unwrap();
+        }
+        let tree = resources(&ctx(false), &doc);
+        let shared = tree[0]
+            .children
+            .iter()
+            .find(|child| child.id.0 == "video-player.shared-library")
+            .unwrap();
+        let playlists = &shared.children[0];
+        assert_eq!(playlists.children.len(), CONTEXTUAL_CHILD_LIMIT);
+        assert!(
+            playlists
+                .actions
+                .iter()
+                .any(|action| { action.id == "create" && action.kind == OperationKind::Document })
+        );
+        assert!(playlists.actions.iter().any(|action| {
+            action.id == "show"
+                && action.kind == OperationKind::View
+                && action.contract.retry == RetryPolicy::Idempotent
+        }));
+        let late_id = playlist_resource_id(&format!("p-{}", CONTEXTUAL_CHILD_LIMIT + 1));
+        let late = resource(&ctx(false), &doc, &late_id).expect("lazy shared playlist");
+        assert_eq!(late.id.0, late_id);
+        assert!(
+            late.actions
+                .iter()
+                .any(|action| action.id == "rename" && action.kind == OperationKind::Document)
+        );
+        assert!(
+            late.actions
+                .iter()
+                .any(|action| action.id == "show" && action.kind == OperationKind::View)
         );
     }
 }

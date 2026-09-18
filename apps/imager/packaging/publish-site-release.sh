@@ -5,13 +5,18 @@ set -euo pipefail
 
 : "${GITHUB_SERVER_URL:?missing Forgejo server URL}"
 : "${GITHUB_REF_NAME:?missing release tag}"
-: "${QOS_SITE_GIT_TOKEN:?missing short-lived website token}"
-: "${QOS_LINUX_SIGNING_FINGERPRINT:?missing protected Linux signing fingerprint}"
+: "${TILO_SITE_GIT_TOKEN:?missing short-lived website token}"
+: "${TILO_LINUX_SIGNING_FINGERPRINT:?missing protected Linux signing fingerprint}"
+
+release_repository="${TILO_RELEASE_REPOSITORY:-tilo/releases}"
+[[ "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+  || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
+release_root="${GITHUB_SERVER_URL%/}/${release_repository}/releases"
 
 version="${GITHUB_REF_NAME#imager-v}"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
   || { printf 'release tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 2; }
-fingerprint="${QOS_LINUX_SIGNING_FINGERPRINT^^}"
+fingerprint="${TILO_LINUX_SIGNING_FINGERPRINT^^}"
 fingerprint="${fingerprint//[[:space:]]/}"
 [[ "$fingerprint" =~ ^([A-F0-9]{40}|[A-F0-9]{64})$ ]] \
   || { printf 'Linux signing fingerprint must be a full OpenPGP fingerprint\n' >&2; exit 2; }
@@ -22,14 +27,14 @@ askpass="$work/askpass.sh"
 cat >"$askpass" <<'SH'
 #!/bin/sh
 case "$1" in
-  *Username*) printf '%s' "${QOS_SITE_GIT_USER:-oauth2}" ;;
-  *) printf '%s' "$QOS_SITE_GIT_TOKEN" ;;
+  *Username*) printf '%s' "${TILO_SITE_GIT_USER:-oauth2}" ;;
+  *) printf '%s' "$TILO_SITE_GIT_TOKEN" ;;
 esac
 SH
 chmod 0700 "$askpass"
 
 GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git clone \
-  "$GITHUB_SERVER_URL/qos/website.git" "$work/site"
+  "$GITHUB_SERVER_URL/tilo/website.git" "$work/site"
 manifest="$work/site/src/data/imager-release.json"
 contract="$work/site/src/data/install-contract.json"
 test -f "$manifest"
@@ -75,22 +80,24 @@ fi
 # A transient GitHub failure stays fail-safe as "submitted" and a later rerun
 # of this idempotent promotion can advance the same release to "available".
 winget_state=submitted
-winget_manifest="$work/qOS.Imager.yaml"
-winget_url="https://raw.githubusercontent.com/microsoft/winget-pkgs/master/manifests/q/qOS/Imager/${version}/qOS.Imager.yaml"
+winget_manifest="$work/Tilo.Imager.yaml"
+winget_url="https://raw.githubusercontent.com/microsoft/winget-pkgs/master/manifests/q/Tilo/Imager/${version}/Tilo.Imager.yaml"
 winget_http="$(curl --silent --show-error --location \
     --retry 3 --retry-all-errors --retry-max-time 45 \
     --connect-timeout 10 --max-time 20 \
     --output "$winget_manifest" --write-out '%{http_code}' "$winget_url" || true)"
 if [ "$winget_http" = 200 ] \
-  && grep -Fxq 'PackageIdentifier: qOS.Imager' "$winget_manifest" \
+  && grep -Fxq 'PackageIdentifier: Tilo.Imager' "$winget_manifest" \
   && grep -Fxq "PackageVersion: $version" "$winget_manifest"; then
   winget_state=available
 fi
 
 jq --arg tag "$GITHUB_REF_NAME" --arg fingerprint "$fingerprint" \
+   --arg release_root "$release_root" \
    --arg winget_state "$winget_state" \
   '.tag = $tag
    | .published = true
+   | .releaseRoot = $release_root
    | .linuxSigningFingerprint = $fingerprint
    | .channels.homebrew = "available"
    | .channels.winget = $winget_state' \
@@ -102,13 +109,32 @@ npm --prefix "$work/site" ci
 npm --prefix "$work/site" run test:release
 npm --prefix "$work/site" run build
 
-git -C "$work/site" config user.name "qOS release automation"
-git -C "$work/site" config user.email "release-bot@qos.dev"
+# The current enabled release matrix has no macOS artifacts. A separate website
+# deployment must understand that scope before its release pointer can advance.
+# Inspect the rendered download URLs, not only a manifest the UI might ignore.
+if grep -REq 'tilo-imager-macos-[^"<>[:space:]]*\.(dmg|zip)' "$work/site/dist"; then
+  printf 'landing page advertises deferred macOS downloads; update its enabled platform matrix before promotion\n' >&2
+  exit 1
+fi
+
+# The manifest is the release-origin contract. Refuse to publish a manifest a
+# site build ignores: that would turn every attractive download action into an
+# authentication-gated or dead link even though its own tests passed.
+expected_download="$release_root/download/$GITHUB_REF_NAME/$(jq -r '.assets.windowsX64Setup' "$manifest")"
+grep -R -Fq -- "href=\"$expected_download\"" "$work/site/dist" \
+  || { printf 'landing page does not consume the public releaseRoot manifest field\n' >&2; exit 1; }
+if grep -R -Fq -- 'https://code.podesta.ai/qos/tilo/releases/download/' "$work/site/dist"; then
+  printf 'landing page still contains private-source release downloads\n' >&2
+  exit 1
+fi
+
+git -C "$work/site" config user.name "Tilo release automation"
+git -C "$work/site" config user.email "release-bot@tilo.dev"
 git -C "$work/site" add src/data/imager-release.json src/data/install-contract.json
 if git -C "$work/site" diff --cached --quiet; then
   printf 'landing page already targets %s\n' "$GITHUB_REF_NAME"
   exit 0
 fi
-git -C "$work/site" commit -m "Publish qOS Imager $version"
+git -C "$work/site" commit -m "Publish Tilo Imager $version"
 GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 \
   git -C "$work/site" push origin HEAD:main

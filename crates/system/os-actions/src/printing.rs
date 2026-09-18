@@ -2,11 +2,13 @@
 //!
 //! This is deliberately a narrow vocabulary.  Callers cannot pass command
 //! fragments: queue names and URIs are validated and are always individual
-//! argv entries.  CUPS remains the policy/driver authority; qOS does not grow
+//! argv entries.  CUPS remains the policy/driver authority; Tilo does not grow
 //! a second printer database.
 
 use crate::process::{run, run_capture};
 use std::collections::{BTreeMap, BTreeSet};
+use std::process::Command;
+use std::time::Duration;
 
 const PRINTER_ATTRIBUTES_TEST: &str = "/usr/share/cups/ipptool/get-printer-attributes.test";
 const JOBS_TEST: &str = "/usr/share/cups/ipptool/get-jobs.test";
@@ -56,6 +58,8 @@ pub struct DiscoveredPrinter {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PrintJob {
     pub id: String,
+    /// Human-facing document name reported by IPP, sanitized and bounded.
+    pub title: Option<String>,
     pub owner: String,
     pub size_bytes: u64,
     pub submitted: String,
@@ -64,6 +68,23 @@ pub struct PrintJob {
     pub state_reasons: Vec<String>,
     pub impressions_completed: Option<u32>,
     pub impressions_total: Option<u32>,
+}
+
+/// Finite document options accepted by the Print Centre. Callers cannot pass
+/// arbitrary CUPS option strings through this type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PrintSettings {
+    pub copies: u16,
+    pub two_sided: bool,
+}
+
+impl Default for PrintSettings {
+    fn default() -> Self {
+        Self {
+            copies: 1,
+            two_sided: false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,6 +115,107 @@ pub struct Scanner {
     pub description: String,
 }
 
+/// Deliberately finite scanner controls shared by Settings and Camera.  Keeping
+/// these typed prevents a UI—or a compromised app—from smuggling scanimage
+/// options through a free-form argument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScanSettings {
+    pub resolution_dpi: u16,
+    pub color: ScanColor,
+    pub source: ScanSource,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScanColor {
+    Color,
+    Grayscale,
+    LineArt,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScanSource {
+    Flatbed,
+    Feeder,
+    FeederDuplex,
+}
+
+const MAX_SCAN_BYTES: usize = 128 * 1024 * 1024;
+const MAX_SCAN_DIAGNOSTIC_BYTES: usize = 1024 * 1024;
+const SCAN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+/// Capture one page as PNG through SANE. Device identity is passed as one argv
+/// value and every option is selected from a typed finite set.
+///
+/// # Errors
+///
+/// Returns an error for an invalid device/settings combination, if the scanner
+/// process cannot start or complete, or if its output is empty or exceeds the
+/// bounded capture limit.
+pub fn scan_page(device: &str, settings: ScanSettings) -> Result<Vec<u8>, String> {
+    if device.is_empty()
+        || device.len() > 1024
+        || device.bytes().any(|byte| matches!(byte, 0 | b'\n' | b'\r'))
+    {
+        return Err("invalid scanner device identity".into());
+    }
+    if !matches!(
+        settings.resolution_dpi,
+        75 | 100 | 150 | 200 | 300 | 400 | 600
+    ) {
+        return Err("unsupported scan resolution".into());
+    }
+    let mode = match settings.color {
+        ScanColor::Color => "Color",
+        ScanColor::Grayscale => "Gray",
+        ScanColor::LineArt => "Lineart",
+    };
+    let source = match settings.source {
+        ScanSource::Flatbed => "Flatbed",
+        ScanSource::Feeder => "ADF",
+        ScanSource::FeederDuplex => "ADF Duplex",
+    };
+    let mut command = Command::new("scanimage");
+    command
+        .arg("--device-name")
+        .arg(device)
+        .arg("--format=png")
+        .arg("--resolution")
+        .arg(settings.resolution_dpi.to_string())
+        .arg("--mode")
+        .arg(mode)
+        .arg("--source")
+        .arg(source);
+    let output = bounded_command::run_prepared_with_limits(
+        command,
+        None,
+        MAX_SCAN_BYTES,
+        MAX_SCAN_DIAGNOSTIC_BYTES,
+        SCAN_TIMEOUT,
+    )
+    .map_err(|error| match error {
+        bounded_command::Error::OutputTooLarge {
+            stream: "stdout", ..
+        } => "scanner output exceeded the safety limit".to_string(),
+        bounded_command::Error::OutputTooLarge {
+            stream: "stderr", ..
+        } => "scanner diagnostics exceeded the safety limit".to_string(),
+        bounded_command::Error::Timeout(_) => "scanner timed out".to_string(),
+        _ => format!("scanner process failed: {error}"),
+    })?;
+    if !output.status.success() {
+        let diagnostic = sanitize_text(&String::from_utf8_lossy(&output.stderr), 512);
+        return Err(if diagnostic.is_empty() {
+            "scanner failed".into()
+        } else {
+            format!("scanner failed: {diagnostic}")
+        });
+    }
+    if output.stdout.is_empty() {
+        return Err("scanner returned an empty page".into());
+    }
+    Ok(output.stdout)
+}
+
 /// List CUPS print queues, enriched with live IPP telemetry where a printer answers it.
 ///
 /// # Errors
@@ -117,7 +239,10 @@ pub fn queues() -> Result<Vec<PrinterQueue>, String> {
 ///
 /// Returns an error message if `lpstat` is not installed or the command fails.
 pub fn jobs() -> Result<Vec<PrintJob>, String> {
-    let mut jobs = parse_jobs(&run_capture("lpstat", &["-o"])?);
+    // Include completed/cancelled jobs retained by CUPS: Print Centre is a
+    // recovery and audit surface, not merely a duplicate of the transient
+    // portal dialog.
+    let mut jobs = parse_jobs(&run_capture("lpstat", &["-W", "all", "-o"])?);
     let destinations: BTreeSet<String> = jobs.iter().map(|job| job.destination.clone()).collect();
     for destination in destinations {
         let Ok(output) = query_ipp(&destination, JOBS_TEST) else {
@@ -133,6 +258,7 @@ pub fn jobs() -> Result<Vec<PrintJob>, String> {
                 continue;
             };
             if let Some(details) = telemetry.get(&number) {
+                job.title.clone_from(&details.title);
                 job.state = details.state;
                 job.state_reasons.clone_from(&details.state_reasons);
                 job.impressions_completed = details.impressions_completed;
@@ -153,7 +279,7 @@ fn query_ipp(queue: &str, test: &str) -> Result<String, String> {
 }
 
 /// Discover only driverless IPP devices.  `driverless` delegates DNS-SD and
-/// IPP capability probing to cups-filters and therefore avoids a qOS-specific
+/// IPP capability probing to cups-filters and therefore avoids a Tilo-specific
 /// discovery stack or legacy PPD downloads.
 ///
 /// # Errors
@@ -239,6 +365,40 @@ pub fn cancel_job(id: &str) -> Result<(), String> {
 pub fn retry_job(id: &str) -> Result<(), String> {
     validate_job_id(id)?;
     run("lp", &["-i", id, "-H", "restart"])
+}
+
+/// Submit one portal-authorized local document to a named queue.
+///
+/// # Errors
+///
+/// Returns an error if the queue, file, or bounded settings are invalid, or
+/// if CUPS cannot accept the document.
+pub fn print_document(
+    queue: &str,
+    path: &std::path::Path,
+    settings: PrintSettings,
+) -> Result<(), String> {
+    let queue = queue_name(queue)?;
+    if !(1..=99).contains(&settings.copies) {
+        return Err("copies must be between 1 and 99".into());
+    }
+    let metadata = std::fs::metadata(path).map_err(|_| "document is no longer available")?;
+    if !metadata.is_file() {
+        return Err("selected document is not a regular file".into());
+    }
+    if metadata.len() > 2 * 1024 * 1024 * 1024 {
+        return Err("selected document is too large to print".into());
+    }
+    let path = path
+        .to_str()
+        .ok_or_else(|| "selected document name is not supported".to_string())?;
+    let copies = settings.copies.to_string();
+    let mut args = vec!["-d", queue.as_str(), "-n", copies.as_str()];
+    if settings.two_sided {
+        args.extend(["-o", "sides=two-sided-long-edge"]);
+    }
+    args.extend(["--", path]);
+    run("lp", &args)
 }
 
 /// List SANE scanners via `scanimage -L`.
@@ -339,6 +499,7 @@ pub fn parse_jobs(text: &str) -> Vec<PrintJob> {
             Some(PrintJob {
                 destination: id.rsplit_once('-')?.0.to_string(),
                 id: id.to_string(),
+                title: None,
                 owner: sanitize_text(owner, 80),
                 size_bytes: size,
                 submitted: sanitize_text(&p.collect::<Vec<_>>().join(" "), 120),
@@ -427,6 +588,7 @@ pub fn parse_ipp_printer_attributes(text: &str) -> PrinterTelemetry {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IppJobTelemetry {
+    pub title: Option<String>,
     pub state: Option<JobState>,
     pub state_reasons: Vec<String>,
     pub impressions_completed: Option<u32>,
@@ -445,7 +607,10 @@ pub fn parse_ipp_jobs(text: &str) -> BTreeMap<u32, IppJobTelemetry> {
         let Some(job) = current.and_then(|id| jobs.get_mut(&id)) else {
             continue;
         };
-        if let Some(value) = attribute(line, "job-state") {
+        if let Some(value) = attribute(line, "job-name") {
+            let title = sanitize_text(value.trim_matches('"'), 160);
+            job.title = (!title.is_empty()).then_some(title);
+        } else if let Some(value) = attribute(line, "job-state") {
             let value = value
                 .split_whitespace()
                 .next()
@@ -548,6 +713,28 @@ mod tests {
         assert!(validate_job_id("Office-42").is_ok());
         assert!(validate_job_id("Office;shutdown-42").is_err());
         assert_eq!(queue_name("Office Laser").unwrap(), "Office_Laser");
+        let invalid = ScanSettings {
+            resolution_dpi: 301,
+            color: ScanColor::Color,
+            source: ScanSource::Flatbed,
+        };
+        assert!(scan_page("scanner", invalid).is_err());
+        let valid = ScanSettings {
+            resolution_dpi: 300,
+            ..invalid
+        };
+        assert!(scan_page("scanner\n--batch", valid).is_err());
+        assert!(
+            print_document(
+                "Office",
+                std::path::Path::new("/does/not/matter"),
+                PrintSettings {
+                    copies: 0,
+                    two_sided: false,
+                },
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -563,8 +750,9 @@ mod tests {
         assert_eq!(telemetry.state_reasons, ["media-low"]);
 
         let jobs = parse_ipp_jobs(
-            " job-id (integer) = 42\n job-state (enum) = processing\n job-state-reasons (1setOf keyword) = job-printing\n job-impressions-completed (integer) = 3\n job-impressions (integer) = 12\n",
+            " job-id (integer) = 42\n job-name (nameWithoutLanguage) = \"Travel itinerary.pdf\"\n job-state (enum) = processing\n job-state-reasons (1setOf keyword) = job-printing\n job-impressions-completed (integer) = 3\n job-impressions (integer) = 12\n",
         );
+        assert_eq!(jobs[&42].title.as_deref(), Some("Travel itinerary.pdf"));
         assert_eq!(jobs[&42].state, Some(JobState::Processing));
         assert_eq!(jobs[&42].impressions_completed, Some(3));
         assert_eq!(jobs[&42].impressions_total, Some(12));

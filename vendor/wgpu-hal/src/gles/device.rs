@@ -7,9 +7,9 @@ use arrayvec::ArrayVec;
 use glow::HasContext;
 use naga::FastHashMap;
 
-use super::{conv, lock, MaybeMutex, PrivateCapabilities};
-use crate::auxil::map_naga_stage;
+use super::{MaybeMutex, PrivateCapabilities, conv, lock};
 use crate::TlasInstance;
+use crate::auxil::map_naga_stage;
 
 type ShaderStage<'a> = (
     naga::ShaderStage,
@@ -174,7 +174,14 @@ impl super::Device {
         gl: &glow::Context,
         shader: &str,
         naga_stage: naga::ShaderStage,
-        #[cfg_attr(target_arch = "wasm32", allow(unused))] label: Option<&str>,
+        #[cfg_attr(
+            target_arch = "wasm32",
+            allow(
+                unused,
+                reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+            )
+        )]
+        label: Option<&str>,
     ) -> Result<glow::Shader, crate::PipelineError> {
         let target = match naga_stage {
             naga::ShaderStage::Vertex => glow::VERTEX_SHADER,
@@ -317,7 +324,14 @@ impl super::Device {
         gl: &glow::Context,
         shaders: ArrayVec<ShaderStage<'a>, { crate::MAX_CONCURRENT_SHADER_STAGES }>,
         layout: &super::PipelineLayout,
-        #[cfg_attr(target_arch = "wasm32", allow(unused))] label: Option<&str>,
+        #[cfg_attr(
+            target_arch = "wasm32",
+            allow(
+                unused,
+                reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+            )
+        )]
+        label: Option<&str>,
         multiview_mask: Option<NonZeroU32>,
     ) -> Result<Arc<super::PipelineInner>, crate::PipelineError> {
         let mut program_stages = ArrayVec::new();
@@ -379,7 +393,14 @@ impl super::Device {
         gl: &glow::Context,
         shaders: ArrayVec<ShaderStage<'a>, { crate::MAX_CONCURRENT_SHADER_STAGES }>,
         layout: &super::PipelineLayout,
-        #[cfg_attr(target_arch = "wasm32", allow(unused))] label: Option<&str>,
+        #[cfg_attr(
+            target_arch = "wasm32",
+            allow(
+                unused,
+                reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+            )
+        )]
+        label: Option<&str>,
         multiview_mask: Option<NonZeroU32>,
         glsl_version: naga::back::glsl::Version,
         private_caps: PrivateCapabilities,
@@ -1306,8 +1327,10 @@ impl crate::Device for super::Device {
                 wgt::BindingType::Texture { view_dimension, .. } => {
                     let view = desc.textures[entry.resource_index as usize].view;
                     if view.array_layers.start != 0 {
-                        log::error!("Unable to create a sampled texture binding for non-zero array layer.\n{}",
-                            "This is an implementation problem of wgpu-hal/gles backend.")
+                        log::error!(
+                            "Unable to create a sampled texture binding for non-zero array layer.\n{}",
+                            "This is an implementation problem of wgpu-hal/gles backend."
+                        )
                     }
                     let (raw, target) = view.inner.as_native();
 
@@ -1534,7 +1557,13 @@ impl crate::Device for super::Device {
     }
     unsafe fn destroy_pipeline_cache(&self, _: super::PipelineCache) {}
 
-    #[cfg_attr(target_arch = "wasm32", allow(unused))]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        allow(
+            unused,
+            reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+        )
+    )]
     unsafe fn create_query_set(
         &self,
         desc: &wgt::QuerySetDescriptor<crate::Label>,
@@ -1590,7 +1619,13 @@ impl crate::Device for super::Device {
         &self,
         fence: &super::Fence,
     ) -> Result<crate::FenceValue, crate::DeviceError> {
-        #[cfg_attr(target_arch = "wasm32", allow(clippy::needless_borrow))]
+        #[cfg_attr(
+            target_arch = "wasm32",
+            allow(
+                clippy::needless_borrow,
+                reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+            )
+        )]
         Ok(fence.get_latest(&self.shared.context.lock()))
     }
     unsafe fn wait(
@@ -1624,7 +1659,10 @@ impl crate::Device for super::Device {
             self.render_doc
                 .start_frame_capture(self.shared.context.raw_context(), ptr::null_mut())
         };
-        #[allow(unreachable_code)]
+        #[allow(
+            unreachable_code,
+            reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+        )]
         false
     }
     unsafe fn stop_graphics_debugger_capture(&self) {

@@ -18,6 +18,8 @@ mod cmd_k_palette;
 mod e2e_smoke;
 #[path = "interaction_event_path.rs"]
 mod interaction_event_path;
+#[path = "launch_cli.rs"]
+mod launch_cli;
 #[path = "main_panel_scroll.rs"]
 mod main_panel_scroll;
 #[path = "markdown_marks_roundtrip.rs"]

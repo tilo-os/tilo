@@ -47,9 +47,9 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Role};
 use ui::icons::{self, Icon};
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{ActionSpec, OperationKind, Resource, RetryPolicy};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tilo_actions::{ActionSpec, OperationKind, Resource, RetryPolicy};
 use ui::widget::Widget;
 
 use crate::futo::FutoSwipeModel;
@@ -2146,7 +2146,7 @@ mod tests {
 
     #[test]
     fn switching_purpose_then_back_registers_layouts_on_demand() {
-        // qOS only preloads qwerty/azerty/symbols; the specialised layouts must
+        // Tilo only preloads qwerty/azerty/symbols; the specialised layouts must
         // be registered the first time a purpose needs them.
         let mut osk = OskWidget::new();
         osk.set_purpose(InputPurpose::Email);
@@ -2550,7 +2550,7 @@ mod tests {
         // The compositor recognises the keyboard by this exact app-id to keep
         // it out of the tile layout and own its visibility. If this drifts, the
         // keyboard would be treated as an ordinary window — so pin the value.
-        assert_eq!(crate::KEYBOARD_APP_ID, "dev.qos.osk");
+        assert_eq!(crate::KEYBOARD_APP_ID, "dev.tilo.osk");
     }
 
     #[test]

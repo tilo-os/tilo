@@ -2,17 +2,17 @@
 //!
 //! Capture is **`GStreamer`**: `autovideosrc` for the webcam and `pipewiresrc`
 //! for a portal `ScreenCast` node — both yield tightly-packed RGBA frames. The
-//! frames feed the **shared qOS video-streaming stack** ([`qos_callstream`]):
+//! frames feed the **shared Tilo video-streaming stack** ([`tilo_callstream`]):
 //! encode, per-share framing/transport, and decode all live there, so the
 //! call app reuses the exact same H.264 codec + wire format the compositor's
 //! collab surface streaming uses instead of a second in-app codec. This
 //! module is compiled only under `live-media`.
 //!
 //! Capture needs a device (camera) or a live portal (screen), so those
-//! pipelines return `None` when absent and the call falls back to the honest
+//! pipelines return `None` when absent and the call falls back to the
 //! "camera off" / "connecting" placeholder. The codec itself is device-free
-//! and is exercised by a real encode→transport→decode round-trip test against
-//! [`qos_callstream`].
+//! and is exercised by an encode→transport→decode round-trip test against
+//! [`tilo_callstream`].
 
 use gstreamer as gst;
 use gstreamer::prelude::*;
@@ -94,7 +94,7 @@ impl Drop for CameraCapture {
 /// Portal `ScreenCast` `PipeWire` node → RGBA frames. `None` when the `pipewiresrc`
 /// element is unavailable or the node can't be opened. `node_id` comes from
 /// [`crate::media::request_screencast`]. The captured RGBA is handed to a
-/// [`qos_callstream::VideoStreamSender`] for encode + framing — the source
+/// [`tilo_callstream::VideoStreamSender`] for encode + framing — the source
 /// selection stays the xdg `ScreenCast` portal, the encode + transport reuse the
 /// shared stack.
 pub struct ScreenCapture {
@@ -144,8 +144,8 @@ impl Drop for ScreenCapture {
 #[cfg(test)]
 mod tests {
     use crate::media::{MediaObject, TrackKind};
-    use qos_callstream::{VideoStreamReceiver, VideoStreamSender};
     use std::time::{Duration, Instant};
+    use tilo_callstream::{VideoStreamReceiver, VideoStreamSender};
 
     fn gradient(width: u32, height: u32) -> Vec<u8> {
         let mut out = Vec::with_capacity((width * height * 4) as usize);

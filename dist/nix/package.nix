@@ -19,7 +19,6 @@
 , mesa
 , pipewire
 , dbus
-, openssl
 , fontconfig
 , freetype
 , harfbuzz
@@ -28,7 +27,7 @@
 }:
 
 rustPlatform.buildRustPackage rec {
-  pname = "qos-session";
+  pname = "tilo-session";
   version = lib.removeSuffix "\n" (builtins.readFile ../VERSION);
   src = lib.cleanSourceWith {
     src = ../..;
@@ -40,11 +39,11 @@ rustPlatform.buildRustPackage rec {
   cargoLock.lockFile = ../../Cargo.lock;
   cargoBuildFlags = [
     "-p" "launcher"
-    "-p" "qos-unlock-helper"
+    "-p" "tilo-unlock-helper"
     "-p" "shell"
     "-p" "imager"
-    "--bin" "qos-launcher"
-    "--bin" "qos-unlock-helper"
+    "--bin" "tilo-launcher"
+    "--bin" "tilo-unlock-helper"
     "--bin" "shell"
     "--bin" "imager"
     "--no-default-features"
@@ -62,7 +61,7 @@ rustPlatform.buildRustPackage rec {
   nativeBuildInputs = [ pkg-config cmake clang capnproto makeWrapper ];
   buildInputs = [
     libxkbcommon wayland seatd libinput systemd libdrm mesa pipewire dbus
-    openssl fontconfig freetype harfbuzz fuse3
+    fontconfig freetype harfbuzz fuse3
     gst_all_1.gstreamer gst_all_1.gst-plugins-base
   ];
   # Bindgen executes on the build machine even when the package's host
@@ -71,40 +70,45 @@ rustPlatform.buildRustPackage rec {
   # The FHS packages use /usr/libexec. Nix must seal the immutable store path
   # into the compositor or locking the session could never invoke PAM.
   preBuild = ''
-    export QOS_DESKTOP_TRUSTED_SHELL_PATH="$out/bin/.qos-shell-wrapped"
-    export QOS_UNLOCK_HELPER_PATH="$out/libexec/qos-unlock-helper"
+    export QOS_DESKTOP_TRUSTED_SHELL_PATH="$out/bin/.tilo-shell-wrapped"
+    export TILO_UNLOCK_HELPER_PATH="$out/libexec/tilo-unlock-helper"
   '';
 
   installPhase = ''
     runHook preInstall
     shell_bin=$(find target -type f -path '*/release/shell' -perm -0100 -print -quit)
     test -n "$shell_bin"
-    "$src/dist/stage-payload.sh" "$(dirname "$shell_bin")" "$TMPDIR/qos-payload"
-    p="$TMPDIR/qos-payload"
-    install -Dm755 "$p/bin/qos-import-folders" "$out/bin/qos-import-folders"
-    install -Dm644 "$p/applications/qos-import-folders.desktop" "$out/share/applications/qos-import-folders.desktop"
-    substituteInPlace "$out/share/applications/qos-import-folders.desktop" --replace-fail "/usr/bin/qos-import-folders" "$out/bin/qos-import-folders"
-    install -Dm755 "$p/bin/qos-shell" "$out/bin/qos-shell"
-    install -Dm755 "$p/bin/qos-launcher" "$out/bin/qos-launcher"
-    install -Dm755 "$p/libexec/qos-unlock-helper" "$out/libexec/qos-unlock-helper"
-    install -Dm755 "$p/libexec/qos-session" "$out/libexec/qos-session"
-    install -Dm644 "$p/pam/qos-unlock" "$out/etc/pam.d/qos-unlock"
-    install -Dm644 "$p/wayland-sessions/qos.desktop" "$out/share/wayland-sessions/qos.desktop"
-    install -Dm644 "$p/portal/qos.portal" "$out/share/xdg-desktop-portal/portals/qos.portal"
-    install -Dm644 "$p/portal/nirios-portals.conf" "$out/share/xdg-desktop-portal/nirios-portals.conf"
-    install -Dm644 "$p/systemd-user/qos-graphical-session.target" "$out/share/systemd/user/qos-graphical-session.target"
-    install -Dm644 "$p/license/LICENSE" "$out/share/licenses/qos-session/LICENSE"
+    "$src/dist/stage-payload.sh" "$(dirname "$shell_bin")" "$TMPDIR/tilo-payload"
+    p="$TMPDIR/tilo-payload"
+    install -Dm755 "$p/bin/tilo-shell" "$out/bin/tilo-shell"
+    install -Dm755 "$p/bin/tilo-launcher" "$out/bin/tilo-launcher"
+    install -Dm755 "$p/libexec/tilo-unlock-helper" "$out/libexec/tilo-unlock-helper"
+    install -Dm755 "$p/libexec/tilo-session" "$out/libexec/tilo-session"
+    install -Dm755 "$p/libexec/tilo-session-runner" "$out/libexec/tilo-session-runner"
+    install -Dm755 "$p/libexec/tilo-flight-recorder" "$out/libexec/tilo-flight-recorder"
+    install -Dm644 "$p/pam/tilo-unlock" "$out/etc/pam.d/tilo-unlock"
+    install -Dm644 "$p/wayland-sessions/tilo.desktop" "$out/share/wayland-sessions/tilo.desktop"
+    install -Dm644 "$p/portal/tilo.portal" "$out/share/xdg-desktop-portal/portals/tilo.portal"
+    install -Dm644 "$p/portal/tilo-portals.conf" "$out/share/xdg-desktop-portal/tilo-portals.conf"
+    install -Dm644 "$p/systemd-user/tilo-graphical-session.target" "$out/share/systemd/user/tilo-graphical-session.target"
+    install -Dm644 "$p/license/LICENSE" "$out/share/licenses/tilo-session/LICENSE"
+    install -Dm755 "$p/bin/tilo-import-folders" "$out/bin/tilo-import-folders"
+    install -Dm644 "$p/applications/tilo-import-folders.desktop" "$out/share/applications/tilo-import-folders.desktop"
+    substituteInPlace "$out/share/applications/tilo-import-folders.desktop" --replace-fail "/usr/bin/tilo-import-folders" "$out/bin/tilo-import-folders"
 
     # Store paths replace FHS paths in the wrapper and session entry.
-    substituteInPlace "$out/libexec/qos-session" \
-      --replace-fail 'QOS_SHELL=/usr/bin/qos-shell' "QOS_SHELL=$out/bin/qos-shell" \
+    substituteInPlace "$out/libexec/tilo-session" \
+      --replace-fail 'TILO_SHELL=/usr/bin/tilo-shell' "TILO_SHELL=$out/bin/tilo-shell" \
+      --replace-fail 'SESSION_RUNNER=/usr/libexec/tilo-session-runner' "SESSION_RUNNER=$out/libexec/tilo-session-runner"
+    substituteInPlace "$out/libexec/tilo-session-runner" \
       --replace-fail 'SYSTEMCTL=/usr/bin/systemctl' "SYSTEMCTL=${systemd}/bin/systemctl" \
       --replace-fail 'SYSTEMD_CAT=/usr/bin/systemd-cat' "SYSTEMD_CAT=${systemd}/bin/systemd-cat" \
-      --replace-fail 'DBUS_UPDATE=/usr/bin/dbus-update-activation-environment' "DBUS_UPDATE=${dbus}/bin/dbus-update-activation-environment"
-    substituteInPlace "$out/share/wayland-sessions/qos.desktop" \
-      --replace-fail 'Exec=/usr/libexec/qos-session' "Exec=$out/libexec/qos-session" \
-      --replace-fail 'TryExec=/usr/bin/qos-shell' "TryExec=$out/bin/qos-shell"
-    grep -a -F "$out/libexec/qos-unlock-helper" "$out/bin/qos-shell"
+      --replace-fail 'DBUS_UPDATE=/usr/bin/dbus-update-activation-environment' "DBUS_UPDATE=${dbus}/bin/dbus-update-activation-environment" \
+      --replace-fail 'FLIGHT_RECORDER=/usr/libexec/tilo-flight-recorder' "FLIGHT_RECORDER=$out/libexec/tilo-flight-recorder"
+    substituteInPlace "$out/share/wayland-sessions/tilo.desktop" \
+      --replace-fail 'Exec=/usr/libexec/tilo-session' "Exec=$out/libexec/tilo-session" \
+      --replace-fail 'TryExec=/usr/bin/tilo-shell' "TryExec=$out/bin/tilo-shell"
+    grep -a -F "$out/libexec/tilo-unlock-helper" "$out/bin/tilo-shell"
     runHook postInstall
   '';
 
@@ -112,23 +116,23 @@ rustPlatform.buildRustPackage rec {
     # A NixOS session has no FHS-wide PATH or ldconfig cache. Seal the runtime
     # tools and PAM library into wrappers so both direct package installs and
     # the NixOS module produce a usable session.
-    wrapProgram "$out/bin/qos-shell" \
+    wrapProgram "$out/bin/tilo-shell" \
       --prefix PATH : ${lib.makeBinPath [ bubblewrap xdg-dbus-proxy xwayland-satellite ]}
-    wrapProgram "$out/bin/qos-launcher" \
+    wrapProgram "$out/bin/tilo-launcher" \
       --prefix PATH : ${lib.makeBinPath [ bubblewrap xdg-dbus-proxy ]}
-    wrapProgram "$out/libexec/qos-unlock-helper" \
-      --set QOS_PAM_LIB ${lib.getLib pam}/lib/libpam.so.0
-    grep -F '${bubblewrap}/bin' "$out/bin/qos-shell"
-    grep -F '${xwayland-satellite}/bin' "$out/bin/qos-shell"
-    grep -F '${xdg-dbus-proxy}/bin' "$out/bin/qos-launcher"
-    grep -F '${lib.getLib pam}/lib/libpam.so.0' "$out/libexec/qos-unlock-helper"
+    wrapProgram "$out/libexec/tilo-unlock-helper" \
+      --set TILO_PAM_LIB ${lib.getLib pam}/lib/libpam.so.0
+    grep -F '${bubblewrap}/bin' "$out/bin/tilo-shell"
+    grep -F '${xwayland-satellite}/bin' "$out/bin/tilo-shell"
+    grep -F '${xdg-dbus-proxy}/bin' "$out/bin/tilo-launcher"
+    grep -F '${lib.getLib pam}/lib/libpam.so.0' "$out/libexec/tilo-unlock-helper"
   '';
 
   meta = {
-    description = "qOS collaborative compositor as a Wayland session";
-    homepage = "https://code.podesta.ai/qos/qos";
+    description = "Tilo collaborative compositor as a Wayland session";
+    homepage = "https://code.podesta.ai/tilo/tilo";
     license = lib.licenses.agpl3Only;
     platforms = [ "x86_64-linux" "aarch64-linux" ];
-    mainProgram = "qos-shell";
+    mainProgram = "tilo-shell";
   };
 }

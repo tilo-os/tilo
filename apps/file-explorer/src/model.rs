@@ -1,17 +1,18 @@
+use crate::filesystem_metadata as xattr;
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::path::{Path, PathBuf};
 
-/// The qOS collaborative FUSE mount. Per `fs.service` the daemon mounts
+/// The Tilo collaborative FUSE mount. Per `fs.service` the daemon mounts
 /// at `/var/workspace` (the older `/workspace` was a bug in this app).
 pub const WORKSPACE_ROOT: &str = "/var/workspace";
 
-/// The extended-attribute the qOS FUSE driver answers with an entry's sync
+/// The extended-attribute the Tilo FUSE driver answers with an entry's sync
 /// state. Kept in lock-step with `fs::SYNC_XATTR`.
-pub const SYNC_XATTR: &str = "user.qos.sync";
+pub const SYNC_XATTR: &str = "user.tilo.sync";
 
-/// The qOS FUSE **sync / hydration state** of an entry, read live from the
+/// The Tilo FUSE **sync / hydration state** of an entry, read live from the
 /// driver via the [`SYNC_XATTR`] extended attribute. The collaborative FS
 /// projects a peer's file metadata immediately but only hydrates the bytes on
 /// first read, so a workspace file is one of:
@@ -42,10 +43,10 @@ impl SyncState {
     }
 }
 
-/// Read the qOS sync state of `path` from its [`SYNC_XATTR`] extended attribute.
+/// Read the Tilo sync state of `path` from its [`SYNC_XATTR`] extended attribute.
 /// `None` when the attribute is absent (an ordinary file, off any workspace
 /// mount) or unreadable. This is a single `getxattr` — the same call
-/// `getfattr -n user.qos.sync <path>` makes.
+/// `getfattr -n user.tilo.sync <path>` makes.
 pub fn read_sync_state(path: &Path) -> Option<SyncState> {
     match xattr::get(path, SYNC_XATTR) {
         Ok(Some(bytes)) => SyncState::from_xattr(&bytes),
@@ -53,37 +54,37 @@ pub fn read_sync_state(path: &Path) -> Option<SyncState> {
     }
 }
 
-/// The extended attribute the qOS FUSE driver answers with a file's **thumbnail**
+/// The extended attribute the Tilo FUSE driver answers with a file's **thumbnail**
 /// (a small PNG the host generates as metadata, ahead of / independent of the
 /// content). Kept in lock-step with `fs::THUMB_XATTR`.
-pub const THUMB_XATTR: &str = "user.qos.thumb";
+pub const THUMB_XATTR: &str = "user.tilo.thumb";
 
-/// Raw 32-byte content/manifest identity exposed by the qOS FUSE driver.
+/// Raw 32-byte content/manifest identity exposed by the Tilo FUSE driver.
 /// Using this instead of `(path, mtime, size)` makes preview cache entries
 /// survive renames and deduplicate identical content across folders and peers.
-pub const CONTENT_HASH_XATTR: &str = "user.qos.content-hash";
+pub const CONTENT_HASH_XATTR: &str = "user.tilo.content-hash";
 
 /// Raw 16-byte stable collaborative-record UUID.
-pub const RECORD_ID_XATTR: &str = "user.qos.record-id";
-pub const METADATA_XATTR: &str = "user.qos.metadata";
+pub const RECORD_ID_XATTR: &str = "user.tilo.record-id";
+pub const METADATA_XATTR: &str = "user.tilo.metadata";
 pub const MAX_METADATA_XATTR_BYTES: usize = 2_048;
-pub const RECORD_INDEX_XATTR: &str = "user.qos.record-index";
-pub const RECORD_INDEX_V2_XATTR: &str = "user.qos.record-index.v2";
-pub const RECORD_INDEX_V3_XATTR: &str = "user.qos.record-index.v3";
-pub const RECORD_INDEX_BY_ID_XATTR_PREFIX: &str = "user.qos.record-index.by-id.";
+pub const RECORD_INDEX_XATTR: &str = "user.tilo.record-index";
+pub const RECORD_INDEX_V2_XATTR: &str = "user.tilo.record-index.v2";
+pub const RECORD_INDEX_V3_XATTR: &str = "user.tilo.record-index.v3";
+pub const RECORD_INDEX_BY_ID_XATTR_PREFIX: &str = "user.tilo.record-index.by-id.";
 pub const MAX_RECORD_INDEX_XATTR_BYTES: usize = 60 * 1024;
 pub const MAX_RECORD_INDEX_ENTRIES: usize = 256;
 const RECORD_INDEX_V2_VERSION: u16 = 2;
 // Must match the mount authority's portable, single-xattr page contract.
 const RECORD_INDEX_PAGE_ENTRIES: usize = 32;
 const MAX_RECORD_INDEX_PAGE_BYTES: usize = 48 * 1024;
-pub const AVAILABILITY_XATTR: &str = "user.qos.availability";
-pub const AVAILABILITY_CONTROL_XATTR: &str = "user.qos.availability-control";
-pub const PIN_XATTR: &str = "user.qos.pin";
-pub const SHARE_XATTR: &str = "user.qos.share";
-pub const SHARE_CONTROL_XATTR: &str = "user.qos.share-control";
-pub const HISTORY_XATTR: &str = "user.qos.history";
-pub const HISTORY_CONTROL_XATTR: &str = "user.qos.history-control";
+pub const AVAILABILITY_XATTR: &str = "user.tilo.availability";
+pub const AVAILABILITY_CONTROL_XATTR: &str = "user.tilo.availability-control";
+pub const PIN_XATTR: &str = "user.tilo.pin";
+pub const SHARE_XATTR: &str = "user.tilo.share";
+pub const SHARE_CONTROL_XATTR: &str = "user.tilo.share-control";
+pub const HISTORY_XATTR: &str = "user.tilo.history";
+pub const HISTORY_CONTROL_XATTR: &str = "user.tilo.history-control";
 
 /// Fetch a bounded immutable version preview from the collaborative
 /// filesystem. Binary/invalid UTF-8 versions intentionally return `None`.
@@ -701,10 +702,9 @@ fn has_record_index(root: &Path) -> bool {
 }
 
 fn root_generation(root: &Path) -> String {
-    use std::os::unix::ffi::OsStrExt as _;
     let mut hasher = Sha256::new();
-    hasher.update(b"qos.files.record-index-root-generation.v2\\0");
-    let root_bytes = root.as_os_str().as_bytes();
+    hasher.update(b"tilo.files.record-index-root-generation.v2\\0");
+    let root_bytes = root.as_os_str().as_encoded_bytes();
     hasher.update((root_bytes.len() as u64).to_be_bytes());
     hasher.update(root_bytes);
     // ACL mounts intentionally expose a stable opaque manifest. Do not hash
@@ -898,7 +898,7 @@ impl WorkspaceRecordIndexPager {
         // Each configured workspace root is an authority mount. We do not
         // infer child mounts by directory enumeration: doing so makes an exact
         // record UUID impossible to reopen without a hidden tail scan. Shared
-        // mounts must therefore be listed directly in `QOS_WORKSPACE_ROOTS`.
+        // mounts must therefore be listed directly in `TILO_WORKSPACE_ROOTS`.
         while let Some(root) = self.discovery_sources.pop_front() {
             if has_record_index(&root) {
                 self.roots.push(root);
@@ -1203,13 +1203,13 @@ pub fn read_thumb_xattr(path: &Path) -> Option<Vec<u8>> {
     }
 }
 
-/// The qOS workspace roots the FUSE driver mounts (first-class sidebar
+/// The Tilo workspace roots the FUSE driver mounts (first-class sidebar
 /// locations, and the dirs whose entries carry sync state). Normally just
-/// [`WORKSPACE_ROOT`]; `QOS_WORKSPACE_ROOTS` (colon-separated) overrides it for
+/// [`WORKSPACE_ROOT`]; `TILO_WORKSPACE_ROOTS` (a native path list) overrides it for
 /// tests and alternate mounts. This navigable list includes the user's Shared
 /// place even when received shares are separate authority mounts.
 pub fn workspace_roots() -> Vec<PathBuf> {
-    if let Ok(v) = std::env::var("QOS_WORKSPACE_ROOTS") {
+    if let Some(v) = std::env::var_os("TILO_WORKSPACE_ROOTS") {
         return parse_workspace_roots(&v);
     }
     let p = PathBuf::from(WORKSPACE_ROOT);
@@ -1227,25 +1227,25 @@ pub fn workspace_roots() -> Vec<PathBuf> {
 /// record opens. Received-share discovery requires a dedicated subscription
 /// index and is intentionally not inferred by walking `~/Shared`.
 pub fn workspace_record_authority_roots() -> Vec<PathBuf> {
-    if let Ok(value) = std::env::var("QOS_WORKSPACE_ROOTS") {
+    if let Some(value) = std::env::var_os("TILO_WORKSPACE_ROOTS") {
         return parse_workspace_roots(&value);
     }
     let root = PathBuf::from(WORKSPACE_ROOT);
     root.exists().then_some(root).into_iter().collect()
 }
 
-/// Parse a `QOS_WORKSPACE_ROOTS` value (colon-separated) into the roots that
+/// Parse a `TILO_WORKSPACE_ROOTS` value (colon-separated on Unix, semicolon-
+/// separated on Windows) into the roots that
 /// currently exist. Split out so the parsing is unit-testable without touching
 /// the process environment.
-fn parse_workspace_roots(val: &str) -> Vec<PathBuf> {
-    val.split(':')
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
+fn parse_workspace_roots(val: &std::ffi::OsStr) -> Vec<PathBuf> {
+    std::env::split_paths(val)
+        .filter(|path| !path.as_os_str().is_empty())
         .filter(|p| p.exists())
         .collect()
 }
 
-/// Whether `path` sits inside a qOS workspace root (so its entries carry sync
+/// Whether `path` sits inside a Tilo workspace root (so its entries carry sync
 /// state and should be queried for the [`SYNC_XATTR`]).
 pub fn is_workspace_path(path: &Path) -> bool {
     #[cfg(test)]
@@ -1314,7 +1314,7 @@ pub struct Entry {
     pub size: u64,
     pub modified: Option<DateTime<Local>>,
     pub mime: String,
-    /// The qOS FUSE sync state, when this entry is on a workspace mount.
+    /// The Tilo FUSE sync state, when this entry is on a workspace mount.
     pub sync_state: Option<SyncState>,
     /// Stable content identity supplied by the collaborative mount. Ordinary
     /// local files have `None` and retain the path/mtime/size fallback key.
@@ -1436,7 +1436,7 @@ pub(crate) fn read_dir_with_workspace_roots(
 
 /// The listing body, with the workspace-gating decision passed in (so tests can
 /// exercise the sync-state population path without mutating the global
-/// `QOS_WORKSPACE_ROOTS` env). Standalone callers use [`read_dir_sync`];
+/// `TILO_WORKSPACE_ROOTS` env). Standalone callers use [`read_dir_sync`];
 /// injected views supply workspace roots explicitly.
 fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String> {
     #[cfg(test)]
@@ -1529,9 +1529,9 @@ pub fn initial_path() -> PathBuf {
     if let Some(root) = workspace_roots().into_iter().next() {
         return root;
     }
-    // `/workspace` predates `QOS_WORKSPACE_ROOTS`; retain it only when no
+    // `/workspace` predates `TILO_WORKSPACE_ROOTS`; retain it only when no
     // override was supplied, so old installations keep their start location.
-    if std::env::var_os("QOS_WORKSPACE_ROOTS").is_none() {
+    if std::env::var_os("TILO_WORKSPACE_ROOTS").is_none() {
         let legacy = PathBuf::from("/workspace");
         if legacy.exists() {
             return legacy;
@@ -1546,7 +1546,7 @@ pub fn initial_path() -> PathBuf {
 /// The user's home, which under a sandbox is *not* this process's `HOME`
 /// — that is the app's own per-package directory, and opening a file
 /// manager on it shows a folder with none of the user's files in it.
-/// `QOS_USER_HOME` is present only when a grant actually bound the real
+/// `TILO_USER_HOME` is present only when a grant actually bound the real
 /// home, so preferring it can never point at a directory this process
 /// cannot read.
 ///
@@ -1555,7 +1555,7 @@ pub fn initial_path() -> PathBuf {
 /// abbreviates against are the same answer. When they were two answers
 /// the trail rendered as an absolute path from the filesystem root: the
 /// window was on the real home and `format_path` was measuring against
-/// `/run/qos/app`, which nothing is under.
+/// `/run/tilo/app`, which nothing is under.
 pub fn user_home() -> Option<PathBuf> {
     ui::sysdirs::user_home_override().or_else(dirs::home_dir)
 }
@@ -1602,8 +1602,9 @@ mod sync_state_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn read_sync_state_round_trips_a_real_xattr() {
-        // A real getxattr against a real `user.qos.sync` attribute — the exact
+        // A real getxattr against a real `user.tilo.sync` attribute — the exact
         // syscall the app makes against the FUSE mount, exercised here on a
         // tmpfile so it doesn't need a live driver.
         let d = tempfile::tempdir().unwrap();
@@ -1619,8 +1620,9 @@ mod sync_state_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn read_thumb_xattr_round_trips_a_real_host_preview() {
-        // The FS-metadata channel: a host writes a preview into `user.qos.thumb`
+        // The FS-metadata channel: a host writes a preview into `user.tilo.thumb`
         // and the file manager reads the exact bytes back — the same `getxattr`
         // the driver answers. Exercised on a tmpfile so it needs no live driver.
         let d = tempfile::tempdir().unwrap();
@@ -1637,6 +1639,7 @@ mod sync_state_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn read_content_hash_requires_exactly_the_raw_blake3_width() {
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("photo.png");
@@ -1656,6 +1659,7 @@ mod sync_state_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn read_record_id_requires_exactly_the_raw_uuid_width() {
         let d = tempfile::tempdir().unwrap();
         let f = d.path().join("shared.txt");
@@ -1769,6 +1773,7 @@ mod sync_state_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn read_dir_populates_sync_state_only_inside_a_workspace_root() {
         // Tag two files with real sync xattrs, then confirm the real listing
         // path surfaces them on `Entry` when (and only when) the directory is a
@@ -1863,11 +1868,8 @@ mod sync_state_tests {
         // through the pure helpers so no global env is touched.
         let a = tempfile::tempdir().unwrap();
         let b = tempfile::tempdir().unwrap();
-        let spec = format!(
-            "{}:/does/not/exist:{}",
-            a.path().display(),
-            b.path().display()
-        );
+        let missing = a.path().join("missing-root");
+        let spec = std::env::join_paths([a.path(), missing.as_path(), b.path()]).unwrap();
         let roots = parse_workspace_roots(&spec);
         assert!(
             roots.contains(&a.path().to_path_buf()),
@@ -1894,6 +1896,7 @@ mod sync_state_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn share_control_locator_is_read_only_from_the_workspace_root() {
         let root = tempfile::tempdir().unwrap();
         let nested = root.path().join("folder");
@@ -1913,6 +1916,7 @@ mod sync_state_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn workspace_record_index_projects_nested_paths_by_stable_identity() {
         let root = tempfile::tempdir().unwrap();
         let record_id = uuid::Uuid::from_u128(7);
@@ -1982,6 +1986,7 @@ mod sync_state_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn completed_pager_withdraws_rows_after_mount_disappears() {
         let root = tempfile::tempdir().unwrap();
         let projection = serde_json::json!({
@@ -2013,6 +2018,7 @@ mod sync_state_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn pager_does_not_advertise_nested_share_as_an_exact_record_authority() {
         let parent = tempfile::tempdir().unwrap();
         let share = parent.path().join("received-share");
@@ -2044,6 +2050,7 @@ mod sync_state_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn pager_refuses_duplicate_identity_across_revisioned_page_boundary() {
         let root = tempfile::tempdir().unwrap();
         let revision = "b".repeat(64);
@@ -2105,6 +2112,7 @@ mod sync_state_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn workspace_record_index_rejects_noncanonical_or_escaping_projections() {
         let root = tempfile::tempdir().unwrap();
         for records in [
@@ -2169,90 +2177,102 @@ mod sync_state_tests {
 /// Fail before ambient boundaries in the isolated library-test process.
 #[cfg(test)]
 pub(crate) mod fixture_io_guard {
+    use std::cell::{Cell, RefCell};
+    use std::marker::PhantomData;
     use std::path::{Path, PathBuf};
-    use std::sync::{
-        Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-    };
+    use std::rc::Rc;
 
-    static DENY: AtomicBool = AtomicBool::new(false);
-    static ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
     struct ListingState {
         root: PathBuf,
         entries: Vec<(PathBuf, bool)>,
     }
-    static LISTINGS: Mutex<Option<ListingState>> = Mutex::new(None);
 
-    pub(crate) struct DenyAmbientIo(&'static AtomicUsize);
+    thread_local! {
+        static DENY: Cell<bool> = const { Cell::new(false) };
+        static ATTEMPTS: Cell<usize> = const { Cell::new(0) };
+        static LISTINGS: RefCell<Option<ListingState>> = const { RefCell::new(None) };
+    }
+
+    /// Per-test-thread ambient-I/O guard.
+    ///
+    /// Rust runs independent unit tests concurrently in one process. Keeping
+    /// this state thread-local prevents one negative-boundary test from
+    /// denying legitimate fixture I/O in an unrelated test.
+    pub(crate) struct DenyAmbientIo {
+        owner: std::thread::ThreadId,
+        not_send: PhantomData<Rc<()>>,
+    }
     impl DenyAmbientIo {
         pub(crate) fn new() -> Self {
-            assert!(
-                !DENY.swap(true, Ordering::SeqCst),
-                "ambient guard already armed"
-            );
-            ATTEMPTS.store(0, Ordering::SeqCst);
-            Self(&ATTEMPTS)
+            DENY.with(|deny| assert!(!deny.replace(true), "ambient guard already armed"));
+            ATTEMPTS.set(0);
+            Self {
+                owner: std::thread::current().id(),
+                not_send: PhantomData,
+            }
         }
         pub(crate) fn attempts(&self) -> usize {
-            self.0.load(Ordering::SeqCst)
+            assert_eq!(self.owner, std::thread::current().id());
+            ATTEMPTS.get()
         }
     }
     impl Drop for DenyAmbientIo {
         fn drop(&mut self) {
-            DENY.store(false, Ordering::SeqCst);
+            DENY.set(false);
         }
     }
     pub(crate) fn ambient_io(boundary: &'static str) {
-        ATTEMPTS.fetch_add(1, Ordering::SeqCst);
-        assert!(
-            !DENY.load(Ordering::SeqCst),
-            "ambient I/O denied: {boundary}"
-        );
+        ATTEMPTS.set(ATTEMPTS.get().saturating_add(1));
+        DENY.with(|deny| assert!(!deny.get(), "ambient I/O denied: {boundary}"));
     }
 
-    pub(crate) struct OwnedListings(&'static Mutex<Option<ListingState>>);
+    pub(crate) struct OwnedListings {
+        owner: std::thread::ThreadId,
+        not_send: PhantomData<Rc<()>>,
+    }
     impl OwnedListings {
         pub(crate) fn new(root: &Path) -> Self {
-            let mut state = LISTINGS
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            assert!(state.is_none(), "listing observer already armed");
-            *state = Some(ListingState {
-                root: root.to_path_buf(),
-                entries: Vec::new(),
+            LISTINGS.with(|listings| {
+                let mut state = listings.borrow_mut();
+                assert!(state.is_none(), "listing observer already armed");
+                *state = Some(ListingState {
+                    root: root.to_path_buf(),
+                    entries: Vec::new(),
+                });
             });
-            drop(state);
-            Self(&LISTINGS)
+            Self {
+                owner: std::thread::current().id(),
+                not_send: PhantomData,
+            }
         }
         pub(crate) fn observations(&self) -> Vec<(PathBuf, bool)> {
-            self.0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref()
-                .unwrap()
-                .entries
-                .clone()
+            assert_eq!(self.owner, std::thread::current().id());
+            LISTINGS.with(|listings| {
+                listings
+                    .borrow()
+                    .as_ref()
+                    .expect("listing observer is armed")
+                    .entries
+                    .clone()
+            })
         }
     }
     impl Drop for OwnedListings {
         fn drop(&mut self) {
-            *self
-                .0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            LISTINGS.with(|listings| *listings.borrow_mut() = None);
         }
     }
     pub(crate) fn observe_owned_listing(path: &Path, in_workspace: bool) {
-        let mut state = LISTINGS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(state) = state.as_mut() {
-            assert!(
-                path.starts_with(&state.root),
-                "listing outside owned fixture: {}",
-                path.display()
-            );
-            state.entries.push((path.to_path_buf(), in_workspace));
-        }
+        LISTINGS.with(|listings| {
+            let mut state = listings.borrow_mut();
+            if let Some(state) = state.as_mut() {
+                assert!(
+                    path.starts_with(&state.root),
+                    "listing outside owned fixture: {}",
+                    path.display()
+                );
+                state.entries.push((path.to_path_buf(), in_workspace));
+            }
+        });
     }
 }

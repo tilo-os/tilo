@@ -1,0 +1,33 @@
+[package]
+name = "hex-editor"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "hex_editor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hex-editor"
+path = "src/main.rs"
+
+[features]
+thin = ["dep:runtime-dylib"]
+
+[dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+# Canonical resource-operation types and local invocation contracts. Raw bytes
+# and their undo history are deliberately never replicated through this crate.
+tilo-actions = { path = "../../crates/collab/actions" }
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+vello.workspace = true
+winit.workspace = true
+taffy.workspace = true
+
+[lints]
+workspace = true

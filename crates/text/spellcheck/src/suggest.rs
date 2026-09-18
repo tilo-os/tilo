@@ -13,7 +13,7 @@ const MAX_EDIT_DISTANCE: usize = 2;
 ///
 /// 1. a *weighted* edit cost, ascending — the same integer distance, but with a
 ///    transposition charged slightly less than a substitution/indel, so the most
-///    common real typos (e.g. "teh" -> "the") float to the top of an otherwise
+///    common typos (e.g. "teh" -> "the") float to the top of an otherwise
 ///    tied group, then
 /// 2. word length, ascending (prefer the shorter, more common-looking word),
 ///    then

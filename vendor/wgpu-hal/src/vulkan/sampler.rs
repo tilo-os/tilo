@@ -3,7 +3,7 @@
 //! Nearly identical to the DX12 sampler cache, without descriptor heap management.
 
 use ash::vk;
-use hashbrown::{hash_map::Entry, HashMap};
+use hashbrown::{HashMap, hash_map::Entry};
 use ordered_float::OrderedFloat;
 
 /// If the allowed sampler count is above this value, the sampler cache is disabled.
@@ -121,7 +121,10 @@ impl SamplerCache {
 
                 // We need to check if we can create more samplers.
                 if used_samplers >= self.total_capacity as usize {
-                    log::error!("There is no more room in the global sampler heap for more unique samplers. Your device supports a maximum of {} unique samplers.", self.samplers.len());
+                    log::error!(
+                        "There is no more room in the global sampler heap for more unique samplers. Your device supports a maximum of {} unique samplers.",
+                        self.samplers.len()
+                    );
                     return Err(crate::DeviceError::OutOfMemory);
                 }
 

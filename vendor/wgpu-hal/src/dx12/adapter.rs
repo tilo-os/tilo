@@ -4,17 +4,17 @@ use std::thread;
 
 use parking_lot::Mutex;
 use windows::{
-    core::Interface as _,
     Win32::{
         Devices::DeviceAndDriverInstallation::{
-            SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
-            SetupDiGetDeviceRegistryPropertyW, DIGCF_PRESENT, GUID_DEVCLASS_DISPLAY, HDEVINFO,
-            SPDRP_ADDRESS, SPDRP_BUSNUMBER, SPDRP_HARDWAREID, SP_DEVINFO_DATA,
+            DIGCF_PRESENT, GUID_DEVCLASS_DISPLAY, HDEVINFO, SP_DEVINFO_DATA, SPDRP_ADDRESS,
+            SPDRP_BUSNUMBER, SPDRP_HARDWAREID, SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo,
+            SetupDiGetClassDevsW, SetupDiGetDeviceRegistryPropertyW,
         },
-        Foundation::{GetLastError, ERROR_NO_MORE_ITEMS},
+        Foundation::{ERROR_NO_MORE_ITEMS, GetLastError},
         Graphics::{Direct3D, Direct3D12, Dxgi},
         UI::WindowsAndMessaging,
     },
+    core::Interface as _,
 };
 
 use super::D3D12Lib;
@@ -24,8 +24,8 @@ use crate::{
         dxgi::{factory::DxgiAdapter, result::HResult},
     },
     dx12::{
-        dcomp::DCompLib, device_creation::DeviceFactory, shader_compilation, FeatureLevel,
-        ShaderModel, SurfaceTarget,
+        FeatureLevel, ShaderModel, SurfaceTarget, dcomp::DCompLib, device_creation::DeviceFactory,
+        shader_compilation,
     },
 };
 
@@ -61,7 +61,10 @@ impl super::Adapter {
         &self.raw
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+    )]
     pub(super) fn expose(
         adapter: DxgiAdapter,
         library: &Arc<D3D12Lib>,

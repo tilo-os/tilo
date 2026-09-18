@@ -1,0 +1,69 @@
+# Music — Tilo application manifest.
+#
+# The live audio/lyrics features resolve content from rotating third-party CDN
+# names, which cannot be statically allowlisted — `mode = "host"`. Shared
+# library state travels through the platform collaboration channel; MPRIS uses
+# the session bus.
+#
+# Beyond the system read profile it needs, as consented capabilities:
+# read on the library the user points it at (`~/Music`), the audio
+# device for output, and read+exec on the host bin dirs for `nmcli`.
+#
+
+
+[package]
+id       = "dev.tilo.music"
+name     = "Music"
+category = "Multimedia"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[continuity]
+required = ["presentation", "semantic"]
+semantic-schema = "media-position-v1"
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+    "net",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "host"
+
+[sandbox.portals]
+file-chooser = "via-host"
+
+[sandbox.services]
+collab = "optional@1"
+tilo-fs = "optional@1"
+
+[entrypoint]
+bin             = "bin/music"
+type            = "gui"
+splash-segments = ["bin/music[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = []
+ext  = []
+schemes = ["music"]

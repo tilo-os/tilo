@@ -5,14 +5,20 @@ use std::path::PathBuf;
 use crate::auxil::dxgi::result::HResult;
 use thiserror::Error;
 use windows::{
+    Win32::Graphics::Direct3D::{D3D_SHADER_MACRO, Dxc, Fxc, ID3DBlob},
     core::{Interface, PCSTR, PCWSTR},
-    Win32::Graphics::Direct3D::{Dxc, Fxc, ID3DBlob, D3D_SHADER_MACRO},
 };
 
 pub(super) enum CompilerContainer {
     Fxc(CompilerFxc),
     DynamicDxc(CompilerDynamicDxc),
-    #[cfg_attr(not(static_dxc), allow(unused))]
+    #[cfg_attr(
+        not(static_dxc),
+        allow(
+            unused,
+            reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+        )
+    )]
     StaticDxc(CompilerStaticDxc),
 }
 
@@ -42,6 +48,48 @@ pub(super) enum GetContainerError {
 }
 
 impl CompilerContainer {
+    pub(super) fn loaded_library_path(&self) -> Option<PathBuf> {
+        use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+        use windows::Win32::{
+            Foundation::HMODULE,
+            System::LibraryLoader::{
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, GetModuleFileNameW,
+                GetModuleHandleExW,
+            },
+        };
+        let Self::DynamicDxc(container) = self else {
+            return None;
+        };
+        // Query the module owning the symbol actually used by this compiler,
+        // not a same-named DLL or merely the requested loader path.
+        let symbol = unsafe {
+            container
+                ._dxc
+                .lib
+                .get::<*const core::ffi::c_void>(b"DxcCreateInstance\0")
+        }
+        .ok()?;
+        let mut module = HMODULE::default();
+        // SAFETY: the library stays alive through the lookup. FROM_ADDRESS
+        // treats the PCWSTR value as an address, never dereferences a string.
+        unsafe {
+            GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                    | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                PCWSTR((*symbol).cast::<u16>()),
+                &mut module,
+            )
+        }
+        .ok()?;
+        let mut path = alloc::vec![0u16; 32768];
+        let length = unsafe { GetModuleFileNameW(Some(module), &mut path) } as usize;
+        if length == 0 || length >= path.len() {
+            return None;
+        }
+        Some(PathBuf::from(OsString::from_wide(path.get(..length)?)))
+    }
+
     pub(super) fn new_fxc() -> Result<Self, GetContainerError> {
         FxcLib::new_dynamic().map(|fxc| Self::Fxc(CompilerFxc { fxc }))
     }
@@ -88,7 +136,9 @@ impl CompilerContainer {
         }
         #[cfg(not(static_dxc))]
         {
-            panic!("Attempted to create a static DXC shader compiler, but the static-dxc feature was not enabled")
+            panic!(
+                "Attempted to create a static DXC shader compiler, but the static-dxc feature was not enabled"
+            )
         }
     }
 
@@ -175,7 +225,10 @@ impl FxcLib {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+    )]
     fn compile(
         &self,
         source: &str,
@@ -328,7 +381,10 @@ unsafe fn dxc_create_instance<T: DxcObj>(
 }
 
 /// Owned PCWSTR
-#[allow(clippy::upper_case_acronyms)]
+#[allow(
+    clippy::upper_case_acronyms,
+    reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+)]
 struct OPCWSTR {
     inner: Vec<u16>,
 }

@@ -1,35 +1,35 @@
 use alloc::{borrow::ToOwned as _, ffi::CString, string::String, sync::Arc, vec::Vec};
 use core::{
-    ffi::{c_int, c_void, CStr},
+    ffi::{CStr, c_int, c_void},
     mem::{self, ManuallyDrop},
     ptr,
     time::Duration,
 };
 use std::{
     sync::{
-        mpsc::{sync_channel, SyncSender},
         LazyLock,
+        mpsc::{SyncSender, sync_channel},
     },
     thread,
 };
 
 use glow::HasContext;
 use glutin_wgl_sys::wgl_extra::{
-    Wgl, CONTEXT_CORE_PROFILE_BIT_ARB, CONTEXT_DEBUG_BIT_ARB, CONTEXT_FLAGS_ARB,
-    CONTEXT_PROFILE_MASK_ARB,
+    CONTEXT_CORE_PROFILE_BIT_ARB, CONTEXT_DEBUG_BIT_ARB, CONTEXT_FLAGS_ARB,
+    CONTEXT_PROFILE_MASK_ARB, Wgl,
 };
 use hashbrown::HashSet;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use wgt::InstanceFlags;
 use windows::{
-    core::{Error, PCSTR},
     Win32::{
         Foundation,
         Graphics::{Gdi, OpenGL},
         System::LibraryLoader,
         UI::WindowsAndMessaging,
     },
+    core::{Error, PCSTR},
 };
 
 /// The amount of time to wait while trying to obtain a lock to the adapter context
@@ -665,7 +665,10 @@ pub struct Swapchain {
 
     format: wgt::TextureFormat,
     format_desc: super::TextureFormatDesc,
-    #[allow(unused)]
+    #[allow(
+        unused,
+        reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+    )]
     sample_type: wgt::TextureSampleType,
 }
 

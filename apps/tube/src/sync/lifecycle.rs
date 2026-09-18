@@ -371,10 +371,19 @@ impl DeviceSync {
             .is_some_and(|sender| sender.try_send(command).is_ok())
     }
 
-    /// Drain worker updates and merge pulled personal state. Returns true when
-    /// the app should rebuild/persist its non-secret collaborative document.
-    pub fn pump(&mut self, model: &mut TubeModel) -> bool {
+    /// Drain worker updates without mutating the render model.
+    ///
+    /// A pulled package is intentionally returned to `TubeApp`, which imports
+    /// it through its canonical `TubeAction`/`ActionHost` boundary. Writing a
+    /// remote package directly into `TubeModel` made the next Automerge
+    /// reconciliation overwrite it, and made the device-only change invisible
+    /// to activity history, collaborators, and a restart.
+    ///
+    /// The bool reports public status/fingerprint changes; the vector contains
+    /// personal state that still needs canonical import.
+    pub fn pump(&mut self) -> (bool, Vec<SyncState>) {
         let mut changed = false;
+        let mut pulled = Vec::new();
         while let Ok(event) = self.events.try_recv() {
             match event {
                 Event::View(view) => {
@@ -383,10 +392,10 @@ impl DeviceSync {
                         changed = true;
                     }
                 }
-                Event::Pulled(remote) => changed |= merge_remote_state(model, &remote),
+                Event::Pulled(remote) => pulled.push(remote),
             }
         }
-        changed
+        (changed, pulled)
     }
 }
 
@@ -407,7 +416,7 @@ fn production_parts(device_name: &str) -> SyncResult<(GrayjaySyncTransport, Peer
         ));
     }
     let mut digest = Sha256::new();
-    digest.update(b"qos.tube.grayjay-noise-static-v1\0");
+    digest.update(b"tilo.tube.grayjay-noise-static-v1\0");
     digest.update(portal_secret.as_slice());
     let private = Zeroizing::new(digest.finalize().to_vec());
     let key = DeviceKey::from_private(private.as_slice())?;
@@ -419,7 +428,7 @@ fn production_parts(device_name: &str) -> SyncResult<(GrayjaySyncTransport, Peer
         .ok_or_else(|| SyncError::Persistence("no private state directory is available".into()))?;
     Ok((
         transport,
-        PeerStore::new(base.join("qos-tube").join("grayjay-peers.json")),
+        PeerStore::new(base.join("tilo-tube").join("grayjay-peers.json")),
         public_key,
     ))
 }
@@ -726,16 +735,24 @@ pub fn state_from_model(model: &TubeModel) -> SyncState {
     let subscriptions = model
         .subscriptions
         .iter()
-        .filter_map(|id| model.channel(id))
-        .map(|channel| {
-            if channel.handle.starts_with("http") {
-                channel.handle.clone()
-            } else {
-                format!(
-                    "https://youtube.com/{}",
-                    channel.handle.trim_start_matches('/')
-                )
-            }
+        .filter_map(|id| {
+            // A paired device can know about a creator before this device has
+            // fetched its catalogue record. Preserve the vetted external URL
+            // verbatim so the subscription round-trips rather than silently
+            // disappearing from the next package we push.
+            model.channel(id).map_or_else(
+                || super::normalized_subscription_url(id),
+                |channel| {
+                    if channel.handle.starts_with("http") {
+                        super::normalized_subscription_url(&channel.handle)
+                    } else {
+                        Some(format!(
+                            "https://youtube.com/{}",
+                            channel.handle.trim_start_matches('/')
+                        ))
+                    }
+                },
+            )
         })
         .collect();
     SyncState {

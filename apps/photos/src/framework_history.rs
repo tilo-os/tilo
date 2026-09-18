@@ -12,7 +12,7 @@ use ui::history_mode::{
 };
 
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
-    app_id: "dev.qos.photos",
+    app_id: "dev.tilo.photos",
     scopes: &[HistoryScopeDefinition {
         key: "photos",
         title: "Photograph and photo library",
@@ -165,6 +165,34 @@ fn list(doc: &AutoCommit, obj: &ObjId, key: &str) -> Result<(), String> {
     }
     Ok(())
 }
+/// Labels migrated from JSON arrays to per-label boolean membership maps.
+/// Inspect every membership conflict, including false removal tombstones.
+fn labels(doc: &AutoCommit, value: &Value<'_>, row: &ObjId) -> Result<(), String> {
+    if matches!(value, Value::Object(ObjType::Map)) {
+        if doc.length(row) > MAX_RECORDS {
+            return Err("Too many metadata labels".into());
+        }
+        let mut bytes = 0usize;
+        for label in doc.keys(row) {
+            if label.is_empty() || label.len() > 65_536 {
+                return Err("Invalid recorded metadata label".into());
+            }
+            bytes = bytes.saturating_add(label.len());
+            if bytes > 16 * 1024 * 1024 {
+                return Err("Recorded metadata labels exceed safe size".into());
+            }
+            for (membership, _) in values(doc, row, label)? {
+                if !matches!(membership, Value::Scalar(s) if matches!(s.as_ref(), automerge::ScalarValue::Boolean(_)))
+                {
+                    return Err("Invalid recorded metadata membership".into());
+                }
+            }
+        }
+    } else if json::<Vec<String>>(value)?.len() > MAX_RECORDS {
+        return Err("Too many metadata labels".into());
+    }
+    Ok(())
+}
 /// Validate all consumed conflict branches; the shared restore engine separately
 /// refuses selected conflicts it cannot restore exactly. No tolerant fallback here.
 #[allow(
@@ -242,11 +270,7 @@ pub(crate) fn validate(doc: &AutoCommit) -> Result<(), String> {
                             "photo_folder" | "photo_captured_at" => {
                                 json::<Option<String>>(&v)?;
                             }
-                            "photo_people" | "photo_tags" => {
-                                if json::<Vec<String>>(&v)?.len() > MAX_RECORDS {
-                                    return Err("Too many metadata labels".into());
-                                }
-                            }
+                            "photo_people" | "photo_tags" => labels(doc, &v, &row)?,
                             "removed_photos" | "removed_albums" => {
                                 if !matches!(v, Value::Scalar(s) if matches!(s.as_ref(), automerge::ScalarValue::Boolean(_)))
                                 {

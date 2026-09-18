@@ -1,0 +1,16 @@
+[package]
+name = "tilo-ocr"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+bounded-command = { path = "../../system/bounded-command" }
+image.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

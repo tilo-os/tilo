@@ -5,10 +5,10 @@ use std::{thread, time};
 use bytemuck::TransparentWrapper;
 use objc2::{
     available,
-    rc::{autoreleasepool, Retained},
+    rc::{Retained, autoreleasepool},
     runtime::ProtocolObject,
 };
-use objc2_foundation::{ns_string, NSError, NSRange, NSString, NSUInteger};
+use objc2_foundation::{NSError, NSRange, NSString, NSUInteger, ns_string};
 use objc2_metal::{
     MTLAccelerationStructure, MTLAccelerationStructureInstanceOptions, MTLBuffer,
     MTLCaptureManager, MTLCaptureScope, MTLCommandBuffer, MTLCommandBufferStatus,
@@ -24,8 +24,8 @@ use objc2_metal::{
     MTLVertexStepFunction,
 };
 
-use super::{conv, PassthroughShader, ShaderModuleSource};
-use crate::{auxil::map_naga_stage, TlasInstance};
+use super::{PassthroughShader, ShaderModuleSource, conv};
+use crate::{TlasInstance, auxil::map_naga_stage};
 
 type DeviceResult<T> = Result<T, crate::DeviceError>;
 
@@ -166,7 +166,10 @@ impl super::Device {
 
                 let options = naga::back::msl::Options {
                     lang_version: match self.shared.private_caps.msl_version {
-                        #[allow(deprecated)]
+                        #[allow(
+                            deprecated,
+                            reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+                        )]
                         MTLLanguageVersion::Version1_0 => (1, 0),
                         MTLLanguageVersion::Version1_1 => (1, 1),
                         MTLLanguageVersion::Version1_2 => (1, 2),
@@ -1220,7 +1223,10 @@ impl crate::Device for super::Device {
                     }
                 };
             }
-            #[allow(non_snake_case)]
+            #[allow(
+                non_snake_case,
+                reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+            )]
             impl MetalGenericRenderPipelineDescriptor {
                 unsafe fn setFragmentFunction(
                     &self,
@@ -1598,7 +1604,10 @@ impl crate::Device for super::Device {
                 //TODO: handle sample mask
                 match descriptor {
                     MetalGenericRenderPipelineDescriptor::Standard(ref inner) => {
-                        #[allow(deprecated)]
+                        #[allow(
+                            deprecated,
+                            reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+                        )]
                         inner.setSampleCount(desc.multisample.count as _);
                     }
                     MetalGenericRenderPipelineDescriptor::Mesh(ref inner) => {
@@ -1917,7 +1926,10 @@ impl crate::Device for super::Device {
         let shared_capture_manager = unsafe { MTLCaptureManager::sharedCaptureManager() };
         let default_capture_scope = shared_capture_manager.newCaptureScopeWithDevice(device);
         shared_capture_manager.setDefaultCaptureScope(Some(&default_capture_scope));
-        #[allow(deprecated)]
+        #[allow(
+            deprecated,
+            reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+        )]
         shared_capture_manager.startCaptureWithScope(&default_capture_scope);
         default_capture_scope.beginScope();
         true

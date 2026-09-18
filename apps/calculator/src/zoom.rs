@@ -14,7 +14,7 @@
 //!    do NOT re-sample the geometry. Instead we replay the last-sampled
 //!    polylines / surface cells under a cheap affine (a uniform scale + shift
 //!    for 2D, a scale-about-centre for 3D) that reproduces the zoom exactly for
-//!    a pure scale change. The single real re-sample happens once, when the
+//!    a pure scale change. The single re-sample happens once, when the
 //!    animation settles — mirroring how the map keeps drawing cached tiles
 //!    while new ones stream in.
 

@@ -4,11 +4,11 @@
 //!
 //! A decision here is a `collab_types::caps::CapOverride`, evaluated by the
 //! same `decide_capability` the compositor's permissions panel and
-//! `qos-launcher`/the FUSE mount use. `perm trust-dir ~/src` is not a
+//! `tilo-launcher`/the FUSE mount use. `perm trust-dir ~/src` is not a
 //! second kind of grant — it mints exactly:
 //!
 //! ```text
-//! CapOverride { subject: Principal::App("dev.qos.ush"),
+//! CapOverride { subject: Principal::App("dev.tilo.ush"),
 //!               scope:   Scope::FsPath("/var/home/you/src"),
 //!               effect:  Effect::Grant,
 //!               verb:    Verb::Write }
@@ -72,7 +72,7 @@ impl Policy {
     /// Write `policy.json`, creating its directory. Only decisions that
     /// outlive a restart are written — a session-scoped grant surviving into
     /// the next session would be one the user never made (mirrors
-    /// `shell/src/shell/persist.rs`).
+    /// `crates/session/shell/src/shell/persist.rs`).
     ///
     /// # Errors
     ///

@@ -15,16 +15,19 @@
 //! bare taffy node owned directly by `GreeterApp`: the structure stays
 //! `GreeterApp -> Card -> [fields]`, mirroring the taffy tree exactly.
 //!
-//! State lives in the CRDT (the toolkit convention):
+//! Non-secret presentation state lives in the CRDT (the toolkit convention):
 //!   * `greeter.username` — `Text`
-//!   * `greeter.password` — `Text` (rendered masked; value stays real)
 //!   * `greeter.submit`   — `bool` flag (Log-in / Enter rising edge)
 //!   * `greeter.fingerprint` — `bool` flag (explicit passwordless PAM attempt)
 //!   * `greeter.session`  — `Text` (the chosen session's label)
+//!
+//! The passcode is deliberately different: it is held only in a process-local,
+//! zeroized buffer shared with a local-mode [`TextInput`]. It never enters an
+//! Automerge object, change history, persistence, presence, or peer sync.
 
 use std::cell::Cell;
 use std::rc::Rc;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use automerge::{
     AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, transaction::Transactable,
@@ -39,6 +42,7 @@ use vello::peniko::{Color, ColorStop, Extend, Fill, Gradient};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{Key, NamedKey};
+use zeroize::{Zeroize, Zeroizing};
 
 use ui::a11y::Politeness;
 use ui::app::UserEvent;
@@ -57,7 +61,6 @@ use crate::local_users::{LoginUser, discover_default_login_user};
 use crate::sessions::{DEFAULT_SESSIONS_DIR, Session, read_sessions};
 
 const USERNAME_PATH: &str = "greeter.username";
-const PASSWORD_PATH: &str = "greeter.password";
 const SUBMIT_PATH: &str = "greeter.submit";
 const FINGERPRINT_PATH: &str = "greeter.fingerprint";
 /// The session picker's chosen label, as a CRDT `Text`. The picker writes
@@ -67,7 +70,7 @@ const SESSION_PATH: &str = "greeter.session";
 /// Rising-edge boolean flags raised by the secondary power-action buttons.
 /// Consumed in [`GreeterApp::sync`], which routes them through logind via
 /// `systemctl reboot` / `systemctl poweroff` (authorised for the `greetd`
-/// user by os/etc/polkit-1/rules.d/49-qos-greeter-power.rules).
+/// user by os/etc/polkit-1/rules.d/49-tilo-greeter-power.rules).
 const REBOOT_PATH: &str = "greeter.reboot";
 const POWEROFF_PATH: &str = "greeter.poweroff";
 
@@ -545,11 +548,14 @@ fn fingerprint_list_has_enrollment(output: &str) -> bool {
 /// enrollment fails closed to `false` so the login screen never offers a
 /// button which can only fail.
 fn enrolled_fingerprint(username: &str) -> bool {
-    let Ok(output) = std::process::Command::new("fprintd-list")
-        .env("LC_ALL", "C")
-        .arg(username)
-        .output()
-    else {
+    let Ok(output) = bounded_command::run_with_env(
+        "fprintd-list",
+        &[username],
+        &[("LC_ALL", "C")],
+        None,
+        64 * 1024,
+        std::time::Duration::from_secs(3),
+    ) else {
         return false;
     };
     output.status.success()
@@ -563,10 +569,15 @@ pub struct GreeterApp {
     /// unambiguous. Its username is fixed and the form asks only for the
     /// passcode; zero/multiple candidates retain the editable username field.
     login_user: Option<LoginUser>,
-    /// Whether the fixed local account has at least one enrolled fingerprint.
-    /// False on every discovery or probe error, and whenever the username is
-    /// editable: the greeter must not advertise a factor it cannot identify.
+    /// Whether fingerprint login is unavailable, already confirmed for the
+    /// fixed local account, or must be resolved from the typed username.
     fingerprint: FingerprintAvailability,
+    /// Account-specific enrollment resolver. Production calls `fprintd-list`;
+    /// a function pointer keeps multi-account routing deterministic in tests.
+    fingerprint_probe: fn(&str) -> bool,
+    /// Process-local only. Passcode text never enters Automerge, persistence,
+    /// presence, diagnostics, or peer sync and is zeroized after every attempt.
+    password_buffer: Arc<Mutex<String>>,
     status: String,
     /// How [`GreeterApp::status`] should read — see [`StatusKind`].
     status_kind: StatusKind,
@@ -616,6 +627,7 @@ pub struct GreeterApp {
 enum FingerprintAvailability {
     Unavailable,
     Enrolled,
+    CheckNamedAccount,
 }
 
 impl From<bool> for FingerprintAvailability {
@@ -634,18 +646,29 @@ impl Default for GreeterApp {
     }
 }
 
+impl Drop for GreeterApp {
+    fn drop(&mut self) {
+        self.password_buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .zeroize();
+    }
+}
+
 impl GreeterApp {
     /// Construct a greeter reading sessions from the standard
     /// `/usr/share/wayland-sessions` directory.
     pub fn new() -> Self {
         let login_user = discover_default_login_user();
-        let fingerprint_available = login_user
+        let fingerprint = login_user
             .as_ref()
-            .is_some_and(|user| enrolled_fingerprint(&user.username));
+            .map_or(FingerprintAvailability::CheckNamedAccount, |user| {
+                enrolled_fingerprint(&user.username).into()
+            });
         Self::with_sessions_login_user_and_fingerprint(
             read_sessions(std::path::Path::new(DEFAULT_SESSIONS_DIR)),
             login_user,
-            fingerprint_available,
+            fingerprint,
         )
     }
 
@@ -663,19 +686,26 @@ impl GreeterApp {
     ) -> Self {
         // Deterministic constructor for shots and focused UI tests. Production
         // uses `new`, which probes the fixed account and fails closed.
-        Self::with_sessions_login_user_and_fingerprint(sessions, login_user, true)
+        let fingerprint = if login_user.is_some() {
+            FingerprintAvailability::Enrolled
+        } else {
+            FingerprintAvailability::CheckNamedAccount
+        };
+        Self::with_sessions_login_user_and_fingerprint(sessions, login_user, fingerprint)
     }
 
     fn with_sessions_login_user_and_fingerprint(
         sessions: Vec<Session>,
         login_user: Option<LoginUser>,
-        fingerprint_available: bool,
+        fingerprint: FingerprintAvailability,
     ) -> Self {
         Self {
             sessions,
             selected_session: 0,
             login_user,
-            fingerprint: fingerprint_available.into(),
+            fingerprint,
+            fingerprint_probe: enrolled_fingerprint,
+            password_buffer: Arc::new(Mutex::new(String::new())),
             status: String::new(),
             status_kind: StatusKind::None,
             detail: String::new(),
@@ -709,13 +739,13 @@ impl GreeterApp {
     /// (see `main.rs`), mirroring how the live App syncs fields.
     pub fn for_shot(scenario: AuthScenario) -> Self {
         // A snapshot may point at a fixture directory via
-        // `QOS_GREETER_SESSIONS_DIR`, so the session picker can be captured
+        // `TILO_GREETER_SESSIONS_DIR`, so the session picker can be captured
         // on a machine whose real sessions directory holds a single entry.
         // Deliberately confined to this snapshot constructor:
         // `GreeterApp::new` — the live path — always reads the system
         // location, so nothing in the environment can redirect what a real
         // login is offered.
-        let dir = std::env::var("QOS_GREETER_SESSIONS_DIR")
+        let dir = std::env::var("TILO_GREETER_SESSIONS_DIR")
             .unwrap_or_else(|_| DEFAULT_SESSIONS_DIR.to_string());
         let sessions = crate::sessions::read_sessions(std::path::Path::new(&dir));
         let personal = matches!(
@@ -733,17 +763,18 @@ impl GreeterApp {
             username: "quinten".to_string(),
             display_name: "Quinten Example".to_string(),
         });
-        // Live discovery only probes enrollment after it has resolved one
-        // unambiguous local account. Keep shot fixtures inside that same
-        // capability contract: a fallback username form cannot truthfully
-        // advertise an account-specific enrolled print.
-        let fingerprint_available =
-            personal.is_some() && !matches!(scenario, AuthScenario::PersonalNoFingerprint);
-        let mut app = Self::with_sessions_login_user_and_fingerprint(
-            sessions,
-            personal,
-            fingerprint_available,
-        );
+        // A fixed personal account has a known enrollment result. The
+        // multi-account fixture exposes the action only as a route: its
+        // enrollment is resolved for the username entered before PAM starts.
+        let fingerprint = if personal.is_none() {
+            FingerprintAvailability::CheckNamedAccount
+        } else if matches!(scenario, AuthScenario::PersonalNoFingerprint) {
+            FingerprintAvailability::Unavailable
+        } else {
+            FingerprintAvailability::Enrolled
+        };
+        let mut app =
+            Self::with_sessions_login_user_and_fingerprint(sessions, personal, fingerprint);
         match scenario {
             AuthScenario::Form
             | AuthScenario::LongName
@@ -775,9 +806,21 @@ impl GreeterApp {
         app
     }
 
+    /// Seed representative local-only passcode text for a headless snapshot.
+    /// The live path never calls this, and even shots keep the value out of the
+    /// Automerge document used to drive the rest of the frame.
+    pub fn seed_shot_password(&mut self, password: &str) {
+        let mut value = self
+            .password_buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        value.zeroize();
+        value.push_str(password);
+    }
+
     /// Label for the session picker — the session's own human-readable
     /// name, never the internal desktop id it is launched under. The id
-    /// (`nirios`) is a `DesktopNames=` contract with the portal; it is not
+    /// (`tilo`) is a `DesktopNames=` contract with the portal; it is not
     /// something to show the person logging in.
     #[cfg(test)]
     fn session_label(&self) -> String {
@@ -930,7 +973,7 @@ impl GreeterApp {
         // prompt is the information the person needs. Removing the disabled
         // duplicate keeps that assertive instruction visible at large text
         // sizes instead of pushing it below the scroll viewport.
-        if self.fingerprint == FingerprintAvailability::Enrolled && !busy {
+        if self.fingerprint != FingerprintAvailability::Unavailable && !busy {
             actions.push(Box::new(
                 Button::new(
                     "greeter.fingerprint",
@@ -997,7 +1040,7 @@ impl GreeterApp {
                 BRAND_GAP,
                 vec![
                     Box::new(
-                        Text::new("qOS desktop")
+                        Text::new("Tilo Desktop")
                             .with_role(ui::tokens::typography::TextRole::Label)
                             .with_color(c.text_dim),
                     ),
@@ -1013,7 +1056,7 @@ impl GreeterApp {
             Box::new(VStack::new(
                 BRAND_GAP,
                 vec![
-                    Box::new(Text::new("qOS").with_size(38.0)),
+                    Box::new(Text::new("Tilo").with_size(38.0)),
                     Box::new(
                         Text::new("Sign in to continue")
                             .with_size(13.0)
@@ -1064,17 +1107,23 @@ impl GreeterApp {
             children.push(self.build_account_field(busy, theme));
         }
 
+        let password_input = {
+            let value = self
+                .password_buffer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            TextInput::local()
+                .with_initial_value(&value)
+                .with_id("greeter.password")
+                .with_external_buffer(Arc::clone(&self.password_buffer))
+                .with_accessible_name("Passcode")
+                .with_secret(true)
+                .with_placeholder("Your passcode")
+                .disabled(busy)
+        };
         let mut password_group: Vec<Box<dyn Widget>> = vec![
             Box::new(Self::field_label("Passcode", theme)),
-            Box::new(
-                TextInput::new(Vec::new())
-                    .with_id("greeter.password")
-                    .with_on_change_path(PASSWORD_PATH)
-                    .with_accessible_name("Passcode")
-                    .with_secret(true)
-                    .with_placeholder("Your passcode")
-                    .disabled(busy),
-            ),
+            Box::new(password_input),
         ];
         // The Caps-Lock note lives *inside* the password group so it reads
         // as attached to that field, and so toggling it can never shift the
@@ -1159,9 +1208,6 @@ impl GreeterApp {
                 let _ = state.splice_text(&username, 0, 0, &user.username);
             }
         }
-        if state.get(root, PASSWORD_PATH).ok().flatten().is_none() {
-            let _ = state.put_object(root, PASSWORD_PATH, ObjType::Text);
-        }
         if state.get(root, SUBMIT_PATH).ok().flatten().is_none() {
             let _ = state.put(root, SUBMIT_PATH, false);
         }
@@ -1196,7 +1242,7 @@ impl GreeterApp {
     /// Invoke logind for `action` via `systemctl`. `systemctl reboot` /
     /// `systemctl poweroff` issue `org.freedesktop.login1.Manager.{Reboot,
     /// PowerOff}` over D-Bus; polkit authorises these for the `greetd` user
-    /// through os/etc/polkit-1/rules.d/49-qos-greeter-power.rules (logind
+    /// through os/etc/polkit-1/rules.d/49-tilo-greeter-power.rules (logind
     /// also permits an *active* local session by default, but the greeter's
     /// session class is "greeter" and may not register as active, so the
     /// explicit rule makes it deterministic). Compiled out under `cfg(test)`
@@ -1226,21 +1272,31 @@ impl GreeterApp {
         }
     }
 
-    fn auth_secret(
-        state: &AutoCommit,
-        root: &ObjId,
-        method: AuthMethod,
-    ) -> Result<String, &'static str> {
+    fn take_auth_secret(&self, method: AuthMethod) -> Result<Zeroizing<String>, &'static str> {
+        let mut stored = self
+            .password_buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut password = Zeroizing::new(std::mem::take(&mut *stored));
+        drop(stored);
         match method {
-            AuthMethod::Password => {
-                let password = Self::read_text(state, root, PASSWORD_PATH).unwrap_or_default();
-                if password.is_empty() {
-                    Err("Enter your passcode")
-                } else {
-                    Ok(password)
-                }
+            AuthMethod::Password if password.is_empty() => Err("Enter your passcode"),
+            AuthMethod::Password => Ok(password),
+            AuthMethod::Fingerprint => {
+                // A passcode may have been typed before the alternate factor
+                // was selected. Scrub it now; it must not ride the fingerprint
+                // PAM conversation or remain recoverable in the form model.
+                password.zeroize();
+                Ok(Zeroizing::new(String::new()))
             }
-            AuthMethod::Fingerprint => Ok(String::new()),
+        }
+    }
+
+    fn fingerprint_available_for(&self, username: &str) -> bool {
+        match self.fingerprint {
+            FingerprintAvailability::Unavailable => false,
+            FingerprintAvailability::Enrolled => true,
+            FingerprintAvailability::CheckNamedAccount => (self.fingerprint_probe)(username),
         }
     }
 
@@ -1265,12 +1321,12 @@ impl GreeterApp {
     }
 
     /// Environment handed to greetd's `StartSession`. Mirrors the
-    /// `DesktopNames=nirios` advertised by the session `.desktop` files.
+    /// `DesktopNames=tilo` advertised by the session `.desktop` files.
     fn session_env() -> Vec<String> {
         vec![
             "XDG_SESSION_TYPE=wayland".to_string(),
-            "XDG_SESSION_DESKTOP=nirios".to_string(),
-            "XDG_CURRENT_DESKTOP=nirios".to_string(),
+            "XDG_SESSION_DESKTOP=tilo".to_string(),
+            "XDG_CURRENT_DESKTOP=tilo".to_string(),
         ]
     }
 
@@ -1288,22 +1344,34 @@ impl GreeterApp {
             return;
         }
         if method == AuthMethod::Fingerprint
-            && self.fingerprint != FingerprintAvailability::Enrolled
+            && self.fingerprint == FingerprintAvailability::Unavailable
         {
             self.set_status("No enrolled fingerprint is available for this account");
             return;
         }
 
-        let username = Self::read_text(state, root, USERNAME_PATH).unwrap_or_default();
+        // A fixed account's identity comes from conservative host discovery,
+        // not mutable document state. Multi-account mode accepts the visible
+        // field and normalizes incidental surrounding whitespace before both
+        // the enrollment check and greetd's account-specific PAM session.
+        let username = self.login_user.as_ref().map_or_else(
+            || Self::read_text(state, root, USERNAME_PATH).unwrap_or_default(),
+            |user| user.username.clone(),
+        );
+        let username = username.trim().to_owned();
 
-        if username.trim().is_empty() {
+        if username.is_empty() {
             self.set_status("Enter your username");
+            return;
+        }
+        if method == AuthMethod::Fingerprint && !self.fingerprint_available_for(&username) {
+            self.set_status("No enrolled fingerprint is available for this account");
             return;
         }
         // An explicit fingerprint attempt must not copy or submit a password
         // that happens to remain in the field. PAM/fprintd owns the factor
         // conversation and receives an empty response for secret prompts.
-        let password = match Self::auth_secret(state, root, method) {
+        let password = match self.take_auth_secret(method) {
             Ok(secret) => secret,
             Err(message) => {
                 self.set_status(message);
@@ -1339,7 +1407,7 @@ impl GreeterApp {
             match crate::greetd_client::authenticate_and_start(
                 &sock,
                 &username,
-                &password,
+                password.as_str(),
                 &argv,
                 &env,
                 |_| {},
@@ -1373,33 +1441,28 @@ impl GreeterApp {
         &mut self,
         message: &str,
         detail: Option<String>,
-        state: &mut AutoCommit,
-        root: &ObjId,
+        _state: &mut AutoCommit,
+        _root: &ObjId,
     ) {
         self.phase = AuthPhase::Idle;
         self.prompt.clear();
         self.status = message.to_string();
         self.status_kind = StatusKind::Error;
         self.detail = detail.unwrap_or_default();
-        Self::clear_password(state, root);
+        self.clear_password();
         self.dirty_structure = true;
         // Inputs are re-enabled (back in the focus order) — re-seat focus on
         // the rebuilt form rather than a stale auth-phase ordinal.
         self.focus_reset_pending = true;
     }
 
-    /// Empty the password CRDT Text object so the field clears on the next
-    /// sync. The username is intentionally left untouched.
-    fn clear_password(state: &mut AutoCommit, root: &ObjId) {
-        if let Ok(Some((Value::Object(ObjType::Text), obj))) = state.get(root, PASSWORD_PATH)
-            && let Ok(text) = state.text(&obj)
-        {
-            let chars = text.chars().count();
-            if chars > 0 {
-                let delete = isize::try_from(chars).unwrap_or(isize::MAX);
-                let _ = state.splice_text(&obj, 0, delete, "");
-            }
-        }
+    /// Empty the process-local passcode buffer. Rebuilding the form drops and
+    /// zeroizes the old input widget, so the next field starts genuinely blank.
+    fn clear_password(&self) {
+        self.password_buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .zeroize();
     }
 
     /// Surface a correctable note about the form itself. Distinct from a
@@ -1449,6 +1512,13 @@ impl Widget for GreeterApp {
             self.dirty_structure = true;
         }
 
+        // Pull local-only passcode edits into the zeroized buffer before
+        // consuming a submit edge raised by Enter or the Log in button in the
+        // same event cycle. No secret is written to `state` by this sync.
+        if let Some(c) = &mut self.composed {
+            c.sync(state, root);
+        }
+
         // Submit rising edge — reset the flag *before* attempting so a
         // single click fires exactly one attempt.
         if Self::read_flag(state, root, SUBMIT_PATH) {
@@ -1470,10 +1540,6 @@ impl Widget for GreeterApp {
         if Self::read_flag(state, root, POWEROFF_PATH) {
             let _ = state.put(root, POWEROFF_PATH, false);
             self.request_power(PowerAction::PowerOff);
-        }
-
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
         }
     }
 
@@ -1759,11 +1825,11 @@ mod tests {
     fn test_sessions() -> Vec<Session> {
         vec![
             Session {
-                name: "qOS".to_string(),
+                name: "Tilo".to_string(),
                 argv: vec!["/usr/bin/shell".into(), "--backend".into(), "drm".into()],
             },
             Session {
-                name: "qOS with peer sync".to_string(),
+                name: "Tilo with peer sync".to_string(),
                 argv: vec![
                     "/usr/bin/shell".into(),
                     "--backend".into(),
@@ -2010,9 +2076,9 @@ mod tests {
     #[test]
     fn session_label_reflects_selection() {
         let mut app = GreeterApp::with_sessions(test_sessions());
-        assert_eq!(app.session_label(), "qOS");
+        assert_eq!(app.session_label(), "Tilo");
         app.selected_session = 1;
-        assert_eq!(app.session_label(), "qOS with peer sync");
+        assert_eq!(app.session_label(), "Tilo with peer sync");
     }
 
     #[test]
@@ -2038,7 +2104,7 @@ mod tests {
         let mut app = GreeterApp::with_sessions_login_user_and_fingerprint(
             test_sessions(),
             Some(user),
-            false,
+            FingerprintAvailability::Unavailable,
         );
         assert!(
             !focusables(&app).contains(&"greeter.fingerprint".to_string()),
@@ -2055,15 +2121,37 @@ mod tests {
         assert_eq!(app.phase, AuthPhase::Idle);
     }
 
+    fn only_bob_has_a_fingerprint(username: &str) -> bool {
+        username == "bob"
+    }
+
+    #[test]
+    fn multi_account_fingerprint_is_resolved_for_the_typed_username() {
+        let mut app = GreeterApp::with_sessions_login_user_and_fingerprint(
+            test_sessions(),
+            None,
+            FingerprintAvailability::CheckNamedAccount,
+        );
+        app.fingerprint_probe = only_bob_has_a_fingerprint;
+
+        assert!(
+            focusables(&app).contains(&"greeter.fingerprint".to_string()),
+            "multi-account login must expose the alternate factor after asking who is signing in"
+        );
+        assert!(app.fingerprint_available_for("bob"));
+        assert!(!app.fingerprint_available_for("alice"));
+        assert!(!app.fingerprint_available_for(""));
+    }
+
     /// The greeter must never put the internal desktop id in front of the
-    /// user. `nirios` is a `DesktopNames=`/`UseIn=` contract with the
+    /// user. `tilo` is a `DesktopNames=`/`UseIn=` contract with the
     /// portal, not a name anyone logging in should have to read.
     #[test]
     fn session_label_is_the_human_name_not_the_desktop_id() {
         let app = GreeterApp::with_sessions(test_sessions());
         let label = app.session_label();
         assert!(
-            !label.contains("nirios"),
+            !label.contains("tilo"),
             "internal desktop id leaked into the greeter: {label:?}"
         );
         assert!(
@@ -2129,13 +2217,13 @@ mod tests {
         assert_eq!(app.selected_session, 0);
         assert_eq!(
             GreeterApp::read_text(&doc, &root, SESSION_PATH).as_deref(),
-            Some("qOS"),
+            Some("Tilo"),
         );
 
-        choose_session(&mut doc, &root, "qOS with peer sync");
+        choose_session(&mut doc, &root, "Tilo with peer sync");
         app.sync(&mut doc, &root);
         assert_eq!(app.selected_session, 1);
-        assert_eq!(app.session_label(), "qOS with peer sync");
+        assert_eq!(app.session_label(), "Tilo with peer sync");
         assert!(
             app.sessions[app.selected_session]
                 .argv
@@ -2143,7 +2231,7 @@ mod tests {
             "the choice must reach the argv handed to greetd"
         );
 
-        choose_session(&mut doc, &root, "qOS");
+        choose_session(&mut doc, &root, "Tilo");
         app.sync(&mut doc, &root);
         assert_eq!(app.selected_session, 0);
     }
@@ -2156,7 +2244,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
-        choose_session(&mut doc, &root, "qOS with peer sync");
+        choose_session(&mut doc, &root, "Tilo with peer sync");
         app.sync(&mut doc, &root);
         assert_eq!(app.selected_session, 1);
 
@@ -2360,10 +2448,14 @@ mod tests {
 
     // --- auth lifecycle ------------------------------------------------
 
-    /// Seed the password CRDT Text object with `pw`.
-    fn seed_password(doc: &mut AutoCommit, root: &ObjId, pw: &str) {
-        let (_, obj) = doc.get(root, PASSWORD_PATH).unwrap().unwrap();
-        let _ = doc.splice_text(&obj, 0, 0, pw);
+    /// Seed the process-local passcode buffer without touching the document.
+    fn seed_password(app: &GreeterApp, pw: &str) {
+        let mut value = app
+            .password_buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        value.zeroize();
+        value.push_str(pw);
     }
 
     #[test]
@@ -2384,6 +2476,29 @@ mod tests {
     }
 
     #[test]
+    fn passcode_never_enters_automerge_or_its_saved_history() {
+        let app = GreeterApp::with_sessions(test_sessions());
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.bootstrap_crdt(&mut doc, &root);
+        seed_password(&app, "correct horse battery staple");
+
+        assert!(doc.get(&root, "greeter.password").unwrap().is_none());
+        assert!(
+            !doc.save()
+                .windows("correct horse battery staple".len())
+                .any(|bytes| bytes == b"correct horse battery staple"),
+            "the serialized Automerge history must not contain the passcode"
+        );
+
+        let secret = app
+            .take_auth_secret(AuthMethod::Password)
+            .expect("local passcode is available exactly for authentication");
+        assert_eq!(secret.as_str(), "correct horse battery staple");
+        assert!(app.password_buffer.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn fingerprint_auth_explicitly_uses_no_password() {
         let mut app = GreeterApp::with_sessions(test_sessions());
         let mut doc = AutoCommit::new();
@@ -2391,11 +2506,12 @@ mod tests {
         app.sync(&mut doc, &root);
 
         assert_eq!(
-            GreeterApp::auth_secret(&doc, &root, AuthMethod::Password),
+            app.take_auth_secret(AuthMethod::Password),
             Err("Enter your passcode")
         );
         assert_eq!(
-            GreeterApp::auth_secret(&doc, &root, AuthMethod::Fingerprint),
+            app.take_auth_secret(AuthMethod::Fingerprint)
+                .map(|secret| secret.to_string()),
             Ok(String::new()),
             "fingerprint PAM conversation must begin without a dummy password"
         );
@@ -2578,7 +2694,7 @@ mod tests {
         // Seed both fields and enter the authenticating phase.
         let (_, uobj) = doc.get(&root, USERNAME_PATH).unwrap().unwrap();
         let _ = doc.splice_text(&uobj, 0, 0, "alice");
-        seed_password(&mut doc, &root, "wrongpw");
+        seed_password(&app, "wrongpw");
         app.begin_authenticating();
         assert_eq!(app.phase, AuthPhase::Authenticating);
 
@@ -2593,10 +2709,8 @@ mod tests {
         assert_eq!(app.phase, AuthPhase::Idle, "back to the form on failure");
         assert_eq!(app.status, "Incorrect username or passcode");
         // Password cleared, username preserved.
-        assert_eq!(
-            GreeterApp::read_text(&doc, &root, PASSWORD_PATH).as_deref(),
-            Some("")
-        );
+        assert!(app.password_buffer.lock().unwrap().is_empty());
+        assert!(doc.get(&root, "greeter.password").unwrap().is_none());
         assert_eq!(
             GreeterApp::read_text(&doc, &root, USERNAME_PATH).as_deref(),
             Some("alice")
@@ -2669,7 +2783,7 @@ mod tests {
         app.phase = AuthPhase::Authenticating;
         let (_, uobj) = doc.get(&root, USERNAME_PATH).unwrap().unwrap();
         let _ = doc.splice_text(&uobj, 0, 0, "alice");
-        seed_password(&mut doc, &root, "pw");
+        seed_password(&app, "pw");
 
         // A second submit must be consumed but NOT start a new attempt or
         // reset the phase.
@@ -2678,10 +2792,8 @@ mod tests {
         assert_eq!(app.phase, AuthPhase::Authenticating);
         assert!(!GreeterApp::read_flag(&doc, &root, SUBMIT_PATH));
         // Password is still intact (no failure was processed).
-        assert_eq!(
-            GreeterApp::read_text(&doc, &root, PASSWORD_PATH).as_deref(),
-            Some("pw")
-        );
+        assert_eq!(&*app.password_buffer.lock().unwrap(), "pw");
+        assert!(doc.get(&root, "greeter.password").unwrap().is_none());
     }
 
     /// A submit that lands while the session is already starting must not
@@ -2697,15 +2809,13 @@ mod tests {
         app.begin_starting();
         let (_, uobj) = doc.get(&root, USERNAME_PATH).unwrap().unwrap();
         let _ = doc.splice_text(&uobj, 0, 0, "alice");
-        seed_password(&mut doc, &root, "pw");
+        seed_password(&app, "pw");
 
         let _ = doc.put(&root, SUBMIT_PATH, true);
         app.sync(&mut doc, &root);
         assert_eq!(app.phase, AuthPhase::Starting);
-        assert_eq!(
-            GreeterApp::read_text(&doc, &root, PASSWORD_PATH).as_deref(),
-            Some("pw")
-        );
+        assert_eq!(&*app.password_buffer.lock().unwrap(), "pw");
+        assert!(doc.get(&root, "greeter.password").unwrap().is_none());
     }
 
     /// On the *form* (Idle), the focusable order must NOT shift when the
@@ -2947,8 +3057,8 @@ mod tests {
             "the fingerprint prompt must model the known account required for enrollment"
         );
         assert!(
-            accessible_name_for(ambiguous.as_ref(), "greeter.fingerprint").is_none(),
-            "the ambiguous-account shot must not invent an enrolled fingerprint"
+            accessible_name_for(ambiguous.as_ref(), "greeter.fingerprint").is_some(),
+            "multi-account login must retain a username-specific fingerprint path"
         );
     }
 
@@ -3001,8 +3111,8 @@ mod tests {
             assert!(rect.y0 >= 0.0 && rect.y1 <= 640.0, "{id} clipped: {rect:?}");
         }
         assert!(
-            rect_for(&app, "greeter.fingerprint").is_none(),
-            "an ambiguous-account fallback must not advertise an account-specific fingerprint"
+            rect_for(&app, "greeter.fingerprint").is_some(),
+            "multi-account login must keep the username-specific fingerprint action reachable"
         );
     }
 
@@ -3051,7 +3161,7 @@ mod tests {
                         );
                     }
                 }
-                if app.fingerprint == FingerprintAvailability::Enrolled && !app.phase.is_busy() {
+                if app.fingerprint != FingerprintAvailability::Unavailable && !app.phase.is_busy() {
                     let rect =
                         rect_for(&app, "greeter.fingerprint").expect("enrolled fingerprint action");
                     assert!(

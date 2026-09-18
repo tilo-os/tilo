@@ -1,6 +1,6 @@
 //! Content transport for qpkg bytes — iroh-blobs, keyed by blake3.
 //!
-//! This is the SAME content-addressed transport the FUSE filesystem
+//! This is the same content-addressed transport the FUSE filesystem
 //! uses. A `.qpkg` is a single raw blob; its blake3 hash is both the
 //! registry-index `qpkg_hash` and the iroh-blobs key, so the shared
 //! runtime bundle and every thin app blob are downloaded exactly once

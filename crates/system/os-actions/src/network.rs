@@ -4,7 +4,7 @@ use crate::process::{run, run_capture};
 use std::sync::OnceLock;
 use zeroize::Zeroizing;
 
-pub const HOTSPOT_PROFILE: &str = "qOS Hotspot";
+pub const HOTSPOT_PROFILE: &str = "Tilo Hotspot";
 
 // Six independently-meaningful named flags, not a bitset in disguise — each is read and
 // written by name across `shell` and `apps/settings`. Regrouping them (e.g. into a bitflags
@@ -99,8 +99,8 @@ pub fn set_mobile_broadband(enabled: bool) -> Result<(), String> {
     )
 }
 
-/// Activate the qOS hotspot. `NetworkManager` creates the profile and a random
-/// WPA credential on first use; qOS never receives or logs that secret.
+/// Activate the Tilo hotspot. `NetworkManager` creates the profile and a random
+/// WPA credential on first use; Tilo never receives or logs that secret.
 ///
 /// # Errors
 ///
@@ -233,6 +233,98 @@ pub fn delete_vpn_connection_uuid(uuid: &str) -> Result<(), String> {
     run("nmcli", &["connection", "delete", "uuid", uuid])
 }
 
+/// Authentication advertised by a Wi-Fi access point.
+///
+/// `Unknown` is fail-closed: callers must not treat an unfamiliar security
+/// suite as an ordinary password network.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum WifiSecurity {
+    Open,
+    Wpa2,
+    Wpa3,
+    Owe,
+    Enterprise,
+    #[default]
+    Unknown,
+}
+
+impl TryFrom<String> for WifiSecurity {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        match value.as_str() {
+            "open" => Ok(Self::Open),
+            "wpa2" => Ok(Self::Wpa2),
+            "wpa3" => Ok(Self::Wpa3),
+            "owe" => Ok(Self::Owe),
+            "enterprise" => Ok(Self::Enterprise),
+            "unknown" => Ok(Self::Unknown),
+            _ => Err(format!("unsupported Wi-Fi security mode {value:?}")),
+        }
+    }
+}
+
+impl From<WifiSecurity> for String {
+    fn from(value: WifiSecurity) -> Self {
+        match value {
+            WifiSecurity::Open => "open",
+            WifiSecurity::Wpa2 => "wpa2",
+            WifiSecurity::Wpa3 => "wpa3",
+            WifiSecurity::Owe => "owe",
+            WifiSecurity::Enterprise => "enterprise",
+            WifiSecurity::Unknown => "unknown",
+        }
+        .to_string()
+    }
+}
+
+impl WifiSecurity {
+    #[must_use]
+    pub fn from_nmcli(value: &str) -> Self {
+        let security = value.trim().to_ascii_uppercase();
+        if security.is_empty() || security == "--" {
+            Self::Open
+        } else if security.contains("802.1X") || security.contains("EAP") {
+            Self::Enterprise
+        } else if security.contains("OWE") {
+            Self::Owe
+        } else if security.contains("WPA3") || security.contains("SAE") {
+            Self::Wpa3
+        } else if security.contains("WPA2") {
+            Self::Wpa2
+        } else {
+            Self::Unknown
+        }
+    }
+
+    #[must_use]
+    pub fn is_secure(self) -> bool {
+        !matches!(self, Self::Open)
+    }
+
+    /// Only personal WPA profiles can be recreated from an SSID and a
+    /// passphrase. OWE has no secret; enterprise needs identity, EAP and CA
+    /// policy; unknown modes must be reviewed first.
+    #[must_use]
+    pub fn supports_portable_passphrase(self) -> bool {
+        matches!(self, Self::Wpa2 | Self::Wpa3)
+    }
+
+    /// Stable domain-separation byte for encrypted continuity envelopes.
+    #[must_use]
+    pub const fn continuity_tag(self) -> u8 {
+        match self {
+            Self::Open => 0,
+            Self::Wpa2 => 1,
+            Self::Wpa3 => 2,
+            Self::Owe => 3,
+            Self::Enterprise => 4,
+            Self::Unknown => 255,
+        }
+    }
+}
+
 /// One Wi-Fi network entry returned by [`list_wifi_networks`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WifiNetworkInfo {
@@ -242,6 +334,9 @@ pub struct WifiNetworkInfo {
     pub signal: u8,
     /// `true` when the row's SECURITY column is non-empty (i.e. not `"--"`).
     pub secure: bool,
+    /// Parsed authentication mode. Unlike `secure`, this is sufficient to
+    /// decide whether password continuity is valid for the network.
+    pub security: WifiSecurity,
     /// `true` when the row's IN-USE column is `*`.
     pub connected: bool,
 }
@@ -319,11 +414,12 @@ fn parse_nmcli_wifi_list(stdout: &str) -> Vec<WifiNetworkInfo> {
             continue;
         }
         let signal_pct: u8 = signal_field.trim().parse().unwrap_or(0);
-        let security = security_field.trim();
+        let security = WifiSecurity::from_nmcli(security_field);
         out.push(WifiNetworkInfo {
             ssid,
             signal: signal_pct_to_bucket(signal_pct),
-            secure: !security.is_empty() && security != "--",
+            secure: security.is_secure(),
+            security,
             connected: in_use == "*",
         });
     }
@@ -332,14 +428,15 @@ fn parse_nmcli_wifi_list(stdout: &str) -> Vec<WifiNetworkInfo> {
     let mut deduped: Vec<WifiNetworkInfo> = Vec::new();
     for entry in out {
         if let Some(existing) = deduped.iter_mut().find(|e| e.ssid == entry.ssid) {
+            if entry.connected || (entry.signal > existing.signal && !existing.connected) {
+                existing.security = entry.security;
+                existing.secure = entry.secure;
+            }
             if entry.signal > existing.signal {
                 existing.signal = entry.signal;
             }
             if entry.connected {
                 existing.connected = true;
-            }
-            if entry.secure {
-                existing.secure = true;
             }
         } else {
             deduped.push(entry);
@@ -560,6 +657,20 @@ pub fn connect_wifi(ssid: &str, password: Option<&str>) -> Result<(), String> {
     }
 }
 
+/// Disconnect the exact `NetworkManager` connection used for a remote
+/// tethering grant. This does not forget the profile or affect other radios.
+///
+/// # Errors
+///
+/// Returns an error when `ssid` is invalid or `NetworkManager` rejects the
+/// targeted disconnect.
+pub fn disconnect_wifi(ssid: &str) -> Result<(), String> {
+    if ssid.is_empty() || ssid.len() > 32 || ssid.chars().any(char::is_control) {
+        return Err("Wi-Fi name is invalid".into());
+    }
+    run("nmcli", &["connection", "down", "id", ssid])
+}
+
 /// `NetworkManager`'s connectivity result, including the portal state used by
 /// captive-portal helpers. Values intentionally mirror the daemon rather than
 /// deriving "online" from a local address.
@@ -595,7 +706,7 @@ pub fn get_connectivity() -> Result<ConnectivityState, String> {
 
 /// Return `NetworkManager`'s configured connectivity-check URI. Opening this
 /// URI is the standard captive-portal flow: an intercepting network redirects
-/// it to its login page. qOS does not guess a gateway or hard-code a vendor URL.
+/// it to its login page. Tilo does not guess a gateway or hard-code a vendor URL.
 ///
 /// # Errors
 ///
@@ -651,6 +762,75 @@ pub struct SavedNetworkProfile {
     pub uuid: String,
     pub kind: String,
     pub autoconnect: bool,
+}
+
+/// The only `NetworkManager` profile fields eligible for personal-device
+/// roaming. UUID is deliberately absent: it is a machine-local lookup
+/// capability, never portable state.
+pub struct PortableWifiProfileSecret {
+    pub ssid: String,
+    pub security: WifiSecurity,
+    pub password: Zeroizing<String>,
+}
+
+/// Resolve one explicit `NetworkManager` profile into portable Wi-Fi semantics.
+/// The query allowlist excludes interface names, MAC addresses, routes, DNS,
+/// autoconnect state, and every other machine-specific property.
+///
+/// # Errors
+///
+/// Returns an error for malformed UUIDs, non-Wi-Fi/enterprise/open profiles,
+/// missing secrets, or an unavailable `NetworkManager` command.
+pub fn portable_wifi_profile_secret(uuid: &str) -> Result<PortableWifiProfileSecret, String> {
+    validate_uuid(uuid)?;
+    let output = Zeroizing::new(run_capture(
+        "nmcli",
+        &[
+            "--show-secrets",
+            "-g",
+            "connection.type,802-11-wireless.ssid,802-11-wireless-security.key-mgmt,802-11-wireless-security.psk",
+            "connection",
+            "show",
+            uuid,
+        ],
+    )?);
+    parse_portable_wifi_profile(&output)
+}
+
+fn parse_portable_wifi_profile(output: &str) -> Result<PortableWifiProfileSecret, String> {
+    let values = output.lines().map(str::trim).collect::<Vec<_>>();
+    let [kind, ssid, key_mgmt, password] = values.as_slice() else {
+        return Err("NetworkManager returned an incomplete Wi-Fi profile".into());
+    };
+    if *kind != "802-11-wireless" {
+        return Err("only Wi-Fi profiles can be shared across devices".into());
+    }
+    if ssid.is_empty() || ssid.len() > runtime_wifi_ssid_limit() {
+        return Err("the saved Wi-Fi profile has an invalid network name".into());
+    }
+    let security = match key_mgmt.to_ascii_lowercase().as_str() {
+        "wpa-psk" | "wpa-none" => WifiSecurity::Wpa2,
+        "sae" => WifiSecurity::Wpa3,
+        "wpa-eap" | "ieee8021x" => {
+            return Err("enterprise Wi-Fi identity and certificates stay device-local".into());
+        }
+        "none" | "owe" | "" => {
+            return Err("this Wi-Fi profile has no portable passphrase".into());
+        }
+        _ => return Err("unrecognized Wi-Fi security cannot be shared safely".into()),
+    };
+    if password.is_empty() || password.len() > 512 {
+        return Err("the saved Wi-Fi passphrase is missing or too large".into());
+    }
+    Ok(PortableWifiProfileSecret {
+        ssid: (*ssid).to_string(),
+        security,
+        password: Zeroizing::new((*password).to_string()),
+    })
+}
+
+const fn runtime_wifi_ssid_limit() -> usize {
+    256
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1348,13 +1528,13 @@ mod profile_tests {
     #[test]
     fn hotspot_qr_escapes_schema_delimiters() {
         let config = HotspotConfiguration {
-            ssid: "qOS; Guest".into(),
+            ssid: "Tilo; Guest".into(),
             password: "hello:world".into(),
             band: HotspotBand::Automatic,
         };
         assert_eq!(
             config.qr_payload().unwrap(),
-            "WIFI:T:WPA;S:qOS\\; Guest;P:hello\\:world;;"
+            "WIFI:T:WPA;S:Tilo\\; Guest;P:hello\\:world;;"
         );
     }
 
@@ -1461,47 +1641,25 @@ pub struct CertificateInfo {
 
 /// # Errors
 ///
-/// Returns an error message if `path` is not an existing absolute file, `openssl` is not
-/// installed, the certificate cannot be parsed or is missing a subject/expiry/fingerprint, or
-/// the certificate has expired.
+/// Returns an error message if `path` is not an existing absolute regular file, is larger than
+/// 1 MiB, cannot be parsed as one PEM/DER certificate, or the certificate has expired.
 pub fn inspect_certificate(path: &str) -> Result<CertificateInfo, String> {
     let p = std::path::Path::new(path);
     if !p.is_absolute() || !p.is_file() {
         return Err("certificate must be an existing absolute file".into());
     }
-    let out = run_capture(
-        "openssl",
-        &[
-            "x509",
-            "-in",
-            path,
-            "-noout",
-            "-subject",
-            "-enddate",
-            "-fingerprint",
-            "-sha256",
-        ],
-    )?;
-    let field = |prefix: &str| {
-        out.lines()
-            .find_map(|l| l.trim().strip_prefix(prefix))
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(str::to_string)
-    };
-    let info = CertificateInfo {
-        subject: field("subject=").ok_or("certificate has no subject")?,
-        expires: field("notAfter=").ok_or("certificate has no expiry")?,
-        sha256_fingerprint: field("sha256 Fingerprint=")
-            .or_else(|| field("SHA256 Fingerprint="))
-            .ok_or("certificate has no SHA-256 fingerprint")?,
-    };
-    run(
-        "openssl",
-        &["x509", "-in", path, "-noout", "-checkend", "0"],
-    )
-    .map_err(|_| format!("certificate expired at {}", info.expires))?;
-    Ok(info)
+    let metadata =
+        std::fs::metadata(p).map_err(|error| format!("cannot read certificate: {error}"))?;
+    if metadata.len() > 1024 * 1024 {
+        return Err("certificate must be no larger than 1 MiB".into());
+    }
+    let bytes = std::fs::read(p).map_err(|error| format!("cannot read certificate: {error}"))?;
+    let info = tilo_crypto::inspect_certificate(&bytes)?;
+    Ok(CertificateInfo {
+        subject: info.subject,
+        expires: info.expires,
+        sha256_fingerprint: info.sha256_fingerprint,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1555,7 +1713,7 @@ impl EnterpriseWifiConfiguration {
 
 /// Configure the broadly deployed PEAP/MSCHAPv2 enterprise profile using
 /// `NetworkManager`'s standard 802.1X setting. A CA certificate is mandatory;
-/// qOS never offers the dangerously convenient "do not validate" mode.
+/// Tilo never offers the dangerously convenient "do not validate" mode.
 /// The password is fed to `nmcli --ask` on stdin and marked not-saved.
 ///
 /// # Errors
@@ -1723,11 +1881,40 @@ mod tests {
         assert_eq!(nets[0].ssid, "Home_Network");
         assert!(nets[0].connected);
         assert!(nets[0].secure);
+        assert_eq!(nets[0].security, WifiSecurity::Wpa2);
         assert_eq!(nets[0].signal, 4);
         assert!(!nets[1].connected);
         assert!(!nets[1].secure);
+        assert_eq!(nets[1].security, WifiSecurity::Open);
         assert_eq!(nets[1].signal, 3);
         assert_eq!(nets[2].signal, 2);
+    }
+
+    #[test]
+    fn wifi_security_preserves_supported_authentication_modes() {
+        for (nmcli, expected) in [
+            ("--", WifiSecurity::Open),
+            ("WPA2", WifiSecurity::Wpa2),
+            ("WPA3 SAE", WifiSecurity::Wpa3),
+            ("OWE", WifiSecurity::Owe),
+            ("WPA2 802.1X", WifiSecurity::Enterprise),
+            ("WEP", WifiSecurity::Unknown),
+        ] {
+            assert_eq!(WifiSecurity::from_nmcli(nmcli), expected, "{nmcli}");
+        }
+        assert!(WifiSecurity::Wpa2.supports_portable_passphrase());
+        assert!(WifiSecurity::Wpa3.supports_portable_passphrase());
+        assert!(!WifiSecurity::Enterprise.supports_portable_passphrase());
+        assert!(!WifiSecurity::Owe.supports_portable_passphrase());
+    }
+
+    #[test]
+    fn connected_bssid_supplies_security_when_ssids_are_deduplicated() {
+        let nets = parse_nmcli_wifi_list(":Transition:90:WPA2\n*:Transition:40:WPA3 SAE\n");
+        assert_eq!(nets.len(), 1);
+        assert_eq!(nets[0].security, WifiSecurity::Wpa3);
+        assert!(nets[0].connected);
+        assert_eq!(nets[0].signal, 4);
     }
 
     #[test]
@@ -1904,6 +2091,28 @@ mod wired_tests {
         let (speed, ipv4) = parse_nmcli_wired_show("CAPABILITIES.SPEED:unknown\n");
         assert!(speed.is_none());
         assert!(ipv4.is_none());
+    }
+}
+
+#[cfg(test)]
+mod portable_profile_tests {
+    use super::*;
+
+    #[test]
+    fn portable_profile_keeps_only_ssid_mode_and_secret() {
+        let profile = parse_portable_wifi_profile(
+            "802-11-wireless\nHome network\nwpa-psk\ncorrect horse battery staple\n",
+        )
+        .unwrap();
+        assert_eq!(profile.ssid, "Home network");
+        assert_eq!(profile.security, WifiSecurity::Wpa2);
+        assert_eq!(profile.password.as_str(), "correct horse battery staple");
+    }
+
+    #[test]
+    fn enterprise_and_non_wifi_profiles_fail_closed() {
+        assert!(parse_portable_wifi_profile("802-11-wireless\nWork\nwpa-eap\nsecret\n").is_err());
+        assert!(parse_portable_wifi_profile("802-3-ethernet\nLAN\nwpa-psk\nsecret\n").is_err());
     }
 }
 

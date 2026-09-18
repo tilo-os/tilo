@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule one-time TPM dictionary-attack hardening off the login path
+Documentation=man:tilo-rollback(8)
+
+[Timer]
+OnBootSec=5s
+AccuracySec=1s
+Unit=tilo-rollback-harden.service
+
+[Install]
+WantedBy=timers.target

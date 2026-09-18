@@ -8,7 +8,7 @@ fn main() -> anyhow::Result<()> {
         args.next().is_none(),
         "expected exactly one fixture directory"
     );
-    let manifest = qos_scratchpad::seed_native_fixture(std::path::Path::new(&directory))?;
+    let manifest = scratchpad::seed_native_fixture(std::path::Path::new(&directory))?;
     println!("{}", serde_json::to_string(&manifest)?);
     Ok(())
 }

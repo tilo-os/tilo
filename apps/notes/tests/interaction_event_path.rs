@@ -840,6 +840,57 @@ fn right_click_row_opens_context_menu_and_new_child_action_works() {
 }
 
 #[test]
+fn keyboard_context_menu_opens_on_the_selected_page() {
+    let tmp = TempDir::new().unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+    let mut state = ui::State::new();
+    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800).unwrap();
+    let row = app.sidebar_row_center_for_test(0).expect("row laid out");
+    let no_mods = Modifiers::default();
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        no_mods,
+        &cursor_moved(row.x, row.y),
+    );
+    dispatch(&mut app, &mut state, &taffy, child, no_mods, &mouse_press());
+
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        no_mods,
+        &named_key(NamedKey::ContextMenu),
+    );
+    assert!(app.sidebar_menu_open_for_test());
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        no_mods,
+        &named_key(NamedKey::Escape),
+    );
+
+    let shift = Modifiers::from(ModifiersState::SHIFT);
+    dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        shift,
+        &named_key(NamedKey::F10),
+    );
+    assert!(
+        app.sidebar_menu_open_for_test(),
+        "Shift+F10 opens the same selected-page menu"
+    );
+}
+
+#[test]
 fn nested_child_renders_indented_under_its_parent() {
     // Bug: the sidebar rendered a flat list despite the model's hierarchy.
     // A child of the selected page must show one indent level below it.
@@ -870,6 +921,57 @@ fn nested_child_renders_indented_under_its_parent() {
         app.sidebar_row_depth_for_test(1),
         Some(1),
         "the child renders one level indented under its parent — a real tree"
+    );
+}
+
+#[test]
+fn sidebar_tab_and_shift_tab_edit_the_page_hierarchy() {
+    let tmp = TempDir::new().unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+    let first = app.workspace_pages_for_test()[0].id;
+    app.apply_event_for_test(OutEvent::CreateChild { parent: None });
+    let second = app.selected_for_test().expect("new root is selected");
+    app.sync_sidebar_for_test();
+
+    let mut state = ui::State::new();
+    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800).unwrap();
+    click_row(&mut app, &mut state, &taffy, child, 1).unwrap();
+
+    assert!(dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        Modifiers::default(),
+        &named_key(NamedKey::Tab),
+    ));
+    assert_eq!(
+        app.workspace_pages_for_test()
+            .iter()
+            .find(|page| page.id == second)
+            .and_then(|page| page.parent),
+        Some(first),
+        "Tab nests the selected root beneath its previous sibling"
+    );
+
+    // The sidebar re-flattens synchronously after the canonical action so the
+    // moved page remains visible and the inverse command is immediately usable.
+    assert_eq!(app.sidebar_row_depth_for_test(1), Some(1));
+    assert!(dispatch(
+        &mut app,
+        &mut state,
+        &taffy,
+        child,
+        Modifiers::from(ModifiersState::SHIFT),
+        &named_key(NamedKey::Tab),
+    ));
+    assert_eq!(
+        app.workspace_pages_for_test()
+            .iter()
+            .find(|page| page.id == second)
+            .and_then(|page| page.parent),
+        None,
+        "Shift-Tab lifts the selected page one level"
     );
 }
 
@@ -1295,6 +1397,28 @@ fn hash_space_promotes_paragraph_to_heading_through_the_event_path() {
         );
         assert_eq!(blocks[0].text(), "");
     }
+}
+
+#[test]
+fn greater_than_space_promotes_paragraph_to_quote_through_the_event_path() {
+    let tmp = TempDir::new().unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+    app.apply_event_for_test(OutEvent::CreateChild { parent: None });
+    app.sync_sidebar_for_test();
+
+    let mut state = ui::State::new();
+    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800).unwrap();
+    let no_mods = Modifiers::default();
+    dispatch(&mut app, &mut state, &taffy, child, no_mods, &char_key(">"));
+    assert!(matches!(
+        app.main_panel_mut().editor().blocks()[0].kind,
+        ui::widget::BlockKind::Paragraph
+    ));
+    dispatch(&mut app, &mut state, &taffy, child, no_mods, &char_key(" "));
+
+    let blocks = app.main_panel_mut().editor().blocks();
+    assert!(matches!(blocks[0].kind, ui::widget::BlockKind::Quote));
+    assert_eq!(blocks[0].text(), "");
 }
 
 #[test]

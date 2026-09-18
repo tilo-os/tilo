@@ -2,7 +2,7 @@
 
 ## The problem this solves
 
-In a shared qOS workspace, invited peers are already **co-present**: the compositor
+In a shared Tilo workspace, invited peers are already **co-present**: the compositor
 streams the same spatial strip of real surfaces to every participant and arbitrates
 input (host-wins). Everyone already sees the same windows. So a conventional
 "screen share" — capture a screen, re-encode it to H.264, show it as a flat video
@@ -15,11 +15,11 @@ Two genuinely different needs hide under the one word "screen sharing":
    *directing attention*, not shipping pixels: the presenter points everyone at a
    specific surface/group and their views follow.
 2. **Flat video share** — for a participant who is **not** co-present (a remote
-   contact on another device, a non-qOS viewer, or a deliberate single-window share
+   contact on another device, a non-Tilo viewer, or a deliberate single-window share
    without granting workspace access), a real encoded video stream is correct.
 
 Need 2 is already implemented and reuses the shared video stack
-(`crates/collab/qos-callstream`, re-exported by the compositor and consumed by chat).
+(`crates/collab/tilo-callstream`, re-exported by the compositor and consumed by chat).
 **This document specifies need 1**, which is not built yet. An earlier "Follow host"
 toggle was stubbed and removed (`follow_host_control_no_longer_exists` in chat)
 precisely because it had no real model behind it — this is that model.
@@ -44,7 +44,7 @@ enum FollowState { Following, BrokenAway }   // per-follower, local
 
 `FocusPointer` rides the **existing presence channel** — the same
 `CollabEvent::Context` / `PresenceCtx` path that already carries remote cursors and
-per-object presence (see `plan/collaboration.md` and the app↔chrome boundary). It is
+per-object presence (see `docs/architecture/collaboration.md` and the app↔chrome boundary). It is
 small (an id + an epoch), gossiped like any other presence datum; no media path is
 involved.
 
@@ -103,7 +103,7 @@ Build:
 Focus/follow requires the target to be **co-present** (the follower already has its
 surfaces). When a participant is *not* co-present, or the source is a single window
 the presenter won't add to the shared workspace, fall back to the flat
-`qos-callstream` video share (already implemented) shown as the featured call tile.
+`tilo-callstream` video share (already implemented) shown as the featured call tile.
 The call UI chooses automatically: co-present target → focus/follow; otherwise →
 video. Both can be active for different participants in the same call.
 
@@ -116,9 +116,9 @@ video. Both can be active for different participants in the same call.
   cross-spoke target switches the wheel-disc spoke.
 - Break-away: local navigation flips the follower to `BrokenAway`; subsequent epochs
   do not move them; re-sync snaps to the current target.
-- Boundary: a non-co-present target routes to the `qos-callstream` video path instead.
+- Boundary: a non-co-present target routes to the `tilo-callstream` video path instead.
 
 ## Status
 
 Design only. The flat-video half (need 2) is implemented and landed
-(`qos-callstream`). Focus/follow (need 1) is unbuilt; this is the spec for it.
+(`tilo-callstream`). Focus/follow (need 1) is unbuilt; this is the spec for it.

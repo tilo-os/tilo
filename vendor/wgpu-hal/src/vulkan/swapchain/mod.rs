@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 use core::{any::Any, fmt::Debug, time::Duration};
 
-use crate::vulkan::{semaphore_list::SemaphoreType, DeviceShared};
+use crate::vulkan::{DeviceShared, semaphore_list::SemaphoreType};
 
 pub(super) use native::*;
 

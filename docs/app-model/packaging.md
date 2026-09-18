@@ -1,8 +1,8 @@
-# Packaging: manifest schema and the `qos-pkg` CLI
+# Packaging: manifest schema and the `tilo-pkg` CLI
 
 A `.qpkg` is a tar archive of a signed root + a manifest + a Collection of
 content-addressed blobs. This document is the source of truth for what
-belongs in the manifest and what `qos-pkg` does to it.
+belongs in the manifest and what `tilo-pkg` does to it.
 
 ## The manifest file
 
@@ -12,10 +12,10 @@ GUI app:
 
 ```toml
 [package]
-id       = "dev.qos.hello"
+id       = "dev.tilo.hello"
 version  = "0.1.0"
 kind     = "app"
-runtime  = "qos-runtime/2026.07"
+runtime  = "tilo-runtime/2026.07"
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -23,7 +23,7 @@ signature = ""
 
 [sandbox]
 namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
-seccomp    = "qos-default"
+seccomp    = "tilo-default"
 landlock   = "strict"
 
 [sandbox.net]
@@ -34,7 +34,7 @@ mode = "off"
 [sandbox.services]
 
 [entrypoint]
-bin  = "bin/qos-hello"
+bin  = "bin/tilo-hello"
 type = "gui"
 ```
 
@@ -44,7 +44,7 @@ type = "gui"
 
 | Field     | Required | Notes                                                             |
 | --------- | -------- | ----------------------------------------------------------------- |
-| `id`      | yes      | Reverse-DNS, e.g. `dev.qos.notes-cli`. Stable across versions; used as the install slot and to name the sandbox profile. |
+| `id`      | yes      | Reverse-DNS, e.g. `dev.tilo.notes-cli`. Stable across versions; used as the install slot and to name the sandbox profile. |
 | `version` | yes      | Semver. Rejected at validate time if not parseable.               |
 | `kind`    | yes      | One of `app`, `service`, `format-provider`, `plugin`, `runtime`.  |
 | `runtime` | no       | `<name>/<version>` of the runtime bundle to bind against. The version side must be semver OR calver (`YYYY.MM[.MICRO]`, e.g. `2026.07`). Must be omitted for `kind = "runtime"`. |
@@ -53,8 +53,8 @@ type = "gui"
 
 | Field       | Required | Notes                                                                                            |
 | ----------- | -------- | ------------------------------------------------------------------------------------------------ |
-| `identity`  | yes      | `ed25519:<64-hex>` — the publisher's Ed25519 public key. When `qos-pkg pack` generates a fresh keypair (no `--identity`), it overwrites whatever was here with the real key. |
-| `signature` | no       | Hex-encoded 64-byte signature. Empty at author time; filled by `qos-pkg pack` / `qos-pkg sign`.  |
+| `identity`  | yes      | `ed25519:<64-hex>` — the publisher's Ed25519 public key. When `tilo-pkg pack` generates a fresh keypair (no `--identity`), it overwrites whatever was here with the generated public key. |
+| `signature` | no       | Hex-encoded 64-byte signature. Empty at author time; filled by `tilo-pkg pack` / `tilo-pkg sign`.  |
 
 #### `[trust]`
 
@@ -62,12 +62,12 @@ Optional. Third-party attestations. Repeated as `[[trust.attested_by]]`:
 
 ```toml
 [[trust.attested_by]]
-attestor  = "qos-curated/2026.07"
+attestor  = "tilo-curated/2026.07"
 claim     = "deadbeef"      # attestor-specific bytes, hex
 signature = ""              # 64-byte Ed25519 signature, hex; empty for legacy claim-only rows
 ```
 
-The attestor list is verified against `~/.config/qos/trusted-attestors.toml`
+The attestor list is verified against `~/.config/tilo/trusted-attestors.toml`
 at install and run time. See [`trust.md`](./trust.md).
 
 #### `[sandbox]`
@@ -75,7 +75,7 @@ at install and run time. See [`trust.md`](./trust.md).
 | Field        | Required | Notes                                                                                     |
 | ------------ | -------- | ----------------------------------------------------------------------------------------- |
 | `namespaces` | yes      | Linux namespaces to unshare. Names match `unshare(2)`: any subset of `user`, `pid`, `uts`, `ipc`, `mount`, `net`. |
-| `seccomp`    | yes      | Named seccomp profile. `qos-default` is the shipped baseline.                             |
+| `seccomp`    | yes      | Named seccomp profile. `tilo-default` is the shipped baseline.                             |
 | `landlock`   | yes      | `strict` — enforce Landlock v3+; `lax` — best-effort; `off` — disable.                    |
 
 ##### Filesystem — no block
@@ -86,7 +86,7 @@ refused at install and at launch, with a message naming the package and
 the offending entry.
 
 The launcher gives every app one writable directory, bound at
-`/run/qos/app`, with `HOME` and the `XDG_*` variables pointed inside it.
+`/run/tilo/app`, with `HOME` and the `XDG_*` variables pointed inside it.
 Reads come from a fixed system profile — loader and C library, fonts, GPU
 loader manifests, `/sys`, CA bundle, timezone data — identical for every
 package. Anything else is a capability the user grants at runtime. See
@@ -129,18 +129,18 @@ it when the manifest says to.
 
 ##### `[sandbox.services]`
 
-Declared dependencies on qOS system services. Each value parses as
+Declared dependencies on Tilo system services. Each value parses as
 `required@<version>` or `optional@<version>`.
 
 ```toml
 [sandbox.services]
 collab     = "optional@1"
-qos-fs     = "optional@1"
+tilo-fs     = "optional@1"
 spellcheck = "optional@1"
 ```
 
 At launch, the launcher opens a connected Unix socket to every declared
-service and passes the fd in as `QOS_SVC_<NAME>_FD`. If a `required` service
+service and passes the fd in as `TILO_SVC_<NAME>_FD`. If a `required` service
 can't be reached the launcher aborts; if an `optional` service is missing
 the app sees `NotAvailable::ServiceFdMissing` and is expected to degrade.
 
@@ -168,8 +168,8 @@ Only meaningful when the entrypoint's `type` is `cli` or `both`. See
 commands = ["notes", "notes-import"]
 ```
 
-At install time `qos-install install` drops a `qos-cli-shim` copy under
-`~/.local/share/qos-apps/bin/<command>` for each entry.
+At install time `tilo-install install` drops a `tilo-cli-shim` copy under
+`~/.local/share/tilo-apps/bin/<command>` for each entry.
 
 #### `[providers]`
 
@@ -186,12 +186,12 @@ schemes = ["web+notes"]
 
 ### Validation
 
-`qos-pkg pack` calls
+`tilo-pkg pack` calls
 `validate_manifest_with_payload` before writing anything, which enforces:
 
 - `sandbox.fs.read` and `sandbox.fs.write` are empty. Checked first, so a
   package that still declares paths reads that error rather than a semver
-  nit four lines down. `qos-install install` runs the same check, and the
+  nit four lines down. `tilo-install install` runs the same check, and the
   launcher refuses again at launch.
 - `package.version` is semver.
 - `package.runtime` is `<name>/<version>` with a semver or calver version, and
@@ -208,11 +208,11 @@ schemes = ["web+notes"]
 
 ### On-disk layout
 
-A `.qpkg` is a plain (uncompressed) tar. Actual contents of the hello-world
-qpkg produced below:
+A `.qpkg` is a plain (uncompressed) tar. Contents of the example hello-world
+package:
 
 ```
-$ tar tvf /tmp/qos-hello-demo/qos-hello.qpkg
+$ tar tvf /tmp/tilo-hello-demo/tilo-hello.qpkg
 -rw-r--r-- 0/0              96 1970-01-01 01:00 qpkg.toml
 -rw-r--r-- 0/0             173 1970-01-01 01:00 signed-root
 -rw-r--r-- 0/0             770 1970-01-01 01:00 manifest.toml
@@ -236,19 +236,19 @@ $ tar tvf /tmp/qos-hello-demo/qos-hello.qpkg
   named entries).
 
 Uncompressed on purpose: each blob is already content-addressed and (in
-deployed qOS) lives in an `iroh-blobs` store with chunk-level dedup. Adding
-gzip over that just wastes CPU.
+deployed Tilo) lives in an `iroh-blobs` store with chunk-level dedup. Adding
+gzip over that adds CPU cost without improving deduplication.
 
 The `PackageId` is `blake3(signed-root-bytes)`. It is the `qpkg:<hex>` URL
-you see in `qos-pkg inspect`.
+you see in `tilo-pkg inspect`.
 
-## `qos-pkg` — the CLI
+## `tilo-pkg` — the CLI
 
 ```
-$ qos-pkg --help
-Pack / sign / verify / inspect qOS packages (.qpkg)
+$ tilo-pkg --help
+Pack / sign / verify / inspect Tilo packages (.qpkg)
 
-Usage: qos-pkg <COMMAND>
+Usage: tilo-pkg <COMMAND>
 
 Commands:
   pack     Pack a payload directory + manifest into a .qpkg, signing it with a freshly-generated identity unless --identity is passed
@@ -262,7 +262,7 @@ Commands:
 ### `pack`
 
 ```
-qos-pkg pack --manifest <toml> --payload <dir> --output <qpkg> [--identity <json>]
+tilo-pkg pack --manifest <toml> --payload <dir> --output <qpkg> [--identity <json>]
 ```
 
 - Reads `--manifest` and `--payload/**`.
@@ -271,13 +271,13 @@ qos-pkg pack --manifest <toml> --payload <dir> --output <qpkg> [--identity <json
 - Signs the signed root with that identity.
 - Writes the `.qpkg`.
 
-Actual run against the demo project:
+Example run against the demo project:
 
 ```
-$ qos-pkg pack \
-    --manifest /tmp/qos-hello-demo/manifest.toml \
-    --payload  /tmp/qos-hello-demo/payload \
-    --output   /tmp/qos-hello-demo/qos-hello.qpkg
+$ tilo-pkg pack \
+    --manifest /tmp/tilo-hello-demo/manifest.toml \
+    --payload  /tmp/tilo-hello-demo/payload \
+    --output   /tmp/tilo-hello-demo/tilo-hello.qpkg
 packed qpkg:b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3 (4 blobs)
 ```
 
@@ -292,7 +292,7 @@ The `--identity` file is JSON:
 Re-sign an existing `.qpkg` with a different identity. Fails unless the
 identity's public key matches the `.qpkg`'s embedded publisher identity —
 this command is for detached signing flows (e.g. an offline HSM signed
-what `qos-pkg pack --identity dummy.json` produced), not for identity
+what `tilo-pkg pack --identity dummy.json` produced), not for identity
 substitution.
 
 ### `verify`
@@ -300,7 +300,7 @@ substitution.
 Every cryptographic invariant. On the demo bundle:
 
 ```
-$ qos-pkg verify /tmp/qos-hello-demo/qos-hello.qpkg
+$ tilo-pkg verify /tmp/tilo-hello-demo/tilo-hello.qpkg
 ok: qpkg:b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3 verifies and publisher is trusted
 ```
 
@@ -317,7 +317,7 @@ the embedded publisher key. Exit code:
 Human-readable dump of everything but the payload contents:
 
 ```
-$ qos-pkg inspect /tmp/qos-hello-demo/qos-hello.qpkg
+$ tilo-pkg inspect /tmp/tilo-hello-demo/tilo-hello.qpkg
 package-id: qpkg:b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3
 manifest-hash: blake3:774d5714edfb4734e3f158e5e74aa5a8aeb34aab98ae21ef675894a578dbb312
 payload-root-hash: blake3:55ab8b6bdeb4e85d7fd37e975914278f67347056414d3e489aaaad4a1b4de2ee
@@ -326,21 +326,21 @@ signed: yes
 
 --- manifest.toml ---
 [package]
-id = "dev.qos.hello"
+id = "dev.tilo.hello"
 version = "0.1.0"
 kind = "app"
-runtime = "qos-runtime/2026.07"
+runtime = "tilo-runtime/2026.07"
 ...
 ```
 
 ### `unpack`
 
 ```
-qos-pkg unpack --dest <dir> <qpkg>
+tilo-pkg unpack --dest <dir> <qpkg>
 ```
 
 Writes the payload tree into `--dest` and drops a copy of `manifest.toml`
-next to it. Useful for auditing a signed bundle without a running qOS.
+next to it. Useful for auditing a signed bundle without a running Tilo.
 
 ## The pack pipeline
 
@@ -383,4 +383,4 @@ The `PackageId` is derived entirely from the signed root, so a re-sign
 default, so identity re-use with a fresh key each pack changes the ID).
 
 Next: [`sandbox.md`](./sandbox.md) explains what each `[sandbox.*]` block
-actually enables at launch.
+enables at launch.

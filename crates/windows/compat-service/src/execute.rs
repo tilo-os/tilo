@@ -1,6 +1,6 @@
 use std::ffi::CString;
 use std::fs::File;
-use std::io::Write;
+use std::io::{Seek, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
@@ -10,6 +10,12 @@ use thiserror::Error;
 use crate::CapsuleCommandPlan;
 
 pub const SECCOMP_CHILD_FD: i32 = 32;
+pub(crate) const PREFIX_CHILD_FD: i32 = 33;
+pub(crate) const HOME_CHILD_FD: i32 = 34;
+pub(crate) const RUNTIME_LOCK_CHILD_FD: i32 = 35;
+pub(crate) const PASSWD_CHILD_FD: i32 = 36;
+pub(crate) const GROUP_CHILD_FD: i32 = 37;
+use launcher::performance::apply_game_performance_hints;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionOutcome {
@@ -27,17 +33,53 @@ pub struct BwrapExecutor;
 
 impl SandboxExecutor for BwrapExecutor {
     fn execute(&self, plan: &CapsuleCommandPlan) -> Result<ExecutionOutcome, ExecutionError> {
+        // SAFETY: these calls only read this process's effective credentials.
+        let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+        validate_identity_uid(plan.identity_uid, uid)?;
         let mut filter_file = if let Some(profile) = plan.seccomp_profile {
             let filter = launcher::seccomp::compile_baseline(profile)
                 .map_err(|error| ExecutionError::Seccomp(error.to_string()))?;
-            let mut file = create_memfd()?;
+            let mut file = create_memfd("tilo-compat-seccomp")?;
             file.write_all(&filter)?;
             file.sync_all()?;
+            // Bubblewrap reads from the inherited descriptor's current offset.
+            // dup2 shares that offset, so an EOF position yields an empty BPF
+            // program and PR_SET_SECCOMP fails with EINVAL.
+            file.rewind()?;
             Some(file)
         } else {
             None
         };
-        let filter_fd = filter_file.as_ref().map(AsRawFd::as_raw_fd);
+        // Duplicate above every destination before fork. Otherwise dup2 of
+        // one mapping could overwrite a source needed by the next mapping.
+        let [prefix, home] = plan.directory_fds();
+        let mut inherited = vec![
+            (duplicate_above_child_slots(prefix)?, PREFIX_CHILD_FD),
+            (duplicate_above_child_slots(home)?, HOME_CHILD_FD),
+        ];
+        for (name, contents, target) in identity_files(uid, gid) {
+            let mut file = create_memfd(name)?;
+            file.write_all(contents.as_bytes())?;
+            file.rewind()?;
+            inherited.push((duplicate_above_child_slots(file.as_raw_fd())?, target));
+        }
+        if let Some(filter) = &filter_file {
+            inherited.push((
+                duplicate_above_child_slots(filter.as_raw_fd())?,
+                SECCOMP_CHILD_FD,
+            ));
+        }
+        if plan.runtime_lock_required {
+            let lock = create_memfd("tilo-runtime-lock")?;
+            inherited.push((
+                duplicate_above_child_slots(lock.as_raw_fd())?,
+                RUNTIME_LOCK_CHILD_FD,
+            ));
+        }
+        let mappings: Vec<_> = inherited
+            .iter()
+            .map(|(file, target)| (file.as_raw_fd(), *target))
+            .collect();
 
         let mut command = Command::new("/usr/bin/bwrap");
         command
@@ -45,27 +87,26 @@ impl SandboxExecutor for BwrapExecutor {
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
-        if let Some(filter_fd) = filter_fd {
-            // SAFETY: `pre_exec` calls only async-signal-safe libc functions.
-            // The owned memfd remains alive until spawn returns.
-            unsafe {
-                command.pre_exec(move || {
-                    if libc::dup2(filter_fd, SECCOMP_CHILD_FD) == -1 {
+        let latency_sensitive = plan.latency_sensitive;
+        // SAFETY: the closure only iterates preallocated mappings and calls
+        // async-signal-safe syscalls (performance hints and dup2). Every source differs from every target, so
+        // dup2 also clears CLOEXEC on the inherited target descriptors.
+        // The owned source descriptors remain alive until spawn returns.
+        unsafe {
+            command.pre_exec(move || {
+                if latency_sensitive {
+                    apply_game_performance_hints()?;
+                }
+                for &(source, target) in &mappings {
+                    if libc::dup2(source, target) == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
-                    let flags = libc::fcntl(SECCOMP_CHILD_FD, libc::F_GETFD);
-                    if flags == -1 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    if libc::fcntl(SECCOMP_CHILD_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1
-                    {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
+                }
+                Ok(())
+            });
         }
         let mut child = command.spawn().map_err(ExecutionError::Spawn)?;
+        drop(inherited);
         drop(filter_file.take());
         let status = child.wait()?;
         Ok(ExecutionOutcome {
@@ -75,9 +116,45 @@ impl SandboxExecutor for BwrapExecutor {
     }
 }
 
-fn create_memfd() -> Result<File, ExecutionError> {
-    let name = CString::new("qos-compat-seccomp")
-        .map_err(|_| ExecutionError::Seccomp("invalid memfd name".to_string()))?;
+fn duplicate_above_child_slots(fd: std::os::fd::RawFd) -> Result<File, std::io::Error> {
+    // SAFETY: fcntl duplicates the borrowed live descriptor without changing
+    // it. The result is newly owned and kept close-on-exec in the parent.
+    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, GROUP_CHILD_FD + 1) };
+    if duplicate < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: a successful F_DUPFD_CLOEXEC returns a new owned descriptor.
+    Ok(unsafe { File::from_raw_fd(duplicate) })
+}
+
+fn validate_identity_uid(planned: u32, effective: u32) -> Result<(), ExecutionError> {
+    if planned != effective {
+        return Err(ExecutionError::IdentityMismatch { planned, effective });
+    }
+    Ok(())
+}
+
+fn identity_files(uid: u32, gid: u32) -> [(&'static str, String, i32); 2] {
+    [
+        (
+            "tilo-capsule-passwd",
+            format!(
+                "tilo:x:{uid}:{gid}:Tilo capsule:{}:/usr/bin/nologin\n",
+                crate::plan::HOME_MOUNT
+            ),
+            PASSWD_CHILD_FD,
+        ),
+        (
+            "tilo-capsule-group",
+            format!("tilo:x:{gid}:\n"),
+            GROUP_CHILD_FD,
+        ),
+    ]
+}
+
+fn create_memfd(name: &str) -> Result<File, ExecutionError> {
+    let name = CString::new(name)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid memfd name"))?;
     // SAFETY: `name` is a valid NUL-terminated C string. On success this call
     // returns a new owned file descriptor, transferred immediately to `File`.
     let raw = unsafe {
@@ -98,12 +175,47 @@ fn create_memfd() -> Result<File, ExecutionError> {
 
 #[derive(Debug, Error)]
 pub enum ExecutionError {
-    #[error("could not compile the qOS seccomp profile: {0}")]
+    #[error("capsule session UID {planned} differs from executor UID {effective}")]
+    IdentityMismatch { planned: u32, effective: u32 },
+    #[error("could not compile the Tilo seccomp profile: {0}")]
     Seccomp(String),
-    #[error("could not create the private seccomp memfd: {0}")]
+    #[error("could not create a private sandbox memfd: {0}")]
     Memfd(std::io::Error),
     #[error("could not spawn Bubblewrap: {0}")]
     Spawn(std::io::Error),
     #[error("sandbox process failed: {0}")]
     Io(#[from] std::io::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_contains_only_fixed_capsule_paths_and_effective_ids() {
+        for (uid, gid) in [(0, 0), (1000, 2000), (u32::MAX, u32::MAX)] {
+            let files = identity_files(uid, gid);
+            assert_eq!(
+                files[0].1,
+                format!(
+                    "tilo:x:{uid}:{gid}:Tilo capsule:/run/tilo/capsule/home:/usr/bin/nologin\n"
+                )
+            );
+            assert_eq!(files[1].1, format!("tilo:x:{gid}:\n"));
+            assert_eq!(files[0].2, PASSWD_CHILD_FD);
+            assert_eq!(files[1].2, GROUP_CHILD_FD);
+        }
+    }
+
+    #[test]
+    fn changed_execution_identity_fails_closed() {
+        assert!(validate_identity_uid(1000, 1000).is_ok());
+        assert!(matches!(
+            validate_identity_uid(1000, 0),
+            Err(ExecutionError::IdentityMismatch {
+                planned: 1000,
+                effective: 0
+            })
+        ));
+    }
 }

@@ -11,7 +11,8 @@
 //!
 //! ## Live vs. sample
 //!
-//! Production loads only real stores and renders an honest empty state.
+//! Production loads the configured stores and renders an empty state when none
+//! are available.
 //! Screenshot and widget tests may inject [`crate::accounts::sample_directory`]
 //! explicitly; those rows are labelled examples and omit mutation controls.
 //!
@@ -79,7 +80,7 @@ fn account_action_button(
     resource_id: String,
     resource_label: String,
     action_id: &str,
-    kind: qos_actions::OperationKind,
+    kind: tilo_actions::OperationKind,
     operation: crate::actions::AccountOperation,
     destructive: bool,
 ) -> Button {
@@ -554,7 +555,7 @@ impl AccountsPane {
             crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
             "External Accounts".into(),
             "add-mail",
-            qos_actions::OperationKind::View,
+            tilo_actions::OperationKind::View,
             crate::actions::AccountOperation::Add {
                 kind: "mail".into(),
             },
@@ -575,7 +576,7 @@ impl AccountsPane {
                 crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
                 "External Accounts".into(),
                 &format!("add-{}", kind.slug()),
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::AccountOperation::Add {
                     kind: kind.slug().into(),
                 },
@@ -599,8 +600,8 @@ impl AccountsPane {
     /// One account: label + connection summary, status, and a Remove button
     /// (only for real accounts — sample rows are illustrative).
     ///
-    /// Sample rows report an honest "Example" status rather than fabricating
-    /// a live "Connected" — nothing is actually connected in the illustration.
+    /// Sample rows report an "Example" status; they do not represent a live
+    /// connection.
     #[allow(
         clippy::too_many_lines,
         reason = "the full account-row action hierarchy is kept together for auditability"
@@ -677,7 +678,7 @@ impl AccountsPane {
                         account_resource.clone(),
                         view.label.clone(),
                         "edit",
-                        qos_actions::OperationKind::View,
+                        tilo_actions::OperationKind::View,
                         crate::actions::AccountOperation::Edit {
                             id: view.id.clone(),
                         },
@@ -692,7 +693,7 @@ impl AccountsPane {
                         account_resource.clone(),
                         view.label.clone(),
                         "reauthenticate",
-                        qos_actions::OperationKind::View,
+                        tilo_actions::OperationKind::View,
                         crate::actions::AccountOperation::Reauthenticate {
                             id: view.id.clone(),
                         },
@@ -713,7 +714,7 @@ impl AccountsPane {
                         account_resource.clone(),
                         view.label.clone(),
                         "test",
-                        qos_actions::OperationKind::Effect,
+                        tilo_actions::OperationKind::Effect,
                         crate::actions::AccountOperation::Test {
                             id: view.id.clone(),
                         },
@@ -729,7 +730,7 @@ impl AccountsPane {
                         account_resource,
                         view.label.clone(),
                         "remove",
-                        qos_actions::OperationKind::Effect,
+                        tilo_actions::OperationKind::Effect,
                         crate::actions::AccountOperation::Remove {
                             id: view.id.clone(),
                         },
@@ -810,7 +811,7 @@ impl AccountsPane {
                 crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
                 "External Accounts".into(),
                 "save-form",
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::AccountOperation::SubmitForm,
                 false,
             )))
@@ -820,7 +821,7 @@ impl AccountsPane {
                 crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
                 "External Accounts".into(),
                 "cancel-form",
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::AccountOperation::CancelForm,
                 false,
             )))
@@ -889,7 +890,7 @@ impl AccountsPane {
                     crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
                     "External Accounts".into(),
                     "save-reauthentication",
-                    qos_actions::OperationKind::Effect,
+                    tilo_actions::OperationKind::Effect,
                     crate::actions::AccountOperation::SubmitReauthentication,
                     false,
                 )))
@@ -899,7 +900,7 @@ impl AccountsPane {
                     crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
                     "External Accounts".into(),
                     "cancel-reauthentication",
-                    qos_actions::OperationKind::View,
+                    tilo_actions::OperationKind::View,
                     crate::actions::AccountOperation::CancelReauthentication,
                     false,
                 )))
@@ -1111,7 +1112,7 @@ impl AccountsPane {
                 }
             }
             let _ = crate::accounts::finish_account_mutation();
-            warn!(target: "qos::settings", op = "account_store_save", error = %e, "failed to persist account metadata");
+            warn!(target: "tilo::settings", op = "account_store_save", error = %e, "failed to persist account metadata");
             return Err(format!("could not persist account: {e}"));
         }
         finish_or_recover("account save")
@@ -2009,10 +2010,6 @@ mod tests {
         );
     }
 
-    /// The live pane (`new()`, over an empty store) must NOT fabricate the
-    /// illustrative sample — it renders an honest empty state, mirroring the
-    /// Printers pane's no-fabrication rule. Asserts the real production path,
-    /// with `XDG_CONFIG_HOME` redirected to an empty temp dir.
     #[test]
     fn live_pane_over_empty_store_does_not_fabricate_sample() {
         let _cfg = crate::prefs::test_env::ConfigGuard::new("accounts_empty_live");

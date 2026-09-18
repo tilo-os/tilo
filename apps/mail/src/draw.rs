@@ -2,13 +2,12 @@
 //!
 //! These are thin wrappers over the Vello scene plus the two mail-specific
 //! bits every pane needs: text elision to a pixel budget and the sender
-//! avatar. Avatars try a real remote image (a Gravatar keyed by the address)
-//! through the shared [`ui::ImageStore`]; until/unless one resolves they fall
-//! back to a coloured initials disc — a real, computed avatar, never a blank
-//! placeholder.
+//! avatar. Avatars try a remote image (a Gravatar keyed by the address)
+//! through the shared [`ui::ImageStore`]; until one resolves they fall back to
+//! a coloured initials disc.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect};
+use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill, ImageBrush};
 
 use ui::ImageStore;
@@ -17,6 +16,14 @@ use ui::theme::Theme;
 use ui::widget::Avatar;
 
 use crate::model::Addr;
+
+pub struct AvatarPaintContext<'a> {
+    pub scene: &'a mut Scene,
+    pub text: &'a mut TextRenderer,
+    pub transform: Affine,
+    pub theme: &'a Theme,
+    pub images: &'a ImageStore,
+}
 
 /// Height of a per-pane header strip (folder title / actions / account switch).
 pub const HEADER_H: f64 = 56.0;
@@ -110,19 +117,18 @@ pub fn gravatar_url(email: &str) -> String {
 
 /// Draw a sender avatar centred at `center`. Uses a real Gravatar when the
 /// [`ImageStore`] has one decoded; otherwise a coloured initials disc.
-#[allow(clippy::too_many_arguments)]
 pub fn draw_avatar(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    t: Affine,
-    theme: &Theme,
-    images: &ImageStore,
+    ctx: &mut AvatarPaintContext<'_>,
     center: Point,
     radius: f64,
     addr: &Addr,
     tint: u8,
 ) {
-    if let Some(img) = images.get(&gravatar_url(&addr.email)) {
+    let scene = &mut *ctx.scene;
+    let tr = &mut *ctx.text;
+    let t = ctx.transform;
+    let theme = ctx.theme;
+    if let Some(img) = ctx.images.get(&gravatar_url(&addr.email)) {
         let iw = f64::from(img.width);
         let ih = f64::from(img.height);
         if iw > 0.0 && ih > 0.0 {
@@ -341,4 +347,24 @@ mod tests {
         let u = gravatar_url("  MyEmailAddress@example.com ");
         assert!(u.contains("0bc83cb571cd1c50ba6f3e8a78ef1346"), "{u}");
     }
+}
+
+pub fn fill_round(scene: &mut Scene, t: Affine, rect: Rect, r: f64, color: Color) {
+    scene.fill(
+        Fill::NonZero,
+        t,
+        color,
+        None,
+        &RoundedRect::from_rect(rect, r),
+    );
+}
+
+pub fn stroke_round(scene: &mut Scene, t: Affine, rect: Rect, r: f64, w: f64, color: Color) {
+    scene.stroke(
+        &Stroke::new(w),
+        t,
+        color,
+        None,
+        &RoundedRect::from_rect(rect, r),
+    );
 }

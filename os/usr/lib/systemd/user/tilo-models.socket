@@ -1,0 +1,14 @@
+[Unit]
+Description=Tilo local-model manager activation socket
+Documentation=file:///usr/share/doc/tilo/system-extensions.md
+
+[Socket]
+ListenStream=%t/tilo/services/models.sock
+SocketMode=0600
+DirectoryMode=0700
+Backlog=16
+RemoveOnStop=yes
+Service=tilo-models.service
+
+[Install]
+WantedBy=sockets.target

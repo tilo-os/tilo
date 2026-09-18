@@ -190,9 +190,9 @@ fn youtube_ad_skip_script() -> &'static str {
     'ytd-promoted-video-renderer, ytd-companion-slot-renderer,' +
     '#masthead-ad, #player-ads { display: none !important; }';
   function injectStyle() {
-    if (document.getElementById('qos-yt-adblock')) return;
+    if (document.getElementById('tilo-yt-adblock')) return;
     var el = document.createElement('style');
-    el.id = 'qos-yt-adblock';
+    el.id = 'tilo-yt-adblock';
     el.textContent = css;
     (document.head || document.documentElement).appendChild(el);
   }
@@ -225,18 +225,18 @@ fn youtube_ad_skip_script() -> &'static str {
       // Only mute if the user hadn't already muted the video.
       if (!video.muted) {
         video.muted = true;
-        video.dataset.qosAdMuted = '1';
+        video.dataset.tiloAdMuted = '1';
       }
       try { video.playbackRate = 16; } catch (e) {}
       if (isFinite(video.duration) && video.duration > 0) {
         // Seek to the end: fast-forwards the unskippable portion away.
         video.currentTime = video.duration;
       }
-    } else if (video && video.dataset.qosAdMuted === '1') {
+    } else if (video && video.dataset.tiloAdMuted === '1') {
       // Ad cleared — restore only what we changed.
       video.muted = false;
       try { video.playbackRate = 1; } catch (e) {}
-      delete video.dataset.qosAdMuted;
+      delete video.dataset.tiloAdMuted;
     }
   }
 

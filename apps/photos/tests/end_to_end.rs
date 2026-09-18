@@ -30,10 +30,10 @@ use vello::kurbo::{Affine, Point, Rect};
 
 use photos::actions::{PhotosResources, register};
 use photos::doc::PhotosDoc;
-use photos::model::{Edits, Rect01};
+use photos::model::{Album, Edits, Rect01};
 use photos::pixels::{self, Rgba};
 use photos::{PhotosApp, shots_pattern};
-use qos_actions::ResourceProvider;
+use tilo_actions::ResourceProvider;
 
 /// A laid-out app, ready to assert on.
 struct Harness {
@@ -124,6 +124,97 @@ fn staged(dir: &std::path::Path, w: u32, h: u32) -> (String, Rgba) {
     let path = dir.join("harbour.png");
     std::fs::write(&path, pixels::encode_png(&img).unwrap()).unwrap();
     (path.to_string_lossy().into_owned(), img)
+}
+
+#[test]
+fn populated_large_text_library_passes_native_accessibility_certification() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, _) = staged(dir.path(), 1200, 800);
+    let mut state = ui::State::new();
+    let mut app = PhotosApp::new();
+    app.open_path(&mut state.doc, &path);
+    app.show_library();
+    let theme = Theme::high_contrast()
+        .with_text_scale(2.0)
+        .with_reduce_motion(true);
+    let mut driver = ui::headless::Driver::new_with_theme(state, Box::new(app), (390, 844), theme);
+    register(driver.action_registry_mut());
+    let audit = driver.native_app_audit();
+    assert!(
+        audit.is_certified(),
+        "populated large-text library native audit: native={:?}, accessibility={:?}",
+        audit.issues,
+        audit.accessibility.issues
+    );
+    assert!(driver.accessibility_audit().is_clean());
+}
+
+/// The destination picker is an overlay, but its controls still have to be
+/// individually routable through the same stable album ids an agent or screen
+/// reader uses.  In particular, the shared modal close control must not
+/// duplicate Cancel's semantic identity.
+#[test]
+fn destination_album_chooser_keeps_native_actions_unique_and_canonical() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, _) = staged(dir.path(), 320, 240);
+    let mut hz = Harness::new(960.0, 700.0);
+    hz.app.open_path(&mut hz.state.doc, &path);
+    let photo_id = PhotosDoc::library(&hz.state.doc).photos[0].id.clone();
+    let mut library = PhotosDoc::library(&hz.state.doc);
+    library.albums.extend([
+        Album {
+            id: "photos.album:destination-a".into(),
+            name: "Weekend plans".into(),
+            photo_ids: vec![photo_id.clone()],
+        },
+        Album {
+            id: "photos.album:destination-b".into(),
+            name: "Home projects".into(),
+            photo_ids: vec![photo_id],
+        },
+    ]);
+    PhotosDoc::set_library(&mut hz.state.doc, &library);
+    hz.app.show_selection_for_shot(&hz.state.doc);
+    hz.app
+        .show_selection_destination_chooser_for_shot(&hz.state.doc);
+    hz.frame();
+
+    fn collect_targets(node: &ui::a11y::AccessNode, targets: &mut Vec<String>) {
+        if let Some(target) = &node.action_target {
+            targets.push(target.clone());
+        }
+        for child in &node.children {
+            collect_targets(child, targets);
+        }
+    }
+
+    let tree = hz
+        .app
+        .accessibility()
+        .expect("Photos publishes accessibility");
+    let mut targets = Vec::new();
+    collect_targets(&tree, &mut targets);
+    for target in [
+        "photos:selection:destination:photos.album:destination-a",
+        "photos:selection:destination:photos.album:destination-b",
+        "photos:selection:destination-cancel",
+        "photos:selection:destination-close",
+    ] {
+        assert_eq!(
+            targets
+                .iter()
+                .filter(|candidate| candidate.as_str() == target)
+                .count(),
+            1,
+            "chooser action `{target}` must be present exactly once: {targets:?}"
+        );
+    }
+    assert!(
+        !targets
+            .iter()
+            .any(|target| target == "photos:selection:destination-apply"),
+        "Use album must remain unavailable until a destination is selected"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -567,7 +658,7 @@ fn save_writes_a_png_that_decodes_to_what_was_shown() {
 /// The default destination must not be the file that was opened.
 #[test]
 fn save_does_not_default_to_overwriting_the_original() {
-    let open = photos::OpenImage::from_path("/var/tmp/qos/home/quinten/harbour.png", 10, 10);
+    let open = photos::OpenImage::from_path("/var/tmp/tilo/home/quinten/harbour.png", 10, 10);
     let suggested = PhotosApp::suggested_save_path(&open);
     assert_ne!(suggested, open.path);
     assert!(suggested.ends_with("harbour-edited.png"), "got {suggested}");
@@ -581,7 +672,7 @@ fn save_does_not_default_to_overwriting_the_original() {
 /// listing them changes nothing.
 #[test]
 fn the_resource_surface_enumerates_the_open_photograph_and_acts_on_it() {
-    use qos_actions::{ActionRegistry, flatten};
+    use tilo_actions::{ActionRegistry, flatten};
 
     let dir = tempfile::tempdir().unwrap();
     let (path, _) = staged(dir.path(), 400, 200);
@@ -622,7 +713,7 @@ fn the_resource_surface_enumerates_the_open_photograph_and_acts_on_it() {
         .iter()
         .find(|a| a.id == "rotate-right")
         .expect("rotate-right is published");
-    let qos_actions::ActionInput::Immediate(encoded) = &spec.input else {
+    let tilo_actions::ActionInput::Immediate(encoded) = &spec.input else {
         panic!("rotate-right fires immediately");
     };
     registry
@@ -651,7 +742,7 @@ fn the_resource_surface_enumerates_the_open_photograph_and_acts_on_it() {
 /// the exported pixels against the original by identity rather than by size.
 #[test]
 fn a_caller_with_no_display_crops_by_address_and_gets_those_pixels() {
-    use qos_actions::{ActionInput, ActionRegistry};
+    use tilo_actions::{ActionInput, ActionRegistry};
 
     let dir = tempfile::tempdir().unwrap();
     let (path, original) = staged(dir.path(), 400, 400);
@@ -922,6 +1013,50 @@ fn library_card_controls_stay_inside_their_cards_at_wide_and_narrow_sizes() {
             }
         }
     }
+}
+
+#[test]
+fn desktop_library_uses_two_complete_rows_before_leaving_canvas_space() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, _) = staged(dir.path(), 1200, 800);
+    let mut hz = Harness::new(1440.0, 900.0);
+    hz.app.open_path(&mut hz.state.doc, &path);
+    let mut library = PhotosDoc::library(&hz.state.doc);
+    let seed = library.photos[0].clone();
+    for suffix in ["dusk", "trail", "museum", "market"] {
+        let mut extra = seed.clone();
+        extra.id = format!("{}:{suffix}", seed.id);
+        extra.image.name = format!("{suffix}.png");
+        library.add_photo(extra);
+    }
+    library.albums.push(Album {
+        id: "photos.album:layout".into(),
+        name: "Layout coverage".into(),
+        photo_ids: library
+            .photos
+            .iter()
+            .map(|photo| photo.id.clone())
+            .collect(),
+    });
+    PhotosDoc::set_library(&mut hz.state.doc, &library);
+    hz.app.show_library();
+    hz.frame();
+    hz.frame();
+
+    let cards = hz.app.library_card_action_rects();
+    assert_eq!(
+        cards.len(),
+        5,
+        "a five-photo desktop library should use the second row, not a large blank canvas"
+    );
+    assert!(
+        cards.iter().all(|(card, ..)| card.width() >= 220.0),
+        "the image-forward desktop timeline should fill a useful row rather than retain the old sparse file-card measure: {cards:?}"
+    );
+    assert!(
+        cards.iter().all(|(card, ..)| card.y1 <= 900.0),
+        "every rendered desktop card must remain fully pointer and AT reachable: {cards:?}"
+    );
 }
 
 /// 200% text has a deliberately compact overflow toolbar and a two-row

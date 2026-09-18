@@ -28,11 +28,13 @@
 use automerge::ActorId;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 use crate::model::{
-    AnnoKind, Annotation, ColorScheme, FontEntry, FontKind, HiColor, LibraryEntry, LibraryPrefs,
-    LibrarySort, Progress, ReadMode, ReadTheme, Settings, default_fonts, default_schemes, now_ms,
+    AnnoKind, Annotation, AnnotationAnchor, ColorScheme, FontEntry, FontKind, HiColor,
+    LibraryEntry, LibraryPrefs, LibrarySort, Progress, ReadMode, ReadTheme, Settings,
+    default_fonts, default_schemes, now_ms,
 };
 
 /// Pack an sRGB triple into a single int for the CRDT.
@@ -73,6 +75,78 @@ impl BooksDoc {
     fn root_map(doc: &mut AutoCommit, key: &str) -> ObjId {
         let root = ROOT;
         Self::get_or_make_map(doc, &root, key)
+    }
+
+    /// Every concurrent map object stored at one root key. Fresh documents
+    /// normally have one; legacy/lazily-created roots may conflict when two
+    /// offline peers create the first child simultaneously, and reads must
+    /// materialise all branches instead of accepting Automerge's one winner.
+    fn root_maps(doc: &AutoCommit, key: &str) -> Vec<ObjId> {
+        doc.get_all(&ROOT, key)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(value, id)| matches!(value, Value::Object(ObjType::Map)).then_some(id))
+            .collect()
+    }
+
+    /// All map-valued entries below every concurrently-created root map,
+    /// grouped by their logical key.  A lazy root can be created independently
+    /// by two offline peers; accepting only `ReadDoc::get` would then hide one
+    /// complete branch after merge.
+    fn keyed_map_entries(doc: &AutoCommit, root_key: &str) -> BTreeMap<String, Vec<ObjId>> {
+        let mut grouped = BTreeMap::<String, Vec<ObjId>>::new();
+        for root in Self::root_maps(doc, root_key) {
+            for key in doc.keys(&root) {
+                for (value, id) in doc.get_all(&root, key.as_str()).unwrap_or_default() {
+                    if matches!(value, Value::Object(ObjType::Map)) {
+                        let entries = grouped.entry(key.clone()).or_default();
+                        if !entries.contains(&id) {
+                            entries.push(id);
+                        }
+                    }
+                }
+            }
+        }
+        grouped
+    }
+
+    /// Resolve every object for `key`, creating the missing keyed object in
+    /// every live root branch. Updating all branches heals old first-use root
+    /// conflicts instead of leaving a stale twin that can win a later read.
+    fn get_or_make_keyed_maps(doc: &mut AutoCommit, root_key: &str, key: &str) -> Vec<ObjId> {
+        let mut roots = Self::root_maps(doc, root_key);
+        if roots.is_empty() {
+            roots.push(Self::root_map(doc, root_key));
+        }
+        let mut out = Vec::new();
+        for root in roots {
+            let mut found = doc
+                .get_all(&root, key)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|(value, id)| {
+                    matches!(value, Value::Object(ObjType::Map)).then_some(id)
+                })
+                .collect::<Vec<_>>();
+            if found.is_empty()
+                && let Ok(id) = doc.put_object(&root, key, ObjType::Map)
+            {
+                found.push(id);
+            }
+            for id in found {
+                if !out.contains(&id) {
+                    out.push(id);
+                }
+            }
+        }
+        out
+    }
+
+    fn merged_str(doc: &AutoCommit, entries: &[ObjId], key: &str) -> Option<String> {
+        entries
+            .iter()
+            .filter_map(|entry| Self::scalar_str(doc, entry, key))
+            .max()
     }
 
     fn scalar_f64(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<f64> {
@@ -122,10 +196,7 @@ impl BooksDoc {
     // --- settings ----------------------------------------------------------
 
     pub fn has_settings(doc: &AutoCommit) -> bool {
-        matches!(
-            doc.get(&ROOT, "settings"),
-            Ok(Some((Value::Object(ObjType::Map), _)))
-        )
+        !Self::root_maps(doc, "settings").is_empty()
     }
 
     pub fn write_settings(doc: &mut AutoCommit, s: &Settings) {
@@ -139,30 +210,61 @@ impl BooksDoc {
         let _ = doc.put(&m, "composition", s.composition.as_str());
     }
 
+    /// Write only fields changed by one authored settings gesture. This keeps
+    /// concurrent changes to unrelated preferences (for example theme and
+    /// line spacing) as independent Automerge register updates.
+    pub fn write_settings_delta(doc: &mut AutoCommit, before: &Settings, after: &Settings) {
+        let m = Self::root_map(doc, "settings");
+        if before.font_scale.to_bits() != after.font_scale.to_bits() {
+            let _ = doc.put(&m, "font_scale", f64::from(after.font_scale));
+        }
+        if before.line_spacing.to_bits() != after.line_spacing.to_bits() {
+            let _ = doc.put(&m, "line_spacing", f64::from(after.line_spacing));
+        }
+        if before.font_id != after.font_id {
+            let _ = doc.put(&m, "font_id", after.font_id.as_str());
+        }
+        if before.theme != after.theme {
+            let _ = doc.put(&m, "theme", after.theme.as_str());
+        }
+        if before.scheme_id != after.scheme_id {
+            let _ = doc.put(&m, "scheme_id", after.scheme_id.as_str());
+        }
+        if before.mode != after.mode {
+            let _ = doc.put(&m, "mode", after.mode.as_str());
+        }
+        if before.composition != after.composition {
+            let _ = doc.put(&m, "composition", after.composition.as_str());
+        }
+    }
+
     pub fn read_settings(doc: &AutoCommit) -> Settings {
         let mut s = Settings::default();
-        let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&ROOT, "settings") else {
+        let maps = Self::root_maps(doc, "settings");
+        if maps.is_empty() {
             return s;
-        };
-        if let Some(v) = Self::scalar_f64(doc, &m, "font_scale") {
+        }
+        let f64_value = |key| maps.iter().find_map(|map| Self::scalar_f64(doc, map, key));
+        let str_value = |key| maps.iter().find_map(|map| Self::scalar_str(doc, map, key));
+        if let Some(v) = f64_value("font_scale") {
             s.font_scale = (v as f32).clamp(Settings::FONT_MIN, Settings::FONT_MAX);
         }
-        if let Some(v) = Self::scalar_f64(doc, &m, "line_spacing") {
+        if let Some(v) = f64_value("line_spacing") {
             s.line_spacing = (v as f32).clamp(Settings::SPACING_MIN, Settings::SPACING_MAX);
         }
-        if let Some(v) = Self::scalar_str(doc, &m, "font_id") {
+        if let Some(v) = str_value("font_id") {
             s.font_id = v;
         }
-        if let Some(v) = Self::scalar_str(doc, &m, "theme") {
+        if let Some(v) = str_value("theme") {
             s.theme = ReadTheme::from_str(&v);
         }
-        if let Some(v) = Self::scalar_str(doc, &m, "scheme_id") {
+        if let Some(v) = str_value("scheme_id") {
             s.scheme_id = v;
         }
-        if let Some(v) = Self::scalar_str(doc, &m, "mode") {
+        if let Some(v) = str_value("mode") {
             s.mode = ReadMode::from_str(&v);
         }
-        if let Some(v) = Self::scalar_str(doc, &m, "composition") {
+        if let Some(v) = str_value("composition") {
             s.composition = crate::model::CompositionStyle::from_str(&v);
         }
         s
@@ -174,31 +276,85 @@ impl BooksDoc {
     /// built-in [`default_fonts`] set is returned without writing, so the
     /// document stays clean until the user actually edits the registry.
     pub fn read_fonts(doc: &AutoCommit) -> Vec<FontEntry> {
-        let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&ROOT, "fonts") else {
-            return default_fonts();
-        };
-        let mut out = Vec::new();
-        for i in 0..doc.length(&list) {
-            let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i) else {
-                continue;
-            };
-            let id = Self::scalar_str(doc, &e, "id").unwrap_or_default();
-            if id.is_empty() {
-                continue;
+        let mut out = default_fonts();
+        if let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&ROOT, "fonts") {
+            out.clear();
+            for i in 0..doc.length(&list) {
+                let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i) else {
+                    continue;
+                };
+                if let Some(font) = Self::read_font_entry(doc, &e, None) {
+                    out.push(font);
+                }
             }
-            out.push(FontEntry {
-                kind: FontKind::from_code(
-                    &Self::scalar_str(doc, &e, "kind").unwrap_or_else(|| "default".into()),
-                ),
-                name: Self::scalar_str(doc, &e, "name").unwrap_or_else(|| id.clone()),
-                size_mult: Self::scalar_f64(doc, &e, "size_mult").map_or(1.0, |v| {
-                    (v as f32).clamp(FontEntry::MULT_MIN, FontEntry::MULT_MAX)
-                }),
-                shown: Self::scalar_bool(doc, &e, "shown").unwrap_or(true),
-                id,
-            });
         }
+        for entries in Self::root_maps(doc, "font_entries") {
+            let keys: Vec<String> = doc.keys(&entries).collect();
+            for id in keys {
+                if Self::has_tombstone(doc, "font_tombstones", &id) {
+                    continue;
+                }
+                let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&entries, &id) else {
+                    continue;
+                };
+                let Some(font) = Self::read_font_entry(doc, &entry, Some(id.as_str())) else {
+                    continue;
+                };
+                if let Some(existing) = out.iter_mut().find(|existing| existing.id == font.id) {
+                    *existing = font;
+                } else {
+                    out.push(font);
+                }
+            }
+        }
+        out.retain(|font| !Self::has_tombstone(doc, "font_tombstones", &font.id));
         if out.is_empty() { default_fonts() } else { out }
+    }
+
+    fn read_font_entry(
+        doc: &AutoCommit,
+        e: &ObjId,
+        fallback_id: Option<&str>,
+    ) -> Option<FontEntry> {
+        let id = Self::scalar_str(doc, e, "id").unwrap_or_default();
+        let id = if id.is_empty() {
+            fallback_id?.to_string()
+        } else {
+            id
+        };
+        Some(FontEntry {
+            kind: FontKind::from_code(
+                &Self::scalar_str(doc, e, "kind").unwrap_or_else(|| "default".into()),
+            ),
+            name: Self::scalar_str(doc, e, "name").unwrap_or_else(|| id.clone()),
+            size_mult: Self::scalar_f64(doc, e, "size_mult").map_or(1.0, |v| {
+                (v as f32).clamp(FontEntry::MULT_MIN, FontEntry::MULT_MAX)
+            }),
+            shown: Self::scalar_bool(doc, e, "shown").unwrap_or(true),
+            id,
+        })
+    }
+
+    /// Upsert one stable font entity. Tombstoned ids are never resurrected by
+    /// a delayed peer edit; a newly-added face always receives a fresh id.
+    pub fn upsert_font(doc: &mut AutoCommit, font: &FontEntry) {
+        if Self::has_tombstone(doc, "font_tombstones", &font.id) {
+            return;
+        }
+        let entries = Self::root_map(doc, "font_entries");
+        let entry = Self::get_or_make_map(doc, &entries, &font.id);
+        let _ = doc.put(&entry, "id", font.id.as_str());
+        let _ = doc.put(&entry, "kind", font.kind.as_code());
+        let _ = doc.put(&entry, "name", font.name.as_str());
+        let _ = doc.put(&entry, "size_mult", f64::from(font.size_mult));
+        let _ = doc.put(&entry, "shown", font.shown);
+    }
+
+    pub fn remove_font(doc: &mut AutoCommit, id: &str) {
+        let tombstones = Self::root_map(doc, "font_tombstones");
+        let _ = doc.put(&tombstones, id, true);
+        let entries = Self::root_map(doc, "font_entries");
+        let _ = doc.delete(&entries, id);
     }
 
     /// Replace the whole font registry (the manager edits the list wholesale).
@@ -231,12 +387,10 @@ impl BooksDoc {
     /// The registry-wide default font id (used when a book has no explicit
     /// per-reader selection). Empty string means "the first registered font".
     pub fn read_default_font(doc: &AutoCommit) -> String {
-        match doc.get(&ROOT, "settings") {
-            Ok(Some((Value::Object(ObjType::Map), m))) => {
-                Self::scalar_str(doc, &m, "default_font").unwrap_or_default()
-            }
-            _ => String::new(),
-        }
+        Self::root_maps(doc, "settings")
+            .iter()
+            .find_map(|map| Self::scalar_str(doc, map, "default_font"))
+            .unwrap_or_default()
     }
 
     pub fn write_default_font(doc: &mut AutoCommit, id: &str) {
@@ -249,13 +403,17 @@ impl BooksDoc {
     /// Read the shelf's sort order + hide-read flag (defaults when unset).
     pub fn read_library_prefs(doc: &AutoCommit) -> LibraryPrefs {
         let mut p = LibraryPrefs::default();
-        let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&ROOT, "settings") else {
-            return p;
-        };
-        if let Some(v) = Self::scalar_str(doc, &m, "library_sort") {
+        let maps = Self::root_maps(doc, "settings");
+        if let Some(v) = maps
+            .iter()
+            .find_map(|map| Self::scalar_str(doc, map, "library_sort"))
+        {
             p.sort = LibrarySort::from_str(&v);
         }
-        if let Some(v) = Self::scalar_bool(doc, &m, "library_hide_read") {
+        if let Some(v) = maps
+            .iter()
+            .find_map(|map| Self::scalar_bool(doc, map, "library_hide_read"))
+        {
             p.hide_read = v;
         }
         p
@@ -265,6 +423,20 @@ impl BooksDoc {
         let m = Self::root_map(doc, "settings");
         let _ = doc.put(&m, "library_sort", p.sort.as_str());
         let _ = doc.put(&m, "library_hide_read", p.hide_read);
+    }
+
+    pub fn write_library_prefs_delta(
+        doc: &mut AutoCommit,
+        before: &LibraryPrefs,
+        after: &LibraryPrefs,
+    ) {
+        let m = Self::root_map(doc, "settings");
+        if before.sort != after.sort {
+            let _ = doc.put(&m, "library_sort", after.sort.as_str());
+        }
+        if before.hide_read != after.hide_read {
+            let _ = doc.put(&m, "library_hide_read", after.hide_read);
+        }
     }
 
     // --- the library: books the reader has added, keyed by content-hash id -
@@ -279,25 +451,27 @@ impl BooksDoc {
         if Self::library_is_removed(doc, &e.id) {
             return;
         }
-        let lib = Self::root_map(doc, "library");
-        let existing_added = match doc.get(&lib, e.id.as_str()) {
-            Ok(Some((Value::Object(ObjType::Map), id))) => Self::scalar_i64(doc, &id, "added")
-                .filter(|&v| v > 0)
-                .map(|v| v as u64),
-            _ => None,
-        };
-        let entry = Self::get_or_make_map(doc, &lib, &e.id);
-        // Earlier development snapshots stored a raw source path here. Clear
-        // it whenever this row is touched so a normal import repairs old
-        // replicated state instead of extending the disclosure indefinitely.
-        let _ = doc.delete(&entry, "path");
-        let _ = doc.put(&entry, "title", e.title.as_str());
-        let _ = doc.put(&entry, "author", e.author.as_str());
-        let _ = doc.put(&entry, "subject", e.subject.as_str());
-        let was_shared = Self::scalar_bool(doc, &entry, "shared").unwrap_or(false);
-        let _ = doc.put(&entry, "shared", was_shared || e.shared);
+        let entries = Self::get_or_make_keyed_maps(doc, "library", &e.id);
+        let existing_added = entries
+            .iter()
+            .filter_map(|entry| Self::scalar_i64(doc, entry, "added"))
+            .filter(|&value| value > 0)
+            .min()
+            .map(|value| value as u64);
+        let was_shared = entries
+            .iter()
+            .any(|entry| Self::scalar_bool(doc, entry, "shared").unwrap_or(false));
         let added = existing_added.unwrap_or_else(|| if e.added > 0 { e.added } else { now_ms() });
-        let _ = doc.put(&entry, "added", added as i64);
+        for entry in entries {
+            // Earlier development snapshots stored a raw source path here.
+            // Clear it in every conflicting branch while repairing the row.
+            let _ = doc.delete(&entry, "path");
+            let _ = doc.put(&entry, "title", e.title.as_str());
+            let _ = doc.put(&entry, "author", e.author.as_str());
+            let _ = doc.put(&entry, "subject", e.subject.as_str());
+            let _ = doc.put(&entry, "shared", was_shared || e.shared);
+            let _ = doc.put(&entry, "added", added as i64);
+        }
     }
 
     /// Drop a book from the library. Its annotations + progress are left in place
@@ -305,17 +479,16 @@ impl BooksDoc {
     pub fn remove_library_entry(doc: &mut AutoCommit, id: &str) {
         let tombstones = Self::root_map(doc, "library_tombstones");
         let _ = doc.put(&tombstones, id, true);
-        let lib = Self::root_map(doc, "library");
-        let _ = doc.delete(&lib, id);
+        for lib in Self::root_maps(doc, "library") {
+            let _ = doc.delete(&lib, id);
+        }
     }
 
     /// A fresh, user-consented import is the sole restore path for a shelf
     /// tombstone. This keeps delayed metadata writes from reviving a removed
     /// book while retaining the intentional "remove then re-add" workflow.
     pub fn restore_library_entry(doc: &mut AutoCommit, e: &LibraryEntry) {
-        if let Ok(Some((Value::Object(ObjType::Map), tombstones))) =
-            doc.get(&ROOT, "library_tombstones")
-        {
+        for tombstones in Self::root_maps(doc, "library_tombstones") {
             let _ = doc.delete(&tombstones, &e.id);
         }
         Self::upsert_library_entry(doc, e);
@@ -328,25 +501,25 @@ impl BooksDoc {
     /// Every book in the library, ordered by when it was added (oldest first) so
     /// the shelf has a stable base order the sort control then re-orders.
     pub fn read_library_entries(doc: &AutoCommit) -> Vec<LibraryEntry> {
-        let Ok(Some((Value::Object(ObjType::Map), lib))) = doc.get(&ROOT, "library") else {
-            return Vec::new();
-        };
         let mut out = Vec::new();
-        let keys: Vec<String> = doc.keys(&lib).collect();
-        for key in keys {
+        for (key, entries) in Self::keyed_map_entries(doc, "library") {
             if Self::library_is_removed(doc, &key) {
                 continue;
             }
-            let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&lib, key.as_str()) else {
-                continue;
-            };
             out.push(LibraryEntry {
                 id: key,
-                shared: Self::scalar_bool(doc, &e, "shared").unwrap_or(false),
-                title: Self::scalar_str(doc, &e, "title").unwrap_or_default(),
-                author: Self::scalar_str(doc, &e, "author").unwrap_or_default(),
-                subject: Self::scalar_str(doc, &e, "subject").unwrap_or_default(),
-                added: Self::scalar_i64(doc, &e, "added").unwrap_or(0).max(0) as u64,
+                shared: entries
+                    .iter()
+                    .any(|entry| Self::scalar_bool(doc, entry, "shared").unwrap_or(false)),
+                title: Self::merged_str(doc, &entries, "title").unwrap_or_default(),
+                author: Self::merged_str(doc, &entries, "author").unwrap_or_default(),
+                subject: Self::merged_str(doc, &entries, "subject").unwrap_or_default(),
+                added: entries
+                    .iter()
+                    .filter_map(|entry| Self::scalar_i64(doc, entry, "added"))
+                    .filter(|&value| value > 0)
+                    .min()
+                    .unwrap_or(0) as u64,
             });
         }
         out.sort_by(|a, b| a.added.cmp(&b.added).then_with(|| a.id.cmp(&b.id)));
@@ -358,11 +531,18 @@ impl BooksDoc {
     /// user-granted watched folder and peers can resolve the canonical shared
     /// object without learning where either device stored it.
     pub fn strip_legacy_library_paths(doc: &mut AutoCommit) {
-        if let Ok(Some((Value::Object(ObjType::Map), lib))) = doc.get(&ROOT, "library") {
+        for lib in Self::root_maps(doc, "library") {
             let keys: Vec<String> = doc.keys(&lib).collect();
             for key in keys {
-                if let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&lib, key.as_str())
-                {
+                let entries = doc
+                    .get_all(&lib, key.as_str())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|(value, entry)| {
+                        matches!(value, Value::Object(ObjType::Map)).then_some(entry)
+                    })
+                    .collect::<Vec<_>>();
+                for entry in entries {
                     let _ = doc.delete(&entry, "path");
                 }
             }
@@ -377,36 +557,91 @@ impl BooksDoc {
     /// Read the registered colour schemes, falling back to the built-ins when
     /// none are stored (kept out of the document until the user edits them).
     pub fn read_schemes(doc: &AutoCommit) -> Vec<ColorScheme> {
-        let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&ROOT, "schemes") else {
-            return default_schemes();
-        };
-        let mut out = Vec::new();
-        for i in 0..doc.length(&list) {
-            let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i) else {
-                continue;
-            };
-            let id = Self::scalar_str(doc, &e, "id").unwrap_or_default();
-            if id.is_empty() {
-                continue;
+        let mut out = default_schemes();
+        if let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&ROOT, "schemes") {
+            out.clear();
+            for i in 0..doc.length(&list) {
+                let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i) else {
+                    continue;
+                };
+                if let Some(scheme) = Self::read_scheme_entry(doc, &e, None) {
+                    out.push(scheme);
+                }
             }
-            let page = unpack_rgb(Self::scalar_i64(doc, &e, "page").unwrap_or(0));
-            out.push(ColorScheme {
-                name: Self::scalar_str(doc, &e, "name").unwrap_or_else(|| id.clone()),
-                page,
-                ink: unpack_rgb(Self::scalar_i64(doc, &e, "ink").unwrap_or(0)),
-                accent: unpack_rgb(Self::scalar_i64(doc, &e, "accent").unwrap_or(0)),
-                dark: Self::scalar_bool(doc, &e, "dark")
-                    .unwrap_or_else(|| crate::model::luminance(page) < 0.5),
-                enabled: Self::scalar_bool(doc, &e, "enabled").unwrap_or(true),
-                builtin: Self::scalar_bool(doc, &e, "builtin").unwrap_or(false),
-                id,
-            });
         }
+        for entries in Self::root_maps(doc, "scheme_entries") {
+            let keys: Vec<String> = doc.keys(&entries).collect();
+            for id in keys {
+                if Self::has_tombstone(doc, "scheme_tombstones", &id) {
+                    continue;
+                }
+                let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&entries, &id) else {
+                    continue;
+                };
+                let Some(scheme) = Self::read_scheme_entry(doc, &entry, Some(id.as_str())) else {
+                    continue;
+                };
+                if let Some(existing) = out.iter_mut().find(|existing| existing.id == scheme.id) {
+                    *existing = scheme;
+                } else {
+                    out.push(scheme);
+                }
+            }
+        }
+        out.retain(|scheme| !Self::has_tombstone(doc, "scheme_tombstones", &scheme.id));
         if out.is_empty() {
             default_schemes()
         } else {
             out
         }
+    }
+
+    fn read_scheme_entry(
+        doc: &AutoCommit,
+        e: &ObjId,
+        fallback_id: Option<&str>,
+    ) -> Option<ColorScheme> {
+        let id = Self::scalar_str(doc, e, "id").unwrap_or_default();
+        let id = if id.is_empty() {
+            fallback_id?.to_string()
+        } else {
+            id
+        };
+        let page = unpack_rgb(Self::scalar_i64(doc, e, "page").unwrap_or(0));
+        Some(ColorScheme {
+            name: Self::scalar_str(doc, e, "name").unwrap_or_else(|| id.clone()),
+            page,
+            ink: unpack_rgb(Self::scalar_i64(doc, e, "ink").unwrap_or(0)),
+            accent: unpack_rgb(Self::scalar_i64(doc, e, "accent").unwrap_or(0)),
+            dark: Self::scalar_bool(doc, e, "dark")
+                .unwrap_or_else(|| crate::model::luminance(page) < 0.5),
+            enabled: Self::scalar_bool(doc, e, "enabled").unwrap_or(true),
+            builtin: Self::scalar_bool(doc, e, "builtin").unwrap_or(false),
+            id,
+        })
+    }
+
+    pub fn upsert_scheme(doc: &mut AutoCommit, scheme: &ColorScheme) {
+        if Self::has_tombstone(doc, "scheme_tombstones", &scheme.id) {
+            return;
+        }
+        let entries = Self::root_map(doc, "scheme_entries");
+        let entry = Self::get_or_make_map(doc, &entries, &scheme.id);
+        let _ = doc.put(&entry, "id", scheme.id.as_str());
+        let _ = doc.put(&entry, "name", scheme.name.as_str());
+        let _ = doc.put(&entry, "page", pack_rgb(scheme.page));
+        let _ = doc.put(&entry, "ink", pack_rgb(scheme.ink));
+        let _ = doc.put(&entry, "accent", pack_rgb(scheme.accent));
+        let _ = doc.put(&entry, "dark", scheme.dark);
+        let _ = doc.put(&entry, "enabled", scheme.enabled);
+        let _ = doc.put(&entry, "builtin", scheme.builtin);
+    }
+
+    pub fn remove_scheme(doc: &mut AutoCommit, id: &str) {
+        let tombstones = Self::root_map(doc, "scheme_tombstones");
+        let _ = doc.put(&tombstones, id, true);
+        let entries = Self::root_map(doc, "scheme_entries");
+        let _ = doc.delete(&entries, id);
     }
 
     /// Replace the whole scheme registry (the manager edits it wholesale).
@@ -442,37 +677,43 @@ impl BooksDoc {
     // --- progress ----------------------------------------------------------
 
     pub fn write_progress(doc: &mut AutoCommit, book_id: &str, p: &Progress) {
-        let progress = Self::root_map(doc, "progress");
-        let entry = Self::get_or_make_map(doc, &progress, book_id);
-        let _ = doc.put(&entry, "chapter", p.chapter as i64);
-        let _ = doc.put(&entry, "page", p.page as i64);
-        let _ = doc.put(&entry, "fraction", f64::from(p.fraction));
-        // Preserve a previously recorded open time; only advance it (0 = never).
-        if p.opened > 0 {
-            let _ = doc.put(&entry, "opened", p.opened as i64);
+        for entry in Self::get_or_make_keyed_maps(doc, "progress", book_id) {
+            let _ = doc.put(&entry, "chapter", p.chapter as i64);
+            let _ = doc.put(&entry, "page", p.page as i64);
+            let _ = doc.put(&entry, "fraction", f64::from(p.fraction));
+            // Preserve a previously recorded open time; only advance it (0 = never).
+            if p.opened > 0 {
+                let _ = doc.put(&entry, "opened", p.opened as i64);
+            }
         }
     }
 
     pub fn read_progress(doc: &AutoCommit, book_id: &str) -> Progress {
-        let Ok(Some((Value::Object(ObjType::Map), progress))) = doc.get(&ROOT, "progress") else {
-            return Progress::default();
-        };
-        let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&progress, book_id) else {
-            return Progress::default();
-        };
-        Progress {
-            chapter: Self::scalar_i64(doc, &entry, "chapter").unwrap_or(0).max(0) as usize,
-            page: Self::scalar_i64(doc, &entry, "page").unwrap_or(0).max(0) as usize,
-            fraction: Self::scalar_f64(doc, &entry, "fraction").unwrap_or(0.0) as f32,
-            opened: Self::scalar_i64(doc, &entry, "opened").unwrap_or(0).max(0) as u64,
-        }
+        Self::keyed_map_entries(doc, "progress")
+            .remove(book_id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| Progress {
+                chapter: Self::scalar_i64(doc, &entry, "chapter").unwrap_or(0).max(0) as usize,
+                page: Self::scalar_i64(doc, &entry, "page").unwrap_or(0).max(0) as usize,
+                fraction: (Self::scalar_f64(doc, &entry, "fraction").unwrap_or(0.0) as f32)
+                    .clamp(0.0, 1.0),
+                opened: Self::scalar_i64(doc, &entry, "opened").unwrap_or(0).max(0) as u64,
+            })
+            // Keep one authored tuple coherent across conflicting entry
+            // objects. Latest explicit open wins; ordinary position updates
+            // then prefer furthest progress with stable location tie-breaks.
+            .max_by(|left, right| {
+                left.opened
+                    .cmp(&right.opened)
+                    .then_with(|| left.fraction.total_cmp(&right.fraction))
+                    .then_with(|| left.chapter.cmp(&right.chapter))
+                    .then_with(|| left.page.cmp(&right.page))
+            })
+            .unwrap_or_default()
     }
 
     // --- annotations -------------------------------------------------------
-
-    fn annotations_map(doc: &mut AutoCommit) -> ObjId {
-        Self::root_map(doc, "annotations")
-    }
 
     /// A deletion marker is deliberately a separate, keyed CRDT map rather
     /// than a `delete` of the annotation entry. Automerge merges a map delete
@@ -484,10 +725,9 @@ impl BooksDoc {
     }
 
     fn has_tombstone(doc: &AutoCommit, key: &str, id: &str) -> bool {
-        let Ok(Some((Value::Object(ObjType::Map), tombstones))) = doc.get(&ROOT, key) else {
-            return false;
-        };
-        Self::scalar_bool(doc, &tombstones, id).unwrap_or(false)
+        Self::root_maps(doc, key)
+            .iter()
+            .any(|tombstones| Self::scalar_bool(doc, tombstones, id).unwrap_or(false))
     }
 
     pub fn annotation_is_deleted(doc: &AutoCommit, id: Uuid) -> bool {
@@ -507,21 +747,24 @@ impl BooksDoc {
         if Self::annotation_is_deleted(doc, id) {
             return false;
         }
-        let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(&ROOT, "annotations") else {
+        let Some(entries) = Self::keyed_map_entries(doc, "annotations").remove(&id.to_string())
+        else {
             return false;
         };
-        let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&map, id.to_string()) else {
-            return false;
-        };
-        let group = Self::scalar_str(doc, &entry, "group")
+        let group = Self::merged_str(doc, &entries, "group")
             .and_then(|value| value.parse().ok())
             .unwrap_or(id);
         !Self::group_is_deleted(doc, group)
     }
 
     fn mark_tombstone(doc: &mut AutoCommit, map_key: &str, id: Uuid) {
-        let tombstones = Self::tombstone_map(doc, map_key);
-        let _ = doc.put(&tombstones, id.to_string().as_str(), true);
+        let mut tombstones = Self::root_maps(doc, map_key);
+        if tombstones.is_empty() {
+            tombstones.push(Self::tombstone_map(doc, map_key));
+        }
+        for tombstones in tombstones {
+            let _ = doc.put(&tombstones, id.to_string().as_str(), true);
+        }
     }
 
     pub fn upsert_annotation(doc: &mut AutoCommit, a: &Annotation) {
@@ -533,30 +776,78 @@ impl BooksDoc {
         // An annotation id never changes logical highlight group. Apart from
         // making accidental UUID reuse harmless, this prevents a stale row
         // hidden by a group tombstone from being reattached to a new group.
-        if let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(&ROOT, "annotations")
-            && let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&map, a.id.to_string())
-        {
-            let existing_group = Self::scalar_str(doc, &entry, "group")
+        let existing = Self::keyed_map_entries(doc, "annotations")
+            .remove(&a.id.to_string())
+            .unwrap_or_default();
+        for entry in &existing {
+            let existing_group = Self::scalar_str(doc, entry, "group")
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(a.id);
             if existing_group != a.group || Self::group_is_deleted(doc, existing_group) {
                 return;
             }
         }
-        let map = Self::annotations_map(doc);
         let key = a.id.to_string();
-        let entry = Self::get_or_make_map(doc, &map, &key);
-        let _ = doc.put(&entry, "doc_id", a.doc_id.as_str());
-        let _ = doc.put(&entry, "kind", a.kind.as_str());
-        let _ = doc.put(&entry, "chapter", a.chapter as i64);
-        let _ = doc.put(&entry, "block", a.block as i64);
-        let _ = doc.put(&entry, "start", a.start as i64);
-        let _ = doc.put(&entry, "end", a.end as i64);
-        let _ = doc.put(&entry, "excerpt", a.excerpt.as_str());
-        let _ = doc.put(&entry, "note", a.note.as_str());
-        let _ = doc.put(&entry, "color", a.color.as_str());
-        let _ = doc.put(&entry, "created", a.created as i64);
-        let _ = doc.put(&entry, "group", a.group.to_string().as_str());
+        for entry in Self::get_or_make_keyed_maps(doc, "annotations", &key) {
+            let _ = doc.put(&entry, "doc_id", a.doc_id.as_str());
+            let _ = doc.put(&entry, "kind", a.kind.as_str());
+            let _ = doc.put(&entry, "chapter", a.chapter as i64);
+            let _ = doc.put(&entry, "block", a.block as i64);
+            let _ = doc.put(&entry, "start", a.start as i64);
+            let _ = doc.put(&entry, "end", a.end as i64);
+            let _ = doc.put(&entry, "excerpt", a.excerpt.as_str());
+            let _ = doc.put(&entry, "note", a.note.as_str());
+            let _ = doc.put(&entry, "color", a.color.as_str());
+            let _ = doc.put(&entry, "created", a.created as i64);
+            let _ = doc.put(&entry, "group", a.group.to_string().as_str());
+        }
+    }
+
+    /// Change only the free-text field, preserving concurrent anchor/colour
+    /// edits made by another reader.
+    pub fn write_annotation_note(doc: &mut AutoCommit, id: Uuid, note: &str) -> bool {
+        let entries = Self::keyed_map_entries(doc, "annotations")
+            .remove(&id.to_string())
+            .unwrap_or_default();
+        for entry in &entries {
+            let _ = doc.put(entry, "note", note);
+        }
+        !entries.is_empty()
+    }
+
+    pub fn write_annotation_created(doc: &mut AutoCommit, id: Uuid, created: u64) -> bool {
+        let entries = Self::keyed_map_entries(doc, "annotations")
+            .remove(&id.to_string())
+            .unwrap_or_default();
+        let created = i64::try_from(created).unwrap_or(i64::MAX);
+        for entry in &entries {
+            let _ = doc.put(entry, "created", created);
+        }
+        !entries.is_empty()
+    }
+
+    pub fn move_annotation(doc: &mut AutoCommit, id: Uuid, anchor: &AnnotationAnchor) -> bool {
+        let entries = Self::keyed_map_entries(doc, "annotations")
+            .remove(&id.to_string())
+            .unwrap_or_default();
+        for entry in &entries {
+            let _ = doc.put(entry, "chapter", anchor.chapter as i64);
+            let _ = doc.put(entry, "block", anchor.block as i64);
+            let _ = doc.put(entry, "start", anchor.start as i64);
+            let _ = doc.put(entry, "end", anchor.end as i64);
+            let _ = doc.put(entry, "excerpt", &anchor.excerpt);
+        }
+        !entries.is_empty()
+    }
+
+    pub fn write_annotation_color(doc: &mut AutoCommit, id: Uuid, color: HiColor) -> bool {
+        let entries = Self::keyed_map_entries(doc, "annotations")
+            .remove(&id.to_string())
+            .unwrap_or_default();
+        for entry in &entries {
+            let _ = doc.put(entry, "color", color.as_str());
+        }
+        !entries.is_empty()
     }
 
     pub fn remove_annotation(doc: &mut AutoCommit, id: Uuid) {
@@ -582,35 +873,58 @@ impl BooksDoc {
     }
 
     pub fn list_annotations(doc: &AutoCommit) -> Vec<Annotation> {
-        let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(&ROOT, "annotations") else {
-            return Vec::new();
-        };
         let mut out = Vec::new();
-        for key in doc.keys(&map) {
+        for (key, entries) in Self::keyed_map_entries(doc, "annotations") {
             let Ok(id) = key.parse::<Uuid>() else {
                 continue;
             };
             if Self::annotation_is_deleted(doc, id) {
                 continue;
             }
-            let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&map, key.as_str()) else {
-                continue;
-            };
             let a = Annotation {
                 id,
-                doc_id: Self::scalar_str(doc, &e, "doc_id").unwrap_or_default(),
-                kind: AnnoKind::from_str(&Self::scalar_str(doc, &e, "kind").unwrap_or_default()),
-                chapter: Self::scalar_i64(doc, &e, "chapter").unwrap_or(0).max(0) as usize,
-                block: Self::scalar_i64(doc, &e, "block").unwrap_or(0).max(0) as usize,
-                start: Self::scalar_i64(doc, &e, "start").unwrap_or(0).max(0) as usize,
-                end: Self::scalar_i64(doc, &e, "end").unwrap_or(0).max(0) as usize,
-                excerpt: Self::scalar_str(doc, &e, "excerpt").unwrap_or_default(),
-                note: Self::scalar_str(doc, &e, "note").unwrap_or_default(),
-                color: HiColor::from_str(&Self::scalar_str(doc, &e, "color").unwrap_or_default()),
-                created: Self::scalar_i64(doc, &e, "created").unwrap_or(0).max(0) as u64,
+                doc_id: Self::merged_str(doc, &entries, "doc_id").unwrap_or_default(),
+                kind: AnnoKind::from_str(
+                    &Self::merged_str(doc, &entries, "kind").unwrap_or_default(),
+                ),
+                chapter: entries
+                    .iter()
+                    .filter_map(|entry| Self::scalar_i64(doc, entry, "chapter"))
+                    .max()
+                    .unwrap_or(0)
+                    .max(0) as usize,
+                block: entries
+                    .iter()
+                    .filter_map(|entry| Self::scalar_i64(doc, entry, "block"))
+                    .max()
+                    .unwrap_or(0)
+                    .max(0) as usize,
+                start: entries
+                    .iter()
+                    .filter_map(|entry| Self::scalar_i64(doc, entry, "start"))
+                    .max()
+                    .unwrap_or(0)
+                    .max(0) as usize,
+                end: entries
+                    .iter()
+                    .filter_map(|entry| Self::scalar_i64(doc, entry, "end"))
+                    .max()
+                    .unwrap_or(0)
+                    .max(0) as usize,
+                excerpt: Self::merged_str(doc, &entries, "excerpt").unwrap_or_default(),
+                note: Self::merged_str(doc, &entries, "note").unwrap_or_default(),
+                color: HiColor::from_str(
+                    &Self::merged_str(doc, &entries, "color").unwrap_or_default(),
+                ),
+                created: entries
+                    .iter()
+                    .filter_map(|entry| Self::scalar_i64(doc, entry, "created"))
+                    .max()
+                    .unwrap_or(0)
+                    .max(0) as u64,
                 // Older rows predate grouping; fall back to a self-group (the
                 // row's own id) so each behaves as a standalone mark.
-                group: Self::scalar_str(doc, &e, "group")
+                group: Self::merged_str(doc, &entries, "group")
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(id),
             };
@@ -933,5 +1247,84 @@ mod tests {
         BooksDoc::upsert_annotation(&mut doc, &Annotation::new("book:b", AnnoKind::Note, 0, 0));
         assert_eq!(BooksDoc::annotations_for(&doc, "book:a").len(), 1);
         assert_eq!(BooksDoc::annotations_for(&doc, "book:b").len(), 1);
+    }
+
+    #[test]
+    fn independently_created_keyed_roots_materialise_every_branch() {
+        let mut left = AutoCommit::new().with_actor(ActorId::random());
+        let mut right = AutoCommit::new().with_actor(ActorId::random());
+        let left_book = LibraryEntry {
+            id: "book:left".into(),
+            shared: true,
+            title: "Left".into(),
+            author: "A".into(),
+            subject: String::new(),
+            added: 1,
+        };
+        let right_book = LibraryEntry {
+            id: "book:right".into(),
+            shared: true,
+            title: "Right".into(),
+            author: "B".into(),
+            subject: String::new(),
+            added: 2,
+        };
+        let left_annotation = Annotation::new(&left_book.id, AnnoKind::Note, 0, 1);
+        let right_annotation = Annotation::new(&right_book.id, AnnoKind::Bookmark, 0, 2);
+        BooksDoc::upsert_library_entry(&mut left, &left_book);
+        BooksDoc::upsert_annotation(&mut left, &left_annotation);
+        BooksDoc::write_progress(
+            &mut left,
+            "book:shared-progress",
+            &Progress {
+                chapter: 1,
+                page: 3,
+                fraction: 0.25,
+                opened: 10,
+            },
+        );
+        BooksDoc::upsert_library_entry(&mut right, &right_book);
+        BooksDoc::upsert_annotation(&mut right, &right_annotation);
+        BooksDoc::write_progress(
+            &mut right,
+            "book:shared-progress",
+            &Progress {
+                chapter: 4,
+                page: 9,
+                fraction: 0.75,
+                opened: 20,
+            },
+        );
+
+        left.merge(&mut right).unwrap();
+        right.merge(&mut left).unwrap();
+        for peer in [&left, &right] {
+            assert_eq!(
+                BooksDoc::read_library_entries(peer)
+                    .into_iter()
+                    .map(|entry| entry.id)
+                    .collect::<Vec<_>>(),
+                vec!["book:left".to_string(), "book:right".to_string()]
+            );
+            let annotation_ids = BooksDoc::list_annotations(peer)
+                .into_iter()
+                .map(|annotation| annotation.id)
+                .collect::<std::collections::HashSet<_>>();
+            assert_eq!(
+                annotation_ids,
+                [left_annotation.id, right_annotation.id]
+                    .into_iter()
+                    .collect()
+            );
+            assert_eq!(
+                BooksDoc::read_progress(peer, "book:shared-progress"),
+                Progress {
+                    chapter: 4,
+                    page: 9,
+                    fraction: 0.75,
+                    opened: 20,
+                }
+            );
+        }
     }
 }

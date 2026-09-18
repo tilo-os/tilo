@@ -52,6 +52,14 @@ mod tests {
         for key in [
             "photos-open",
             "photos-library",
+            "photos-timeline",
+            "photos-open-timeline",
+            "photos-open-timeline-month",
+            "photos-open-timeline-day",
+            "photos-timeline-description",
+            "photos-timeline-month-description",
+            "photos-timeline-day-description",
+            "photos-photographs",
             "photos-library-empty-title",
             "photos-library-empty-body",
             "photos-open-title",
@@ -83,6 +91,14 @@ mod tests {
             "photos-tools",
             "photos-image",
             "photos-image-help",
+            "photos-shared-details",
+            "photos-no-shared-context",
+            "photos-description",
+            "photos-captured",
+            "photos-place",
+            "photos-people",
+            "photos-tags",
+            "photos-folder",
         ] {
             let got = tr(key);
             assert_ne!(got, key, "`{key}` is not in the bundle");

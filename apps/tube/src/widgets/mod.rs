@@ -10,6 +10,7 @@ pub mod channel_avatar;
 pub mod controls;
 pub mod flex;
 pub mod image_box;
+pub mod large_video_meta;
 pub mod player_host;
 pub mod seek_bar;
 pub mod thumbnail;
@@ -18,6 +19,7 @@ pub use channel_avatar::ChannelAvatar;
 pub use controls::Switch;
 pub use flex::{Align, Axis, Flex, IntoElement, Justify, Len, Surface};
 pub use image_box::ImageBox;
+pub use large_video_meta::LargeVideoMeta;
 pub use player_host::{PlayerHost, SharedPlayer};
 pub use seek_bar::SeekBar;
 pub use thumbnail::Thumbnail;
@@ -99,12 +101,14 @@ pub(crate) fn layout_rect(
 
 /// A line of text at `size` in the theme's primary colour.
 pub fn text(s: impl AsRef<str>, size: f32) -> Text {
-    Text::new(s.as_ref()).with_size(size)
+    Text::new(s.as_ref()).with_scaled_size(size)
 }
 
 /// A line of text in an explicit colour.
 pub fn text_c(s: impl AsRef<str>, size: f32, color: Color) -> Text {
-    Text::new(s.as_ref()).with_size(size).with_color(color)
+    Text::new(s.as_ref())
+        .with_scaled_size(size)
+        .with_color(color)
 }
 
 /// Dim secondary text (channel names, metadata).

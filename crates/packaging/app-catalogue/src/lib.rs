@@ -1,23 +1,23 @@
 //! `app-catalogue` — what software this machine can open but has not
 //! installed yet, and how to get it.
 //!
-//! The desktop's applications list is "what is in the `qos-install`
+//! The desktop's applications list is "what is in the `tilo-install`
 //! registry" — already installed. This crate is the other half: what
 //! the machine's configured registries ([`config::load_registries_no_seed`],
 //! the user's `registries.toml` — nothing bundled or seeded) describe,
 //! minus what's already installed. No registries configured means an
 //! empty catalogue, correctly.
 //!
-//! [`main`](../src/main.rs) builds `qos-catalogue`, and the compositor
+//! [`main`](../src/main.rs) builds `tilo-catalogue`, and the compositor
 //! shells out to it rather than linking this crate — listing means
 //! HTTP, installing means HTTP plus signature verification plus
 //! archive extraction, none of which belongs in the most privileged
-//! process (same precedent as the desktop execing `qos-launcher`
+//! process (same precedent as the desktop execing `tilo-launcher`
 //! instead of building sandboxes itself).
 //!
 //! This crate never decides whether bytes are safe to extract:
 //! [`install::install`] downloads to a staging file and hands the
-//! path to `qos-install`, which checks the publisher signature
+//! path to `tilo-install`, which checks the publisher signature
 //! fail-closed before extracting anything; `--allow-self-signed` is never passed.
 
 #![cfg_attr(
@@ -44,12 +44,12 @@ pub use config::{RegistriesFile, RegistryConfig};
 
 /// One application a registry offers that is not installed here.
 ///
-/// The wire shape `qos-catalogue list --json` prints and the
+/// The wire shape `tilo-catalogue list --json` prints and the
 /// compositor parses — field names are a contract between the two.
 /// Everything on it is metadata a signed registry entry carried.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogueApp {
-    /// Reverse-DNS package id — the same identity `qos-install` records once this is installed.
+    /// Reverse-DNS package id — the same identity `tilo-install` records once this is installed.
     pub package_id: String,
     /// The publisher's name for it.
     pub display_name: String,
@@ -79,7 +79,7 @@ pub struct CatalogueApp {
     pub trust: String,
 }
 
-/// The JSON envelope `qos-catalogue list --json` prints.
+/// The JSON envelope `tilo-catalogue list --json` prints.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CatalogueListing {
     #[serde(default)]
@@ -104,11 +104,22 @@ pub fn entry_to_app(v: &VerifiedEntry, registry_name: &str) -> Option<CatalogueA
     if !v.trust.is_offerable() {
         return None;
     }
-    // Registries list versions newest-first; the newest is what "open this" means.
-    let newest = v.entry.versions.first()?;
-    if newest.qpkg_url.trim().is_empty() {
-        return None;
-    }
+    // Version strings may be SemVer or CalVer, so the publisher-signed
+    // release timestamp is the common ordering authority. Never trust JSON
+    // array order: an otherwise valid registry rewrite could put an older
+    // qpkg first. The remaining fields make timestamp ties deterministic.
+    let newest = v
+        .entry
+        .versions
+        .iter()
+        .filter(|version| !version.qpkg_url.trim().is_empty())
+        .max_by(|a, b| {
+            (a.released_at_unix, &a.version, &a.qpkg_root_hash_hex).cmp(&(
+                b.released_at_unix,
+                &b.version,
+                &b.qpkg_root_hash_hex,
+            ))
+        })?;
     let display_name = if v.entry.name.trim().is_empty() {
         launcher::registry::display_name_for_package_id(&v.entry.package_id)
     } else {
@@ -138,9 +149,9 @@ pub fn entry_to_app(v: &VerifiedEntry, registry_name: &str) -> Option<CatalogueA
     })
 }
 
-/// The package ids `qos-install` has already installed here, read
+/// The package ids `tilo-install` has already installed here, read
 /// through the launcher's registry reader (same file, same
-/// `QOS_APPS_DATA_DIR` override) so the two can't disagree about what's present.
+/// `TILO_APPS_DATA_DIR` override) so the two can't disagree about what's present.
 pub fn installed_ids() -> Vec<String> {
     launcher::registry::list_installed()
         .map(|v| v.into_iter().map(|e| e.id).collect())
@@ -280,14 +291,17 @@ mod tests {
 
     #[test]
     fn a_signed_entry_becomes_a_row_carrying_the_publishers_own_metadata() {
-        let v = verified(entry("dev.qos.sheets", "Sheets", vec!["Office"]));
+        let v = verified(entry("dev.tilo.sheets", "Sheets", vec!["Office"]));
         let app = entry_to_app(&v, "main").expect("an offerable entry");
-        assert_eq!(app.package_id, "dev.qos.sheets");
+        assert_eq!(app.package_id, "dev.tilo.sheets");
         assert_eq!(app.display_name, "Sheets");
         assert_eq!(app.category.as_deref(), Some("Office"));
         assert_eq!(app.version, "2.0.0");
         assert_eq!(app.registry, "main");
-        assert_eq!(app.download_url, "https://apps.example/dev.qos.sheets.qpkg");
+        assert_eq!(
+            app.download_url,
+            "https://apps.example/dev.tilo.sheets.qpkg"
+        );
         assert_eq!(app.trust, "publisher-signed");
     }
 
@@ -295,7 +309,7 @@ mod tests {
     /// become something a user can activate — the name and download URL would be unattributed.
     #[test]
     fn a_tampered_entry_never_becomes_a_row() {
-        let mut e = entry("dev.qos.sheets", "Sheets", vec![]);
+        let mut e = entry("dev.tilo.sheets", "Sheets", vec![]);
         e.name = "Totally Legit Banking".into();
         let v = verified(e);
         assert_eq!(v.trust, TrustLevel::Untrusted);
@@ -304,12 +318,12 @@ mod tests {
 
     #[test]
     fn an_entry_with_no_downloadable_version_is_not_offered() {
-        let mut e = entry("dev.qos.ghost", "Ghost", vec![]);
+        let mut e = entry("dev.tilo.ghost", "Ghost", vec![]);
         e.versions.clear();
         sign_entry(&mut e, &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]));
         assert!(entry_to_app(&verified(e), "main").is_none());
 
-        let mut blank = entry("dev.qos.blank", "Blank", vec![]);
+        let mut blank = entry("dev.tilo.blank", "Blank", vec![]);
         blank.versions[0].qpkg_url = "  ".into();
         sign_entry(
             &mut blank,
@@ -319,8 +333,35 @@ mod tests {
     }
 
     #[test]
+    fn catalogue_selects_latest_release_independent_of_registry_array_order() {
+        let mut e = entry("dev.tilo.timeline", "Timeline", vec![]);
+        e.versions = vec![
+            RegistryVersion {
+                version: "1.0.0".into(),
+                qpkg_url: "https://apps.example/timeline-1.qpkg".into(),
+                qpkg_root_hash_hex: "11".repeat(32),
+                qpkg_size_bytes: 10,
+                released_at_unix: 100,
+            },
+            RegistryVersion {
+                version: "2027.01".into(),
+                qpkg_url: "https://apps.example/timeline-new.qpkg".into(),
+                qpkg_root_hash_hex: "22".repeat(32),
+                qpkg_size_bytes: 20,
+                released_at_unix: 200,
+            },
+        ];
+        sign_entry(&mut e, &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]));
+
+        let app = entry_to_app(&verified(e), "main").expect("offerable latest release");
+        assert_eq!(app.version, "2027.01");
+        assert_eq!(app.download_url, "https://apps.example/timeline-new.qpkg");
+        assert_eq!(app.qpkg_size_bytes, 20);
+    }
+
+    #[test]
     fn a_nameless_entry_falls_back_to_the_same_derivation_installed_apps_use() {
-        let mut e = entry("dev.qos.hex-editor", "", vec![]);
+        let mut e = entry("dev.tilo.hex-editor", "", vec![]);
         sign_entry(&mut e, &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]));
         let app = entry_to_app(&verified(e), "main").expect("offerable");
         assert_eq!(app.display_name, "Hex Editor");
@@ -333,7 +374,7 @@ mod tests {
     fn the_json_envelope_field_names_are_the_contract() {
         let listing = CatalogueListing {
             apps: vec![CatalogueApp {
-                package_id: "dev.qos.sheets".into(),
+                package_id: "dev.tilo.sheets".into(),
                 display_name: "Sheets".into(),
                 description: "a spreadsheet".into(),
                 category: Some("Office".into()),
@@ -353,23 +394,23 @@ mod tests {
         let json = serde_json::to_string(&listing).expect("encodes");
         assert_eq!(
             json,
-            r#"{"apps":[{"package_id":"dev.qos.sheets","display_name":"Sheets","description":"a spreadsheet","category":"Office","version":"2.0.0","registry":"main","download_url":"https://x/y.qpkg","qpkg_root_hash_hex":"abababababababababababababababababababababababababababababababab","qpkg_size_bytes":10,"publisher_pubkey_hex":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","trust":"verified"}],"unreachable":[{"name":"mirror","detail":"connection refused"}]}"#
+            r#"{"apps":[{"package_id":"dev.tilo.sheets","display_name":"Sheets","description":"a spreadsheet","category":"Office","version":"2.0.0","registry":"main","download_url":"https://x/y.qpkg","qpkg_root_hash_hex":"abababababababababababababababababababababababababababababababab","qpkg_size_bytes":10,"publisher_pubkey_hex":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","trust":"verified"}],"unreachable":[{"name":"mirror","detail":"connection refused"}]}"#
         );
     }
 
     #[test]
     fn installed_packages_are_subtracted() {
-        let a = entry_to_app(&verified(entry("dev.qos.a", "A", vec![])), "main").unwrap();
-        let b = entry_to_app(&verified(entry("dev.qos.b", "B", vec![])), "main").unwrap();
-        let out = dedupe_and_subtract(vec![a, b], &["dev.qos.a".to_string()]);
+        let a = entry_to_app(&verified(entry("dev.tilo.a", "A", vec![])), "main").unwrap();
+        let b = entry_to_app(&verified(entry("dev.tilo.b", "B", vec![])), "main").unwrap();
+        let out = dedupe_and_subtract(vec![a, b], &["dev.tilo.a".to_string()]);
         assert_eq!(out.len(), 1, "the installed one is gone: {out:?}");
-        assert_eq!(out[0].package_id, "dev.qos.b");
+        assert_eq!(out[0].package_id, "dev.tilo.b");
     }
 
     #[test]
     fn the_first_registry_offering_an_id_wins() {
-        let first = entry_to_app(&verified(entry("dev.qos.a", "A", vec![])), "primary").unwrap();
-        let second = entry_to_app(&verified(entry("dev.qos.a", "A", vec![])), "mirror").unwrap();
+        let first = entry_to_app(&verified(entry("dev.tilo.a", "A", vec![])), "primary").unwrap();
+        let second = entry_to_app(&verified(entry("dev.tilo.a", "A", vec![])), "mirror").unwrap();
         let out = dedupe_and_subtract(vec![first, second], &[]);
         assert_eq!(out.len(), 1);
         assert_eq!(

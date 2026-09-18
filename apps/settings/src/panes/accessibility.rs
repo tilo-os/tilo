@@ -59,7 +59,7 @@ pub const SWITCH_KEYS_KEY: &str = "a11y.switch_keys";
 pub const SWITCH_SCAN_KEY: &str = "a11y.switch_scan";
 pub const READER_RATE_KEY: &str = "a11y.reader_rate";
 pub const READER_VOICE_KEY: &str = "a11y.reader_voice";
-const OSK_PACKAGE_ID: &str = "dev.qos.osk";
+const OSK_PACKAGE_ID: &str = "dev.tilo.osk";
 const OSK_PACKAGE_KIND: &str = "service";
 
 pub(crate) fn osk_service_available() -> bool {
@@ -260,7 +260,7 @@ impl AccessibilityPane {
                 ),
                 setting_row_described(
                     "Thicker text cursor",
-                    "Use a wider insertion caret in qOS applications",
+                    "Use a wider insertion caret in Tilo applications",
                     Self::toggle("a11y.thick_text_caret", THICK_CARET_KEY, "thick-text-caret"),
                 ),
             ]),
@@ -278,7 +278,7 @@ impl AccessibilityPane {
         } else {
             value_row(
                 "On-screen keyboard",
-                "Not installed — add the signed dev.qos.osk system package",
+                "Not installed — add the signed dev.tilo.osk system package",
             )
         };
         card(
@@ -414,7 +414,7 @@ impl AccessibilityPane {
                         ),
                         value_row(
                             "Application focus highlight",
-                            "Not yet available for non-qOS applications",
+                            "Not yet available for non-Tilo applications",
                         ),
                         value_row(
                             "Live captions",
@@ -436,7 +436,7 @@ impl AccessibilityPane {
                  compositor's input layer. Colour filters, the magnifier and \
                  pointer guides are final-scene compositor effects. Text-caret \
                  width is owned by the shared toolkit. The screen reader reloads in every \
-                 qOS app and visual alerts are rendered by shell chrome. The \
+                 Tilo app and visual alerts are rendered by shell chrome. The \
                  on-screen keyboard is a sandboxed system service: the \
                  compositor starts it on a private input-method socket and \
                  keeps its surface out of workspace tiles. \
@@ -453,7 +453,7 @@ impl AccessibilityPane {
         p.appearance = self.appearance.clone();
         p.accessibility = self.access;
         if let Err(e) = p.save() {
-            warn!(target: "qos::settings", op = "accessibility_save", error = %e, "failed to persist accessibility prefs");
+            warn!(target: "tilo::settings", op = "accessibility_save", error = %e, "failed to persist accessibility prefs");
         }
     }
 
@@ -814,7 +814,7 @@ impl Widget for AccessibilityPane {
             .collect()
     }
 
-    fn take_commit_context(&mut self) -> Option<ui::qos_actions::ActionContext> {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
         let pending = std::mem::take(&mut self.commit_context_pending)
             || self
                 .composed

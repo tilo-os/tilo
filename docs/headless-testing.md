@@ -1,11 +1,11 @@
 # Headless testing: screenshots, recordings, remote control
 
-This guide covers everything you need to test the nirios shell (and individual apps in a follow-up) **without opening a window**. Every command below writes PNG / H.264 / JSON to disk; nothing requires a display server attached to your terminal.
+This guide covers everything you need to test the tilo shell (and individual apps in a follow-up) **without opening a window**. Every command below writes PNG / H.264 / JSON to disk; nothing requires a display server attached to your terminal.
 
 Three layers, each useful on its own:
 
 1. **`shots` — scenarios → PNG / H.264** (run pre-written interactions, capture per-step output)
-2. **`QOS_TEST_CONTROL` socket — JSON RPC over a unix socket** (drive a running binary programmatically: click, drag, type, snapshot)
+2. **`TILO_TEST_CONTROL` socket — JSON RPC over a unix socket** (drive a running binary programmatically: click, drag, type, snapshot)
 3. **`--backend headless` — live compositor without a window** (the same binary that boots on a real display, running through the same code paths, but rendering into an off-screen wgpu texture)
 
 ## Layer 1: `shots` — pre-written scenarios
@@ -31,11 +31,11 @@ cargo run --bin shots --quiet -- --mode recording --scenario workspace_switch --
 cargo run --bin shots --quiet -- --mode window --scenario palette_typing
 ```
 
-Scenarios are defined in `shell/src/bin/shots/scenario.rs`. Each is a `Vec<Action>` of `ClickNamed("add_workspace")`, `Drag {...}`, `Key(...)`, `Type(...)` steps. The engine resolves names against the live widget tree (see Layer 2's widget registry).
+Scenarios are defined in `crates/session/shell/src/bin/shots/scenario.rs`. Each is a `Vec<Action>` of `ClickNamed("add_workspace")`, `Drag {...}`, `Key(...)`, `Type(...)` steps. The engine resolves names against the live widget tree (see Layer 2's widget registry).
 
 **No display server required.** `shots --mode offscreen` and `--mode recording` use `quick_ui::offscreen::OffscreenRenderer` — wgpu only, no window.
 
-## Layer 2: `QOS_TEST_CONTROL` — drive the live binary via a unix socket
+## Layer 2: `TILO_TEST_CONTROL` — drive the live binary via a unix socket
 
 Best for: ad-hoc interactive testing from a script or an AI agent, exploratory "click here, snapshot that" flows, integration tests where you want to assert against the live compositor's state.
 
@@ -43,7 +43,7 @@ Best for: ad-hoc interactive testing from a script or an AI agent, exploratory "
 
 ```bash
 # Pick a socket path (must be writable; typically under /run/user/$UID/ or /tmp/):
-export QOS_TEST_CONTROL=/tmp/nirios-test-control.sock
+export TILO_TEST_CONTROL=/tmp/tilo-test-control.sock
 
 # Spawn the compositor. The env var enables the socket; nothing else changes.
 cargo run --bin shell -- --backend headless &
@@ -52,10 +52,10 @@ cargo run --bin shell -- --backend headless &
 # either way.)
 
 # Confirm the socket bound:
-ls -la $QOS_TEST_CONTROL
+ls -la $TILO_TEST_CONTROL
 ```
 
-The compositor prints `nirios compositor test_control listening on "<path>"` to stderr once the socket is ready to accept.
+The compositor prints `tilo compositor test_control listening on "<path>"` to stderr once the socket is ready to accept.
 
 ### Put `TMPDIR` somewhere with room
 
@@ -76,13 +76,13 @@ Keep session roots short (`/tmp/qs-xxxx`-shaped): a unix socket path has
 a hard ~108-byte limit, and a deep temp directory silently pushes the
 control socket past it.
 
-### Easiest path: the `qos-control` CLI
+### Easiest path: the `tilo-control` CLI
 
 A wrapper binary ships in the same workspace. Subcommands take human-friendly arguments instead of raw JSON:
 
 ```bash
-cargo build -p shell --bin qos-control      # lands in target/debug, NOT on PATH
-alias qc='cargo run -q --bin qos-control --' # or: cargo install --path shell --bin qos-control
+cargo build -p shell --bin tilo-control      # lands in target/debug, NOT on PATH
+alias qc='cargo run -q --bin tilo-control --' # or: cargo install --path shell --bin tilo-control
 
 qc list-targets                             # PNAME (X, Y, W, H) per line
 qc click add_workspace                      # click_named
@@ -96,7 +96,7 @@ qc state-dump --pretty                      # live WorkspaceTree + Chrome as JSO
 qc raw '{"op":"list_targets"}'              # escape hatch for unwrapped commands
 ```
 
-Default socket: `$QOS_TEST_CONTROL` env var, else `/tmp/nirios.sock`. Override with `--socket /path`. Errors from the compositor surface as non-zero exit + structured `code: message` on stderr.
+Default socket: `$TILO_TEST_CONTROL` env var, else `/tmp/tilo.sock`. Override with `--socket /path`. Errors from the compositor surface as non-zero exit + structured `code: message` on stderr.
 
 ### Wire protocol (when you can't use the CLI)
 
@@ -104,30 +104,30 @@ The socket accepts newline-delimited JSON. Every command returns one JSON respon
 
 ```bash
 # List every clickable widget by name + rect:
-echo '{"op":"list_targets"}' | nc -U $QOS_TEST_CONTROL
+echo '{"op":"list_targets"}' | nc -U $TILO_TEST_CONTROL
 
 # Click a widget by name (resolved from the live widget tree):
-echo '{"op":"click_named","name":"add_workspace"}' | nc -U $QOS_TEST_CONTROL
+echo '{"op":"click_named","name":"add_workspace"}' | nc -U $TILO_TEST_CONTROL
 
 # Click at raw coordinates:
-echo '{"op":"click_at","x":400,"y":300}' | nc -U $QOS_TEST_CONTROL
+echo '{"op":"click_at","x":400,"y":300}' | nc -U $TILO_TEST_CONTROL
 
 # Drag from one point to another (default 8 intermediate motions):
-echo '{"op":"drag","x_from":100,"y_from":100,"x_to":300,"y_to":200,"steps":12}' | nc -U $QOS_TEST_CONTROL
+echo '{"op":"drag","x_from":100,"y_from":100,"x_to":300,"y_to":200,"steps":12}' | nc -U $TILO_TEST_CONTROL
 
 # Set modifiers, then send a key:
-echo '{"op":"modifiers","ctrl":true,"shift":false,"alt":false,"logo":false}' | nc -U $QOS_TEST_CONTROL
-echo '{"op":"key","key":"k"}' | nc -U $QOS_TEST_CONTROL    # Ctrl+K opens the palette
-echo '{"op":"modifiers","ctrl":false,"shift":false,"alt":false,"logo":false}' | nc -U $QOS_TEST_CONTROL
+echo '{"op":"modifiers","ctrl":true,"shift":false,"alt":false,"logo":false}' | nc -U $TILO_TEST_CONTROL
+echo '{"op":"key","key":"k"}' | nc -U $TILO_TEST_CONTROL    # Ctrl+K opens the palette
+echo '{"op":"modifiers","ctrl":false,"shift":false,"alt":false,"logo":false}' | nc -U $TILO_TEST_CONTROL
 
 # Type a string (one press+release per character):
-echo '{"op":"type","text":"hello"}' | nc -U $QOS_TEST_CONTROL
+echo '{"op":"type","text":"hello"}' | nc -U $TILO_TEST_CONTROL
 
 # Capture a PNG of the current state:
-echo '{"op":"snapshot","path":"/tmp/state.png"}' | nc -U $QOS_TEST_CONTROL
+echo '{"op":"snapshot","path":"/tmp/state.png"}' | nc -U $TILO_TEST_CONTROL
 
 # Get the live workspace tree + chrome state as JSON:
-echo '{"op":"state_dump"}' | nc -U $QOS_TEST_CONTROL
+echo '{"op":"state_dump"}' | nc -U $TILO_TEST_CONTROL
 
 # Copy and paste as the compositor's own in-process widgets do. Both call
 # straight into `ui::text_selection`, the same functions the terminal, the
@@ -135,26 +135,26 @@ echo '{"op":"state_dump"}' | nc -U $QOS_TEST_CONTROL
 # drives the compositor's side of a cross-process transfer through the
 # production path rather than around it. `primary` targets the middle-click
 # selection instead of the clipboard.
-echo '{"op":"clipboard_copy","text":"hello","primary":false}' | nc -U $QOS_TEST_CONTROL
-echo '{"op":"clipboard_paste","primary":false}' | nc -U $QOS_TEST_CONTROL
+echo '{"op":"clipboard_copy","text":"hello","primary":false}' | nc -U $TILO_TEST_CONTROL
+echo '{"op":"clipboard_paste","primary":false}' | nc -U $TILO_TEST_CONTROL
 # → {"clipboard":{"text":"hello"}}   (text is null when nothing is copied)
 
 # Pointer press and release as separate events. `click_at` bundles them,
 # which cannot express a drag-and-drop: the source client has to be *holding*
 # the button when it calls start_drag, and the drop happens on a release that
 # arrives after the pointer has travelled to another window.
-echo '{"op":"pointer_move","x":260,"y":140}' | nc -U $QOS_TEST_CONTROL
-echo '{"op":"pointer_button","pressed":true}' | nc -U $QOS_TEST_CONTROL
-echo '{"op":"pointer_button","pressed":false}' | nc -U $QOS_TEST_CONTROL
+echo '{"op":"pointer_move","x":260,"y":140}' | nc -U $TILO_TEST_CONTROL
+echo '{"op":"pointer_button","pressed":true}' | nc -U $TILO_TEST_CONTROL
+echo '{"op":"pointer_button","pressed":false}' | nc -U $TILO_TEST_CONTROL
 
 # Open the next window of an app in its own window group rather than as a tab
 # in the focused one, via the launcher's normal pending-placement note. Two
 # client windows are only on screen at the same time when they are in
 # separate groups — the precondition for dragging anything between them.
-echo '{"op":"place_next_window","app_id":"org.example.App"}' | nc -U $QOS_TEST_CONTROL
+echo '{"op":"place_next_window","app_id":"org.example.App"}' | nc -U $TILO_TEST_CONTROL
 ```
 
-Full command reference: `shell/src/compositor/test_control.rs` (the `Command` enum is the source of truth; comments document each variant).
+Full command reference: `crates/session/shell/src/compositor/test_control.rs` (the `Command` enum is the source of truth; comments document each variant).
 
 ### Response shapes
 
@@ -188,7 +188,7 @@ Every widget in the tree exposes a name through either:
 
 `list_targets` returns every widget with a non-zero rect. The bare name (`Parent/Child`) is registered when there's exactly one sibling of that name; an indexed form (`Parent/Child[N]`) always works.
 
-To make a widget more addressable, override `Widget::test_id()` in `ui` to return `Some("my_stable_name")`. See `command_palette_input` in `ui/src/widget/command_palette.rs` for the pattern.
+To make a widget more addressable, override `Widget::test_id()` in `ui` to return `Some("my_stable_name")`. See `command_palette_input` in `crates/sdk/ui-core/src/widget/command_palette.rs` for the pattern.
 
 ## Layer 3: `--backend headless` — display-free live binary
 
@@ -197,7 +197,7 @@ Best for: running the full compositor in CI, on a remote shell, or in distrobox 
 ```bash
 # Spawn headless. Note: no DISPLAY or WAYLAND_DISPLAY needed.
 env -u DISPLAY -u WAYLAND_DISPLAY \
-    QOS_TEST_CONTROL=/tmp/control.sock \
+    TILO_TEST_CONTROL=/tmp/control.sock \
     cargo run --bin shell --quiet -- --backend headless &
 
 # Click + snapshot:
@@ -210,7 +210,7 @@ kill %1
 
 Configure the headless viewport via env var (defaults to 1600×900):
 ```bash
-NIRIOS_HEADLESS_SIZE=1920x1080 cargo run --bin shell -- --backend headless
+TILO_HEADLESS_SIZE=1920x1080 cargo run --bin shell -- --backend headless
 ```
 
 ## End-to-end recipe — "click, snapshot, look"
@@ -245,27 +245,27 @@ If you want to do it by hand without Python, use `socat` (Ncat doesn't have `-q`
 
 ```bash
 # 1. Start the compositor (no display required):
-export QOS_TEST_CONTROL=/tmp/nirios-e2e.sock
+export TILO_TEST_CONTROL=/tmp/tilo-e2e.sock
 env -u DISPLAY -u WAYLAND_DISPLAY \
     cargo run --bin shell --quiet -- --backend headless &
 COMP_PID=$!
 
 # 2. Wait for the socket to be ready:
-until [ -S $QOS_TEST_CONTROL ]; do sleep 0.1; done
+until [ -S $TILO_TEST_CONTROL ]; do sleep 0.1; done
 
 # 3. Drive the UI (socat closes the connection cleanly after EOF, unlike Ncat):
-echo '{"op":"modifiers","ctrl":true,"shift":false,"alt":false,"logo":false}' | socat - UNIX-CONNECT:$QOS_TEST_CONTROL
-echo '{"op":"key","key":"k"}'                                                          | socat - UNIX-CONNECT:$QOS_TEST_CONTROL
-echo '{"op":"modifiers","ctrl":false,"shift":false,"alt":false,"logo":false}'          | socat - UNIX-CONNECT:$QOS_TEST_CONTROL
-echo '{"op":"type","text":"terminal"}'                                                 | socat - UNIX-CONNECT:$QOS_TEST_CONTROL
-echo '{"op":"snapshot","path":"/tmp/palette-with-query.png"}'                          | socat - UNIX-CONNECT:$QOS_TEST_CONTROL
+echo '{"op":"modifiers","ctrl":true,"shift":false,"alt":false,"logo":false}' | socat - UNIX-CONNECT:$TILO_TEST_CONTROL
+echo '{"op":"key","key":"k"}'                                                          | socat - UNIX-CONNECT:$TILO_TEST_CONTROL
+echo '{"op":"modifiers","ctrl":false,"shift":false,"alt":false,"logo":false}'          | socat - UNIX-CONNECT:$TILO_TEST_CONTROL
+echo '{"op":"type","text":"terminal"}'                                                 | socat - UNIX-CONNECT:$TILO_TEST_CONTROL
+echo '{"op":"snapshot","path":"/tmp/palette-with-query.png"}'                          | socat - UNIX-CONNECT:$TILO_TEST_CONTROL
 
 # 4. Inspect the PNG:
 xdg-open /tmp/palette-with-query.png
 
 # 5. Tear down:
 kill $COMP_PID
-rm -f $QOS_TEST_CONTROL
+rm -f $TILO_TEST_CONTROL
 ```
 
 ## Measuring the frame loop
@@ -297,33 +297,32 @@ scripts/perf/frame-loop-bench.py --resummarize target/frame-bench/run.csv
 
 | Env var | Effect |
 |---|---|
-| `QOS_FRAME_TRACE=/path.csv` | one row per loop tick |
-| `QOS_FRAME_SUMMARY=/path.json` | percentile summary on clean exit |
-| `QOS_FRAME_WARMUP_MS` | samples excluded from the summary (default 1500) |
-| `QOS_RUN_SECONDS` | exit cleanly after N seconds, flushing both |
-| `QOS_REFRESH_HZ` | force the presentation rate (diagnostic) |
-| `QOS_PAINT_STATS=1` | 2-second painted-vs-idled counter on stderr |
-| `QOS_LOOP_TIMING=1` | log any tick over 100 ms with a phase breakdown |
+| `TILO_FRAME_TRACE=/path.csv` | one row per loop tick |
+| `TILO_FRAME_SUMMARY=/path.json` | percentile summary on clean exit |
+| `TILO_FRAME_WARMUP_MS` | samples excluded from the summary (default 1500) |
+| `TILO_RUN_SECONDS` | exit cleanly after N seconds, flushing both |
+| `TILO_REFRESH_HZ` | force the presentation rate (diagnostic) |
+| `TILO_PAINT_STATS=1` | 2-second painted-vs-idled counter on stderr |
+| `TILO_LOOP_TIMING=1` | log any tick over 100 ms with a phase breakdown |
 
-`QOS_RUN_SECONDS` matters for a scripted run: the trace and summary are
+`TILO_RUN_SECONDS` matters for a scripted run: the trace and summary are
 written by the normal exit path, so a `SIGKILL`ed compositor loses them.
 
 ## Where to look in source
 
 | What | Where |
 |---|---|
-| `shots` binary | `shell/src/bin/shots/` |
-| Frame-loop metrics | `shell/src/compositor/metrics.rs` |
-| Presentation clock | `shell/src/compositor/pacing.rs` |
-| Render thread | `shell/src/compositor/present.rs` |
-| Load-generator client | `shell/src/bin/qos-loadclient.rs` |
-| Scenario catalogue | `shell/src/bin/shots/scenario.rs::catalogue()` |
-| Offscreen renderer | `ui/src/offscreen.rs` |
-| `QOS_TEST_CONTROL` protocol | `shell/src/compositor/test_control.rs` |
-| Widget registry walk | `shell/src/compositor/frame.rs::walk_widget` |
-| Backend trait | `shell/src/compositor/backend/mod.rs` |
-| Headless backend impl | `shell/src/compositor/backend/headless.rs` |
-| Spec | `docs/superpowers/specs/2026-05-16-real-input-e2e-design.md` |
+| `shots` binary | `crates/session/shell/src/bin/shots/` |
+| Frame-loop metrics | `crates/session/shell/src/compositor/metrics.rs` |
+| Presentation clock | `crates/session/shell/src/compositor/pacing.rs` |
+| Render thread | `crates/session/shell/src/compositor/present.rs` |
+| Load-generator client | `crates/session/shell/src/bin/tilo-loadclient.rs` |
+| Scenario catalogue | `crates/session/shell/src/bin/shots/scenario.rs::catalogue()` |
+| Offscreen renderer | `crates/sdk/ui-core/src/offscreen.rs` |
+| `TILO_TEST_CONTROL` protocol | `crates/session/shell/src/compositor/test_control.rs` |
+| Widget registry walk | `crates/session/shell/src/compositor/frame.rs::walk_widget` |
+| Backend trait | `crates/session/shell/src/compositor/backend/mod.rs` |
+| Headless backend impl | `crates/session/shell/src/compositor/backend/headless.rs` |
 
 ## Per-app screenshots
 
@@ -368,7 +367,7 @@ reason is on stderr — a missing target is an error, not a silent no-op), `3`
 persistence was unavailable.
 
 The run persists through the app's real store (`ui::persist`), so pointing
-`XDG_DATA_HOME` and `QOS_PACKAGE_ID` at a scratch directory gives a complete
+`XDG_DATA_HOME` and `TILO_PACKAGE_ID` at a scratch directory gives a complete
 restart test.
 
 ## Persistence sweep
@@ -397,7 +396,7 @@ scenario can drive an edit and then assert it is undoable — including an edit
 made through an accessibility verb rather than a click.
 
 This did not always work, and the way it failed is worth knowing. An app that
-dispatches its edits through `qos_actions` reports them via
+dispatches its edits through `tilo_actions` reports them via
 `Widget::take_committed_action`; the driver never drained it, so no boundary was
 recorded and any headless undo test was impossible to write honestly. (One was
 written and deleted for exactly that reason — it could not observe its subject.)
@@ -415,7 +414,7 @@ passes while proving nothing.
 
 ## Opening an app the machine does not have
 
-`scripts/install-on-open-demo.py` drives the one flow that cannot be
+`scripts/demo/install-on-open.py` drives the one flow that cannot be
 exercised from an installed package, because its subject is a package
 that is not installed: typing the name of an app the configured
 registries offer, pressing Enter, and getting a tab.
@@ -424,8 +423,8 @@ registries offer, pressing Enter, and getting a tab.
 cargo build -p shell -p sheets -p install -p launcher
 cargo build -p app-catalogue --bins --examples
 
-scripts/install-on-open-demo.py --out target/install-on-open
-scripts/install-on-open-demo.py --backend winit --stage-only   # drive it yourself
+scripts/demo/install-on-open.py --out target/install-on-open
+scripts/demo/install-on-open.py --backend winit --stage-only   # drive it yourself
 ```
 
 It packs the real Sheets binary into a signed `.qpkg`, serves it from a
@@ -455,9 +454,22 @@ proof that an external device, network service, or codec works.
 
 ## CI integration
 
-The `shots --mode offscreen` flow runs cleanly in CI (no display, no GPU forwarding) as long as the runner has a recent Mesa + a software wgpu fallback. The compositor's `--backend headless` does the same thing for live-binary tests.
+The `shots --mode offscreen` flow runs cleanly in CI (no display, no GPU
+forwarding) as long as the runner has a recent Mesa plus a software wgpu
+fallback. The compositor's `--backend headless` does the same thing for
+live-binary tests.
 
-In distrobox locally: `distrobox enter my-distrobox -- bash -c 'cd /home/quinten/Development/quickdesktop && cargo test -p shell --test control_socket_test -- --ignored --test-threads 1'` — runs the full integration suite under `--ignored` (those tests spawn the binary themselves; opt-in via `--ignored` because they currently require a Wayland session for the legacy winit backend, but will work fully headless once the `--backend headless` worker lands).
+The control-socket integration test is ignored by default because its native
+compositor opens a winit window. Run it from the repository checkout inside a
+desktop session (or enter the development container first):
+
+```bash
+cargo build -p shell
+cargo test -p shell --test control_socket_test -- --ignored --test-threads 1
+```
+
+The test spawns the binary itself. It is intentionally separate from the
+offscreen lanes until the native compositor can run without a host display.
 
 ## Desktop UX journeys
 

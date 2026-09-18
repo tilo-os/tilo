@@ -1,15 +1,13 @@
 //! A small native application exercising UI, FS and actions together.
 
+pub mod actions;
 mod native_fixture;
-mod storage;
 pub use native_fixture::{NativeFixtureManifest, seed_native_fixture};
+mod storage;
 
-use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, transaction::Transactable};
-use qos_actions::{
-    Action, ActionBinding, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource,
-};
-use serde::{Deserialize, Serialize};
+use actions::EDIT;
+pub use actions::{EditNote, register};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
@@ -17,6 +15,9 @@ use std::{
     rc::Rc,
 };
 use taffy::{NodeId, TaffyTree};
+use tilo_actions::{
+    ActionBinding, ActionSpec, EncodedAction, ExecutionLocus, OperationKind, Resource,
+};
 use ui::widget::{Button, Column, Row, Scrollable, Text, TextInput, Widget};
 use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
 use vello::{
@@ -25,34 +26,16 @@ use vello::{
 };
 use winit::event::{Modifiers, WindowEvent};
 
-const EDIT: &str = "dev.qos.scratchpad.edit";
-const SAVE: &str = "dev.qos.scratchpad.save";
-
-/// Replace the one note. The complete value makes replay deterministic.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct EditNote {
-    pub text: String,
-}
-
-impl Action for EditNote {
-    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        doc.put(ROOT, "body", self.text.as_str())?;
-        Ok(())
-    }
-    fn locus(&self) -> ExecutionLocus {
-        ExecutionLocus::ClientLocal
-    }
-}
-
-pub fn register(registry: &mut qos_actions::ActionRegistry) {
-    registry.register::<EditNote>(EDIT);
-}
+const SAVE: &str = "dev.tilo.scratchpad.save";
 
 fn body(doc: &AutoCommit) -> String {
     doc.get(ROOT, "body")
         .ok()
         .flatten()
-        .and_then(|(value, _)| value.to_str().map(str::to_owned))
+        .and_then(|(value, id)| match value {
+            Value::Object(ObjType::Text) => doc.text(id).ok(),
+            value => value.to_str().map(str::to_owned),
+        })
         .unwrap_or_default()
 }
 
@@ -80,7 +63,10 @@ fn edit_spec() -> ActionSpec {
 pub fn open(directory: &Path) -> anyhow::Result<(ui::State, Box<dyn Widget>)> {
     let (store, doc) = storage::NoteStore::open(directory)?;
     if let Some((value, _)) = doc.get(ROOT, "body")? {
-        anyhow::ensure!(value.to_str().is_some(), "saved note body is not text");
+        anyhow::ensure!(
+            value.to_str().is_some() || matches!(value, Value::Object(ObjType::Text)),
+            "saved note body is not text"
+        );
     }
     let saved = body(&doc);
     let mut state = ui::State::new();
@@ -192,11 +178,7 @@ impl Widget for Scratchpad {
             }
             widget.for_each_child(&mut |child| find(child, editor, scroll, focused));
         }
-        let value = doc.get(ROOT, "body").ok().flatten();
-        let body = value
-            .as_ref()
-            .and_then(|(value, _)| value.to_str())
-            .unwrap_or("");
+        let body = body(doc);
         let (mut editor_rect, mut scroll_rect) = (None, None);
         let mut editor_focused = false;
         find(
@@ -212,7 +194,7 @@ impl Widget for Scratchpad {
             && scroll_rect.is_some_and(|[x0, y0, x1, y1]| x1 > x0 && y1 > y0);
         let (offset_x, offset_y) = self.scroll_offset.get();
         Some(serde_json::json!({
-            "app": "dev.qos.scratchpad",
+            "app": "dev.tilo.scratchpad",
             "editor_id": "note-editor",
             "editor_focused": editor_focused,
             "body_hash": iroh_blobs::Hash::new(body.as_bytes()).to_hex(),

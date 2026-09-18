@@ -1,0 +1,56 @@
+[Unit]
+Description=Tilo installer live-medium setup (privileged-backend sudoers + SELinux module)
+# ONLY on the installer live medium — the kernel cmdline carries tilo.install.
+# The INSTALLED system never has this arg, so this unit never fires there and
+# the passwordless sudoers rule is never present on installed machines.
+ConditionKernelCommandLine=tilo.install
+After=local-fs.target
+# In place before the greeter starts the installer UI.
+Before=greetd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+PrivateIPC=yes
+ProtectHome=yes
+ProtectProc=invisible
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+# Extract a Tilo Imager profile before the unprivileged installer starts. No
+# profile is a normal manual-install case; corruption is recorded for the UI.
+ExecStart=/usr/libexec/tilo-installer-profile-extract
+# Drop in the live-medium-only sudoers rule that lets the greetd session user
+# run /usr/libexec/tilo-install via `sudo -n`. install(1) copies + chmods 0440
+# (sudo refuses world/group-writable drop-ins) in one shot.
+ExecStart=/usr/bin/install -D -m 0440 /usr/share/tilo/installer-sudoers /etc/sudoers.d/tilo-installer
+# Give the privileged backend a system-labelled, root-only rendezvous point for
+# its transient unit's stdin/stdout. Creating this from PID 1 avoids inheriting
+# the greeter session's xdm_tmp_t SELinux label, which systemd correctly refuses
+# to open while preparing an enforcing system service.
+ExecStart=/usr/bin/install -d -m 0755 /run/tilo-installer
+ExecStart=/usr/bin/install -d -m 0700 /run/tilo-installer/bridge
+ExecStart=-/usr/sbin/restorecon -RF /run/tilo-installer
+# Load the live-medium SELinux module that lets the greeter session domain
+# (xdm_t) launch the privileged install backend as a transient system unit.
+# This is what lets the live medium stay SELinux-ENFORCING (the former
+# `enforcing=0` kernel arg is gone — see os/installer-disk.toml). Best-effort
+# (leading `-`): if SELinux is disabled or semodule is unavailable the greeter
+# must still come up; a load failure is surfaced in the journal, not fatal.
+ExecStart=-/usr/sbin/semodule -i /usr/share/tilo/selinux/tilo-installer.cil
+
+[Install]
+WantedBy=multi-user.target

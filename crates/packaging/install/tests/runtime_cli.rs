@@ -1,11 +1,11 @@
-//! Integration tests exercising `qos-install runtime …` via the built
+//! Integration tests exercising `tilo-install runtime …` via the built
 //! CLI binary.
 //!
-//! We use a fake `XDG_DATA_HOME` so each test operates on an isolated
-//! bundle store — no side effects on the user's real
-//! `$XDG_DATA_HOME/qos-runtime/`.
+//! Each test uses an isolated `XDG_DATA_HOME` bundle store, with no side
+//! effects on the user's
+//! `$XDG_DATA_HOME/tilo-runtime/`.
 //!
-//! `--from` points the bundle producer at a fake host root we
+//! `--from` points the bundle producer at a fixture host root we
 //! populate with stub loader / libc files so the tests don't depend on
 //! the runner's actual `/lib64` layout.
 
@@ -26,7 +26,7 @@ use std::process::Command;
 fn install_bin() -> PathBuf {
     // Cargo compiles the binary before running integration tests and
     // exposes its path via CARGO_BIN_EXE_<name>.
-    PathBuf::from(env!("CARGO_BIN_EXE_qos-install"))
+    PathBuf::from(env!("CARGO_BIN_EXE_tilo-install"))
 }
 
 fn fake_host(root: &Path) {
@@ -57,7 +57,7 @@ fn runtime_install_list_verify_remove_roundtrip() {
         .env("XDG_DATA_HOME", xdg.path())
         .env("HOME", xdg.path())
         .output()
-        .expect("run qos-install");
+        .expect("run tilo-install");
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -68,7 +68,7 @@ fn runtime_install_list_verify_remove_roundtrip() {
     assert!(stdout.contains("root-hash: blake3:"));
     assert!(
         xdg.path()
-            .join("qos-runtime/test-1.0.0/bundle.toml")
+            .join("tilo-runtime/test-1.0.0/bundle.toml")
             .exists()
     );
 
@@ -104,7 +104,7 @@ fn runtime_install_list_verify_remove_roundtrip() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.trim().ends_with("qos-runtime/test-1.0.0"));
+    assert!(stdout.trim().ends_with("tilo-runtime/test-1.0.0"));
 
     // remove
     let out = Command::new(install_bin())
@@ -116,7 +116,7 @@ fn runtime_install_list_verify_remove_roundtrip() {
     assert!(out.status.success());
     assert!(
         !xdg.path()
-            .join("qos-runtime/test-1.0.0/bundle.toml")
+            .join("tilo-runtime/test-1.0.0/bundle.toml")
             .exists()
     );
 }
@@ -176,7 +176,7 @@ fn runtime_verify_detects_tampering() {
     assert!(out.status.success());
 
     // Flip a byte in the installed libc stub.
-    let libc = xdg.path().join("qos-runtime/vv/lib/lib64/libc.so.6");
+    let libc = xdg.path().join("tilo-runtime/vv/lib/lib64/libc.so.6");
     let mut bytes = fs::read(&libc).unwrap();
     bytes[0] ^= 0x5a;
     fs::write(&libc, bytes).unwrap();

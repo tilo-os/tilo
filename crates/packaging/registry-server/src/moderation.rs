@@ -649,7 +649,7 @@ mod tests {
     }
     fn entry(key: &SigningKey, timestamp: u64) -> RegistryEntry {
         RegistryEntry {
-            package_id: "dev.qos.editor".into(),
+            package_id: "dev.tilo.editor".into(),
             name: "Editor".into(),
             description: String::new(),
             categories: vec![],
@@ -694,7 +694,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             service
-                .pending("dev.qos.editor")
+                .pending("dev.tilo.editor")
                 .unwrap()
                 .unwrap()
                 .change
@@ -738,7 +738,7 @@ mod tests {
             .approve(&pending, "m", "", 102, &allow(&key))
             .unwrap();
         assert_eq!(review.decision, ReviewDecision::Approved);
-        assert!(service.pending("dev.qos.editor").unwrap().is_none());
+        assert!(service.pending("dev.tilo.editor").unwrap().is_none());
         assert_eq!(
             service.storage.load_review(&review.review_id).unwrap(),
             Some(review)
@@ -756,13 +756,13 @@ mod tests {
             .submit(sign_change_request(EntryAction::Delete, public, &key), 100)
             .unwrap();
         let review = service
-            .reject("dev.qos.editor", "m", "revoked", 101)
+            .reject("dev.tilo.editor", "m", "revoked", 101)
             .unwrap();
         assert_eq!(review.decision, ReviewDecision::Rejected);
         assert!(
             service
                 .storage
-                .load_entry("dev.qos.editor")
+                .load_entry("dev.tilo.editor")
                 .unwrap()
                 .is_some()
         );
@@ -785,7 +785,7 @@ mod tests {
         assert!(
             service
                 .storage
-                .load_entry("dev.qos.editor")
+                .load_entry("dev.tilo.editor")
                 .unwrap()
                 .is_none()
         );
@@ -804,12 +804,12 @@ mod tests {
 
         assert!(matches!(
             service.approve(&reviewed, "m", "", 102, &allow(&key)),
-            Err(ModerationError::PendingChanged(package)) if package == "dev.qos.editor"
+            Err(ModerationError::PendingChanged(package)) if package == "dev.tilo.editor"
         ));
         assert!(
             service
                 .storage
-                .load_entry("dev.qos.editor")
+                .load_entry("dev.tilo.editor")
                 .unwrap()
                 .is_none()
         );
@@ -823,11 +823,11 @@ mod tests {
         sign_entry(&mut public, &key);
         service.storage.save_entry(&public).unwrap();
         service
-            .quarantine("dev.qos.editor", "m", "hold", 100)
+            .quarantine("dev.tilo.editor", "m", "hold", 100)
             .unwrap();
         assert!(matches!(
             service.restore_quarantined(
-                "dev.qos.editor",
+                "dev.tilo.editor",
                 "m",
                 "",
                 101,
@@ -836,12 +836,12 @@ mod tests {
             Err(ModerationError::PublisherNoLongerAllowed(_))
         ));
         service
-            .restore_quarantined("dev.qos.editor", "m", "", 102, &allow(&key))
+            .restore_quarantined("dev.tilo.editor", "m", "", 102, &allow(&key))
             .unwrap();
         assert!(
             service
                 .storage
-                .load_entry("dev.qos.editor")
+                .load_entry("dev.tilo.editor")
                 .unwrap()
                 .is_some()
         );

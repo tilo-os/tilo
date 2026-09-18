@@ -2,13 +2,13 @@
 //!
 //! Music has two worlds behind one trait:
 //!
-//! * **offline** (the default build): the bundled [`crate::seed`] sample
+//! * **offline** (the hermetic runtime mode): the bundled [`crate::seed`] sample
 //!   library. `--shots`, CI and every test run here — no network, fully
 //!   hermetic, deterministic screenshots. [`offline::OfflineBackend`] answers
 //!   metadata from the sample and reports "cannot stream".
-//! * **live** (`--features live`): real `YouTube` Music via the pure-Rust
+//! * **live** (included in shipping defaults): `YouTube` Music via the pure-Rust
 //!   [`rustypipe`](https://docs.rs/rustypipe) `InnerTube` client —
-//!   `music_search_tracks` for real search results and, crucially, `player`
+//!   `music_search_tracks` for search results and `player`
 //!   to resolve a **directly-playable audio-only stream URL** for a track.
 //!
 //! Both worlds implement the same [`MusicBackend`] trait: the cargo feature
@@ -19,13 +19,31 @@
 //! `PoToken` minting (why the offline-audio path works with no `BotGuard`) is
 //! documented in [`potoken`].
 
+pub mod android_vr;
+#[cfg(feature = "live")]
+pub mod live;
 pub mod offline;
 pub mod potoken;
 pub mod proxy;
-pub mod ytdlp;
 
-#[cfg(feature = "live")]
-pub mod live;
+/// Signed media URLs are accepted only from `YouTube`'s HTTPS media origin.
+/// A substring check would also accept `googlevideo.com.attacker.invalid`.
+pub(crate) fn trusted_googlevideo_url(raw: &str) -> bool {
+    if raw.len() > 16 * 1024 {
+        return false;
+    }
+    let Ok(url) = url::Url::parse(raw) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    url.scheme() == "https"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.fragment().is_none()
+        && (host == "googlevideo.com" || host.ends_with(".googlevideo.com"))
+}
 
 /// A track returned by a search (real from `YouTube` Music, or none offline).
 ///
@@ -476,7 +494,8 @@ mod tests {
 
     #[test]
     fn preferred_backend_offline_build_notes_and_is_offline() {
-        // In the default (non-`live`) build the preferred backend is offline.
+        // A deliberately feature-minimal build remains honest and offline;
+        // the ordinary default build has `live` enabled.
         let mut msg = String::new();
         let b = preferred_backend(|m| msg = m);
         assert!(!msg.is_empty());

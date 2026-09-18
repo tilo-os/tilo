@@ -19,7 +19,7 @@ use crate::layer::{Layer, LayerKind};
 
 /// Environment override for the store root; set by tests or to run two
 /// independent runtimes on one machine.
-pub const STORE_ENV: &str = "QOS_USH_HOME";
+pub const STORE_ENV: &str = "TILO_USH_HOME";
 
 /// The layer store.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,8 +82,8 @@ impl Store {
 
     /// The guest's home directory — one per store, shared by every session.
     /// This is what makes "write-isolated by default" concrete: the guest's
-    /// `$HOME` is bound over the real one, so a shell sees its own dotfiles and
-    /// none of the user's files; `perm trust-dir` is the only way a real
+    /// `$HOME` is bound over the user's home, so a shell sees its own dotfiles
+    /// and none of the user's files; `perm trust-dir` is the only way a user
     /// directory appears.
     pub fn guest_home(&self) -> PathBuf {
         self.root.join("home")

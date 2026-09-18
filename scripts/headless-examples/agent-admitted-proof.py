@@ -43,7 +43,7 @@ BINARY = (SCRIPT_DIR / ".." / ".." / "target" / "debug" / "shell").resolve()
 
 PROVIDER = "actions"
 ACTION_ID = "agent.invite"
-# The agent this OS ships (`qos-agent --name`, defaulting to `Scribe`),
+# The agent this OS ships (`tilo-agent --name`, defaulting to `Scribe`),
 # case-folded into the principal the grant names.
 AGENT = "scribe"
 
@@ -76,7 +76,7 @@ def main() -> int:
     )
     if BINARY.stat().st_mtime < newest_src:
         print(
-            f"FAIL: {BINARY} is older than shell/src — rebuild before trusting this run",
+            f"FAIL: {BINARY} is older than crates/session/shell/src — rebuild before trusting this run",
             file=sys.stderr,
         )
         return 1
@@ -91,16 +91,16 @@ def main() -> int:
 
     env = {
         **os.environ,
-        "QOS_TEST_CONTROL": socket_path,
-        "QOS_STATE_PATH": os.path.join(session_root, "state.json"),
+        "TILO_TEST_CONTROL": socket_path,
+        "TILO_STATE_PATH": os.path.join(session_root, "state.json"),
         "XDG_DATA_HOME": os.path.join(session_root, "data"),
         "XDG_CACHE_HOME": os.path.join(session_root, "cache"),
         "XDG_STATE_HOME": os.path.join(session_root, "st"),
         "XDG_CONFIG_HOME": os.path.join(session_root, "cfg"),
         "XDG_RUNTIME_DIR": session_root,
-        "QOS_PEER_KEY_PATH": os.path.join(session_root, "peer.key"),
-        "QOS_APPS_DATA_DIR": os.path.expanduser("~/.local/share/qos-apps"),
-        "QOS_RUNTIME_BUNDLE_DIR": os.path.expanduser("~/.local/share/qos-runtime"),
+        "TILO_PEER_KEY_PATH": os.path.join(session_root, "peer.key"),
+        "TILO_APPS_DATA_DIR": os.path.expanduser("~/.local/share/tilo-apps"),
+        "TILO_RUNTIME_BUNDLE_DIR": os.path.expanduser("~/.local/share/tilo-runtime"),
     }
     env.pop("DISPLAY", None)
     env.pop("WAYLAND_DISPLAY", None)
