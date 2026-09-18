@@ -359,6 +359,8 @@ pub enum PeerDepartureCause {
     HostSessionClosed,
     /// The peer stopped refreshing its liveness heartbeat.
     LivenessTimedOut,
+    /// The local topic subscription ended or was explicitly left.
+    WorkspaceRouteClosed,
 }
 
 enum InternalEvent {
@@ -714,7 +716,7 @@ impl ActorState {
                 self.handle_join_workspace(ws, on_event).await;
             }
             Some(NetCmd::LeaveWorkspace { ws }) => {
-                self.subscribers.remove(&ws);
+                let subscriber = self.subscribers.get(&ws).cloned();
                 let leaving = self
                     .peers_seen
                     .iter()
@@ -723,8 +725,20 @@ impl ActorState {
                     })
                     .collect::<Vec<_>>();
                 for (peer, epoch) in leaving {
-                    self.remove_membership_if_epoch(ws, peer, epoch);
+                    if self.remove_membership_if_epoch(ws, peer, epoch)
+                        && let Some(tx) = subscriber.as_ref()
+                    {
+                        let _ = tx
+                            .send(NetEvent::PeerLeft {
+                                ws,
+                                peer,
+                                cause: PeerDepartureCause::WorkspaceRouteClosed,
+                                membership_epoch: Some(epoch),
+                            })
+                            .await;
+                    }
                 }
+                self.subscribers.remove(&ws);
                 if let Some(topic) = self.topics.remove(&ws) {
                     topic.pump.abort();
                 }
@@ -1349,6 +1363,7 @@ impl ActorState {
             }
             Some(InternalEvent::Closed { ws }) => {
                 self.topics.remove(&ws);
+                let subscriber = self.subscribers.get(&ws).cloned();
                 let closed = self
                     .peers_seen
                     .iter()
@@ -1357,7 +1372,18 @@ impl ActorState {
                     })
                     .collect::<Vec<_>>();
                 for (peer, epoch) in closed {
-                    self.remove_membership_if_epoch(ws, peer, epoch);
+                    if self.remove_membership_if_epoch(ws, peer, epoch)
+                        && let Some(tx) = subscriber.as_ref()
+                    {
+                        let _ = tx
+                            .send(NetEvent::PeerLeft {
+                                ws,
+                                peer,
+                                cause: PeerDepartureCause::WorkspaceRouteClosed,
+                                membership_epoch: Some(epoch),
+                            })
+                            .await;
+                    }
                 }
             }
             Some(InternalEvent::HostConnected {
@@ -1470,19 +1496,12 @@ impl ActorState {
                 })
             }
             GossipEvent::NeighborDown(peer) => {
-                let membership_epoch = self
-                    .peers_seen
-                    .get(&(ws, peer))
-                    .map(|membership| membership.epoch);
-                if let Some(epoch) = membership_epoch {
-                    self.remove_membership_if_epoch(ws, peer, epoch);
-                }
-                Some(NetEvent::PeerLeft {
-                    ws,
-                    peer,
-                    cause: PeerDepartureCause::GossipNeighborDown,
-                    membership_epoch,
-                })
+                // Gossip does not attach a connection incarnation to a down
+                // edge. Revoking the current epoch here could let a delayed
+                // Down(N) kill a newer Up(N+1). Keep the exact membership
+                // until its actor-owned heartbeat deadline confirms loss.
+                tracing::debug!(ws, peer = %peer, "gossip neighbour down awaits liveness confirmation");
+                None
             }
             GossipEvent::Received(message) => {
                 let peer = message.delivered_from;
