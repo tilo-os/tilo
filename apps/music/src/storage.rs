@@ -396,20 +396,14 @@ pub fn save_device_profile(profile: &DeviceProfile) -> std::io::Result<()> {
     save_device_profile_to(&device_profile_path(), profile)
 }
 
-/// Best-effort XDG data dir without pulling the `dirs` crate: honour
-/// `XDG_DATA_HOME`, else `$HOME/.local/share`, else the current dir.
+/// Native device-local data directory, with an absolute XDG override for
+/// sandboxed launches. Windows resolves to LocalAppData through `dirs`.
 fn dirs_data_dir() -> PathBuf {
-    if let Ok(x) = std::env::var("XDG_DATA_HOME")
-        && !x.is_empty()
-    {
-        return PathBuf::from(x);
-    }
-    if let Ok(home) = std::env::var("HOME")
-        && !home.is_empty()
-    {
-        return PathBuf::from(home).join(".local").join("share");
-    }
-    PathBuf::from(".")
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(dirs::data_local_dir)
+        .unwrap_or_else(std::env::temp_dir)
 }
 
 #[cfg(test)]

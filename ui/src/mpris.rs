@@ -5,8 +5,10 @@
 //! Lifted out of the Music app so any `ui` consumer (e.g.
 //! [`crate::widget::video_player::VideoPlayer`], hence Tube) gets this free.
 //!
-//! Real D-Bus serving is gated behind the `mpris` feature (via [`zbus`]); the
+//! Real D-Bus serving requires Unix and the `mpris` feature (via zbus); the
 //! pure state/command core always compiles so tests run without D-Bus.
+//! Other platforms use an inactive handle. Native Windows system media
+//! controls are not implemented by this backend.
 //!
 //! Runs on its own worker thread with a private Tokio runtime so the UI
 //! thread is never blocked. Two channels bridge it to the widget: external
@@ -46,6 +48,10 @@ pub struct MprisConfig {
     pub identity: String,
     /// `DesktopEntry` — the `.desktop` basename, for the desktop to find the app.
     pub desktop_entry: String,
+    /// URI schemes this player accepts (`SupportedUriSchemes`).
+    pub supported_uri_schemes: Vec<String>,
+    /// Media formats this player accepts (`SupportedMimeTypes`).
+    pub supported_mime_types: Vec<String>,
 }
 
 impl MprisConfig {
@@ -54,6 +60,13 @@ impl MprisConfig {
             bus_name: format!("org.mpris.MediaPlayer2.{app_id}"),
             identity: identity.to_string(),
             desktop_entry: app_id.to_string(),
+            supported_uri_schemes: vec!["http".into(), "https".into(), "file".into()],
+            supported_mime_types: vec![
+                "video/mp4".into(),
+                "video/webm".into(),
+                "audio/mpeg".into(),
+                "audio/mp4".into(),
+            ],
         }
     }
 }
@@ -159,7 +172,8 @@ pub enum MprisCommand {
 }
 
 /// The widget-side handle to the MPRIS worker. In the default (non-`mpris`)
-/// build, and whenever the session bus is unavailable, this is an inert stub:
+/// build, on non-Unix platforms, and whenever the session bus is unavailable,
+/// this is an inert stub:
 /// `publish` is a no-op and `drain_commands` yields nothing — so the widget code
 /// path is identical everywhere.
 pub struct MprisHandle {
@@ -187,7 +201,7 @@ impl MprisHandle {
     }
 
     /// Bring up the MPRIS service under `config`, publishing `initial` as the
-    /// starting state. Never panics: without the `mpris` feature, or if the
+    /// starting state. Never panics: on non-Unix platforms, without the `mpris` feature, or if the
     /// session bus can't be reached, it returns an inert [`Self::disabled`].
     pub fn spawn(config: MprisConfig, initial: PlayerSnapshot) -> Self {
         #[cfg(feature = "mpris")]
@@ -262,7 +276,22 @@ pub fn track_object_path(track_id: &str) -> String {
 /// The single object path both MPRIS interfaces live at.
 pub const OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";
 
-#[cfg(feature = "mpris")]
+#[cfg(all(feature = "mpris", not(unix)))]
+mod imp {
+    use super::{MprisCommand, MprisConfig, PlayerSnapshot, Receiver};
+    use tokio::sync::mpsc::UnboundedSender;
+
+    // MPRIS is a Unix session-bus protocol. Keep the common application API
+    // available without claiming a native Windows media-control service.
+    pub(super) fn spawn(
+        _config: MprisConfig,
+        _initial: PlayerSnapshot,
+    ) -> Option<(Receiver<MprisCommand>, UnboundedSender<PlayerSnapshot>)> {
+        None
+    }
+}
+
+#[cfg(all(feature = "mpris", unix))]
 mod imp {
     #![allow(
         clippy::used_underscore_binding,
@@ -324,6 +353,20 @@ mod imp {
         pub cmd: Sender<MprisCommand>,
         pub identity: String,
         pub desktop_entry: String,
+        pub supported_uri_schemes: Vec<String>,
+        pub supported_mime_types: Vec<String>,
+    }
+
+    impl RootIface {
+        pub(super) fn new(config: MprisConfig, cmd: Sender<MprisCommand>) -> Self {
+            Self {
+                cmd,
+                identity: config.identity,
+                desktop_entry: config.desktop_entry,
+                supported_uri_schemes: config.supported_uri_schemes,
+                supported_mime_types: config.supported_mime_types,
+            }
+        }
     }
 
     // Every method below takes `&self` because the #[interface] macro
@@ -363,19 +406,12 @@ mod imp {
             self.desktop_entry.clone()
         }
         #[zbus(property)]
-        #[allow(clippy::unused_self, reason = "see the comment above this impl")]
         fn supported_uri_schemes(&self) -> Vec<String> {
-            vec!["http".into(), "https".into(), "file".into()]
+            self.supported_uri_schemes.clone()
         }
         #[zbus(property)]
-        #[allow(clippy::unused_self, reason = "see the comment above this impl")]
         fn supported_mime_types(&self) -> Vec<String> {
-            vec![
-                "video/mp4".into(),
-                "video/webm".into(),
-                "audio/mpeg".into(),
-                "audio/mp4".into(),
-            ]
+            self.supported_mime_types.clone()
         }
     }
 
@@ -585,11 +621,7 @@ mod imp {
             })
             .ok()?;
 
-        let root = RootIface {
-            cmd: cmd_tx.clone(),
-            identity: config.identity.clone(),
-            desktop_entry: config.desktop_entry,
-        };
+        let root = RootIface::new(config, cmd_tx.clone());
         let player = PlayerIface {
             snap: initial.clone(),
             cmd: cmd_tx,
@@ -683,10 +715,27 @@ mod tests {
         });
     }
 
+    #[cfg(all(feature = "mpris", not(unix)))]
+    #[test]
+    fn unsupported_platform_spawn_is_inactive() {
+        let mut handle = MprisHandle::spawn(
+            MprisConfig::new("tilo-player", "Tilo Player"),
+            PlayerSnapshot::default(),
+        );
+        assert!(!handle.is_active());
+        handle.publish(PlayerSnapshot {
+            status: PlaybackStatus::Playing,
+            title: "Now playing locally".into(),
+            ..PlayerSnapshot::default()
+        });
+        assert!(!handle.is_active());
+        assert!(handle.drain_commands().is_empty());
+    }
+
     /// Hermetic round-trip over an in-process p2p socket pair (no session
     /// bus): proves the served MPRIS interfaces *respond* and *reflect* the
     /// player state a `VideoPlayer` publishes.
-    #[cfg(feature = "mpris")]
+    #[cfg(all(feature = "mpris", unix))]
     #[tokio::test]
     async fn mpris_interface_responds_and_reflects_state() {
         use std::sync::mpsc::channel;
@@ -717,11 +766,10 @@ mod tests {
             snap: snap.clone(),
             cmd: cmd_tx.clone(),
         };
-        let root = imp::RootIface {
-            cmd: cmd_tx.clone(),
-            identity: "Tilo Player".into(),
-            desktop_entry: "tilo-player".into(),
-        };
+        let mut config = MprisConfig::new("tilo-player", "Tilo Player");
+        config.supported_uri_schemes = vec!["http".into(), "https".into()];
+        config.supported_mime_types = vec!["audio/ogg".into(), "audio/mpeg".into()];
+        let root = imp::RootIface::new(config, cmd_tx.clone());
         let server_builder = Builder::unix_stream(server_sock)
             .server(GUID)
             .expect("guid")
@@ -735,6 +783,29 @@ mod tests {
             tokio::join!(server_builder.build(), client_builder.build());
         let server_conn = server_conn.expect("server conn");
         let client_conn = client_conn.expect("client conn");
+
+        let root_proxy = zbus::Proxy::new(
+            &client_conn,
+            "org.mpris.MediaPlayer2.tilo-player",
+            OBJECT_PATH,
+            "org.mpris.MediaPlayer2",
+        )
+        .await
+        .expect("root proxy");
+        assert_eq!(
+            root_proxy
+                .get_property::<Vec<String>>("SupportedUriSchemes")
+                .await
+                .expect("URI schemes"),
+            ["http", "https"],
+        );
+        assert_eq!(
+            root_proxy
+                .get_property::<Vec<String>>("SupportedMimeTypes")
+                .await
+                .expect("MIME types"),
+            ["audio/ogg", "audio/mpeg"],
+        );
 
         let player_proxy: zbus::Proxy = zbus::proxy::Builder::new(&client_conn)
             .destination("org.mpris.MediaPlayer2.tilo-player")
@@ -758,7 +829,7 @@ mod tests {
 
     /// The properties zbus serves for the snapshot [`spawn`] published match
     /// what was published.
-    #[cfg(feature = "mpris")]
+    #[cfg(all(feature = "mpris", unix))]
     async fn assert_served_state_matches(player_proxy: &zbus::Proxy<'_>) {
         let status: String = player_proxy
             .get_property("PlaybackStatus")
@@ -784,7 +855,7 @@ mod tests {
 
     /// A client calling `Pause`/`Next`/`Play` over the proxy is forwarded to
     /// the widget as [`MprisCommand`]s, in order.
-    #[cfg(feature = "mpris")]
+    #[cfg(all(feature = "mpris", unix))]
     async fn assert_commands_forwarded(
         player_proxy: &zbus::Proxy<'_>,
         cmd_rx: &std::sync::Mutex<std::sync::mpsc::Receiver<MprisCommand>>,
@@ -820,7 +891,7 @@ mod tests {
 
     /// Publishing an update through [`imp::apply_update`] is reflected back
     /// over the served property.
-    #[cfg(feature = "mpris")]
+    #[cfg(all(feature = "mpris", unix))]
     async fn assert_update_reflected(
         server_conn: &zbus::Connection,
         player_proxy: &zbus::Proxy<'_>,

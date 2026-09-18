@@ -364,6 +364,7 @@ gstreamer = "0.24"
 gstreamer-app = "0.24"
 gstreamer-video = "0.24"
 rustypipe = { version = "0.11", default-features = false }
+rquickjs = "0.9"
 # Sender-side discovery and transports for FCast and Google Cast. Disable the
 # mobile FFI/logging defaults: tilo-projector is a native Rust broker.
 fcast-sender-sdk = { version = "0.3.0", default-features = false, features = ["fcast", "chromecast", "discovery"] }

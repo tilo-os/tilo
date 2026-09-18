@@ -1902,6 +1902,10 @@ mod tests {
             labels.iter().any(|l| l.contains("New playlist")),
             "{labels:?}"
         );
+        // The shared palette shows eight rows per group; find the nested
+        // action through its production search path instead of assuming order.
+        palette.set_query("Rename playlist");
+        let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Rename playlist")),
             "{labels:?}"
