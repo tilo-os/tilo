@@ -1135,8 +1135,12 @@ pub struct ShellNetwork {
     /// Bounded, session-local transport truth for the Devices pane. Media
     /// acceptance remains a separate action, so a completed upload never
     /// implies that the destination app opened it.
-    outgoing_personal_media_transfers:
-        Mutex<std::collections::BTreeMap<[u8; 16], OutgoingPersonalMediaTransferEntry>>,
+    outgoing_personal_media_transfers: Mutex<
+        std::collections::BTreeMap<
+            (crate::shell::personal_continuity::DeviceId, [u8; 16]),
+            OutgoingPersonalMediaTransferEntry,
+        >,
+    >,
     /// Verified transport-device chains received on workspace topics.
     peer_identities: PeerIdentityStore,
     /// Production is fail-closed until a peer presents `IdentityHello`.
@@ -3149,7 +3153,7 @@ impl ShellNetwork {
         ))
         .map_err(|_| "target is not a certified transport device id")?;
         self.record_outgoing_personal_media_transfer(OutgoingPersonalMediaTransfer {
-            target,
+            target: target.clone(),
             transfer_id: transfer.transfer_id,
             sent_bytes: 0,
             total_bytes: transfer.total_bytes,
@@ -3170,12 +3174,32 @@ impl ShellNetwork {
             .map_err(|error| error.to_string());
         if result.is_err()
             && let Ok(mut transfers) = self.outgoing_personal_media_transfers.lock()
-            && let Some(entry) = transfers.get_mut(&transfer_id)
+            && let Some(entry) = transfers.get_mut(&(target, transfer_id))
         {
             entry.transfer.status = PersonalMediaTransferStatus::Failed;
             entry.updated = std::time::Instant::now();
         }
         result
+    }
+
+    /// Stop only the source stream bound to this exact certified target/id.
+    pub(crate) fn cancel_personal_media_transfer(
+        &self,
+        target: &crate::shell::personal_continuity::DeviceId,
+        transfer_id: [u8; 16],
+    ) -> Result<(), String> {
+        let target_bytes: [u8; 32] = hex::decode(target.as_str())
+            .map_err(|_| "invalid transfer target")?
+            .try_into()
+            .map_err(|_| "invalid transfer target")?;
+        let target =
+            iroh::EndpointId::from_bytes(&target_bytes).map_err(|_| "invalid transfer target")?;
+        self.cmd_tx
+            .try_send(NetCmd::CancelPersonalMedia {
+                target,
+                transfer_id,
+            })
+            .map_err(|error| error.to_string())
     }
 
     /// Stream an immutable Nearby spool object from a receiver-confirmed
@@ -3248,11 +3272,13 @@ impl ShellNetwork {
         transfers.retain(|_, entry| {
             !matches!(
                 entry.transfer.status,
-                PersonalMediaTransferStatus::Completed | PersonalMediaTransferStatus::Failed
+                PersonalMediaTransferStatus::Completed
+                    | PersonalMediaTransferStatus::Failed
+                    | PersonalMediaTransferStatus::Cancelled
             ) || now.saturating_duration_since(entry.updated) <= OUTGOING_PERSONAL_MEDIA_RETENTION
         });
         transfers.insert(
-            transfer.transfer_id,
+            (transfer.target.clone(), transfer.transfer_id),
             OutgoingPersonalMediaTransferEntry {
                 transfer,
                 updated: now,
@@ -3262,7 +3288,7 @@ impl ShellNetwork {
             let oldest = transfers
                 .iter()
                 .min_by_key(|(_, entry)| entry.updated)
-                .map(|(id, _)| *id);
+                .map(|(id, _)| id.clone());
             let Some(oldest) = oldest else {
                 break;
             };
@@ -3278,7 +3304,9 @@ impl ShellNetwork {
         transfers.retain(|_, entry| {
             !matches!(
                 entry.transfer.status,
-                PersonalMediaTransferStatus::Completed | PersonalMediaTransferStatus::Failed
+                PersonalMediaTransferStatus::Completed
+                    | PersonalMediaTransferStatus::Failed
+                    | PersonalMediaTransferStatus::Cancelled
             ) || now.saturating_duration_since(entry.updated) <= OUTGOING_PERSONAL_MEDIA_RETENTION
         });
         let mut snapshot = transfers
@@ -6127,6 +6155,8 @@ mod tests {
         .expect("handoff action");
         net.start_personal_media_transfer(transfer)
             .expect("stream command");
+        net.cancel_personal_media_transfer(&target, transfer_id)
+            .expect("cancel command");
         let commands = std::iter::from_fn(|| commands.try_recv().ok()).collect::<Vec<_>>();
         let action_index = commands
             .iter()
@@ -6136,7 +6166,18 @@ mod tests {
             .iter()
             .position(|command| matches!(command, NetCmd::PublishPersonalMedia { .. }))
             .expect("media command");
+        let cancel_index = commands
+            .iter()
+            .position(|command| {
+                matches!(
+                    command,
+                    NetCmd::CancelPersonalMedia { target: cancelled_target, transfer_id: cancelled_id }
+                        if *cancelled_target == target_endpoint && *cancelled_id == transfer_id
+                )
+            })
+            .expect("exact cancel command");
         assert!(action_index < media_index);
+        assert!(media_index < cancel_index);
     }
 
     #[test]
