@@ -1304,6 +1304,8 @@ impl PasswordsSurface {
         match self.model.as_ref().map(crate::PasswordsModel::custody) {
             Some(SecretCustody::SecretService) => Some("System keyring"),
             Some(SecretCustody::LocalFile) => Some("Local encrypted storage"),
+            #[cfg(windows)]
+            Some(SecretCustody::WindowsDpapi) => Some("Windows user protection (DPAPI)"),
             None => None,
         }
     }

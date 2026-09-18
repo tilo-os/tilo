@@ -3659,6 +3659,7 @@ fn hosted_terminal_requires_ush_before_construction() {
     ));
 }
 
+#[cfg(unix)]
 fn private_ush_listener(runtime: &std::path::Path) -> std::os::unix::net::UnixListener {
     use std::os::unix::fs::PermissionsExt;
 
@@ -3675,6 +3676,7 @@ fn private_ush_listener(runtime: &std::path::Path) -> std::os::unix::net::UnixLi
 }
 
 #[test]
+#[cfg(unix)]
 fn hosted_services_discover_and_use_a_healthy_ush_socket() {
     use std::io::{BufRead, BufReader};
     use std::os::fd::AsRawFd;
@@ -3706,6 +3708,7 @@ fn hosted_services_discover_and_use_a_healthy_ush_socket() {
 }
 
 #[test]
+#[cfg(unix)]
 fn hosted_services_leave_ush_missing_when_the_socket_is_absent() {
     let runtime = tempfile::tempdir().unwrap();
     let services = crate::HostedProcessServices::discover_from_runtime_dir(runtime.path());
@@ -3717,6 +3720,7 @@ fn hosted_services_leave_ush_missing_when_the_socket_is_absent() {
 }
 
 #[test]
+#[cfg(unix)]
 fn hosted_services_leave_ush_missing_when_the_socket_refuses_connections() {
     let runtime = tempfile::tempdir().unwrap();
     let listener = private_ush_listener(runtime.path());
