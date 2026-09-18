@@ -150,7 +150,10 @@ fn render_scenario(
     // necessary. A library shot gets a few more *offscreen-only* frames so
     // its real background thumbnail worker can settle; the live UI never
     // waits for a decode.
-    let settle_frames = if matches!(scenario, "library" | "album-manage" | "metadata-edit") {
+    let settle_frames = if matches!(
+        scenario,
+        "library" | "selection" | "album-manage" | "metadata-edit"
+    ) {
         // A library queues one bounded thumbnail job per sync.  Give the
         // deterministic offscreen gallery enough frames to show the fully
         // materialised shelf without changing the live app's non-blocking
