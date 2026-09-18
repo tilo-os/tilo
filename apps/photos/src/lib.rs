@@ -322,11 +322,19 @@ pub fn seed_scenario(
         "library" | "selection" | "selection-many-albums" | "album-manage" | "metadata-edit" => {
             let mut library = PhotosDoc::library(doc);
             let mut travel = Vec::new();
-            for (variant, name) in [
-                "Harbour dusk",
-                "Summer trail",
-                "Museum light",
-                "Rainy market",
+            for (variant, (name, captured_at)) in [
+                ("Harbour dusk", "2026-06-14 20:24"),
+                ("Summer trail", "2026-06-15 09:18"),
+                ("Museum light", "2026-06-15 14:42"),
+                ("Rainy market", "2026-06-16 10:06"),
+                ("Dog at the lake", "2026-06-16 17:30"),
+                ("Window cat", "2026-06-18 08:11"),
+                ("Sunset ferry", "2026-06-18 21:02"),
+                ("Garden supper", "2026-06-21 19:14"),
+                ("Paper lanterns", "2026-07-02 22:09"),
+                ("Mountain lookout", "2026-07-04 11:28"),
+                ("Studio morning", "2026-07-09 07:51"),
+                ("First swim", "2026-07-12 15:45"),
             ]
             .into_iter()
             .enumerate()
@@ -338,27 +346,28 @@ pub fn seed_scenario(
                 }
                 let image = OpenImage::from_path(&sample_path.to_string_lossy(), 1200, 800);
                 let mut photo = crate::model::LibraryPhoto::from_image(image);
-                photo.favorite = name == "Summer trail";
-                photo.folder = Some(if name.contains("Museum") {
+                photo.favorite =
+                    matches!(name, "Summer trail" | "Dog at the lake" | "Sunset ferry");
+                photo.folder = Some(if name.contains("Museum") || name.contains("Studio") {
                     "City walks".into()
                 } else {
                     "Travel 2026".into()
                 });
-                photo.people = if name.contains("Summer") {
+                photo.people = if name.contains("Summer") || name.contains("Dog") {
                     vec!["Élodie".into(), "Sam".into()]
+                } else if name.contains("cat") {
+                    vec!["Noor".into()]
                 } else {
                     vec!["Élodie".into()]
                 };
                 photo.tags = vec![if name.contains("Rainy") {
                     "rain".into()
+                } else if name.contains("Dog") || name.contains("cat") {
+                    "pets".into()
                 } else {
                     "golden hour".into()
                 }];
-                photo.captured_at = Some(if name.contains("Harbour") {
-                    "2026-06-14 20:24".into()
-                } else {
-                    "2026-06-15".into()
-                });
+                photo.captured_at = Some(captured_at.into());
                 travel.push(photo.id.clone());
                 library.add_photo(photo);
             }
