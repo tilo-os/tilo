@@ -980,6 +980,10 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # base may also carry systemd-networkd and systemd-resolved, adding duplicate
 # network state machines (and a direct libssl consumer) without serving a Tilo
 # path. Remove both subpackages and consume NetworkManager's resolver state.
+# Switch the symlink first: resolved's preun script otherwise tries to migrate
+# live resolver state that does not exist while constructing an offline image.
+# Filter the installed inventory; querying absent names emits diagnostics on
+# stdout, which must never become removal arguments. Removal needs no mirrors.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     bubblewrap \
     flatpak \
@@ -998,11 +1002,13 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     fuse3 \
     cage \
     && dnf clean all && ${FINALIZE_RPMDB} \
-    && rpm -q --qf '%{NAME}\n' systemd-coredump systemd-networkd systemd-resolved 2>/dev/null \
-         | xargs -r dnf remove -y \
     && ln -sfn ../run/NetworkManager/resolv.conf /etc/resolv.conf \
+    && installed="$(rpm -qa --qf '%{NAME}\n')" \
+    && printf '%s\n' "$installed" | awk '/^systemd-(coredump|networkd|resolved)$/' \
+           | xargs -r dnf --disablerepo='*' remove -y \
     && test "$(readlink /etc/resolv.conf)" = ../run/NetworkManager/resolv.conf \
-    && ! rpm -q systemd-coredump systemd-networkd systemd-resolved >/dev/null 2>&1 \
+    && installed="$(rpm -qa --qf '%{NAME}\n')" \
+    && ! printf '%s\n' "$installed" | grep -Eq '^systemd-(coredump|networkd|resolved)$' \
     && dnf clean all && ${FINALIZE_RPMDB}
 
 # xdg-desktop-portal — the frontend that proxies sandboxed-app
@@ -1095,10 +1101,11 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     libxkbcommon-devel \
     libinput-devel \
     && rpm -e --nodeps wayland-devel libxkbcommon-devel libinput-devel \
-    && rpm -q --qf '%{NAME}\n' pkgconf-pkg-config pkgconf pkgconf-m4 libpkgconf 2>/dev/null \
-         | xargs -r rpm -e --nodeps \
-    && ! rpm -q wayland-devel libxkbcommon-devel libinput-devel >/dev/null 2>&1 \
-    && ! rpm -q pkgconf-pkg-config pkgconf pkgconf-m4 libpkgconf >/dev/null 2>&1 \
+    && installed="$(rpm -qa --qf '%{NAME}\n')" \
+    && printf '%s\n' "$installed" | awk '/^(pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf)$/' \
+           | xargs -r rpm -e --nodeps \
+    && installed="$(rpm -qa --qf '%{NAME}\n')" \
+    && ! printf '%s\n' "$installed" | grep -Eq '^(wayland-devel|libxkbcommon-devel|libinput-devel|pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf)$' \
     && dnf clean all && ${FINALIZE_RPMDB}
 
 # ---------------------------------------------------------------------------
@@ -1520,10 +1527,12 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && python3 /usr/local/bin/make-plymouth-assets.py /usr/share/plymouth/themes/tilo \
     && plymouth-set-default-theme tilo \
     && test "$(plymouth-set-default-theme)" = tilo \
-    && dnf remove -y systemd-ukify python3-pillow \
-    && rpm -q --qf '%{NAME}\n' systemd-ukify openssl sbsigntools efitools mokutil pesign nss-tools gnutls-utils git git-core openvpn NetworkManager-openvpn openssh openssh-clients openssh-server 2>/dev/null \
-         | xargs -r dnf remove -y \
-    && ! rpm -q python3-pillow systemd-ukify >/dev/null 2>&1 \
+    && dnf --disablerepo='*' remove -y systemd-ukify python3-pillow \
+    && installed="$(rpm -qa --qf '%{NAME}\n')" \
+    && printf '%s\n' "$installed" | awk '/^(systemd-ukify|openssl|sbsigntools|efitools|mokutil|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh|openssh-clients|openssh-server)$/' \
+           | xargs -r dnf --disablerepo='*' remove -y \
+    && installed="$(rpm -qa --qf '%{NAME}\n')" \
+    && ! printf '%s\n' "$installed" | grep -Eq '^(python3-pillow|systemd-ukify|openssl|sbsigntools|efitools|mokutil|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh|openssh-clients|openssh-server)$' \
     && dnf clean all && ${FINALIZE_RPMDB}
 
 # The install-config drop-in that flips bootc's bootloader choice to
