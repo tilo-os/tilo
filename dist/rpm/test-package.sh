@@ -17,6 +17,10 @@ dnf install -y "$@" file mesa-vulkan-drivers
 "$repo_root/dist/verify-payload.sh" /
 rpm -q tilo-session >/dev/null
 rpm -q tilo-session-apps >/dev/null
+rpm -q --provides tilo-session | grep -Eq '^qos-session = '
+rpm -q --obsoletes tilo-session | grep -Fxq 'qos-session < 0.1.9'
+rpm -q --provides tilo-session-apps | grep -Eq '^qos-session-apps = '
+rpm -q --obsoletes tilo-session-apps | grep -Fxq 'qos-session-apps < 0.1.9'
 rpm -q --requires tilo-session | grep -Fxq bubblewrap
 rpm -q --requires tilo-session | grep -Fxq xwayland-satellite
 rpm -q --requires tilo-session | grep -Fxq xdg-desktop-portal
@@ -46,5 +50,7 @@ done
 if (( expect_devel )); then
     "$repo_root/dist/verify-devel-payload.sh" /
     rpm -q tilo-session-devel >/dev/null
+    rpm -q --provides tilo-session-devel | grep -Eq '^qos-session-devel = '
+    rpm -q --obsoletes tilo-session-devel | grep -Fxq 'qos-session-devel < 0.1.9'
 fi
 "$repo_root/dist/ci/test-installed-host-startup.sh"
