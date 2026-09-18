@@ -48,7 +48,7 @@ collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }
 os-actions = { path = "../../system/os-actions" }
 runtime-identity = { path = "../runtime-identity" }
-tilo-user-identity = { path = "../../identity/tilo-user-identity" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 runtime-fs = { path = "../runtime-fs" }
 tilo-relay = { path = "../../hosting/tilo-relay" }
 tilo-bluez = { path = "../../system/tilo-bluez" }

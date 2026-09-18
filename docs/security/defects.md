@@ -668,7 +668,7 @@ and `::key_reachable_outside_the_trust_group_raises_instead_of_rotating`.
 
 ## P2-3 — Revocation is modelled but undeliverable
 
-`crates/identity/tilo-user-identity/src/revocation.rs` implements signed revocation entries with
+`crates/collab/tilo-user-identity/src/revocation.rs` implements signed revocation entries with
 correct before/after-cutoff semantics (tested at `shell/src/network/identity.rs:364-406`), but
 `PeerIdentityStore::set_revocations` has no non-test caller and there is no distribution mechanism.
 
