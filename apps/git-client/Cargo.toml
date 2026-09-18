@@ -39,6 +39,7 @@ url.workspace = true
 rustls.workspace = true
 zeroize.workspace = true
 bounded-command = { path = "../../crates/system/bounded-command" }
+shlex = "1.3"
 
 [dev-dependencies]
 futures-util.workspace = true

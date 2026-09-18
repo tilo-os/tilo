@@ -134,14 +134,28 @@ fn authenticated_client(root: &Path, url: &str, password: &str) -> Repository {
     let quoted_store_path = format!("'{}'", store_path.replace('\'', "'\\''"));
     let mut config = client.config().unwrap();
     config.set_str("credential.helper", "").unwrap();
-    config
-        .set_multivar(
-            "credential.helper",
-            "^does-not-match$",
-            &format!("store --file={quoted_store_path}"),
-        )
-        .unwrap();
     config.set_bool("core.autocrlf", false).unwrap();
+    drop(config);
+    // libgit2's multivar writer does not correctly escape this shell value
+    // for Git's config grammar. Let Git encode it, retaining the empty helper
+    // reset followed by the real helper and its quoted filesystem argument.
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(&path)
+        .args(["config", "--local", "--add", "credential.helper"])
+        .arg(format!("store --file={quoted_store_path}"));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let output = command.output().expect("Git writes fixture configuration");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     client
 }
 
