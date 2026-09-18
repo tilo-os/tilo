@@ -105,7 +105,9 @@ echo "$marked" >"$conf"
 err=$scratch/accept.err
 wrapper_copy=$scratch/tilo-session-dev
 lifecycle=$scratch/tilo-session-runner
+test_runtime=$scratch/runtime
 cp "$wrapper" "$wrapper_copy"
+mkdir -m 0700 "$test_runtime"
 cat >"$lifecycle" <<'SH'
 #!/bin/sh
 case "${1:-}" in /*) ;; *) exit 73 ;; esac
@@ -118,7 +120,7 @@ fi
 printf '\n'
 SH
 chmod 0755 "$wrapper_copy" "$lifecycle"
-out=$("$wrapper_copy" 2>"$err"); rc=$?
+out=$(XDG_RUNTIME_DIR="$test_runtime" "$wrapper_copy" 2>"$err"); rc=$?
 expected="managed $(realpath -e "$marked") ::"
 if (( rc == 0 )) && [[ $out == "$expected" ]]; then
     echo "ok: a marked, privately-owned build enters the package session lifecycle"
@@ -129,7 +131,7 @@ else
     fails=$((fails + 1))
 fi
 
-attest=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/tilo-dev-session/active
+attest=$test_runtime/tilo-dev-session/active
 if [[ -r $attest ]] \
     && grep -Fqx "path=$(realpath -e "$marked")" "$attest" \
     && grep -Eq '^sha256=[0-9a-f]{64}$' "$attest"; then
