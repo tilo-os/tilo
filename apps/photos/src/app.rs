@@ -2228,6 +2228,10 @@ impl PhotosApp {
                     "Camera import requires document dispatch: {media_id} ({name})"
                 ));
             }
+            crate::actions::PhotosOperation::ImportDirectory { .. }
+            | crate::actions::PhotosOperation::ReindexDirectory { .. } => {
+                return Err("directory indexing requires the Photos indexing job host".to_owned());
+            }
             crate::actions::PhotosOperation::AnalyzeText { .. }
             | crate::actions::PhotosOperation::AnalyzeImage { .. } => {
                 return Err("local image analysis requires document dispatch".to_owned());

@@ -134,6 +134,20 @@ pub enum PhotosOperation {
         media_id: String,
         name: String,
     },
+    /// Start a cancellable, device-local directory index. The selected path
+    /// is never retained in the CRDT; every accepted result becomes the
+    /// normal portable `ImportPhoto` action with actual EXIF metadata.
+    ImportDirectory {
+        path: String,
+        retain_exif_location: bool,
+    },
+    /// Re-scan a user-selected directory. This intentionally has the same
+    /// explicit path boundary as import; Photos never watches arbitrary local
+    /// folders or synchronizes their machine-specific path names.
+    ReindexDirectory {
+        path: String,
+        retain_exif_location: bool,
+    },
     Copy,
     /// Copy a portable resource reference to the local clipboard. This is an
     /// explicit share handoff, not a claim that a remote recipient accepted it.
@@ -212,7 +226,9 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         | PhotosOperation::ViewPet { .. } => vec!["device-local".into(), "presentation".into()],
         PhotosOperation::Open { .. }
         | PhotosOperation::Save { .. }
-        | PhotosOperation::ImportCameraMedia { .. } => vec![
+        | PhotosOperation::ImportCameraMedia { .. }
+        | PhotosOperation::ImportDirectory { .. }
+        | PhotosOperation::ReindexDirectory { .. } => vec![
             "device-local".into(),
             "filesystem".into(),
             "portal".into(),
@@ -276,6 +292,8 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         | PhotosOperation::ShareReference { .. } => spec.retry_policy(RetryPolicy::Idempotent),
         PhotosOperation::Save { .. }
         | PhotosOperation::ImportCameraMedia { .. }
+        | PhotosOperation::ImportDirectory { .. }
+        | PhotosOperation::ReindexDirectory { .. }
         | PhotosOperation::AnalyzeText { .. }
         | PhotosOperation::AnalyzeImage { .. } => spec.retry_policy(RetryPolicy::AtMostOnce),
         PhotosOperation::ManagePeopleRecognition => spec.retry_policy(RetryPolicy::Idempotent),
@@ -1255,6 +1273,8 @@ pub(crate) fn library_root_resource() -> Resource {
     }
     root = root
         .with_action(file_operation("import", "Import photograph", true))
+        .with_action(import_directory_spec(false))
+        .with_action(import_directory_spec(true))
         .with_action(create_album_spec())
         .with_action(set_favorites_spec());
     root
@@ -2251,6 +2271,58 @@ fn file_operation(id: &str, label: &str, open: bool) -> ActionSpec {
         ],
         ..ActionContract::default()
     })
+}
+
+/// The indexer is a local job rather than a document action because directory
+/// enumeration depends on this machine's consented filesystem. Each result is
+/// later admitted through `ImportPhoto`, preserving collaboration/history.
+fn import_directory_spec(reindex: bool) -> ActionSpec {
+    let id = if reindex {
+        "reindex-directory"
+    } else {
+        "import-directory"
+    };
+    let label = if reindex {
+        "Reindex photo folder"
+    } else {
+        "Import photo folder"
+    };
+    ActionSpec::typed_operation(
+        id,
+        label,
+        "A local folder and EXIF-location choice",
+        OperationKind::Effect,
+        PHOTOS_OPERATION_TYPE,
+        vec![
+            ActionParam::required("path", ParamType::Text, "explicit local folder path"),
+            ActionParam::optional(
+                "retain_exif_location",
+                ParamType::Boolean,
+                "retain GPS read from imported files; defaults to true",
+            ),
+        ],
+        move |args| {
+            let path = args.text("path").unwrap_or_default().trim().to_owned();
+            let retain_exif_location = args.boolean("retain_exif_location").unwrap_or(true);
+            let operation = if reindex {
+                PhotosOperation::ReindexDirectory { path, retain_exif_location }
+            } else {
+                PhotosOperation::ImportDirectory { path, retain_exif_location }
+            };
+            EncodedAction::encode_operation(PHOTOS_OPERATION_TYPE, &operation).unwrap_or_else(|error| EncodedAction {
+                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                payload: format!("photos directory operation could not be serialized: {error}").into_bytes(),
+            })
+        },
+    )
+    .with_contract(ActionContract {
+        retry: RetryPolicy::AtMostOnce,
+        execution: ExecutionMode::Background { cancellable: true },
+        result: ResultSpec::Job,
+        tags: vec!["device-local".into(), "filesystem".into(), "portal".into(), "sensitive-path".into(), "bounded-index".into()],
+        ..ActionContract::default()
+    })
+    .with_description("Recursively index a selected folder with bounded real-file reads; paths never enter collaboration and EXIF GPS is never uploaded")
 }
 
 /// The address of a photograph: what it is, not where a machine put it.
