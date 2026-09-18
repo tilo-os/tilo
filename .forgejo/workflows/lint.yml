@@ -22,7 +22,7 @@ jobs:
     runs-on: runner
     timeout-minutes: 30
     container:
-      image: code.podesta.ai/qos/tilo-builder:latest
+      image: code.podesta.ai/qos/ci-fast@sha256:b30e3f76cb3c43731d27f49d9fcef14f55d7173ca086e568418fe771541177f8
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -33,6 +33,17 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 2
           fetch-tags: false
+
+      - name: Verify native fast-quality toolchain
+        run: |
+          test "$(uname -m)" = x86_64
+          cargo --version
+          rustc --version
+          rustfmt --version
+          cargo deny --version
+          cargo machete --version
+          printf 'fn main() {}\n' > "$RUNNER_TEMP/ci-fast-format.rs"
+          rustfmt --edition 2024 --check "$RUNNER_TEMP/ci-fast-format.rs"
 
       - name: Check formatting of changed Rust files
         shell: bash
