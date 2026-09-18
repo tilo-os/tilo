@@ -146,14 +146,15 @@ fn draw_columns_panel(
         let chip_x0 = type_x - 22.0;
         let chip = Rect::new(chip_x0, chip_y0, chip_x0 + chip_side, chip_y0 + chip_side)
             .to_rounded_rect(4.0);
-        scene.fill(Fill::NonZero, t, theme.type_color(col.class), None, &chip);
+        let chip_color = theme.type_color(col.class);
+        scene.fill(Fill::NonZero, t, chip_color, None, &chip);
         let icon = col.class.icon();
         let (iw, ih) = tr.measure(icon, 10.0, None);
         tr.draw_text(
             scene,
             icon,
             10.0,
-            Color::from_rgb8(20, 20, 20),
+            theme.tokens.colors.on_surface(chip_color).ink,
             t * Affine::translate((
                 chip_x0 + (chip_side - f64::from(iw)) / 2.0,
                 chip_y0 + (chip_side - f64::from(ih)) / 2.0,
