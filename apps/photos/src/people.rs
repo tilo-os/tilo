@@ -12,6 +12,7 @@
 //! claims to have recognized a person from a photograph.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
 use crate::actions::PhotosAction;
 use crate::model::PhotoLibrary;
@@ -56,7 +57,7 @@ pub fn approved_people(library: &PhotoLibrary) -> Vec<SharedPerson> {
 ///
 /// This is suitable for a local settings store, but must never be written to
 /// the Photos CRDT: one collaborator's opt-in is not another's consent.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct PeoplePrivacy {
     /// Whether the owner has explicitly allowed local face clustering on this
     /// device. It defaults to off, including after migration from older apps.
@@ -120,13 +121,13 @@ pub struct VerifiedFaceCluster {
 /// Deliberately absent: face rectangle, confidence, embedding, crop, image
 /// bytes, path, and any model output. A runtime that needs those keeps them in
 /// its own ephemeral/private cache keyed by this opaque reference.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize, serde::Serialize)]
 pub struct LocalClusterPhoto {
     pub photo_id: String,
 }
 
 /// How a proposal entered the local People controller.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub enum ProposalOrigin {
     /// A separately capability-gated local face pipeline supplied this opaque
     /// grouping. The controller never receives its embedding or geometry.
@@ -148,7 +149,7 @@ impl ProposalOrigin {
 /// A locally held candidate person. This is intentionally a management record
 /// rather than a remote identity: it is free to be renamed, split, hidden,
 /// rejected, or deleted without producing document history.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct LocalPersonCluster {
     pub id: String,
     pub display_name: Option<String>,
@@ -189,6 +190,13 @@ pub struct PeopleController {
     privacy: PeoplePrivacy,
     capability: FaceCapability,
     clusters: BTreeMap<String, LocalPersonCluster>,
+    storage_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Default, serde::Deserialize, serde::Serialize)]
+struct PersistedPeople {
+    privacy: PeoplePrivacy,
+    clusters: BTreeMap<String, LocalPersonCluster>,
 }
 
 impl Default for FaceCapability {
@@ -201,6 +209,52 @@ impl PeopleController {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Load the private review queue for this device. The file contains only
+    /// consent, opaque cluster ids, and photo resource ids. Model identity,
+    /// embeddings, face geometry, crops, and confidence are never persisted.
+    #[must_use]
+    pub fn persistent() -> Self {
+        Self::load_from(local_store_path())
+    }
+
+    fn load_from(storage_path: Option<PathBuf>) -> Self {
+        let persisted = storage_path
+            .as_ref()
+            .and_then(|path| std::fs::read(path).ok())
+            .and_then(|bytes| serde_json::from_slice::<PersistedPeople>(&bytes).ok())
+            .unwrap_or_default();
+        let capability = if persisted.privacy.recognition_enabled {
+            FaceCapability::NoVerifiedFaceModel
+        } else {
+            FaceCapability::DisabledByOwner
+        };
+        Self {
+            privacy: persisted.privacy,
+            capability,
+            clusters: persisted.clusters,
+            storage_path,
+        }
+    }
+
+    fn save(&self) {
+        let Some(path) = &self.storage_path else {
+            return;
+        };
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        if std::fs::create_dir_all(parent).is_err() {
+            return;
+        }
+        let state = PersistedPeople {
+            privacy: self.privacy,
+            clusters: self.clusters.clone(),
+        };
+        if let Ok(bytes) = serde_json::to_vec(&state) {
+            let _ = atomic_file::write(path, &bytes);
+        }
     }
 
     #[must_use]
@@ -223,6 +277,7 @@ impl PeopleController {
         } else if matches!(self.capability, FaceCapability::DisabledByOwner) {
             self.capability = FaceCapability::NoVerifiedFaceModel;
         }
+        self.save();
     }
 
     /// Discover the dedicated signed loopback face capability. Generic vision
@@ -297,6 +352,7 @@ impl PeopleController {
                 rejected: false,
             },
         );
+        self.save();
         true
     }
 
@@ -357,6 +413,7 @@ impl PeopleController {
         }
         cluster.display_name = Some(name.to_owned());
         cluster.hidden = false;
+        self.save();
         PeopleChange::Updated
     }
 
@@ -369,6 +426,22 @@ impl PeopleController {
         cluster.rejected = true;
         cluster.hidden = true;
         cluster.display_name = None;
+        self.save();
+        PeopleChange::Updated
+    }
+
+    /// Return a hidden or rejected local proposal to the review queue. This is
+    /// deliberately local and reversible; it never recreates a shared label.
+    pub fn restore_suggestion(&mut self, id: &str) -> PeopleChange {
+        let Some(cluster) = self.clusters.get_mut(id) else {
+            return PeopleChange::Unchanged;
+        };
+        if !cluster.hidden && !cluster.rejected {
+            return PeopleChange::Unchanged;
+        }
+        cluster.hidden = false;
+        cluster.rejected = false;
+        self.save();
         PeopleChange::Updated
     }
 
@@ -384,6 +457,7 @@ impl PeopleController {
             return PeopleChange::Unchanged;
         }
         cluster.hidden = hidden;
+        self.save();
         PeopleChange::Updated
     }
 
@@ -402,8 +476,10 @@ impl PeopleController {
         }
         if cluster.photos.is_empty() {
             self.clusters.remove(id);
+            self.save();
             PeopleChange::Deleted
         } else {
+            self.save();
             PeopleChange::Updated
         }
     }
@@ -425,6 +501,7 @@ impl PeopleController {
         if destination_cluster.display_name.is_none() {
             destination_cluster.display_name = source_cluster.display_name;
         }
+        self.save();
         PeopleChange::Updated
     }
 
@@ -454,7 +531,19 @@ impl PeopleController {
         } else {
             FaceCapability::DisabledByOwner
         };
+        self.save();
     }
+}
+
+fn local_store_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join(".local/state"))
+        })?;
+    Some(base.join("tilo/photos/people-review.json"))
 }
 
 fn valid_cluster_id(value: &str) -> bool {
@@ -567,9 +656,41 @@ mod tests {
         assert_eq!(people.set_hidden("one", true), PeopleChange::Updated);
         assert!(people.visible_clusters().is_empty());
         assert_eq!(people.reject_suggestion("one"), PeopleChange::Updated);
+        assert_eq!(people.restore_suggestion("one"), PeopleChange::Updated);
+        assert!(!people.cluster("one").unwrap().hidden);
+        assert!(!people.cluster("one").unwrap().rejected);
         people.delete_all_local_biometric_data();
         assert_eq!(people.all_clusters().count(), 0);
         assert_eq!(people.capability(), &FaceCapability::DisabledByOwner);
+    }
+
+    #[test]
+    fn private_review_queue_survives_restart_without_persisting_model_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("people-review.json");
+        let mut people = PeopleController::load_from(Some(path.clone()));
+        people.set_recognition_enabled(true);
+        assert!(people.set_verified_local_face_model("face-model", "revision-7"));
+        assert!(people.add_cluster(
+            "local-cluster",
+            [A.to_owned()],
+            ProposalOrigin::VerifiedLocalPipeline,
+        ));
+        assert_eq!(
+            people.confirm_suggestion("local-cluster", "Sam"),
+            PeopleChange::Updated
+        );
+
+        let restored = PeopleController::load_from(Some(path));
+        assert!(restored.privacy().recognition_enabled);
+        assert_eq!(
+            restored.capability(),
+            &FaceCapability::NoVerifiedFaceModel,
+            "a signed model must be rediscovered rather than trusted from disk"
+        );
+        let cluster = restored.cluster("local-cluster").unwrap();
+        assert_eq!(cluster.display_name.as_deref(), Some("Sam"));
+        assert_eq!(cluster.visible_photo_ids(), [A]);
     }
 
     #[test]
