@@ -63,7 +63,8 @@ Use the pinned Rust MSVC toolchain, Visual Studio C++ build tools for the host
 architecture, and the Cap'n Proto compiler (`capnp.exe` on `PATH`). The native
 ARM64 toolkit, Calculator, Notes, Calendar, Contacts, Sheets, Slides, Weather and
 Scratchpad, Files, Word Processor, Terminal, PDF Viewer, Books, Clocks, Image Editor,
-Photos, Hex Editor, Code Editor and API Tester have been built and run on Windows.
+Photos, Hex Editor, Code Editor, API Tester and Diff and Merge have been built
+and run on Windows.
 Other apps are still being ported; a workspace-wide build currently includes
 Linux services and is not a Windows
 application build command.
@@ -105,8 +106,21 @@ Start menu entries under **Tilo**:
 
 This builds before copying executables to `%LOCALAPPDATA%\Tilo\Applications`.
 Unoptimized builds spend substantially longer validating and loading fonts at
-startup. Windows prepares GPU pipelines before revealing the primary window to
-avoid displaying an empty client area during that work. To measure startup,
+startup. The installer includes Microsoft's pinned DXC 1.8.2505.1 compiler and
+its MIT/LLVM notices beside the apps. Without DXC, wgpu's FXC fallback spends
+seconds compiling UI shaders on every launch. `install-windows-dxc.ps1` can
+update this shared runtime independently of app builds; it verifies the
+release archive against Microsoft's published SHA-256 digest. The separate
+DXIL validator and command-line compiler are not installed.
+
+The standard Windows app launcher prepares the GPU and its shaders in parallel with
+app state and font construction, then attaches the real window after checking
+the selected adapter supports its surface. The primary window appears only
+once the renderer is ready. Linux keeps its existing first-redraw initialization.
+`TILO_SERIAL_RENDER_INIT=1` disables the Windows overlap for an A/B comparison;
+`WGPU_DX12_COMPILER=fxc` explicitly selects the old compiler for diagnostics.
+Both controls are optional: installed apps use DXC and parallel initialization
+without environment configuration. To measure startup,
 set `TILO_STARTUP_METRICS_PATH` to a writable JSON filename before launching an
 app; it records font setup, GPU initialization, and the first presented frame.
 Close an installed app before updating its executable. Application documents
