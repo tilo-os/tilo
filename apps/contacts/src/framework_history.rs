@@ -150,9 +150,13 @@ impl HistoryPreview for ContactsPreview {
     fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         scene.fill(Fill::NonZero, t, theme.bg_primary, None, &self.bounds);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1., t, &self.bounds);
-        let x = self.bounds.x0 + 20.;
-        let x1 = self.bounds.x1 - 20.;
-        let mut y = self.bounds.y0 + 20. - self.view.scroll.1;
+        // Page gutter `s6`, avatar `s16`, avatar ↔ first field `s3` (HIG §7b).
+        let sp = &theme.tokens.spacing;
+        let gutter = f64::from(sp.s6);
+        let avatar = f64::from(sp.s16);
+        let x = self.bounds.x0 + gutter;
+        let x1 = self.bounds.x1 - gutter;
+        let mut y = self.bounds.y0 + gutter - self.view.scroll.1;
         if let Some(c) = self
             .contacts
             .iter()
@@ -163,10 +167,10 @@ impl HistoryPreview for ContactsPreview {
                 t,
                 tr,
                 theme,
-                Rect::new(x, y, x + 64., y + 64.),
+                Rect::new(x, y, x + avatar, y + avatar),
                 &c.initials(),
             );
-            y += 76.;
+            y += avatar + f64::from(sp.s3);
             crate::app::detail_field(
                 scene,
                 t,
