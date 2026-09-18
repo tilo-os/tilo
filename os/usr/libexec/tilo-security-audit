@@ -228,7 +228,11 @@ else
   check_sysctl kernel.io_uring_disabled 2
 fi
 check_sysctl kernel.randomize_va_space 2
-check_sysctl vm.unprivileged_userfaultfd 0
+if grep -Fqx '# CONFIG_USERFAULTFD is not set' "$running_kernel_config" 2>/dev/null; then
+  ok "userfaultfd page-fault control surface is not compiled"
+else
+  check_sysctl vm.unprivileged_userfaultfd 0
+fi
 check_sysctl vm.mmap_min_addr 65536
 check_sysctl fs.suid_dumpable 0
 check_sysctl fs.protected_symlinks 1
