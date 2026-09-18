@@ -357,10 +357,22 @@ if PATH="$work/bin:$PATH" TILO_SB_KEYDIR="$captured" TILO_SB_BOOT="$work/boot" \
 fi
 mv "$captured/db.esl.valid" "$captured/db.esl"
 chmod 0644 "$captured/db.esl"
+# Holding the firmware-directory inode lock must keep the complete db/KEK/PK
+# transaction from starting. This covers separate invocations with different
+# key-store paths as well as the ordinary same-store case.
+exec 6<"$efivars"
+flock -x 6
 PATH="$work/bin:$PATH" TILO_SB_KEYDIR="$captured" TILO_SB_BOOT="$work/boot" \
   TILO_SB_ESP="$work/boot" TILO_SB_EFIVARS="$efivars" \
   TILO_TEST_FIRMWARE_DIR="$firmware" \
-  "$repo/os/usr/libexec/tilo-secureboot" enroll --yes >/dev/null
+  "$repo/os/usr/libexec/tilo-secureboot" enroll --yes >/dev/null &
+enroll_pid=$!
+sleep 0.1
+kill -0 "$enroll_pid"
+test ! -e "$firmware/db.esl" -a ! -e "$firmware/KEK.esl" -a ! -e "$firmware/PK.esl"
+flock -u 6
+wait "$enroll_pid"
+exec 6<&-
 for variable in db KEK PK; do test -s "$firmware/$variable.esl"; done
 [[ $(od -An -tu1 -j4 -N1 "$efivars/SetupMode-8be4df61-93ca-11d2-aa0d-00e098032b8c" | tr -d ' \n') == 0 ]]
 
@@ -529,6 +541,7 @@ printf 'ok: Secure Boot key generation rejects partial and mismatched keysets\n'
 printf 'ok: Secure Boot operations reject insecure and symlinked key stores\n'
 printf 'ok: Secure Boot capture refuses to call a partial factory trust backup complete\n'
 printf 'ok: Secure Boot enrollment verifies firmware read-back and exits setup mode\n'
+printf 'ok: Secure Boot enrollment serializes the complete firmware policy transaction\n'
 printf 'ok: Secure Boot enrollment stops before KEK/PK on corrupt db read-back\n'
 printf 'ok: verified enrollment authority can be retired while db signing remains\n'
 printf 'ok: key generation preserves a TPM-sealed db identity without recreating plaintext\n'

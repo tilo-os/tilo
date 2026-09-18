@@ -688,6 +688,14 @@ grep -Fq 'flock -x 9' "$secureboot" \
   || bad 'Secure Boot signing is not serialized against concurrent hooks'
 grep -Fq '[ ! -L "$f" ]' "$secureboot" \
   || bad 'Secure Boot loader discovery follows symlinks'
+for enrollment_lock in \
+  'exec 9<"$KEYDIR"' \
+  'exec 8<"$ESP"' \
+  'exec 7<"$EFIVARS"' \
+  'flock -x 7'; do
+  grep -Fq "$enrollment_lock" "$secureboot" \
+    || bad "Secure Boot enrollment transaction lock is missing: $enrollment_lock"
+done
 for variable in db KEK PK; do
   grep -Fq "verify_firmware_variable_contains $variable \"\$KEYDIR/$variable.crt\"" "$secureboot" \
     || bad "Secure Boot enrollment does not read back and verify firmware $variable"
