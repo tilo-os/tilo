@@ -16,8 +16,8 @@ finishes, then use the exact final signed **generic ARM** installer artifact.
 - Record the medium SHA256, final signed OCI digest, public trust identity and
   helper source revision before running. The helper overlay must include the
   target-sidecar, exact boot-entry promotion and composefs `/etc` fixes.
-- Use native aarch64 KVM, architecture-matched QEMU/UEFI, GL/virgl capability for
-  desktop validation, and no physical disks, USB, TPM or firmware passthrough.
+- Use native aarch64 KVM, architecture-matched QEMU/UEFI, either GL/virgl or explicit software graphics, and no physical disks, USB,
+  TPM or firmware passthrough.
   No-TPM passphrase mode is the first required path. Development Secure Boot and
   software TPM evidence are separate, explicitly configured tests.
 - Required fixture tools: `qemu-img`, `sfdisk`, `mkfs.vfat`, `mkfs.ntfs`,
@@ -36,13 +36,13 @@ TILO_DISTROBOX='' TILO_VM_ARCH=aarch64 TILO_ACCEL=kvm \
 TILO_VM_CYCLE=prepared-alongside-ARTIFACT_ID \
 TILO_INSTALLER_CYCLE_STORAGE=/work/prepared-storage \
   ./os/dev/test-installer-cycle.sh /work/verified-installer.qcow2 \
-  --prepared-alongside --out /work/prepared-evidence
+  --prepared-alongside --graphics software --out /work/prepared-evidence
 
 TILO_DISTROBOX='' TILO_VM_ARCH=aarch64 TILO_ACCEL=kvm \
 TILO_VM_CYCLE=guided-alongside-ARTIFACT_ID \
 TILO_INSTALLER_CYCLE_STORAGE=/work/guided-storage \
   ./os/dev/test-installer-cycle.sh /work/verified-installer.qcow2 \
-  --guided-alongside --out /work/guided-evidence
+  --guided-alongside --graphics software --out /work/guided-evidence
 ```
 
 Prepared mode uses an existing 2 GiB shared ESP, 512 MiB NTFS and ext4 sentinel
@@ -81,3 +81,11 @@ If the next run fails, fix/retry that exact stage using the same immutable mediu
 when its contents are unchanged; do not restart unrelated compilation.
 
 The physical Lenovo installation-medium session must separately verify display/GPU, keyboard/touchpad, storage discovery, USB and network access before any internal installation. Audio, Bluetooth, battery reporting and suspend/resume remain deferred follow-up checks. Merely reaching a generic VM desktop cannot satisfy those Lenovo checks.
+
+`--graphics software` selects virtio 2D for both boots, permitting the retained
+shell's CPU-rendered KMS dumb-buffer path on hosts without `/dev/dri`. It retains
+the exact same graphical installer, framebuffer OCR, unlock, OOBE and desktop
+acceptance checks. Passing it proves software-rendered behavior, not accelerated
+GPU functionality. `--graphics gl` (the default) retains the GL/virgl path for
+suitable hosts. `scenario.txt` records the explicitly selected mode. Neither
+selection pre-judges whether the real framebuffer checks will pass.
