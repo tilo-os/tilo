@@ -88,6 +88,7 @@ def sign(home, operation, source, destination):
     if marker.read_bytes() != PURPOSE:
         raise ValueError('missing development-only signer purpose')
     certificate = trusted(home / 'efi-signing.crt')
+    crypto = trusted(Path('/usr/local/bin/tilo-crypto'))
     # Exclusive output prevents accidental overwrite, including key files.
     with exclusive_output(destination) as output:
         if operation == 'export-efi-cert':
@@ -103,12 +104,12 @@ def sign(home, operation, source, destination):
                 signed = Path(temporary) / 'signed'
                 if operation == 'sign-efi':
                     key = trusted(home / 'efi-signing.key', private=True)
-                    argv = ['/usr/bin/sbsign', '--key', str(key), '--cert', str(certificate),
-                            '--output', str(signed), source_fd]
+                    argv = [str(crypto), 'sign-efi', str(key), str(certificate),
+                            source_fd, str(signed)]
                 else:
                     key = trusted(home / 'pcr-signing.key', private=True)
-                    argv = ['/usr/bin/openssl', 'dgst', '-sha256', '-sign', str(key),
-                            '-sigopt', 'rsa_padding_mode:pkcs1', '-out', str(signed), source_fd]
+                    argv = [str(crypto), 'sign-rsa-sha256', str(key), source_fd,
+                            str(signed)]
                 run(argv, pass_fds=(descriptor,))
                 with signed.open('rb') as result:
                     shutil.copyfileobj(result, output)

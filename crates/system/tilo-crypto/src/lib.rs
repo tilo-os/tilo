@@ -1315,7 +1315,7 @@ mod tests {
         image[section + 16..section + 20].copy_from_slice(&0x200u32.to_le_bytes());
         image[section + 20..section + 24].copy_from_slice(&0x200u32.to_le_bytes());
         image[section + 36..section + 40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
-        image[0x200..0x208].copy_from_slice(b"Tilo EFI\0");
+        image[0x200..0x209].copy_from_slice(b"Tilo EFI\0");
         image
     }
 
