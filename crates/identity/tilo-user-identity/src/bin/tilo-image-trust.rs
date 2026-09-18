@@ -192,6 +192,44 @@ fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+fn read_private_bounded(path: &Path) -> Result<Vec<u8>, String> {
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    let file = options
+        .open(path)
+        .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
+    // Live trust artifacts are mutable root authority, despite containing no
+    // secret material. Reject aliases and writable-by-others inodes so an
+    // update cannot verify bytes controlled through another pathname.
+    // SAFETY: geteuid takes no arguments and has no failure mode.
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o077 != 0
+        || metadata.nlink() != 1
+    {
+        return Err(format!(
+            "{} must be caller-owned, mode 0600 or stricter, and have one link",
+            path.display()
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_ARTIFACT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    if bytes.len() as u64 > MAX_ARTIFACT_BYTES {
+        return Err(format!(
+            "{} exceeds the artifact size limit",
+            path.display()
+        ));
+    }
+    Ok(bytes)
+}
+
 fn decode_artifact<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
     from_canonical_bytes(&read_bounded(path)?).map_err(|error| error.to_string())
 }
@@ -721,8 +759,19 @@ fn verify_common(
             "current time {now_ns} is below recorded trusted-time floor {floor}"
         ));
     }
-    let trusted_root = read_root_public_key(&root_path)?;
-    let revocation_entries: Vec<RevocationEntry> = decode_artifact(&revocations_path)?;
+    let read_artifact = |path: &Path| {
+        if record_generation {
+            read_private_bounded(path)
+        } else {
+            read_bounded(path)
+        }
+    };
+    let trusted_root: [u8; 32] = read_artifact(&root_path)?
+        .try_into()
+        .map_err(|_| "root public key must contain exactly 32 bytes")?;
+    let revocation_entries: Vec<RevocationEntry> =
+        from_canonical_bytes(&read_artifact(&revocations_path)?)
+            .map_err(|error| error.to_string())?;
     let mut revocations = RevocationList::new();
     for entry in revocation_entries {
         if entry.user_public_key != trusted_root {
@@ -732,7 +781,8 @@ fn verify_common(
             .insert(entry)
             .map_err(|error| format!("revocation bundle is invalid: {error}"))?;
     }
-    let endorsement: ImageEndorsement = decode_artifact(&endorsement_path)?;
+    let endorsement: ImageEndorsement = from_canonical_bytes(&read_artifact(&endorsement_path)?)
+        .map_err(|error| error.to_string())?;
     verify_image_endorsement_with_revocations_at(&endorsement, &trusted_root, &revocations, now_ns)
         .map_err(|error| error.to_string())?;
     if endorsement.image_manifest_sha256 != expected_digest {
@@ -999,6 +1049,22 @@ mod tests {
         fs::write(&artifact, b"fixture").expect("artifact fixture");
         symlink(&artifact, &link).expect("artifact symlink");
         assert!(read_bounded(&link).is_err());
+    }
+
+    #[test]
+    fn live_trust_reader_rejects_exposed_or_aliased_artifacts() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let artifact = temp.path().join("root.pub");
+        atomic_file::write_with_mode(&artifact, &[7; 32], 0o600).expect("private trust artifact");
+        assert_eq!(read_private_bounded(&artifact).unwrap(), vec![7; 32]);
+
+        fs::set_permissions(&artifact, fs::Permissions::from_mode(0o640))
+            .expect("expose trust artifact");
+        assert!(read_private_bounded(&artifact).is_err());
+        fs::set_permissions(&artifact, fs::Permissions::from_mode(0o600))
+            .expect("restore private trust artifact");
+        fs::hard_link(&artifact, temp.path().join("root-alias.pub")).expect("alias trust artifact");
+        assert!(read_private_bounded(&artifact).is_err());
     }
 
     #[test]
@@ -1330,6 +1396,10 @@ mod tests {
             "50",
         ]))
         .expect("verify exact image");
+        for artifact in [&root_public_path, &revocations_path, &endorsement_path] {
+            fs::set_permissions(artifact, fs::Permissions::from_mode(0o600))
+                .expect("make live trust artifact private");
+        }
         verify_common(
             arguments(&[
                 root_public_path.to_str().expect("root path"),
