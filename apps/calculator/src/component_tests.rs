@@ -109,6 +109,31 @@ fn expression_value(driver: &FrameHarness) -> String {
     find(&driver.inspection().root).expect("Calculator semantic root")
 }
 
+fn assert_existing_refused_unchanged(fixture: &Fixture, instance: u64, checkout: &RecordCheckout) {
+    let before = fixture.records.read(&checkout.id, |doc| {
+        (
+            doc.base_heads(),
+            doc.pending_ops(),
+            serde_json::to_value(automerge::AutoSerde::from(doc)).unwrap(),
+        )
+    });
+    assert!(matches!(
+        fixture.try_component(instance, existing(checkout)),
+        Err(ui::launch::LaunchError::Operation(_))
+            | Err(ui::launch::LaunchError::ComponentSetup { .. })
+    ));
+    assert_eq!(
+        fixture.records.read(&checkout.id, |doc| {
+            (
+                doc.base_heads(),
+                doc.pending_ops(),
+                serde_json::to_value(automerge::AutoSerde::from(doc)).unwrap(),
+            )
+        }),
+        before
+    );
+}
+
 // Catches seeded screenshot/demo state leaking into checked New construction.
 #[test]
 fn checked_new_is_an_empty_real_calculator_document_with_a_unique_record() {
@@ -138,7 +163,7 @@ fn checked_new_is_an_empty_real_calculator_document_with_a_unique_record() {
 
 // Catches bypasses of package, record-kind, or host namespace admission.
 #[test]
-fn checked_admission_refuses_wrong_package_kind_and_device_authority() {
+fn checked_admission_refuses_wrong_package_kind_and_device_namespace() {
     let fixture = Fixture::new();
     let foreign_records = RecordOwners::portable(fixture.cache.clone())
         .open("dev.qos.foreign", WORKSPACE)
@@ -327,11 +352,119 @@ fn existing_malformed_record_is_refused_without_reseeding_or_replacement() {
         .reserve_record(&checkout)
         .unwrap()
         .initialize(|doc| {
-            automerge::transaction::Transactable::put(doc, automerge::ROOT, "unrelated", 7)
+            doc.put(automerge::ROOT, "calculator_resources_v2", true)
+                .map_err(|error| error.to_string())?;
+            let history = doc
+                .put_object(
+                    automerge::ROOT,
+                    crate::doc::HISTORY,
+                    automerge::ObjType::Map,
+                )
+                .map_err(|error| error.to_string())?;
+            let row = doc
+                .put_object(&history, "malformed-row", automerge::ObjType::Map)
+                .map_err(|error| error.to_string())?;
+            doc.put(&row, "expr", 7)
+                .map_err(|error| error.to_string())?;
+            doc.put(&row, "result", "must not default expr")
+                .map_err(|error| error.to_string())?;
+            doc.put(&row, "rank", 0)
+                .map_err(|error| error.to_string())?;
+            doc.put(&row, "deleted", false)
                 .map_err(|error| error.to_string())?;
             Ok(())
         })
         .unwrap();
+    assert_existing_refused_unchanged(&fixture, 41, &checkout);
+}
+
+#[test]
+fn existing_false_current_schema_marker_is_refused_without_mutation() {
+    let fixture = Fixture::new();
+    let checkout = RecordCheckout::new(RecordId::minted(), crate::definition().record_kind.clone());
+    fixture
+        .records
+        .reserve_record(&checkout)
+        .unwrap()
+        .initialize(|doc| {
+            doc.put(automerge::ROOT, "calculator_resources_v2", false)
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        })
+        .unwrap();
+    assert_existing_refused_unchanged(&fixture, 42, &checkout);
+}
+
+#[test]
+fn existing_current_row_missing_required_fields_is_refused_without_mutation() {
+    let fixture = Fixture::new();
+    let checkout = RecordCheckout::new(RecordId::minted(), crate::definition().record_kind.clone());
+    fixture
+        .records
+        .reserve_record(&checkout)
+        .unwrap()
+        .initialize(|doc| {
+            doc.put(automerge::ROOT, "calculator_resources_v2", true)
+                .map_err(|error| error.to_string())?;
+            let history = doc
+                .put_object(
+                    automerge::ROOT,
+                    crate::doc::HISTORY,
+                    automerge::ObjType::Map,
+                )
+                .map_err(|error| error.to_string())?;
+            let row = doc
+                .put_object(&history, "incomplete-row", automerge::ObjType::Map)
+                .map_err(|error| error.to_string())?;
+            doc.put(&row, "expr", "2+2")
+                .map_err(|error| error.to_string())?;
+            doc.put(&row, "result", "4")
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        })
+        .unwrap();
+    assert_existing_refused_unchanged(&fixture, 43, &checkout);
+}
+
+// Catches stale checked bindings retaining write access after authority changes.
+#[test]
+fn revoked_viewer_authority_refuses_real_calculator_mutation_without_record_change() {
+    let fixture = Fixture::new();
+    let component = fixture.component(45, LaunchTarget::New);
+    let checkout = component.record().clone();
+    let mut driver = FrameHarness::from_component(
+        component,
+        (900, 640),
+        ComponentRunnerInputs {
+            theme: ui::Theme::dark(),
+            text_renderer: ui::TextRenderer::new(),
+        },
+    )
+    .unwrap();
+    let address = ui::bound_dispatch::BoundActionAddress {
+        instance_id: 45,
+        address: qos_actions::ActionAddress::new("calculator.workspace", "add-function"),
+    };
+    driver
+        .invoke_bound_action(
+            &address,
+            serde_json::json!({ "value": "x" }).as_object().unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        fixture
+            .records
+            .read(&checkout.id, |doc| crate::doc::load(doc).unwrap().funcs[0]
+                .expr
+                .clone())
+            .unwrap(),
+        "x"
+    );
+    fixture.acknowledge_all();
+    *fixture.authority.borrow_mut() = PermissionContext::from_capabilities(
+        Actor::person(Some(Role::Viewer), &fixture.author.0),
+        vec![],
+    );
     let before = fixture.records.read(&checkout.id, |doc| {
         (
             doc.base_heads(),
@@ -339,11 +472,16 @@ fn existing_malformed_record_is_refused_without_reseeding_or_replacement() {
             serde_json::to_value(automerge::AutoSerde::from(doc)).unwrap(),
         )
     });
-    assert!(matches!(
-        fixture.try_component(41, existing(&checkout)),
-        Err(ui::launch::LaunchError::Operation(_))
-            | Err(ui::launch::LaunchError::ComponentSetup { .. })
-    ));
+    assert!(
+        driver
+            .invoke_bound_action(
+                &address,
+                serde_json::json!({ "value": "denied" })
+                    .as_object()
+                    .unwrap(),
+            )
+            .is_err()
+    );
     assert_eq!(
         fixture.records.read(&checkout.id, |doc| {
             (
@@ -354,6 +492,7 @@ fn existing_malformed_record_is_refused_without_reseeding_or_replacement() {
         }),
         before
     );
+    driver.close_components();
 }
 
 // Catches loss of the component-owned portable store after a failed close flush.

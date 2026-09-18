@@ -89,6 +89,15 @@ pub(crate) fn validate(doc: &AutoCommit) -> Result<(), String> {
                 ]
             };
             validate_fields(doc, &row, allowed)?;
+            for (field, _) in allowed {
+                if doc
+                    .get(&row, *field)
+                    .map_err(|error| error.to_string())?
+                    .is_none()
+                {
+                    return Err(format!("Missing calculator field: {field}"));
+                }
+            }
         }
     }
     if let Some((v, _)) = doc

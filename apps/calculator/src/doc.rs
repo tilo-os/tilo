@@ -242,6 +242,16 @@ pub fn load_existing(doc: &AutoCommit) -> Result<CalcModel, String> {
     if !is_seeded(doc) {
         return Err("Calculator record is missing its schema marker".into());
     }
+    // Current keyed-map documents have one strict schema. Validate before the
+    // lossy UI projection can skip an invalid row or default an invalid field.
+    // Legacy list documents are validated by `project`'s dedicated list path.
+    if doc
+        .get(&ROOT, SCHEMA)
+        .map_err(|error| error.to_string())?
+        .is_some()
+    {
+        crate::framework_history::validate(doc)?;
+    }
     crate::framework_history::project(doc)
 }
 
