@@ -99,6 +99,12 @@ Passwords is available as an explicit Windows preview with
 default verified-app set: native backup/import/export and failure reporting are
 verified, but successful Windows clipboard copying still needs verification.
 The automated session currently receives an access-denied error from Windows.
+Typst is also available as an explicit preview with
+`./tools/install-windows-apps.ps1 -Apps typst-editor`; native source editing,
+Save/Open, and PDF export have been verified, including reduced-motion settings
+and emoji export through the shared font catalog. It remains outside the
+default set while optimized-installation and Start integration checks finish.
+
 The installer verifies the real Windows Start catalog and reports an error if
 Windows has not indexed the shortcut, even when the executable was copied.
 
