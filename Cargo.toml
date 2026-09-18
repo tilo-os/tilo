@@ -102,6 +102,7 @@ members = [
     "apps/print-centre",
     "apps/remote",
     "apps/scratchpad",
+    "apps/speed-test",
     "apps/settings",
     "apps/sheets",
     "apps/slides",
