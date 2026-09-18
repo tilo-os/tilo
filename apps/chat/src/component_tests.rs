@@ -81,6 +81,211 @@ fn canonical_composer_exports_ime_purpose_through_app_root() {
     assert!(app.ime_purpose().is_some());
 }
 
+fn semantic_component_harness(
+    profile: &str,
+) -> (
+    ui::headless::FrameHarness,
+    ui::record::RecordStore,
+    ui::record::RecordCheckout,
+) {
+    use std::{cell::RefCell, rc::Rc};
+    use ui::application::{ComponentRunnerInputs, HostContext, LaunchTarget, RestoreInput};
+
+    let cache = ui::portable_storage::PortableStorage::new(profile, "device").unwrap();
+    let definition = crate::definition();
+    let records = ui::record::RecordOwners::portable(cache.clone())
+        .open(definition.app_id, "room")
+        .unwrap();
+    let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, "room").unwrap());
+    let permissions = Rc::new(RefCell::new(
+        ui::permissions::PermissionContext::from_capabilities(
+            ui::permissions::Actor::person(Some(ui::permissions::Role::Owner), "author"),
+            vec![],
+        ),
+    ));
+    let target = LaunchTarget::PrimaryNew;
+    let context = HostContext::prepare(
+        definition,
+        records.clone(),
+        views,
+        "device".into(),
+        1,
+        permissions,
+        ui::permissions::UserId("author".into()),
+        qos_actions::ActionContext::default(),
+        &target,
+    )
+    .unwrap();
+    let component = definition
+        .instantiate(context, target, RestoreInput::None)
+        .unwrap();
+    let checkout = component.record().clone();
+    let font_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/assets/fonts");
+    let fonts = ui::font_catalog::FontCatalog::controlled_fixture(&font_root, "en-US");
+    let frame = ui::headless::FrameHarness::from_component(
+        component,
+        (1280, 720),
+        ComponentRunnerInputs {
+            theme: ui::Theme::dark(),
+            text_renderer: ui::TextRenderer::with_font_catalog(&fonts).unwrap(),
+        },
+    )
+    .unwrap();
+    (frame, records, checkout)
+}
+
+fn semantic_owner_path(node: &ui::headless::InspectionNode, target: &str) -> Option<String> {
+    fn has_target(node: &ui::a11y::AccessNode, target: &str) -> bool {
+        node.action_target.as_deref() == Some(target)
+            || node.children.iter().any(|child| has_target(child, target))
+    }
+    if node
+        .semantics
+        .as_ref()
+        .is_some_and(|semantic| has_target(semantic, target))
+    {
+        return Some(node.path.clone());
+    }
+    node.children
+        .iter()
+        .find_map(|child| semantic_owner_path(child, target))
+}
+
+fn semantic_target_rect(
+    node: &ui::headless::InspectionNode,
+    target: &str,
+) -> Option<vello::kurbo::Rect> {
+    fn find(node: &ui::a11y::AccessNode, target: &str) -> Option<vello::kurbo::Rect> {
+        if node.action_target.as_deref() == Some(target) {
+            return node.bounds.map(ui::a11y::AccessBounds::to_rect);
+        }
+        node.children.iter().find_map(|child| find(child, target))
+    }
+    node.semantics
+        .as_ref()
+        .and_then(|semantic| find(semantic, target))
+        .or_else(|| {
+            node.children
+                .iter()
+                .find_map(|child| semantic_target_rect(child, target))
+        })
+}
+
+#[test]
+fn semantic_composer_and_send_mutate_the_canonical_component_once() {
+    let (mut frame, records, checkout) = semantic_component_harness("chat-semantic-route");
+    let owner = semantic_owner_path(&frame.inspection().root, "chat.composer")
+        .expect("the real component exports the composer target");
+    let before = records
+        .read(&checkout.id, |doc| {
+            ChatDoc::top_level_count(doc, "c_general")
+        })
+        .unwrap();
+
+    frame
+        .perform_semantic_named(
+            &owner,
+            Some("chat.composer"),
+            &ui::a11y::Action::SetValue("semantic route".into()),
+        )
+        .unwrap();
+    frame
+        .perform_semantic_named(&owner, Some("chat.send"), &ui::a11y::Action::Activate)
+        .unwrap();
+
+    let (after, draft, sent) = records
+        .read(&checkout.id, |doc| {
+            let messages = ChatDoc::list_messages(doc, "c_general");
+            (
+                messages
+                    .iter()
+                    .filter(|message| message.parent.is_none())
+                    .count(),
+                ChatDoc::draft_text(doc, "c_general"),
+                messages.last().map(|message| message.text.clone()),
+            )
+        })
+        .unwrap();
+    assert_eq!(after, before + 1, "semantic Send appends exactly one row");
+    assert_eq!(draft, "", "canonical Send consumes the canonical draft");
+    assert_eq!(sent.as_deref(), Some("semantic route"));
+    frame.close_components();
+}
+
+#[test]
+fn assistive_composer_and_send_use_the_same_canonical_component_action() {
+    let (mut frame, records, checkout) = semantic_component_harness("chat-assistive-route");
+    let before = records
+        .read(&checkout.id, |doc| {
+            ChatDoc::top_level_count(doc, "c_general")
+        })
+        .unwrap();
+    let composer = frame
+        .a11y_node_named("Message composer")
+        .expect("the composer is exported to assistive technology");
+    frame
+        .perform_a11y_action(
+            composer,
+            &ui::a11y::Action::SetValue("assistive route".into()),
+        )
+        .unwrap();
+    let send = frame
+        .a11y_node_named("Send message")
+        .expect("Send is exported to assistive technology");
+    frame
+        .perform_a11y_action(send, &ui::a11y::Action::Activate)
+        .unwrap();
+
+    let (after, draft) = records
+        .read(&checkout.id, |doc| {
+            (
+                ChatDoc::top_level_count(doc, "c_general"),
+                ChatDoc::draft_text(doc, "c_general"),
+            )
+        })
+        .unwrap();
+    assert_eq!(after, before + 1);
+    assert_eq!(draft, "");
+    frame.close_components();
+}
+
+#[test]
+fn captured_pointer_send_retry_does_not_duplicate_the_canonical_message() {
+    let (mut frame, records, checkout) = semantic_component_harness("chat-pointer-retry");
+    let inspection = frame.inspection();
+    let owner = semantic_owner_path(&inspection.root, "chat.composer").unwrap();
+    let send = semantic_target_rect(&inspection.root, "chat.send")
+        .expect("the painted Send command has pointer bounds")
+        .center();
+    let before = records
+        .read(&checkout.id, |doc| {
+            ChatDoc::top_level_count(doc, "c_general")
+        })
+        .unwrap();
+    frame
+        .perform_semantic_named(
+            &owner,
+            Some("chat.composer"),
+            &ui::a11y::Action::SetValue("one pointer command".into()),
+        )
+        .unwrap();
+
+    frame.click_at(send.x, send.y);
+    frame.click_at(send.x, send.y);
+
+    let after = records
+        .read(&checkout.id, |doc| {
+            ChatDoc::top_level_count(doc, "c_general")
+        })
+        .unwrap();
+    assert_eq!(
+        after,
+        before + 1,
+        "retrying the captured command is idempotent once the draft is consumed"
+    );
+    frame.close_components();
+}
+
 #[test]
 fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
     use std::{cell::RefCell, rc::Rc};

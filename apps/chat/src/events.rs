@@ -1764,6 +1764,41 @@ mod tests {
     }
 
     #[test]
+    fn semantic_send_reports_acceptance_only_when_it_appends_a_message() {
+        let (mut app, mut doc) = app_with_doc();
+        app.active_channel = "c_general".into();
+        app.focus = Focus::Main;
+        app.thread_open = None;
+        render_frame(&mut app, 1280.0, 720.0);
+        let target = app
+            .semantic_hits()
+            .into_iter()
+            .find_map(|(_, hit, ..)| matches!(hit, Hit::Send).then(|| hit.semantic_id()))
+            .expect("the painted Send button has a semantic target");
+
+        assert!(!ui::Widget::perform_semantic_action(
+            &mut app,
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        let before = ChatDoc::top_level_count(&doc, "c_general");
+        ChatDoc::set_draft(&mut doc, "c_general", "accepted semantic send");
+        app.reload(&doc);
+        render_frame(&mut app, 1280.0, 720.0);
+        assert!(ui::Widget::perform_semantic_action(
+            &mut app,
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(ChatDoc::top_level_count(&doc, "c_general"), before + 1);
+        assert_eq!(ChatDoc::draft_text(&doc, "c_general"), "");
+    }
+
+    #[test]
     fn live_starter_selects_first_real_workspace_and_channel() {
         // Against a real (minimal) starter document whose ids differ from the
         // demo defaults the app boots with, `ensure_selection` must re-home

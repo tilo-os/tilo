@@ -3340,8 +3340,12 @@ impl Widget for ChatApp {
         ) {
             return false;
         }
+        let messages_before = matches!(hit, Hit::Send)
+            .then(|| ChatDoc::list_messages(state, &self.active_channel).len());
         self.on_hit(hit, state);
-        true
+        messages_before.is_none_or(|before| {
+            ChatDoc::list_messages(state, &self.active_channel).len() == before.saturating_add(1)
+        })
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched

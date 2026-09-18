@@ -29,6 +29,33 @@ export function physicalViewport(width, height, dpr) {
 export function wheelPixels(x,y,mode,width,height) {
   return [-x*(mode===1?16:mode===2?width:1), -y*(mode===1?16:mode===2?height:1)];
 }
+const applicationCommands=new Set(['a','b','f','i','u','y','z']);
+const clipboardCommands=new Set(['c','v','x']);
+export function keyboardRoute(event,composing,mac) {
+  if(composing||event.isComposing)return 'composition';
+  const key=String(event.key??'');
+  const lower=key.toLowerCase();
+  const primary=mac?Boolean(event.metaKey):Boolean(event.ctrlKey);
+  if(primary&&clipboardCommands.has(lower))return 'clipboard';
+  if(primary&&!event.altKey&&applicationCommands.has(lower))return 'forward';
+  const altGraph=Boolean(event.ctrlKey&&event.altKey&&!event.metaKey);
+  if(key.length===1&&(!primary||altGraph))return 'text';
+  if(primary||event.metaKey||event.altKey)return 'browser';
+  if(['Alt','Control','Meta','Shift'].includes(key))return 'modifier';
+  return 'forward';
+}
+export function modifierSnapshot(event) {
+  return [Boolean(event.ctrlKey),Boolean(event.altKey),Boolean(event.shiftKey),Boolean(event.metaKey)];
+}
+export function beforeInputRoute(event,composing) {
+  if(composing||event.isComposing)return {kind:'ignore'};
+  if(['insertFromPaste','insertCompositionText'].includes(event.inputType))return {kind:'handled-elsewhere'};
+  if(event.inputType==='insertText'&&event.data)return {kind:'commit',text:event.data};
+  if(['insertLineBreak','insertParagraph'].includes(event.inputType))return {kind:'key',key:'Enter'};
+  if(event.inputType==='deleteContentBackward')return {kind:'key',key:'Backspace'};
+  if(event.inputType==='deleteContentForward')return {kind:'key',key:'Delete'};
+  return {kind:'ignore'};
+}
 export function transactionComplete(transaction) {
   return new Promise((resolve,reject) => {
     transaction.addEventListener('complete',resolve,{once:true});

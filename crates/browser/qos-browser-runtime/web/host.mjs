@@ -1,5 +1,5 @@
 import init,* as runtime from './pkg/qos_browser_runtime.js';
-import {MountRegistry,wheelPixels} from './host-core.mjs';
+import {MountRegistry,beforeInputRoute,keyboardRoute,modifierSnapshot,wheelPixels} from './host-core.mjs';
 import {acquireStorage} from './storage.mjs';
 import {semanticBridge} from './semantics.mjs';
 import {settleComponentClose,recoverableClose} from './close-recovery.mjs';
@@ -116,29 +116,36 @@ export async function mountDesktop(target,options={}) {
       config.record=found?.record;
     }
     id=runtime.mount(canvas,JSON.stringify(config),assets,entries,raw=>queueMicrotask(()=>update(raw)));
+    const publishModifiers=event=>runtime.modifiers(id,...modifierSnapshot(event));
+    const clearModifiers=()=>runtime.modifiers(id,false,false,false,false);
     for(const node of [canvas,editor]){
       on(node,'keydown',event=>{
-        if(active())runtime.modifiers(id,event.ctrlKey,event.altKey,event.shiftKey,event.metaKey);
+        if(active())publishModifiers(event);
         if(!composing&&(event.ctrlKey||event.metaKey)&&['v','c','x'].includes(event.key.toLowerCase())){pasteShift=event.shiftKey;event.stopImmediatePropagation();}
       },{capture:true});
+      on(node,'keyup',event=>{if(active())publishModifiers(event);},{capture:true});
       for(const kind of ['paste','copy','cut'])on(node,kind,event=>{
         if(!active()||!event.clipboardData||composing)return;
         try{if(kind==='paste'&&!event.clipboardData.getData('text/plain')){event.preventDefault();report({clipboard:'empty or unsupported clipboard payload'});return;}const completed=runtime.clipboard_event(id,kind,event.clipboardData,pasteShift);event.preventDefault();report({lastInput:kind,clipboard:completed?'completed in trusted DOM event':'unavailable or no selection'});}
         catch(error){report({clipboard:'failed',error:String(error)});}
       });
     }
+    const forwardedKeys=new Set();
+    const dispatchCanvasKey=key=>{canvas.dispatchEvent(new KeyboardEvent('keydown',{key}));canvas.dispatchEvent(new KeyboardEvent('keyup',{key}));};
     on(editor,'keydown',event=>{
-      if(composing||event.isComposing)return;
-      if((event.ctrlKey||event.metaKey)&&['v','c','x'].includes(event.key.toLowerCase()))return;
+      const route=keyboardRoute(event,composing,config.mac);
+      if(route!=='forward')return;
       event.preventDefault();canvas.dispatchEvent(new KeyboardEvent('keydown',event));report({lastInput:'keyboard'});
+      forwardedKeys.add(event.code||event.key);
     });
-    on(editor,'keyup',event=>{if(!composing){event.preventDefault();canvas.dispatchEvent(new KeyboardEvent('keyup',event));}});
+    on(editor,'keyup',event=>{const key=event.code||event.key;if(forwardedKeys.delete(key)){event.preventDefault();canvas.dispatchEvent(new KeyboardEvent('keyup',event));}});
     on(editor,'compositionstart',()=>{composing=true;runtime.ime(id,'start','');report({lastInput:'compositionstart'});});
     on(editor,'compositionupdate',event=>{runtime.ime(id,'preedit',event.data);});
     on(editor,'compositionend',event=>{runtime.ime(id,'preedit','');runtime.ime(id,'commit',event.data);composing=false;editor.value='';report({lastInput:'compositioncommit'});});
-    on(editor,'beforeinput',event=>{if(composing||event.isComposing)return;if(event.inputType==='insertFromPaste'){event.preventDefault();return;}if(event.inputType==='insertText'&&event.data){event.preventDefault();runtime.ime(id,'commit',event.data);editor.value='';report({lastInput:'beforeinput'});}});
+    on(editor,'beforeinput',event=>{const route=beforeInputRoute(event,composing);if(route.kind==='ignore')return;event.preventDefault();if(route.kind==='commit'){runtime.ime(id,'commit',route.text);editor.value='';report({lastInput:'beforeinput'});}else if(route.kind==='key'){dispatchCanvasKey(route.key);report({lastInput:'beforeinput-key'});}});
     on(editor,'focus',()=>{canvas.dispatchEvent(new FocusEvent('focus'));if(active())runtime.ime(id,'start','');});
-    on(editor,'blur',()=>{if(active()){runtime.ime(id,'end','');canvas.dispatchEvent(new FocusEvent('blur'));}});
+    on(editor,'blur',()=>{if(active()){if(composing){runtime.ime(id,'preedit','');composing=false;report({lastInput:'compositioncancel'});}clearModifiers();forwardedKeys.clear();runtime.ime(id,'end','');canvas.dispatchEvent(new FocusEvent('blur'));}});
+    on(canvas,'blur',()=>{if(active())clearModifiers();});
     on(canvas,'pointerdown',()=>report({lastInput:'pointer'}));
     on(canvas,'wheel',event=>{
       if(event.deltaMode===2){event.preventDefault();const [x,y]=wheelPixels(event.deltaX,event.deltaY,2,canvas.clientWidth,canvas.clientHeight);canvas.dispatchEvent(new WheelEvent('wheel',{deltaX:-x,deltaY:-y,deltaMode:0,ctrlKey:event.ctrlKey,shiftKey:event.shiftKey}));}
