@@ -49,6 +49,24 @@ evidence is retained separately under `boot`, never attributed to the live UKI.
 but produces PCR sidecars only for the target. Both medium live boot and final
 target boot remain independent runtime acceptance requirements.
 
+Creation uses the same explicit `--boot-profile installer-media` and
+`--source-live-uki` arguments. After bootc completes, the creator holds its
+freshly allocated file descriptor, mounts only that file's GPT ESP in a private
+mount namespace, and invokes `installer_target_artifacts.materialize` while
+the authenticated source mount is still held. Only the exact target UKI,
+prediction JSON and detached signature are added under ESP `tilo-target/`.
+Any copy or cleanup failure removes the entire unaccepted new disk. Normal
+target creation does not run this write step.
+
+Media verification compares all three sidecars against the freshly verified
+immutable source and rejects missing/additional/changed files. It permits the
+extra target EFI path only after that verification; no general extra-EFI
+allowance exists. The installer runtime discovers a uniquely mounted VFAT ESP
+at `/boot`, `/efi` or `/boot/efi`; static materialization does not prove that
+mount is present during boot. The receipt therefore retains
+`runtime_access_verified=false` until the medium's actual boot test captures
+mount and installer-preflight evidence.
+
 `installed_bytes_verified` and `installable` remain false. The receipt reports
 the checks actually performed, retains material-audit coverage/limitations,
 and explicitly leaves independent source OCI-layer private-material evidence
