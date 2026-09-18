@@ -49,6 +49,36 @@ pub enum CtxAction {
     Junk,
 }
 
+/// A deliberately small set of inbox-triage operations that can act on a
+/// local selection.  The selection itself is presentation state; every actual
+/// mailbox change below is still emitted as a bounded canonical `MailAction`
+/// so it converges, is undoable, and reaches the IMAP mirror exactly as the
+/// corresponding one-message control does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BulkAction {
+    Archive,
+    /// A reversible move. It intentionally leaves rows already in Trash
+    /// alone; permanent removal must use the separately named `Purge` action.
+    Delete,
+    /// Permanently delete only messages already in Trash. This is never the
+    /// fallback meaning of `Delete`, including in virtual mixed-folder views.
+    Purge,
+    MarkRead,
+    MarkUnread,
+}
+
+impl BulkAction {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Archive => "Archive",
+            Self::Delete => "Move to Trash",
+            Self::Purge => "Delete permanently",
+            Self::MarkRead => "Mark read",
+            Self::MarkUnread => "Mark unread",
+        }
+    }
+}
+
 impl CtxAction {
     pub fn label(self, read: bool, starred: bool) -> String {
         match self {
@@ -122,6 +152,12 @@ pub struct MailState {
     pub now_min: i64,
     pub folder: Folder,
     pub selected: Option<MessageId>,
+    /// IDs selected for the compact bulk-triage surface.  This is explicitly
+    /// device-local presentation state: a collaborator seeing the same inbox
+    /// must not have their selection/focus changed.  The resulting archive,
+    /// delete, or flag mutations do replicate through `MailAction`.
+    pub bulk_selection: Vec<MessageId>,
+    pub bulk_selecting: bool,
     /// The selected message was explicitly inspected rather than opened. This
     /// is transient presentation state (never collaborative data): it makes
     /// the no-side-effect mode visible in the reader and prevents the normal
@@ -199,6 +235,8 @@ impl MailState {
             now_min,
             folder: Folder::Inbox,
             selected: None,
+            bulk_selection: Vec::new(),
+            bulk_selecting: false,
             inspection: None,
             search: String::new(),
             status: None,
@@ -456,6 +494,180 @@ impl MailState {
         true
     }
 
+    /// Enter or leave the local multi-select mode. Leaving always clears the
+    /// local selection so a later accidental shortcut cannot act on messages
+    /// the person no longer sees selected.
+    pub fn set_bulk_selecting(&mut self, selecting: bool) {
+        self.bulk_selecting = selecting;
+        if !selecting {
+            self.bulk_selection.clear();
+        }
+        self.dirty = true;
+    }
+
+    /// Toggle one already-visible loaded message in the local bulk selection.
+    /// A stale row is ignored instead of retaining an id that could later be
+    /// reused by an unrelated hydrated message.
+    pub fn toggle_bulk_selection(&mut self, id: MessageId) -> bool {
+        if self.mailbox.get(id).is_none() {
+            return false;
+        }
+        self.bulk_selecting = true;
+        if let Some(index) = self
+            .bulk_selection
+            .iter()
+            .position(|selected| *selected == id)
+        {
+            self.bulk_selection.remove(index);
+        } else {
+            self.bulk_selection.push(id);
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// Select every currently visible row, bounded by the list's own result
+    /// cap. This is a selection operation only; no mailbox state changes until
+    /// an explicit bulk action is chosen.
+    pub fn select_all_visible(&mut self) {
+        self.bulk_selecting = true;
+        self.bulk_selection = self
+            .list_rows()
+            .into_iter()
+            .map(|(id, _)| id)
+            .filter(|id| self.mailbox.get(*id).is_some())
+            .collect();
+        self.dirty = true;
+    }
+
+    pub fn selected_bulk_ids(&self) -> Vec<MessageId> {
+        self.bulk_selection
+            .iter()
+            .copied()
+            .filter(|id| self.mailbox.get(*id).is_some())
+            .collect()
+    }
+
+    /// Apply a bounded multi-message operation using the exact same action
+    /// payload families as the individual controls. Returns how many loaded
+    /// messages were affected. Archive/move-to-Trash/purge clear the local selection because
+    /// those rows have left the current projection; flag changes intentionally
+    /// retain it so a person can triage the same set in successive steps.
+    pub fn apply_bulk_action(&mut self, doc: &mut AutoCommit, action: BulkAction) -> usize {
+        let ids = self.selected_bulk_ids();
+        if ids.is_empty() {
+            return 0;
+        }
+        for id in &ids {
+            self.register_loaded_target(doc, *id);
+        }
+        let encoded_ids: Vec<String> = ids.iter().map(ToString::to_string).collect();
+        let affected = match action {
+            BulkAction::MarkRead | BulkAction::MarkUnread => {
+                let read = action == BulkAction::MarkRead;
+                for id in &ids {
+                    self.mailbox.mark_read(*id, read);
+                }
+                self.dispatch_action(doc, &set_read_action(encoded_ids, read));
+                for id in &ids {
+                    self.sync_flag_to_server(*id);
+                }
+                ids.len()
+            }
+            BulkAction::Archive => {
+                let sources: Vec<Message> = ids
+                    .iter()
+                    .filter_map(|id| self.mailbox.get(*id).cloned())
+                    .collect();
+                for id in &ids {
+                    self.mailbox.move_to(*id, Folder::Archive);
+                }
+                self.dispatch_action(doc, &move_action(encoded_ids, Folder::Archive));
+                for source in sources {
+                    self.sync_move_to_server(source, Folder::Archive);
+                }
+                self.bulk_selection.clear();
+                self.reselect_after_remove(doc);
+                ids.len()
+            }
+            BulkAction::Delete => {
+                // This path is *only* a move to Trash. A virtual Starred view
+                // can contain Inbox and Trash rows at once, so calling Delete
+                // here must never silently change into permanent deletion for
+                // the latter. The explicit `Purge` variant below is separately
+                // labelled, destructive in the resource tree, and folder-gated
+                // again by the canonical reducer.
+                let move_to_trash: Vec<MessageId> = ids
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        self.mailbox
+                            .get(*id)
+                            .is_some_and(|mail| mail.folder != Folder::Trash)
+                    })
+                    .collect();
+                let sources: Vec<Message> = move_to_trash
+                    .iter()
+                    .filter_map(|id| self.mailbox.get(*id).cloned())
+                    .collect();
+                if !move_to_trash.is_empty() {
+                    for id in &move_to_trash {
+                        self.mailbox.move_to(*id, Folder::Trash);
+                    }
+                    self.dispatch_action(
+                        doc,
+                        &move_action(
+                            move_to_trash.iter().map(ToString::to_string).collect(),
+                            Folder::Trash,
+                        ),
+                    );
+                }
+                for source in sources {
+                    self.sync_move_to_server(source, Folder::Trash);
+                }
+                self.bulk_selection.clear();
+                self.reselect_after_remove(doc);
+                move_to_trash.len()
+            }
+            BulkAction::Purge => {
+                // Only persisted Trash rows can be purged. This checks the
+                // current hydrated projection for immediate feedback; the
+                // MailAction reducer performs the same folder guard against a
+                // stale or remotely-authored payload.
+                let purge: Vec<MessageId> = ids
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        self.mailbox
+                            .get(*id)
+                            .is_some_and(|mail| mail.folder == Folder::Trash)
+                    })
+                    .collect();
+                let sources: Vec<Message> = purge
+                    .iter()
+                    .filter_map(|id| self.mailbox.get(*id).cloned())
+                    .collect();
+                if !purge.is_empty() {
+                    for id in &purge {
+                        self.mailbox.purge(*id);
+                    }
+                    self.dispatch_action(
+                        doc,
+                        &purge_action(purge.iter().map(ToString::to_string).collect()),
+                    );
+                }
+                for source in sources {
+                    self.sync_purge_to_server(source);
+                }
+                self.bulk_selection.clear();
+                self.reselect_after_remove(doc);
+                purge.len()
+            }
+        };
+        self.dirty = true;
+        affected
+    }
+
     pub fn reselect_after_remove(&mut self, _doc: &mut AutoCommit) {
         self.selected = self
             .current_threads()
@@ -644,6 +856,7 @@ pub fn now_minutes() -> i64 {
 mod tests {
     use super::*;
     use crate::engine::EngineRequest;
+    use automerge::ReadDoc;
 
     fn state() -> MailState {
         MailState::new_sample(crate::app::avatar_store_offline())
@@ -771,5 +984,135 @@ mod tests {
             "Reply-all must raise ReplyAll, not the plain Reply intent"
         );
         assert!(!intents.iter().any(|i| matches!(i, Intent::Reply(_))));
+    }
+
+    #[test]
+    fn bulk_archive_is_one_bounded_canonical_move_action_and_keeps_selection_local() {
+        let mut st = state();
+        let mut doc = AutoCommit::new();
+        let ids: Vec<MessageId> = st
+            .list_rows()
+            .into_iter()
+            .map(|(id, _)| id)
+            .take(2)
+            .collect();
+        assert_eq!(ids.len(), 2, "sample exposes two list rows");
+        for id in &ids {
+            assert!(st.toggle_bulk_selection(*id));
+        }
+        let archive_before = st.mailbox.count(Folder::Archive);
+        assert_eq!(st.apply_bulk_action(&mut doc, BulkAction::Archive), 2);
+        assert_eq!(st.mailbox.count(Folder::Archive), archive_before + 2);
+        assert!(
+            st.bulk_selection.is_empty(),
+            "moved rows cannot stay selected"
+        );
+        let last = st
+            .actions
+            .last_dispatched()
+            .expect("bulk action dispatched");
+        assert_eq!(last.type_id, MAIL_ACTION_TYPE);
+        assert_eq!(
+            last.payload,
+            crate::actions::encode(&move_action(
+                ids.iter().map(ToString::to_string).collect(),
+                Folder::Archive,
+            ))
+            .payload,
+            "two archives are one deterministic action boundary"
+        );
+        assert!(
+            doc.get(&automerge::ROOT, "bulk_selection")
+                .expect("document remains readable")
+                .is_none(),
+            "device-local selection is never written to the shared document"
+        );
+    }
+
+    #[test]
+    fn bulk_marking_read_retains_the_local_selection_for_follow_up_triage() {
+        let mut st = state();
+        let mut doc = AutoCommit::new();
+        let ids: Vec<MessageId> = st
+            .list_rows()
+            .into_iter()
+            .map(|(id, _)| id)
+            .take(2)
+            .collect();
+        for id in &ids {
+            st.toggle_bulk_selection(*id);
+        }
+        assert_eq!(st.apply_bulk_action(&mut doc, BulkAction::MarkRead), 2);
+        assert!(
+            ids.iter()
+                .all(|id| st.mailbox.get(*id).is_some_and(|m| m.read))
+        );
+        assert_eq!(st.selected_bulk_ids(), ids);
+    }
+
+    #[test]
+    fn bulk_move_to_trash_never_purges_trash_rows_from_a_mixed_virtual_view() {
+        let mut st = state();
+        let mut doc = AutoCommit::new();
+        let ids: Vec<MessageId> = st
+            .mailbox
+            .messages_in(Folder::Inbox)
+            .into_iter()
+            .take(2)
+            .map(|message| message.id)
+            .collect();
+        let (already_trash, inbox) = (ids[0], ids[1]);
+        st.mailbox.move_to(already_trash, Folder::Trash);
+        // Starred is a virtual folder in the real app, so this deliberately
+        // models a selection whose physical rows come from different folders.
+        st.folder = Folder::Starred;
+        st.mailbox.get_mut(already_trash).unwrap().starred = true;
+        st.mailbox.get_mut(inbox).unwrap().starred = true;
+        st.toggle_bulk_selection(already_trash);
+        st.toggle_bulk_selection(inbox);
+
+        assert_eq!(st.apply_bulk_action(&mut doc, BulkAction::Delete), 1);
+        assert_eq!(
+            st.mailbox.get(already_trash).map(|message| message.folder),
+            Some(Folder::Trash),
+            "Delete means move-to-Trash even when a mixed selection includes Trash"
+        );
+        assert_eq!(
+            st.mailbox.get(inbox).map(|message| message.folder),
+            Some(Folder::Trash)
+        );
+        let last = st.actions.last_dispatched().expect("one move action");
+        assert_eq!(
+            last.payload,
+            crate::actions::encode(&move_action(vec![inbox.to_string()], Folder::Trash)).payload
+        );
+    }
+
+    #[test]
+    fn bulk_purge_filters_nontrash_and_stale_rows_before_the_atomic_action() {
+        let mut st = state();
+        let mut doc = AutoCommit::new();
+        let ids: Vec<MessageId> = st
+            .mailbox
+            .messages_in(Folder::Inbox)
+            .into_iter()
+            .take(2)
+            .map(|message| message.id)
+            .collect();
+        let (trash, inbox) = (ids[0], ids[1]);
+        st.mailbox.move_to(trash, Folder::Trash);
+        st.toggle_bulk_selection(trash);
+        st.toggle_bulk_selection(inbox);
+        // A stale id can never be materialized into a later batch.
+        st.bulk_selection.push(uuid::Uuid::new_v4());
+
+        assert_eq!(st.apply_bulk_action(&mut doc, BulkAction::Purge), 1);
+        assert!(st.mailbox.get(trash).is_none());
+        assert!(st.mailbox.get(inbox).is_some());
+        let last = st.actions.last_dispatched().expect("one purge action");
+        assert_eq!(
+            last.payload,
+            crate::actions::encode(&purge_action(vec![trash.to_string()])).payload
+        );
     }
 }
