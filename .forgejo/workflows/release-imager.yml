@@ -2,15 +2,15 @@ name: Release / imager
 
 # Ordinary commits exercise imager code and release-policy invariants in
 # check.yml. This workflow allocates native release hosts only for an explicit
-# manual rehearsal or an imager-v* tag. Tags expand to every native host and
-# fail closed unless packages are signed (and notarized on macOS).
+# manual rehearsal or an imager-v* tag. Tags expand to the enabled Linux and Windows hosts and
+# fail closed unless packages are signed. macOS packaging is deferred.
 on:
   push:
     tags: ["imager-v*"]
   workflow_dispatch:
     inputs:
       full_native:
-        description: "Build every host OS/architecture instead of the Linux x86_64 smoke lane."
+        description: "Build Linux and Windows on both architectures instead of the Linux x86_64 smoke lane."
         type: boolean
         required: false
         default: false
@@ -571,7 +571,8 @@ jobs:
 
   macos:
     timeout-minutes: 240
-    if: startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true'
+    # Deferred for the alpha; tags and full_native must not allocate Mac hosts.
+    if: ${{ false }}
     needs: catalog
     enable-openid-connect: true
     strategy:
@@ -721,7 +722,7 @@ jobs:
   publish:
     timeout-minutes: 60
     if: startsWith(github.ref, 'refs/tags/imager-v')
-    needs: [linux, windows, macos]
+    needs: [linux, windows]
     runs-on: runner
     enable-openid-connect: true
     steps:
@@ -738,6 +739,7 @@ jobs:
             --version "${GITHUB_REF_NAME#imager-v}" \
             --base-url "${GITHUB_SERVER_URL%/}/${TILO_RELEASE_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
       - name: Require the complete native release matrix
+        id: enabled-assets
         shell: bash
         run: |
           set -euo pipefail
@@ -756,10 +758,6 @@ jobs:
             tilo-imager-windows-aarch64.exe
             tilo-imager-windows-aarch64.zip
             tilo-imager-setup-windows-aarch64.exe
-            tilo-imager-macos-x86_64.dmg
-            tilo-imager-macos-aarch64.dmg
-            tilo-imager-macos-x86_64.zip
-            tilo-imager-macos-aarch64.zip
           )
           for name in "${required[@]}"; do
             path="$(find release-assets -type f -name "$name" -print -quit)"
@@ -806,7 +804,10 @@ jobs:
     timeout-minutes: 60
     if: startsWith(github.ref, 'refs/tags/imager-v')
     needs: publish
-    runs-on: imager-macos-aarch64
+    runs-on: imager-linux-aarch64
+    env:
+      # Keep the cask publisher available, but do not advance macOS packages.
+      TILO_IMAGER_MACOS_ENABLED: "0"
     enable-openid-connect: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -846,6 +847,33 @@ jobs:
             package_kind: formula
           - runner: imager-linux-aarch64
             package_kind: formula
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Install and test the published Homebrew package
+        env:
+          PACKAGE_KIND: ${{ matrix.package_kind }}
+        run: |
+          set -euo pipefail
+          command -v brew >/dev/null
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          brew tap tilo/tilo https://code.podesta.ai/qos/homebrew-tilo.git
+          if [ "$PACKAGE_KIND" = formula ]; then
+            brew install tilo/tilo/tilo-imager
+            brew test tilo/tilo/tilo-imager
+            brew uninstall tilo-imager
+          else
+            brew install --cask tilo/tilo/tilo-imager
+            brew list --cask tilo-imager >/dev/null
+            brew uninstall --cask tilo-imager
+          fi
+
+  homebrew-macos-install-test:
+    timeout-minutes: 90
+    if: ${{ false }} # Deferred with macOS packages; retain both native cask lanes.
+    needs: homebrew
+    strategy:
+      matrix:
+        include:
           - runner: imager-macos-x86_64
             package_kind: cask
           - runner: imager-macos-aarch64
