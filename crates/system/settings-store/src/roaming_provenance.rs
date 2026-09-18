@@ -89,8 +89,8 @@ impl std::error::Error for ProvenanceError {}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LegacyV1 {
-    #[allow(dead_code)]
-    schema_version: u16,
+    #[serde(rename = "schema_version")]
+    _schema_version: u16,
     #[serde(default)]
     generated_unix_ms: u64,
     #[serde(default)]
