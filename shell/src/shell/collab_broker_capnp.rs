@@ -10065,7 +10065,7 @@ mod tests {
         ));
         let (subscriber, mut events) = mpsc::unbounded_channel();
         let app =
-            VerifiedAppRegistration::new_verified("dev.qos.calls", "work").expect("verified app");
+            VerifiedAppRegistration::new_verified("dev.tilo.calls", "work").expect("verified app");
         {
             let mut realtime = state.realtime.lock().expect("target bridge");
             realtime.broker = Arc::clone(&target_broker);
