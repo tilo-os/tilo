@@ -18,7 +18,7 @@
 # here as a tarball, and refuses to package anything it did not build.
 
 %global tilo_summary Tilo compositor as a Wayland session
-%{!?tilo_version:%global tilo_version 0.1.10}
+%{!?tilo_version:%global tilo_version 0.1.11}
 
 # The payload is already built and stripped; there is no source to extract
 # debug symbols from, and an empty -debuginfo subpackage would fail the
