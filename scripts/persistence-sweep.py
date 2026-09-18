@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""Prove, per app, that a change made through the real UI survives a restart.
+"""Check, per app, that a change made through the UI survives a restart.
 
-The claim being tested is the whole point of `app-state`: change something
-in an app, kill it, start it again, and the change is still there. This
-script checks it the only way that means anything — by running the app's own
-binary three times against a scratch data directory:
+The behavior under test is `app-state`: change something in an app, kill it,
+start it again, and verify that the change is still there. The script runs
+the app's own binary three times against a scratch data directory:
 
   cold      a fresh store, no input. Dumps the document the app comes up on.
   hot       the same store, plus a list of clicks/keystrokes delivered
-            through `ui::headless`, i.e. the same `Widget::handle_event` a
-            real click goes through. The process then exits, flushing.
+            through `ui::headless`, i.e. the same `Widget::handle_event` used
+            for a click. The process then exits, flushing.
   restored  the same store again, no input. Dumps what came back off disk.
 
 Two assertions, both necessary:
@@ -21,7 +20,7 @@ Two assertions, both necessary:
 Actions come from `persistence-scenarios.json` when an app needs specific
 ones, otherwise the harness picks addressable widgets out of the app's own
 live widget tree. Names matching the deny-list in DANGEROUS are never
-clicked — several apps front real destructive operations.
+clicked — several apps expose destructive operations.
 
 Usage:
     scripts/persistence-sweep.py                 # every app
@@ -59,11 +58,11 @@ NEEDS_CURATION = {
 # inputs; then keystrokes again now that something may hold focus.
 def generic_actions(viewport=(1280, 800)):
     w, h = viewport
-    acts = [{"type": "qos"}, {"key": "Enter"}]
+    acts = [{"type": "tilo"}, {"key": "Enter"}]
     for y in range(40, h, 80):
         for x in range(40, w, 120):
             acts.append({"click_at": [x, y]})
-    acts += [{"type": "qos"}, {"key": "Enter"}, {"key": "Space"}]
+    acts += [{"type": "tilo"}, {"key": "Enter"}, {"key": "Space"}]
     return acts
 
 
@@ -77,14 +76,14 @@ def app_dirs(names):
             continue
         if names and p.name not in names:
             continue
-        if not (p / "qos-app.toml").exists() or not (p / "Cargo.toml").exists():
+        if not (p / "tilo-app.toml").exists() or not (p / "Cargo.toml").exists():
             continue
         out.append(p)
     return out
 
 
 def app_meta(d):
-    manifest = tomllib.loads((d / "qos-app.toml").read_text())
+    manifest = tomllib.loads((d / "tilo-app.toml").read_text())
     cargo = tomllib.loads((d / "Cargo.toml").read_text())
     pkg = manifest.get("package", {}).get("id")
     bins = cargo.get("bin") or []
@@ -95,7 +94,7 @@ def app_meta(d):
 def run_app(binary, data_home, pkg, spec, log):
     env = dict(os.environ)
     env["XDG_DATA_HOME"] = str(data_home)
-    env["QOS_PACKAGE_ID"] = pkg
+    env["TILO_PACKAGE_ID"] = pkg
     # Keep an inherited compositor connection from turning a headless run
     # into a windowed one, and keep the app off the user's real config.
     env.pop("WAYLAND_DISPLAY", None)
@@ -240,7 +239,7 @@ def main():
     ap.add_argument(
         "--workdir",
         type=pathlib.Path,
-        default=pathlib.Path(os.environ.get("TMPDIR", "/tmp")) / "qos-persistence-sweep",
+        default=pathlib.Path(os.environ.get("TMPDIR", "/tmp")) / "tilo-persistence-sweep",
     )
     args = ap.parse_args()
 

@@ -112,7 +112,7 @@ redaction events retain their stricter audit treatment.
 The executor serializes this context into the Automerge change message under a
 versioned prefix. That makes provenance part of the durable, content-addressed
 change and therefore identical on replay. Old envelopes deserialize with no
-context and the existing structural diff summarizer remains their honest
+context and the existing structural diff summarizer remains their
 fallback.
 
 The action door populates resource/action context automatically because it
@@ -139,7 +139,7 @@ top-bar glance.
 
 - Semantic action context, durable commit messages, filters, explicit grouping,
   shared digests, and a generic facet-count index.
-- An outcome-first Catch up tab with three-to-five expandable cards and honest
+- An outcome-first Catch up tab with three-to-five expandable cards and clear
   app/resource provenance, beside the existing granular Explore timeline.
 - A private per-device, per-workspace seen frontier in the merged settings
   store. It retains full Automerge heads per record document and explicit

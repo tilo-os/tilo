@@ -1,0 +1,50 @@
+[Unit]
+Description=Confirm this OS generation and raise the rollback floor
+Documentation=man:tilo-rollback(8)
+# Everything the health gate inspects has to have had its chance to fail first.
+After=multi-user.target greetd.service fs.service
+# Never block or delay the boot: this is deliberately late and deliberately
+# optional. A machine that never reaches it simply keeps its fallback, which is
+# the safe direction.
+ConditionPathExists=/usr/bin/tilo-rollback
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tilo-rollback-confirm
+RemainAfterExit=no
+# The NV counter and the LUKS header both need real privilege; everything else is
+# taken away.
+PrivateTmp=yes
+PrivateNetwork=yes
+PrivateIPC=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+NoNewPrivileges=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+UMask=0077
+CapabilityBoundingSet=
+AmbientCapabilities=
+DevicePolicy=closed
+DeviceAllow=block-* rw
+DeviceAllow=/dev/mapper/control rw
+DeviceAllow=/dev/tpmrm0 rw
+DeviceAllow=/dev/tpm0 rw
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@clock @cpu-emulation @debug @module @mount @obsolete @privileged @raw-io @reboot @swap
+SystemCallErrorNumber=EPERM
+# Writes the bookkeeping file and reads the proof secret from /run.
+ReadWritePaths=/var/lib/tilo/rollback /run/tilo-rollback

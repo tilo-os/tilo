@@ -11,6 +11,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ReadDoc};
 use qdoc::model::Region;
 use qdoc::{Containers, DocMut, IdGen};
+use ui::text_edit::{Edit, EditCore};
 
 /// One block's `(block_id, start, end)` character range, as returned by the
 /// selection/format-span readers below.
@@ -25,7 +26,7 @@ pub struct Caret {
 
 /// One block of a copied rich fragment — text plus its formatting (marks +
 /// paragraph attributes), with mark offsets relative to the block's own text.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ClipBlock {
     pub kind: String,
     pub text: String,
@@ -128,6 +129,9 @@ pub struct WordProcessor {
     body_caret: Option<(Caret, Option<Caret>)>,
     header_caret: Option<(Caret, Option<Caret>)>,
     footer_caret: Option<(Caret, Option<Caret>)>,
+    /// Shared byte-safe horizontal edit core for the active block. The
+    /// surrounding model still owns block splits/merges and qdoc structure.
+    edit_core: EditCore,
 }
 
 impl Default for WordProcessor {
@@ -147,6 +151,7 @@ impl WordProcessor {
             body_caret: None,
             header_caret: None,
             footer_caret: None,
+            edit_core: EditCore::new(),
         }
     }
 
@@ -422,52 +427,13 @@ impl WordProcessor {
     /// (re-import over the open document) without discarding the host `ui::State`'s
     /// undo history / collaboration session. Caret moves to the first imported
     /// block; returns `false` (document untouched) if unbound or import fails.
-    /// uncommitted transaction window, so the host can still undo cleanly).
     pub fn replace_with_markdown(&mut self, state: &mut AutoCommit, markdown: &[u8]) -> bool {
-        use qdoc::FormatProvider;
-        let Some(containers) = self.containers.clone() else {
-            return false;
-        };
-        // Snapshot the existing body block ids before mutating.
-        let existing = qdoc::model::blocks_in_order(state, &containers);
-        let Some(ids) = self.ids.as_mut() else {
-            return false;
-        };
-        let mut dm = DocMut {
-            doc: state,
-            c: &containers,
-            ids,
-        };
-        // Import the template into a clearly-empty body: drop every existing
-        // block first, then import (the codec appends fresh blocks). If the import
-        // fails we've only removed blocks within the still-open transaction, which
-        // the host's per-action undo will revert — so report failure and let the
-        // caller decide.
-        for id in &existing {
-            dm.remove_block(id);
-        }
-        if qdoc::MarkdownCodec.import(markdown, &mut dm).is_err() {
-            return false;
-        }
-        // Re-seat the caret on the first newly-imported block (the body is fresh).
-        let blocks = qdoc::model::blocks_in_order(state, &containers);
-        match blocks.first() {
-            Some(first) => {
-                self.caret = Caret {
-                    block: first.clone(),
-                    offset: 0,
-                }
-            }
-            None => self.caret = Caret::default(),
-        }
-        self.clear_anchor();
-        true
+        self.replace_with_format(state, markdown, crate::WpFormat::Markdown)
     }
 
     /// Replace the whole body with `bytes` decoded as `format` — the in-place
     /// **Open** path, mirroring [`Self::replace_with_markdown`] but through the
-    /// format-aware codec. Validate in a separate document before touching the
-    /// live transaction, so a decode failure preserves pending edits and selection.
+    /// format-aware codec. A decode failure leaves the document and caret intact.
     pub fn replace_with_format(
         &mut self,
         state: &mut AutoCommit,
@@ -477,35 +443,18 @@ impl WordProcessor {
         let Some(containers) = self.containers.clone() else {
             return false;
         };
-        let existing = qdoc::model::blocks_in_order(state, &containers);
-        let Some(ids) = self.ids.as_mut() else {
+        let Some(mut ids) = self.ids.clone() else {
             return false;
         };
-        // Codecs can fail after writing part of the imported document. A plain
-        // rollback on failure would also discard the user's pending edits. Parse
-        // the same bytes into isolated containers first; only a valid import may
-        // replace the live body. The second import stays in the host's existing
-        // transaction, retaining its CRDT actor, object identities and undo point.
-        let mut validation = AutoCommit::new();
-        let validation_containers = qdoc::model::init(&mut validation, &automerge::ROOT);
-        let mut validation_ids = qdoc::model::seeded_id_gen(&validation, &validation_containers);
-        if format
-            .import(
-                bytes,
-                &mut DocMut {
-                    doc: &mut validation,
-                    c: &validation_containers,
-                    ids: &mut validation_ids,
-                },
-            )
-            .is_err()
-        {
-            return false;
-        }
+        // Codecs can reject malformed input after writing partial content. Stage
+        // the entire replacement so a failed Open cannot delete the live body,
+        // annotations, or other document state (including pending local edits).
+        let mut staged = state.clone();
+        let existing = qdoc::model::blocks_in_order(&staged, &containers);
         let mut dm = DocMut {
-            doc: state,
+            doc: &mut staged,
             c: &containers,
-            ids,
+            ids: &mut ids,
         };
         for id in &existing {
             dm.remove_block(id);
@@ -513,6 +462,8 @@ impl WordProcessor {
         if format.import(bytes, &mut dm).is_err() {
             return false;
         }
+        *state = staged;
+        self.ids = Some(ids);
         let blocks = qdoc::model::blocks_in_order(state, &containers);
         match blocks.first() {
             Some(first) => {
@@ -1328,7 +1279,7 @@ impl WordProcessor {
     //
     // These expose the selection/mark resolution the private edit ops use, so
     // the widget can build the matching `WordProcessorAction` and dispatch it
-    // through the qOS executor instead of mutating the document directly. They
+    // through the Tilo executor instead of mutating the document directly. They
     // never mutate — the action's `apply` performs the write.
 
     /// The active [`RegionKind`](crate::actions::RegionKind) the caret + edit ops
@@ -1962,9 +1913,10 @@ impl WordProcessor {
     }
 
     /// Tab / Shift-Tab cell navigation. `forward` moves to the next cell in
-    /// row-major order (wrapping to the first cell of the next row); when the
-    /// caret is in the table's **last** cell, a fresh row is appended and the
-    /// caret lands in its first cell. `!forward` moves to the previous cell
+    /// row-major order (wrapping to the first cell of the next row). At the
+    /// table's **last** cell it stays put; the widget publishes a typed absolute
+    /// row-insertion action before calling this navigation helper. `!forward`
+    /// moves to the previous cell
     /// (staying put at the very first cell). Returns `true` when the caret was in
     /// a cell and was handled here (so the caller should not insert a tab).
     pub fn tab_cell(&mut self, state: &mut AutoCommit, forward: bool) -> bool {
@@ -1987,9 +1939,6 @@ impl WordProcessor {
                     offset: 0,
                 };
                 self.selection_anchor = None;
-            } else {
-                // Last cell: grow the table by a row and land in its first cell.
-                self.insert_row(state, true);
             }
         } else if let Some((prev, ..)) = pos.checked_sub(1).and_then(|i| ordered.get(i).cloned()) {
             // Land at the end of the previous cell's text (natural Shift-Tab feel).
@@ -2622,7 +2571,7 @@ impl WordProcessor {
             .collect()
     }
 
-    fn ordered_blocks(&self, state: &AutoCommit) -> Vec<String> {
+    pub(crate) fn ordered_blocks(&self, state: &AutoCommit) -> Vec<String> {
         self.region_blocks_in_order(state)
     }
 
@@ -2782,17 +2731,23 @@ impl WordProcessor {
 
     /// Select the whitespace-delimited word under the caret (double-click).
     pub fn select_word(&mut self, state: &AutoCommit) {
-        let chars: Vec<char> = self.current_text(state).chars().collect();
-        let off = self.caret.offset.min(chars.len());
-        let word = |c: char| !c.is_whitespace();
-        let mut s = off;
-        while s > 0 && chars.get(s - 1).is_some_and(|c| word(*c)) {
-            s -= 1;
-        }
-        let mut e = off;
-        while chars.get(e).is_some_and(|c| word(*c)) {
-            e += 1;
-        }
+        let text = self.current_text(state);
+        let byte = text
+            .char_indices()
+            .nth(self.caret.offset.min(text.chars().count()))
+            .map_or(text.len(), |(byte, _)| byte);
+        self.edit_core.set_caret(byte);
+        self.edit_core.select_word(&text, byte);
+        let range = self.edit_core.range();
+        let start = range.start;
+        let end = range.end;
+        let char_at = |byte: usize| {
+            text.char_indices()
+                .take_while(|(index, _)| *index < byte)
+                .count()
+        };
+        let s = char_at(start);
+        let e = char_at(end);
         if s == e {
             return; // caret is on whitespace
         }
@@ -2800,6 +2755,65 @@ impl WordProcessor {
         self.clear_anchor();
         self.set_anchor();
         self.caret.offset = e;
+    }
+
+    fn sync_edit_core_from_state(&mut self, text: &str) {
+        let byte_at = |char_idx: usize| {
+            text.char_indices()
+                .nth(char_idx)
+                .map_or(text.len(), |(byte, _)| byte)
+        };
+        let anchor = self
+            .selection_anchor
+            .as_ref()
+            .filter(|anchor| anchor.block == self.caret.block)
+            .map_or(self.caret.offset, |anchor| anchor.offset);
+        self.edit_core
+            .set_selection(byte_at(anchor), byte_at(self.caret.offset));
+        self.edit_core.clamp_to(text);
+    }
+
+    fn sync_state_from_edit_core(&mut self, text: &str) {
+        let selection = self.edit_core.selection();
+        let char_at = |byte: usize| {
+            text.char_indices()
+                .take_while(|(index, _)| *index < byte.min(text.len()))
+                .count()
+        };
+        let anchor = char_at(selection.anchor);
+        let cursor = char_at(selection.cursor);
+        self.caret.offset = cursor;
+        self.selection_anchor = (!selection.is_collapsed()).then(|| Caret {
+            block: self.caret.block.clone(),
+            offset: anchor,
+        });
+    }
+
+    fn apply_edit_core(&mut self, state: &mut AutoCommit, text: &str, edit: &Edit) -> bool {
+        if edit.is_noop() {
+            return false;
+        }
+        let end = edit.at.saturating_add(edit.removed);
+        let Some(prefix) = text.get(..edit.at) else {
+            return false;
+        };
+        let Some(removed_text) = text.get(edit.at..end) else {
+            return false;
+        };
+        let start = prefix.chars().count();
+        let removed = removed_text.chars().count();
+        let block = self.caret.block.clone();
+        self.region_splice(
+            state,
+            &block,
+            start,
+            num::isize_of_usize(removed),
+            &edit.inserted,
+        );
+        let mut updated = text.to_owned();
+        updated.replace_range(edit.at..end, &edit.inserted);
+        self.sync_state_from_edit_core(&updated);
+        true
     }
 
     /// Select the entire document (Ctrl+A).
@@ -2826,6 +2840,18 @@ impl WordProcessor {
     /// Insert `s` at the caret and advance. Replaces the selection if any.
     /// Routes through the active region (body / header / footer).
     pub fn insert_str(&mut self, state: &mut AutoCommit, s: &str) {
+        if self
+            .selection_anchor
+            .as_ref()
+            .is_none_or(|a| a.block == self.caret.block)
+        {
+            let text = self.current_text(state);
+            self.sync_edit_core_from_state(&text);
+            let edit = self.edit_core.insert(s);
+            if self.apply_edit_core(state, &text, &edit) {
+                return;
+            }
+        }
         self.delete_selection(state);
         if self.containers.is_none() {
             return;
@@ -2890,6 +2916,18 @@ impl WordProcessor {
     /// Delete the character before the caret; at offset 0 merge into the
     /// previous block. Region-aware.
     pub fn backspace(&mut self, state: &mut AutoCommit) {
+        if self
+            .selection_anchor
+            .as_ref()
+            .is_none_or(|a| a.block == self.caret.block)
+        {
+            let text = self.current_text(state);
+            self.sync_edit_core_from_state(&text);
+            let edit = self.edit_core.delete_backward(&text, false);
+            if self.apply_edit_core(state, &text, &edit) {
+                return;
+            }
+        }
         if self.delete_selection(state) {
             return;
         }
@@ -2937,6 +2975,18 @@ impl WordProcessor {
     /// Delete the character after the caret; at end-of-block merge the next
     /// block in. Region-aware.
     pub fn delete_forward(&mut self, state: &mut AutoCommit) {
+        if self
+            .selection_anchor
+            .as_ref()
+            .is_none_or(|a| a.block == self.caret.block)
+        {
+            let text = self.current_text(state);
+            self.sync_edit_core_from_state(&text);
+            let edit = self.edit_core.delete_forward(&text, false);
+            if self.apply_edit_core(state, &text, &edit) {
+                return;
+            }
+        }
         if self.delete_selection(state) {
             return;
         }
@@ -2973,8 +3023,16 @@ impl WordProcessor {
     // ---- caret motion ------------------------------------------------------
 
     pub fn move_left(&mut self, state: &AutoCommit) {
-        if self.caret.offset > 0 {
-            self.caret.offset -= 1;
+        let extends_selection = self
+            .selection_anchor
+            .as_ref()
+            .is_some_and(|anchor| anchor.block == self.caret.block);
+        if extends_selection || self.caret.offset > 0 {
+            let text = self.current_text(state);
+            self.sync_edit_core_from_state(&text);
+            self.edit_core
+                .motion(&text, ui::text_edit::Motion::Left, extends_selection);
+            self.sync_state_from_edit_core(&text);
             return;
         }
         let blocks = self.ordered_blocks(state);
@@ -2991,9 +3049,17 @@ impl WordProcessor {
     }
 
     pub fn move_right(&mut self, state: &AutoCommit) {
+        let extends_selection = self
+            .selection_anchor
+            .as_ref()
+            .is_some_and(|anchor| anchor.block == self.caret.block);
         let len = self.block_len(state, &self.caret.block);
-        if self.caret.offset < len {
-            self.caret.offset += 1;
+        if extends_selection || self.caret.offset < len {
+            let text = self.current_text(state);
+            self.sync_edit_core_from_state(&text);
+            self.edit_core
+                .motion(&text, ui::text_edit::Motion::Right, extends_selection);
+            self.sync_state_from_edit_core(&text);
             return;
         }
         let blocks = self.ordered_blocks(state);
@@ -3021,6 +3087,18 @@ impl WordProcessor {
     }
 
     pub fn move_end(&mut self, state: &AutoCommit) {
+        let extends_selection = self
+            .selection_anchor
+            .as_ref()
+            .is_some_and(|anchor| anchor.block == self.caret.block);
+        if self.selection_anchor.is_none() || extends_selection {
+            let text = self.current_text(state);
+            self.sync_edit_core_from_state(&text);
+            self.edit_core
+                .motion(&text, ui::text_edit::Motion::LineEnd, extends_selection);
+            self.sync_state_from_edit_core(&text);
+            return;
+        }
         self.caret.offset = self.block_len(state, &self.caret.block);
     }
 
@@ -3476,6 +3554,29 @@ mod tests {
         wp.move_left(&state);
         assert_eq!(wp.current_text(&state), "ab");
         assert_eq!(wp.caret.offset, 2);
+    }
+
+    #[test]
+    fn caret_motion_extends_an_active_selection() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "abcd");
+
+        wp.move_home();
+        wp.set_anchor();
+        wp.move_right(&state);
+        assert_eq!(
+            wp.selection_blocks(&state)[0].1..wp.selection_blocks(&state)[0].2,
+            0..1
+        );
+
+        wp.clear_anchor();
+        wp.move_end(&state);
+        wp.set_anchor();
+        wp.move_home();
+        assert_eq!(
+            wp.selection_blocks(&state)[0].1..wp.selection_blocks(&state)[0].2,
+            0..4
+        );
     }
 
     #[test]
@@ -4140,7 +4241,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_walks_cells_and_appends_row_at_end() {
+    fn tab_walks_cells_but_leaves_structural_append_to_the_action_host() {
         let (mut wp, mut state) = bound();
         wp.insert_table(&mut state, 2, 2); // caret in (0,0)
         // Tab forward through every cell: (0,0)->(0,1)->(1,0)->(1,1).
@@ -4151,14 +4252,16 @@ mod tests {
             );
             assert_eq!(wp.caret_rc(&wp.caret_table(&state).unwrap().1), expect);
         }
-        // One more Tab from the last cell appends a row and lands in (2,0).
+        // The editing core deliberately does not perform a hidden structural
+        // mutation at the edge. The widget detects this position and dispatches
+        // an absolute `EditTable::InsertRow` through the shared action host.
         assert!(wp.tab_cell(&mut state, true));
         let grid = table_grid(&wp, &state);
-        assert_rectangular(&grid, 3, 2);
+        assert_rectangular(&grid, 2, 2);
         assert_eq!(
             wp.caret_rc(&wp.caret_table(&state).unwrap().1),
-            (2, 0),
-            "caret in first cell of the appended row"
+            (1, 1),
+            "caret stays at the stable edge target for the action host"
         );
     }
 

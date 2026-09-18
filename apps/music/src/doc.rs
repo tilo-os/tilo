@@ -15,17 +15,21 @@
 //! │   ├── "albums"  (Map<id, {title, artist_id, year}>)
 //! │   └── "tracks"  (Map<id, {title, album_id, artist_id, track_no,
 //! │                            duration_s, yt_id, plays}>)
-//! ├── "playlists" (List<{id, name, description, tracks: List<str>}>)
+//! ├── "playlists" (List<{id, name, description,
+//! │                       track_membership: Map<track_id, bool>,
+//! │                       track_order: Map<track_id, i64>}>)
 //! ├── "playlist_tombstones" (Map<playlist_id, true>)
-//! ├── "liked"     (List<track_id>)
-//! ├── "saved_albums" (List<album_id>)
-//! └── "followed_artists" (List<artist_id>)
+//! ├── "liked"     (Map<track_id, bool>)
+//! ├── "saved_albums" (Map<album_id, bool>)
+//! └── "followed_artists" (Map<artist_id, bool>)
 //! ```
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
 use crate::model::{Album, Artist, Library, Playback, Playlist, Track};
+
+const ORDER_STEP: i64 = 1_048_576;
 
 // ---- small scalar readers -------------------------------------------------
 
@@ -90,6 +94,70 @@ fn list_strings(doc: &AutoCommit, list: &ObjId) -> Vec<String> {
     out
 }
 
+fn map_bool(doc: &AutoCommit, map: &ObjId, key: &str) -> bool {
+    matches!(
+        doc.get(map, key),
+        Ok(Some((Value::Scalar(value), _))) if value.as_ref() == &ScalarValue::Boolean(true)
+    )
+}
+
+fn membership_entries(doc: &AutoCommit, playlist: &ObjId) -> Vec<(String, i64)> {
+    let Some(membership) = get_map(doc, playlist, "track_membership") else {
+        // Backward compatibility for documents written before stable keyed
+        // memberships: project their list order into sparse ranks. The next
+        // authored mutation writes the new representation.
+        return get_list(doc, playlist, "tracks")
+            .map(|list| {
+                list_strings(doc, &list)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, id)| {
+                        let index = i64::try_from(index).unwrap_or(i64::MAX / ORDER_STEP);
+                        (id, index * ORDER_STEP)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+    };
+    let order = get_map(doc, playlist, "track_order");
+    let mut entries = doc
+        .keys(&membership)
+        .filter(|id| map_bool(doc, &membership, id))
+        .map(|id| {
+            let rank = order
+                .as_ref()
+                .and_then(|order| get_i64(doc, order, &id))
+                .unwrap_or(0);
+            (id, rank)
+        })
+        .collect::<Vec<_>>();
+    entries
+        .sort_by(|(a_id, a_rank), (b_id, b_rank)| a_rank.cmp(b_rank).then_with(|| a_id.cmp(b_id)));
+    entries
+}
+
+fn ensure_membership_maps(doc: &mut AutoCommit, playlist: &ObjId) -> Option<(ObjId, ObjId)> {
+    if get_map(doc, playlist, "track_membership").is_none() {
+        let legacy = get_list(doc, playlist, "tracks")
+            .map(|list| list_strings(doc, &list))
+            .unwrap_or_default();
+        let membership = doc
+            .put_object(playlist, "track_membership", ObjType::Map)
+            .ok()?;
+        let order = doc.put_object(playlist, "track_order", ObjType::Map).ok()?;
+        for (index, id) in legacy.iter().enumerate() {
+            let index = i64::try_from(index).unwrap_or(i64::MAX / ORDER_STEP);
+            let _ = doc.put(&membership, id.as_str(), true);
+            let _ = doc.put(&order, id.as_str(), index * ORDER_STEP);
+        }
+        return Some((membership, order));
+    }
+    let membership = get_map(doc, playlist, "track_membership")?;
+    let order = get_map(doc, playlist, "track_order")
+        .or_else(|| doc.put_object(playlist, "track_order", ObjType::Map).ok())?;
+    Some((membership, order))
+}
+
 // ---- public API -----------------------------------------------------------
 
 /// True once the document has been seeded with a library.
@@ -147,25 +215,25 @@ pub fn seed(doc: &mut AutoCommit, lib: &Library, _playback: &Playback) {
     }
 
     // Liked songs + saved albums.
-    let Ok(liked) = doc.put_object(&ROOT, "liked", ObjType::List) else {
+    let Ok(liked) = doc.put_object(&ROOT, "liked", ObjType::Map) else {
         return;
     };
-    for (i, id) in lib.liked.iter().enumerate() {
-        let _ = doc.insert(&liked, i, id.as_str());
+    for id in &lib.liked {
+        let _ = doc.put(&liked, id.as_str(), true);
     }
-    let Ok(saved) = doc.put_object(&ROOT, "saved_albums", ObjType::List) else {
+    let Ok(saved) = doc.put_object(&ROOT, "saved_albums", ObjType::Map) else {
         return;
     };
-    for (i, id) in lib.saved_albums.iter().enumerate() {
-        let _ = doc.insert(&saved, i, id.as_str());
+    for id in &lib.saved_albums {
+        let _ = doc.put(&saved, id.as_str(), true);
     }
     // A keyed delete-wins set; empty on a freshly seeded library.
     let _ = doc.put_object(&ROOT, "playlist_tombstones", ObjType::Map);
-    let Ok(followed) = doc.put_object(&ROOT, "followed_artists", ObjType::List) else {
+    let Ok(followed) = doc.put_object(&ROOT, "followed_artists", ObjType::Map) else {
         return;
     };
-    for (i, id) in lib.followed_artists.iter().enumerate() {
-        let _ = doc.insert(&followed, i, id.as_str());
+    for id in &lib.followed_artists {
+        let _ = doc.put(&followed, id.as_str(), true);
     }
 }
 
@@ -190,11 +258,20 @@ fn write_playlist(doc: &mut AutoCommit, playlists: &ObjId, index: usize, p: &Pla
     let _ = doc.put(&m, "name", p.name.as_str());
     let _ = doc.put(&m, "description", p.description.as_str());
     let _ = doc.put(&m, "cover", p.cover.as_str());
-    let Ok(list) = doc.put_object(&m, "tracks", ObjType::List) else {
+    let Ok(membership) = doc.put_object(&m, "track_membership", ObjType::Map) else {
+        return;
+    };
+    let Ok(order) = doc.put_object(&m, "track_order", ObjType::Map) else {
         return;
     };
     for (i, tid) in p.track_ids.iter().enumerate() {
-        let _ = doc.insert(&list, i, tid.as_str());
+        let rank = p
+            .track_ranks
+            .get(tid)
+            .copied()
+            .unwrap_or_else(|| i64::try_from(i).unwrap_or(i64::MAX / ORDER_STEP) * ORDER_STEP);
+        let _ = doc.put(&membership, tid.as_str(), true);
+        let _ = doc.put(&order, tid.as_str(), rank);
     }
 }
 
@@ -312,16 +389,15 @@ pub fn has_playlist(doc: &AutoCommit, id: &str) -> bool {
 
 /// Append a track id to a playlist (by playlist id). No-op if the track is
 /// already present or the playlist is unknown.
-pub fn add_track_to_playlist(doc: &mut AutoCommit, playlist_id: &str, track_id: &str) {
+pub fn add_track_to_playlist(doc: &mut AutoCommit, playlist_id: &str, track_id: &str, rank: i64) {
     let Some(pm) = find_playlist_obj(doc, playlist_id) else {
         return;
     };
-    if let Some(list) = get_list(doc, &pm, "tracks")
-        && !list_strings(doc, &list).iter().any(|t| t == track_id)
-    {
-        let len = doc.length(&list);
-        let _ = doc.insert(&list, len, track_id);
-    }
+    let Some((membership, order)) = ensure_membership_maps(doc, &pm) else {
+        return;
+    };
+    let _ = doc.put(&membership, track_id, true);
+    let _ = doc.put(&order, track_id, rank);
 }
 
 /// Remove the first occurrence of a track id from a playlist.
@@ -329,11 +405,8 @@ pub fn remove_track_from_playlist(doc: &mut AutoCommit, playlist_id: &str, track
     let Some(pm) = find_playlist_obj(doc, playlist_id) else {
         return;
     };
-    if let Some(list) = get_list(doc, &pm, "tracks") {
-        let ids = list_strings(doc, &list);
-        if let Some(pos) = ids.iter().position(|t| t == track_id) {
-            let _ = doc.delete(&list, pos);
-        }
+    if let Some((membership, _)) = ensure_membership_maps(doc, &pm) {
+        let _ = doc.put(&membership, track_id, false);
     }
 }
 
@@ -341,37 +414,71 @@ pub fn remove_track_from_playlist(doc: &mut AutoCommit, playlist_id: &str, track
 /// before removing an addressable membership so a stale resource is refused
 /// rather than recorded as a successful no-op.
 pub fn playlist_contains_track(doc: &AutoCommit, playlist_id: &str, track_id: &str) -> bool {
-    find_playlist_obj(doc, playlist_id)
-        .and_then(|playlist| get_list(doc, &playlist, "tracks"))
-        .is_some_and(|list| list_strings(doc, &list).iter().any(|id| id == track_id))
+    find_playlist_obj(doc, playlist_id).is_some_and(|playlist| {
+        membership_entries(doc, &playlist)
+            .iter()
+            .any(|(id, _)| id == track_id)
+    })
 }
 
 /// Read the exact membership identity at an ordered playlist position.
 pub fn playlist_track_at(doc: &AutoCommit, playlist_id: &str, index: usize) -> Option<String> {
     let playlist = find_playlist_obj(doc, playlist_id)?;
-    let list = get_list(doc, &playlist, "tracks")?;
-    list_strings(doc, &list).get(index).cloned()
+    membership_entries(doc, &playlist)
+        .get(index)
+        .map(|(id, _)| id.clone())
 }
 
-/// Move a track within a playlist from `from` to `to` (clamped). Implemented
-/// as delete + insert so the ordered list stays compact.
-pub fn move_track_in_playlist(doc: &mut AutoCommit, playlist_id: &str, from: usize, to: usize) {
+pub fn playlist_append_rank(doc: &AutoCommit, playlist_id: &str) -> i64 {
+    find_playlist_obj(doc, playlist_id)
+        .and_then(|playlist| {
+            membership_entries(doc, &playlist)
+                .last()
+                .map(|(_, rank)| *rank)
+        })
+        .unwrap_or(-ORDER_STEP)
+        .saturating_add(ORDER_STEP)
+}
+
+pub fn playlist_rank_for_move(
+    doc: &AutoCommit,
+    playlist_id: &str,
+    track_id: &str,
+    to: usize,
+) -> Option<i64> {
+    let playlist = find_playlist_obj(doc, playlist_id)?;
+    let remaining = membership_entries(doc, &playlist)
+        .into_iter()
+        .filter(|(id, _)| id != track_id)
+        .collect::<Vec<_>>();
+    let insert = to.min(remaining.len());
+    let previous = insert
+        .checked_sub(1)
+        .and_then(|index| remaining.get(index))
+        .map(|(_, rank)| *rank);
+    let next = remaining.get(insert).map(|(_, rank)| *rank);
+    Some(match (previous, next) {
+        (Some(previous), Some(next)) if next.saturating_sub(previous) > 1 => {
+            previous + (next - previous) / 2
+        }
+        (Some(previous), _) => previous.saturating_add(1),
+        (None, Some(next)) => next.saturating_sub(ORDER_STEP),
+        (None, None) => 0,
+    })
+}
+
+/// Assign an authored absolute sparse order key to a stable membership.
+pub fn set_track_rank(doc: &mut AutoCommit, playlist_id: &str, track_id: &str, rank: i64) {
     let Some(pm) = find_playlist_obj(doc, playlist_id) else {
         return;
     };
-    let Some(list) = get_list(doc, &pm, "tracks") else {
+    let Some((membership, order)) = ensure_membership_maps(doc, &pm) else {
         return;
     };
-    let ids = list_strings(doc, &list);
-    if from == to {
+    if !map_bool(doc, &membership, track_id) {
         return;
     }
-    let Some(moved) = ids.get(from).cloned() else {
-        return;
-    };
-    let to = to.min(ids.len().saturating_sub(1));
-    let _ = doc.delete(&list, from);
-    let _ = doc.insert(&list, to, moved.as_str());
+    let _ = doc.put(&order, track_id, rank);
 }
 
 /// Rename a playlist.
@@ -406,110 +513,86 @@ pub fn delete_playlist(doc: &mut AutoCommit, playlist_id: &str) {
 
 // ---- liked songs + saved albums ------------------------------------------
 
-fn ensure_str_list(doc: &mut AutoCommit, key: &str) -> Option<ObjId> {
-    get_list(doc, &ROOT, key).or_else(|| doc.put_object(&ROOT, key, ObjType::List).ok())
+fn ensure_bool_map(doc: &mut AutoCommit, key: &str) -> Option<ObjId> {
+    if let Some(map) = get_map(doc, &ROOT, key) {
+        return Some(map);
+    }
+    let legacy = get_list(doc, &ROOT, key)
+        .map(|list| list_strings(doc, &list))
+        .unwrap_or_default();
+    let map = doc.put_object(&ROOT, key, ObjType::Map).ok()?;
+    for id in legacy {
+        let _ = doc.put(&map, id, true);
+    }
+    Some(map)
+}
+
+fn load_bool_set(doc: &AutoCommit, key: &str) -> std::collections::BTreeSet<String> {
+    if let Some(map) = get_map(doc, &ROOT, key) {
+        doc.keys(&map)
+            .filter(|id| map_bool(doc, &map, id))
+            .collect()
+    } else {
+        get_list(doc, &ROOT, key)
+            .map(|list| list_strings(doc, &list).into_iter().collect())
+            .unwrap_or_default()
+    }
 }
 
 /// Toggle a track's membership in "Liked Songs". Returns the new liked state.
 pub fn toggle_liked(doc: &mut AutoCommit, track_id: &str) -> bool {
-    let Some(list) = ensure_str_list(doc, "liked") else {
+    let Some(map) = ensure_bool_map(doc, "liked") else {
         return false;
     };
-    let ids = list_strings(doc, &list);
-    if let Some(pos) = ids.iter().position(|t| t == track_id) {
-        let _ = doc.delete(&list, pos);
-        false
-    } else {
-        let len = doc.length(&list);
-        let _ = doc.insert(&list, len, track_id);
-        true
-    }
+    let liked = !map_bool(doc, &map, track_id);
+    let _ = doc.put(&map, track_id, liked);
+    liked
 }
 
 /// Force a track liked (idempotent). Used by the context-menu "Like" /
 /// "Add to library" entries which are one-way affordances.
 pub fn set_liked(doc: &mut AutoCommit, track_id: &str, liked: bool) {
-    let Some(list) = ensure_str_list(doc, "liked") else {
+    let Some(map) = ensure_bool_map(doc, "liked") else {
         return;
     };
-    let ids = list_strings(doc, &list);
-    let present = ids.iter().any(|t| t == track_id);
-    if liked && !present {
-        let len = doc.length(&list);
-        let _ = doc.insert(&list, len, track_id);
-    } else if !liked
-        && present
-        && let Some(pos) = ids.iter().position(|t| t == track_id)
-    {
-        let _ = doc.delete(&list, pos);
-    }
+    let _ = doc.put(&map, track_id, liked);
 }
 
 /// Toggle an album's membership in the saved-albums set. Returns the new
 /// saved state.
 pub fn toggle_saved_album(doc: &mut AutoCommit, album_id: &str) -> bool {
-    let Some(list) = ensure_str_list(doc, "saved_albums") else {
+    let Some(map) = ensure_bool_map(doc, "saved_albums") else {
         return false;
     };
-    let ids = list_strings(doc, &list);
-    if let Some(pos) = ids.iter().position(|t| t == album_id) {
-        let _ = doc.delete(&list, pos);
-        false
-    } else {
-        let len = doc.length(&list);
-        let _ = doc.insert(&list, len, album_id);
-        true
-    }
+    let saved = !map_bool(doc, &map, album_id);
+    let _ = doc.put(&map, album_id, saved);
+    saved
 }
 
 /// Set an album's saved membership to an explicit, replay-safe value.
 pub fn set_saved_album(doc: &mut AutoCommit, album_id: &str, saved: bool) {
-    let Some(list) = ensure_str_list(doc, "saved_albums") else {
+    let Some(map) = ensure_bool_map(doc, "saved_albums") else {
         return;
     };
-    let ids = list_strings(doc, &list);
-    let present = ids.iter().any(|id| id == album_id);
-    if saved && !present {
-        let _ = doc.insert(&list, doc.length(&list), album_id);
-    } else if !saved
-        && present
-        && let Some(pos) = ids.iter().position(|id| id == album_id)
-    {
-        let _ = doc.delete(&list, pos);
-    }
+    let _ = doc.put(&map, album_id, saved);
 }
 
 /// Toggle whether the user follows an artist. Returns the new followed state.
 pub fn toggle_followed_artist(doc: &mut AutoCommit, artist_id: &str) -> bool {
-    let Some(list) = ensure_str_list(doc, "followed_artists") else {
+    let Some(map) = ensure_bool_map(doc, "followed_artists") else {
         return false;
     };
-    let ids = list_strings(doc, &list);
-    if let Some(pos) = ids.iter().position(|t| t == artist_id) {
-        let _ = doc.delete(&list, pos);
-        false
-    } else {
-        let len = doc.length(&list);
-        let _ = doc.insert(&list, len, artist_id);
-        true
-    }
+    let followed = !map_bool(doc, &map, artist_id);
+    let _ = doc.put(&map, artist_id, followed);
+    followed
 }
 
 /// Set an artist's followed membership to an explicit, replay-safe value.
 pub fn set_followed_artist(doc: &mut AutoCommit, artist_id: &str, followed: bool) {
-    let Some(list) = ensure_str_list(doc, "followed_artists") else {
+    let Some(map) = ensure_bool_map(doc, "followed_artists") else {
         return;
     };
-    let ids = list_strings(doc, &list);
-    let present = ids.iter().any(|id| id == artist_id);
-    if followed && !present {
-        let _ = doc.insert(&list, doc.length(&list), artist_id);
-    } else if !followed
-        && present
-        && let Some(pos) = ids.iter().position(|id| id == artist_id)
-    {
-        let _ = doc.delete(&list, pos);
-    }
+    let _ = doc.put(&map, artist_id, followed);
 }
 
 /// Create a new empty playlist, returning its generated id.
@@ -543,6 +626,7 @@ pub fn create_playlist_with_id(doc: &mut AutoCommit, id: &str, name: &str) {
             name: name.into(),
             description: String::new(),
             track_ids: vec![],
+            track_ranks: std::collections::BTreeMap::new(),
             cover: String::new(),
         },
     );
@@ -624,35 +708,24 @@ pub fn load_library(doc: &AutoCommit) -> Library {
                 if id.is_empty() || playlist_is_tombstoned(doc, &id) {
                     continue;
                 }
-                let tracks = get_list(doc, &pm, "tracks")
-                    .map(|l| list_strings(doc, &l))
-                    .unwrap_or_default();
+                let entries = membership_entries(doc, &pm);
+                let tracks = entries.iter().map(|(id, _)| id.clone()).collect();
+                let track_ranks = entries.into_iter().collect();
                 lib.playlists.push(Playlist {
                     id,
                     name: get_str(doc, &pm, "name").unwrap_or_default(),
                     description: get_str(doc, &pm, "description").unwrap_or_default(),
                     track_ids: tracks,
+                    track_ranks,
                     cover: get_str(doc, &pm, "cover").unwrap_or_default(),
                 });
             }
         }
     }
 
-    if let Some(liked) = get_list(doc, &ROOT, "liked") {
-        for id in list_strings(doc, &liked) {
-            lib.liked.insert(id);
-        }
-    }
-    if let Some(saved) = get_list(doc, &ROOT, "saved_albums") {
-        for id in list_strings(doc, &saved) {
-            lib.saved_albums.insert(id);
-        }
-    }
-    if let Some(followed) = get_list(doc, &ROOT, "followed_artists") {
-        for id in list_strings(doc, &followed) {
-            lib.followed_artists.insert(id);
-        }
-    }
+    lib.liked = load_bool_set(doc, "liked");
+    lib.saved_albums = load_bool_set(doc, "saved_albums");
+    lib.followed_artists = load_bool_set(doc, "followed_artists");
 
     lib
 }
@@ -697,8 +770,8 @@ mod tests {
         let mut doc = AutoCommit::new();
         let lib = seed::sample_library();
         seed(&mut doc, &lib, &seed::sample_playback(&lib));
-        add_track_to_playlist(&mut doc, "pl_morning", "tk_h1");
-        add_track_to_playlist(&mut doc, "pl_morning", "tk_h1"); // dedup
+        add_track_to_playlist(&mut doc, "pl_morning", "tk_h1", 9_000_000);
+        add_track_to_playlist(&mut doc, "pl_morning", "tk_h1", 9_000_000); // dedup
         let loaded = load_library(&doc);
         let pl = loaded.playlist("pl_morning").unwrap();
         assert_eq!(pl.track_ids.iter().filter(|t| *t == "tk_h1").count(), 1);
@@ -719,7 +792,9 @@ mod tests {
         let pl = load_library(&doc).playlist("pl_morning").unwrap().clone();
         assert_eq!(pl.track_ids, vec!["tk_p1", "tk_r1", "tk_r3"]);
         // Move the first track to the end.
-        move_track_in_playlist(&mut doc, "pl_morning", 0, 2);
+        let playlist = load_library(&doc).playlist("pl_morning").unwrap().clone();
+        let rank = playlist.rank_for_move("tk_p1", 2).unwrap();
+        set_track_rank(&mut doc, "pl_morning", "tk_p1", rank);
         let pl = load_library(&doc).playlist("pl_morning").unwrap().clone();
         assert_eq!(pl.track_ids, vec!["tk_r1", "tk_r3", "tk_p1"]);
     }
@@ -796,6 +871,19 @@ mod tests {
         assert!(load_library(&doc).is_liked("tk_g2"));
         assert!(!toggle_liked(&mut doc, "tk_g2"));
         assert!(!load_library(&doc).is_liked("tk_g2"));
+    }
+
+    #[test]
+    fn first_absolute_set_migrates_legacy_list_without_losing_members() {
+        let mut doc = seeded_doc();
+        let legacy = doc.put_object(&ROOT, "liked", ObjType::List).unwrap();
+        doc.insert(&legacy, 0, "tk_g1").unwrap();
+        doc.insert(&legacy, 1, "tk_p1").unwrap();
+        set_liked(&mut doc, "tk_v2", true);
+        let liked = load_library(&doc).liked;
+        assert!(liked.contains("tk_g1"));
+        assert!(liked.contains("tk_p1"));
+        assert!(liked.contains("tk_v2"));
     }
 
     #[test]

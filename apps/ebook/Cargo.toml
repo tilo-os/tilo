@@ -20,15 +20,15 @@ thin = ["dep:runtime-dylib"]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # `portal` pulls in the host XDG file-chooser so "Open a book…" goes through the
 # desktop's own picker (the HIG's file-access boundary) instead of a magic folder.
-ui = { package = "qos-app", path = "../../crates/app/qos-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
 automerge.workspace = true
 # Content-addressed book identity: the BLAKE3 hash of an EPUB's bytes is its id,
 # so annotations + reading progress follow the file across paths, devices and
-# peers. Same hash family the qOS filesystem uses.
+# peers. Same hash family the Tilo filesystem uses.
 blake3.workspace = true
-# The qOS ACTION model: Books' `actions` module exports its annotation-store
+# The Tilo ACTION model: Books' `actions` module exports its annotation-store
 # operations as replayable actions the host's Ctrl+K palette dispatches.
-qos-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/collab/actions" }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
@@ -37,16 +37,11 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
-# EPUB container = a ZIP of XHTML + an OPF manifest. We parse it ourselves
-# with these two pure-Rust crates (both already in the workspace cache) rather
-# than the `epub` crate, to keep the build hermetic and dodge the 2.1.x API
-# churn. `deflate` covers real-world epubs; our bundled sample is stored.
+# EPUB containers are ZIP archives with XHTML and an OPF manifest. These
+# pure-Rust crates keep parsing hermetic; `deflate` covers common EPUBs.
 zip.workspace = true
 roxmltree = "0.20"
-# Real cover art: EPUBs embed a raster cover (usually JPEG, sometimes PNG).
-# We decode + downscale it once at load so the shelf shows the actual artwork
-# rather than a generated spine. Already in the workspace graph, so no new
-# compilation beyond feature unification.
+# Decode and downscale embedded raster covers for the shelf.
 image = { workspace = true, features = ["jpeg", "png"] }
 unicode-bidi = "0.3.18"
 # Device-local file capabilities (opened book paths and watched roots) must
@@ -58,7 +53,7 @@ settings-store = { path = "../../crates/system/settings-store" }
 # env var (library discovery + the empty-shelf reload) so cargo's default
 # parallel runner can't race them.
 serial_test.workspace = true
-# Real temp directories for the on-disk library-discovery tests.
+# Temporary directories for on-disk library-discovery tests.
 tempfile.workspace = true
 
 [lints]

@@ -4,7 +4,7 @@
 //!
 //! These run in this dedicated test binary (a separate process) so pointing
 //! `XDG_CONFIG_HOME` at a throwaway directory fully isolates the shared
-//! `~/.config/qos/settings.json` the panes write. A process-wide lock
+//! `~/.config/tilo/settings.json` the panes write. A process-wide lock
 //! serialises the env mutation so the tests don't race each other.
 
 #![allow(
@@ -45,7 +45,7 @@ impl settings::account_probe::AccountTester for AcceptAccount {
 /// Returns the directory (kept alive for the test's duration).
 fn temp_home(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "qos-settings-persist-{}-{}",
+        "tilo-settings-persist-{}-{}",
         std::process::id(),
         name
     ));
@@ -86,7 +86,7 @@ fn display_night_light_toggle_persists_to_disk() {
 }
 
 #[test]
-fn input_device_speeds_persist_independently_to_disk() {
+fn replicated_input_device_speeds_do_not_persist_to_disk() {
     let _g = ENV_LOCK.lock().unwrap();
     let _home = temp_home("input");
 
@@ -107,21 +107,15 @@ fn input_device_speeds_persist_independently_to_disk() {
     pane.sync(&mut doc, &root);
 
     let reloaded = SystemPrefs::load();
-    assert!(
-        (reloaded.input.touchpad_pointer_speed.unwrap_or_default() - 0.9).abs() < 1e-6,
-        "touchpad speed persisted"
-    );
-    assert!(
-        (reloaded.input.mouse_pointer_speed.unwrap_or_default() - 0.2).abs() < 1e-6,
-        "mouse speed persisted"
-    );
+    assert_eq!(reloaded.input.touchpad_pointer_speed, None);
+    assert_eq!(reloaded.input.mouse_pointer_speed, None);
 }
 
 /// The Time & Date "24-hour clock" toggle folds into the shared locale that
 /// Region & Formats owns, so the two panes agree and the choice survives a
 /// restart. Driving the pane's real `sync` must write `locale.time_format`.
 #[test]
-fn time_date_clock_format_persists_to_shared_locale() {
+fn replicated_time_date_clock_format_does_not_reach_local_locale() {
     let _g = ENV_LOCK.lock().unwrap();
     let _home = temp_home("timedate");
 
@@ -142,13 +136,13 @@ fn time_date_clock_format_persists_to_shared_locale() {
 
     assert_eq!(
         RegionSettings::load().locale.time_format,
-        TimeStyle::H12,
-        "the clock-format toggle wrote through to the shared locale"
+        TimeStyle::H24,
+        "remote document state must not rewrite this device's clock format"
     );
 }
 
-/// The Power pane's idle preferences (suspend-when-idle, screen-blank timeout)
-/// write through to the shared store the compositor's power layer reads.
+/// The Power pane's idle preferences (suspend, blank and lock timeouts) write
+/// through to the shared store the compositor's power layer reads.
 #[test]
 fn power_idle_prefs_persist_to_disk() {
     let _g = ENV_LOCK.lock().unwrap();
@@ -158,6 +152,7 @@ fn power_idle_prefs_persist_to_disk() {
     let base = SystemPrefs::load();
     assert!(base.power.auto_suspend);
     assert_eq!(base.power.blank_minutes, 10);
+    assert_eq!(base.power.lock_minutes, 5);
 
     let mut pane = settings::panes::power::build();
     let mut doc = AutoCommit::new();
@@ -170,11 +165,13 @@ fn power_idle_prefs_persist_to_disk() {
         automerge::ScalarValue::Boolean(false),
     );
     let _ = doc.put(&root, settings::panes::power::BLANK_KEY, "30 minutes");
+    let _ = doc.put(&root, settings::panes::power::LOCK_KEY, "Never");
     pane.sync(&mut doc, &root);
 
     let reloaded = SystemPrefs::load();
     assert!(!reloaded.power.auto_suspend, "auto-suspend persisted off");
     assert_eq!(reloaded.power.blank_minutes, 30, "blank timeout persisted");
+    assert_eq!(reloaded.power.lock_minutes, 0, "Never lock persisted");
 }
 
 #[test]

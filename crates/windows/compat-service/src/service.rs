@@ -21,7 +21,7 @@ use crate::{
 };
 
 /// One application published by the authenticated singleton Windows guest.
-/// All identifiers are minted by qOS from the guest's opaque publication ID;
+/// All identifiers are minted by Tilo from the guest's opaque publication ID;
 /// they are never executable paths or client-selected launch arguments.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VmPublishedApplication {
@@ -74,7 +74,7 @@ pub struct VmInventory {
 }
 
 /// The inspected, digest-bound package metadata passed to the singleton VM.
-/// It deliberately has neither a host path nor an installer command line.
+/// It contains neither a host path nor an installer command line.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VmInstallerInput {
     pub source_name: String,
@@ -233,7 +233,7 @@ pub struct LaunchInput {
     pub program_id: String,
     pub query: ApplicationQuery,
     pub vm_fallback: VmFallback,
-    /// Canonical qOS capability records, not a compatibility-local policy.
+    /// Canonical Tilo capability records, not a compatibility-local policy.
     pub capabilities: Vec<CapOverride>,
     pub now_unix: Option<u64>,
 }
@@ -347,7 +347,7 @@ pub trait VmDelegate: Send + Sync {
     }
 
     /// Starts a VM installer from the exact descriptor selected through the
-    /// qOS portal. The implementation owns the bridge operation handle and
+    /// Tilo portal. The implementation owns the bridge operation handle and
     /// returns only bounded, client-safe status.
     fn install_from_portal(
         &self,
@@ -875,9 +875,9 @@ where
         let input = vm_installer_input(&inspection);
         let recommended_route = RouteKind::from(route.runtime.layer);
         let detail = if recommended_route == RouteKind::Vm {
-            "qOS recommends the managed Windows appliance for this installer. Confirm the recommended choice or choose a private Wine/Proton capsule."
+            "Tilo recommends the managed Windows appliance for this installer. Confirm the recommended choice or choose a private Wine/Proton capsule."
         } else {
-            "qOS recommends a private compatibility capsule. You can instead explicitly use the managed Windows appliance."
+            "Tilo recommends a private compatibility capsule. You can instead explicitly use the managed Windows appliance."
         };
         Ok(InstallOutcome::Confirmation {
             confirmation: VmInstallConfirmation {
@@ -1089,7 +1089,7 @@ where
         Ok(())
     }
 
-    /// Remove one qOS launcher entry while retaining the Windows installation
+    /// Remove one Tilo launcher entry while retaining the Windows installation
     /// and every byte in its capsule. The server-owned entry ID is resolved by
     /// the session layer before this method is called.
     pub fn remove_launcher(&self, capsule_id: &str, program_id: &str) -> Result<(), ServiceError> {
@@ -1117,7 +1117,7 @@ where
     }
 
     /// Run the installer-recorded vendor uninstaller inside the same sandbox.
-    /// Success removes qOS launchers but deliberately retains the prefix so
+    /// Success removes Tilo launchers but deliberately retains the prefix so
     /// users can inspect or later delete leftover data as a separate action.
     pub fn vendor_uninstall(
         &self,
@@ -1407,7 +1407,7 @@ fn vm_installer_input(inspection: &InstallerInspection) -> VmInstallerInput {
 
 fn imported_app_id(sha256: &str) -> String {
     format!(
-        "dev.qos.windows.import.{}",
+        "dev.tilo.windows.import.{}",
         sha256.get(..24).unwrap_or(sha256)
     )
 }
@@ -1453,7 +1453,7 @@ fn installer_control(
                 .ok_or(ServiceError::CapsuleInstallerMismatch)?;
             (
                 PathBuf::from("drive_c/windows/system32/msiexec.exe"),
-                vec!["/i".to_string(), format!(r"C:\qos-installers\{file_name}")],
+                vec!["/i".to_string(), format!(r"C:\tilo-installers\{file_name}")],
             )
         }
     };
@@ -1601,7 +1601,7 @@ pub(crate) fn published_vm_explanation(presentation: &str) -> ExplainStatus {
         security_profile: "windows-app".to_string(),
         vm_fallback_was_explicit: true,
         // The current integrated SPICE presentation is intentionally
-        // playback-only and carries no generic host redirectors. qOS's normal
+        // playback-only and carries no generic host redirectors. Tilo's normal
         // portal broker may later project a narrower per-launch grant, but a
         // catalogue row never claims that a file, network, or microphone is
         // already visible to the shared guest.
@@ -1801,7 +1801,7 @@ mod tests {
             Vm::default(),
             HostSession {
                 uid: 1000,
-                wayland_socket: PathBuf::from("/run/user/1000/nirios-ws-test"),
+                wayland_socket: PathBuf::from("/run/user/1000/tilo-ws-test"),
                 render_node: PathBuf::from("/dev/dri/renderD128"),
             },
         )
@@ -1913,14 +1913,14 @@ mod tests {
             },
             HostSession {
                 uid: 1000,
-                wayland_socket: PathBuf::from("/run/user/1000/nirios-ws-test"),
+                wayland_socket: PathBuf::from("/run/user/1000/tilo-ws-test"),
                 render_node: PathBuf::from("/dev/dri/renderD128"),
             },
         )
         .unwrap();
         let application = VmPublishedApplication {
             entry_id: "windows-vm-opaque".to_string(),
-            app_id: "dev.qos.windows.vm.opaque".to_string(),
+            app_id: "dev.tilo.windows.vm.opaque".to_string(),
             published_application_id: "published-word".to_string(),
             display_name: "Word".to_string(),
             presentation: VmPresentation::NativeRail,

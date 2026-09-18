@@ -48,6 +48,14 @@ impl TemplatePicker {
         ]);
     }
 
+    pub(crate) fn set_text_scale(&mut self, text_scale: f32) {
+        self.menu.set_text_scale(text_scale);
+    }
+
+    pub(crate) fn set_viewport(&mut self, viewport: vello::kurbo::Rect) {
+        self.menu.set_viewport(Some(viewport));
+    }
+
     pub(crate) fn close(&mut self) {
         self.menu.close();
     }
@@ -102,6 +110,12 @@ impl TemplatePicker {
             .filter_map(MenuItem::label)
             .collect()
     }
+
+    #[cfg(test)]
+    pub(crate) fn item_center(&self, template: Template) -> Option<Point> {
+        let index = self.templates.iter().position(|item| *item == template)?;
+        self.menu.item_rect(index).map(|rect| rect.center())
+    }
 }
 
 #[cfg(test)]
@@ -120,10 +134,21 @@ mod tests {
     fn click_returns_a_typed_template_and_closes() {
         let mut picker = TemplatePicker::default();
         picker.open_at(Point::new(10.0, 20.0));
-        // ContextMenu rows begin after 6 px padding and are 28 px tall.
-        let report_row = Point::new(20.0, 20.0 + 6.0 + 28.0 * 2.0 + 1.0);
+        let report_row = picker.item_center(Template::Report).unwrap();
         assert_eq!(picker.click(report_row), Some(Template::Report));
         assert!(!picker.is_open());
+    }
+
+    #[test]
+    fn scaled_picker_keeps_rows_mapped_to_their_templates() {
+        let mut picker = TemplatePicker::default();
+        picker.set_text_scale(2.0);
+        picker.open_at(Point::new(10.0, 20.0));
+
+        let report = picker
+            .item_center(Template::Report)
+            .expect("report stays an actionable template row at large text");
+        assert_eq!(picker.click(report), Some(Template::Report));
     }
 
     #[test]

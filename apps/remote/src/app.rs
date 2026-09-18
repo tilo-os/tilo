@@ -4,7 +4,7 @@
 //! current [`Screen`], and the per-screen interaction state. The whole UI
 //! is custom-drawn into the Vello scene: this gives precise control over
 //! the connection list, the add/edit form, and the two session surfaces
-//! (an SSH terminal grid and a VNC/RDP/qOS framebuffer canvas).
+//! (an SSH terminal grid and a VNC/RDP/Tilo framebuffer canvas).
 //!
 //! Interaction is region-based. Each frame `draw` registers clickable
 //! [`Hit`] regions; `handle_event` hit-tests pointer presses against the
@@ -40,8 +40,7 @@ use ui::theme::Theme;
 use ui::tokens::{Metrics, Spacing};
 use ui::widget::tooltip::draw_hover_tooltip;
 use ui::widget::{
-    Button, ButtonFace, FlapState, SegmentedFace, SplitLayout, TextInput, ToggleGroup,
-    TooltipHost,
+    Button, ButtonFace, FlapState, SegmentedFace, SplitLayout, TextInput, ToggleGroup, TooltipHost,
 };
 
 use crate::doc::RemoteDoc;
@@ -54,20 +53,20 @@ use crate::ssh::{SshConfig, SshSession};
 use crate::theme_ext::ColorExt;
 use crate::vnc::{VncConfig, VncInput, VncSession};
 
-/// A live transport backing an open session. Real, not simulated: SSH is a
-/// `russh` PTY channel feeding the terminal grid; VNC is an RFB client
+/// A live transport backing an open session. SSH is a `russh` PTY channel
+/// feeding the terminal grid; VNC is an RFB client
 /// decoding the remote framebuffer. `Error` holds a pre-flight failure
-/// (e.g. missing credentials) so the surface can show the honest reason
-/// without ever fabricating a session.
+/// (e.g. missing credentials) so the surface can show the reason without
+/// opening a session.
 enum LiveSession {
     Ssh(Box<SshSession>),
     Vnc(VncSession),
-    Qos(QosSession),
+    Tilo(TiloSession),
     Error(String),
     /// A saved profile that cannot start in this process. This is a distinct
     /// state from a failed connection: no socket was opened and no credential
-    /// was sent. Keeping it explicit lets the UI offer an honest recovery path
-    /// instead of a blank row or a misleading retry button.
+    /// was sent. Keeping it explicit lets the UI offer a recovery path instead
+    /// of a blank row or a misleading retry button.
     Unavailable {
         readiness: TransportReadiness,
         kind: ConnectionKind,
@@ -82,7 +81,7 @@ impl LiveSession {
         match self {
             LiveSession::Ssh(s) => s.status(),
             LiveSession::Vnc(s) => s.status(),
-            LiveSession::Qos(s) => s.status.clone(),
+            LiveSession::Tilo(s) => s.status.clone(),
             LiveSession::Error(e) => SessionStatus::Failed(e.clone()),
             LiveSession::Unavailable { readiness, kind } => {
                 SessionStatus::Unavailable(readiness.detail(*kind).into())
@@ -92,11 +91,11 @@ impl LiveSession {
     }
 }
 
-struct QosSession {
+struct TiloSession {
     id: u64,
     status: SessionStatus,
     size: Option<(u32, u32)>,
-    /// qOS collaboration events arrive on the UI thread. Keep their H.264
+    /// Tilo collaboration events arrive on the UI thread. Keep their H.264
     /// payloads bounded and hand decoding to this private worker so a hostile
     /// or merely busy peer cannot make event dispatch stutter.
     /// A replace-latest encoded frame slot plus a capacity-one wake channel.
@@ -105,10 +104,10 @@ struct QosSession {
     encoded: Arc<Mutex<Option<Vec<u8>>>>,
     encoded_wake: SyncSender<()>,
     decoder_available: Arc<AtomicBool>,
-    decoded: Arc<Mutex<Option<qos_callstream::DecodedFrame>>>,
+    decoded: Arc<Mutex<Option<tilo_callstream::DecodedFrame>>>,
 }
 
-impl QosSession {
+impl TiloSession {
     fn new(id: u64) -> Result<Self, String> {
         let (encoded_wake, encoded_rx) = sync_channel::<()>(1);
         let encoded: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
@@ -120,9 +119,9 @@ impl QosSession {
         let decoded = Arc::new(Mutex::new(None));
         let decoded_worker = Arc::clone(&decoded);
         std::thread::Builder::new()
-            .name("remote-qos-decode".into())
+            .name("remote-tilo-decode".into())
             .spawn(move || {
-                let mut h264_decoder = qos_callstream::H264Decoder::new();
+                let mut h264_decoder = tilo_callstream::H264Decoder::new();
                 while encoded_rx.recv().is_ok() {
                     let Some(encoded) = lock_recover(&encoded_worker).take() else {
                         continue;
@@ -134,7 +133,7 @@ impl QosSession {
                 }
                 decoder_available_worker.store(false, Ordering::Release);
             })
-            .map_err(|error| format!("could not start qOS frame decoder: {error}"))?;
+            .map_err(|error| format!("could not start Tilo frame decoder: {error}"))?;
         Ok(Self {
             id,
             status: SessionStatus::Connecting,
@@ -148,7 +147,7 @@ impl QosSession {
 
     fn queue_frame(&self, encoded: Vec<u8>) -> Result<(), String> {
         if !self.decoder_available.load(Ordering::Acquire) {
-            return Err("qOS frame decoder is unavailable".into());
+            return Err("Tilo frame decoder is unavailable".into());
         }
         // Store first, then wake. If a wake is already pending, that worker
         // pass observes this replacement; at most one stale decode can be
@@ -158,12 +157,12 @@ impl QosSession {
             Ok(()) | Err(TrySendError::Full(())) => Ok(()),
             Err(TrySendError::Disconnected(())) => {
                 self.decoder_available.store(false, Ordering::Release);
-                Err("qOS frame decoder stopped".into())
+                Err("Tilo frame decoder stopped".into())
             }
         }
     }
 
-    fn take_latest_frame(&self) -> Option<qos_callstream::DecodedFrame> {
+    fn take_latest_frame(&self) -> Option<tilo_callstream::DecodedFrame> {
         lock_recover(&self.decoded).take()
     }
 }
@@ -174,12 +173,12 @@ fn lock_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 enum PendingResourceOperation {
     Connect {
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         connection_id: ConnectionId,
         session_generation: u64,
     },
     SshInput {
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         connection_id: ConnectionId,
         session_generation: u64,
         acknowledgement: std::sync::mpsc::Receiver<Result<(), String>>,
@@ -249,7 +248,10 @@ impl Default for RowMetrics {
 impl RowMetrics {
     fn measure(tr: &mut TextRenderer) -> Self {
         let h = |tr: &mut TextRenderer, size: f32| {
-            f64::from(tr.measure_weighted("Hg", size, None, TextWeight::Semibold).1)
+            f64::from(
+                tr.measure_weighted("Hg", size, None, TextWeight::Semibold)
+                    .1,
+            )
         };
         let w = |tr: &mut TextRenderer, s: &str, size: f32| {
             f64::from(tr.measure_weighted(s, size, None, TextWeight::Semibold).0)
@@ -383,8 +385,8 @@ enum Action {
     ToggleFullscreen,
     /// Disconnect from the active session.
     Disconnect,
-    /// Pick one of the discovered qOS devices into the form.
-    PickQosDevice(usize),
+    /// Pick one of the discovered Tilo devices into the form.
+    PickTiloDevice(usize),
     /// Open/close the navigation rail (hamburger toggle in overlay mode).
     ToggleRail,
 }
@@ -480,7 +482,7 @@ impl FormValidation {
         match problem {
             p if p.starts_with("Name is required") => self.touched.0,
             p if p.starts_with("Host is required")
-                || p.starts_with("qOS device node must be an exact certified endpoint id") =>
+                || p.starts_with("Tilo device node must be an exact certified endpoint id") =>
             {
                 self.touched.1
             }
@@ -571,10 +573,10 @@ impl FieldInputs {
     }
 }
 
-/// A discoverable qOS peer, surfaced in the form's device picker. Offline
+/// A discoverable Tilo peer, surfaced in the form's device picker. Offline
 /// we seed a representative set so the picker is populated.
 #[derive(Clone, Debug)]
-struct QosDevice {
+struct TiloDevice {
     name: String,
     node: String,
     online: bool,
@@ -649,9 +651,9 @@ pub struct RemoteApp {
     focus: Option<Field>,
     /// The shared [`TextInput`] behind each editable field.
     inputs: FieldInputs,
-    /// The live transport for the open session. Production qOS control always
-    /// creates one; gated SSH/VNC leave it `None` and show the honest "not
-    /// connected" surface until explicitly enabled.
+    /// The live transport for the open session. Production Tilo control always
+    /// creates one; gated SSH/VNC leave it `None` and show the "not connected"
+    /// surface until explicitly enabled.
     live: Option<LiveSession>,
     /// Cached GPU image of the most recent VNC frame, rebuilt only when a
     /// new framebuffer generation arrives.
@@ -671,10 +673,10 @@ pub struct RemoteApp {
     scale_to_fit: bool,
     /// Whether the session surface is in fullscreen (hides chrome).
     fullscreen: bool,
-    /// Discoverable qOS peers for the form's device picker.
-    qos_devices: Vec<QosDevice>,
+    /// Discoverable Tilo peers for the form's device picker.
+    tilo_devices: Vec<TiloDevice>,
     collab_outbox: Vec<ui::collaboration::CollabRequest>,
-    next_qos_session_id: u64,
+    next_tilo_session_id: u64,
 
     /// Root rect, from `apply_layout`.
     rect: Rect,
@@ -902,9 +904,11 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            cancel,
-            "Cancel",
-            false,
+            &ButtonSpec {
+                rect: cancel,
+                label: "Cancel",
+                primary: false,
+            },
         );
         if is_delete {
             Button::paint(
@@ -924,35 +928,36 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                confirm,
-                primary,
-                true,
+                &ButtonSpec {
+                    rect: confirm,
+                    label: primary,
+                    primary: true,
+                },
             );
         }
         self.push_hit(cancel, Action::CancelPending);
         self.push_hit(confirm, Action::ConfirmPending);
     }
 
-    /// The live app: starts empty. Only the user's real saved connections
-    /// (held in the shared document, persisted across sessions) appear — no
-    /// fabricated machines are ever written into the CRDT.
+    /// The live app starts empty. Only the user's saved connections (held in the
+    /// shared document and persisted across sessions) appear.
     pub fn new() -> Self {
         Self::from_parts(Workspace::new(), Vec::new())
     }
 
     /// The hermetic `--shots` / demo build: a representative connection list
     /// plus a discovered-device roster so the screenshot reads as lived-in.
-    /// This is the ONLY place sample machines come from — the live app never
-    /// fabricates them.
+    /// This is the only place sample machines come from; the live app does not
+    /// seed them.
     pub fn new_demo() -> Self {
         let mut workspace = Workspace::new();
         for c in seed_connections() {
             workspace.upsert(c);
         }
-        Self::from_parts(workspace, seed_qos_devices())
+        Self::from_parts(workspace, seed_tilo_devices())
     }
 
-    fn from_parts(workspace: Workspace, qos_devices: Vec<QosDevice>) -> Self {
+    fn from_parts(workspace: Workspace, tilo_devices: Vec<TiloDevice>) -> Self {
         let selected = workspace.filtered("").first().map(|c| c.id);
         Self {
             workspace,
@@ -971,9 +976,9 @@ impl RemoteApp {
             session_generation: 0,
             scale_to_fit: true,
             fullscreen: false,
-            qos_devices,
+            tilo_devices,
             collab_outbox: Vec::new(),
-            next_qos_session_id: 1,
+            next_tilo_session_id: 1,
             rect: Rect::ZERO,
             hits: Vec::new(),
             pointer: Point::ZERO,
@@ -1008,8 +1013,7 @@ impl RemoteApp {
     pub fn dev_shot_scenario(&mut self, scenario: &str) {
         match scenario {
             "narrow" => self.rail_snap = Some(false),
-            // The summoned overlay rail (flap open over the dimming scrim) —
-            // proves the narrow open state for visual verification.
+            // The summoned overlay rail (flap open over the dimming scrim).
             "narrow-open" => self.rail_snap = Some(true),
             _ => {}
         }
@@ -1023,9 +1027,9 @@ impl RemoteApp {
         let mut doc = AutoCommit::new();
         match which {
             "form" => self.apply(Action::NewConnection, &mut doc),
-            "form-qos" => {
+            "form-tilo" => {
                 self.apply(Action::NewConnection, &mut doc);
-                self.apply(Action::SetKind(ConnectionKind::Qos), &mut doc);
+                self.apply(Action::SetKind(ConnectionKind::Tilo), &mut doc);
             }
             "session-ssh" => {
                 if let Some(id) = self.first_of_kind(ConnectionKind::Ssh) {
@@ -1047,8 +1051,8 @@ impl RemoteApp {
                     ),
                 );
             }
-            "session-qos" => {
-                self.dev_preview_session(ConnectionKind::Qos, SessionStatus::Connecting);
+            "session-tilo" => {
+                self.dev_preview_session(ConnectionKind::Tilo, SessionStatus::Connecting);
             }
             // Preview-only session states (no transport) for `--shots` grading
             // of the composed status surfaces.
@@ -1062,7 +1066,7 @@ impl RemoteApp {
                 );
             }
             "confirm-connect" => {
-                if let Some(id) = self.first_of_kind(ConnectionKind::Qos) {
+                if let Some(id) = self.first_of_kind(ConnectionKind::Tilo) {
                     self.request_connect(id);
                 }
             }
@@ -1165,7 +1169,7 @@ impl RemoteApp {
                 self.draft.kind = k;
                 // Keep the port in step with the kind's default unless the
                 // user already typed a custom one for this kind.
-                if k == ConnectionKind::Qos {
+                if k == ConnectionKind::Tilo {
                     self.draft.port = String::new();
                     self.draft.auth = AuthMethod::DeviceIdentity;
                 } else if self.draft.port.trim().is_empty() || self.draft.port.trim() == "0" {
@@ -1193,11 +1197,11 @@ impl RemoteApp {
             Action::Disconnect => {
                 self.disconnect_session();
             }
-            Action::PickQosDevice(i) => {
-                if let Some(d) = self.qos_devices.get(i) {
+            Action::PickTiloDevice(i) => {
+                if let Some(d) = self.tilo_devices.get(i) {
                     self.draft.name = d.name.clone();
                     self.draft.host = d.node.clone();
-                    self.draft.kind = ConnectionKind::Qos;
+                    self.draft.kind = ConnectionKind::Tilo;
                     self.draft.auth = AuthMethod::DeviceIdentity;
                     self.draft.port = String::new();
                     self.reload_inputs();
@@ -1262,7 +1266,7 @@ impl RemoteApp {
             state,
             crate::actions::REMOTE_ACTION_TYPE,
             &action,
-            qos_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
+            tilo_actions::ActionContext::for_action("org.tilo.Remote", "Remote", &action),
         );
     }
 
@@ -1273,7 +1277,7 @@ impl RemoteApp {
             state,
             crate::actions::REMOTE_ACTION_TYPE,
             &action,
-            qos_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
+            tilo_actions::ActionContext::for_action("org.tilo.Remote", "Remote", &action),
         );
         if self.selected == Some(id) {
             self.selected = self.workspace.filtered(&self.search).first().map(|c| c.id);
@@ -1469,7 +1473,7 @@ impl RemoteApp {
         }
     }
 
-    /// Open the session surface for a connection. qOS always uses its real
+    /// Open the session surface for a connection. Tilo always uses its real
     /// shell-broker transport; SSH/VNC require the explicit live-session
     /// capability. A missing capability or RDP backend gets a first-class
     /// recovery surface — no socket is opened, and it is not misreported as a
@@ -1517,7 +1521,7 @@ impl RemoteApp {
     fn disconnect_session(&mut self) {
         // Dropping the live session closes the transport (the worker thread
         // sees its channel close and disconnects).
-        if let Some(LiveSession::Qos(session)) = self.live.as_ref() {
+        if let Some(LiveSession::Tilo(session)) = self.live.as_ref() {
             self.collab_outbox
                 .push(ui::collaboration::CollabRequest::CloseWorkspaceControl {
                     session_id: session.id,
@@ -1585,24 +1589,24 @@ impl RemoteApp {
                 Ok(s) => LiveSession::Vnc(s),
                 Err(e) => LiveSession::Error(e.to_string()),
             },
-            ConnectionKind::Qos => {
+            ConnectionKind::Tilo => {
                 let target = match c.host.parse::<iroh::EndpointId>() {
                     Ok(target) => *target.as_bytes(),
                     Err(_) => {
                         return LiveSession::Error(
-                            "qOS host must be an exact certified device endpoint id".into(),
+                            "Tilo host must be an exact certified device endpoint id".into(),
                         );
                     }
                 };
-                let id = self.next_qos_session_id;
-                self.next_qos_session_id = self.next_qos_session_id.saturating_add(1);
+                let id = self.next_tilo_session_id;
+                self.next_tilo_session_id = self.next_tilo_session_id.saturating_add(1);
                 self.collab_outbox
                     .push(ui::collaboration::CollabRequest::OpenWorkspaceControl {
                         session_id: id,
                         target_device: target,
                     });
-                match QosSession::new(id) {
-                    Ok(session) => LiveSession::Qos(session),
+                match TiloSession::new(id) {
+                    Ok(session) => LiveSession::Tilo(session),
                     Err(error) => LiveSession::Error(error),
                 }
             }
@@ -1640,7 +1644,7 @@ impl RemoteApp {
                     changed = true;
                 }
             }
-            Some(LiveSession::Qos(session)) => {
+            Some(LiveSession::Tilo(session)) => {
                 if let Some(frame) = session.take_latest_frame() {
                     session.size = Some((frame.width, frame.height));
                     self.fb_image = Some(PenikoImage {
@@ -1712,8 +1716,8 @@ impl RemoteApp {
         }
     }
 
-    fn qos_pointer_target(&self, p: Point) -> Option<(f64, f64)> {
-        let Some(LiveSession::Qos(session)) = self.live.as_ref() else {
+    fn tilo_pointer_target(&self, p: Point) -> Option<(f64, f64)> {
+        let Some(LiveSession::Tilo(session)) = self.live.as_ref() else {
             return None;
         };
         if session.status != SessionStatus::Connected {
@@ -1732,8 +1736,8 @@ impl RemoteApp {
         ))
     }
 
-    fn queue_qos_input(&mut self, event: runtime_collab::WorkspaceControlInput) -> bool {
-        let Some(LiveSession::Qos(session)) = self.live.as_ref() else {
+    fn queue_tilo_input(&mut self, event: runtime_collab::WorkspaceControlInput) -> bool {
+        let Some(LiveSession::Tilo(session)) = self.live.as_ref() else {
             return false;
         };
         if session.status != SessionStatus::Connected {
@@ -1747,7 +1751,7 @@ impl RemoteApp {
         true
     }
 
-    fn qos_keycode(code: KeyCode) -> Option<u32> {
+    fn tilo_keycode(code: KeyCode) -> Option<u32> {
         Some(match code {
             KeyCode::KeyA => 30,
             KeyCode::KeyB => 48,
@@ -1834,7 +1838,7 @@ impl RemoteApp {
             state,
             crate::actions::REMOTE_ACTION_TYPE,
             &action,
-            qos_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
+            tilo_actions::ActionContext::for_action("org.tilo.Remote", "Remote", &action),
         );
         self.selected = Some(id);
         self.screen = Screen::List;
@@ -1848,7 +1852,7 @@ impl RemoteApp {
         if self.draft.name.trim().is_empty() {
             Some(Field::Name)
         } else if self.draft.host.trim().is_empty()
-            || (self.draft.kind == ConnectionKind::Qos
+            || (self.draft.kind == ConnectionKind::Tilo
                 && !self.draft.host.trim().is_empty()
                 && !self.draft.problems().is_empty())
         {
@@ -1902,8 +1906,8 @@ impl RemoteApp {
     fn reload_inputs(&mut self) {
         self.inputs
             .get(Field::Host)
-            .set_placeholder(if self.draft.kind == ConnectionKind::Qos {
-                "certified qOS endpoint id"
+            .set_placeholder(if self.draft.kind == ConnectionKind::Tilo {
+                "certified Tilo endpoint id"
             } else {
                 Field::Host.placeholder()
             });
@@ -1961,16 +1965,11 @@ impl RemoteApp {
 
     /// Route one event into the focused field's input and write the result
     /// back. Returns whether the input consumed it.
-    #[allow(clippy::too_many_arguments)]
     fn route_to_focused_field(
         &mut self,
         event: &WindowEvent,
-        scale: f64,
-        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
-        path: &ObjId,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &EventRouteCtx<'_>,
     ) -> bool {
         let Some(f) = self.focus else { return false };
         let before = self.inputs.get(f).value().to_string();
@@ -1979,14 +1978,14 @@ impl RemoteApp {
         let (mut handled, mut focus_target) = (false, None);
         input.handle_event(
             event,
-            scale,
-            &modifiers,
+            ctx.scale_factor,
+            &ctx.modifiers,
             state,
-            path,
+            ctx.path,
             &mut handled,
             &mut focus_target,
-            node_id,
-            taffy,
+            ctx.node_id,
+            ctx.taffy,
         );
         if self.inputs.get(f).value() != before {
             self.commit_field(f);
@@ -2001,9 +2000,9 @@ impl RemoteApp {
     }
 
     /// The last action an on-screen affordance dispatched, for the
-    /// affordance == [`ActionSpec`](qos_actions::ActionSpec) covenant test.
+    /// affordance == [`ActionSpec`](tilo_actions::ActionSpec) covenant test.
     #[cfg(test)]
-    fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+    fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 }
@@ -2015,43 +2014,41 @@ impl Default for RemoteApp {
 }
 
 // ===========================================================================
-// Seed data — a populated, lived-in connection list + qOS device roster so
+// Seed data — a populated, lived-in connection list + Tilo device roster so
 // the offline screenshot and first launch are immediately meaningful.
 // ===========================================================================
 
-/// Build one seed [`Connection`]. Broken out of [`seed_connections`] purely to
-/// keep that function's line count down — the field list is identical to
-/// [`Connection`] itself, just positional.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one positional field per Connection column; a builder struct would \
-              just move the same ten values into named fields for a private \
-              seed-data helper used only here"
-)]
-fn seeded_connection(
-    name: &str,
-    host: &str,
+/// Readable fixture input for a seeded connection. Named fields keep adjacent
+/// strings, enums, and booleans from being silently transposed as the sample
+/// roster evolves.
+struct ConnectionSeed<'a> {
+    name: &'a str,
+    host: &'a str,
     port: u16,
-    user: &str,
+    user: &'a str,
     kind: ConnectionKind,
     auth: AuthMethod,
-    last: &str,
+    last_used: &'a str,
     presence: Presence,
-    group: &str,
-    fav: bool,
-) -> Connection {
-    Connection {
-        id: Uuid::new_v4(),
-        name: name.into(),
-        host: host.into(),
-        port,
-        user: user.into(),
-        kind,
-        auth,
-        last_used: last.into(),
-        presence,
-        group: group.into(),
-        favorite: fav,
+    group: &'a str,
+    favorite: bool,
+}
+
+impl ConnectionSeed<'_> {
+    fn build(self) -> Connection {
+        Connection {
+            id: Uuid::new_v4(),
+            name: self.name.into(),
+            host: self.host.into(),
+            port: self.port,
+            user: self.user.into(),
+            kind: self.kind,
+            auth: self.auth,
+            last_used: self.last_used.into(),
+            presence: self.presence,
+            group: self.group.into(),
+            favorite: self.favorite,
+        }
     }
 }
 
@@ -2066,54 +2063,58 @@ fn seed_connections() -> Vec<Connection> {
 fn seed_connections_lab_and_office() -> Vec<Connection> {
     let studio_node = iroh::SecretKey::from_bytes(&[17; 32]).public().to_string();
     vec![
-        seeded_connection(
-            "Build Box",
-            "build.lab.internal",
-            22,
-            "admin",
-            ConnectionKind::Ssh,
-            AuthMethod::PublicKey,
-            "12m ago",
-            Presence::Online,
-            "lab",
-            true,
-        ),
-        seeded_connection(
-            "Studio Node",
-            &studio_node,
-            0,
-            "",
-            ConnectionKind::Qos,
-            AuthMethod::DeviceIdentity,
-            "just now",
-            Presence::Online,
-            "qOS",
-            true,
-        ),
-        seeded_connection(
-            "Office NAS",
-            "10.0.0.20",
-            5900,
-            "media",
-            ConnectionKind::Vnc,
-            AuthMethod::Password,
-            "2h ago",
-            Presence::Online,
-            "home",
-            false,
-        ),
-        seeded_connection(
-            "Win Workstation",
-            "10.0.0.31",
-            3389,
-            "quinten",
-            ConnectionKind::Rdp,
-            AuthMethod::Password,
-            "yesterday",
-            Presence::Offline,
-            "work",
-            false,
-        ),
+        ConnectionSeed {
+            name: "Build Box",
+            host: "build.lab.internal",
+            port: 22,
+            user: "admin",
+            kind: ConnectionKind::Ssh,
+            auth: AuthMethod::PublicKey,
+            last_used: "12m ago",
+            presence: Presence::Online,
+            group: "lab",
+            favorite: true,
+        }
+        .build(),
+        ConnectionSeed {
+            name: "Studio Node",
+            host: &studio_node,
+            port: 0,
+            user: "",
+            kind: ConnectionKind::Tilo,
+            auth: AuthMethod::DeviceIdentity,
+            last_used: "just now",
+            presence: Presence::Online,
+            group: "Tilo",
+            favorite: true,
+        }
+        .build(),
+        ConnectionSeed {
+            name: "Office NAS",
+            host: "10.0.0.20",
+            port: 5900,
+            user: "media",
+            kind: ConnectionKind::Vnc,
+            auth: AuthMethod::Password,
+            last_used: "2h ago",
+            presence: Presence::Online,
+            group: "home",
+            favorite: false,
+        }
+        .build(),
+        ConnectionSeed {
+            name: "Win Workstation",
+            host: "10.0.0.31",
+            port: 3389,
+            user: "quinten",
+            kind: ConnectionKind::Rdp,
+            auth: AuthMethod::Password,
+            last_used: "yesterday",
+            presence: Presence::Offline,
+            group: "work",
+            favorite: false,
+        }
+        .build(),
     ]
 }
 
@@ -2122,79 +2123,83 @@ fn seed_connections_lab_and_office() -> Vec<Connection> {
 fn seed_connections_remote_and_backup() -> Vec<Connection> {
     let workshop_laptop = iroh::SecretKey::from_bytes(&[29; 32]).public().to_string();
     vec![
-        seeded_connection(
-            "Edge Gateway",
-            "edge.example.com",
-            2222,
-            "root",
-            ConnectionKind::Ssh,
-            AuthMethod::PublicKey,
-            "3d ago",
-            Presence::Online,
-            "prod",
-            false,
-        ),
-        seeded_connection(
-            "Pi Cluster Head",
-            "192.168.4.2",
-            22,
-            "pi",
-            ConnectionKind::Ssh,
-            AuthMethod::Password,
-            "1w ago",
-            Presence::Offline,
-            "lab",
-            false,
-        ),
-        seeded_connection(
-            "Workshop Laptop",
-            &workshop_laptop,
-            0,
-            "",
-            ConnectionKind::Qos,
-            AuthMethod::DeviceIdentity,
-            "5h ago",
-            Presence::Online,
-            "qOS",
-            false,
-        ),
-        seeded_connection(
-            "Backup Vault",
-            "vault.example.com",
-            5901,
-            "ops",
-            ConnectionKind::Vnc,
-            AuthMethod::Password,
-            "Never",
-            Presence::Unknown,
-            "prod",
-            false,
-        ),
+        ConnectionSeed {
+            name: "Edge Gateway",
+            host: "edge.example.com",
+            port: 2222,
+            user: "root",
+            kind: ConnectionKind::Ssh,
+            auth: AuthMethod::PublicKey,
+            last_used: "3d ago",
+            presence: Presence::Online,
+            group: "prod",
+            favorite: false,
+        }
+        .build(),
+        ConnectionSeed {
+            name: "Pi Cluster Head",
+            host: "192.168.4.2",
+            port: 22,
+            user: "pi",
+            kind: ConnectionKind::Ssh,
+            auth: AuthMethod::Password,
+            last_used: "1w ago",
+            presence: Presence::Offline,
+            group: "lab",
+            favorite: false,
+        }
+        .build(),
+        ConnectionSeed {
+            name: "Workshop Laptop",
+            host: &workshop_laptop,
+            port: 0,
+            user: "",
+            kind: ConnectionKind::Tilo,
+            auth: AuthMethod::DeviceIdentity,
+            last_used: "5h ago",
+            presence: Presence::Online,
+            group: "Tilo",
+            favorite: false,
+        }
+        .build(),
+        ConnectionSeed {
+            name: "Backup Vault",
+            host: "vault.example.com",
+            port: 5901,
+            user: "ops",
+            kind: ConnectionKind::Vnc,
+            auth: AuthMethod::Password,
+            last_used: "Never",
+            presence: Presence::Unknown,
+            group: "prod",
+            favorite: false,
+        }
+        .build(),
     ]
 }
 
-fn seed_qos_devices() -> Vec<QosDevice> {
+fn seed_tilo_devices() -> Vec<TiloDevice> {
     let studio_node = iroh::SecretKey::from_bytes(&[17; 32]).public().to_string();
     let workshop_laptop = iroh::SecretKey::from_bytes(&[29; 32]).public().to_string();
     let living_room_tv = iroh::SecretKey::from_bytes(&[41; 32]).public().to_string();
     let garage_pi = iroh::SecretKey::from_bytes(&[53; 32]).public().to_string();
     vec![
-        QosDevice {
+        TiloDevice {
             name: "Studio Node".into(),
             node: studio_node,
             online: true,
         },
-        QosDevice {
+        TiloDevice {
             name: "Workshop Laptop".into(),
             node: workshop_laptop,
             online: true,
         },
-        QosDevice {
+        TiloDevice {
             name: "Living Room TV".into(),
             node: living_room_tv,
             online: true,
         },
-        QosDevice {
+        TiloDevice {
             name: "Garage Pi".into(),
             node: garage_pi,
             online: false,
@@ -2213,6 +2218,88 @@ struct EventRouteCtx<'a> {
     taffy: &'a TaffyTree<()>,
 }
 
+/// Shared resources passed through custom-painted screen layers.
+struct PaintContext<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
+/// Paint resources plus the invariant card geometry used by every form row.
+struct FormPaintContext<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+    presence: &'a PresenceCtx,
+    card_x: f64,
+    card_width: f64,
+}
+
+struct ButtonSpec<'a> {
+    rect: Rect,
+    label: &'a str,
+    primary: bool,
+}
+
+struct RailButtonSpec<'a> {
+    rail: Rect,
+    index: usize,
+    glyph: &'a str,
+    active: bool,
+}
+
+struct ToolSpec<'a> {
+    right_x: f64,
+    bar: Rect,
+    label: &'a str,
+}
+
+struct SegmentSpec<'a> {
+    rect: Rect,
+    label: &'a str,
+    active: bool,
+}
+
+#[derive(Clone, Copy)]
+struct SessionSpec {
+    content: Rect,
+    id: ConnectionId,
+    immersive: bool,
+}
+
+struct StatusSessionSpec<'a> {
+    content: Rect,
+    connection: &'a Connection,
+    title: &'a str,
+    body: &'a [String],
+    tone: StatusTone,
+    show_edit: bool,
+}
+
+struct StatusIdentitySpec<'a> {
+    card: Rect,
+    accent: Color,
+    connection: &'a Connection,
+}
+
+struct StatusBodySpec<'a> {
+    card: Rect,
+    accent: Color,
+    title: &'a str,
+    body: &'a [String],
+    y: f64,
+}
+
+struct StatusActionsSpec<'a> {
+    card: Rect,
+    tone: StatusTone,
+    connection: &'a Connection,
+    y: f64,
+    show_edit: bool,
+}
+
 // ===========================================================================
 // Widget impl
 // ===========================================================================
@@ -2226,7 +2313,7 @@ impl Widget for RemoteApp {
         let ui::collaboration::CollabEvent::WorkspaceControl { session_id, event } = event else {
             return;
         };
-        let Some(LiveSession::Qos(session)) = self.live.as_mut() else {
+        let Some(LiveSession::Tilo(session)) = self.live.as_mut() else {
             return;
         };
         if session.id != *session_id {
@@ -2272,10 +2359,10 @@ impl Widget for RemoteApp {
 
     /// Publish each saved connection as a Ctrl+K resource (rename / favourite /
     /// delete) so the shell's one action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
         if let Some(id) = self.session_for
             && let Some(connection) = self.workspace.get(id)
         {
@@ -2305,13 +2392,13 @@ impl Widget for RemoteApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -2413,14 +2500,14 @@ impl Widget for RemoteApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != qos_actions::OperationKind::Effect {
+        if kind != tilo_actions::OperationKind::Effect {
             return Ok(None);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -2462,7 +2549,7 @@ impl Widget for RemoteApp {
                     }
                     Some(SessionStatus::Connected) => {
                         Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                            qos_actions::ActionOutput::default(),
+                            tilo_actions::ActionOutput::default(),
                         )))
                     }
                     Some(SessionStatus::Failed(message) | SessionStatus::Unavailable(message)) => {
@@ -2503,7 +2590,7 @@ impl Widget for RemoteApp {
                     return Ok(None);
                 }
                 Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    qos_actions::ActionOutput::default(),
+                    tilo_actions::ActionOutput::default(),
                 )))
             }
         }
@@ -2515,11 +2602,11 @@ impl Widget for RemoteApp {
     )]
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         let pending = self.pending_resource_operation.as_ref()?;
         if cancellation_requested
             && let PendingResourceOperation::Connect {
@@ -2539,7 +2626,7 @@ impl Widget for RemoteApp {
                 self.disconnect_session();
             }
             self.pending_resource_operation = None;
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("remote connection attempt cancelled".into()),
             });
@@ -2553,9 +2640,9 @@ impl Widget for RemoteApp {
                 if self.session_for != Some(*connection_id)
                     || self.session_generation != *session_generation
                 {
-                    qos_actions::InvocationUpdate::Failed {
+                    tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "remote.session_replaced".into(),
                             message: "the connection attempt was superseded by a newer session"
                                 .into(),
@@ -2567,15 +2654,15 @@ impl Widget for RemoteApp {
                     match self.live.as_ref().map(LiveSession::status) {
                         Some(SessionStatus::Connecting) => return None,
                         Some(SessionStatus::Connected) => {
-                            qos_actions::InvocationUpdate::Succeeded {
+                            tilo_actions::InvocationUpdate::Succeeded {
                                 invocation,
-                                output: qos_actions::ActionOutput::default(),
+                                output: tilo_actions::ActionOutput::default(),
                             }
                         }
                         Some(SessionStatus::Failed(message)) => {
-                            qos_actions::InvocationUpdate::Failed {
+                            tilo_actions::InvocationUpdate::Failed {
                                 invocation,
-                                error: qos_actions::ActionFailure {
+                                error: tilo_actions::ActionFailure {
                                     code: "remote.connect_failed".into(),
                                     message,
                                     details: None,
@@ -2584,9 +2671,9 @@ impl Widget for RemoteApp {
                             }
                         }
                         Some(SessionStatus::Unavailable(message)) => {
-                            qos_actions::InvocationUpdate::Failed {
+                            tilo_actions::InvocationUpdate::Failed {
                                 invocation,
-                                error: qos_actions::ActionFailure {
+                                error: tilo_actions::ActionFailure {
                                     code: "remote.transport_unavailable".into(),
                                     message,
                                     details: None,
@@ -2595,9 +2682,9 @@ impl Widget for RemoteApp {
                             }
                         }
                         Some(SessionStatus::Closed) | None => {
-                            qos_actions::InvocationUpdate::Failed {
+                            tilo_actions::InvocationUpdate::Failed {
                                 invocation,
-                                error: qos_actions::ActionFailure {
+                                error: tilo_actions::ActionFailure {
                                     code: "remote.connection_closed".into(),
                                     message: "remote connection closed before it became ready"
                                         .into(),
@@ -2618,9 +2705,9 @@ impl Widget for RemoteApp {
                 if self.session_for != Some(*connection_id)
                     || self.session_generation != *session_generation
                 {
-                    qos_actions::InvocationUpdate::Failed {
+                    tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "remote.session_replaced".into(),
                             message: "the SSH session ended before input delivery was acknowledged"
                                 .into(),
@@ -2630,13 +2717,13 @@ impl Widget for RemoteApp {
                     }
                 } else {
                     match acknowledgement.try_recv() {
-                        Ok(Ok(())) => qos_actions::InvocationUpdate::Succeeded {
+                        Ok(Ok(())) => tilo_actions::InvocationUpdate::Succeeded {
                             invocation,
-                            output: qos_actions::ActionOutput::default(),
+                            output: tilo_actions::ActionOutput::default(),
                         },
-                        Ok(Err(message)) => qos_actions::InvocationUpdate::Failed {
+                        Ok(Err(message)) => tilo_actions::InvocationUpdate::Failed {
                             invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "remote.input_failed".into(),
                                 message,
                                 details: None,
@@ -2645,9 +2732,9 @@ impl Widget for RemoteApp {
                         },
                         Err(std::sync::mpsc::TryRecvError::Empty) => return None,
                         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                            qos_actions::InvocationUpdate::Failed {
+                            tilo_actions::InvocationUpdate::Failed {
                                 invocation,
-                                error: qos_actions::ActionFailure {
+                                error: tilo_actions::ActionFailure {
                                     code: "remote.input_worker_lost".into(),
                                     message: "remote input worker stopped before acknowledgement"
                                         .into(),
@@ -2840,23 +2927,25 @@ impl Widget for RemoteApp {
             Screen::List => {
                 self.draw_list(scene, transform, text_renderer, theme, presence, content);
             }
-            Screen::Form { editing } => self.draw_form(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                content,
-                editing,
-            ),
+            Screen::Form { editing } => {
+                let mut paint = PaintContext {
+                    scene,
+                    transform,
+                    text: text_renderer,
+                    theme,
+                };
+                self.draw_form(&mut paint, presence, content, editing);
+            }
             Screen::Session { id } => self.draw_session(
                 scene,
                 transform,
                 text_renderer,
                 theme,
-                content,
-                id,
-                immersive,
+                SessionSpec {
+                    content,
+                    id,
+                    immersive,
+                },
             ),
         }
 
@@ -2962,7 +3051,7 @@ impl Widget for RemoteApp {
             }
             WindowEvent::MouseInput { state, button, .. }
                 if self.pending_confirmation.is_none()
-                    && self.qos_pointer_target(self.pointer).is_some() =>
+                    && self.tilo_pointer_target(self.pointer).is_some() =>
             {
                 let button = match button {
                     MouseButton::Left => Some(272),
@@ -2972,11 +3061,11 @@ impl Widget for RemoteApp {
                 };
                 if let Some(button) = button {
                     if *state == ElementState::Pressed && button == 272 {
-                        self.queue_qos_input(
+                        self.queue_tilo_input(
                             runtime_collab::WorkspaceControlInput::KeyboardFocus { focused: true },
                         );
                     }
-                    self.queue_qos_input(runtime_collab::WorkspaceControlInput::PointerButton {
+                    self.queue_tilo_input(runtime_collab::WorkspaceControlInput::PointerButton {
                         button,
                         pressed: *state == ElementState::Pressed,
                     });
@@ -3005,15 +3094,7 @@ impl Widget for RemoteApp {
                 state: ElementState::Released,
                 ..
             } if self.focus.is_some() => {
-                self.route_to_focused_field(
-                    event,
-                    ctx.scale_factor,
-                    ctx.modifiers,
-                    state,
-                    ctx.path,
-                    ctx.node_id,
-                    ctx.taffy,
-                );
+                self.route_to_focused_field(event, state, &ctx);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -3024,11 +3105,11 @@ impl Widget for RemoteApp {
                     },
                 ..
             } if self.pending_confirmation.is_none()
-                && matches!(self.live.as_ref(), Some(LiveSession::Qos(session)) if session.status == SessionStatus::Connected)
+                && matches!(self.live.as_ref(), Some(LiveSession::Tilo(session)) if session.status == SessionStatus::Connected)
                 && !(self.fullscreen && *code == KeyCode::Escape) =>
             {
-                if let Some(keycode) = Self::qos_keycode(*code) {
-                    self.queue_qos_input(runtime_collab::WorkspaceControlInput::Key {
+                if let Some(keycode) = Self::tilo_keycode(*code) {
+                    self.queue_tilo_input(runtime_collab::WorkspaceControlInput::Key {
                         keycode,
                         pressed: *key_state == ElementState::Pressed,
                         modifiers: 0,
@@ -3207,7 +3288,7 @@ impl Widget for RemoteApp {
                     screen.push(
                         AccessNode::new(Role::StaticText)
                             .with_name(if self.workspace.connections().is_empty() {
-                                "No machines yet. Add a connection to reach it over SSH, VNC, or the qOS relay."
+                                "No machines yet. Add a connection to reach it over SSH, VNC, or the Tilo relay."
                             } else {
                                 "No machines match your search."
                             })
@@ -3249,18 +3330,18 @@ impl Widget for RemoteApp {
                 if self.draft.kind == ConnectionKind::Rdp {
                     children.push(
                         AccessNode::new(Role::StaticText)
-                            .with_name("Legacy RDP profile. RDP has no client backend in this build; select SSH, VNC, or qOS to migrate this profile.")
+                            .with_name("Legacy RDP profile. RDP has no client backend in this build; select SSH, VNC, or Tilo to migrate this profile.")
                             .with_live(Politeness::Polite)
                             .with_hashed_key("remote.form.legacy-rdp"),
                     );
                 }
-                if self.draft.kind == ConnectionKind::Qos {
+                if self.draft.kind == ConnectionKind::Tilo {
                     children.push(
                         AccessNode::new(Role::List)
-                            .with_name("Discovered qOS devices")
+                            .with_name("Discovered Tilo devices")
                             .with_hashed_key("remote.form.devices")
                             .with_children(
-                                self.qos_devices
+                                self.tilo_devices
                                     .iter()
                                     .enumerate()
                                     .map(|(index, device)| {
@@ -3274,7 +3355,7 @@ impl Widget for RemoteApp {
                                             })
                                             .with_action_target(format!("remote.device:{index}"))
                                             .with_optional_bounds(
-                                                self.action_bounds(Action::PickQosDevice(index)),
+                                                self.action_bounds(Action::PickTiloDevice(index)),
                                             )
                                             .with_state(
                                                 focusable()
@@ -3287,16 +3368,16 @@ impl Widget for RemoteApp {
                     children.push(
                         AccessNode::new(Role::StaticText)
                             .with_name(
-                                "Authentication: qOS device identity. No password is stored or requested.",
+                                "Authentication: Tilo device identity. No password is stored or requested.",
                             )
-                            .with_hashed_key("remote.form.qos-authentication"),
+                            .with_hashed_key("remote.form.tilo-authentication"),
                     );
                 }
                 for (field, name) in [
                     (Field::Name, "Connection name"),
                     (
                         Field::Host,
-                        if self.draft.kind == ConnectionKind::Qos {
+                        if self.draft.kind == ConnectionKind::Tilo {
                             "Device node"
                         } else {
                             "Host name or IP address"
@@ -3306,7 +3387,7 @@ impl Widget for RemoteApp {
                     (Field::User, "User name"),
                     (Field::Group, "Group"),
                 ] {
-                    if (self.draft.kind == ConnectionKind::Qos
+                    if (self.draft.kind == ConnectionKind::Tilo
                         && matches!(field, Field::Port | Field::User | Field::Group))
                         || (self.draft.kind == ConnectionKind::Vnc && field == Field::User)
                     {
@@ -3321,7 +3402,7 @@ impl Widget for RemoteApp {
                             .with_state(focusable().focused(self.focus == Some(field))),
                     );
                 }
-                if self.draft.kind != ConnectionKind::Qos {
+                if self.draft.kind != ConnectionKind::Tilo {
                     children.push(
                         AccessNode::new(Role::Group)
                             .with_name("Authentication")
@@ -3596,7 +3677,7 @@ impl Widget for RemoteApp {
             .and_then(|value| value.parse::<usize>().ok())
             && matches!(action, A11yAction::Activate | A11yAction::Focus)
         {
-            self.apply(Action::PickQosDevice(index), state);
+            self.apply(Action::PickTiloDevice(index), state);
             return true;
         }
         if let Some(rest) = target.strip_prefix("remote.connection:") {
@@ -3701,8 +3782,8 @@ impl RemoteApp {
             // Stream pointer motion to a live remote desktop.
             if self.pending_confirmation.is_none() {
                 self.forward_vnc_pointer(p);
-                if let Some((x, y)) = self.qos_pointer_target(p) {
-                    self.queue_qos_input(runtime_collab::WorkspaceControlInput::PointerMotion {
+                if let Some((x, y)) = self.tilo_pointer_target(p) {
+                    self.queue_tilo_input(runtime_collab::WorkspaceControlInput::PointerMotion {
                         x,
                         y,
                     });
@@ -3745,15 +3826,7 @@ impl RemoteApp {
         // A focused field tracks the pointer so a drag extends its
         // selection past the edge of the box.
         if self.focus.is_some() {
-            self.route_to_focused_field(
-                event,
-                ctx.scale_factor,
-                ctx.modifiers,
-                state,
-                ctx.path,
-                ctx.node_id,
-                ctx.taffy,
-            );
+            self.route_to_focused_field(event, state, ctx);
         }
     }
 
@@ -3839,15 +3912,7 @@ impl RemoteApp {
             // here selects — rather than the click only meaning "focus".
             if let Action::FocusField(f) = action {
                 self.focus_field(f);
-                self.route_to_focused_field(
-                    event,
-                    ctx.scale_factor,
-                    ctx.modifiers,
-                    state,
-                    ctx.path,
-                    ctx.node_id,
-                    ctx.taffy,
-                );
+                self.route_to_focused_field(event, state, ctx);
             } else {
                 self.apply(action, state);
             }
@@ -3872,15 +3937,7 @@ impl RemoteApp {
     ) {
         self.handle_key(logical_key, text, ctx.modifiers.state(), state, handled);
         if !*handled && self.focus.is_some() {
-            *handled = self.route_to_focused_field(
-                event,
-                ctx.scale_factor,
-                ctx.modifiers,
-                state,
-                ctx.path,
-                ctx.node_id,
-                ctx.taffy,
-            );
+            *handled = self.route_to_focused_field(event, state, ctx);
         }
     }
 
@@ -4201,11 +4258,12 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            rail,
-            0,
-            "≡",
-            "Connections",
-            on_list,
+            &RailButtonSpec {
+                rail,
+                index: 0,
+                glyph: "≡",
+                active: on_list,
+            },
         );
         self.push_hit(home_btn, Action::GoList);
 
@@ -4214,11 +4272,12 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            rail,
-            1,
-            "+",
-            "Add",
-            false,
+            &RailButtonSpec {
+                rail,
+                index: 1,
+                glyph: "+",
+                active: false,
+            },
         );
         self.push_hit(new_btn, Action::NewConnection);
     }
@@ -4290,28 +4349,23 @@ impl RemoteApp {
         self.push_hit(btn, Action::ToggleRail);
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_rail_button(
         &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        rail: Rect,
-        index: usize,
-        glyph: &str,
-        _label: &str,
-        active: bool,
+        spec: &RailButtonSpec<'_>,
     ) -> Rect {
         let tokens = &theme.tokens;
-        let top = rail.y0 + 72.0 + index as f64 * 56.0;
-        let btn = Rect::new(rail.x0 + 12.0, top, rail.x1 - 12.0, top + 40.0);
+        let top = spec.rail.y0 + 72.0 + spec.index as f64 * 56.0;
+        let btn = Rect::new(spec.rail.x0 + 12.0, top, spec.rail.x1 - 12.0, top + 40.0);
         let hovered = btn.contains(self.pointer);
         // Selection is a step, not an accent wash (HIG §9.3): on the raised
         // rail the active control takes the wash measured against the rail
         // with the panel-strength ring (`selected_on`), and hover goes
         // half-way.
-        if active {
+        if spec.active {
             let (wash, ring) = selected_on(tokens.colors.surfaces.raised);
             scene.fill(
                 Fill::NonZero,
@@ -4336,15 +4390,15 @@ impl RemoteApp {
                 &RoundedRect::from_rect(btn, 8.0),
             );
         }
-        let color = if active {
+        let color = if spec.active {
             tokens.colors.text_primary
         } else {
             tokens.colors.text_dim
         };
-        let (gw, _) = text_renderer.measure(glyph, 22.0, None);
+        let (gw, _) = text_renderer.measure(spec.glyph, 22.0, None);
         text_renderer.draw_text(
             scene,
-            glyph,
+            spec.glyph,
             22.0,
             color,
             transform * Affine::translate((btn.center().x - f64::from(gw) / 2.0, btn.y0 + 6.0)),
@@ -4441,9 +4495,11 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            add,
-            add_label,
-            true,
+            &ButtonSpec {
+                rect: add,
+                label: add_label,
+                primary: true,
+            },
         );
         self.push_hit(add, Action::NewConnection);
 
@@ -4457,10 +4513,12 @@ impl RemoteApp {
             header.y1 + S2 + SEARCH_H,
         );
         self.draw_field(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintContext {
+                scene,
+                transform,
+                text: text_renderer,
+                theme,
+            },
             presence,
             search,
             Field::Search,
@@ -4611,7 +4669,7 @@ impl RemoteApp {
         );
         y += f64::from(th) + 6.0;
 
-        let sub = "Add one to reach it over SSH, VNC, or the qOS relay.";
+        let sub = "Add one to reach it over SSH, VNC, or the Tilo relay.";
         let sub_max_w = (region.width() - 2.0 * 24.0).max(120.0) as f32;
         let (sw, sh) = text_renderer.measure(sub, 13.5, Some(sub_max_w));
         text_renderer.draw_text(
@@ -4633,9 +4691,11 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            btn,
-            action,
-            true,
+            &ButtonSpec {
+                rect: btn,
+                label: action,
+                primary: true,
+            },
         );
         self.push_hit(btn, Action::NewConnection);
     }
@@ -4829,9 +4889,11 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                connect,
-                "Connect",
-                true,
+                &ButtonSpec {
+                    rect: connect,
+                    label: "Connect",
+                    primary: true,
+                },
             );
             self.push_hit(connect, Action::RequestConnect(c.id));
         } else {
@@ -4845,7 +4907,17 @@ impl RemoteApp {
             connect.x0 - S3,
             connect.y1,
         );
-        self.draw_button(scene, transform, text_renderer, theme, edit, "Edit", false);
+        self.draw_button(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonSpec {
+                rect: edit,
+                label: "Edit",
+                primary: false,
+            },
+        );
         self.push_hit(edit, Action::EditConnection(c.id));
 
         // last_used, right-aligned just left of the Edit button and centred on
@@ -4959,23 +5031,20 @@ impl RemoteApp {
 
     /// Generic button using the shared immediate-mode face while this canvas
     /// retains ownership of pointer routing.
-    #[allow(clippy::too_many_arguments)]
     fn draw_button(
         &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        rect: Rect,
-        label: &str,
-        primary: bool,
+        spec: &ButtonSpec<'_>,
     ) {
-        let hovered = rect.contains(self.pointer);
-        let face = ButtonFace::new(rect, label)
+        let hovered = spec.rect.contains(self.pointer);
+        let face = ButtonFace::new(spec.rect, spec.label)
             .hovered(hovered)
             .text_size(13.0)
             .weight(TextWeight::Semibold);
-        let face = if primary { face.primary() } else { face };
+        let face = if spec.primary { face.primary() } else { face };
         Button::paint(scene, transform, text_renderer, theme, &face);
     }
 
@@ -4989,17 +5058,17 @@ impl RemoteApp {
     /// Draw a text field: the app paints the box and the focus ring, the
     /// shared [`TextInput`] paints the text, placeholder, selection and caret
     /// inside it — and owns every editing behaviour that goes with them.
-    #[allow(clippy::too_many_arguments)]
     fn draw_field(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         presence: &PresenceCtx,
         rect: Rect,
         field: Field,
     ) {
+        let scene = &mut *paint.scene;
+        let text_renderer = &mut *paint.text;
+        let transform = paint.transform;
+        let theme = paint.theme;
         let tokens = &theme.tokens;
         let focused = self.focus == Some(field);
         // The field box is a well on the window tier with its derived rest
@@ -5024,28 +5093,19 @@ impl RemoteApp {
     /// Draw the add/edit form. Split into one helper per card section — each
     /// threads the running layout cursor `y` through and hands back where the
     /// next section starts, exactly as the inline version did.
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::too_many_lines,
-        reason = "matches ui's draw dispatch shape (scene/transform/text_renderer/theme) \
-                  plus this screen's own presence/content/editing state"
-    )]
     fn draw_form(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         presence: &PresenceCtx,
         content: Rect,
         editing: Option<ConnectionId>,
     ) {
         let pad = S6;
         Self::draw_form_header(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            paint.scene,
+            paint.transform,
+            paint.text,
+            paint.theme,
             content,
             pad,
             editing,
@@ -5056,59 +5116,23 @@ impl RemoteApp {
         let card_x = content.x0 + (content.width() - card_w) / 2.0;
         let y = content.y0 + HEADER_H + 8.0;
 
-        let y =
-            self.draw_form_kind_selector(scene, transform, text_renderer, theme, card_x, card_w, y);
-        let y = self.draw_form_legacy_transport_notice(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            card_x,
-            card_w,
-            y,
-        );
-        let y =
-            self.draw_form_qos_picker(scene, transform, text_renderer, theme, card_x, card_w, y);
-        let y = self.draw_form_name_field(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+        let mut form = FormPaintContext {
+            scene: paint.scene,
+            transform: paint.transform,
+            text: paint.text,
+            theme: paint.theme,
             presence,
             card_x,
-            card_w,
-            y,
-        );
-        let y = self.draw_form_host_port_row(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            card_x,
-            card_w,
-            y,
-        );
-        let y = self.draw_form_user_auth_row(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            card_x,
-            card_w,
-            y,
-        );
-        self.draw_form_footer(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            card_x,
-            card_w,
-            y,
-            editing,
-        );
+            card_width: card_w,
+        };
+
+        let y = self.draw_form_kind_selector(&mut form, y);
+        let y = self.draw_form_legacy_transport_notice(&mut form, y);
+        let y = self.draw_form_tilo_picker(&mut form, y);
+        let y = self.draw_form_name_field(&mut form, y);
+        let y = self.draw_form_host_port_row(&mut form, y);
+        let y = self.draw_form_user_auth_row(&mut form, y);
+        self.draw_form_footer(&mut form, y, editing);
     }
 
     /// `draw_form`'s title, centered above the card.
@@ -5138,23 +5162,13 @@ impl RemoteApp {
     }
 
     /// `draw_form`'s protocol kind selector (segmented control).
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::too_many_lines,
-        reason = "one draw_form section threading the shared card geometry \
-                  (x/width) and running layout cursor `y` through the shaped \
-                  protocol-kind row"
-    )]
-    fn draw_form_kind_selector(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        card_x: f64,
-        card_w: f64,
-        y: f64,
-    ) -> f64 {
+    fn draw_form_kind_selector(&mut self, ctx: &mut FormPaintContext<'_>, y: f64) -> f64 {
+        let scene = &mut *ctx.scene;
+        let text_renderer = &mut *ctx.text;
+        let transform = ctx.transform;
+        let theme = ctx.theme;
+        let card_x = ctx.card_x;
+        let card_w = ctx.card_width;
         let mut y = Self::draw_form_label(
             scene,
             transform,
@@ -5181,31 +5195,32 @@ impl RemoteApp {
         }
         // A legacy draft kind (RDP) is not offered here: nothing is selected.
         let selected = kinds.iter().position(|k| *k == self.draft.kind);
-        self.draw_segments(scene, transform, text_renderer, theme, &rects, &labels, selected);
+        self.draw_segments(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &rects,
+            &labels,
+            selected,
+        );
         y += 40.0 + S4;
         y
     }
 
     /// Legacy RDP profiles are deliberately editable rather than discarded.
     /// Make their migration path explicit: the selector offers only real
-    /// backends, so choosing SSH, VNC, or qOS replaces the unavailable kind.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "this small drawing section receives the same scene/render context and geometry cursor as the adjacent form sections"
-    )]
-    fn draw_form_legacy_transport_notice(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        card_x: f64,
-        card_w: f64,
-        y: f64,
-    ) -> f64 {
+    /// backends, so choosing SSH, VNC, or Tilo replaces the unavailable kind.
+    fn draw_form_legacy_transport_notice(&self, ctx: &mut FormPaintContext<'_>, y: f64) -> f64 {
         if self.draft.kind != ConnectionKind::Rdp {
             return y;
         }
+        let scene = &mut *ctx.scene;
+        let text_renderer = &mut *ctx.text;
+        let transform = ctx.transform;
+        let theme = ctx.theme;
+        let card_x = ctx.card_x;
+        let card_w = ctx.card_width;
         let tokens = &theme.tokens;
         let note = Rect::new(card_x, y, card_x + card_w, y + 54.0);
         scene.fill(
@@ -5233,7 +5248,7 @@ impl RemoteApp {
         );
         text_renderer.draw_text(
             scene,
-            "RDP has no client backend here. Select SSH, VNC, or qOS to migrate this profile.",
+            "RDP has no client backend here. Select SSH, VNC, or Tilo to migrate this profile.",
             11.5,
             tokens.colors.text_dim,
             transform * Affine::translate((note.x0 + 12.0, note.y0 + 29.0)),
@@ -5242,27 +5257,18 @@ impl RemoteApp {
         y + 54.0 + S3
     }
 
-    /// `draw_form`'s qOS device picker — a no-op (returns `y` unchanged) for
+    /// `draw_form`'s Tilo device picker — a no-op (returns `y` unchanged) for
     /// any other protocol kind.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one draw_form section threading the shared card geometry \
-                  (x/width) and running layout cursor `y` through the \
-                  discovered-devices list"
-    )]
-    fn draw_form_qos_picker(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        card_x: f64,
-        card_w: f64,
-        y: f64,
-    ) -> f64 {
+    fn draw_form_tilo_picker(&mut self, ctx: &mut FormPaintContext<'_>, y: f64) -> f64 {
+        let scene = &mut *ctx.scene;
+        let text_renderer = &mut *ctx.text;
+        let transform = ctx.transform;
+        let theme = ctx.theme;
+        let card_x = ctx.card_x;
+        let card_w = ctx.card_width;
         let tokens = &theme.tokens;
         let mut y = y;
-        if self.draft.kind == ConnectionKind::Qos {
+        if self.draft.kind == ConnectionKind::Tilo {
             y = Self::draw_form_label(
                 scene,
                 transform,
@@ -5270,9 +5276,9 @@ impl RemoteApp {
                 theme,
                 card_x,
                 y,
-                "Discovered qOS devices",
+                "Discovered Tilo devices",
             );
-            for (i, d) in self.qos_devices.clone().into_iter().enumerate() {
+            for (i, d) in self.tilo_devices.clone().into_iter().enumerate() {
                 let chip = Rect::new(card_x, y, card_x + card_w, y + 36.0);
                 let hovered = chip.contains(self.pointer);
                 let picked = self.draft.host == d.node;
@@ -5315,7 +5321,7 @@ impl RemoteApp {
                     None,
                     TextWeight::Medium,
                 );
-                let compact_node = crate::model::compact_qos_endpoint(&d.node);
+                let compact_node = crate::model::compact_tilo_endpoint(&d.node);
                 text_renderer.draw_text(
                     scene,
                     &compact_node,
@@ -5324,7 +5330,7 @@ impl RemoteApp {
                     transform * Affine::translate((chip.x1 - 160.0, chip.center().y - 7.0)),
                     None,
                 );
-                self.push_hit(chip, Action::PickQosDevice(i));
+                self.push_hit(chip, Action::PickTiloDevice(i));
                 // Related rows `S2` apart; the next form group follows the
                 // last chip by `S4`.
                 y += 36.0 + S2;
@@ -5335,31 +5341,24 @@ impl RemoteApp {
     }
 
     /// `draw_form`'s Name field.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one draw_form section threading the shared card geometry \
-                  (x/width) and running layout cursor `y` through the Name field"
-    )]
-    fn draw_form_name_field(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        card_x: f64,
-        card_w: f64,
-        y: f64,
-    ) -> f64 {
+    fn draw_form_name_field(&mut self, ctx: &mut FormPaintContext<'_>, y: f64) -> f64 {
+        let scene = &mut *ctx.scene;
+        let text_renderer = &mut *ctx.text;
+        let transform = ctx.transform;
+        let theme = ctx.theme;
+        let card_x = ctx.card_x;
+        let card_w = ctx.card_width;
         let mut y =
             Self::draw_form_label(scene, transform, text_renderer, theme, card_x, y, "Name");
         let name = Rect::new(card_x, y, card_x + card_w, y + 40.0);
         self.draw_field(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
+            &mut PaintContext {
+                scene: &mut *ctx.scene,
+                transform: ctx.transform,
+                text: &mut *ctx.text,
+                theme: ctx.theme,
+            },
+            ctx.presence,
             name,
             Field::Name,
         );
@@ -5368,24 +5367,15 @@ impl RemoteApp {
         y
     }
 
-    /// `draw_form`'s Host + Port row (Port hidden for qOS).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one draw_form section threading the shared card geometry \
-                  (x/width) and running layout cursor `y` through the Host/Port row"
-    )]
-    fn draw_form_host_port_row(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        card_x: f64,
-        card_w: f64,
-        y: f64,
-    ) -> f64 {
-        let host_label = if self.draft.kind == ConnectionKind::Qos {
+    /// `draw_form`'s Host + Port row (Port hidden for Tilo).
+    fn draw_form_host_port_row(&mut self, ctx: &mut FormPaintContext<'_>, y: f64) -> f64 {
+        let scene = &mut *ctx.scene;
+        let text_renderer = &mut *ctx.text;
+        let transform = ctx.transform;
+        let theme = ctx.theme;
+        let card_x = ctx.card_x;
+        let card_w = ctx.card_width;
+        let host_label = if self.draft.kind == ConnectionKind::Tilo {
             "Device node"
         } else {
             "Host"
@@ -5399,27 +5389,31 @@ impl RemoteApp {
             y,
             host_label,
         );
-        let qos = self.draft.kind == ConnectionKind::Qos;
-        let host_w = if qos { card_w } else { card_w - 130.0 };
+        let tilo = self.draft.kind == ConnectionKind::Tilo;
+        let host_w = if tilo { card_w } else { card_w - 130.0 };
         let host = Rect::new(card_x, y, card_x + host_w, y + 40.0);
         self.draw_field(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
+            &mut PaintContext {
+                scene: &mut *ctx.scene,
+                transform: ctx.transform,
+                text: &mut *ctx.text,
+                theme: ctx.theme,
+            },
+            ctx.presence,
             host,
             Field::Host,
         );
         self.push_hit(host, Action::FocusField(Field::Host));
-        if !qos {
+        if !tilo {
             let port = Rect::new(card_x + host_w + 12.0, y, card_x + card_w, y + 40.0);
             self.draw_field(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
+                &mut PaintContext {
+                    scene: &mut *ctx.scene,
+                    transform: ctx.transform,
+                    text: &mut *ctx.text,
+                    theme: ctx.theme,
+                },
+                ctx.presence,
                 port,
                 Field::Port,
             );
@@ -5429,31 +5423,24 @@ impl RemoteApp {
         y
     }
 
-    /// `draw_form`'s User + Group row for non-qOS kinds, or the implicit-auth
-    /// info card for qOS.
+    /// `draw_form`'s User + Group row for non-Tilo kinds, or the implicit-auth
+    /// info card for Tilo.
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
-        reason = "one draw_form section threading the shared card geometry \
-                  (x/width) and running layout cursor `y` through the User/Group \
-                  row and auth method selector"
+        reason = "the non-Tilo field row and its authentication selector form one conditional layout section"
     )]
-    fn draw_form_user_auth_row(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        card_x: f64,
-        card_w: f64,
-        y: f64,
-    ) -> f64 {
+    fn draw_form_user_auth_row(&mut self, ctx: &mut FormPaintContext<'_>, y: f64) -> f64 {
+        let scene = &mut *ctx.scene;
+        let text_renderer = &mut *ctx.text;
+        let transform = ctx.transform;
+        let theme = ctx.theme;
+        let card_x = ctx.card_x;
+        let card_w = ctx.card_width;
         let tokens = &theme.tokens;
-        let qos = self.draft.kind == ConnectionKind::Qos;
+        let tilo = self.draft.kind == ConnectionKind::Tilo;
         let mut y = y;
-        if qos {
-            // qOS: authentication is implicit via device identity.
+        if tilo {
+            // Tilo: authentication is implicit via device identity.
             y = Self::draw_form_label(
                 scene,
                 transform,
@@ -5476,7 +5463,7 @@ impl RemoteApp {
             );
             text_renderer.draw_text(
                 scene,
-                "Authenticated by qOS device identity over the P2P fabric — no password needed.",
+                "Authenticated by Tilo device identity over the P2P fabric — no password needed.",
                 12.5,
                 tokens.colors.text_dim,
                 transform * Affine::translate((info.x0 + 12.0, info.center().y - 7.0)),
@@ -5494,15 +5481,19 @@ impl RemoteApp {
                 y,
                 if has_user { "User" } else { "Group" },
             );
+            let _ = scene;
+            let _ = text_renderer;
             if has_user {
                 let half = (card_w - 12.0) / 2.0;
                 let user = Rect::new(card_x, y, card_x + half, y + 40.0);
                 self.draw_field(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    presence,
+                    &mut PaintContext {
+                        scene: &mut *ctx.scene,
+                        transform: ctx.transform,
+                        text: &mut *ctx.text,
+                        theme: ctx.theme,
+                    },
+                    ctx.presence,
                     user,
                     Field::User,
                 );
@@ -5514,11 +5505,13 @@ impl RemoteApp {
                 Rect::new(card_x, y, card_x + card_w, y + 40.0)
             };
             self.draw_field(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
+                &mut PaintContext {
+                    scene: &mut *ctx.scene,
+                    transform: ctx.transform,
+                    text: &mut *ctx.text,
+                    theme: ctx.theme,
+                },
+                ctx.presence,
                 group,
                 Field::Group,
             );
@@ -5526,6 +5519,8 @@ impl RemoteApp {
             y += 40.0 + S4;
 
             // -- Auth method selector --
+            let scene = &mut *ctx.scene;
+            let text_renderer = &mut *ctx.text;
             y = Self::draw_form_label(
                 scene,
                 transform,
@@ -5551,7 +5546,15 @@ impl RemoteApp {
                 self.push_hit(seg, Action::SetAuth(a));
             }
             let selected = auth_methods.iter().position(|a| *a == self.draft.auth);
-            self.draw_segments(scene, transform, text_renderer, theme, &rects, &labels, selected);
+            self.draw_segments(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &rects,
+                &labels,
+                selected,
+            );
             y += 40.0 + S4;
         }
         y
@@ -5559,23 +5562,18 @@ impl RemoteApp {
 
     /// `draw_form`'s tail: validation messages, Save + Cancel, and (edit mode
     /// only) the Delete button.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one draw_form section threading the shared card geometry \
-                  (x/width), the settled layout cursor `y`, and the editing id \
-                  through the closing validation/action row"
-    )]
     fn draw_form_footer(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        card_x: f64,
-        card_w: f64,
+        ctx: &mut FormPaintContext<'_>,
         y: f64,
         editing: Option<ConnectionId>,
     ) {
+        let scene = &mut *ctx.scene;
+        let text_renderer = &mut *ctx.text;
+        let transform = ctx.transform;
+        let theme = ctx.theme;
+        let card_x = ctx.card_x;
+        let card_w = ctx.card_width;
         let tokens = &theme.tokens;
 
         // -- Validation messages --
@@ -5607,7 +5605,17 @@ impl RemoteApp {
 
         // -- Save + Cancel --
         let save = Rect::new(card_x + card_w - 120.0, y, card_x + card_w, y + 40.0);
-        self.draw_button(scene, transform, text_renderer, theme, save, "Save", true);
+        self.draw_button(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonSpec {
+                rect: save,
+                label: "Save",
+                primary: true,
+            },
+        );
         self.push_hit(save, Action::SaveForm);
         let cancel = Rect::new(save.x0 - 110.0, y, save.x0 - 12.0, y + 40.0);
         self.draw_button(
@@ -5615,9 +5623,11 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            cancel,
-            "Cancel",
-            false,
+            &ButtonSpec {
+                rect: cancel,
+                label: "Cancel",
+                primary: false,
+            },
         );
         self.push_hit(cancel, Action::Back);
 
@@ -5699,7 +5709,6 @@ impl RemoteApp {
 
     /// Draw the session surface for a connection.
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "the live-state match deliberately composes all session status surfaces beside the shared toolbar and canvas geometry"
     )]
@@ -5709,10 +5718,11 @@ impl RemoteApp {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        content: Rect,
-        id: ConnectionId,
-        immersive: bool,
+        spec: SessionSpec,
     ) {
+        let content = spec.content;
+        let id = spec.id;
+        let immersive = spec.immersive;
         let tokens = &theme.tokens;
         let Some(c) = self.workspace.get(id).cloned() else {
             // Connection vanished — bounce home.
@@ -5727,24 +5737,26 @@ impl RemoteApp {
             return;
         };
 
-        // No live transport object: the honest "not connected" card. Only
-        // app-owned SSH/VNC transports use the developer gate; production qOS
-        // control always creates a real broker session or an honest error.
+        // No live transport object: the "not connected" card. Only
+        // app-owned SSH/VNC transports use the developer gate; production Tilo
+        // control always creates a broker session or an error.
         let Some(status) = self.live.as_ref().map(LiveSession::status) else {
             self.draw_status_session(
                 scene,
                 transform,
                 text_renderer,
                 theme,
-                content,
-                &c,
-                "Not connected",
-                &[
-                    "This transport is unavailable in this build.".to_string(),
-                    "Your saved connection is unchanged.".to_string(),
-                ],
-                StatusTone::Neutral,
-                false,
+                &StatusSessionSpec {
+                    content,
+                    connection: &c,
+                    title: "Not connected",
+                    body: &[
+                        "This transport is unavailable in this build.".to_string(),
+                        "Your saved connection is unchanged.".to_string(),
+                    ],
+                    tone: StatusTone::Neutral,
+                    show_edit: false,
+                },
             );
             return;
         };
@@ -5752,7 +5764,7 @@ impl RemoteApp {
         // Live path: reflect the real transport state.
         match status {
             SessionStatus::Connecting => {
-                let (title, detail) = if c.kind == ConnectionKind::Qos {
+                let (title, detail) = if c.kind == ConnectionKind::Tilo {
                     (
                         "Waiting for consent…",
                         "Opening an authenticated route to the exact target, then waiting for it to share a workspace surface…",
@@ -5768,12 +5780,14 @@ impl RemoteApp {
                     transform,
                     text_renderer,
                     theme,
-                    content,
-                    &c,
-                    title,
-                    &[detail.to_string()],
-                    StatusTone::Pending,
-                    false,
+                    &StatusSessionSpec {
+                        content,
+                        connection: &c,
+                        title,
+                        body: &[detail.to_string()],
+                        tone: StatusTone::Pending,
+                        show_edit: false,
+                    },
                 );
             }
             SessionStatus::Failed(err) => {
@@ -5782,38 +5796,42 @@ impl RemoteApp {
                     transform,
                     text_renderer,
                     theme,
-                    content,
-                    &c,
-                    "Connection failed",
-                    &[
-                        err,
-                        "This is the real error — nothing is simulated.".to_string(),
-                    ],
-                    StatusTone::Error,
-                    false,
+                    &StatusSessionSpec {
+                        content,
+                        connection: &c,
+                        title: "Connection failed",
+                        body: &[
+                            err,
+                            "This is the real error — nothing is simulated.".to_string(),
+                        ],
+                        tone: StatusTone::Error,
+                        show_edit: false,
+                    },
                 );
             }
             SessionStatus::Unavailable(detail) => {
                 let recovery = match c.kind {
                     ConnectionKind::Rdp => {
-                        "Edit this saved profile to use SSH, VNC, or qOS device control."
+                        "Edit this saved profile to use SSH, VNC, or Tilo device control."
                     }
                     ConnectionKind::Ssh | ConnectionKind::Vnc => {
-                        "Use qOS device control now, or install Remote with live network and host-key trust access."
+                        "Use Tilo device control now, or install Remote with live network and host-key trust access."
                     }
-                    ConnectionKind::Qos => "No connection was attempted.",
+                    ConnectionKind::Tilo => "No connection was attempted.",
                 };
                 self.draw_status_session(
                     scene,
                     transform,
                     text_renderer,
                     theme,
-                    content,
-                    &c,
-                    "Connection not available",
-                    &[detail, recovery.to_string()],
-                    StatusTone::Neutral,
-                    true,
+                    &StatusSessionSpec {
+                        content,
+                        connection: &c,
+                        title: "Connection not available",
+                        body: &[detail, recovery.to_string()],
+                        tone: StatusTone::Neutral,
+                        show_edit: true,
+                    },
                 );
             }
             SessionStatus::Closed => {
@@ -5822,16 +5840,18 @@ impl RemoteApp {
                     transform,
                     text_renderer,
                     theme,
-                    content,
-                    &c,
-                    "Session ended",
-                    &["The remote closed the session.".to_string()],
-                    StatusTone::Neutral,
-                    false,
+                    &StatusSessionSpec {
+                        content,
+                        connection: &c,
+                        title: "Session ended",
+                        body: &["The remote closed the session.".to_string()],
+                        tone: StatusTone::Neutral,
+                        show_edit: false,
+                    },
                 );
             }
             SessionStatus::Connected => {
-                // Real surface. Toolbar hidden in immersive/fullscreen mode.
+                // Session surface. Toolbar hidden in immersive/fullscreen mode.
                 let surface = if immersive {
                     content
                 } else {
@@ -5856,62 +5876,61 @@ impl RemoteApp {
     }
 
     /// A session surface that is *not* a live pixel/terminal view: the
-    /// honest states (not connected, connecting, failed, ended), composed as
+    /// states (not connected, connecting, failed, ended), composed as
     /// a centred card — a state emblem carrying the protocol, the machine
-    /// identity, a status pill, an explanation, and real actions. The state
+    /// identity, a status pill, an explanation, and available actions. The state
     /// has a visible form (the emblem ring + pill colour), not just a label.
-    /// Never draws a fabricated terminal or desktop.
-    #[allow(clippy::too_many_arguments)]
     fn draw_status_session(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        content: Rect,
-        c: &Connection,
-        title: &str,
-        body: &[String],
-        tone: StatusTone,
-        show_edit: bool,
+        spec: &StatusSessionSpec<'_>,
     ) {
         let tokens = &theme.tokens;
-        let accent = match tone {
+        let accent = match spec.tone {
             StatusTone::Neutral => tokens.colors.text_dim,
             StatusTone::Pending => tokens.colors.semantic.warning,
             StatusTone::Error => tokens.colors.semantic.danger,
         };
-        let card = Self::draw_status_session_card(scene, transform, theme, content, body);
+        let card = Self::draw_status_session_card(scene, transform, theme, spec.content, spec.body);
         let y = Self::draw_status_session_identity(
             scene,
             transform,
             text_renderer,
             theme,
-            card,
-            accent,
-            c,
+            &StatusIdentitySpec {
+                card,
+                accent,
+                connection: spec.connection,
+            },
         );
         let y = Self::draw_status_session_pill_and_body(
             scene,
             transform,
             text_renderer,
             theme,
-            card,
-            accent,
-            title,
-            body,
-            y,
+            &StatusBodySpec {
+                card,
+                accent,
+                title: spec.title,
+                body: spec.body,
+                y,
+            },
         );
         self.draw_status_session_actions(
             scene,
             transform,
             text_renderer,
             theme,
-            card,
-            tone,
-            c,
-            y,
-            show_edit,
+            &StatusActionsSpec {
+                card,
+                tone: spec.tone,
+                connection: spec.connection,
+                y,
+                show_edit: spec.show_edit,
+            },
         );
     }
 
@@ -5947,20 +5966,16 @@ impl RemoteApp {
 
     /// `draw_status_session`'s state emblem, machine name, and address line.
     /// Returns the `y` the status pill should start at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one draw_status_session section threading the card geometry \
-                  and tone accent through the emblem + identity lines"
-    )]
     fn draw_status_session_identity(
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        card: Rect,
-        accent: Color,
-        c: &Connection,
+        spec: &StatusIdentitySpec<'_>,
     ) -> f64 {
+        let card = spec.card;
+        let accent = spec.accent;
+        let c = spec.connection;
         let tokens = &theme.tokens;
         let mid = card.center().x;
         let mut y = card.y0 + 34.0;
@@ -6026,26 +6041,20 @@ impl RemoteApp {
 
     /// `draw_status_session`'s status pill and explanation body. Returns the
     /// `y` the action row should start at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one draw_status_session section threading the card geometry, \
-                  tone accent, and running layout cursor `y` through the pill \
-                  and body lines"
-    )]
     fn draw_status_session_pill_and_body(
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        card: Rect,
-        accent: Color,
-        title: &str,
-        body: &[String],
-        y: f64,
+        spec: &StatusBodySpec<'_>,
     ) -> f64 {
+        let card = spec.card;
+        let accent = spec.accent;
+        let title = spec.title;
+        let body = spec.body;
         let tokens = &theme.tokens;
         let mid = card.center().x;
-        let mut y = y;
+        let mut y = spec.y;
 
         // Status pill — the state as a labelled, tone-coloured form.
         let (pw, _) = text_renderer.measure_weighted(title, 13.0, None, TextWeight::Semibold);
@@ -6098,23 +6107,19 @@ impl RemoteApp {
 
     /// `draw_status_session`'s action row: a primary "Back to list", plus
     /// "Retry" where the tone is an actual failure.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one draw_status_session section threading the card geometry, \
-                  tone, and settled layout cursor `y` through the action row"
-    )]
     fn draw_status_session_actions(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        card: Rect,
-        tone: StatusTone,
-        c: &Connection,
-        y: f64,
-        show_edit: bool,
+        spec: &StatusActionsSpec<'_>,
     ) {
+        let card = spec.card;
+        let tone = spec.tone;
+        let c = spec.connection;
+        let y = spec.y;
+        let show_edit = spec.show_edit;
         let mid = card.center().x;
         // Retry only makes sense after a real failure. An unavailable saved
         // profile gets a direct edit recovery instead; it must never look as
@@ -6151,9 +6156,11 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                retry,
-                "Retry",
-                false,
+                &ButtonSpec {
+                    rect: retry,
+                    label: "Retry",
+                    primary: false,
+                },
             );
             self.push_hit(retry, Action::RequestConnect(c.id));
             bx += retry_w + gap;
@@ -6165,9 +6172,11 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                recover,
-                label,
-                false,
+                &ButtonSpec {
+                    rect: recover,
+                    label,
+                    primary: false,
+                },
             );
             self.push_hit(recover, action);
             bx += retry_w + gap;
@@ -6179,9 +6188,11 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                edit,
-                "Edit profile",
-                false,
+                &ButtonSpec {
+                    rect: edit,
+                    label: "Edit profile",
+                    primary: false,
+                },
             );
             self.push_hit(edit, Action::EditConnection(c.id));
             bx += retry_w + gap;
@@ -6192,9 +6203,11 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            back,
-            "Back to list",
-            true,
+            &ButtonSpec {
+                rect: back,
+                label: "Back to list",
+                primary: true,
+            },
         );
         self.push_hit(back, Action::Disconnect);
     }
@@ -6318,7 +6331,7 @@ impl RemoteApp {
             TextWeight::Semibold,
         );
         // Kind chip + connection label after the name.
-        let mode = if c.kind == ConnectionKind::Qos {
+        let mode = if c.kind == ConnectionKind::Tilo {
             format!("· {} · workspace stream", c.address())
         } else if c.kind.is_terminal() {
             format!("· {} · shell", c.address())
@@ -6339,7 +6352,21 @@ impl RemoteApp {
             None,
         );
 
-        // Right-aligned tool buttons. Only the relevant ones per kind.
+        self.draw_session_toolbar_controls(scene, transform, text_renderer, theme, bar, c);
+    }
+
+    /// Right-aligned session actions; framebuffer-only controls stay absent
+    /// from terminal sessions rather than presenting inert affordances.
+    fn draw_session_toolbar_controls(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        bar: Rect,
+        c: &Connection,
+    ) {
+        let tokens = &theme.tokens;
         let mut x = bar.x1 - 12.0;
         let disconnect = Rect::new(x - 110.0, bar.center().y - 16.0, x, bar.center().y + 16.0);
         // The shared outlined-danger face instead of a neutral face with a
@@ -6363,7 +6390,17 @@ impl RemoteApp {
         // channel; a clickable no-op would lie about a security-sensitive
         // capability.
         if c.kind.streams_framebuffer() {
-            let fs = self.draw_tool(scene, transform, text_renderer, theme, x, bar, "Fullscreen");
+            let fs = self.draw_tool(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ToolSpec {
+                    right_x: x,
+                    bar,
+                    label: "Fullscreen",
+                },
+            );
             self.push_hit(fs, Action::ToggleFullscreen);
             x = fs.x0 - 8.0;
 
@@ -6372,33 +6409,50 @@ impl RemoteApp {
             } else {
                 "Scale: 1:1"
             };
-            let sc = self.draw_tool(scene, transform, text_renderer, theme, x, bar, scale_label);
+            let sc = self.draw_tool(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ToolSpec {
+                    right_x: x,
+                    bar,
+                    label: scale_label,
+                },
+            );
             self.push_hit(sc, Action::ToggleScale);
         }
     }
 
     /// Draw a compact toolbar tool button ending at `right_x`; returns its rect.
-    #[allow(clippy::too_many_arguments)]
     fn draw_tool(
         &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        right_x: f64,
-        bar: Rect,
-        label: &str,
+        spec: &ToolSpec<'_>,
     ) -> Rect {
         // Shared neutral face (same as Edit/Disconnect) sized from the label.
-        let (tw, _) = text_renderer.measure_weighted(label, 13.0, None, TextWeight::Semibold);
+        let (tw, _) = text_renderer.measure_weighted(spec.label, 13.0, None, TextWeight::Semibold);
         let w = f64::from(tw) + 24.0;
         let rect = Rect::new(
-            right_x - w,
-            bar.center().y - 16.0,
-            right_x,
-            bar.center().y + 16.0,
+            spec.right_x - w,
+            spec.bar.center().y - 16.0,
+            spec.right_x,
+            spec.bar.center().y + 16.0,
         );
-        self.draw_button(scene, transform, text_renderer, theme, rect, label, false);
+        self.draw_button(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonSpec {
+                rect,
+                label: spec.label,
+                primary: false,
+            },
+        );
         rect
     }
 
@@ -6600,7 +6654,7 @@ fn kind_color(kind: ConnectionKind, theme: &Theme) -> Color {
         ConnectionKind::Ssh => c.semantic.success,
         ConnectionKind::Vnc => c.semantic.info,
         ConnectionKind::Rdp => c.semantic.warning,
-        ConnectionKind::Qos => c.accent[6],
+        ConnectionKind::Tilo => c.accent[6],
     }
 }
 
@@ -6608,7 +6662,7 @@ fn kind_color(kind: ConnectionKind, theme: &Theme) -> Color {
 /// kind shows.
 fn next_field(cur: Option<Field>, kind: ConnectionKind) -> Field {
     let order: Vec<Field> = match kind {
-        ConnectionKind::Qos => vec![Field::Name, Field::Host],
+        ConnectionKind::Tilo => vec![Field::Name, Field::Host],
         ConnectionKind::Vnc => vec![Field::Name, Field::Host, Field::Port, Field::Group],
         ConnectionKind::Ssh | ConnectionKind::Rdp => {
             vec![
@@ -6698,6 +6752,101 @@ mod tests {
             )
             .unwrap();
         app.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    #[test]
+    fn seeded_connections_have_unique_identity_and_valid_transport_fields() {
+        let connections = seed_connections();
+        assert_eq!(connections.len(), 8, "the preview roster stays intentional");
+
+        let mut names = std::collections::HashSet::new();
+        for connection in &connections {
+            assert!(
+                names.insert(connection.name.as_str()),
+                "duplicate seed name"
+            );
+            assert!(!connection.name.is_empty());
+            assert!(!connection.host.is_empty());
+            assert!(!connection.group.is_empty());
+            if connection.kind == ConnectionKind::Tilo {
+                assert_eq!(connection.port, 0);
+                assert_eq!(connection.auth, AuthMethod::DeviceIdentity);
+            } else {
+                assert_ne!(connection.port, 0, "network transports need a port");
+            }
+        }
+    }
+
+    #[test]
+    fn protocol_segments_share_one_gapless_form_card_row() {
+        let mut app = RemoteApp::new();
+        lay_out(&mut app, 1280.0, 800.0);
+        app.apply(Action::NewConnection, &mut doc());
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        Widget::draw(
+            &mut app,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+
+        let segments: Vec<Rect> = app
+            .hits
+            .iter()
+            .filter_map(|hit| matches!(hit.action, Action::SetKind(_)).then_some(hit.rect))
+            .collect();
+        assert_eq!(segments.len(), ConnectionKind::available_to_create().len());
+        let width = segments[0].width();
+        for pair in segments.windows(2) {
+            assert_eq!(pair[0].x1, pair[1].x0, "protocol segments meet exactly");
+            assert!(
+                (pair[1].width() - width).abs() < 0.001,
+                "the card row divides evenly"
+            );
+            assert_eq!(pair[0].y0, pair[1].y0);
+            assert_eq!(pair[0].y1, pair[1].y1);
+        }
+    }
+
+    #[test]
+    fn failed_status_surface_exposes_retry_and_exit_actions() {
+        let mut app = RemoteApp::new_demo();
+        lay_out(&mut app, 1280.0, 800.0);
+        app.dev_preview_session(
+            ConnectionKind::Ssh,
+            SessionStatus::Failed("Connection refused".into()),
+        );
+        let id = app.session_for.expect("preview connection");
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        Widget::draw(
+            &mut app,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+
+        assert!(
+            app.hits
+                .iter()
+                .any(|hit| hit.action == Action::RequestConnect(id)),
+            "a genuine failure offers retry"
+        );
+        assert!(
+            app.hits.iter().any(|hit| hit.action == Action::Disconnect),
+            "every status card offers a route back to the list"
+        );
+        assert!(
+            !app.hits
+                .iter()
+                .any(|hit| matches!(hit.action, Action::EditConnection(_))),
+            "ordinary transport failures do not masquerade as profile errors"
+        );
     }
 
     #[test]
@@ -6828,7 +6977,10 @@ mod tests {
             (m.connect_w, floors.connect_w),
             (m.edit_w, floors.edit_w),
         ] {
-            assert!((got - want).abs() < 1e-6, "1× band {got} measures to its floor {want}");
+            assert!(
+                (got - want).abs() < 1e-6,
+                "1× band {got} measures to its floor {want}"
+            );
         }
 
         // 1920px at 2× is still the wide row form (breakpoint scales to 1240).
@@ -6844,7 +6996,9 @@ mod tests {
         let edit = two
             .hits
             .iter()
-            .find(|h| matches!(h.action, Action::EditConnection(_)) && row.contains(h.rect.center()))
+            .find(|h| {
+                matches!(h.action, Action::EditConnection(_)) && row.contains(h.rect.center())
+            })
             .map(|h| h.rect)
             .expect("the first row paints its Edit button inside itself");
         assert!(edit.y0 >= row.y0 && edit.y1 <= row.y1);
@@ -6855,15 +7009,23 @@ mod tests {
         let (compact, rows) = drawn_rows(800.0, 2.0);
         assert!(compact.list_rows_compact);
         let m = compact.list_rows.clone();
-        assert!(rows.iter().all(|r| (r.height() - m.compact_row_h).abs() < 1e-6));
+        assert!(
+            rows.iter()
+                .all(|r| (r.height() - m.compact_row_h).abs() < 1e-6)
+        );
         let row = rows[0];
         let edit = compact
             .hits
             .iter()
-            .find(|h| matches!(h.action, Action::EditConnection(_)) && row.contains(h.rect.center()))
+            .find(|h| {
+                matches!(h.action, Action::EditConnection(_)) && row.contains(h.rect.center())
+            })
             .map(|h| h.rect)
             .unwrap();
-        assert!(edit.y0 >= row.y0 + m.line2_y + m.badge_h, "actions sit under the badge line");
+        assert!(
+            edit.y0 >= row.y0 + m.line2_y + m.badge_h,
+            "actions sit under the badge line"
+        );
         assert!(edit.y1 <= row.y1);
     }
 
@@ -6915,7 +7077,7 @@ mod tests {
             "live app starts empty"
         );
         assert!(
-            app.qos_devices.is_empty(),
+            app.tilo_devices.is_empty(),
             "no fabricated discovered devices"
         );
         assert!(app.selected.is_none());
@@ -6987,7 +7149,7 @@ mod tests {
             .connections()
             .iter()
             .find(|connection| connection_readiness(connection).can_connect())
-            .expect("demo has a production-available qOS connection")
+            .expect("demo has a production-available Tilo connection")
             .id;
         let tree = app.accessibility().expect("Remote window semantics");
         for target in [
@@ -7054,14 +7216,14 @@ mod tests {
     fn view_resource_operations_open_the_exact_requested_ui() {
         let mut app = RemoteApp::new_demo();
         let id = app.workspace.connections()[0].id;
-        let edit = qos_actions::EncodedAction::encode_operation(
+        let edit = tilo_actions::EncodedAction::encode_operation(
             crate::actions::REMOTE_OPERATION_TYPE,
             &crate::actions::RemoteOperation::EditConnection { connection_id: id },
         )
         .expect("serializable view operation");
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 &edit.type_id,
                 &edit.payload,
                 &doc(),
@@ -7073,7 +7235,7 @@ mod tests {
 
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 &edit.type_id,
                 &edit.payload,
                 &doc(),
@@ -7279,8 +7441,8 @@ mod tests {
             .workspace
             .connections()
             .iter()
-            .find(|connection| connection.kind == ConnectionKind::Qos)
-            .expect("demo qOS connection")
+            .find(|connection| connection.kind == ConnectionKind::Tilo)
+            .expect("demo Tilo connection")
             .id;
 
         app.apply(Action::RequestConnect(id), &mut doc());
@@ -7303,8 +7465,8 @@ mod tests {
             .workspace
             .connections()
             .iter()
-            .find(|connection| connection.kind == ConnectionKind::Qos)
-            .expect("demo qOS connection")
+            .find(|connection| connection.kind == ConnectionKind::Tilo)
+            .expect("demo Tilo connection")
             .id;
         app.apply(Action::RequestConnect(id), &mut doc());
         app.workspace.get_mut(id).expect("profile").host =
@@ -7347,8 +7509,7 @@ mod tests {
     #[test]
     fn connect_ssh_explains_the_missing_live_capability_without_opening_a_socket() {
         // Default build has no live transport: Connect opens an explicit
-        // unavailable surface, not a fabricated terminal or an ambiguous
-        // "not connected" screen.
+        // unavailable surface.
         let mut app = RemoteApp::new_demo();
         let id = app
             .workspace
@@ -7389,21 +7550,21 @@ mod tests {
     }
 
     #[test]
-    fn connect_qos_starts_the_production_broker_transport_without_dev_gate() {
+    fn connect_tilo_starts_the_production_broker_transport_without_dev_gate() {
         let mut app = RemoteApp::new_demo();
         let target = iroh::SecretKey::generate().public();
         let id = app
             .workspace
             .connections()
             .iter()
-            .find(|connection| connection.kind == ConnectionKind::Qos)
-            .expect("demo qOS connection")
+            .find(|connection| connection.kind == ConnectionKind::Tilo)
+            .expect("demo Tilo connection")
             .id;
-        app.workspace.get_mut(id).expect("qOS connection").host = target.to_string();
+        app.workspace.get_mut(id).expect("Tilo connection").host = target.to_string();
 
         app.apply(Action::Connect(id), &mut doc());
 
-        assert!(matches!(app.live, Some(LiveSession::Qos(_))));
+        assert!(matches!(app.live, Some(LiveSession::Tilo(_))));
         assert!(matches!(
             app.collab_outbox.as_slice(),
             [ui::collaboration::CollabRequest::OpenWorkspaceControl { target_device, .. }]
@@ -7412,21 +7573,21 @@ mod tests {
     }
 
     #[test]
-    fn qos_session_setup_uses_authenticated_broker_transport() {
+    fn tilo_session_setup_uses_authenticated_broker_transport() {
         let mut app = RemoteApp::new_demo();
         let mut connection = app
             .workspace
             .connections()
             .iter()
-            .find(|connection| connection.kind == ConnectionKind::Qos)
-            .expect("demo qOS connection")
+            .find(|connection| connection.kind == ConnectionKind::Tilo)
+            .expect("demo Tilo connection")
             .clone();
         let target = iroh::SecretKey::generate().public();
         connection.host = target.to_string();
         let session = app.start_live(&connection);
         assert!(matches!(
             session,
-            LiveSession::Qos(QosSession {
+            LiveSession::Tilo(TiloSession {
                 status: SessionStatus::Connecting,
                 ..
             })
@@ -7439,25 +7600,25 @@ mod tests {
     }
 
     #[test]
-    fn qos_widget_never_queues_input_before_consent_or_after_revocation() {
+    fn tilo_widget_never_queues_input_before_consent_or_after_revocation() {
         let mut app = RemoteApp::new_demo();
         let mut connection = app
             .workspace
             .connections()
             .iter()
-            .find(|connection| connection.kind == ConnectionKind::Qos)
-            .expect("demo qOS connection")
+            .find(|connection| connection.kind == ConnectionKind::Tilo)
+            .expect("demo Tilo connection")
             .clone();
         connection.host = iroh::SecretKey::generate().public().to_string();
         let live = app.start_live(&connection);
         app.live = Some(live);
         let session_id = match app.live.as_ref() {
-            Some(LiveSession::Qos(session)) => session.id,
-            _ => panic!("qOS session"),
+            Some(LiveSession::Tilo(session)) => session.id,
+            _ => panic!("Tilo session"),
         };
         app.collab_outbox.clear();
         assert!(
-            !app.queue_qos_input(runtime_collab::WorkspaceControlInput::PointerMotion {
+            !app.queue_tilo_input(runtime_collab::WorkspaceControlInput::PointerMotion {
                 x: 1.0,
                 y: 2.0
             })
@@ -7473,7 +7634,7 @@ mod tests {
             },
         });
         assert!(
-            app.queue_qos_input(runtime_collab::WorkspaceControlInput::PointerMotion {
+            app.queue_tilo_input(runtime_collab::WorkspaceControlInput::PointerMotion {
                 x: 1.0,
                 y: 2.0
             })
@@ -7487,7 +7648,7 @@ mod tests {
             ),
         });
         assert!(
-            !app.queue_qos_input(runtime_collab::WorkspaceControlInput::PointerMotion {
+            !app.queue_tilo_input(runtime_collab::WorkspaceControlInput::PointerMotion {
                 x: 1.0,
                 y: 2.0
             })
@@ -7496,21 +7657,21 @@ mod tests {
     }
 
     #[test]
-    fn pick_qos_device_fills_draft() {
+    fn pick_tilo_device_fills_draft() {
         let mut app = RemoteApp::new_demo();
         app.apply(Action::NewConnection, &mut doc());
-        app.apply(Action::SetKind(ConnectionKind::Qos), &mut doc());
-        app.apply(Action::PickQosDevice(0), &mut doc());
-        assert_eq!(app.draft.kind, ConnectionKind::Qos);
+        app.apply(Action::SetKind(ConnectionKind::Tilo), &mut doc());
+        app.apply(Action::PickTiloDevice(0), &mut doc());
+        assert_eq!(app.draft.kind, ConnectionKind::Tilo);
         assert!(!app.draft.host.is_empty());
         assert_eq!(app.draft.auth, AuthMethod::DeviceIdentity);
     }
 
     #[test]
-    fn set_kind_qos_clears_port_and_sets_device_auth() {
+    fn set_kind_tilo_clears_port_and_sets_device_auth() {
         let mut app = RemoteApp::new();
         app.apply(Action::NewConnection, &mut doc());
-        app.apply(Action::SetKind(ConnectionKind::Qos), &mut doc());
+        app.apply(Action::SetKind(ConnectionKind::Tilo), &mut doc());
         assert!(app.draft.port.is_empty());
         assert_eq!(app.draft.auth, AuthMethod::DeviceIdentity);
     }
@@ -7654,11 +7815,11 @@ mod tests {
     }
 
     #[test]
-    fn dev_set_screen_qos_form_selects_qos_kind() {
+    fn dev_set_screen_tilo_form_selects_tilo_kind() {
         let mut app = RemoteApp::new();
-        app.dev_set_screen("form-qos");
+        app.dev_set_screen("form-tilo");
         assert!(matches!(app.screen, Screen::Form { .. }));
-        assert_eq!(app.draft.kind, ConnectionKind::Qos);
+        assert_eq!(app.draft.kind, ConnectionKind::Tilo);
     }
 
     #[test]
@@ -7684,7 +7845,7 @@ mod tests {
     #[test]
     fn unavailable_connect_operation_reports_a_distinct_non_retryable_result() {
         let mut app = RemoteApp::new_demo();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.live = Some(LiveSession::Unavailable {
             readiness: TransportReadiness::BackendUnavailable,
             kind: ConnectionKind::Rdp,
@@ -7702,7 +7863,7 @@ mod tests {
             .expect("unavailable transport reaches a terminal operation result");
         assert!(matches!(
             update,
-            qos_actions::InvocationUpdate::Failed { error, .. }
+            tilo_actions::InvocationUpdate::Failed { error, .. }
                 if error.code == "remote.transport_unavailable" && !error.retryable
         ));
     }
@@ -7710,8 +7871,8 @@ mod tests {
     #[test]
     fn cancelling_connect_settles_only_the_matching_session_generation() {
         let mut app = RemoteApp::new_demo();
-        let id = app.first_of_kind(ConnectionKind::Qos).unwrap();
-        let invocation = qos_actions::InvocationId::new();
+        let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
+        let invocation = tilo_actions::InvocationId::new();
         app.session_for = Some(id);
         app.session_generation = 42;
         app.live = Some(LiveSession::Preview(SessionStatus::Connecting));
@@ -7723,14 +7884,14 @@ mod tests {
 
         assert!(matches!(
             app.poll_resource_operation(invocation, true, &doc(), &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Cancelled { .. })
+            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
         ));
         assert!(app.live.is_none());
         assert!(app.pending_resource_operation.is_none());
 
         // A delayed cancel for an older generation reports terminally but
         // cannot tear down a replacement session for the same saved profile.
-        let stale = qos_actions::InvocationId::new();
+        let stale = tilo_actions::InvocationId::new();
         app.session_for = Some(id);
         app.session_generation = 99;
         app.live = Some(LiveSession::Preview(SessionStatus::Connecting));
@@ -7741,7 +7902,7 @@ mod tests {
         });
         assert!(matches!(
             app.poll_resource_operation(stale, true, &doc(), &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Cancelled { .. })
+            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
         ));
         assert!(
             app.live.is_some(),
@@ -7752,7 +7913,7 @@ mod tests {
     #[test]
     fn exhausted_session_generation_fails_closed_without_reuse() {
         let mut app = RemoteApp::new_demo();
-        let id = app.first_of_kind(ConnectionKind::Qos).unwrap();
+        let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
         app.session_generation = u64::MAX;
 
         app.open_session(id);
@@ -7771,7 +7932,7 @@ mod tests {
             ("session-ssh", ConnectionKind::Ssh),
             ("session-vnc", ConnectionKind::Vnc),
             ("session-rdp", ConnectionKind::Rdp),
-            ("session-qos", ConnectionKind::Qos),
+            ("session-tilo", ConnectionKind::Tilo),
         ] {
             let mut app = RemoteApp::new_demo();
             app.dev_set_screen(which);
@@ -7784,7 +7945,7 @@ mod tests {
         }
 
         let mut app = RemoteApp::new_demo();
-        app.dev_set_screen("session-qos");
+        app.dev_set_screen("session-tilo");
         assert!(matches!(
             app.live,
             Some(LiveSession::Preview(SessionStatus::Connecting))

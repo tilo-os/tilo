@@ -22,6 +22,7 @@ use automerge::{AutoCommit, ROOT, ReadDoc};
 
 use notes::NotesApp;
 use notes::doc::NotesDoc;
+use notes::sidebar::OutEvent;
 use ui::Widget;
 use ui::collaboration::PresencePayload;
 use ui::presence::PresenceKey;
@@ -128,5 +129,55 @@ fn text_edit_in_peer_a_converges_to_peer_b() {
     assert!(
         b_text.contains("ZZZ-"),
         "B's editor should show A's inserted text, got: {b_text:?}"
+    );
+}
+
+#[test]
+fn duplicate_replicates_every_new_page_body_before_any_peer_opens_it() {
+    let (mut a, _da) = spawn_app().unwrap();
+    let mut doc_a = AutoCommit::new();
+    a.sync(&mut doc_a, &ROOT);
+    let source = a.selected_for_test().expect("starter page selected");
+    let source_blocks = NotesDoc::page_block_snapshots(&doc_a, source);
+    assert!(
+        !source_blocks.is_empty(),
+        "fixture has collaborative content"
+    );
+
+    // This is the sidebar context-menu path. It creates the copy and all of
+    // its durable block actions in one local action batch; it must not depend
+    // on selecting the copy (or each descendant) to make its body available.
+    a.dispatch_event_for_test(&mut doc_a, OutEvent::Duplicate(source));
+    let copy = a
+        .workspace_pages_for_test()
+        .into_iter()
+        .find(|page| page.title == "Welcome copy")
+        .expect("duplicate metadata")
+        .id;
+    let copied_blocks = NotesDoc::page_block_snapshots(&doc_a, copy);
+    assert_eq!(
+        copied_blocks
+            .iter()
+            .map(|(_, text)| text)
+            .collect::<Vec<_>>(),
+        source_blocks
+            .iter()
+            .map(|(_, text)| text)
+            .collect::<Vec<_>>(),
+        "copy body was dispatched with its metadata"
+    );
+    assert_ne!(
+        copied_blocks[0].0, source_blocks[0].0,
+        "copies mint independent stable block ids"
+    );
+
+    // A peer receives the complete page before it has navigated to the copy.
+    let (mut b, _db) = spawn_app().unwrap();
+    let mut doc_b = AutoCommit::load(&doc_a.save()).unwrap();
+    b.sync(&mut doc_b, &ROOT);
+    assert_eq!(
+        NotesDoc::page_block_snapshots(&doc_b, copy),
+        copied_blocks,
+        "late joiner sees duplicate content without a view-dependent seed"
     );
 }

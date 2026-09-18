@@ -1007,7 +1007,7 @@ dependencies = [
  "landlock",
  "libc",
  "pkg",
- "qos-desktop-entry",
+ "tilo-desktop-entry",
  "runtime-bundle",
  "runtime-identity",
  "seccompiler",
@@ -1255,14 +1255,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos-desktop-entry"
+name = "tilo-desktop-entry"
 version = "0.1.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
-name = "qos-security-fuzz"
+name = "tilo-security-fuzz"
 version = "0.0.0"
 dependencies = [
  "collab-types",
@@ -1271,12 +1271,12 @@ dependencies = [
  "libfuzzer-sys",
  "pkg",
  "postcard",
- "qos-user-identity",
+ "tilo-user-identity",
  "serde_json",
 ]
 
 [[package]]
-name = "qos-user-identity"
+name = "tilo-user-identity"
 version = "0.1.0"
 dependencies = [
  "atomic-file",

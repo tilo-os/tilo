@@ -104,7 +104,7 @@ fn history_path(kind: PowerSourceKind) -> Option<PathBuf> {
         PowerSourceKind::Battery => "power-history.json",
         PowerSourceKind::Ups => "ups-history.json",
     };
-    Some(base.join("qos").join(name))
+    Some(base.join("tilo").join(name))
 }
 
 fn load_history_at(path: &Path) -> BatteryHistory {
@@ -169,7 +169,7 @@ mod tests {
     fn durable_file_is_private_atomic_and_schema_contains_no_identity() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("qos/history.json");
+        let path = dir.path().join("tilo/history.json");
         assert!(
             record_power_history_at(
                 &path,

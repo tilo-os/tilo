@@ -1,0 +1,54 @@
+[Unit]
+Description=Tilo host first-boot — consume enrollment token and mint device cert
+Documentation=file:///usr/share/doc/tilo/relay.md
+After=network-online.target
+Wants=network-online.target
+Before=tilo-relay.service tilo-fs-replica.service
+# Runs until both the signed device certificate and home-peer bundle
+# are durable, then becomes an immediate no-op on later service starts.
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/tilo-relay-firstboot
+# Give the LAN mdns handshake generous room but do not block
+# forever — a headless host may boot at 2AM with no primary device
+# on the LAN. In that case the script prints its pairing token to
+# the console and returns non-zero; systemd will retry on next
+# boot after the operator finishes the OOB handshake.
+TimeoutStartSec=300
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal+console
+StandardError=journal+console
+UMask=0077
+LimitCORE=0
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+ReadWritePaths=/etc/tilo /var/lib/tilo
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+KeyringMode=private
+CapabilityBoundingSet=CAP_CHOWN
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@clock @debug @keyring @module @mount @obsolete @raw-io @reboot @resources @swap
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

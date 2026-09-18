@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Build the FUTO swipe stack (libswipe_decoder.a + ExecuTorch) and fetch the
-# models, so `qos-swipe` can link the real ML swipe decoder. Prints the two
+# models, so `tilo-swipe` can link the real ML swipe decoder. Prints the two
 # env vars to export for the cargo build.
 #
-#   ./qos-swipe/setup-futo.sh [DEST]
+#   ./tilo-swipe/setup-futo.sh [DEST]
 #
 # DEST defaults to ./.futo-swipe (gitignored). Requires: git, git-lfs, cmake
 # 3.29+, a C++17 compiler, python3 + python3-venv, ninja, curl. Run inside the
@@ -38,8 +38,8 @@ fi
 
 echo
 echo "FUTO swipe ready. Export these for the cargo build:"
-echo "  export QOS_SWIPE_LIB=$LIB"
-echo "  export QOS_SWIPE_MODELS=$MODELS"
+echo "  export TILO_SWIPE_LIB=$LIB"
+echo "  export TILO_SWIPE_MODELS=$MODELS"
 echo
 echo "Then e.g.:  cargo run -p osk"
-echo "For the OS image, install \$QOS_SWIPE_MODELS to /usr/share/qos/swipe-models."
+echo "For the OS image, install \$TILO_SWIPE_MODELS to /usr/share/tilo/swipe-models."

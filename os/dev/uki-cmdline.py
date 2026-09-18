@@ -17,7 +17,7 @@ UKI there, in either the image build's layout or the one `bootc install` leaves.
 `blank` exists to make a negative result available. A check that reports the
 generation as measured is only evidence if it can be shown to fail when the
 generation is absent — otherwise "passed" might mean "asserted nothing". So this
-overwrites `qos.generation=<N>` in the `.cmdline` section **with spaces of exactly
+overwrites `tilo.generation=<N>` in the `.cmdline` section **with spaces of exactly
 the same length**: the section keeps its size, every following section keeps its
 file offset, and the PE stays loadable. Rewriting the section shorter would move
 the rest of the image and change what fails, which would prove nothing about the
@@ -68,6 +68,7 @@ Two things it deliberately does not do:
     and carries no generation.
 """
 
+import hashlib
 import mmap
 import os
 import struct
@@ -97,6 +98,21 @@ def sections(data):
     """Yield (name, file_offset, raw_size, virtual_size) for each PE section."""
     for _o, name, _va, vsz, rsz, raw in section_table(data):
         yield name, raw, rsz, vsz
+
+
+def boot_digest(data):
+    """bootc 1.16.4 identity: SHA256(.linux virtual bytes + .initrd virtual bytes)."""
+    digest = hashlib.sha256()
+    entries = list(sections(data))
+    for required in ('.linux', '.initrd'):
+        matching = [row for row in entries if row[0] == required]
+        if len(matching) != 1:
+            raise SystemExit('UKI needs exactly one ' + required)
+        _, offset, raw_size, size = matching[0]
+        if not size or size > raw_size or offset + size > len(data):
+            raise SystemExit('invalid UKI section bounds')
+        digest.update(data[offset:offset + size])
+    return digest.hexdigest()
 
 
 def find_cmdline(data):
@@ -282,6 +298,13 @@ def main(argv):
         raise SystemExit(__doc__)
     action = argv[1]
 
+    if action == "boot-digest":
+        if len(argv) != 3:
+            raise SystemExit("boot-digest needs one UKI path")
+        with open(argv[2], "rb") as fh:
+            print(boot_digest(fh.read()))
+        return 0
+
     if action == "show":
         path = argv[2] if len(argv) > 2 else default_uki()
         with open(path, "rb") as fh:
@@ -341,7 +364,7 @@ def main(argv):
         key = old.split(b"=", 1)[0]
         path = argv[4] if len(argv) == 5 else default_uki()
     elif len(argv) < 3:
-        raise SystemExit(f"{action} needs an argument, e.g. `{action} qos.generation"
+        raise SystemExit(f"{action} needs an argument, e.g. `{action} tilo.generation"
                          + ("=7`" if action == "set" else "`"))
     elif action == "set":
         if "=" not in argv[2]:

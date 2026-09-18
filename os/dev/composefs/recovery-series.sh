@@ -4,7 +4,7 @@
 #   ./os/dev/composefs/recovery-series.sh [step ...]
 #
 #     entry     boot generation 1 and establish the repair entry exists, is
-#               sealed with qos.mode=repair, and is not the default
+#               sealed with tilo.mode=repair, and is not the default
 #     repair    boot INTO repair mode and drive its console over the serial line
 #     rollback  stage a deliberately broken generation and show the machine
 #               going back to the working one by itself
@@ -15,17 +15,16 @@
 # Expects generation 1 built and installed:
 #     ./os/dev/composefs/build.sh 1 && ./os/dev/composefs/install.sh 1
 #
-# ## What is real here and what is a stand-in
+# ## Test scope
 #
 # The boot chain is the production one: the same sealed UKI, the same
-# systemd-boot, the same qos-deployment, qos-boot-health, qos-boot-mode-generator
+# systemd-boot, the same tilo-deployment, tilo-boot-health, tilo-boot-mode-generator
 # and loader entries the desktop image ships (os/dev/composefs/build.sh copies
 # them out of os/ rather than restating them).
 #
-# The one substitution is what "the session came up" means. This image has no
-# greetd — it is the boot chain without the desktop — so qos-boot-health is
-# pointed at qos-probe-session.service, and the broken generation is one whose
-# stand-in fails. Everything downstream of that verdict (boot-complete.target,
+# This image has no greetd, so tilo-boot-health uses
+# tilo-probe-session.service to represent session readiness. Everything
+# downstream of that verdict (boot-complete.target,
 # systemd-bless-boot, the try counter, sd-boot's ordering) is untouched.
 set -uo pipefail
 
@@ -33,8 +32,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/common.sh"
 
 VM="$HERE/vm.sh"
-CONSOLE_DRIVER="$QOS_OS_DIR/dev/serial-console.py"
-OUT="${QOS_RECOVERY_OUT:-$QOS_CFS_RUN/recovery}"
+CONSOLE_DRIVER="$TILO_OS_DIR/dev/serial-console.py"
+OUT="${TILO_RECOVERY_OUT:-$TILO_CFS_RUN/recovery}"
 mkdir -p "$OUT"
 
 fail=0
@@ -53,7 +52,7 @@ proof_entry() {
 
   # The boot-side check is the one that can see any of this. Its exit status is
   # the assertion — it fails rather than skips when it cannot observe.
-  if guest "sudo /usr/libexec/qos-recovery-boot-check" 2>&1 | tee "$OUT/01-entry.txt"; then
+  if guest "sudo /usr/libexec/tilo-recovery-boot-check" 2>&1 | tee "$OUT/01-entry.txt"; then
     ok "boot-side recovery check passed (transcript: $OUT/01-entry.txt)"
   else
     bad "boot-side recovery check FAILED; see $OUT/01-entry.txt"
@@ -62,39 +61,38 @@ proof_entry() {
   # And the artefacts themselves, so the transcript stands on its own.
   guest "sudo bootctl list; echo; sudo ls -l /boot/loader/entries /boot/EFI/Linux; echo; sudo bootc status" \
     > "$OUT/01-bootctl.txt" 2>&1
-  guest "sudo /usr/libexec/qos-uki-cmdline show /boot/EFI/Linux/qos-repair.efi" \
+  guest "sudo /usr/libexec/tilo-uki-cmdline show /boot/EFI/Linux/tilo-repair.efi" \
     > "$OUT/01-repair-cmdline.txt" 2>&1
-  if grep -q 'qos\.mode=repair' "$OUT/01-repair-cmdline.txt"; then
-    ok "the repair UKI's sealed command line says qos.mode=repair"
+  if grep -q 'tilo\.mode=repair' "$OUT/01-repair-cmdline.txt"; then
+    ok "the repair UKI's sealed command line says tilo.mode=repair"
   else
-    bad "the repair UKI does not carry qos.mode=repair; it would boot the desktop"
+    bad "the repair UKI does not carry tilo.mode=repair; it would boot the desktop"
   fi
 }
 
 # --- 2. repair mode boots, authenticates, and can act ------------------------
 proof_repair() {
   step "boot INTO repair mode and drive its console"
-  "$VM" ssh "sudo bootctl set-oneshot qos-repair.efi" > "$OUT/02-oneshot.txt" 2>&1 \
+  "$VM" ssh "sudo bootctl set-oneshot tilo-repair.efi" > "$OUT/02-oneshot.txt" 2>&1 \
     || { bad "could not set the one-shot boot entry"; return 1; }
-  ok "next boot pinned to qos-repair.efi"
+  ok "next boot pinned to tilo-repair.efi"
   "$VM" ssh "sudo systemctl poweroff" >/dev/null 2>&1
   sleep 8
   "$VM" stop >/dev/null 2>&1 || true
 
-  # A serial line that can be typed into. Repair mode masks sshd on purpose, so
-  # this is the only channel there is — which is the point of it.
+  # Repair mode masks sshd, so the serial line is the only input channel.
   "$VM" boot 1 --serial-socket || { bad "repair-mode boot did not start"; return 1; }
   local sock; sock="$("$VM" console)"
   for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
   [ -S "$sock" ] || { bad "no serial socket at $sock"; return 1; }
 
   # The console is the evidence. Each `expect` fails the run if it never
-  # arrives, so a pass means these words were actually on the wire.
+  # arrives, so a pass means the expected text was received.
   python3 "$CONSOLE_DRIVER" "$sock" --log "$OUT/02-repair-console.log" \
     timeout:400 \
-    expect:"qos\\.mode=repair" \
-    expect:"Reached target qos-repair.target" \
-    expect:"qOS repair mode" \
+    expect:"tilo\\.mode=repair" \
+    expect:"Reached target tilo-repair.target" \
+    expect:"Tilo repair mode" \
     expect:"mode repair" \
     expect:"What would you like to do" \
     send:"6" \
@@ -115,19 +113,19 @@ proof_repair() {
 # --- 3. a broken generation rolls itself back --------------------------------
 proof_rollback() {
   step "stage a generation whose session never comes up"
-  if ! podman image exists "$QOS_CFS_IMAGE:gen2"; then
+  if ! podman image exists "$TILO_CFS_IMAGE:gen2"; then
     bad "generation 2 is not built. Build the broken one with:
-        QOS_CFS_SESSION_OK=0 ./os/dev/composefs/build.sh 2"
+        TILO_CFS_SESSION_OK=0 ./os/dev/composefs/build.sh 2"
     return 1
   fi
-  if ! podman container exists qos-cfs-registry 2>/dev/null; then
-    podman run -d --name qos-cfs-registry -p "$QOS_CFS_REG_PORT:5000" \
+  if ! podman container exists tilo-cfs-registry 2>/dev/null; then
+    podman run -d --name tilo-cfs-registry -p "$TILO_CFS_REG_PORT:5000" \
       docker.io/library/registry:2 >/dev/null
   else
-    podman start qos-cfs-registry >/dev/null 2>&1 || true
+    podman start tilo-cfs-registry >/dev/null 2>&1 || true
   fi
-  podman push --tls-verify=false "$QOS_CFS_IMAGE:gen2" \
-    "$QOS_CFS_REG_HOST/$QOS_CFS_REPO:latest" >/dev/null 2>&1 \
+  podman push --tls-verify=false "$TILO_CFS_IMAGE:gen2" \
+    "$TILO_CFS_REG_HOST/$TILO_CFS_REPO:latest" >/dev/null 2>&1 \
     || { bad "could not publish generation 2"; return 1; }
 
   "$VM" stop >/dev/null 2>&1 || true
@@ -138,7 +136,7 @@ proof_rollback() {
 
   guest "sudo bootc upgrade" > "$OUT/03-upgrade.txt" 2>&1
   # The staged entry has to carry a try counter BEFORE the reboot into it.
-  guest "sudo /usr/libexec/qos-deployment entries; sudo ls -l /boot/loader/entries" \
+  guest "sudo /usr/libexec/tilo-deployment entries; sudo ls -l /boot/loader/entries" \
     > "$OUT/03-entries-after-stage.txt" 2>&1
   if grep -qE 'bootc.*\+[0-9]+\.conf' "$OUT/03-entries-after-stage.txt"; then
     ok "the staged deployment's loader entry carries a try counter"
@@ -162,7 +160,7 @@ proof_rollback() {
       sleep 5; waited=$((waited+5))
     done
     if "$VM" ssh true >/dev/null 2>&1; then
-      guest 'echo "cmdline: $(cat /proc/cmdline)"; echo; sudo bootctl list; echo; sudo ls -l /boot/loader/entries; echo; sudo journalctl -b -u qos-boot-health --no-pager' \
+      guest 'echo "cmdline: $(cat /proc/cmdline)"; echo; sudo bootctl list; echo; sudo ls -l /boot/loader/entries; echo; sudo journalctl -b -u tilo-boot-health --no-pager' \
         > "$OUT/03-boot$i.txt" 2>&1
       local now
       now="$(guest 'tr " " "\n" < /proc/cmdline | sed -n "s/^composefs=//p"' 2>/dev/null | tr -d '\r')"

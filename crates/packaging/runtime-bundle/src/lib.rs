@@ -1,4 +1,4 @@
-//! qOS runtime bundle producer + verifier.
+//! Tilo runtime bundle producer + verifier.
 //!
 //! A bundle is a directory (`bundle.toml` + `lib/` + optional
 //! `etc/ld.so.cache`) holding a host-copied loader/libc; it is
@@ -34,12 +34,12 @@ use serde::{Deserialize, Serialize};
 pub const BUNDLE_MANIFEST_FILENAME: &str = "bundle.toml";
 
 /// Domain-separation prefix for the bundle-signing preimage; bumped only on a wire-breaking change.
-pub const BUNDLE_SIGNING_DOMAIN: &[u8] = b"qos-runtime-bundle-v1\0";
+pub const BUNDLE_SIGNING_DOMAIN: &[u8] = b"tilo-runtime-bundle-v1\0";
 
 /// Bundle metadata written into `bundle.toml`; fields are stable so `verify` roundtrips across tool versions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundleManifest {
-    /// Human-readable version tag — matches `qos-runtime/<version>` in a package manifest.
+    /// Human-readable version tag — matches `tilo-runtime/<version>` in a package manifest.
     pub version: String,
     /// Target architecture the bundle was built for (matches
     /// `std::env::consts::ARCH`); a launcher on the wrong arch refuses
@@ -224,17 +224,17 @@ pub const HOST_MINIMAL_PATHS: &[&str] = HOST_MINIMAL_PATHS_X86_64;
 pub const HOST_LD_SO_CACHE: &str = "/etc/ld.so.cache";
 
 /// Environment override naming the root that holds `<version>/` bundle
-/// directories (counterpart of `QOS_APPS_DATA_DIR`).
+/// directories (counterpart of `TILO_APPS_DATA_DIR`).
 ///
 /// Repointing `XDG_DATA_HOME` for a session's own documents would
 /// also isolate the runtime bundles living under it, breaking every
 /// app's launch — this variable lets a caller keep the (shared)
 /// runtime reachable without moving it into the session's isolated documents.
-pub const RUNTIME_DIR_ENV: &str = "QOS_RUNTIME_BUNDLE_DIR";
+pub const RUNTIME_DIR_ENV: &str = "TILO_RUNTIME_BUNDLE_DIR";
 
 /// Root holding the per-user bundles, before the version is appended:
 /// [`RUNTIME_DIR_ENV`] when set and non-empty, else
-/// `$XDG_DATA_HOME/qos-runtime`.
+/// `$XDG_DATA_HOME/tilo-runtime`.
 ///
 /// # Errors
 ///
@@ -248,10 +248,10 @@ pub fn bundle_root() -> Result<PathBuf, BundleError> {
     }
     Ok(dirs::data_dir()
         .ok_or(BundleError::NoDataDir)?
-        .join("qos-runtime"))
+        .join("tilo-runtime"))
 }
 
-/// Default per-user bundle directory: `$XDG_DATA_HOME/qos-runtime/<v>/`,
+/// Default per-user bundle directory: `$XDG_DATA_HOME/tilo-runtime/<v>/`,
 /// unless [`RUNTIME_DIR_ENV`] names another root.
 ///
 /// # Errors
@@ -261,9 +261,9 @@ pub fn default_bundle_path(version: &str) -> Result<PathBuf, BundleError> {
     Ok(bundle_root()?.join(version))
 }
 
-/// System-wide fallback: `/usr/lib/qos-runtime/<v>/`.
+/// System-wide fallback: `/usr/lib/tilo-runtime/<v>/`.
 pub fn system_bundle_path(version: &str) -> PathBuf {
-    PathBuf::from("/usr/lib/qos-runtime").join(version)
+    PathBuf::from("/usr/lib/tilo-runtime").join(version)
 }
 
 /// Walk the search path and return the first existing bundle dir with a `bundle.toml` (per-user, then system).
@@ -299,7 +299,7 @@ pub struct BuildOptions<'a> {
     pub extra_libs: &'a [PathBuf],
 }
 
-/// Signing identity for [`build_bundle_with`]: JSON `{ "secret_key_hex": "<64-hex>" }`, same shape as `qos-pkg`.
+/// Signing identity for [`build_bundle_with`]: JSON `{ "secret_key_hex": "<64-hex>" }`, same shape as `tilo-pkg`.
 #[derive(Clone)]
 pub struct Identity {
     signing_key: ed25519_dalek::SigningKey,
@@ -1406,7 +1406,7 @@ mod tests {
         // SAFETY: this test is in the `process_env` serial group.
         unsafe { std::env::remove_var(RUNTIME_DIR_ENV) };
         if let Ok(p) = default_bundle_path("v") {
-            assert!(p.ends_with("qos-runtime/v"));
+            assert!(p.ends_with("tilo-runtime/v"));
         }
     }
 
@@ -1435,7 +1435,7 @@ mod tests {
     }
 
     /// An empty value is not a path — treating it as one resolves to
-    /// `/<version>` (nowhere), turning a stray `QOS_RUNTIME_BUNDLE_DIR=`
+    /// `/<version>` (nowhere), turning a stray `TILO_RUNTIME_BUNDLE_DIR=`
     /// into "no app on this machine launches".
     #[test]
     #[serial_test::serial(process_env)]
@@ -1445,7 +1445,7 @@ mod tests {
         let resolved = default_bundle_path("v");
         unsafe { std::env::remove_var(RUNTIME_DIR_ENV) };
         if let Ok(p) = resolved {
-            assert!(p.ends_with("qos-runtime/v"), "got {p:?}");
+            assert!(p.ends_with("tilo-runtime/v"), "got {p:?}");
         }
     }
 
@@ -1455,7 +1455,7 @@ mod tests {
         fake_x86_64_host(host.path());
 
         // Two stand-in shared objects a thin app links dynamically (Rust std
-        // + qOS runtime dylib); content is arbitrary — the point is they land
+        // + Tilo runtime dylib); content is arbitrary — the point is they land
         // in the bundle, content-addressed, and pass verification.
         let extras_dir = tempfile::tempdir().unwrap();
         let libstd = extras_dir.path().join("libstd-deadbeef.so");

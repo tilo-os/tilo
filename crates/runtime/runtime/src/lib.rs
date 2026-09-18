@@ -1,11 +1,11 @@
-//! `runtime` — the qOS app SDK umbrella crate.
+//! `runtime` — the Tilo app SDK umbrella crate.
 //!
 //! Apps typically depend on `runtime` and use the re-exported submodules
 //! ([`collab`], [`fs`], [`identity`], [`portal`]) instead of pulling in
 //! each sub-crate individually.
 //!
 //! Every service reachable through this SDK is optional: apps built
-//! against `runtime` must run as Flatpaks on stock Linux with no qOS
+//! against `runtime` must run as Flatpaks on stock Linux with no Tilo
 //! services present, so every `try_connect` / `load` returns
 //! `Result<_, NotAvailable>` rather than panicking, letting the app fall
 //! back to a local-only mode.
@@ -20,7 +20,7 @@
 //!
 //! ```text
 //!                +------------------------+
-//!                |      qos-runtime       |   (this crate — umbrella)
+//!                |      tilo-runtime       |   (this crate — umbrella)
 //!                +------------------------+
 //!                     |    |   |    |
 //!         portal ---+ |    |   |    +--- identity
@@ -33,8 +33,8 @@
 //! clients; [`identity`] consumes an app-scoped signing connection while
 //! private key material remains in the host launcher-side broker.
 //!
-//! The broker lives in the compositor, the FUSE driver in `fs/`, and the
-//! launcher is `qos-launcher` — this umbrella is client-side only.
+//! The broker lives in the compositor, the FUSE driver in `crates/system/fs/`, and the
+//! launcher is `tilo-launcher` — this umbrella is client-side only.
 #![cfg_attr(
     test,
     allow(
@@ -60,9 +60,9 @@ pub use runtime_portal_xdg as portal_xdg;
 /// `Result<T, NotAvailable>`, re-exported so app code matches one import.
 pub use runtime_portal::NotAvailable;
 
-/// Are we running inside a qOS session at all? True iff the launcher set
-/// `QOS_WORKSPACE_ID` — not an authorisation gate, see [`portal::is_qos_native`].
-pub use runtime_portal::is_qos_native;
+/// Are we running inside a Tilo session at all? True iff the launcher set
+/// `TILO_WORKSPACE_ID` — not an authorisation gate, see [`portal::is_tilo_native`].
+pub use runtime_portal::is_tilo_native;
 
 #[cfg(test)]
 mod tests {
@@ -89,14 +89,14 @@ mod tests {
     #[test]
     fn every_service_reports_unavailable_when_env_is_empty() {
         for (key, _) in std::env::vars() {
-            if key.starts_with("QOS_") {
+            if key.starts_with("TILO_") {
                 // SAFETY: this test process' env is not touched by
                 // any other thread during test setup.
                 unsafe { std::env::remove_var(&key) };
             }
         }
 
-        assert!(!is_qos_native());
+        assert!(!is_tilo_native());
         assert!(matches!(
             collab::try_connect(),
             Err(NotAvailable::ServiceFdMissing)

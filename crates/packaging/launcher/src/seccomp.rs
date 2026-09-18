@@ -11,7 +11,7 @@
 //! Deliberately small and *deny-list*, not a sweeping allow-list: a
 //! hand-rolled allow-list breaks unpredictably when glibc adds a new
 //! syscall and the surface differs per architecture. Same shape as the
-//! per-workspace filter in `shell/src/sandbox/seccomp.rs`, kept
+//! per-workspace filter in `crates/session/shell/src/sandbox/seccomp.rs`, kept
 //! independent so the launcher has zero dep on the compositor.
 //!
 //! The write-xor-execute rules below exist only here, not in that copy:
@@ -23,7 +23,7 @@
 //! it to a temp file, and passes the open fd to `bwrap`'s `--seccomp
 //! <fd>`. [`compile_baseline`] is the default fast path;
 //! [`baked_blob_path`] returns a pre-populated on-disk blob under
-//! `share/qos-default.bpf` for environments where seccompiler can't run
+//! `share/tilo-default.bpf` for environments where seccompiler can't run
 //! inside the sandbox — identical output for the current build arch.
 
 #[cfg(target_os = "linux")]
@@ -132,40 +132,40 @@ const CLONE_NAMESPACE_FLAGS: &[u64] = &[
 /// [`Self::parse`] anywhere a real launch is being confined.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SeccompProfile {
-    /// `qos-default` — write-xor-execute enforced. An app cannot turn data it
+    /// `tilo-default` — write-xor-execute enforced. An app cannot turn data it
     /// received over the network into code.
     #[default]
-    QosDefault,
-    /// `qos-jit` — the baseline minus the write-xor-execute rules, for the
+    TiloDefault,
+    /// `tilo-jit` — the baseline minus the write-xor-execute rules, for the
     /// one class of program that genuinely compiles code at run time: a
     /// web engine's JavaScript tier. Everything else still applies.
-    QosJit,
+    TiloJit,
 }
 
 impl SeccompProfile {
     /// Resolve a manifest profile name.
     ///
-    /// Unknown names resolve to [`SeccompProfile::QosDefault`], the strict
+    /// Unknown names resolve to [`SeccompProfile::TiloDefault`], the strict
     /// one — a typo must not be a way to acquire a weaker sandbox.
     pub fn parse(name: &str) -> Self {
         match name {
-            "qos-jit" => Self::QosJit,
-            _ => Self::QosDefault,
+            "tilo-jit" => Self::TiloJit,
+            _ => Self::TiloDefault,
         }
     }
 
     /// The manifest spelling, for logging and round-tripping.
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::QosDefault => "qos-default",
-            Self::QosJit => "qos-jit",
+            Self::TiloDefault => "tilo-default",
+            Self::TiloJit => "tilo-jit",
         }
     }
 
     /// Whether this profile lets the app map memory writable and executable
     /// at once.
     pub fn allows_dynamic_code(self) -> bool {
-        matches!(self, Self::QosJit)
+        matches!(self, Self::TiloJit)
     }
 }
 
@@ -175,10 +175,10 @@ impl SeccompProfile {
 /// One entry per line, `#` starts a comment, a trailing `*` is a prefix
 /// match — same format as [`crate::hardening::POLICY_PATH`], so the two
 /// image-owned policies cannot drift into different syntaxes.
-pub const JIT_POLICY_PATH: &str = "/usr/lib/qos/jit-entitled.conf";
+pub const JIT_POLICY_PATH: &str = "/usr/lib/tilo/jit-entitled.conf";
 
 /// Overrides [`JIT_POLICY_PATH`], so a test can point at a fixture.
-pub const JIT_POLICY_PATH_ENV: &str = "QOS_JIT_ENTITLED_FILE";
+pub const JIT_POLICY_PATH_ENV: &str = "TILO_JIT_ENTITLED_FILE";
 
 /// Fallback when [`JIT_POLICY_PATH`] is absent — the packages in this
 /// tree that genuinely compile code at run time.
@@ -187,7 +187,7 @@ pub const JIT_POLICY_PATH_ENV: &str = "QOS_JIT_ENTITLED_FILE";
 /// tier emits machine code it then executes; anything else almost
 /// certainly wants a write-then-flip JIT, which the strict profile
 /// already allows.
-pub const BUILTIN_JIT_ENTITLED: &[&str] = &["dev.qos.browser"];
+pub const BUILTIN_JIT_ENTITLED: &[&str] = &["dev.tilo.browser"];
 
 /// Whether the image lets `package_id` run without write-xor-execute.
 ///
@@ -239,7 +239,7 @@ pub fn resolve_profile(requested: &str, package_id: &str) -> ProfileDecision {
         };
     }
     ProfileDecision {
-        applied: SeccompProfile::QosDefault,
+        applied: SeccompProfile::TiloDefault,
         requested: requested.to_string(),
         refused: true,
     }
@@ -269,7 +269,7 @@ fn build_baseline_filter(profile: SeccompProfile) -> Result<SeccompFilter, Secco
     }
 
     // pthreads still need clone(), but an app may not use it to manufacture
-    // another namespace boundary inside the one qOS constructed. One rule per
+    // another namespace boundary inside the one Tilo constructed. One rule per
     // bit expresses "any forbidden flag" because rules for a syscall are ORed.
     rules.insert(
         libc::SYS_clone,
@@ -291,7 +291,7 @@ fn build_baseline_filter(profile: SeccompProfile) -> Result<SeccompFilter, Secco
     // the attacker no longer needs to reuse existing instructions, they can
     // write their own. Refusing the combination costs nothing unless an app
     // compiles code at run time — the only one here is the browser's web
-    // engine, which asks for `qos-jit`.
+    // engine, which asks for `tilo-jit`.
     //
     // `MaskedEq` compares `(prot & mask) == (value & mask)`, matching any
     // protection with both bits set and leaving `PROT_READ|PROT_WRITE`
@@ -387,7 +387,7 @@ pub fn write_baseline_to(dir: &Path, profile: SeccompProfile) -> Result<PathBuf,
 
 /// Path the launcher checks for a pre-baked blob, preferred over
 /// compiling when present. Looked up relative to `$CARGO_MANIFEST_DIR`
-/// at build time and `<crate_root>/share/qos-default.bpf` at runtime —
+/// at build time and `<crate_root>/share/tilo-default.bpf` at runtime —
 /// a developer convenience only; production has a fixed location.
 #[cfg(target_os = "linux")]
 pub fn baked_blob_path(profile: SeccompProfile) -> PathBuf {
@@ -403,7 +403,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn baseline_compiles_and_blob_alignment() {
-        let bytes = compile_baseline(SeccompProfile::QosDefault).expect("compile");
+        let bytes = compile_baseline(SeccompProfile::TiloDefault).expect("compile");
         assert!(!bytes.is_empty(), "empty BPF");
         assert_eq!(
             bytes.len() % 8,
@@ -417,7 +417,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn write_baseline_creates_blob() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_baseline_to(dir.path(), SeccompProfile::QosDefault).unwrap();
+        let path = write_baseline_to(dir.path(), SeccompProfile::TiloDefault).unwrap();
         assert!(path.exists());
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(bytes.len() % 8, 0);
@@ -425,21 +425,21 @@ mod tests {
 
     #[test]
     fn unknown_profile_name_resolves_to_the_strict_one() {
-        for name in ["qos-default", "", "qos-jitt", "QOS-JIT", "anything"] {
+        for name in ["tilo-default", "", "tilo-jitt", "TILO-JIT", "anything"] {
             assert_eq!(
                 SeccompProfile::parse(name),
-                SeccompProfile::QosDefault,
+                SeccompProfile::TiloDefault,
                 "{name:?} must not resolve to a weaker profile"
             );
         }
-        assert_eq!(SeccompProfile::parse("qos-jit"), SeccompProfile::QosJit);
+        assert_eq!(SeccompProfile::parse("tilo-jit"), SeccompProfile::TiloJit);
     }
 
     #[test]
     #[cfg(target_os = "linux")]
     fn jit_profile_is_the_only_one_that_drops_the_write_exec_rules() {
-        let strict = compile_baseline(SeccompProfile::QosDefault).unwrap();
-        let jit = compile_baseline(SeccompProfile::QosJit).unwrap();
+        let strict = compile_baseline(SeccompProfile::TiloDefault).unwrap();
+        let jit = compile_baseline(SeccompProfile::TiloJit).unwrap();
         assert!(
             strict.len() > jit.len(),
             "the strict profile must carry more program than the JIT one \
@@ -564,7 +564,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn strict_profile_refuses_writable_executable_memory_in_the_kernel() {
         assert_eq!(
-            probe_mappings_under(SeccompProfile::QosDefault),
+            probe_mappings_under(SeccompProfile::TiloDefault),
             0,
             "10 = W+X was allowed, 11 = an ordinary mapping was refused, \
              12 = the filter would not install"
@@ -574,7 +574,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn baseline_refuses_kernel_introspection_and_fault_injection_syscalls() {
-        let filter = build_baseline_filter(SeccompProfile::QosDefault).expect("build filter");
+        let filter = build_baseline_filter(SeccompProfile::TiloDefault).expect("build filter");
         let program: BpfProgram = filter.try_into().expect("compile filter");
         // SAFETY: the child installs a filter, invokes raw syscalls with inert
         // arguments, and exits without returning into the test harness.
@@ -611,7 +611,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn jit_profile_still_permits_writable_executable_memory() {
         assert_eq!(
-            probe_mappings_under(SeccompProfile::QosJit),
+            probe_mappings_under(SeccompProfile::TiloJit),
             0,
             "10 = W+X was allowed, 11 = an ordinary mapping was refused, \
              12 = the filter would not install"
@@ -667,19 +667,19 @@ mod tests {
     }
 
     /// A package cannot lift write-xor-execute off itself by saying so: a
-    /// `.qpkg` carries its own manifest, so naming `qos-jit` is the applicant
+    /// `.qpkg` carries its own manifest, so naming `tilo-jit` is the applicant
     /// filling in their own permit.
     #[test]
     #[serial_test::serial(process_env)]
     fn a_package_the_image_does_not_entitle_gets_the_strict_profile() {
-        let _policy = JitPolicy::listing("dev.qos.browser\n");
+        let _policy = JitPolicy::listing("dev.tilo.browser\n");
 
-        let decision = resolve_profile("qos-jit", "com.example.evil");
+        let decision = resolve_profile("tilo-jit", "com.example.evil");
 
         assert_eq!(
             decision.applied,
-            SeccompProfile::QosDefault,
-            "a manifest asking for qos-jit without entitlement must be confined \
+            SeccompProfile::TiloDefault,
+            "a manifest asking for tilo-jit without entitlement must be confined \
              by the strict profile"
         );
         assert!(
@@ -687,7 +687,7 @@ mod tests {
             "the launcher has to be able to say a request was refused, or the \
              log cannot tell a typo from an app trying to weaken itself"
         );
-        assert_eq!(decision.requested, "qos-jit");
+        assert_eq!(decision.requested, "tilo-jit");
     }
 
     /// The refusal reaches the kernel, not just the enum: a test comparing
@@ -697,9 +697,9 @@ mod tests {
     #[serial_test::serial(process_env)]
     #[cfg(target_os = "linux")]
     fn an_unentitled_request_is_refused_by_the_running_filter() {
-        let _policy = JitPolicy::listing("dev.qos.browser\n");
+        let _policy = JitPolicy::listing("dev.tilo.browser\n");
 
-        let applied = resolve_profile("qos-jit", "com.example.evil").applied;
+        let applied = resolve_profile("tilo-jit", "com.example.evil").applied;
         assert!(
             !applied.allows_dynamic_code(),
             "fixture sanity: the resolved profile must be the strict one, or \
@@ -718,11 +718,11 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn the_package_the_image_entitles_still_gets_what_it_asked_for() {
-        let _policy = JitPolicy::listing("dev.qos.browser\n");
+        let _policy = JitPolicy::listing("dev.tilo.browser\n");
 
-        let decision = resolve_profile("qos-jit", "dev.qos.browser");
+        let decision = resolve_profile("tilo-jit", "dev.tilo.browser");
 
-        assert_eq!(decision.applied, SeccompProfile::QosJit);
+        assert_eq!(decision.applied, SeccompProfile::TiloJit);
         assert!(!decision.refused);
     }
 
@@ -730,13 +730,13 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn entitlement_without_a_request_changes_nothing() {
-        let _policy = JitPolicy::listing("dev.qos.browser\n");
+        let _policy = JitPolicy::listing("dev.tilo.browser\n");
 
-        let decision = resolve_profile("qos-default", "dev.qos.browser");
+        let decision = resolve_profile("tilo-default", "dev.tilo.browser");
 
         assert_eq!(
             decision.applied,
-            SeccompProfile::QosDefault,
+            SeccompProfile::TiloDefault,
             "being on the list must not weaken a package that did not ask"
         );
         assert!(!decision.refused);
@@ -746,14 +746,14 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn a_misspelt_profile_resolves_strict_for_everyone() {
-        let _policy = JitPolicy::listing("dev.qos.browser\n");
+        let _policy = JitPolicy::listing("dev.tilo.browser\n");
 
-        for id in ["dev.qos.browser", "com.example.evil"] {
-            for name in ["qos-jitt", "QOS-JIT", "", "anything"] {
+        for id in ["dev.tilo.browser", "com.example.evil"] {
+            for name in ["tilo-jitt", "TILO-JIT", "", "anything"] {
                 let decision = resolve_profile(name, id);
                 assert_eq!(
                     decision.applied,
-                    SeccompProfile::QosDefault,
+                    SeccompProfile::TiloDefault,
                     "{id} asking for {name:?} must not reach a weaker profile"
                 );
                 assert!(
@@ -772,8 +772,8 @@ mod tests {
         let _policy = JitPolicy::listing("# nobody\n");
 
         assert_eq!(
-            resolve_profile("qos-jit", "dev.qos.browser").applied,
-            SeccompProfile::QosDefault,
+            resolve_profile("tilo-jit", "dev.tilo.browser").applied,
+            SeccompProfile::TiloDefault,
             "the image's own file decides; the fallback must not add to it"
         );
     }
@@ -786,13 +786,13 @@ mod tests {
         let _policy = JitPolicy::missing();
 
         assert_eq!(
-            resolve_profile("qos-jit", "dev.qos.browser").applied,
-            SeccompProfile::QosJit,
+            resolve_profile("tilo-jit", "dev.tilo.browser").applied,
+            SeccompProfile::TiloJit,
             "fallback list lost the browser"
         );
         assert_eq!(
-            resolve_profile("qos-jit", "com.example.evil").applied,
-            SeccompProfile::QosDefault,
+            resolve_profile("tilo-jit", "com.example.evil").applied,
+            SeccompProfile::TiloDefault,
             "the fallback must entitle the browser and nobody else"
         );
     }
@@ -801,20 +801,20 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn the_manifest_accessor_consults_the_entitlement_policy() {
-        let _policy = JitPolicy::listing("dev.qos.browser\n");
+        let _policy = JitPolicy::listing("dev.tilo.browser\n");
         let sandbox = crate::manifest::Sandbox {
-            seccomp: "qos-jit".to_string(),
+            seccomp: "tilo-jit".to_string(),
             ..crate::manifest::Sandbox::default()
         };
 
         assert_eq!(
             sandbox.seccomp_profile("com.example.evil"),
-            SeccompProfile::QosDefault,
+            SeccompProfile::TiloDefault,
             "the manifest accessor must not hand out what the image refused"
         );
         assert_eq!(
-            sandbox.seccomp_profile("dev.qos.browser"),
-            SeccompProfile::QosJit
+            sandbox.seccomp_profile("dev.tilo.browser"),
+            SeccompProfile::TiloJit
         );
     }
 
@@ -823,8 +823,8 @@ mod tests {
     /// on one image than another.
     #[test]
     fn the_shipped_policy_file_and_the_builtin_list_agree() {
-        let repo =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../os/usr/lib/qos/jit-entitled.conf");
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../os/usr/lib/tilo/jit-entitled.conf");
         let shipped = std::fs::read_to_string(&repo).unwrap_or_else(|e| {
             panic!(
                 "the image's entitlement list must be in the tree at {}: {e}",

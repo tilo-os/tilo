@@ -2,9 +2,9 @@
 //!
 //! Shared by the `serve-test-registry` example and the test that holds
 //! it to its contract. Lives under `examples/support/` (a dev-only
-//! dependency set) so the packer doesn't ship inside `qos-catalogue`.
+//! dependency set) so the packer doesn't ship inside `tilo-catalogue`.
 //!
-//! The manifest decides real launch behaviour — `[sandbox.services]`
+//! The manifest decides launch behaviour — `[sandbox.services]`
 //! (which service descriptors the launcher hands the app; no `collab`
 //! entry means collaboration silently doesn't work), the runtime
 //! bundle, sandbox namespaces, the entrypoint binary. A registry
@@ -14,7 +14,7 @@
 //!
 //! So the rule: **publish the manifest the payload was built with**
 //! (a payload root with `manifest.toml` beside `bin/`, as
-//! `qos-install` writes). Synthesising a minimal manifest is the
+//! `tilo-install` writes). Synthesising a minimal manifest is the
 //! fallback for a payload with none at all, not the default.
 
 use std::path::{Path, PathBuf};
@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use pkg::pack::{SigningIdentity, pack};
 use pkg::{Manifest, MemoryBlobStore};
 
-/// Where the manifest that got packed came from, printed so a log says which app was actually published.
+/// Where the manifest that got packed came from, so a log identifies the published app.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManifestSource {
     /// Taken from the package the payload belongs to.
@@ -75,7 +75,7 @@ pub enum AuthorError {
 
 /// The `manifest.toml` belonging to `payload_bin`, if part of an installed package.
 ///
-/// `qos-install` unpacks as `<payload-root>/manifest.toml` beside
+/// `tilo-install` unpacks as `<payload-root>/manifest.toml` beside
 /// `<payload-root>/bin/<binary>`, so the manifest is the binary's
 /// grandparent's `manifest.toml`; two levels up is also checked, for
 /// a nested entrypoint like `libexec/helpers/thing`.
@@ -92,7 +92,7 @@ pub fn manifest_beside(payload_bin: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Pack `payload_bin` into a real, signed `.qpkg`.
+/// Pack `payload_bin` into a signed `.qpkg`.
 ///
 /// `manifest_path` overrides the search; `None` looks beside the
 /// payload via [`manifest_beside`] and synthesises only if that finds nothing.
@@ -218,7 +218,7 @@ signature = ""
 
 [sandbox]
 namespaces = ["user"]
-seccomp = "qos-default"
+seccomp = "tilo-default"
 landlock = "strict"
 
 [sandbox.net]

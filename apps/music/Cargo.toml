@@ -15,54 +15,36 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
-# The real app ships on by default: `streaming` + `audio` + `live` give a
-# normally-built `music` real YouTube-Music search, real audio-stream
-# resolution, and real sound out of the box. The bundled sample library and
-# the runtime offline switch (`set_offline_for_shot`) keep `--shots` and tests
-# fully hermetic regardless — the features compile the live code in; the
-# runtime mode decides live vs sample. `lyrics` and `p2p` stay opt-in extras.
-default = ["streaming", "audio", "live"]
-# Real HTTP audio-stream resolution (Piped/Invidious).
-streaming = ["dep:reqwest"]
-# Real desktop audio integration. Off by default (no system GStreamer / D-Bus
-# dependency for CI / screenshots). Bundles everything the real running app
-# needs to *sound* and be *controllable* on a live session, so the documented
-# real path (`--features live,audio`) turns them all on together:
-#   * `gstreamer` — real `playbin` audio output through a real system sink;
-#   * `zbus`      — MPRIS (`org.mpris.MediaPlayer2`) so media keys + GNOME's
-#                   media controls drive playback (see `src/mpris.rs`);
-#   * `ashpd`/`url` — the native XDG file-chooser portal for picking a
-#                   playlist cover image through `ui::portal`.
-audio = ["dep:gstreamer", "dep:zbus", "dep:tokio", "ui/portal"]
-# Real YouTube-Music streaming via the pure-Rust `rustypipe` InnerTube client:
-# real search (`music_search_tracks`) and real audio-stream resolution
-# (`player`, which returns a directly-playable googlevideo URL). Off by default
-# so the default build + every `--shots`/test run stays hermetic on the bundled
-# sample library. Pairs with `audio` for actual sound: `--features live,audio`.
-# `reqwest` is pulled in so `--probe` can independently HTTP-verify the resolved
-# stream URL (Content-Length / first bytes).
-live = ["dep:rustypipe", "dep:tokio", "dep:reqwest"]
-# Live synced-lyrics fetch from lrclib.net over HTTP. Off by default; the
-# bundled sample lyrics keep the lyrics view populated offline / in `--shots`.
+# The default app includes live search, stream resolution, and audio output.
+# The bundled sample library and runtime offline switch keep shots and tests
+# hermetic. Live builds also support network lyrics.
+default = ["audio", "live"]
+# Desktop audio output/control and the host file chooser for playlist covers.
+audio = ["dep:gstreamer", "dep:tokio", "ui/portal", "ui/mpris"]
+# YouTube Music search and stream resolution through the pure-Rust `rustypipe`
+# InnerTube client. Shots/tests select their hermetic backend at runtime; `reqwest`
+# supports `--probe` verification.
+live = ["dep:rustypipe", "dep:tokio", "dep:reqwest", "dep:rquickjs"]
+# Enable network lyrics without the full live backend; live already enables them.
 lyrics = ["dep:reqwest"]
-# Async P2P library-sync seam. The current transport is the deterministic
-# loopback implementation, so only its Tokio executor is feature-gated.
-p2p = ["dep:tokio"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
-# The qOS action model: document-mutating library edits (playlist create/rename/
+dirs.workspace = true
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+# The Tilo action model: document-mutating library edits (playlist create/rename/
 # delete, add/remove/reorder track, like/save/follow) are replayable actions the
 # Ctrl+K palette and the on-screen affordances both dispatch — one source of
 # truth, one replay path.
-qos-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/collab/actions" }
+media = { path = "../../crates/media/core" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+url.workspace = true
 base64.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 tracing.workspace = true
@@ -72,26 +54,27 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 
-# Optional: enabled only by the `streaming` / `audio` / `lyrics` / `p2p`
+# Optional: enabled only by the `audio` / `live` / `lyrics`
 # features above. Versions pinned to match the workspace lock so no extra
 # copies resolve (tokio mirrors the `chat` app + `fs` submodule pins).
-reqwest = { workspace = true, optional = true, features = ["blocking", "json"], default-features = true }
+reqwest = { workspace = true, optional = true, features = ["blocking", "json", "rustls-tls"] }
 gstreamer = { workspace = true, optional = true }
-# MPRIS D-Bus media control (`org.mpris.MediaPlayer2` + `.Player`). Version
-# pinned to match `apps/chat` + `ashpd` so no second zbus copy resolves. The
-# `p2p` feature backs the hermetic socket-pair round-trip test (serve the real
-# interfaces over a `UnixStream` pair — no session bus needed).
-zbus = { workspace = true, optional = true, features = ["p2p"], default-features = true }
-# Native XDG file-chooser portal for the playlist-cover picker (same crate +
-# version as `apps/contacts`/`apps/maps`, so the picker matches the host desktop
-# and hosts the sandbox file-access prompt). `url` maps the returned file URIs.
-# `url` maps the portal's returned file URIs; kept non-optional so the pure
-# mapping + its tests build in the default (hermetic) configuration too.
 tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 # Pure-Rust InnerTube (YouTube / YouTube Music) client: search + stream
-# resolution. Embeds `rquickjs` for signature deobfuscation — no ffmpeg /
-# yt-dlp / JS runtime binary. Gated behind `live`; off the `--shots` path.
-rustypipe = { workspace = true, optional = true, default-features = true }
+# resolution. Embeds `rquickjs` for signature deobfuscation — no external
+# interpreter, downloader, or JS runtime binary. Gated behind `live`.
+rustypipe = { workspace = true, optional = true, features = ["rustls-tls-webpki-roots"] }
+
+[target.'cfg(all(windows, target_arch = "aarch64"))'.dependencies]
+# QuickJS does not ship Windows ARM64 bindings; generate the actual target ABI.
+rquickjs = { workspace = true, optional = true, features = ["bindgen"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+bounded-command = { path = "../../crates/system/bounded-command" }
+
+[dev-dependencies]
+serial_test.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

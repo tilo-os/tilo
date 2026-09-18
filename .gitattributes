@@ -1,0 +1,14 @@
+# Linux image scripts must retain LF when the repository is checked out on
+# Windows for ARM64 image preparation. PowerShell also accepts LF.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Font licenses are content-addressed by the canonical font manifest.
+crates/sdk/ui-core/assets/fonts/LICENSES/*.txt -text
+crates/sdk/ui-core/assets/fonts/manifest.toml text eol=lf
+
+# Media license notices retain the bytes verified by sources.json.
+tools/windows/gstreamer-licenses/*.txt -text
+tools/windows/gstreamer-licenses/*-COPYING -text
+tools/windows/gstreamer-licenses/*-LICENSE -text

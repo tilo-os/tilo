@@ -4,7 +4,7 @@
 //! Mount / unmount / format / eject / benchmark are privileged, per-machine
 //! effects against real block devices (via udisks2 / polkit, or the CLI
 //! fallback). They change the running system, never the shared Automerge
-//! document, so by the qOS action-model recipe (`docs/action-model-recipe.md`)
+//! document, so by the Tilo action-model recipe (`docs/action-model-recipe.md`)
 //! **none of them is an `Action`** — none crosses the CRDT executor. The
 //! resource + action-model finding is recorded in [`crate::actions`], and the
 //! functions here deliberately take no `AutoCommit`: they cannot touch the doc.
@@ -30,6 +30,7 @@ use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::process::Command;
+use std::time::Duration;
 use std::time::Instant;
 
 /// The privileged operations the app can perform.
@@ -166,12 +167,19 @@ pub fn eject_cli(dev_leaf: &str) -> Vec<CommandSpec> {
 pub fn run_command_chain(specs: &[CommandSpec]) -> Result<String, String> {
     let mut last = String::from("no command available");
     for spec in specs {
-        match Command::new(&spec.program).args(&spec.args).output() {
+        let mut command = Command::new(&spec.program);
+        command.args(&spec.args);
+        match bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(5 * 60))
+        {
             Ok(out) if out.status.success() => {
                 return Ok(format!("{} succeeded", spec.program));
             }
             Ok(out) => {
-                let err = String::from_utf8_lossy(&out.stderr);
+                let err = String::from_utf8_lossy(&out.stderr)
+                    .chars()
+                    .filter(|character| !character.is_control() || *character == ' ')
+                    .take(512)
+                    .collect::<String>();
                 last = format!("{} failed: {}", spec.program, err.trim());
             }
             Err(e) => {
@@ -371,11 +379,11 @@ mod tests {
     fn command_chain_reports_the_last_failure_when_nothing_runs() {
         // Two programs that certainly do not exist → an Err carrying the last.
         let specs = vec![
-            CommandSpec::new("qos-no-such-tool-a", &["x"]),
-            CommandSpec::new("qos-no-such-tool-b", &["y"]),
+            CommandSpec::new("tilo-no-such-tool-a", &["x"]),
+            CommandSpec::new("tilo-no-such-tool-b", &["y"]),
         ];
         let r = run_command_chain(&specs);
         assert!(r.is_err());
-        assert!(r.unwrap_err().contains("qos-no-such-tool-b"));
+        assert!(r.unwrap_err().contains("tilo-no-such-tool-b"));
     }
 }

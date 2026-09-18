@@ -1,4 +1,4 @@
-//! `runtime-collab` — Cap'n Proto client for the qOS
+//! `runtime-collab` — Cap'n Proto client for the Tilo
 //! collaboration broker.
 //!
 //! ## Usage shape
@@ -122,7 +122,7 @@ impl MlsSnapshotReceipt {
     }
 }
 
-/// Broker-internal MLS membership command. This is deliberately not exposed
+/// Broker-internal MLS membership command. This is not exposed
 /// as a `CollabService` RPC: applications never submit governance commands.
 /// The shell's authenticated workspace authority constructs it from live
 /// membership state and vault-issued handles.
@@ -227,12 +227,13 @@ pub use collab_capnp::collab_service::Client as CollabServiceClient;
 pub use collab_capnp::context_stream::Client as ContextStreamClient;
 pub use collab_capnp::invocation_stream::Client as InvocationStreamClient;
 pub use collab_capnp::presence_stream::Client as PresenceStreamClient;
+pub use collab_capnp::realtime_stream::Client as RealtimeStreamClient;
 pub use collab_capnp::stream::Client as StreamClient;
 pub use collab_capnp::task_run_stream::Client as TaskRunStreamClient;
 
 /// Version tag distinguishing a certified join presentation from invalid
 /// identity bytes.
-pub const CERTIFIED_JOIN_PREFIX: &[u8] = b"qos-collab-certified-join-v1\0";
+pub const CERTIFIED_JOIN_PREFIX: &[u8] = b"tilo-collab-certified-join-v1\0";
 
 /// Peer-verifiable proof that an enrolled device joined one workspace.
 /// `device_certificate` is the JSON form supplied by `runtime-identity`; the
@@ -276,7 +277,7 @@ impl CertifiedJoinIdentity {
     }
 }
 
-/// Try to dial the qOS collab broker via the launcher-supplied service
+/// Try to dial the Tilo collab broker via the launcher-supplied service
 /// fd. Returns [`NotAvailable`] when the env var is unset (likely: app
 /// running as a Flatpak on stock Linux) or the fd is no longer open.
 ///
@@ -385,7 +386,538 @@ pub struct ChannelHandle {
     inner: Rc<collab_capnp::channel_handle::Client>,
 }
 
+/// Maximum encoded size of one Nearby Send control command or reply. Transfer
+/// bytes never use this lane; the shell's existing resumable object transport
+/// owns payload delivery.
+pub const MAX_NEARBY_TRANSFER_WIRE_BYTES: usize = 64 * 1024;
+/// Maximum certified devices returned to one picker snapshot.
+pub const MAX_NEARBY_TRANSFER_TARGETS: usize = 32;
+pub const MAX_NEARBY_TRANSFER_DESTINATIONS: usize = 16;
+/// Maximum active/recent transfers returned to one status snapshot.
+pub const MAX_NEARBY_TRANSFER_STATUSES: usize = 128;
+/// Maximum UTF-8 byte length of a device label or rejection reason.
+pub const MAX_NEARBY_TRANSFER_LABEL_BYTES: usize = 256;
+/// Maximum UTF-8 byte length of a portable transfer display name.
+pub const MAX_NEARBY_TRANSFER_NAME_BYTES: usize = 512;
+/// Maximum raw byte length of one exact Files source path.
+pub const MAX_NEARBY_TRANSFER_PATH_BYTES: usize = 4_096;
+/// Maximum encoded size of one local Settings Wi-Fi continuity request.
+pub const MAX_WIFI_CONTINUITY_WIRE_BYTES: usize = 4 * 1024;
+pub const MAX_WIFI_SSID_BYTES: usize = 256;
+pub const MAX_WIFI_PASSWORD_BYTES: usize = 512;
+
+/// Portable Wi-Fi authentication modes understood by the sealed personal
+/// secret bridge. Enterprise identity/certificate state is intentionally not
+/// representable here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PortableWifiSecurity {
+    Wpa2,
+    Wpa3,
+}
+
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "command", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum WifiContinuityCommand {
+    Lookup {
+        ssid: String,
+        security: PortableWifiSecurity,
+    },
+    Share {
+        ssid: String,
+        security: PortableWifiSecurity,
+        password: String,
+    },
+    ShareSavedProfile {
+        /// Local `NetworkManager` capability; never serialized into fabric state.
+        profile_uuid: String,
+    },
+}
+
+impl std::fmt::Debug for WifiContinuityCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Lookup { ssid, security } => formatter
+                .debug_struct("Lookup")
+                .field("ssid", ssid)
+                .field("security", security)
+                .finish(),
+            Self::Share { ssid, security, .. } => formatter
+                .debug_struct("Share")
+                .field("ssid", ssid)
+                .field("security", security)
+                .field("password", &"<redacted>")
+                .finish(),
+            Self::ShareSavedProfile { profile_uuid } => formatter
+                .debug_struct("ShareSavedProfile")
+                .field("profile_uuid", profile_uuid)
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "result", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum WifiContinuityReply {
+    Password { password: String },
+    NotFound,
+    Shared { ssid: String },
+    Rejected { reason: String },
+}
+
+impl std::fmt::Debug for WifiContinuityReply {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Password { .. } => formatter
+                .debug_struct("Password")
+                .field("password", &"<redacted>")
+                .finish(),
+            Self::NotFound => formatter.write_str("NotFound"),
+            Self::Shared { ssid } => formatter
+                .debug_struct("Shared")
+                .field("ssid", ssid)
+                .finish(),
+            Self::Rejected { reason } => formatter
+                .debug_struct("Rejected")
+                .field("reason", reason)
+                .finish(),
+        }
+    }
+}
+
+impl WifiContinuityCommand {
+    pub fn valid(&self) -> bool {
+        let valid_ssid = |ssid: &str| !ssid.is_empty() && ssid.len() <= MAX_WIFI_SSID_BYTES;
+        match self {
+            Self::Lookup { ssid, .. } => valid_ssid(ssid),
+            Self::Share { ssid, password, .. } => {
+                valid_ssid(ssid)
+                    && !password.is_empty()
+                    && password.len() <= MAX_WIFI_PASSWORD_BYTES
+            }
+            Self::ShareSavedProfile { profile_uuid } => valid_uuid(profile_uuid),
+        }
+    }
+}
+
+impl WifiContinuityReply {
+    pub fn valid(&self) -> bool {
+        match self {
+            Self::Password { password } => {
+                !password.is_empty() && password.len() <= MAX_WIFI_PASSWORD_BYTES
+            }
+            Self::NotFound => true,
+            Self::Shared { ssid } => !ssid.is_empty() && ssid.len() <= MAX_WIFI_SSID_BYTES,
+            Self::Rejected { reason } => !reason.is_empty() && reason.len() <= 512,
+        }
+    }
+}
+
+fn valid_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+}
+
+/// A short-lived shell capability naming one picker target. It
+/// carries no cryptographic peer identity and has no authority outside the
+/// authenticated app connection that received it.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct NearbyTargetHandle([u8; 16]);
+
+impl NearbyTargetHandle {
+    /// Wrap random bytes freshly issued by the shell's authenticated broker.
+    pub fn from_issued_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    /// Return the opaque bytes for equality, serialization, and stable action ids.
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+
+    /// Whether this is a structurally valid shell-issued handle.
+    pub fn valid(self) -> bool {
+        self.0 != [0; 16]
+    }
+}
+
+/// A short-lived shell capability naming one transfer for one authenticated
+/// Files connection. It is never the transport's global transfer identity.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct NearbyTransferHandle([u8; 16]);
+
+impl NearbyTransferHandle {
+    /// Wrap random bytes freshly issued by the shell's authenticated broker.
+    pub fn from_issued_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    /// Return opaque bytes for equality and serialization.
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+
+    /// Whether this is a structurally valid shell-issued handle.
+    pub fn valid(self) -> bool {
+        self.0 != [0; 16]
+    }
+}
+
+/// A short-lived shell capability naming one receiver destination for one
+/// authenticated Files connection. Applications never receive its host path.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct NearbyDestinationHandle([u8; 16]);
+
+impl NearbyDestinationHandle {
+    pub fn from_issued_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+
+    pub fn valid(self) -> bool {
+        self.0 != [0; 16]
+    }
+}
+
+/// Path-free receiver destination projected from this Files instance's
+/// current writable grants.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NearbyTransferDestination {
+    pub handle: NearbyDestinationHandle,
+    pub label: String,
+    pub remembered_for_session: bool,
+}
+
+/// A certified personal-device target safe to show in an application picker.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NearbyTransferTarget {
+    pub handle: NearbyTargetHandle,
+    pub label: String,
+    pub online: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NearbyTransferDirection {
+    Sending,
+    Receiving,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NearbyTransferPhase {
+    AwaitingConsent,
+    AwaitingDestination,
+    Queued,
+    Transferring,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+/// Bounded status projection. Paths and file contents are absent:
+/// receiver UI needs a portable display name, exact peer and byte progress.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NearbyTransferStatus {
+    pub handle: NearbyTransferHandle,
+    pub name: String,
+    pub device_label: String,
+    pub direction: NearbyTransferDirection,
+    pub phase: NearbyTransferPhase,
+    pub transferred_bytes: u64,
+    pub total_bytes: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NearbyTransferSnapshot {
+    pub targets: Vec<NearbyTransferTarget>,
+    pub destinations: Vec<NearbyTransferDestination>,
+    pub transfers: Vec<NearbyTransferStatus>,
+}
+
+/// Commands accepted by the shell-owned Nearby Send authority. `source_path`
+/// is raw Unix path bytes so a valid file never becomes inaccessible merely
+/// because its name is not UTF-8. The broker accepts `Send` only from the
+/// certified Files application and revalidates the exact target and source.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "command", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum NearbyTransferCommand {
+    Snapshot,
+    Send {
+        target: NearbyTargetHandle,
+        source_path: Vec<u8>,
+    },
+    Decide {
+        handle: NearbyTransferHandle,
+        accept: bool,
+        destination: Option<NearbyDestinationHandle>,
+        remember_for_session: bool,
+    },
+    Cancel {
+        handle: NearbyTransferHandle,
+    },
+    Retry {
+        handle: NearbyTransferHandle,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "result", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum NearbyTransferReply {
+    Snapshot { snapshot: NearbyTransferSnapshot },
+    Queued { handle: NearbyTransferHandle },
+    Accepted,
+    Rejected { reason: String },
+}
+
+impl NearbyTransferCommand {
+    /// Structural validation shared by clients and the shell broker. This is
+    /// independent of authorization: the broker must still bind
+    /// the app, source path, transfer id and device to its live route.
+    pub fn valid(&self) -> bool {
+        match self {
+            Self::Snapshot => true,
+            Self::Decide {
+                handle,
+                accept,
+                destination,
+                remember_for_session,
+            } => {
+                handle.valid()
+                    && if *accept {
+                        destination.is_some_and(NearbyDestinationHandle::valid)
+                    } else {
+                        destination.is_none() && !remember_for_session
+                    }
+            }
+            Self::Cancel { handle } | Self::Retry { handle } => handle.valid(),
+            Self::Send {
+                target,
+                source_path,
+            } => {
+                target.valid()
+                    && !source_path.is_empty()
+                    && source_path.len() <= MAX_NEARBY_TRANSFER_PATH_BYTES
+                    && !source_path.contains(&0)
+            }
+        }
+    }
+}
+
+impl NearbyTransferReply {
+    /// Validate the bounded, path-free status projection returned by a broker.
+    pub fn valid(&self) -> bool {
+        match self {
+            Self::Snapshot { snapshot } => {
+                snapshot.targets.len() <= MAX_NEARBY_TRANSFER_TARGETS
+                    && snapshot.destinations.len() <= MAX_NEARBY_TRANSFER_DESTINATIONS
+                    && snapshot.transfers.len() <= MAX_NEARBY_TRANSFER_STATUSES
+                    && snapshot.targets.iter().all(|target| {
+                        target.handle.valid()
+                            && !target.label.is_empty()
+                            && target.label.len() <= MAX_NEARBY_TRANSFER_LABEL_BYTES
+                    })
+                    && snapshot.destinations.iter().all(|destination| {
+                        destination.handle.valid()
+                            && !destination.label.is_empty()
+                            && destination.label.len() <= MAX_NEARBY_TRANSFER_LABEL_BYTES
+                    })
+                    && snapshot.transfers.iter().all(|transfer| {
+                        !transfer.name.is_empty()
+                            && transfer.name.len() <= MAX_NEARBY_TRANSFER_NAME_BYTES
+                            && !transfer.device_label.is_empty()
+                            && transfer.device_label.len() <= MAX_NEARBY_TRANSFER_LABEL_BYTES
+                            && transfer.transferred_bytes <= transfer.total_bytes
+                    })
+            }
+            Self::Queued { handle } => handle.valid(),
+            Self::Accepted => true,
+            Self::Rejected { reason } => {
+                !reason.is_empty() && reason.len() <= MAX_NEARBY_TRANSFER_LABEL_BYTES
+            }
+        }
+    }
+}
+
 impl ChannelHandle {
+    /// Ask the broker to direct one current route holder to publish a complete
+    /// document snapshot for this late joiner.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the broker cannot accept or complete the
+    /// snapshot request.
+    pub async fn request_document_snapshot(&self) -> Result<(), NotAvailable> {
+        self.inner
+            .request_document_snapshot_request()
+            .send()
+            .promise
+            .await?;
+        Ok(())
+    }
+
+    /// Submit one bounded realtime-session continuity command. The broker
+    /// authenticates `app_id` against this channel and returns a versioned
+    /// application-contract reply.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the broker rejects the command or the
+    /// local capability disconnects.
+    pub async fn realtime_command(
+        &self,
+        app_id: &str,
+        command_json: &[u8],
+    ) -> Result<Vec<u8>, NotAvailable> {
+        let mut request = self.inner.realtime_command_request();
+        request.get().set_app_id(app_id);
+        request.get().set_command_json(command_json);
+        let reply = request.send().promise.await?;
+        Ok(reply.get()?.get_reply_json()?.to_vec())
+    }
+
+    /// Submit one bounded Nearby Send control command. File contents remain on
+    /// the existing shell-owned resumable transport; this request carries only
+    /// picker/status/consent control data.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker disconnects, rejects malformed
+    /// Cap'n Proto data, or returns an oversized/invalid typed reply.
+    pub async fn nearby_transfer_command(
+        &self,
+        app_id: &str,
+        command: &NearbyTransferCommand,
+    ) -> Result<NearbyTransferReply, NotAvailable> {
+        if !command.valid() {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "invalid nearby transfer command".into(),
+            )));
+        }
+        let command_json = serde_json::to_vec(command).map_err(|error| {
+            NotAvailable::Capnp(capnp::Error::failed(format!(
+                "encode nearby transfer command: {error}"
+            )))
+        })?;
+        if command_json.len() > MAX_NEARBY_TRANSFER_WIRE_BYTES {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "nearby transfer command exceeds wire bound".into(),
+            )));
+        }
+        let mut request = self.inner.nearby_transfer_command_request();
+        request.get().set_app_id(app_id);
+        request.get().set_command_json(&command_json);
+        let reply = request.send().promise.await?;
+        let bytes = reply.get()?.get_reply_json()?;
+        if bytes.len() > MAX_NEARBY_TRANSFER_WIRE_BYTES {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "nearby transfer reply exceeds wire bound".into(),
+            )));
+        }
+        let decoded: NearbyTransferReply = serde_json::from_slice(bytes).map_err(|error| {
+            NotAvailable::Capnp(capnp::Error::failed(format!(
+                "decode nearby transfer reply: {error}"
+            )))
+        })?;
+        if !decoded.valid() {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "invalid nearby transfer reply".into(),
+            )));
+        }
+        Ok(decoded)
+    }
+
+    /// Use the shell-owned sealed Wi-Fi secret bridge from the authenticated
+    /// Settings route. Plaintext is confined to this connected local
+    /// descriptor and the immediate `NetworkManager` call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the command or reply violates its wire
+    /// contract, serialization fails, or the local broker request fails.
+    pub async fn wifi_continuity_command(
+        &self,
+        app_id: &str,
+        command: &WifiContinuityCommand,
+    ) -> Result<WifiContinuityReply, NotAvailable> {
+        if !command.valid() {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "invalid Wi-Fi continuity command".into(),
+            )));
+        }
+        let command_json = serde_json::to_vec(command).map_err(|error| {
+            NotAvailable::Capnp(capnp::Error::failed(format!(
+                "encode Wi-Fi continuity command: {error}"
+            )))
+        })?;
+        if command_json.len() > MAX_WIFI_CONTINUITY_WIRE_BYTES {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "Wi-Fi continuity command exceeds wire bound".into(),
+            )));
+        }
+        let mut request = self.inner.wifi_continuity_command_request();
+        request.get().set_app_id(app_id);
+        request.get().set_command_json(&command_json);
+        let reply = request.send().promise.await?;
+        let bytes = reply.get()?.get_reply_json()?;
+        if bytes.len() > MAX_WIFI_CONTINUITY_WIRE_BYTES {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "Wi-Fi continuity reply exceeds wire bound".into(),
+            )));
+        }
+        let decoded: WifiContinuityReply = serde_json::from_slice(bytes).map_err(|error| {
+            NotAvailable::Capnp(capnp::Error::failed(format!(
+                "decode Wi-Fi continuity reply: {error}"
+            )))
+        })?;
+        if !decoded.valid() {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "invalid Wi-Fi continuity reply".into(),
+            )));
+        }
+        Ok(decoded)
+    }
+
+    /// Subscribe to lifecycle edges addressed to this exact application
+    /// connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the local broker is unavailable.
+    pub async fn subscribe_realtime(&self) -> Result<RealtimeStream, NotAvailable> {
+        let reply = self
+            .inner
+            .subscribe_realtime_request()
+            .send()
+            .promise
+            .await?;
+        Ok(RealtimeStream {
+            inner: Rc::new(reply.get()?.get_stream()?),
+        })
+    }
+
     /// Open the certified workspace-control capability for `target_device`.
     ///
     /// # Errors
@@ -435,6 +967,25 @@ impl ChannelHandle {
     pub async fn clear_continuation(&self, app_id: &str) -> Result<(), NotAvailable> {
         let mut req = self.inner.clear_continuation_request();
         req.get().set_app_id(app_id);
+        req.send().promise.await?;
+        Ok(())
+    }
+
+    /// Replace this process's private media handoff descriptors. The shell
+    /// authenticates the channel route and never relays `reports_json` as room
+    /// collaboration state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker request fails.
+    pub async fn report_playback(
+        &self,
+        app_id: &str,
+        reports_json: &[u8],
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.report_playback_request();
+        req.get().set_app_id(app_id);
+        req.get().set_reports_json(reports_json);
         req.send().promise.await?;
         Ok(())
     }
@@ -724,7 +1275,7 @@ impl ChannelHandle {
     ///
     /// Call this immediately before beginning an invocation. `Found` is the
     /// only outcome that may be used for execution; stale/disconnected rows
-    /// are deliberately not served from a broker cache.
+    /// are not served from a broker cache.
     ///
     /// # Errors
     ///
@@ -1088,9 +1639,13 @@ impl ChannelHandle {
     pub async fn launch_published_application(
         &self,
         app_id: &str,
+        content_hash: Option<&str>,
     ) -> Result<(u64, String), NotAvailable> {
         let mut request = self.inner.launch_published_application_request();
         request.get().set_app_id(app_id);
+        request
+            .get()
+            .set_content_hash(content_hash.unwrap_or_default());
         let reply = request.send().promise.await?;
         let result = reply.get()?;
         Ok((
@@ -1105,7 +1660,7 @@ impl ChannelHandle {
 
     /// Ask this session to open the "say something about this" surface,
     /// addressed to the compositor on the far end of this socket, not the
-    /// room. `reference` is a serialised `qos_reference::ResourceRef`
+    /// room. `reference` is a serialised `tilo_reference::ResourceRef`
     /// (JSON); `beside` is `(x, y, w, h)` **in this window's own
     /// coordinates** — the session converts, since only it knows where this
     /// window sits on a desktop. The panel can't be drawn here: it opens
@@ -1318,7 +1873,7 @@ pub struct ActionEvent {
     /// The registry type id the action was encoded under. Names the app
     /// that owns the document it belongs to.
     pub type_id: String,
-    /// The encoded action, exactly as `qos_actions::EncodedAction`
+    /// The encoded action, exactly as `tilo_actions::EncodedAction`
     /// carries it.
     pub payload: Vec<u8>,
     /// The broker's attribution for whoever sent the frame. Who *sent*
@@ -1388,8 +1943,8 @@ impl ActionStream {
 }
 
 /// What one exported action's invocation must carry, as it crosses the
-/// wire — the transport-side twin of `qos_actions::door::InputSpec`.
-/// Kept here rather than depending on `qos-actions` so this crate stays
+/// wire — the transport-side twin of `tilo_actions::door::InputSpec`.
+/// Kept here rather than depending on `tilo-actions` so this crate stays
 /// a client for one socket; an app wanting the richer type converts at
 /// its own edge.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1458,6 +2013,7 @@ pub struct ActionDirectoryRow {
     /// shape without parsing raw resource identifiers.
     pub resource_kind: String,
     pub resource_label: String,
+    pub resource_presentation_json: String,
     pub action: Option<String>,
     pub descriptor: Option<ExportedAction>,
     pub has_children: bool,
@@ -1534,6 +2090,7 @@ fn decode_action_directory_row(
         resource: capnp_text(row.get_resource()?)?,
         resource_kind: capnp_text(row.get_resource_kind()?)?,
         resource_label: capnp_text(row.get_resource_label()?)?,
+        resource_presentation_json: capnp_text(row.get_resource_presentation_json()?)?,
         action: (!action.is_empty()).then_some(action),
         descriptor,
         has_children: row.get_has_children(),
@@ -1611,7 +2168,7 @@ pub struct Invocation {
     /// resulting change commits under — not an authority; the session
     /// already decided this may happen.
     pub actor: String,
-    /// Serialized broker-owned [`qos_actions::ActionContext`] when this
+    /// Serialized broker-owned [`tilo_actions::ActionContext`] when this
     /// invocation originated from a leased workspace task. Empty for ordinary
     /// invocations so legacy application callers remain context-neutral.
     pub context_json: String,
@@ -1621,6 +2178,24 @@ pub struct Invocation {
 #[derive(Clone)]
 pub struct InvocationStream {
     inner: Rc<InvocationStreamClient>,
+}
+
+/// Client-pulled active-session lifecycle stream.
+#[derive(Clone)]
+pub struct RealtimeStream {
+    inner: Rc<RealtimeStreamClient>,
+}
+
+impl RealtimeStream {
+    /// Pull one bounded, versioned event payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker disconnects.
+    pub async fn read(&self) -> Result<Vec<u8>, NotAvailable> {
+        let reply = self.inner.read_request().send().promise.await?;
+        Ok(reply.get()?.get_event_json()?.to_vec())
+    }
 }
 
 impl InvocationStream {
@@ -1883,7 +2458,7 @@ impl PresenceHandle {
 
     /// Publish an invocation-scoped semantic interaction. The broker derives
     /// the actor from this authenticated handle; the JSON carries only the
-    /// versioned action/target lifecycle from `qos_actions`.
+    /// versioned action/target lifecycle from `tilo_actions`.
     ///
     /// # Errors
     ///
@@ -1899,6 +2474,31 @@ impl PresenceHandle {
             let mut b = req.get();
             b.set_key_bytes(key_bytes);
             b.set_interaction_json(interaction_json);
+        }
+        req.send().promise.await?;
+        Ok(())
+    }
+
+    /// Publish or clear (`text == ""`) the local participant's short status.
+    /// The broker authenticates authorship; `automatic` is presentation
+    /// provenance, not authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the broker rejects the request or its
+    /// connection fails during the call.
+    pub async fn publish_status(
+        &self,
+        key_bytes: &[u8],
+        text: &str,
+        automatic: bool,
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.publish_status_request();
+        {
+            let mut b = req.get();
+            b.set_key_bytes(key_bytes);
+            b.set_text(text);
+            b.set_automatic(automatic);
         }
         req.send().promise.await?;
         Ok(())
@@ -1984,10 +2584,14 @@ pub enum PresencePayload {
     Following {
         target: Option<String>,
     },
-    /// Versioned `qos_actions::InteractionUpdate` JSON. Actor identity is the
+    /// Versioned `tilo_actions::InteractionUpdate` JSON. Actor identity is the
     /// enclosing broker-attributed [`PresenceEvent::user_id`], never this
     /// caller-controlled payload.
     InteractionJson(String),
+    Status {
+        text: String,
+        automatic: bool,
+    },
     Arrived,
     Left,
 }
@@ -2073,6 +2677,14 @@ fn decode_presence_payload(
                 })?
                 .to_owned(),
         ),
+        W::Status(value) => PresencePayload::Status {
+            text: value
+                .get_text()?
+                .to_str()
+                .map_err(|error| capnp::Error::failed(format!("invalid status utf8: {error}")))?
+                .to_owned(),
+            automatic: value.get_automatic(),
+        },
         W::Arrived(()) => PresencePayload::Arrived,
         W::Left(()) => PresencePayload::Left,
     })
@@ -2108,6 +2720,9 @@ pub struct ChannelContext {
     /// `None` means stop following; ordinary context snapshots keep this
     /// field at `None` and replace roster/permissions as before.
     pub follow_changed: Option<Option<String>>,
+    /// True only on a directed broker request to publish current document
+    /// state. It is not a roster update and must not replace local context.
+    pub snapshot_requested: bool,
 }
 
 /// Client-pulled channel-context stream.
@@ -2173,6 +2788,7 @@ impl ContextStream {
             collaborators,
             permissions,
             follow_changed,
+            snapshot_requested: ctx.get_snapshot_requested(),
         })
     }
 }
@@ -2231,9 +2847,9 @@ mod tests {
     use super::*;
     use std::env;
 
-    fn clear_qos_env() {
+    fn clear_tilo_env() {
         for (key, _) in env::vars() {
-            if key.starts_with("QOS_") {
+            if key.starts_with("TILO_") {
                 unsafe { env::remove_var(&key) };
             }
         }
@@ -2241,7 +2857,7 @@ mod tests {
 
     #[test]
     fn try_connect_without_env_returns_service_fd_missing() {
-        clear_qos_env();
+        clear_tilo_env();
         // Not using `expect_err` because `CollabClient` intentionally
         // doesn't implement `Debug` (the underlying capnp client hook
         // isn't `Debug`).
@@ -2250,5 +2866,175 @@ mod tests {
             Err(other) => panic!("unexpected error: {other:?}"),
             Ok(_) => panic!("expected ServiceFdMissing"),
         }
+    }
+
+    #[test]
+    fn nearby_transfer_contract_is_bounded_and_path_bytes_are_opaque() {
+        let command = NearbyTransferCommand::Send {
+            target: NearbyTargetHandle::from_issued_bytes([7; 16]),
+            source_path: vec![b'/', b't', b'm', b'p', b'/', 0xff],
+        };
+        assert!(command.valid());
+        let encoded = serde_json::to_vec(&command).expect("encode nearby command");
+        assert!(encoded.len() < MAX_NEARBY_TRANSFER_WIRE_BYTES);
+        assert_eq!(
+            serde_json::from_slice::<NearbyTransferCommand>(&encoded).expect("decode command"),
+            command
+        );
+
+        assert!(
+            !NearbyTransferCommand::Send {
+                target: NearbyTargetHandle::from_issued_bytes([7; 16]),
+                source_path: vec![b'a', 0, b'b'],
+            }
+            .valid()
+        );
+        assert!(
+            NearbyTransferCommand::Decide {
+                handle: NearbyTransferHandle::from_issued_bytes([8; 16]),
+                accept: true,
+                destination: Some(NearbyDestinationHandle::from_issued_bytes([9; 16])),
+                remember_for_session: true,
+            }
+            .valid()
+        );
+        assert!(
+            !NearbyTransferCommand::Decide {
+                handle: NearbyTransferHandle::from_issued_bytes([8; 16]),
+                accept: true,
+                destination: None,
+                remember_for_session: false,
+            }
+            .valid()
+        );
+        assert!(
+            !NearbyTransferCommand::Send {
+                target: NearbyTargetHandle::from_issued_bytes([7; 16]),
+                source_path: vec![b'a'; MAX_NEARBY_TRANSFER_PATH_BYTES + 1],
+            }
+            .valid()
+        );
+    }
+
+    #[test]
+    fn nearby_transfer_snapshot_rejects_unbounded_or_impossible_progress() {
+        let target = NearbyTransferTarget {
+            handle: NearbyTargetHandle::from_issued_bytes([3; 16]),
+            label: "Travel laptop".into(),
+            online: true,
+        };
+        let transfer = NearbyTransferStatus {
+            handle: NearbyTransferHandle::from_issued_bytes([4; 16]),
+            name: "Photos".into(),
+            device_label: target.label.clone(),
+            direction: NearbyTransferDirection::Sending,
+            phase: NearbyTransferPhase::Transferring,
+            transferred_bytes: 20,
+            total_bytes: 100,
+        };
+        let reply = NearbyTransferReply::Snapshot {
+            snapshot: NearbyTransferSnapshot {
+                targets: vec![target],
+                destinations: vec![NearbyTransferDestination {
+                    handle: NearbyDestinationHandle::from_issued_bytes([5; 16]),
+                    label: "Workspace files".into(),
+                    remembered_for_session: false,
+                }],
+                transfers: vec![transfer.clone()],
+            },
+        };
+        assert!(reply.valid());
+
+        let mut impossible = transfer;
+        impossible.transferred_bytes = 101;
+        assert!(
+            !NearbyTransferReply::Snapshot {
+                snapshot: NearbyTransferSnapshot {
+                    targets: Vec::new(),
+                    destinations: Vec::new(),
+                    transfers: vec![impossible],
+                },
+            }
+            .valid()
+        );
+    }
+
+    #[test]
+    fn wifi_continuity_contract_is_bounded_and_redacts_secrets() {
+        let command = WifiContinuityCommand::Share {
+            ssid: "Studio".into(),
+            security: PortableWifiSecurity::Wpa3,
+            password: "correct horse battery staple".into(),
+        };
+        assert!(command.valid());
+        assert!(!format!("{command:?}").contains("correct horse"));
+        let encoded = serde_json::to_vec(&command).expect("encode Wi-Fi command");
+        assert!(encoded.len() < MAX_WIFI_CONTINUITY_WIRE_BYTES);
+        assert_eq!(
+            serde_json::from_slice::<WifiContinuityCommand>(&encoded)
+                .expect("decode Wi-Fi command"),
+            command
+        );
+
+        assert!(
+            !WifiContinuityCommand::Share {
+                ssid: "Studio".into(),
+                security: PortableWifiSecurity::Wpa2,
+                password: "x".repeat(MAX_WIFI_PASSWORD_BYTES + 1),
+            }
+            .valid()
+        );
+        assert!(
+            !WifiContinuityReply::Password {
+                password: "x".repeat(MAX_WIFI_PASSWORD_BYTES + 1),
+            }
+            .valid()
+        );
+    }
+
+    #[test]
+    fn saved_wifi_profile_reference_requires_an_exact_local_uuid() {
+        assert!(
+            WifiContinuityCommand::ShareSavedProfile {
+                profile_uuid: "12345678-1234-1234-1234-123456789abc".into(),
+            }
+            .valid()
+        );
+        for invalid in [
+            "profile-name",
+            "../../secret",
+            "12345678-1234-1234-1234-123456789abz",
+        ] {
+            assert!(
+                !WifiContinuityCommand::ShareSavedProfile {
+                    profile_uuid: invalid.into(),
+                }
+                .valid()
+            );
+        }
+    }
+
+    #[test]
+    fn action_directory_resource_presentation_round_trips() {
+        let mut message = capnp::message::Builder::new_default();
+        {
+            let mut page = message.init_root::<collab_capnp::action_directory_page::Builder<'_>>();
+            page.set_revision("r1");
+            page.set_exhausted(true);
+            let mut rows = page.init_rows(1);
+            let mut row = rows.reborrow().get(0);
+            row.set_resource("totp:mail");
+            row.set_resource_kind("totp");
+            row.set_resource_label("Mail code");
+            row.set_resource_presentation_json(r#"{"detail":"expires in 18 s","badge":"438 291"}"#);
+        }
+        let reader = message
+            .get_root_as_reader::<collab_capnp::action_directory_page::Reader<'_>>()
+            .expect("page reader");
+        let decoded = decode_action_directory_page(reader).expect("page decodes");
+        assert_eq!(
+            decoded.rows[0].resource_presentation_json,
+            r#"{"detail":"expires in 18 s","badge":"438 291"}"#
+        );
     }
 }

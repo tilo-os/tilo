@@ -19,7 +19,7 @@ use vello::{
     peniko::{BlendMode, Fill},
 };
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
-    app_id: "dev.qos.snippets",
+    app_id: "dev.tilo.snippets",
     scopes: &[HistoryScopeDefinition {
         key: "snippets",
         title: "Snippet library",

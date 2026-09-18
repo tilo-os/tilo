@@ -17,9 +17,9 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-qos-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

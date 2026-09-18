@@ -38,11 +38,11 @@ pub fn host_arch() -> Arch {
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
-        panic!("qOS binary compiled for unsupported target arch");
+        panic!("Tilo binary compiled for unsupported target arch");
     }
 }
 
-/// Public for tests + for the CLI's `qos-install isa-report`.
+/// Public for tests + for the CLI's `tilo-install isa-report`.
 pub fn detect_from_cpuinfo(cpuinfo: &str, arch: Arch) -> IsaLevel {
     let flags = extract_flags(cpuinfo, arch);
     match arch {

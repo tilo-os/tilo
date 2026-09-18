@@ -374,7 +374,7 @@ mod tests {
                 id: "format-range".into(),
                 label: "Format range".into(),
                 app: Some(ActionApp {
-                    id: "org.qos.Sheets".into(),
+                    id: "org.tilo.Sheets".into(),
                     label: "Sheets".into(),
                 }),
             },

@@ -1,10 +1,10 @@
 # Settings, Quick Settings, and Studio ownership
 
-qOS uses progressive disclosure without creating “basic” and “advanced” modes. A control has one domain owner and may have several views of the same state.
+Tilo uses progressive disclosure without creating “basic” and “advanced” modes. A control has one domain owner and may have several views of the same state.
 
 ## Personal and workspace settings
 
-qOS has two settings contexts, but not two unrelated implementations:
+Tilo has two settings contexts, but not two unrelated implementations:
 
 - **Personal Settings** is a normal application for this person's device,
   account, accessibility and fallback preferences. Its window title and
@@ -82,7 +82,7 @@ Do not hide expert capability behind a global “advanced mode.” Prefer a stab
   administrator role and automatic login. AccountsService is authoritative and
   polkit authenticates every privileged change; Settings never edits passwd or
   shadow files.
-- A **qOS identity** is personal scope and is not a login account. One login may
+- A **Tilo identity** is personal scope and is not a login account. One login may
   hold several identities. Settings shows their public fingerprints, lets the
   person select an explicit active identity, and protects active/final records
   from removal.
@@ -105,9 +105,9 @@ Do not hide expert capability behind a global “advanced mode.” Prefer a stab
 - Settings owns everyday setup and recovery: driverless IPP discovery/addition,
   default selection, live queue health, active jobs, pause/resume, retry/cancel,
   removal confirmation and scanner discovery.
-- CUPS, cups-filters and SANE are the authorities. qOS exposes one typed narrow
+- CUPS, cups-filters and SANE are the authorities. Tilo exposes one typed narrow
   service over them and validates queue names, job ids and IPP(S) URIs before
-  invoking a tool. There is no qOS printer database or driver catalogue.
+  invoking a tool. There is no Tilo printer database or driver catalogue.
 - A Print Centre is justified for long job history, document previews, advanced
   finishing, calibration and diagnostic logs. It consumes the same service and
   opens on a printer/job id; it does not duplicate discovery, state, defaults or

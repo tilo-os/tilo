@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Recreate the product-owned screenshots used by qOS and website documentation.
+# Recreate the product-owned screenshots used by Tilo and website documentation.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -64,8 +64,8 @@ for path in sorted(root.glob("**/*.png")):
     files[str(path.relative_to(root))] = hashlib.sha256(path.read_bytes()).hexdigest()
 (root / "capture.json").write_text(json.dumps({
     "schemaVersion": 1,
-    "qosRevision": sys.argv[2],
-    "qosDirty": sys.argv[3] == "true",
+    "tiloRevision": sys.argv[2],
+    "tiloDirty": sys.argv[3] == "true",
     "files": files,
 }, indent=2, sort_keys=True) + "\n")
 PY

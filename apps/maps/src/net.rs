@@ -17,7 +17,7 @@ use crate::model::{
     TransitMode, TravelMode,
 };
 
-const USER_AGENT: &str = "qOS-Maps/0.1 (https://qos.example; native maps app)";
+const USER_AGENT: &str = "Tilo-Maps/0.1 (https://tilo.example; native maps app)";
 
 /// Ramer–Douglas–Peucker tolerance (metres) applied to fetched route and
 /// transit-leg geometry on the fetch worker, before it reaches the model. A few
@@ -29,11 +29,8 @@ const GEOMETRY_SIMPLIFY_M: f64 = 3.0;
 /// Install the process-wide rustls [`CryptoProvider`] exactly once, before any
 /// HTTPS fetch runs.
 ///
-/// In this workspace `rustls` is compiled with **both** its `ring` and
-/// `aws-lc-rs` backends (different crates pull each in), so rustls cannot pick a
-/// default on its own. reqwest consults `CryptoProvider::get_default()` when it
-/// builds a TLS client; with no default installed and two backends present the
-/// selection is ambiguous. Installing `ring` up front makes that lookup
+/// reqwest consults `CryptoProvider::get_default()` when it builds a TLS client.
+/// Installing the workspace-standard `ring` provider up front makes that lookup
 /// succeed, so tile / geocoding / routing requests actually complete instead of
 /// silently returning nothing (the "imagery unavailable" symptom).
 ///

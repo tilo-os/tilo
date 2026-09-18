@@ -45,7 +45,7 @@ fn snapshot_input(
     view: PreviewView,
 ) -> PreviewInput {
     let mut controller = HistoryController::new(
-        HistoryResource::new("test", "deck", "dev.qos.slides", ui::RecordId::for_tab(55)),
+        HistoryResource::new("test", "deck", "dev.tilo.slides", ui::RecordId::for_tab(55)),
         doc,
     )
     .unwrap();
@@ -405,7 +405,7 @@ fn navigation_clamps_effective_scroll_reverses_and_recreates_at_both_widths() {
 #[test]
 fn empty_restore_uses_real_autosaver_and_fresh_process_opener() {
     if let Ok(stage) = std::env::var("QOS_SLIDES_EMPTY_STAGE") {
-        let (mut state, mut saver) = ui::persist::try_open("dev.qos.slides").unwrap();
+        let (mut state, mut saver) = ui::persist::try_open("dev.tilo.slides").unwrap();
         if stage == "write" {
             let mut deck = crate::model::seed_deck();
             deck.slides.clear();
@@ -452,7 +452,7 @@ fn empty_restore_uses_real_autosaver_and_fresh_process_opener() {
     let dir = std::env::temp_dir().join(format!("slides-empty-history-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     for stage in ["write", "read"] {
-        let out=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","framework_history_tests::empty_restore_uses_real_autosaver_and_fresh_process_opener","--nocapture"]).env("QOS_SLIDES_EMPTY_STAGE",stage).env("XDG_DATA_HOME",&dir).env("XDG_CONFIG_HOME",&dir).env("QOS_PACKAGE_ID","dev.qos.slides").output().unwrap();
+        let out=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","framework_history_tests::empty_restore_uses_real_autosaver_and_fresh_process_opener","--nocapture"]).env("QOS_SLIDES_EMPTY_STAGE",stage).env("XDG_DATA_HOME",&dir).env("XDG_CONFIG_HOME",&dir).env("TILO_PACKAGE_ID","dev.tilo.slides").output().unwrap();
         assert!(
             out.status.success(),
             "{stage}: {} {}",
@@ -465,25 +465,25 @@ fn empty_restore_uses_real_autosaver_and_fresh_process_opener() {
 
 struct ResourceHarness {
     app: crate::SlidesApp,
-    queue: std::rc::Rc<std::cell::RefCell<Vec<qos_actions::ControlInvocation>>>,
+    queue: std::rc::Rc<std::cell::RefCell<Vec<tilo_actions::ControlInvocation>>>,
 }
 impl ui::widget::Widget for ResourceHarness {
     fn sync(&mut self, d: &mut AutoCommit, p: &automerge::ObjId) {
         self.app.sync(d, p);
     }
-    fn resources(&self, d: &AutoCommit) -> Vec<qos_actions::Resource> {
+    fn resources(&self, d: &AutoCommit) -> Vec<tilo_actions::Resource> {
         ui::widget::Widget::resources(&self.app, d)
     }
     fn document_action_applied(
         &mut self,
-        a: &qos_actions::EncodedAction,
+        a: &tilo_actions::EncodedAction,
         b: &[automerge::ChangeHash],
         d: &AutoCommit,
         p: &automerge::ObjId,
     ) {
         self.app.document_action_applied(a, b, d, p);
     }
-    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.queue.borrow_mut().pop()
     }
     fn build_layout(
@@ -551,8 +551,8 @@ fn successive_admitted_resource_actions_stay_usable_and_deleted_target_is_refuse
             .iter()
             .find(|r| r.actions.iter().any(|a| a.id == choice))
             .expect("canonical resource remains usable");
-        queue.borrow_mut().push(qos_actions::ControlInvocation {
-            address: qos_actions::ActionAddress::new(deck.id.as_str(), choice),
+        queue.borrow_mut().push(tilo_actions::ControlInvocation {
+            address: tilo_actions::ActionAddress::new(deck.id.as_str(), choice),
             arguments: serde_json::Map::default(),
         });
         driver.key("Escape");
@@ -569,12 +569,12 @@ fn successive_admitted_resource_actions_stay_usable_and_deleted_target_is_refuse
         .flat_map(|r| &r.children)
         .find(|r| r.actions.iter().any(|a| a.id == "duplicate"))
         .unwrap();
-    let stale = qos_actions::ActionAddress::new(slide.id.as_str(), "duplicate");
+    let stale = tilo_actions::ActionAddress::new(slide.id.as_str(), "duplicate");
     let mut empty = crate::doc::SlidesDoc::load(&driver.state_mut().doc).unwrap();
     empty.slides.clear();
     crate::doc::SlidesDoc::seed(&mut driver.state_mut().doc, &empty);
     let heads = driver.state_mut().doc.get_heads();
-    queue.borrow_mut().push(qos_actions::ControlInvocation {
+    queue.borrow_mut().push(tilo_actions::ControlInvocation {
         address: stale,
         arguments: serde_json::Map::default(),
     });
@@ -700,7 +700,7 @@ fn request_selected_provider(
             resource: HistoryResource::new(
                 "test",
                 "test",
-                "dev.qos.slides",
+                "dev.tilo.slides",
                 ui::RecordId::for_tab(55),
             ),
         }],

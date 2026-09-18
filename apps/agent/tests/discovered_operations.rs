@@ -1,7 +1,7 @@
 //! Operations the agent was never told about, discovered off the room's own
 //! applications rather than a written-down list, and dispatched for real —
 //! carried over the compositor's production Cap'n Proto broker. What is
-//! under test is [`qos_agent::Session`]'s discovery, dispatch and capability
+//! under test is [`tilo_agent::Session`]'s discovery, dispatch and capability
 //! gating while it participates through the same endpoint as an app.
 
 #![allow(
@@ -20,15 +20,15 @@
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
-use qos_actions::{Resource, ResourceProvider};
-use qos_agent::{Config, Session};
-use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation, PresencePayload};
+use tilo_actions::{Resource, ResourceProvider};
+use tilo_agent::{Config, Session};
+use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
 use uuid::Uuid;
 
 mod typed_peer;
 use typed_peer::{TypedPeer as UnixStream, document_mutation, recv, send};
 
-const APP: &str = "dev.qos.word-processor";
+const APP: &str = "dev.tilo.word-processor";
 const RECORD: &str = "file:/var/workspace/Demo/brief.docx";
 static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -161,13 +161,7 @@ fn run(
         .expect("agent never established its route subscriptions");
     std::thread::sleep(Duration::from_millis(250));
     typed_peer::publish_actions(&mut peer, APP, &word_processor_resources(&replica));
-    send(
-        &mut peer,
-        &CollabRequest::DocumentSnapshot {
-            data: replica.save(),
-        },
-    )
-    .unwrap();
+    send(&mut peer, &CollabRequest::document_snapshot(replica.save())).unwrap();
 
     peer.set_read_timeout(Some(Duration::from_millis(200)));
     let deadline = Instant::now()
@@ -180,14 +174,9 @@ fn run(
             continue;
         };
         match event {
-            CollabEvent::RemotePresenceUpdate {
-                payload: PresencePayload::Arrived,
-                ..
-            } => {
+            CollabEvent::DocumentSnapshotRequested { .. } => {
                 typed_peer::publish_actions(&mut peer, APP, &word_processor_resources(&replica));
-                let snap = CollabRequest::DocumentSnapshot {
-                    data: replica.save(),
-                };
+                let snap = CollabRequest::document_snapshot(replica.save());
                 send(&mut peer, &snap).unwrap();
             }
             CollabEvent::Invocation {
@@ -243,7 +232,7 @@ fn a_discovered_destructive_operation_requires_explicit_confirmation() {
         "Scribe: delete the image, then give this a title, then delete the image again",
     );
     let (mut replica, acted, invocation_actor) = run(
-        &[("dev.qos.word-processor", "delete")],
+        &[("dev.tilo.word-processor", "delete")],
         |sock, room| Config {
             endpoint: Some(sock),
             endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
@@ -324,7 +313,7 @@ fn a_discovered_operation_is_performed_once_under_the_agents_own_actor() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let replica = seed_document_with_image("Scribe: insert a table, then insert a table again");
     let (mut replica, acted, invocation_actor) = run(
-        &[("dev.qos.word-processor", "insert-table")],
+        &[("dev.tilo.word-processor", "insert-table")],
         |sock, room| Config {
             endpoint: Some(sock),
             endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
@@ -390,8 +379,8 @@ fn a_discovered_operation_is_performed_once_under_the_agents_own_actor() {
 /// word-processor page *and* a photograph nobody told the agent about; the
 /// instruction names an operation only the photograph publishes. Answering
 /// it needs the peer to have been attributed, recognised and merged under
-/// its own contract ([`qos_agent::apply::attribute`],
-/// [`qos_agent::apply::Editor::merge_full_any`]) — this is the live path
+/// its own contract ([`tilo_agent::apply::attribute`],
+/// [`tilo_agent::apply::Editor::merge_full_any`]) — this is the live path
 /// that gives them one.
 /// Connect the word-processor peer to `sock`, announce it, and seed its
 /// replica with the instruction naming a discoverable operation.
@@ -421,7 +410,7 @@ fn connect_photo_editor(sock: &std::path::Path, room: Uuid) -> (UnixStream, Auto
     send(
         &mut photo_peer,
         &CollabRequest::Hello {
-            app_id: "dev.qos.photos".into(),
+            app_id: "dev.tilo.photos".into(),
             cluster_id: room,
             record: None,
             handle: Some("photos".into()),
@@ -478,14 +467,12 @@ fn drive_photo_peer(
     let deadline = Instant::now() + Duration::from_secs(15);
     typed_peer::publish_actions(
         &mut photo_peer,
-        "dev.qos.photos",
+        "dev.tilo.photos",
         &photos_resources(&photo_replica),
     );
     send(
         &mut photo_peer,
-        &CollabRequest::DocumentSnapshot {
-            data: photo_replica.save(),
-        },
+        &CollabRequest::document_snapshot(photo_replica.save()),
     )
     .unwrap();
     let _ = photo_ready_tx.send(());
@@ -495,15 +482,10 @@ fn drive_photo_peer(
             continue;
         };
         match event {
-            CollabEvent::RemotePresenceUpdate {
-                payload: PresencePayload::Arrived,
-                ..
-            } => {
+            CollabEvent::DocumentSnapshotRequested { .. } => {
                 send(
                     &mut photo_peer,
-                    &CollabRequest::DocumentSnapshot {
-                        data: photo_replica.save(),
-                    },
+                    &CollabRequest::document_snapshot(photo_replica.save()),
                 )
                 .unwrap();
             }
@@ -527,8 +509,8 @@ fn drive_photo_peer(
                                 .find(|candidate| candidate.id == action)
                         })
                         .and_then(|spec| match &spec.input {
-                            qos_actions::ActionInput::Immediate(encoded) => Some(encoded),
-                            qos_actions::ActionInput::Prompted { .. } => None,
+                            tilo_actions::ActionInput::Immediate(encoded) => Some(encoded),
+                            tilo_actions::ActionInput::Prompted { .. } => None,
                         })
                         .expect("the published export has one immediate operation payload");
                     let result =
@@ -547,15 +529,15 @@ fn drive_photo_peer(
                                 _ => Err("the export descriptor did not encode an export".into()),
                             });
                     let invocation =
-                        qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+                        tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
                     match result {
                         Ok(output) => {
                             exported = true;
-                            qos_actions::InvocationUpdate::Succeeded { invocation, output }
+                            tilo_actions::InvocationUpdate::Succeeded { invocation, output }
                         }
-                        Err(message) => qos_actions::InvocationUpdate::Failed {
+                        Err(message) => tilo_actions::InvocationUpdate::Failed {
                             invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "photos.export_failed".into(),
                                 message,
                                 details: None,
@@ -618,9 +600,7 @@ fn drive_word_processor_peer(
     typed_peer::publish_actions(&mut wp_peer, APP, &word_processor_resources(&wp_replica));
     send(
         &mut wp_peer,
-        &CollabRequest::DocumentSnapshot {
-            data: wp_replica.save(),
-        },
+        &CollabRequest::document_snapshot(wp_replica.save()),
     )
     .unwrap();
     while Instant::now() < deadline && !done {
@@ -628,13 +608,8 @@ fn drive_word_processor_peer(
             continue;
         };
         match event {
-            CollabEvent::RemotePresenceUpdate {
-                payload: PresencePayload::Arrived,
-                ..
-            } => {
-                let snap = CollabRequest::DocumentSnapshot {
-                    data: wp_replica.save(),
-                };
+            CollabEvent::DocumentSnapshotRequested { .. } => {
+                let snap = CollabRequest::document_snapshot(wp_replica.save());
                 send(&mut wp_peer, &snap).unwrap();
             }
             event @ CollabEvent::Document { .. } => {

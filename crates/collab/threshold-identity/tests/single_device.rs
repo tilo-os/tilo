@@ -45,13 +45,13 @@ fn bootstrap_produces_distinct_keys_per_run() {
 }
 
 #[test]
-fn single_device_signs_and_verifies_via_qos_collab_types() {
+fn single_device_signs_and_verifies_via_tilo_collab_types() {
     let mut rng = fixed_rng();
     let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
     let payload: Vec<u8> = b"hello, threshold world".to_vec();
     let sig = id.sign(&payload, &mut rng).unwrap();
     // Headline assertion: the signature verifies through the standard
-    // qos-collab-types pathway — no special threshold verifier needed.
+    // tilo-collab-types pathway — no special threshold verifier needed.
     verify_event(&payload, &sig, &id.group_public_key).expect("threshold sig must verify");
 }
 

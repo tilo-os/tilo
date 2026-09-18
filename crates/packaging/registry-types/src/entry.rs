@@ -15,11 +15,11 @@ use serde::Deserialize;
 use serde::Serialize;
 
 /// Domain-separation prefix for a registry-entry publisher signature.
-pub const ENTRY_DOMAIN: &[u8] = b"qos-registry-entry-v1\0";
+pub const ENTRY_DOMAIN: &[u8] = b"tilo-registry-entry-v1\0";
 
 /// Domain-separation prefix for a registry-owner index signature; not
 /// used in this crate but exposed for federation clients snapshotting registry state.
-pub const INDEX_DOMAIN: &[u8] = b"qos-registry-index-v1\0";
+pub const INDEX_DOMAIN: &[u8] = b"tilo-registry-index-v1\0";
 
 /// One version of a .qpkg, with the download URL and the BLAKE3 root the client verifies after fetching.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,17 +184,17 @@ mod tests {
 
     fn sample_entry() -> RegistryEntry {
         RegistryEntry {
-            package_id: "dev.qos.editor".into(),
+            package_id: "dev.tilo.editor".into(),
             name: "Editor".into(),
             description: "CRDT-native text editor".into(),
             categories: vec!["Productivity".into(), "Text".into()],
-            icon_url: Some("https://apps.qos.dev/editor/icon.png".into()),
+            icon_url: Some("https://apps.tilo.dev/editor/icon.png".into()),
             source_url: Some("https://code.podesta.ai/qos/editor".into()),
             homepage: None,
             publisher_pubkey_hex: "aa".repeat(32),
             versions: vec![RegistryVersion {
                 version: "2026.06".into(),
-                qpkg_url: "https://apps.qos.dev/editor/2026.06.qpkg".into(),
+                qpkg_url: "https://apps.tilo.dev/editor/2026.06.qpkg".into(),
                 qpkg_root_hash_hex: "cd".repeat(32),
                 qpkg_size_bytes: 12_345_678,
                 released_at_unix: 1_800_000_000,
@@ -228,7 +228,7 @@ mod tests {
 
         {
             let mut alt = sample_entry();
-            alt.package_id = "dev.qos.other".into();
+            alt.package_id = "dev.tilo.other".into();
             assert_ne!(alt.signing_message(), base_msg);
         }
         {

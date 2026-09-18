@@ -1,6 +1,6 @@
 //! End-to-end test of the real FUTO swipe engine. Runs only when the crate
-//! is built with the FUTO libs (`cfg(futo)`, i.e. `QOS_SWIPE_LIB` set) AND
-//! the model dir is provided via `QOS_SWIPE_MODELS` (the HF `futo-org/futo-swipe`
+//! is built with the FUTO libs (`cfg(futo)`, i.e. `TILO_SWIPE_LIB` set) AND
+//! the model dir is provided via `TILO_SWIPE_MODELS` (the HF `futo-org/futo-swipe`
 //! clone, plus `en_w2.combined`). Otherwise it self-skips.
 
 #![cfg(futo)]
@@ -57,7 +57,7 @@ fn swipe_path(word: &str) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
 }
 
 fn models() -> Option<PathBuf> {
-    std::env::var_os("QOS_SWIPE_MODELS").map(PathBuf::from)
+    std::env::var_os("TILO_SWIPE_MODELS").map(PathBuf::from)
 }
 
 fn engine() -> Option<FutoSwipe> {
@@ -75,7 +75,7 @@ fn engine() -> Option<FutoSwipe> {
 #[test]
 fn recognizes_common_words() {
     let Some(eng) = engine() else {
-        eprintln!("QOS_SWIPE_MODELS unset or engine load failed — skipping");
+        eprintln!("TILO_SWIPE_MODELS unset or engine load failed — skipping");
         return;
     };
     assert!(eng.has_decoder(), "decoder should be loaded");

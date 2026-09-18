@@ -176,6 +176,68 @@ pub enum Recurrence {
     Yearly,
 }
 
+/// One invitation participant. The UUID is the durable resource identity;
+/// email is editable contact data and therefore must never be used as a CRDT
+/// map key.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Attendee {
+    pub id: Id,
+    pub name: String,
+    pub email: String,
+    pub status: InviteStatus,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum InviteStatus {
+    NeedsAction,
+    Accepted,
+    Tentative,
+    Declined,
+}
+
+impl InviteStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NeedsAction => "Awaiting response",
+            Self::Accepted => "Accepted",
+            Self::Tentative => "Maybe",
+            Self::Declined => "Declined",
+        }
+    }
+
+    pub fn as_ical(self) -> &'static str {
+        match self {
+            Self::NeedsAction => "NEEDS-ACTION",
+            Self::Accepted => "ACCEPTED",
+            Self::Tentative => "TENTATIVE",
+            Self::Declined => "DECLINED",
+        }
+    }
+
+    pub fn from_ical(value: &str) -> Self {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "ACCEPTED" => Self::Accepted,
+            "TENTATIVE" => Self::Tentative,
+            "DECLINED" => Self::Declined,
+            _ => Self::NeedsAction,
+        }
+    }
+}
+
+/// An absolute edit to one generated recurrence instance. `original_date` is
+/// the stable occurrence identity even when this override moves the instance.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct OccurrenceOverride {
+    pub original_date: NaiveDate,
+    /// Time component when the RFC identity was DATE-TIME rather than DATE.
+    pub original_time: Option<NaiveTime>,
+    pub cancelled: bool,
+    pub start: Option<NaiveDateTime>,
+    pub end: Option<NaiveDateTime>,
+    pub title: Option<String>,
+    pub location: Option<String>,
+}
+
 impl Recurrence {
     pub fn label(self) -> &'static str {
         match self {
@@ -260,6 +322,22 @@ pub struct Event {
     pub location: String,
     pub color: Palette,
     pub recurrence: Recurrence,
+    /// Positive recurrence interval. For example, weekly + 2 is every other
+    /// week. Old documents default to 1.
+    pub recurrence_interval: u32,
+    /// Inclusive final original occurrence date.
+    pub recurrence_until: Option<NaiveDate>,
+    /// Maximum number of original occurrences, including the seed.
+    pub recurrence_count: Option<u32>,
+    /// Absolute original occurrence dates omitted from the series.
+    pub recurrence_exdates: Vec<NaiveDate>,
+    /// Per-occurrence absolute cancellation/reschedule/content edits.
+    pub occurrence_overrides: Vec<OccurrenceOverride>,
+    /// IANA time-zone identifier, or `floating` for legacy/local wall time.
+    pub timezone: String,
+    /// Stable attendee id designating the organizer, when known.
+    pub organizer: Option<Id>,
+    pub attendees: Vec<Attendee>,
     /// Minutes before start for a reminder, if any.
     pub reminder_min: Option<i64>,
     pub project: Option<Id>,
@@ -289,6 +367,51 @@ impl Event {
         }
     }
 
+    /// The last date an all-day event occupies in Calendar's editor and
+    /// views.  RFC 5545 represents all-day `DTEND` as an *exclusive* date,
+    /// while people naturally choose an inclusive final day.  Older local
+    /// documents used `23:59` on that final day, so accept both shapes at the
+    /// model boundary instead of making existing events appear a day longer.
+    pub fn all_day_last_date(&self) -> NaiveDate {
+        if !self.all_day {
+            return self.end.date();
+        }
+        if self.end.time() == NaiveTime::MIN && self.end.date() > self.start.date() {
+            self.end.date() - Duration::days(1)
+        } else {
+            self.end.date().max(self.start.date())
+        }
+    }
+
+    /// The RFC 5545 exclusive end date for this all-day event.  This keeps
+    /// CalDAV/ICS interchange honest while allowing pre-existing local data
+    /// that stored `23:59` on the final day to round-trip correctly.
+    pub fn all_day_end_exclusive(&self) -> NaiveDate {
+        self.all_day_last_date() + Duration::days(1)
+    }
+
+    /// Number of visible dates occupied by an all-day event.  Kept separate
+    /// from a timestamp duration because RFC all-day events are date ranges,
+    /// and a daylight-saving transition must never shorten one in the views.
+    pub fn all_day_span_days(&self) -> i64 {
+        (self.all_day_end_exclusive() - self.start.date())
+            .num_days()
+            .max(1)
+    }
+
+    /// Resolve an occurrence start to an absolute UTC instant. Named-zone
+    /// recurrences retain their local clock time across DST; folds choose the
+    /// earlier instant and gaps advance to the first valid minute. Floating
+    /// events intentionally have no absolute interpretation.
+    pub fn occurrence_start_utc(&self, date: NaiveDate) -> Option<chrono::DateTime<chrono::Utc>> {
+        (self.timezone != "floating")
+            .then(|| {
+                crate::timezone::wall_to_utc(&self.timezone, date.and_time(self.start.time()))
+                    .map(|(instant, _)| instant)
+            })
+            .flatten()
+    }
+
     /// Whether this should be shown given the set of currently-hidden
     /// remote calendar ids. Local events (no `calendar_id`) are always visible;
     /// a synced event is hidden exactly when its source calendar is unchecked.
@@ -304,60 +427,104 @@ impl Event {
     pub fn occurrences_in(&self, from: NaiveDate, to: NaiveDate) -> Vec<NaiveDate> {
         let seed = self.start.date();
         let mut out = Vec::new();
-        let mut day = from.max(seed);
-        match self.recurrence {
-            Recurrence::None => {
-                if seed >= from && seed <= to {
-                    out.push(seed);
+        let interval = self.recurrence_interval.max(1);
+        let last_original = self
+            .occurrence_overrides
+            .iter()
+            .map(|edit| edit.original_date)
+            .max()
+            .unwrap_or(to)
+            .max(to);
+        let mut generated = 0_u32;
+        // Unbounded series jump directly to the requested window; the modular
+        // predicates below stay anchored on `seed`. A finite COUNT needs its
+        // ordinal, so it starts at the seed but can never inspect more than the
+        // explicitly bounded series plus interval gaps.
+        let moved_original = self
+            .occurrence_overrides
+            .iter()
+            .filter(|edit| {
+                edit.start
+                    .is_some_and(|start| start.date() >= from && start.date() <= to)
+            })
+            .map(|edit| edit.original_date)
+            .min();
+        let window_start = moved_original.unwrap_or(from).min(from).max(seed);
+        let mut day = if self.recurrence_count.is_some() {
+            seed
+        } else {
+            window_start
+        };
+        while day <= last_original {
+            let days = (day - seed).num_days();
+            let months = (day.year() - seed.year()) * 12
+                + (i32::try_from(day.month()).unwrap_or(0)
+                    - i32::try_from(seed.month()).unwrap_or(0));
+            let base_match = match self.recurrence {
+                Recurrence::None => day == seed,
+                Recurrence::Daily => days % i64::from(interval) == 0,
+                Recurrence::Weekdays => {
+                    day.weekday().num_days_from_monday() < 5
+                        && (days / 7) % i64::from(interval) == 0
+                }
+                Recurrence::Weekly => {
+                    day.weekday() == seed.weekday() && (days / 7) % i64::from(interval) == 0
+                }
+                Recurrence::Monthly => {
+                    day.day() == seed.day()
+                        && months >= 0
+                        && u32::try_from(months).is_ok_and(|value| value % interval == 0)
+                }
+                Recurrence::Yearly => {
+                    day.day() == seed.day()
+                        && day.month() == seed.month()
+                        && u32::try_from(day.year() - seed.year())
+                            .is_ok_and(|value| value % interval == 0)
+                }
+            };
+            if base_match {
+                generated = generated.saturating_add(1);
+                let within_end = self.recurrence_until.is_none_or(|until| day <= until)
+                    && self.recurrence_count.is_none_or(|count| generated <= count);
+                if !within_end {
+                    break;
+                }
+                let edit = self
+                    .occurrence_overrides
+                    .iter()
+                    .find(|edit| edit.original_date == day);
+                let excluded = self.recurrence_exdates.contains(&day);
+                let actual = edit
+                    .and_then(|edit| edit.start)
+                    .map_or(day, |start| start.date());
+                if !excluded
+                    && !edit.is_some_and(|edit| edit.cancelled)
+                    && actual >= from
+                    && actual <= to
+                {
+                    out.push(actual);
                 }
             }
-            Recurrence::Daily => {
-                while day <= to {
-                    out.push(day);
-                    day += Duration::days(1);
-                }
+            if self.recurrence == Recurrence::None {
+                break;
             }
-            Recurrence::Weekdays => {
-                while day <= to {
-                    let wd = day.weekday().num_days_from_monday();
-                    if wd < 5 {
-                        out.push(day);
-                    }
-                    day += Duration::days(1);
-                }
-            }
-            Recurrence::Weekly => {
-                // Align to the seed's weekday.
-                while day.weekday() != seed.weekday() && day <= to {
-                    day += Duration::days(1);
-                }
-                while day <= to {
-                    out.push(day);
-                    day += Duration::days(7);
-                }
-            }
-            Recurrence::Monthly => {
-                let dom = seed.day();
-                while day <= to {
-                    if day.day() == dom {
-                        out.push(day);
-                    }
-                    day += Duration::days(1);
-                }
-            }
-            Recurrence::Yearly => {
-                while day <= to {
-                    if day.day() == seed.day() && day.month() == seed.month() {
-                        out.push(day);
-                    }
-                    day += Duration::days(1);
-                }
-            }
+            day += Duration::days(1);
         }
+        out.sort_unstable();
+        out.dedup();
         out
     }
 
     pub fn occurs_on(&self, date: NaiveDate) -> bool {
+        if self.all_day {
+            // Query far enough back to include an event that started before
+            // `date` but still spans it.  This also makes recurring all-day
+            // conferences appear on every occupied day, not only their first.
+            let from = date - Duration::days(self.all_day_span_days().saturating_sub(1));
+            return self.occurrences_in(from, date).into_iter().any(|start| {
+                date >= start && date < start + Duration::days(self.all_day_span_days())
+            });
+        }
         !self.occurrences_in(date, date).is_empty()
     }
 
@@ -478,9 +645,8 @@ impl Model {
     }
 }
 
-/// Build a populated demo model anchored on `today` so the seeded
-/// screenshot always lands inside the visible month with a realistic
-/// spread of work, regardless of the real date.
+/// Build a populated demo model anchored on `today` so the seeded screenshot
+/// always lands inside the visible month with a spread of work.
 pub fn seed_demo(today: NaiveDate) -> Model {
     let pid_work = Uuid::new_v4();
     let pid_personal = Uuid::new_v4();
@@ -540,6 +706,10 @@ fn seed_demo_events(
 }
 
 /// Today's events: standup through quarterly planning.
+#[allow(
+    clippy::too_many_lines,
+    reason = "declarative demo fixture is intentionally grouped by visible calendar period"
+)]
 fn seed_demo_events_early(
     today: NaiveDate,
     pid_work: Id,
@@ -547,6 +717,7 @@ fn seed_demo_events_early(
     pid_health: Id,
 ) -> Vec<Event> {
     let d = |delta: i64| today + Duration::days(delta);
+    let design_organizer = Uuid::new_v4();
     vec![
         Event {
             id: Uuid::new_v4(),
@@ -557,6 +728,14 @@ fn seed_demo_events_early(
             location: "Huddle room / Meet".into(),
             color: Palette::Indigo,
             recurrence: Recurrence::Weekdays,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: Some(10),
             calendar_id: None,
             project: Some(pid_work),
@@ -569,7 +748,28 @@ fn seed_demo_events_early(
             all_day: false,
             location: "Figma + Meet".into(),
             color: Palette::Violet,
-            recurrence: Recurrence::None,
+            recurrence: Recurrence::Weekly,
+            recurrence_interval: 2,
+            recurrence_until: Some(d(90)),
+            recurrence_count: None,
+            recurrence_exdates: vec![d(28)],
+            occurrence_overrides: vec![OccurrenceOverride {
+                original_date: d(42),
+                original_time: None,
+                cancelled: false,
+                start: Some(seed_demo_at(d(43), 14, 0)),
+                end: Some(seed_demo_at(d(43), 15, 0)),
+                title: Some("Design review · rescheduled".into()),
+                location: None,
+            }],
+            timezone: "Europe/Berlin".into(),
+            organizer: Some(design_organizer),
+            attendees: vec![Attendee {
+                id: design_organizer,
+                name: "Mina Patel".into(),
+                email: "mina@example.com".into(),
+                status: InviteStatus::Accepted,
+            }],
             reminder_min: Some(15),
             calendar_id: None,
             project: Some(pid_work),
@@ -583,6 +783,14 @@ fn seed_demo_events_early(
             location: "Café Mori".into(),
             color: Palette::Emerald,
             recurrence: Recurrence::None,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: None,
             calendar_id: None,
             project: Some(pid_personal),
@@ -596,6 +804,14 @@ fn seed_demo_events_early(
             location: "Northside".into(),
             color: Palette::Red,
             recurrence: Recurrence::Weekly,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: Some(30),
             calendar_id: None,
             project: Some(pid_health),
@@ -609,6 +825,14 @@ fn seed_demo_events_early(
             location: "War room".into(),
             color: Palette::Indigo,
             recurrence: Recurrence::None,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: Some(15),
             calendar_id: None,
             project: Some(pid_work),
@@ -617,6 +841,10 @@ fn seed_demo_events_early(
 }
 
 /// The rest of the week's events: dentist through payday rent.
+#[allow(
+    clippy::too_many_lines,
+    reason = "declarative demo fixture is intentionally grouped by visible calendar period"
+)]
 fn seed_demo_events_later(today: NaiveDate, pid_work: Id, pid_personal: Id) -> Vec<Event> {
     let d = |delta: i64| today + Duration::days(delta);
     vec![
@@ -629,6 +857,14 @@ fn seed_demo_events_later(today: NaiveDate, pid_work: Id, pid_personal: Id) -> V
             location: "Bright Smiles".into(),
             color: Palette::Blue,
             recurrence: Recurrence::None,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: Some(60),
             calendar_id: None,
             project: Some(pid_personal),
@@ -642,6 +878,14 @@ fn seed_demo_events_later(today: NaiveDate, pid_work: Id, pid_personal: Id) -> V
             location: String::new(),
             color: Palette::Amber,
             recurrence: Recurrence::None,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: None,
             calendar_id: None,
             project: Some(pid_work),
@@ -655,6 +899,14 @@ fn seed_demo_events_later(today: NaiveDate, pid_work: Id, pid_personal: Id) -> V
             location: "Ridge trail".into(),
             color: Palette::Emerald,
             recurrence: Recurrence::None,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: None,
             calendar_id: None,
             project: Some(pid_personal),
@@ -668,6 +920,14 @@ fn seed_demo_events_later(today: NaiveDate, pid_work: Id, pid_personal: Id) -> V
             location: "Meet".into(),
             color: Palette::Indigo,
             recurrence: Recurrence::None,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: Some(10),
             calendar_id: None,
             project: Some(pid_work),
@@ -681,6 +941,14 @@ fn seed_demo_events_later(today: NaiveDate, pid_work: Id, pid_personal: Id) -> V
             location: String::new(),
             color: Palette::Amber,
             recurrence: Recurrence::Monthly,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: Some(720),
             calendar_id: None,
             project: Some(pid_personal),
@@ -842,8 +1110,77 @@ mod tests {
     }
 
     #[test]
+    fn recurrence_limits_exceptions_and_moved_occurrences_are_absolute() {
+        let mut event = sample_event(date(2026, 6, 1));
+        event.recurrence = Recurrence::Daily;
+        event.recurrence_interval = 2;
+        event.recurrence_count = Some(4);
+        event.recurrence_exdates.push(date(2026, 6, 3));
+        event.occurrence_overrides.push(OccurrenceOverride {
+            original_date: date(2026, 6, 5),
+            original_time: None,
+            cancelled: false,
+            start: Some(date(2026, 6, 6).and_hms_opt(9, 0, 0).unwrap()),
+            end: Some(date(2026, 6, 6).and_hms_opt(10, 0, 0).unwrap()),
+            title: Some("Moved instance".into()),
+            location: None,
+        });
+        assert_eq!(
+            event.occurrences_in(date(2026, 6, 1), date(2026, 6, 10)),
+            vec![date(2026, 6, 1), date(2026, 6, 6), date(2026, 6, 7)]
+        );
+    }
+
+    #[test]
+    fn named_zone_recurrence_keeps_wall_clock_time_across_dst() {
+        let mut event = sample_event(date(2026, 3, 22));
+        event.start = date(2026, 3, 22).and_hms_opt(9, 0, 0).unwrap();
+        event.end = date(2026, 3, 22).and_hms_opt(10, 0, 0).unwrap();
+        event.timezone = "Europe/Berlin".into();
+        let before = event.occurrence_start_utc(date(2026, 3, 22)).unwrap();
+        let after = event.occurrence_start_utc(date(2026, 3, 29)).unwrap();
+        assert_eq!(
+            before.naive_utc().time(),
+            NaiveTime::from_hms_opt(8, 0, 0).unwrap()
+        );
+        assert_eq!(
+            after.naive_utc().time(),
+            NaiveTime::from_hms_opt(7, 0, 0).unwrap()
+        );
+    }
+
+    #[test]
     fn none_recurrence_is_single_day() {
         let e = sample_event(date(2026, 6, 15));
+        assert!(e.occurs_on(date(2026, 6, 15)));
+        assert!(!e.occurs_on(date(2026, 6, 16)));
+    }
+
+    #[test]
+    fn all_day_events_use_an_exclusive_end_but_occupy_each_visible_day() {
+        let mut e = sample_event(date(2026, 6, 15));
+        e.all_day = true;
+        e.start = date(2026, 6, 15).and_time(NaiveTime::MIN);
+        e.end = date(2026, 6, 18).and_time(NaiveTime::MIN);
+
+        assert_eq!(e.all_day_last_date(), date(2026, 6, 17));
+        assert_eq!(e.all_day_end_exclusive(), date(2026, 6, 18));
+        assert_eq!(e.all_day_span_days(), 3);
+        assert!(e.occurs_on(date(2026, 6, 15)));
+        assert!(e.occurs_on(date(2026, 6, 16)));
+        assert!(e.occurs_on(date(2026, 6, 17)));
+        assert!(!e.occurs_on(date(2026, 6, 18)));
+    }
+
+    #[test]
+    fn legacy_all_day_final_minute_stays_one_visible_day() {
+        let mut e = sample_event(date(2026, 6, 15));
+        e.all_day = true;
+        e.start = date(2026, 6, 15).and_time(NaiveTime::MIN);
+        e.end = date(2026, 6, 15).and_hms_opt(23, 59, 0).unwrap();
+
+        assert_eq!(e.all_day_last_date(), date(2026, 6, 15));
+        assert_eq!(e.all_day_end_exclusive(), date(2026, 6, 16));
         assert!(e.occurs_on(date(2026, 6, 15)));
         assert!(!e.occurs_on(date(2026, 6, 16)));
     }
@@ -930,6 +1267,14 @@ mod tests {
             location: String::new(),
             color: Palette::Indigo,
             recurrence: Recurrence::None,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: None,
             calendar_id: None,
             project: None,

@@ -1,16 +1,14 @@
 //! [`InstallerApp`] — the root installer widget + wizard state machine.
 //!
-//! Structured like the greeter (the verified `ui`-app-under-cage
-//! template): a thin root widget owning a single composed child (a
+//! Structured like the greeter: a root widget owning a single composed child (a
 //! [`Card`]) and delegating the five `Widget` passes into it.
 //!
-//! IMPORTANT (focus): the App discovers focusable widgets by walking the
+//! Focus handling: the App discovers focusable widgets by walking the
 //! widget tree (`Widget::children`) in lock-step with the taffy tree.
 //! Any intermediate taffy node MUST have a matching widget in
 //! `children()`, or the recursion derails and inputs never enter
-//! `focusable_order` — breaking Tab / arrow navigation. That's why the
-//! card is a real [`Card`] widget (not a bare taffy node) and the
-//! two-button rows are real `ui::Row`s: the widget tree mirrors the
+//! `focusable_order` — breaking Tab / arrow navigation. The card is a
+//! [`Card`] widget and the two-button rows are `ui::Row`s, so the widget tree mirrors the
 //! taffy tree exactly.
 //!
 //! Keyboard-focus continuity across the per-step rebuild is handled by
@@ -21,7 +19,7 @@
 //!
 //! State lives in the CRDT (toolkit convention):
 //!   * `installer.username` — `Text`
-//!   * `installer.hostname` — `Text` (seeded `qos`)
+//!   * `installer.hostname` — `Text` (seeded `tilo`)
 //!   * `installer.timezone` — `Text` (seeded `UTC`)
 //!   * `installer.next` / `back` / `begin` — `bool` rising-edge flags
 //!   * `installer.reboot` / `poweroff` — `bool` rising-edge flags (Finish)
@@ -37,7 +35,6 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::process::Command;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -73,12 +70,15 @@ use crate::install::{InstallOptions, PowerAction};
 use crate::installer_network::{InstallerNetwork, NETWORK_WAKE_EVENT, NetworkPhase};
 use crate::keyboard_view::KeyboardView;
 use crate::layouts;
+use crate::power_readiness::current_insufficient_battery_percent;
 use crate::seg_choice::SegChoice;
 use crate::status_log::StatusLog;
 use crate::step_indicator::StepIndicator;
 
 const USERNAME_PATH: &str = "installer.username";
+const FULL_NAME_PATH: &str = "installer.full_name";
 const HOSTNAME_PATH: &str = "installer.hostname";
+const LOCALE_PATH: &str = "installer.locale";
 const TIMEZONE_PATH: &str = "installer.timezone";
 /// CRDT path holding the selected keyboard layout's *display name*.
 const KEYMAP_PATH: &str = "installer.keymap";
@@ -130,7 +130,7 @@ const RECOVERY_ACK_PATH: &str = "installer.recovery_ack";
 pub const FIDO2_LABELS: [&str; 2] = ["No security key", "Enroll security key"];
 
 /// Default hostname seeded into the CRDT (and the installed system).
-const DEFAULT_HOSTNAME: &str = "qos";
+const DEFAULT_HOSTNAME: &str = "tilo";
 /// Default time zone seeded into the CRDT.
 const DEFAULT_TIMEZONE: &str = "UTC";
 /// Default keyboard-layout display name seeded into the CRDT.
@@ -139,7 +139,13 @@ const DEFAULT_KEYMAP_NAME: &str = layouts::DEFAULT_DISPLAY_NAME;
 /// Filesystem choices, in display order. Index 0 is the default.
 pub const FILESYSTEMS: [&str; 3] = ["btrfs", "ext4", "xfs"];
 pub const INSTALL_METHOD_LABELS: [&str; 2] = ["Erase disk", "Install alongside"];
-const WINDOWS_ALONGSIDE_PREPARATION: &str = "Windows or NTFS storage was detected on this disk. Before continuing, boot Windows, save its BitLocker recovery key, and turn off Fast Startup. If you still need unallocated space, shrink Windows with Disk Management. qOS cannot make these Windows changes and will not resize NTFS.";
+const WINDOWS_ALONGSIDE_PREPARATION: &str = "Windows or NTFS storage was detected on this disk. Before continuing, boot Windows, save its BitLocker recovery key, and turn off Fast Startup. If you still need unallocated space, shrink Windows with Disk Management. Tilo cannot make these Windows changes and will not resize NTFS.";
+
+fn connect_power_message(percent: u8) -> String {
+    format!(
+        "Connect this computer to power before installing — the battery is at {percent}%. Installation has not started."
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallMethod {
@@ -147,10 +153,61 @@ enum InstallMethod {
     Alongside,
 }
 
+/// Which non-secret choices were independently validated from the medium.
+/// This deliberately records fields rather than treating a profile as one
+/// all-or-nothing shortcut: an invalid value can be repaired without asking
+/// for the sound choices again.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum FieldCompletion {
+    #[default]
+    NeedsRepair,
+    Complete,
+}
+
+impl FieldCompletion {
+    const fn is_complete(self) -> bool {
+        matches!(self, Self::Complete)
+    }
+}
+
+impl From<bool> for FieldCompletion {
+    fn from(complete: bool) -> Self {
+        if complete {
+            Self::Complete
+        } else {
+            Self::NeedsRepair
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ProfileCompletion {
+    hostname: FieldCompletion,
+    username: FieldCompletion,
+    full_name: FieldCompletion,
+    locale: FieldCompletion,
+    keyboard: FieldCompletion,
+    timezone: FieldCompletion,
+    filesystem: FieldCompletion,
+}
+
+impl ProfileCompletion {
+    fn identity_complete(self) -> bool {
+        self.username.is_complete() && self.full_name.is_complete()
+    }
+
+    fn options_complete(self) -> bool {
+        self.hostname.is_complete()
+            && self.locale.is_complete()
+            && self.timezone.is_complete()
+            && self.filesystem.is_complete()
+    }
+}
+
 /// One-line explanation for each filesystem, shown under the chooser.
 fn fs_description(i: usize) -> &'static str {
     match i {
-        0 => "Btrfs: snapshots, compression and rollback — recommended for qOS.",
+        0 => "Btrfs: snapshots, compression and rollback — recommended for Tilo.",
         1 => "Ext4: simple and battle-tested; no snapshot support.",
         2 => "XFS: high throughput for large files; no snapshot support.",
         _ => "",
@@ -195,9 +252,14 @@ fn kernel_lockdown_active() -> bool {
 /// unless the target UKI, initramfs, command line and firmware trust chain are
 /// all covered.
 fn target_verified_boot_ready() -> bool {
-    Command::new("/usr/libexec/qos-verified-boot-install-preflight")
-        .status()
-        .is_ok_and(|status| status.success())
+    bounded_command::run(
+        "/usr/libexec/tilo-verified-boot-install-preflight",
+        &[],
+        None,
+        64 * 1024,
+        std::time::Duration::from_secs(30),
+    )
+    .is_ok_and(|output| output.status.success())
 }
 
 /// Explanation shown under the encryption chooser, reflecting the choice and
@@ -214,19 +276,19 @@ enum VerifiedBootState {
 fn encrypt_description(state: VerifiedBootState) -> &'static str {
     match state {
         VerifiedBootState::TargetVerified => {
-            "qOS always encrypts the disk with LUKS2. Measured qOS-bound TPM unlock is not enabled yet, so this installation requires a strong disk passphrase even though the verified-boot checks pass. A recovery key is shown once during install."
+            "Tilo encrypts the disk with LUKS2 and binds unlock to this computer's Secure Boot state plus the release-authorized Tilo boot measurement. You will use a short startup PIN; a recovery key is shown once during install."
         }
         VerifiedBootState::TargetUnverified => {
-            "qOS always encrypts the disk with LUKS2. Verified boot is unavailable for this installation, so use one strong startup passphrase. A short PIN is only safe when the TPM can verify the complete boot chain."
+            "Tilo always encrypts the disk with LUKS2. Verified boot is unavailable for this installation, so use one strong startup passphrase. A short PIN is only safe when the TPM can verify the complete boot chain."
         }
         VerifiedBootState::KernelLockdownInactive => {
-            "qOS always encrypts the disk with LUKS2. Secure Boot is active but kernel lockdown is not, so qOS cannot treat this boot as verified and uses a strong disk passphrase instead."
+            "Tilo always encrypts the disk with LUKS2. Secure Boot is active but kernel lockdown is not, so Tilo cannot treat this boot as verified and uses a strong disk passphrase instead."
         }
         VerifiedBootState::SecureBootInactive => {
-            "qOS always encrypts the disk with LUKS2. TPM2 short-PIN protection requires verified boot, but Secure Boot is not active, so this installation uses a strong disk passphrase instead."
+            "Tilo always encrypts the disk with LUKS2. TPM2 short-PIN protection requires verified boot, but Secure Boot is not active, so this installation uses a strong disk passphrase instead."
         }
         VerifiedBootState::NoTpm => {
-            "qOS always encrypts the disk with LUKS2. This computer has no TPM2 chip, so you will enter a disk passphrase at startup. A recovery key is shown once during install as a backup."
+            "Tilo always encrypts the disk with LUKS2. This computer has no TPM2 chip, so you will enter a disk passphrase at startup. A recovery key is shown once during install as a backup."
         }
     }
 }
@@ -237,7 +299,7 @@ const CTRL_DONE: &str = "\u{1}done";
 const CTRL_FAIL: &str = "\u{1}fail";
 const PREFLIGHT_OK_PREFIX: &str = "\u{1}storage-preflight-ok:";
 const PREFLIGHT_FAIL_PREFIX: &str = "\u{1}storage-preflight-fail:";
-const RECOVERY_KEY_PREFIX: &str = "::qos-recovery-key::";
+const RECOVERY_KEY_PREFIX: &str = "::tilo-recovery-key::";
 
 /// Card geometry (logical px).
 const CARD_WIDTH: f32 = 520.0;
@@ -334,7 +396,7 @@ pub fn valid_hostname(h: &str) -> bool {
 }
 
 /// Whether `username` is portable across the Linux `useradd`
-/// implementations supported by the qOS installer.
+/// implementations supported by the Tilo installer.
 pub fn valid_username(username: &str) -> bool {
     let bytes = username.as_bytes();
     !bytes.is_empty()
@@ -367,8 +429,33 @@ pub fn valid_username(username: &str) -> bool {
                 | "chrony"
                 | "tss"
                 | "greetd"
-                | "qos"
+                | "tilo"
         )
+}
+
+pub fn valid_full_name(full_name: &str) -> bool {
+    full_name.chars().count() <= 100
+        && !full_name
+            .chars()
+            .any(|c| c.is_control() || matches!(c, ':' | '\n' | '\r'))
+}
+
+pub fn valid_locale(locale: &str) -> bool {
+    !locale.is_empty()
+        && locale.len() <= 64
+        && locale
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'@' | b'-'))
+}
+
+pub fn valid_timezone_name(timezone: &str) -> bool {
+    !timezone.is_empty()
+        && timezone.len() <= 128
+        && !timezone.starts_with('/')
+        && !timezone.contains("..")
+        && timezone
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'/' | b'+' | b'-'))
 }
 
 /// Guard for advancing out of `step`. `Ok(())` means it's valid to move
@@ -437,11 +524,9 @@ pub fn validate_passwords(password: &str, confirmation: &str) -> Result<(), Stri
     }
 }
 
-/// Validate the mandatory disk-unlock secret. Current releases deliberately
-/// enrol it as an ordinary LUKS passphrase on every machine: a TPM device is
-/// not a safe reason to accept a short PIN until unlock is bound to signed,
-/// measured qOS boot artifacts.
-fn validate_startup_secret(secret: &str) -> Result<(), &'static str> {
+/// Validate either the measured-boot TPM PIN or the independent strong LUKS
+/// passphrase selected when the target cannot prove that policy.
+fn validate_startup_secret_for(secret: &str, tpm_pin: bool) -> Result<(), &'static str> {
     const COMMON_BASES: &[&str] = &[
         "password",
         "qwerty",
@@ -449,15 +534,33 @@ fn validate_startup_secret(secret: &str) -> Result<(), &'static str> {
         "welcome",
         "administrator",
         "admin",
-        "quickdesktop",
+        "tilo",
         "quickdesk",
-        "qos",
+        "tilo",
     ];
 
     if secret.trim() != secret {
         return Err("Do not begin or end the disk passphrase with spaces");
     }
     let chars: Vec<char> = secret.chars().collect();
+    if tpm_pin {
+        if chars.len() < 6 {
+            return Err("Use at least 6 digits for the TPM-protected startup PIN");
+        }
+        if !chars.iter().all(char::is_ascii_digit) {
+            return Err("The TPM-protected startup PIN must contain digits only");
+        }
+        if chars
+            .first()
+            .is_some_and(|first| chars.iter().all(|c| c == first))
+            || ["012345", "123456", "234567", "345678", "456789", "987654"]
+                .iter()
+                .any(|bad| secret.contains(bad))
+        {
+            return Err("Choose a less predictable startup PIN");
+        }
+        return Ok(());
+    }
     if chars.len() < 15 {
         return Err("Use at least 15 characters for the disk passphrase");
     }
@@ -478,12 +581,19 @@ fn validate_startup_secret(secret: &str) -> Result<(), &'static str> {
     }
     for period in 1..=4 {
         if chars.len().is_multiple_of(period)
-            && chars.chunks(period).all(|chunk| chunk == &chars[..period])
+            && chars
+                .get(..period)
+                .is_some_and(|prefix| chars.chunks(period).all(|chunk| chunk == prefix))
         {
             return Err("That passphrase is a repeated pattern; use several unrelated words");
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+fn validate_startup_secret(secret: &str) -> Result<(), &'static str> {
+    validate_startup_secret_for(secret, false)
 }
 
 // ===================================================================
@@ -941,8 +1051,8 @@ pub struct InstallerApp {
     /// Required before Begin Install when encryption is on. Default `false`.
     recovery_ack: bool,
     /// Whether this machine has a TPM2 device, sampled once at construction.
-    /// Encryption and passphrase policy are identical either way; this only
-    /// helps explain why automatic TPM unlock is not currently offered.
+    /// Together with the verified-target preflight, this selects either the
+    /// measured-boot PIN policy or the strong passphrase policy.
     tpm2: bool,
     /// Diagnostic state used to explain the measured-boot boundary.
     secure_boot: bool,
@@ -1006,10 +1116,14 @@ pub struct InstallerApp {
     /// probe to disk/root/ESP identities.
     storage_preflight_request: Option<String>,
     storage_preflight_passed: bool,
-    /// A validated qOS Imager profile supplied the non-secret setup choices.
-    preconfigured: bool,
+    /// Independently validated choices supplied by Tilo Imager. `None` is the
+    /// ordinary manual flow; incomplete fields route to their repair screen.
+    profile_completion: Option<ProfileCompletion>,
     /// Wired by `main` so the worker thread can pump progress back.
     proxy_slot: Option<ProxySlot>,
+    /// Live power probe. Tests and deterministic screenshots use a no-op;
+    /// [`Self::new`] replaces it with the shared sysfs-backed Tilo reader.
+    power_probe: fn() -> Option<u8>,
     /// Scroll position survives incidental composition rebuilds (network
     /// status, validation, progress). Deliberate step changes reset it.
     viewport_offset: Rc<Cell<(f32, f32)>>,
@@ -1026,6 +1140,7 @@ impl InstallerApp {
     /// the live time-zone list from the system.
     pub fn new() -> Self {
         let mut s = Self::with_disks(read_disks());
+        s.power_probe = current_insufficient_battery_percent;
         s.timezones = crate::timezones::list_timezones();
         match crate::media_profile::load() {
             Ok(Some(profile)) => s.apply_media_profile(profile),
@@ -1087,27 +1202,56 @@ impl InstallerApp {
             install_launched: false,
             storage_preflight_request: None,
             storage_preflight_passed: false,
-            preconfigured: false,
+            profile_completion: None,
             proxy_slot: None,
+            power_probe: || None,
             viewport_offset: Rc::new(Cell::new((0.0, 0.0))),
         }
     }
 
     fn apply_media_profile(&mut self, profile: crate::media_profile::MediaProfile) {
-        let keyboard = profile.keyboard_display_name().to_string();
-        self.hostname = profile.hostname;
-        self.username = profile.username;
-        self.full_name = profile.full_name;
-        self.locale = profile.locale;
-        self.keymap = keyboard;
-        self.timezone = profile.timezone;
-        self.selected_fs = FILESYSTEMS
-            .iter()
-            .position(|filesystem| *filesystem == profile.filesystem)
-            .unwrap_or(0);
-        self.step = Step::Disk;
-        self.preconfigured = true;
-        self.status = "Your setup choices are ready. Choose where to install qOS.".to_string();
+        let status = profile.repair_summary();
+        let keyboard_display = profile.keyboard_display_name().map(str::to_string);
+        let completion = ProfileCompletion {
+            hostname: profile.hostname.is_some().into(),
+            username: profile.username.is_some().into(),
+            full_name: profile.full_name.is_some().into(),
+            locale: profile.locale.is_some().into(),
+            keyboard: profile.keyboard.is_some().into(),
+            timezone: profile.timezone.is_some().into(),
+            filesystem: profile.filesystem.is_some().into(),
+        };
+        if let Some(value) = profile.hostname {
+            self.hostname = value;
+        }
+        if let Some(value) = profile.username {
+            self.username = value;
+        }
+        if let Some(value) = profile.full_name {
+            self.full_name = value;
+        }
+        if let Some(value) = profile.locale {
+            self.locale = value;
+        }
+        if let Some(value) = keyboard_display {
+            self.keymap = value;
+        }
+        if let Some(value) = profile.timezone {
+            self.timezone = value;
+        }
+        if let Some(value) = profile.filesystem {
+            self.selected_fs = FILESYSTEMS
+                .iter()
+                .position(|filesystem| *filesystem == value)
+                .unwrap_or(0);
+        }
+        self.step = if completion.keyboard.is_complete() {
+            Step::Disk
+        } else {
+            Step::Keyboard
+        };
+        self.profile_completion = Some(completion);
+        self.status = status;
     }
 
     /// Wire the shared event-loop-proxy slot used to stream install
@@ -1299,12 +1443,19 @@ impl InstallerApp {
         }
     }
 
-    /// May the install start, as far as encryption is concerned? Native qOS
+    /// May the install start, as far as encryption is concerned? Native Tilo
     /// always requires both a reproducible recovery factor and a startup
-    /// secret. TPM-backed unlock is not enabled until it can be bound to
-    /// signed, measured qOS boot artifacts.
+    /// secret. A short PIN is accepted only for a signed, measured target.
     fn encryption_ready(&self) -> bool {
-        self.recovery_ack && validate_startup_secret(&secret_copy(&self.password)).is_ok()
+        self.recovery_ack
+            && validate_startup_secret_for(
+                &secret_copy(&self.password),
+                matches!(
+                    self.verified_boot_state(),
+                    VerifiedBootState::TargetVerified
+                ),
+            )
+            .is_ok()
     }
 
     fn destructive_confirmation_target(&self) -> Option<String> {
@@ -1325,11 +1476,21 @@ impl InstallerApp {
 
     /// Human-readable summary of the encryption factors for the Review step.
     fn encryption_summary(&self) -> String {
-        // Recovery key is always present; the strong boot passphrase is
-        // mandatory; FIDO2 is listed only when enrolling.
+        // Recovery is always present; the primary startup factor reflects the
+        // same verified-target decision used by validation and the backend.
         let mut factors = vec!["recovery key".to_string()];
         if !secret_copy(&self.password).trim().is_empty() {
-            factors.push("boot passphrase".to_string());
+            factors.push(
+                if matches!(
+                    self.verified_boot_state(),
+                    VerifiedBootState::TargetVerified
+                ) {
+                    "TPM-protected startup PIN"
+                } else {
+                    "boot passphrase"
+                }
+                .to_string(),
+            );
         }
         if self.fido2 {
             factors.push("FIDO2".to_string());
@@ -1411,6 +1572,12 @@ impl InstallerApp {
         {
             let _ = state.splice_text(&obj, 0, 0, &self.username);
         }
+        if state.get(root, FULL_NAME_PATH).ok().flatten().is_none()
+            && let Ok(obj) = state.put_object(root, FULL_NAME_PATH, ObjType::Text)
+            && !self.full_name.is_empty()
+        {
+            let _ = state.splice_text(&obj, 0, 0, &self.full_name);
+        }
         // Hostname / timezone seed with sensible defaults so the fields
         // aren't blank (and validation passes out of the box).
         if state.get(root, HOSTNAME_PATH).ok().flatten().is_none()
@@ -1422,6 +1589,11 @@ impl InstallerApp {
             && let Ok(obj) = state.put_object(root, TIMEZONE_PATH, ObjType::Text)
         {
             let _ = state.splice_text(&obj, 0, 0, DEFAULT_TIMEZONE);
+        }
+        if state.get(root, LOCALE_PATH).ok().flatten().is_none()
+            && let Ok(obj) = state.put_object(root, LOCALE_PATH, ObjType::Text)
+        {
+            let _ = state.splice_text(&obj, 0, 0, &self.locale);
         }
         // Keyboard layout seeds with the current selection (default or a
         // shot-injected one), so the picker + preview aren't blank.
@@ -1507,6 +1679,43 @@ impl InstallerApp {
         }
     }
 
+    fn validate_current_step_details(&self) -> Result<(), String> {
+        if self.step == Step::Account && !valid_full_name(self.full_name.trim()) {
+            return Err(
+                "Use at most 100 characters for the name, without colons or control characters"
+                    .into(),
+            );
+        }
+        if self.step == Step::Account {
+            validate_passwords(
+                &secret_copy(&self.password),
+                &secret_copy(&self.password_confirmation),
+            )?;
+            validate_startup_secret_for(
+                &secret_copy(&self.password),
+                matches!(
+                    self.verified_boot_state(),
+                    VerifiedBootState::TargetVerified
+                ),
+            )
+            .map_err(str::to_string)?;
+        }
+        if self.step == Step::Options {
+            if !valid_locale(self.locale.trim()) {
+                return Err("Enter a valid locale such as en_US.UTF-8".into());
+            }
+            if !valid_timezone_name(self.timezone.trim())
+                || !self
+                    .timezones
+                    .iter()
+                    .any(|zone| zone == self.timezone.trim())
+            {
+                return Err("Choose a valid time zone from the list".into());
+            }
+        }
+        Ok(())
+    }
+
     /// Advance to the next step if the current one validates.
     fn go_next(&mut self) {
         if self.step == Step::Disk {
@@ -1552,22 +1761,31 @@ impl InstallerApp {
             &self.hostname,
         ) {
             Ok(()) => {
-                if self.step == Step::Account
-                    && let Err(message) = validate_passwords(
-                        &secret_copy(&self.password),
-                        &secret_copy(&self.password_confirmation),
-                    )
-                {
+                if let Err(message) = self.validate_current_step_details() {
                     self.set_status(&message);
                     return;
                 }
-                if self.step == Step::Account
-                    && let Err(message) = validate_startup_secret(&secret_copy(&self.password))
-                {
-                    self.set_status(message);
-                    return;
+                if let Some(completion) = self.profile_completion.as_mut() {
+                    match self.step {
+                        Step::Keyboard => completion.keyboard = FieldCompletion::Complete,
+                        Step::Account => {
+                            completion.username = FieldCompletion::Complete;
+                            completion.full_name = FieldCompletion::Complete;
+                        }
+                        Step::Options => {
+                            completion.hostname = FieldCompletion::Complete;
+                            completion.locale = FieldCompletion::Complete;
+                            completion.timezone = FieldCompletion::Complete;
+                            completion.filesystem = FieldCompletion::Complete;
+                        }
+                        Step::Network | Step::Disk | Step::Review | Step::Install => {}
+                    }
                 }
-                let destination = if self.preconfigured && self.step == Step::Account {
+                let destination = if self.step == Step::Account
+                    && self
+                        .profile_completion
+                        .is_some_and(ProfileCompletion::options_complete)
+                {
                     Some(Step::Review)
                 } else {
                     next_step(self.step)
@@ -1600,7 +1818,7 @@ impl InstallerApp {
             return;
         };
         let Some(disk) = self.selected_dev() else {
-            self.set_status("Select the prepared qOS disk before checking it.");
+            self.set_status("Select the prepared Tilo disk before checking it.");
             return;
         };
         let opts = self.install_options();
@@ -1644,18 +1862,17 @@ impl InstallerApp {
                 self.install_launched = false;
                 self.status_lines.clear();
                 self.set_status(
-                    "Refresh storage before continuing. qOS will not reinitialize a target from unauthenticated on-disk metadata; use Ctrl+Alt+F2 if you need recovery tools.",
+                    "Refresh storage before continuing. Tilo will not reinitialize a target from unauthenticated on-disk metadata; use Ctrl+Alt+F2 if you need recovery tools.",
                 );
                 self.dirty_structure = true;
                 self.focus_reset = true;
             }
             return;
         }
-        let destination = if self.preconfigured && self.step == Step::Review {
-            Some(Step::Account)
-        } else {
-            prev_step(self.step)
-        };
+        // Back always follows the visible breadcrumb. A shortened forward path
+        // must not trap the owner between Account and Review: Options (including
+        // FIDO2) and Network remain available for deliberate changes.
+        let destination = prev_step(self.step);
         if let Some(p) = destination {
             self.step = p;
             self.reset_viewport();
@@ -1676,6 +1893,14 @@ impl InstallerApp {
             self.set_status("Select a disk to continue");
             return;
         };
+        // Check immediately before consuming secrets or starting the worker.
+        // The Review warning is advisory because plugging in does not rebuild
+        // this static wizard page; pressing Begin probes again and proceeds as
+        // soon as the machine is safely powered.
+        if let Some(percent) = (self.power_probe)() {
+            self.set_status(&connect_power_message(percent));
+            return;
+        }
         if !self.destructive_confirmation_ready() {
             let expected = self
                 .destructive_confirmation_target()
@@ -1689,7 +1914,13 @@ impl InstallerApp {
             self.set_status("Confirm you'll save your recovery key first");
             return;
         }
-        if let Err(message) = validate_startup_secret(&secret_copy(&self.password)) {
+        if let Err(message) = validate_startup_secret_for(
+            &secret_copy(&self.password),
+            matches!(
+                self.verified_boot_state(),
+                VerifiedBootState::TargetVerified
+            ),
+        ) {
             self.set_status(message);
             return;
         }
@@ -1779,6 +2010,11 @@ impl InstallerApp {
         }
         self.install_state = InstallState::Failed;
         self.reset_viewport();
+        // Running progress has no focusable controls. Failure replaces it
+        // with recovery-key actions and Review storage, so keyboard and
+        // assistive-technology users need a fresh focus target just as they
+        // do on successful completion.
+        self.focus_reset = true;
         self.dirty_structure = true;
     }
 
@@ -1850,7 +2086,7 @@ impl InstallerApp {
         children.push(Box::new(Text::new("Connect to a network").with_size(xl)));
         children.push(Box::new(
             Text::new(
-                "Optional — qOS installs from this medium and does not require internet access.",
+                "Optional — Tilo installs from this medium and does not require internet access.",
             )
             .with_size(sm)
             .with_color(dim),
@@ -1974,7 +2210,7 @@ impl InstallerApp {
         let base = theme.tokens.typography.scale.base;
         let sm = theme.tokens.typography.scale.sm;
 
-        children.push(Box::new(Text::new("Install qOS").with_size(xl)));
+        children.push(Box::new(Text::new("Install Tilo").with_size(xl)));
         children.push(Box::new(
             SegChoice::new(
                 INSTALL_METHOD_LABELS
@@ -1991,7 +2227,7 @@ impl InstallerApp {
         let guidance = if self.install_method == InstallMethod::Erase {
             "Erase disk deletes every partition and operating system on the selected disk."
         } else {
-            "Alongside preserves existing partitions. qOS can use one unallocated GPT extent (34 GiB+) or prepared qOS partitions. It never shrinks, moves, or deletes an existing partition."
+            "Alongside preserves existing partitions. Tilo can use one unallocated GPT extent (34 GiB+) or prepared Tilo partitions. It never shrinks, moves, or deletes an existing partition."
         };
         children.push(Box::new(Text::new(guidance).with_size(sm).with_color(
             if self.install_method == InstallMethod::Erase {
@@ -2049,7 +2285,7 @@ impl InstallerApp {
         {
             children.push(Box::new(
                 Text::new(&format!(
-                    "Ready to use {} GiB of unallocated space: a new 2 GiB qOS EFI partition and a new {} GiB encrypted root. Existing partitions will not be changed.",
+                    "Ready to use {} GiB of unallocated space: a new 2 GiB Tilo EFI partition and a new {} GiB encrypted root. Existing partitions will not be changed.",
                     plan.free_size_bytes / (1024 * 1024 * 1024),
                     plan.root_size_bytes / (1024 * 1024 * 1024)
                 ))
@@ -2102,7 +2338,7 @@ impl InstallerApp {
         plans: &[GuidedAlongsidePlan],
     ) {
         children.push(Box::new(
-            Text::new("Choose the exact unallocated region for qOS")
+            Text::new("Choose the exact unallocated region for Tilo")
                 .with_size(theme.tokens.typography.scale.base),
         ));
         for (index, plan) in plans.iter().enumerate() {
@@ -2131,20 +2367,50 @@ impl InstallerApp {
         let base = theme.tokens.typography.scale.base;
         let sm = theme.tokens.typography.scale.sm;
 
-        children.push(Box::new(Text::new("Create your account").with_size(xl)));
-        children.push(Box::new(Text::new("Username").with_size(base)));
+        let completion = self.profile_completion.unwrap_or_default();
+        let identity_complete = self
+            .profile_completion
+            .is_some_and(ProfileCompletion::identity_complete);
         children.push(Box::new(
-            TextInput::new(Vec::new())
-                .with_id("installer.username")
-                .with_on_change_path(USERNAME_PATH),
+            Text::new(if identity_complete {
+                "Secure your account"
+            } else {
+                "Create your account"
+            })
+            .with_size(xl),
         ));
+        if self.profile_completion.is_none() || !completion.username.is_complete() {
+            children.push(Box::new(Text::new("Username").with_size(base)));
+            children.push(Box::new(
+                TextInput::new(Vec::new())
+                    .with_id("installer.username")
+                    .with_on_change_path(USERNAME_PATH),
+            ));
+            children.push(Box::new(
+                Text::new("Used to sign in and for your home directory.")
+                    .with_size(sm)
+                    .with_color(dim),
+            ));
+        }
+        if self.profile_completion.is_none() || !completion.full_name.is_complete() {
+            children.push(Box::new(Text::new("Full name (optional)").with_size(base)));
+            children.push(Box::new(
+                TextInput::new(Vec::new())
+                    .with_id("installer.full_name")
+                    .with_on_change_path(FULL_NAME_PATH),
+            ));
+        }
+        let tpm_pin = matches!(
+            self.verified_boot_state(),
+            VerifiedBootState::TargetVerified
+        );
         children.push(Box::new(
-            Text::new("Used to sign in and for your home directory.")
-                .with_size(sm)
-                .with_color(dim),
-        ));
-        children.push(Box::new(
-            Text::new("Startup and unlock passphrase").with_size(base),
+            Text::new(if tpm_pin {
+                "TPM-protected startup PIN"
+            } else {
+                "Startup and unlock passphrase"
+            })
+            .with_size(base),
         ));
         children.push(Box::new(
             TextInput::new(Vec::new())
@@ -2153,12 +2419,21 @@ impl InstallerApp {
                 .with_secret(true),
         ));
         children.push(Box::new(
-            Text::new("Choose at least 15 characters, ideally several unrelated words. It decrypts the disk at startup and unlocks your session later.")
-                .with_size(sm)
-                .with_color(dim),
+            Text::new(if tpm_pin {
+                "Use at least 6 digits. The TPM rate-limits guesses; keep the recovery key for hardware changes."
+            } else {
+                "Choose at least 15 characters, ideally several unrelated words. It decrypts the disk at startup and unlocks your session later."
+            })
+            .with_size(sm)
+            .with_color(dim),
         ));
         children.push(Box::new(
-            Text::new("Confirm startup and unlock passphrase").with_size(base),
+            Text::new(if tpm_pin {
+                "Confirm TPM-protected startup PIN"
+            } else {
+                "Confirm startup and unlock passphrase"
+            })
+            .with_size(base),
         ));
         children.push(Box::new(
             TextInput::new(Vec::new())
@@ -2187,7 +2462,7 @@ impl InstallerApp {
         ));
         children.push(Box::new(KeyboardView::new(KEYMAP_PATH)));
         children.push(Box::new(
-            Text::new("Need files from this computer, or removing an alongside qOS install? Press Ctrl+Alt+F2 for recovery tools; Ctrl+Alt+F1 returns here.")
+            Text::new("Need files from this computer, or removing an alongside Tilo install? Press Ctrl+Alt+F2 for recovery tools; Ctrl+Alt+F1 returns here.")
                 .with_size(sm)
                 .with_color(dim),
         ));
@@ -2199,23 +2474,26 @@ impl InstallerApp {
         let xl = theme.tokens.typography.scale.xl;
         let base = theme.tokens.typography.scale.base;
         let sm = theme.tokens.typography.scale.sm;
+        let completion = self.profile_completion.unwrap_or_default();
 
         children.push(Box::new(Text::new("Installation options").with_size(xl)));
 
-        children.push(Box::new(Text::new("Filesystem").with_size(base)));
-        children.push(Box::new(SegChoice::new(
-            FILESYSTEMS
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect(),
-            (0..FILESYSTEMS.len()).map(fs_path).collect(),
-            self.selected_fs,
-        )));
-        children.push(Box::new(
-            Text::new(fs_description(self.selected_fs))
-                .with_size(sm)
-                .with_color(dim),
-        ));
+        if self.profile_completion.is_none() || !completion.filesystem.is_complete() {
+            children.push(Box::new(Text::new("Filesystem").with_size(base)));
+            children.push(Box::new(SegChoice::new(
+                FILESYSTEMS
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect(),
+                (0..FILESYSTEMS.len()).map(fs_path).collect(),
+                self.selected_fs,
+            )));
+            children.push(Box::new(
+                Text::new(fs_description(self.selected_fs))
+                    .with_size(sm)
+                    .with_color(dim),
+            ));
+        }
 
         children.push(Box::new(Text::new("Disk encryption").with_size(base)));
         children.push(Box::new(
@@ -2247,30 +2525,48 @@ impl InstallerApp {
                 .with_color(dim),
         ));
 
-        children.push(Box::new(Text::new("Hostname").with_size(base)));
-        children.push(Box::new(
-            TextInput::new(Vec::new())
-                .with_id("installer.hostname")
-                .with_on_change_path(HOSTNAME_PATH),
-        ));
-        children.push(Box::new(
-            Text::new("The name your computer uses on the network.")
-                .with_size(sm)
-                .with_color(dim),
-        ));
+        if self.profile_completion.is_none() || !completion.hostname.is_complete() {
+            children.push(Box::new(Text::new("Hostname").with_size(base)));
+            children.push(Box::new(
+                TextInput::new(Vec::new())
+                    .with_id("installer.hostname")
+                    .with_on_change_path(HOSTNAME_PATH),
+            ));
+            children.push(Box::new(
+                Text::new("The name your computer uses on the network.")
+                    .with_size(sm)
+                    .with_color(dim),
+            ));
+        }
 
-        children.push(Box::new(Text::new("Time zone").with_size(base)));
-        children.push(Box::new(
-            Dropdown::new(self.timezones.clone(), TIMEZONE_PATH)
-                .with_id("installer.timezone")
-                .with_placeholder("Select a time zone")
-                .open_if(self.tz_open_for_shot),
-        ));
-        children.push(Box::new(
-            Text::new("Pick from the list — start typing to filter (IANA name, e.g. Europe/Amsterdam or UTC).")
-                .with_size(sm)
-                .with_color(dim),
-        ));
+        if self.profile_completion.is_none() || !completion.locale.is_complete() {
+            children.push(Box::new(Text::new("Language & locale").with_size(base)));
+            children.push(Box::new(
+                TextInput::new(Vec::new())
+                    .with_id("installer.locale")
+                    .with_on_change_path(LOCALE_PATH),
+            ));
+            children.push(Box::new(
+                Text::new("Use a locale such as en_US.UTF-8 or de_DE.UTF-8.")
+                    .with_size(sm)
+                    .with_color(dim),
+            ));
+        }
+
+        if self.profile_completion.is_none() || !completion.timezone.is_complete() {
+            children.push(Box::new(Text::new("Time zone").with_size(base)));
+            children.push(Box::new(
+                Dropdown::new(self.timezones.clone(), TIMEZONE_PATH)
+                    .with_id("installer.timezone")
+                    .with_placeholder("Select a time zone")
+                    .open_if(self.tz_open_for_shot),
+            ));
+            children.push(Box::new(
+                Text::new("Pick from the list — start typing to filter (IANA name, e.g. Europe/Amsterdam or UTC).")
+                    .with_size(sm)
+                    .with_color(dim),
+            ));
+        }
 
         children.push(nav_row(Step::Options, NEXT_PATH, "Next", false));
     }
@@ -2294,7 +2590,7 @@ impl InstallerApp {
                 if self.uses_guided_alongside() {
                     "guided free-space partition plan"
                 } else {
-                    "qOS root format"
+                    "Tilo root format"
                 },
             ),
         };
@@ -2350,7 +2646,7 @@ impl InstallerApp {
                     theme,
                     "Partition plan",
                     &format!(
-                        "Create 2 GiB qOS EFI + {} GiB qOS root in {} GiB unallocated space",
+                        "Create 2 GiB Tilo EFI + {} GiB Tilo root in {} GiB unallocated space",
                         plan.root_size_bytes / (1024 * 1024 * 1024),
                         plan.free_size_bytes / (1024 * 1024 * 1024)
                     ),
@@ -2368,20 +2664,20 @@ impl InstallerApp {
             } else {
                 children.push(summary_row(
                     theme,
-                    "qOS root",
+                    "Tilo root",
                     disk.alongside_root()
                         .map_or("<missing>", |p| p.name.as_str()),
                 ));
                 children.push(summary_row(
                     theme,
-                    "qOS EFI partition",
+                    "Tilo EFI partition",
                     disk.efi_partition()
                         .map_or("<missing>", |p| p.name.as_str()),
                 ));
                 children.push(summary_row(
                     theme,
                     "Choose an OS",
-                    "qOS adds safe menu shortcuts for unambiguous Windows/Linux loaders on this shared EFI partition",
+                    "Tilo adds safe menu shortcuts for unambiguous Windows/Linux loaders on this shared EFI partition",
                 ));
             }
         }
@@ -2400,19 +2696,27 @@ impl InstallerApp {
             &self.network.connection_summary(),
         ));
         children.push(Box::new(
-            Text::new("This install uses the qOS image on this medium; it does not download an update. Future system updates come from the signature-required qOS repository and are checked automatically after first boot whenever the computer is online.")
+            Text::new("This install uses the Tilo image on this medium; it does not download an update. Future system updates come from the signature-required Tilo repository and are checked automatically after first boot whenever the computer is online.")
                 .with_size(sm)
                 .with_color(dim),
         ));
 
+        if let Some(percent) = (self.power_probe)() {
+            children.push(Box::new(
+                Text::new(&connect_power_message(percent))
+                    .with_size(base)
+                    .with_color(theme.tokens.colors.semantic.warning),
+            ));
+        }
+
         let impact = if self.install_method == InstallMethod::Alongside {
             if self.uses_guided_alongside() {
                 format!(
-                    "Two new qOS partitions will be created only in the reviewed unallocated space on {dev}. Existing OS partitions are preserved. Firmware/Secure Boot changes can still trigger a Windows BitLocker recovery prompt; save that recovery key before continuing."
+                    "Two new Tilo partitions will be created only in the reviewed unallocated space on {dev}. Existing OS partitions are preserved. Firmware/Secure Boot changes can still trigger a Windows BitLocker recovery prompt; save that recovery key before continuing."
                 )
             } else {
                 format!(
-                    "Only the prepared qOS root partition on {dev} is formatted. Existing OS partitions are preserved. Firmware/Secure Boot changes can still trigger a Windows BitLocker recovery prompt; save that recovery key before continuing."
+                    "Only the prepared Tilo root partition on {dev} is formatted. Existing OS partitions are preserved. Firmware/Secure Boot changes can still trigger a Windows BitLocker recovery prompt; save that recovery key before continuing."
                 )
             }
         } else {
@@ -2464,7 +2768,7 @@ impl InstallerApp {
         match self.install_state {
             InstallState::Done => {
                 children.push(Box::new(
-                    Text::new("qOS is installed")
+                    Text::new("Tilo is installed")
                         .with_size(xl)
                         .with_color(theme.status_success)
                         .with_role(TextRole::Title)
@@ -2478,9 +2782,9 @@ impl InstallerApp {
                 if self.install_method == InstallMethod::Alongside {
                     children.push(Box::new(
                         Text::new(if self.uses_guided_alongside() {
-                            "To choose qOS or your existing system, open this computer's firmware boot picker. The installer preserved its previous default."
+                            "To choose Tilo or your existing system, open this computer's firmware boot picker. The installer preserved its previous default."
                         } else {
-                            "The qOS boot menu includes each unambiguous Windows or Linux loader found on the shared EFI partition; firmware choices remain available too."
+                            "The Tilo boot menu includes each unambiguous Windows or Linux loader found on the shared EFI partition; firmware choices remain available too."
                         })
                         .with_size(sm)
                         .with_color(dim),
@@ -2507,7 +2811,7 @@ impl InstallerApp {
                         .with_live(Politeness::Assertive),
                 ));
                 children.push(Box::new(
-                    Text::new("The installer stopped before it could confirm a bootable system. The destination may already contain a partial encrypted installation. qOS will not treat on-disk names, labels, or metadata as permission to erase it. Save the recovery key below if one was generated, then review storage or use Ctrl+Alt+F2 for recovery tools.")
+                    Text::new("The installer stopped before it could confirm a bootable system. The destination may already contain a partial encrypted installation. Tilo will not treat on-disk names, labels, or metadata as permission to erase it. Save the recovery key below if one was generated, then review storage or use Ctrl+Alt+F2 for recovery tools.")
                         .with_size(sm)
                         .with_color(dim),
                 ));
@@ -2521,7 +2825,7 @@ impl InstallerApp {
             }
             _ => {
                 children.push(Box::new(
-                    Text::new("Installing qOS…")
+                    Text::new("Installing Tilo…")
                         .with_size(xl)
                         .with_role(TextRole::Title),
                 ));
@@ -2703,7 +3007,7 @@ fn sample_disks() -> Vec<Disk> {
             logical_sector_size: 512,
             major_minor: "8:0".to_string(),
             wwn: "0x5002538e40abcdef".to_string(),
-            serial: "QOS-SAMPLE-SATA".to_string(),
+            serial: "TILO-SAMPLE-SATA".to_string(),
             removable: false,
             read_only: false,
             is_system: false,
@@ -2744,7 +3048,7 @@ fn sample_disks() -> Vec<Disk> {
                     size_bytes: 2_147_483_648,
                     part_uuid: "00000000-0000-0000-0000-000000000004".to_string(),
                     filesystem: "vfat".to_string(),
-                    label: "qOS EFI".to_string(),
+                    label: "Tilo EFI".to_string(),
                     mountpoint: String::new(),
                     part_type: EFI_SYSTEM_GUID.to_string(),
                 },
@@ -2760,7 +3064,7 @@ fn sample_disks() -> Vec<Disk> {
             logical_sector_size: 512,
             major_minor: "259:0".to_string(),
             wwn: "eui.0000000000000001".to_string(),
-            serial: "QOS-SAMPLE-NVME".to_string(),
+            serial: "TILO-SAMPLE-NVME".to_string(),
             removable: false,
             read_only: false,
             is_system: false,
@@ -2774,12 +3078,12 @@ fn sample_disks() -> Vec<Disk> {
 fn sample_install_log() -> Vec<String> {
     vec![
         "Starting install to /dev/sda for user quinten (btrfs).".to_string(),
-        "==> Copying the running qOS image into local container storage".to_string(),
-        "Copying local image docker://localhost/qos-installer:latest to containers-storage:localhost/bootc".to_string(),
-        "==> Installing qOS onto /dev/sda (this ERASES the disk)".to_string(),
+        "==> Copying the running Tilo image into local container storage".to_string(),
+        "Copying local image docker://localhost/tilo-installer:latest to containers-storage:localhost/bootc".to_string(),
+        "==> Installing Tilo onto /dev/sda (this ERASES the disk)".to_string(),
         "  base system installed.".to_string(),
         "==> Preparing the 'quinten' account on the installed system".to_string(),
-        "==> Setting hostname 'qos' and time zone 'UTC'".to_string(),
+        "==> Setting hostname 'tilo' and time zone 'UTC'".to_string(),
     ]
 }
 
@@ -2798,16 +3102,17 @@ fn friendly_install_status(lines: &[String]) -> Vec<String> {
         let lower = line.to_ascii_lowercase();
         if lower.contains("starting install") {
             add("✓ Installation choices verified");
-        } else if lower.contains("copying the running qos image")
+        } else if lower.contains("copying the running tilo image")
             || lower.contains("copying blob")
             || lower.contains("copying config")
         {
-            add("Copying verified qOS system files…");
+            add("Copying verified Tilo system files…");
         } else if lower.contains("preparing an encrypted root") || lower.contains("formatting luks")
         {
             add("Preparing encrypted storage…");
-        } else if lower.contains("installing qos onto") || lower.contains("base system installed") {
-            add("Installing the signed qOS system…");
+        } else if lower.contains("installing tilo onto") || lower.contains("base system installed")
+        {
+            add("Installing the signed Tilo system…");
         } else if lower.contains("fido2") && (lower.contains("touch") || lower.contains("enroll")) {
             // This is not background progress: systemd-cryptenroll is blocked
             // until the person touches their selected hardware token. Keep it
@@ -2834,7 +3139,7 @@ fn friendly_install_status(lines: &[String]) -> Vec<String> {
         {
             add("Finalizing the secure boot setup…");
         } else if lower.contains("installed — remove the medium") {
-            add("✓ qOS is ready");
+            add("✓ Tilo is ready");
         }
     }
 
@@ -2851,11 +3156,17 @@ impl InstallerApp {
         if let Some(u) = Self::read_text(state, root, USERNAME_PATH) {
             self.username = u;
         }
+        if let Some(name) = Self::read_text(state, root, FULL_NAME_PATH) {
+            self.full_name = name;
+        }
         if let Some(h) = Self::read_text(state, root, HOSTNAME_PATH) {
             self.hostname = h;
         }
         if let Some(t) = Self::read_text(state, root, TIMEZONE_PATH) {
             self.timezone = t;
+        }
+        if let Some(locale) = Self::read_text(state, root, LOCALE_PATH) {
+            self.locale = locale;
         }
         if let Some(k) = Self::read_text(state, root, KEYMAP_PATH) {
             self.keymap = k;
@@ -3592,24 +3903,24 @@ mod tests {
 
     #[test]
     fn keyboard_step_never_blocks_forward_progress() {
-        assert!(validate_step(Step::Keyboard, Some(0), "quinten", "qos").is_ok());
+        assert!(validate_step(Step::Keyboard, Some(0), "quinten", "tilo").is_ok());
     }
 
     #[test]
     fn validate_disk_requires_selection() {
-        assert!(validate_step(Step::Disk, None, "", "qos").is_err());
-        assert!(validate_step(Step::Disk, Some(0), "", "qos").is_ok());
+        assert!(validate_step(Step::Disk, None, "", "tilo").is_err());
+        assert!(validate_step(Step::Disk, Some(0), "", "tilo").is_ok());
     }
 
     #[test]
     fn validate_account_requires_username() {
-        assert!(validate_step(Step::Account, Some(0), "", "qos").is_err());
-        assert!(validate_step(Step::Account, Some(0), "   ", "qos").is_err());
-        assert!(validate_step(Step::Account, Some(0), "quinten", "qos").is_ok());
-        assert!(validate_step(Step::Account, Some(0), "lab-user_2", "qos").is_ok());
-        assert!(validate_step(Step::Account, Some(0), "2bad", "qos").is_err());
-        assert!(validate_step(Step::Account, Some(0), "has space", "qos").is_err());
-        assert!(validate_step(Step::Account, Some(0), "bad:name", "qos").is_err());
+        assert!(validate_step(Step::Account, Some(0), "", "tilo").is_err());
+        assert!(validate_step(Step::Account, Some(0), "   ", "tilo").is_err());
+        assert!(validate_step(Step::Account, Some(0), "quinten", "tilo").is_ok());
+        assert!(validate_step(Step::Account, Some(0), "lab-user_2", "tilo").is_ok());
+        assert!(validate_step(Step::Account, Some(0), "2bad", "tilo").is_err());
+        assert!(validate_step(Step::Account, Some(0), "has space", "tilo").is_err());
+        assert!(validate_step(Step::Account, Some(0), "bad:name", "tilo").is_err());
     }
 
     #[test]
@@ -3656,7 +3967,7 @@ mod tests {
 
     #[test]
     fn validate_options_requires_valid_hostname() {
-        assert!(validate_step(Step::Options, Some(0), "q", "qos").is_ok());
+        assert!(validate_step(Step::Options, Some(0), "q", "tilo").is_ok());
         assert!(validate_step(Step::Options, Some(0), "q", "").is_err());
         assert!(validate_step(Step::Options, Some(0), "q", "-bad").is_err());
         assert!(validate_step(Step::Options, Some(0), "q", "bad host").is_err());
@@ -3664,7 +3975,7 @@ mod tests {
 
     #[test]
     fn hostname_validator() {
-        assert!(valid_hostname("qos"));
+        assert!(valid_hostname("tilo"));
         assert!(valid_hostname("lab-1"));
         assert!(!valid_hostname(""));
         assert!(!valid_hostname("-x"));
@@ -3862,24 +4173,24 @@ mod tests {
     #[test]
     fn encryption_summary_reflects_factors() {
         let mut app = InstallerApp::with_disks(sample());
-        // Pin the hardware so this proves even a fully verified TPM does not
-        // weaken the passphrase requirement in this release.
+        // Pin the hardware so the Review copy must describe measured-boot PIN
+        // mode rather than the non-TPM passphrase fallback.
         app.tpm2 = true;
         app.secure_boot = true;
         app.kernel_lockdown = true;
         app.target_verified_boot = true;
         assert_eq!(app.encryption_summary(), "On (LUKS — recovery key)");
 
-        *app.password.lock().unwrap() = "correct horse battery".to_string();
+        *app.password.lock().unwrap() = "804927".to_string();
         assert_eq!(
             app.encryption_summary(),
-            "On (LUKS — recovery key, boot passphrase)"
+            "On (LUKS — recovery key, TPM-protected startup PIN)"
         );
 
         app.fido2 = true;
         assert_eq!(
             app.encryption_summary(),
-            "On (LUKS — recovery key, boot passphrase, FIDO2)"
+            "On (LUKS — recovery key, TPM-protected startup PIN, FIDO2)"
         );
     }
 
@@ -3911,7 +4222,7 @@ mod tests {
     }
 
     #[test]
-    fn verified_tpm_still_requires_a_strong_passphrase() {
+    fn verified_tpm_requires_a_nontrivial_pin() {
         let mut app = InstallerApp::with_disks(sample());
         app.selected_disk = Some(0);
         app.tpm2 = true;
@@ -3923,12 +4234,12 @@ mod tests {
             !app.encryption_ready(),
             "silent TPM-only unlock is not a hardened startup boundary"
         );
-        *app.password.lock().unwrap() = "246810".to_string();
+        *app.password.lock().unwrap() = "123456".to_string();
         assert!(
             !app.encryption_ready(),
-            "a TPM must not make a six-digit LUKS passphrase acceptable"
+            "a trivial sequence must not become a TPM PIN"
         );
-        *app.password.lock().unwrap() = "correct horse battery".to_string();
+        *app.password.lock().unwrap() = "804927".to_string();
         assert!(app.encryption_ready());
     }
 
@@ -4061,7 +4372,7 @@ mod tests {
         app2.target_verified_boot = true;
         app2.recovery_ack = true;
         app2.erase_confirmation = "/dev/sda".to_string();
-        *app2.password.lock().unwrap() = "correct horse battery".to_string();
+        *app2.password.lock().unwrap() = "804927".to_string();
         let _ = build(&mut app2);
         let card2 = find_named(&app2, "InstallerCard").expect("review card");
         let begin_enabled = card2
@@ -4081,8 +4392,8 @@ mod tests {
         app.kernel_lockdown = true;
         app.target_verified_boot = true;
         app.recovery_ack = true;
-        *app.password.lock().unwrap() = "correct horse battery".to_string();
-        *app.password_confirmation.lock().unwrap() = "correct horse battery".to_string();
+        *app.password.lock().unwrap() = "804927".to_string();
+        *app.password_confirmation.lock().unwrap() = "804927".to_string();
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
@@ -4153,10 +4464,10 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
-        assert_eq!(app.hostname, "qos");
+        assert_eq!(app.hostname, "tilo");
         assert_eq!(app.timezone, "UTC");
         let opts = app.install_options();
-        assert_eq!(opts.hostname, "qos");
+        assert_eq!(opts.hostname, "tilo");
         assert_eq!(opts.timezone, "UTC");
         assert_eq!(opts.filesystem, "btrfs");
     }
@@ -4170,7 +4481,7 @@ mod tests {
         assert_eq!(opts.disk_size_bytes, 256_000_000_000);
         assert_eq!(opts.disk_major_minor, "8:0");
         assert_eq!(opts.disk_wwn, "0x5002538e40abcdef");
-        assert_eq!(opts.disk_serial, "QOS-SAMPLE-SATA");
+        assert_eq!(opts.disk_serial, "TILO-SAMPLE-SATA");
         assert_eq!(opts.alongside_root, "/dev/sda3");
         assert_eq!(
             opts.alongside_root_partuuid,
@@ -4236,7 +4547,7 @@ mod tests {
         assert!(
             find_accessible(
                 &app,
-                "To choose qOS or your existing system, open this computer's firmware boot picker. The installer preserved its previous default."
+                "To choose Tilo or your existing system, open this computer's firmware boot picker. The installer preserved its previous default."
             )
             .is_some()
         );
@@ -4267,7 +4578,7 @@ mod tests {
     #[test]
     fn alongside_explains_a_determinable_prepared_efi_failure() {
         let mut disk = sample_disks().remove(0);
-        disk.partitions.pop(); // remove the valid 2 GiB qOS ESP
+        disk.partitions.pop(); // remove the valid 2 GiB Tilo ESP
         let mut app = InstallerApp::with_disks(vec![disk]);
         app.install_method = InstallMethod::Alongside;
         app.selected_disk = Some(0);
@@ -4277,7 +4588,7 @@ mod tests {
         assert!(
             find_accessible(
                 &app,
-                "/dev/sda1 is too small for qOS boot images; a prepared EFI partition must be at least 2 GiB. The privileged install check will also verify FAT health and at least 1 GiB of free space before formatting anything."
+                "/dev/sda1 is too small for Tilo boot images; a prepared EFI partition must be at least 2 GiB. The privileged install check will also verify FAT health and at least 1 GiB of free space before formatting anything."
             )
             .is_some(),
             "known ESP failures should be explained before the user leaves storage selection"
@@ -4355,7 +4666,7 @@ mod tests {
                 size_bytes: 2 * gib,
                 part_uuid: "10000000-0000-4000-8000-000000000002".into(),
                 filesystem: String::new(),
-                label: "qOS EFI".into(),
+                label: "Tilo EFI".into(),
                 mountpoint: String::new(),
                 part_type: EFI_SYSTEM_GUID.into(),
             },
@@ -4365,7 +4676,7 @@ mod tests {
                 size_bytes: disk.size_bytes - 7 * gib,
                 part_uuid: "20000000-0000-4000-8000-000000000003".into(),
                 filesystem: String::new(),
-                label: "qOS root".into(),
+                label: "Tilo root".into(),
                 mountpoint: String::new(),
                 part_type: LINUX_FILESYSTEM_GUID.into(),
             },
@@ -4496,6 +4807,31 @@ mod tests {
     }
 
     #[test]
+    fn low_discharging_battery_is_visible_and_blocks_launch_before_secrets_move() {
+        let mut app = InstallerApp::for_shot(Step::Review);
+        app.power_probe = || Some(7);
+        let (_taffy, _root) = build(&mut app);
+        let message = connect_power_message(7);
+        assert!(
+            find_accessible(&app, &message).is_some(),
+            "Review must explain why destructive work cannot start"
+        );
+
+        let doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.begin_install(&doc, &root);
+        assert_eq!(app.step, Step::Review);
+        assert_eq!(app.install_state, InstallState::Idle);
+        assert!(!app.install_launched);
+        assert_eq!(app.status, message);
+        assert_eq!(
+            &*secret_copy(&app.password),
+            "correct horse battery staple",
+            "the account secret stays editable because installation never started"
+        );
+    }
+
+    #[test]
     fn failed_install_recovery_returns_to_unselected_storage_review() {
         let mut app = InstallerApp::with_disks(sample());
         let old_efi_partuuid = app.guided_efi_partuuid.clone();
@@ -4549,7 +4885,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
 
-        app.on_external_event("::qos-recovery-key::abcd-efgh-ijkl-mnop", &mut doc, &root);
+        app.on_external_event("::tilo-recovery-key::abcd-efgh-ijkl-mnop", &mut doc, &root);
         assert_eq!(app.recovery_key.as_deref(), Some("abcd-efgh-ijkl-mnop"));
         assert!(
             app.status_lines.is_empty(),
@@ -4647,7 +4983,7 @@ mod tests {
     #[test]
     fn install_progress_hides_container_noise_behind_human_milestones() {
         let lines = vec![
-            "Starting install to /dev/vdb for user qostest (btrfs).".to_string(),
+            "Starting install to /dev/vdb for user tilotest (btrfs).".to_string(),
             "Copying blob 0123456789abcdef".to_string(),
             "Copying blob fedcba9876543210".to_string(),
             "==> Preparing an encrypted root on /dev/vdb".to_string(),
@@ -4657,7 +4993,7 @@ mod tests {
             friendly_install_status(&lines),
             vec![
                 "✓ Installation choices verified",
-                "Copying verified qOS system files…",
+                "Copying verified Tilo system files…",
                 "Preparing encrypted storage…",
             ]
         );
@@ -4684,7 +5020,7 @@ mod tests {
         done.shot_finished();
         done.recovery_key = Some("test-recovery-key".to_string());
         let _ = build(&mut done);
-        let success = find_accessible(&done, "qOS is installed").expect("success title");
+        let success = find_accessible(&done, "Tilo is installed").expect("success title");
         assert_eq!(success.live, Some(Politeness::Polite));
         let reboot = find_accessible(&done, "Reboot now").expect("reboot action");
         assert_eq!(reboot.role, ui::a11y::Role::Button);
@@ -4744,6 +5080,10 @@ mod tests {
             app.status_lines.last().map(String::as_str),
             Some("error: no space left on device"),
             "the useful backend failure must remain the newest visible log line"
+        );
+        assert!(
+            app.take_focus_reset(),
+            "failure must focus the first recovery action on the new error surface"
         );
     }
 
@@ -4838,11 +5178,11 @@ mod tests {
         app.step = Step::Account;
         let (_taffy, _root) = build(&mut app);
 
-        // Username + password + confirmation + Back + Next.
+        // Username + optional full name + password + confirmation + Back + Next.
         assert_eq!(
             count_focusable(&app),
-            5,
-            "3 inputs + 2 nav buttons must be focusable"
+            6,
+            "4 inputs + 2 nav buttons must be focusable"
         );
     }
 
@@ -4939,14 +5279,14 @@ mod tests {
     fn validated_media_profile_skips_already_configured_screens() {
         let mut app = InstallerApp::with_disks(sample_disks());
         app.apply_media_profile(crate::media_profile::MediaProfile {
-            schema: 1,
-            hostname: "studio".into(),
-            username: "quinten".into(),
-            full_name: "Quinten Example".into(),
-            locale: "de_DE.UTF-8".into(),
-            keyboard: "de".into(),
-            timezone: "Europe/Berlin".into(),
-            filesystem: "ext4".into(),
+            hostname: Some("studio".into()),
+            username: Some("quinten".into()),
+            full_name: Some("Quinten Example".into()),
+            locale: Some("de_DE.UTF-8".into()),
+            keyboard: Some("de".into()),
+            timezone: Some("Europe/Berlin".into()),
+            filesystem: Some("ext4".into()),
+            repairs: Vec::new(),
         });
         app.tpm2 = false;
         assert_eq!(app.step, Step::Disk);
@@ -4958,11 +5298,75 @@ mod tests {
         app.selected_disk = Some(0);
         app.go_next();
         assert_eq!(app.step, Step::Account);
+        let _ = build(&mut app);
+        assert!(find_accessible(&app, "Secure your account").is_some());
+        assert!(find_accessible(&app, "Username").is_none());
         *app.password.lock().unwrap() = "correct horse battery staple".into();
         *app.password_confirmation.lock().unwrap() = "correct horse battery staple".into();
         app.go_next();
         assert_eq!(app.step, Step::Review, "configured Options is not repeated");
         app.go_back();
+        assert_eq!(app.step, Step::Options);
+        let _ = build(&mut app);
+        assert!(
+            has_test_id(app.composed.as_deref().unwrap(), "fido2_choice"),
+            "Review Back must keep on-device security choices reachable"
+        );
+        app.go_back();
         assert_eq!(app.step, Step::Account);
+        app.go_back();
+        assert_eq!(app.step, Step::Disk);
+        app.go_back();
+        assert_eq!(app.step, Step::Network);
+    }
+
+    #[test]
+    fn partial_media_profile_routes_to_only_the_repair_screens() {
+        let mut app = InstallerApp::with_disks(sample_disks());
+        app.apply_media_profile(crate::media_profile::MediaProfile {
+            hostname: None,
+            username: Some("quinten".into()),
+            full_name: Some("Quinten Example".into()),
+            locale: Some("de_DE.UTF-8".into()),
+            keyboard: Some("de".into()),
+            timezone: Some("Europe/Berlin".into()),
+            filesystem: Some("ext4".into()),
+            repairs: vec![crate::media_profile::MediaProfileField::Hostname],
+        });
+        app.tpm2 = false;
+        assert_eq!(app.step, Step::Disk, "sound keyboard is retained");
+        assert_eq!(app.username, "quinten");
+        assert_eq!(app.filesystem(), "ext4");
+
+        app.selected_disk = Some(0);
+        app.go_next();
+        assert_eq!(app.step, Step::Account);
+        *app.password.lock().unwrap() = "correct horse battery staple".into();
+        *app.password_confirmation.lock().unwrap() = "correct horse battery staple".into();
+        app.go_next();
+        assert_eq!(app.step, Step::Options, "invalid hostname needs one repair");
+        let _ = build(&mut app);
+        assert!(find_accessible(&app, "Hostname").is_some());
+        assert!(find_accessible(&app, "Filesystem").is_none());
+        assert!(find_accessible(&app, "Time zone").is_none());
+    }
+
+    #[test]
+    fn invalid_keyboard_starts_at_keyboard_but_retains_other_profile_values() {
+        let mut app = InstallerApp::with_disks(sample_disks());
+        app.apply_media_profile(crate::media_profile::MediaProfile {
+            hostname: Some("studio".into()),
+            username: Some("quinten".into()),
+            full_name: Some("Quinten Example".into()),
+            locale: Some("de_DE.UTF-8".into()),
+            keyboard: None,
+            timezone: Some("Europe/Berlin".into()),
+            filesystem: Some("ext4".into()),
+            repairs: vec![crate::media_profile::MediaProfileField::Keyboard],
+        });
+        assert_eq!(app.step, Step::Keyboard);
+        assert_eq!(app.hostname, "studio");
+        assert_eq!(app.username, "quinten");
+        assert!(app.status.contains("keyboard layout"));
     }
 }

@@ -24,7 +24,7 @@ fn state_path(
     let root = state_home
         .map(PathBuf::from)
         .or_else(|| home.map(|home| PathBuf::from(home).join(".local/state")))?;
-    Some(root.join("qos").join("vpn-local-profiles.json"))
+    Some(root.join("tilo").join("vpn-local-profiles.json"))
 }
 
 fn path() -> Option<PathBuf> {
@@ -86,7 +86,7 @@ mod tests {
     #[test]
     fn state_path_prefers_xdg_state_home() {
         let path = state_path(Some("/state".into()), Some("/home/quinten".into())).unwrap();
-        assert_eq!(path, PathBuf::from("/state/qos/vpn-local-profiles.json"));
+        assert_eq!(path, PathBuf::from("/state/tilo/vpn-local-profiles.json"));
     }
 
     #[test]
@@ -94,7 +94,7 @@ mod tests {
         let path = state_path(None, Some("/home/quinten".into())).unwrap();
         assert_eq!(
             path,
-            PathBuf::from("/home/quinten/.local/state/qos/vpn-local-profiles.json")
+            PathBuf::from("/home/quinten/.local/state/tilo/vpn-local-profiles.json")
         );
     }
 }

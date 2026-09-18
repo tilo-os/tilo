@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the login-wrapper contract with a real non-root passwd entry. Use docker
+# Run the login-wrapper contract with a non-root passwd entry. Use docker
 # cp rather than a bind mount so this works with containerized Forgejo runners.
 set -euo pipefail
 

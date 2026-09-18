@@ -1,0 +1,648 @@
+//! The source editor pane.
+//!
+//! The text-editing surface itself is the shared [`ui::CodeEditor`] — one caret
+//! / selection / clipboard / undo / IME / a11y implementation, a line-number
+//! gutter, and Typst syntax highlighting supplied by the toolkit's built-in
+//! `Language::Typst` highlighter. This module is now a thin shell that owns that
+//! widget and adds the Typst-editor-specific pieces: the inline
+//! compiler-diagnostic overlay (gutter severity markers, wavy squiggles under
+//! error spans, and the hover tooltip), rendered on top of the shared editor
+//! using its public geometry.
+//!
+//! The source text lives in the Automerge `Text` object the editor is bound to;
+//! every edit splices into it through the shared widget.
+
+use automerge::{AutoCommit, ObjId};
+use vello::Scene;
+use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::{BlendMode, Fill};
+use winit::event::{Modifiers, WindowEvent};
+
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::Widget;
+use ui::widget::code_editor::{CodeEditor, Language};
+
+use crate::compile::{DiagKind, Diagnostic};
+
+/// Monospace point size of the editor text.
+pub const FONT_SIZE: f32 = 13.0;
+/// Tab expands to this many spaces (soft tabs).
+const TAB_WIDTH: usize = 2;
+
+pub struct SourceEditor {
+    /// The shared code-editing widget — caret, selection, clipboard, undo,
+    /// gutter, and Typst syntax highlighting all live here.
+    code: CodeEditor,
+    /// Whether the source pane holds keyboard focus. Mirrored onto `code` each
+    /// frame so its caret paints and its key routing engages.
+    pub focused: bool,
+    rect: Rect,
+    /// Anchor byte for an in-flight click+drag selection.
+    drag_anchor: Option<usize>,
+    /// Last known hover position (window space), or `None` when the pointer is
+    /// off the pane. Drives the inline-diagnostic tooltip.
+    hover: Option<Point>,
+}
+
+impl Default for SourceEditor {
+    fn default() -> Self {
+        Self {
+            code: CodeEditor::local()
+                .with_language(Language::Typst)
+                .with_font_size(FONT_SIZE)
+                .with_tab_width(TAB_WIDTH),
+            focused: true,
+            rect: Rect::ZERO,
+            drag_anchor: None,
+            hover: None,
+        }
+    }
+}
+
+impl SourceEditor {
+    #[cfg(test)]
+    pub(crate) fn history_test_caret_rect(&self, theme: &Theme, byte: usize) -> Rect { self.code.caret_rect(theme, byte) }
+
+    /// Unbound source presentation with no caret and persistent local scrolling.
+    pub(crate) fn snapshot(source: &str) -> Self {
+        let mut editor = Self::new();
+        editor.focused = false;
+        editor.code.inner_mut().set_preserve_unfocused_scroll(true);
+        editor.set_text(source);
+        editor
+    }
+
+    /// Prepare immutable source geometry using the widget's normal cached
+    /// measurement, including its renderer font/locale epoch invalidation.
+    pub(crate) fn prepare_snapshot_layout(&mut self, tr: &mut TextRenderer) {
+        Widget::measure(&mut self.code,
+            taffy::Size { width: Some(self.rect.width() as f32), height: Some(self.rect.height() as f32) },
+            taffy::Size { width: taffy::AvailableSpace::Definite(self.rect.width() as f32), height: taffy::AvailableSpace::Definite(self.rect.height() as f32) },
+            tr);
+    }
+
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set_rect(&mut self, rect: Rect) {
+        self.rect = rect;
+        self.code.set_rect(rect);
+    }
+
+    pub fn rect(&self) -> Rect {
+        self.rect
+    }
+
+    pub fn line_height(&self) -> f64 {
+        self.code.line_height().max(f64::from(FONT_SIZE))
+    }
+
+    /// Bind the editor to the Automerge `Text` object holding the source and
+    /// pull its current content. Called from the app's `sync`.
+    pub fn bind(&mut self, obj: ObjId, doc: &mut AutoCommit) {
+        self.code.bind_text(obj);
+        self.code.pull(doc);
+    }
+
+    /// The caret's byte offset in the source.
+    pub fn caret(&self) -> usize {
+        self.code.cursor_pos()
+    }
+
+    /// Move the caret to a byte offset (used by the screenshot harness).
+    pub fn set_caret(&mut self, byte: usize) {
+        self.code.set_cursor_pos(byte);
+    }
+
+    /// The current buffer text (mirrors the bound Automerge object).
+    pub fn text(&self) -> &str {
+        self.code.value()
+    }
+
+    /// Programmatically set the buffer (local/unbound use — tests, seeding).
+    pub fn set_text(&mut self, s: &str) {
+        self.code.set_text(s);
+    }
+
+    /// Reset the caret to the document start (used when switching documents).
+    pub fn reset_cursor(&mut self) {
+        self.code.set_cursor_pos(0);
+        self.code.scroll_by(-1.0e9);
+    }
+
+    /// Screenshot harness only: select a couple of source lines so a capture
+    /// shows a real selection band over highlighted code.
+    pub fn demo_select(&mut self) {
+        let text = self.code.value().to_string();
+        let start = byte_of_line_col(&text, 1, 0);
+        let end = byte_of_line_col(&text, 3, 0).min(text.len());
+        let (a, b) = if end > start {
+            (start, end)
+        } else {
+            (0, text.len().min(24))
+        };
+        self.code.set_selection(a, b);
+        self.focused = true;
+    }
+
+    /// Place the caret on a specific 1-based line (used when a diagnostic is
+    /// clicked). `_text` is unused — the widget holds the source.
+    pub fn goto_line(&mut self, _text: &str, line_1based: usize) {
+        self.code.goto_line(line_1based);
+    }
+
+    // ----- scrolling -------------------------------------------------------
+
+    /// Effective bounded offset for immutable History view persistence.
+    pub(crate) fn snapshot_scroll_y(&self) -> f64 {
+        self.code.inner().scroll_y()
+    }
+
+    /// Wheel scroll. `dx`/`_text` are unused — the code view soft-wraps, so it
+    /// only scrolls vertically.
+    pub fn scroll_by(&mut self, _dx: f32, dy: f32, _text: &str) {
+        self.code.scroll_by(f64::from(dy));
+    }
+
+    /// Scroll the caret into view. The shared widget follows the caret after
+    /// every edit automatically, so this is a no-op kept for call-site parity.
+    pub fn ensure_visible(&mut self, _text: &str) {}
+
+    // ----- mouse -----------------------------------------------------------
+
+    pub fn on_mouse_down(&mut self, p: Point, shift: bool, _text: &str) {
+        self.focused = true;
+        self.code.set_focused(true);
+        let byte = self.code.byte_at_point(p);
+        if shift {
+            let anchor = self.drag_anchor.unwrap_or_else(|| self.code.cursor_pos());
+            self.code.set_selection(anchor, byte);
+            self.drag_anchor = Some(anchor);
+        } else {
+            self.code.set_cursor_pos(byte);
+            self.drag_anchor = Some(byte);
+        }
+    }
+
+    pub fn on_mouse_drag(&mut self, p: Point, _text: &str) {
+        if let Some(anchor) = self.drag_anchor {
+            let byte = self.code.byte_at_point(p);
+            self.code.set_selection(anchor, byte);
+        }
+    }
+
+    /// End of a click+drag. The anchor is kept so a following Shift+click still
+    /// extends from the original point.
+    pub fn on_mouse_up(&mut self) {}
+
+    /// Update the hover position (window space); `None` when the pointer leaves
+    /// the pane. Returns whether the tooltip-relevant state changed, so the app
+    /// can schedule a redraw only when something moved into/out of a squiggle.
+    pub fn on_mouse_move(&mut self, p: Option<Point>) -> bool {
+        if self.hover == p {
+            return false;
+        }
+        self.hover = p;
+        true
+    }
+
+    // ----- keyboard --------------------------------------------------------
+
+    /// Handle a keyboard event through the shared widget. Returns true if
+    /// consumed. `text_id` is the bound source object; the widget is already
+    /// bound to it, so edits splice there.
+    ///
+    /// # Panics
+    /// Never panics: `taffy::TaffyTree::new_leaf` cannot return `Err` for a
+    /// freshly created, single-node tree on this taffy version (see
+    /// `ui::widget::TaffyTreeExt`'s doc comment for the same guarantee).
+    pub fn handle_key(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+        text_id: &ObjId,
+    ) -> bool {
+        use taffy::{Style, TaffyTree};
+        self.code.set_focused(self.focused);
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        #[allow(
+            clippy::unwrap_used,
+            reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
+        )]
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        // `text_id` is the object the widget was bound to; pass it as the root so
+        // the resolve falls back to it even if the binding were ever cleared.
+        self.code.handle_event(
+            event,
+            1.0,
+            modifiers,
+            doc,
+            text_id,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
+        handled
+    }
+
+    // ----- rendering -------------------------------------------------------
+
+    pub fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        diags: &[Diagnostic],
+    ) {
+        let c = &theme.tokens.colors;
+        // Pane background (slightly darker than chrome for an "editor" feel).
+        scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
+
+        // The shared widget paints the gutter, line numbers, current-line band,
+        // selection, highlighted text, and caret.
+        self.code.set_focused(self.focused);
+        self.code.set_rect(self.rect);
+        self.code.draw_embedded(scene, transform, tr, theme);
+
+        // Diagnostics overlay, drawn on top using the widget's geometry, clipped
+        // to the pane so squiggles/markers never spill past it.
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            transform,
+            &self.rect,
+        );
+        self.draw_diagnostics(scene, transform, tr, theme, diags);
+        scene.pop_layer();
+
+        // Hover tooltip for a diagnostic squiggle — drawn last and outside the
+        // clip so it floats above the source and can overflow the pane.
+        if let Some(hp) = self.hover
+            && self.rect.contains(hp)
+        {
+            let byte = self.code.byte_at_point(hp);
+            let text = self.code.value().to_string();
+            if let Some(d) = diags.iter().find(|d| {
+                diag_byte_span(d, &text).is_some_and(|(b0, b1)| byte >= b0 && byte < b1.max(b0 + 1))
+            }) {
+                self.draw_tooltip(scene, transform, tr, theme, hp, d);
+            }
+        }
+    }
+
+    /// Gutter severity markers + inline squiggles, positioned from the shared
+    /// widget's caret / selection geometry so they track scroll, wrap, and the
+    /// gutter width exactly.
+    fn draw_diagnostics(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        _tr: &mut TextRenderer,
+        theme: &Theme,
+        diags: &[Diagnostic],
+    ) {
+        if diags.is_empty() {
+            return;
+        }
+        let text = self.code.value().to_string();
+        let lh = self.code.line_height();
+
+        // Gutter severity dot on each line a diagnostic starts on.
+        for (line0, kind) in worst_severity_by_line(diags) {
+            let byte = byte_of_line_col(&text, line0, 0);
+            let cr = self.code.caret_rect(theme, byte);
+            if cr.y1 < self.rect.y0 || cr.y0 > self.rect.y1 {
+                continue;
+            }
+            let cx = self.rect.x0 + 7.0;
+            let cy = cr.y0 + lh * 0.5;
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                diag_color(kind, theme),
+                None,
+                &Circle::new(Point::new(cx, cy), 3.0),
+            );
+        }
+
+        // Inline squiggle under every diagnostic span, one segment per visual row.
+        for d in diags {
+            if let Some((b0, b1)) = diag_byte_span(d, &text) {
+                for r in self.code.selection_rects(theme, b0, b1) {
+                    let yb = r.y1 - 3.5;
+                    draw_squiggle(scene, transform, r.x0, r.x1, yb, diag_color(d.kind, theme));
+                }
+            }
+        }
+    }
+
+    /// Draw a floating tooltip card near `at` carrying a diagnostic's message
+    /// (and its first hint, dimmed). Sizing is measured from the text so the
+    /// card hugs the content.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_tooltip(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        at: Point,
+        d: &Diagnostic,
+    ) {
+        let c = &theme.tokens.colors;
+        let pad = 8.0;
+        let font = 12.0;
+        let gap = 3.0;
+        let max_text_w = 360.0f64;
+        let mut lines: Vec<(String, bool)> = vec![(d.message.clone(), false)];
+        if let Some(h) = d.hints.first() {
+            lines.push((format!("hint: {h}"), true));
+        }
+        let mut w = 0.0f64;
+        let mut total_h = 0.0f64;
+        let mut heights = Vec::with_capacity(lines.len());
+        for (s, _) in &lines {
+            let (tw, th) = tr.measure(s, font, Some(max_text_w as f32));
+            w = w.max(f64::from(tw));
+            let h = f64::from(th).max(f64::from(font) * 1.2);
+            heights.push(h);
+            total_h += h + gap;
+        }
+        total_h -= gap;
+        let card_w = (w + pad * 2.0).min(max_text_w + pad * 2.0);
+        let card_h = total_h + pad * 2.0;
+        let mut x0 = at.x + 12.0;
+        let mut y0 = at.y + 18.0;
+        if x0 + card_w > self.rect.x1 - 4.0 {
+            x0 = (self.rect.x1 - 4.0 - card_w).max(self.rect.x0 + 4.0);
+        }
+        if y0 + card_h > self.rect.y1 - 4.0 {
+            y0 = (at.y - card_h - 8.0).max(self.rect.y0 + 4.0);
+        }
+        let card = Rect::new(x0, y0, x0 + card_w, y0 + card_h);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            c.surfaces.overlay,
+            None,
+            &RoundedRect::from_rect(card.inflate(2.0, 2.0), 8.0),
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            c.surfaces.raised,
+            None,
+            &RoundedRect::from_rect(card, 7.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            ui::chrome::panel_border(theme),
+            None,
+            &ui::surface::edge_outline(card, 7.0),
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            diag_color(d.kind, theme),
+            None,
+            &Rect::new(card.x0, card.y0, card.x0 + 3.0, card.y1),
+        );
+        let mut ty = y0 + pad;
+        for ((s, dim), h) in lines.iter().zip(heights.iter()) {
+            let col = if *dim { c.text_dim } else { c.text_primary };
+            tr.draw_text(
+                scene,
+                s,
+                font,
+                col,
+                transform * Affine::translate((x0 + pad + 4.0, ty)),
+                Some((card_w - pad * 2.0 - 4.0) as f32),
+            );
+            ty += h + gap;
+        }
+    }
+
+    /// The caret is a steady bar, so a focused-but-idle editor needs no
+    /// animation frames.
+    pub fn wants_animation(&self) -> bool {
+        false
+    }
+}
+
+/// The theme colour a diagnostic severity draws in.
+fn diag_color(kind: DiagKind, theme: &Theme) -> vello::peniko::Color {
+    match kind {
+        DiagKind::Error => theme.tokens.colors.semantic.danger,
+        DiagKind::Warning => theme.tokens.colors.semantic.warning,
+    }
+}
+
+/// Map each 0-based source line that a diagnostic *starts* on to the worst
+/// severity present there (Error beats Warning), for the gutter markers.
+fn worst_severity_by_line(diags: &[Diagnostic]) -> std::collections::HashMap<usize, DiagKind> {
+    let mut map: std::collections::HashMap<usize, DiagKind> = std::collections::HashMap::new();
+    for d in diags {
+        let Some(line1) = d.line else { continue };
+        let line = line1.saturating_sub(1);
+        map.entry(line)
+            .and_modify(|k| {
+                if d.kind == DiagKind::Error {
+                    *k = DiagKind::Error;
+                }
+            })
+            .or_insert(d.kind);
+    }
+    map
+}
+
+/// The byte offset in `text` of 0-based `(line, col)` (col in chars). Clamps to
+/// the line end / text end for out-of-range inputs.
+fn byte_of_line_col(text: &str, line0: usize, col0: usize) -> usize {
+    let mut byte = 0usize;
+    for (i, l) in text.split('\n').enumerate() {
+        if i == line0 {
+            let add = l.char_indices().nth(col0).map_or(l.len(), |(o, _)| o);
+            return byte + add;
+        }
+        byte += l.len() + 1; // + '\n'
+    }
+    text.len()
+}
+
+/// The byte range `[start, end)` a diagnostic covers, from its 1-based
+/// line/col span, widened to at least one byte so a zero-width span still
+/// underlines. `None` when the diagnostic carries no location.
+fn diag_byte_span(d: &Diagnostic, text: &str) -> Option<(usize, usize)> {
+    let (sl, sc) = (d.line?.saturating_sub(1), d.col?.saturating_sub(1));
+    let (el, ec) = (
+        d.end_line.unwrap_or(d.line?).saturating_sub(1),
+        d.end_col.unwrap_or(d.col? + 1).saturating_sub(1),
+    );
+    let b0 = byte_of_line_col(text, sl, sc);
+    let b1 = byte_of_line_col(text, el, ec)
+        .max(b0 + 1)
+        .min(text.len().max(b0 + 1));
+    Some((b0, b1.min(text.len())))
+}
+
+/// Stroke a wavy underline (a squiggle) between `x0` and `x1` at baseline `y`.
+fn draw_squiggle(
+    scene: &mut Scene,
+    transform: Affine,
+    x0: f64,
+    x1: f64,
+    y: f64,
+    color: vello::peniko::Color,
+) {
+    const PERIOD: f64 = 4.0;
+    const AMP: f64 = 1.6;
+    if x1 <= x0 {
+        return;
+    }
+    let mut path = BezPath::new();
+    path.move_to(Point::new(x0, y));
+    let mut x = x0;
+    let mut up = true;
+    loop {
+        if x >= x1 {
+            break;
+        }
+        x = (x + PERIOD * 0.5).min(x1);
+        let dy = if up { -AMP } else { AMP };
+        path.line_to(Point::new(x, y + dy));
+        up = !up;
+    }
+    scene.stroke(&Stroke::new(1.3), transform, color, None, &path);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use automerge::transaction::Transactable;
+    use automerge::{ObjType, ROOT, ReadDoc};
+
+    fn doc_with(text: &str) -> (AutoCommit, ObjId) {
+        let mut doc = AutoCommit::new();
+        let id = doc.put_object(&ROOT, "source", ObjType::Text).unwrap();
+        doc.splice_text(&id, 0, 0, text).unwrap();
+        (doc, id)
+    }
+
+    #[test]
+    fn byte_of_line_col_maps_positions() {
+        let t = "ab\ncde\nf";
+        assert_eq!(byte_of_line_col(t, 0, 0), 0);
+        assert_eq!(byte_of_line_col(t, 1, 0), 3);
+        assert_eq!(byte_of_line_col(t, 1, 2), 5);
+        assert_eq!(byte_of_line_col(t, 2, 0), 7);
+    }
+
+    #[test]
+    fn diag_byte_span_covers_the_reported_span() {
+        // 1-based ln 2 cols 3..6 → 0-based line 1 cols 2..5 → bytes 5..8 in
+        // "ab\ncdefg".
+        let t = "ab\ncdefg";
+        let d = Diagnostic {
+            kind: DiagKind::Error,
+            message: "boom".into(),
+            line: Some(2),
+            col: Some(3),
+            end_line: Some(2),
+            end_col: Some(6),
+            hints: vec![],
+        };
+        assert_eq!(diag_byte_span(&d, t), Some((5, 8)));
+    }
+
+    #[test]
+    fn diag_zero_width_span_is_widened() {
+        let t = "abc";
+        let d = Diagnostic {
+            kind: DiagKind::Warning,
+            message: "x".into(),
+            line: Some(1),
+            col: Some(2),
+            end_line: Some(1),
+            end_col: Some(2),
+            hints: vec![],
+        };
+        let (b0, b1) = diag_byte_span(&d, t).unwrap();
+        assert!(
+            b1 > b0,
+            "a zero-width span still underlines at least one byte"
+        );
+    }
+
+    #[test]
+    fn gutter_severity_prefers_error() {
+        let warn = Diagnostic {
+            kind: DiagKind::Warning,
+            message: "w".into(),
+            line: Some(2),
+            col: Some(1),
+            end_line: Some(2),
+            end_col: Some(2),
+            hints: vec![],
+        };
+        let err = Diagnostic {
+            kind: DiagKind::Error,
+            message: "e".into(),
+            line: Some(2),
+            col: Some(4),
+            end_line: Some(2),
+            end_col: Some(6),
+            hints: vec![],
+        };
+        let map = worst_severity_by_line(&[warn, err]);
+        assert_eq!(map.get(&1), Some(&DiagKind::Error));
+    }
+
+    /// Typing through the shell edits the bound Automerge object via the shared
+    /// widget's real key path.
+    #[test]
+    fn typing_edits_the_bound_document() {
+        use winit::event::{ElementState, KeyEvent};
+        use winit::keyboard::{Key, SmolStr};
+        let (mut doc, id) = doc_with("");
+        let mut ed = SourceEditor::new();
+        ed.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
+        ed.bind(id.clone(), &mut doc);
+        ed.focused = true;
+        for ch in ["h", "i"] {
+            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+            ev.logical_key = Key::Character(SmolStr::new(ch));
+            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+                winit::keyboard::NativeKeyCode::Unidentified,
+            );
+            ev.location = winit::keyboard::KeyLocation::Standard;
+            ev.state = ElementState::Pressed;
+            ev.repeat = false;
+            ev.text = Some(SmolStr::new(ch));
+            let event = WindowEvent::KeyboardInput {
+                device_id: unsafe { std::mem::zeroed() },
+                event: ev,
+                is_synthetic: false,
+            };
+            assert!(ed.handle_key(&event, &Modifiers::default(), &mut doc, &id));
+        }
+        assert_eq!(doc.text(&id).unwrap(), "hi");
+    }
+
+    #[test]
+    fn goto_line_moves_the_caret_to_the_line_start() {
+        let (mut doc, id) = doc_with("one\ntwo\nthree");
+        let mut ed = SourceEditor::new();
+        ed.bind(id, &mut doc);
+        ed.goto_line("", 2);
+        assert_eq!(ed.caret(), 4, "line 2 starts just after the first newline");
+    }
+}

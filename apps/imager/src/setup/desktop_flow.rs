@@ -683,7 +683,7 @@ mod tests {
         assert!(matches!(flow.state(), DesktopFlowState::Verifying(_)));
         flow.apply_install_event(DesktopInstallEvent::Complete(InstalledDesktop {
             version: "0.1.9-1.fc44".into(),
-            session_entry: "/usr/share/wayland-sessions/qos.desktop".into(),
+            session_entry: "/usr/share/wayland-sessions/tilo.desktop".into(),
         }));
         assert!(matches!(flow.state(), DesktopFlowState::Installed { .. }));
     }

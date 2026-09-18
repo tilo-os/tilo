@@ -256,7 +256,7 @@ mod tests {
         let publisher = SigningKey::from_bytes(&[7; 32]);
         let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
         let mut entry = RegistryEntry {
-            package_id: "dev.qos.notes".into(),
+            package_id: "dev.tilo.notes".into(),
             name: "Notes".into(),
             description: "Notes".into(),
             categories: vec!["Productivity".into()],
@@ -266,7 +266,7 @@ mod tests {
             publisher_pubkey_hex: publisher_hex.clone(),
             versions: vec![RegistryVersion {
                 version: "1".into(),
-                qpkg_url: "https://apps.qos.dev/n.qpkg".into(),
+                qpkg_url: "https://apps.tilo.dev/n.qpkg".into(),
                 qpkg_root_hash_hex: "ab".repeat(32),
                 qpkg_size_bytes: 1,
                 released_at_unix: 1,

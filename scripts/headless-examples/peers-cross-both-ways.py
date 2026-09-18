@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Presence crosses between two live sessions, in both directions.
 
-The one-way rig next door proves a guest can see the host. That is half
-the claim, and it is the half that kept working while the other half
-broke: a host and a guest are not symmetric. The guest joined the
+The one-way rig checks that a guest can see the host. This covers only one
+direction: a host and a guest are not symmetric. The guest joined the
 host's room, so the host's pointer goes out under a room the guest is a
 member of. The reverse only holds if joining also moved the guest *into*
 that room as the workspace it is looking at — and if it did not, the
@@ -11,7 +10,7 @@ guest's pointer is published under a room the host has never heard of,
 dropped on arrival, and the host watches an empty desktop while the
 guest sees a cursor and everyone assumes it works.
 
-So this asks both questions, of two real compositors:
+This checks both directions across two compositors:
 
   - the guest paints the host's cursor, and
   - the host paints the guest's, and
@@ -86,8 +85,8 @@ class Session:
         os.makedirs(self.home, exist_ok=True)
         env = {
             **os.environ,
-            "QOS_TEST_CONTROL": self.socket,
-            "QOS_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
+            "TILO_TEST_CONTROL": self.socket,
+            "TILO_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
             "HOME": self.home,
             "XDG_DATA_HOME": os.path.join(self.dir, "data"),
             "XDG_CACHE_HOME": os.path.join(self.dir, "cache"),
@@ -97,11 +96,11 @@ class Session:
             # Without its own device key peer-sync turns itself off, and
             # the only visible symptom is that `peer.invite` is never
             # exported — which reads as a refusal, not a prerequisite.
-            "QOS_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
+            "TILO_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
             # Distinct identities, or both sessions are the same person
             # and "somebody else's cursor" means nothing.
-            "QOS_USER_ID": name,
-            "NIRIOS_HEADLESS_SIZE": "1280x800",
+            "TILO_USER_ID": name,
+            "TILO_HEADLESS_SIZE": "1280x800",
             "LC_ALL": "en_US.UTF-8",
             "LANG": "en_US.UTF-8",
         }

@@ -41,7 +41,7 @@ pub fn try_restored_component(
         instance,
         f.authority.clone(),
         f.author.clone(),
-        qos_actions::ActionContext::default(),
+        tilo_actions::ActionContext::default(),
         &target,
     )
     .unwrap();
@@ -49,7 +49,8 @@ pub fn try_restored_component(
 }
 pub fn renderer() -> ui::TextRenderer {
     let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/assets/fonts"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../crates/sdk/ui-core/assets/fonts"),
         "en-US",
     );
     ui::TextRenderer::with_font_catalog(&catalog).unwrap()
@@ -116,7 +117,7 @@ pub fn invoke(
         .invoke_bound_action(
             &ui::bound_dispatch::BoundActionAddress {
                 instance_id: instance,
-                address: qos_actions::ActionAddress::new(resource, action),
+                address: tilo_actions::ActionAddress::new(resource, action),
             },
             &arguments,
         )
@@ -270,7 +271,7 @@ pub fn invoke_confirmed(
 ) {
     let address = ui::bound_dispatch::BoundActionAddress {
         instance_id: instance,
-        address: qos_actions::ActionAddress::new(resource, action),
+        address: tilo_actions::ActionAddress::new(resource, action),
     };
     driver
         .invoke_bound_action_confirmed(&address, &serde_json::Map::new())

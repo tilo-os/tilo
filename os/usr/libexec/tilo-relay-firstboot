@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Complete host enrollment and provisioning with the trusted nearby Tilo device.
+set -euo pipefail
+
+token=/etc/tilo/enrollment-token.txt
+cert=/var/lib/tilo/device/cert.bin
+home_peer=/etc/tilo/home-peer.toml
+
+handoff_home_peer() {
+    local metadata owner
+    metadata="$(stat -c '%u:%a:%h:%s' -- "$home_peer" 2>/dev/null || true)"
+    if [[ ! -f "$home_peer" || -L "$home_peer" \
+        || ! "$metadata" =~ ^(0|[0-9]+):(600|644):1:([0-9]+)$ \
+        || "${BASH_REMATCH[3]:-65537}" -gt 65536 ]]; then
+        echo "tilo-relay-firstboot: refusing unsafe home-peer configuration inode" >&2
+        exit 1
+    fi
+    owner="$(id -u tilo-relay)"
+    [[ "${BASH_REMATCH[1]}" = 0 || "${BASH_REMATCH[1]}" = "$owner" ]] \
+        || { echo "tilo-relay-firstboot: home-peer configuration has unexpected owner" >&2; exit 1; }
+    chown --no-dereference tilo-relay:tilo-relay "$home_peer"
+    chmod 0600 "$home_peer"
+}
+
+valid_device_certificate() {
+    local metadata size
+    metadata="$(stat -c '%u:%a:%h:%s' -- "$cert" 2>/dev/null || true)"
+    [[ -f "$cert" && ! -L "$cert" \
+        && "$metadata" =~ ^0:(600|640|644):1:([0-9]+)$ ]] || return 1
+    size="${BASH_REMATCH[2]}"
+    (( size > 0 && size <= 65536 ))
+}
+
+if [[ -e /var/lib/tilo-relay/decommissioned ]]; then
+    exit 0
+fi
+
+if [[ -e "$cert" || -L "$cert" ]] && ! valid_device_certificate; then
+    echo "tilo-relay-firstboot: refusing unsafe device-certificate inode" >&2
+    exit 1
+fi
+
+if valid_device_certificate && [[ -s "$home_peer" ]]; then
+    handoff_home_peer
+    exit 0
+fi
+label="$(hostnamectl --static 2>/dev/null || hostname 2>/dev/null || echo 'Home server')"
+if [[ -e "$token" || -L "$token" ]]; then
+    token_metadata="$(stat -c '%u:%a:%h:%s' -- "$token" 2>/dev/null || true)"
+    if [[ ! -f "$token" || -L "$token" || ! "$token_metadata" =~ ^0:(600|644):1:([0-9]+)$ \
+        || "${BASH_REMATCH[2]:-4097}" -gt 4096 ]]; then
+        echo "tilo-relay-firstboot: refusing unsafe enrollment-token inode" >&2
+        rm -f -- "$token"
+        exit 1
+    fi
+fi
+
+if [[ -s "$token" ]] && ! grep -q '^# Replace' "$token"; then
+    # A real bearer token must not be readable by local users. Mode 0644 is
+    # accepted only for the non-secret image placeholder handled by the pair
+    # branch below.
+    if [[ "$(stat -c '%a' -- "$token")" != 600 ]]; then
+        echo "tilo-relay-firstboot: enrollment token must be mode 0600" >&2
+        exit 1
+    fi
+    /usr/bin/tilo-enroll join --token-file "$token" --identity-root /var/lib/tilo \
+        --home-peer-output /etc/tilo/home-peer.toml --label "$label" --timeout 270
+    shred -u -- "$token" 2>/dev/null || rm -f -- "$token"
+else
+    /usr/bin/tilo-enroll pair --identity-root /var/lib/tilo \
+        --home-peer-output /etc/tilo/home-peer.toml --label "$label" --timeout 270
+fi
+valid_device_certificate \
+    || { echo "tilo-relay-firstboot: enrollment produced an unsafe device certificate" >&2; exit 1; }
+handoff_home_peer
+echo "tilo-relay-firstboot: enrollment and full-sync setup complete"

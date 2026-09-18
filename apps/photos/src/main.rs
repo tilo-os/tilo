@@ -5,7 +5,7 @@
 //!   * `--open PATH`        — start with that photograph open.
 //!   * `--shots PATH`       — render one offscreen frame to a PNG and exit.
 //!     `--scenario NAME` picks the pose (see [`photos::SHOT_SCENARIOS`]),
-//!     `--size WxH` the viewport, and `QOS_SHOTS_THEME=light|dark|
+//!     `--size WxH` the viewport, and `TILO_SHOTS_THEME=light|dark|
 //!     high-contrast` the palette.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
@@ -15,6 +15,7 @@
 // unwrap_used, expect_used, panic — because a panicking app is a bad app
 // whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
 // full set: a fault there takes the session, or every app with it.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -57,12 +58,13 @@ extern crate runtime_dylib;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
-        &LaunchSpec::new("dev.qos.photos", photos::app_root)
+        &LaunchSpec::new_with_args("dev.tilo.photos", live_root)
             .history(&photos::framework_history::HISTORY)
             .open_app_global_state_with_args(open_state)
             .shot_handler(render_shot)
             .allowed_options(&["--size"])
-            .allowed_live_options(&["--open"])
+            .allowed_live_flags(&["--analyze-imports", "--library"])
+            .allowed_live_options(&["--open", "--import-directory"])
             .max_positionals(1)
             .scenarios(photos::SHOT_SCENARIOS)
             .configure_app(configure_app),
@@ -70,19 +72,92 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    // Live and headless launches restore the same persistent image content.
+    configure_blob_store();
+    photos::strings::install();
+    let mut app = photos::PhotosApp::new_persistent();
+    if args.value("--import-directory").is_some() || args.has("--library") {
+        app.show_library();
+    }
+    Ok(Box::new(app))
+}
+
 fn requested_path(args: &LaunchArgs) -> Option<&str> {
     args.value("--open")
         .or_else(|| args.positionals().first().map(String::as_str))
 }
 
+fn configure_blob_store() {
+    static INITIALIZED: std::sync::Once = std::sync::Once::new();
+    INITIALIZED.call_once(|| {
+        qdoc::blobstore::set_store(std::sync::Arc::new(qdoc::blobstore::FsBlobStore::new(
+            qdoc::blobstore::FsBlobStore::default_root(),
+        )));
+    });
+}
+
 fn open_state(app_id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::Autosave) {
+    configure_blob_store();
     let (mut state, autosave) = ui::persist::open(app_id);
     if let Some(path) = requested_path(args) {
-        let mut opener = photos::PhotosApp::new();
+        let mut opener = photos::PhotosApp::new_persistent();
         photos::strings::install();
         opener.open_path(&mut state.doc, path);
     }
+    if let Some(directory) = args.value("--import-directory") {
+        import_directory_at_startup(&mut state.doc, directory, args.has("--analyze-imports"));
+    }
     (state, autosave)
+}
+
+/// An explicit launch import is useful for first-run migration and acceptance
+/// testing. It uses the production bounded indexer and genuine local analysis;
+/// no fixture labels, dates, locations, descriptions, or people are injected.
+fn import_directory_at_startup(
+    doc: &mut ui::automerge::AutoCommit,
+    directory: &str,
+    analyze: bool,
+) {
+    use std::sync::atomic::AtomicBool;
+
+    let cancelled = AtomicBool::new(false);
+    let Ok(report) = photos::import::index_directory(
+        std::path::Path::new(directory),
+        photos::import::ImportOptions::default(),
+        &cancelled,
+        |_| {},
+    ) else {
+        return;
+    };
+    let capability = if analyze {
+        tilo_vision::discover_local_capability(&agent_provider_config::ProviderConfig::load())
+    } else {
+        None
+    };
+    let mut library = photos::doc::PhotosDoc::library(doc);
+    for mut indexed in report.photos {
+        if analyze {
+            let result = capability
+                .as_ref()
+                .and_then(|model| photos::analysis::analyze_image(&indexed.photo.image, model).ok())
+                .or_else(|| photos::analysis::recognize_text(&indexed.photo.image, "eng").ok());
+            if let Some(mut analysis) = result {
+                "shared".clone_into(&mut analysis.provenance.scope);
+                if let Some(provenance) = &mut analysis.ocr_provenance {
+                    "shared".clone_into(&mut provenance.scope);
+                }
+                if let Some(provenance) = &mut analysis.vision_provenance {
+                    "shared".clone_into(&mut provenance.scope);
+                }
+                if !analysis.searchable_text().is_empty() {
+                    indexed.photo.analysis = Some(analysis);
+                }
+            }
+        }
+        let _ = library.add_photo(indexed.photo);
+    }
+    photos::doc::PhotosDoc::set_library(doc, &library);
 }
 
 fn configure_app(app: &mut ui::App) {
@@ -148,12 +223,23 @@ fn render_scenario(
     // necessary. A library shot gets a few more *offscreen-only* frames so
     // its real background thumbnail worker can settle; the live UI never
     // waits for a decode.
-    let settle_frames = if matches!(scenario, "library" | "album-manage" | "metadata-edit") {
-        // A library queues one bounded thumbnail job per sync.  Give the
-        // deterministic offscreen gallery enough frames to show the fully
-        // materialised shelf without changing the live app's non-blocking
-        // scheduling policy.
-        96
+    let settle_frames = if matches!(scenario, "people" | "people-detail") {
+        // People cards intentionally use real library thumbnails rather than
+        // avatar placeholders, so let the bounded decoder queue settle.
+        20
+    } else if matches!(
+        scenario,
+        "library"
+            | "places"
+            | "selection"
+            | "selection-many-albums"
+            | "album-manage"
+            | "metadata-edit"
+    ) {
+        // The live view fills a four-item bounded queue per sync. Acceptance
+        // images must let that real queue drain far enough to review the
+        // photograph layout itself rather than mostly reviewing placeholders.
+        20
     } else {
         2
     };
@@ -223,4 +309,50 @@ fn render_scenario(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("photos: wrote {scenario} shot to {}", out.display());
     Ok(())
+}
+
+/// Mirror the live application's accessibility preference in offscreen shots.
+/// The headless handler builds a theme directly, so it does not pass through
+/// `ui::App`'s startup gate where this setting is normally applied.
+fn shot_motion_reduced() -> bool {
+    ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .any(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+        })
+}
+
+/// Apply the accessibility inputs the launcher parsed before either layout or
+/// text shaping begins. Keeping this pure makes it impossible for the custom
+/// screenshot runner to claim 200% or reduced motion while rendering a
+/// default Theme/TextRenderer pair.
+fn configured_shot_theme(base: Theme, text_scale: Option<f32>, reduce_motion: bool) -> Theme {
+    let theme = base.with_reduce_motion(reduce_motion);
+    match text_scale {
+        Some(scale) => theme.with_text_scale(scale),
+        None => theme,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_shot_theme_carries_real_text_scale_and_reduced_motion() {
+        let theme = configured_shot_theme(Theme::dark(), Some(2.0), true);
+        assert!((theme.text_scale - 2.0).abs() < f32::EPSILON);
+        assert!(theme.reduce_motion);
+
+        let mut renderer = TextRenderer::new();
+        renderer.set_text_scale(theme.text_scale);
+        let (normal, _) = TextRenderer::new().measure("Photograph", 16.0, None);
+        let (scaled, _) = renderer.measure("Photograph", 16.0, None);
+        assert!(
+            scaled > normal * 1.8,
+            "the screenshot renderer must shape genuinely enlarged text"
+        );
+    }
 }

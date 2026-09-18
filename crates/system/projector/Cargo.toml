@@ -1,5 +1,5 @@
 [package]
-name = "qos-projector"
+name = "tilo-projector"
 version = "0.1.0"
 edition = "2024"
 license.workspace = true
@@ -17,10 +17,10 @@ zbus = { workspace = true, features = ["tokio", "p2p"] }
 
 [dev-dependencies]
 futures-util.workspace = true
-qos-callstream = { path = "../../collab/qos-callstream" }
+tilo-callstream = { path = "../../collab/tilo-callstream" }
 
 [[bin]]
-name = "qos-projector"
+name = "tilo-projector"
 path = "src/main.rs"
 
 [lints]

@@ -1,4 +1,4 @@
-//! HTTP client for a qOS registry.
+//! HTTP client for a Tilo registry.
 //!
 //! Two endpoints, both blocking — every caller runs these on a worker
 //! thread, never on a frame thread:
@@ -13,7 +13,7 @@
 //! against the registry *owner's* allowlisted publishers.
 //!
 //! Nothing here is a trust decision about *installing*. A registry
-//! describes what exists; `qos-install` re-verifies the actual bytes
+//! describes what exists; `tilo-install` re-verifies the actual bytes
 //! fail-closed before it extracts one of them. An entry that fails its
 //! signature check is [`TrustLevel::Untrusted`], and callers that put
 //! software in front of a user are expected to drop those rather than
@@ -29,12 +29,12 @@ use thiserror::Error;
 use crate::config::{RegistryConfig, config_dir, placeholder_owner_pubkey};
 
 /// Reasonable default request timeout — a fresh registry contacted
-/// over WAN should still fit. Overridable via `QOS_STORE_HTTP_TIMEOUT`.
+/// over WAN should still fit. Overridable via `TILO_STORE_HTTP_TIMEOUT`.
 const DEFAULT_TIMEOUT_SECS: u64 = 10;
 const MAX_INDEX_RESPONSE_BYTES: u64 = registry_types::MAX_SNAPSHOT_ENCODED_BYTES as u64;
 
 fn http_timeout() -> Duration {
-    std::env::var("QOS_STORE_HTTP_TIMEOUT")
+    std::env::var("TILO_STORE_HTTP_TIMEOUT")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .map_or_else(
@@ -103,7 +103,7 @@ struct SnapshotCheckpoint {
 
 fn client() -> Result<reqwest::blocking::Client, RegistryError> {
     reqwest::blocking::Client::builder()
-        .user_agent("qos-catalogue/0.1")
+        .user_agent("tilo-catalogue/0.1")
         .timeout(http_timeout())
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -340,7 +340,7 @@ mod tests {
         let key = SigningKey::from_bytes(&[7u8; 32]);
         let pk_hex = hex::encode(key.verifying_key().to_bytes());
         let mut entry = RegistryEntry {
-            package_id: "dev.qos.editor".into(),
+            package_id: "dev.tilo.editor".into(),
             name: "Editor".into(),
             description: "CRDT-native editor".into(),
             categories: vec!["Productivity".into()],
@@ -350,7 +350,7 @@ mod tests {
             publisher_pubkey_hex: pk_hex,
             versions: vec![RegistryVersion {
                 version: "0.1.0".into(),
-                qpkg_url: "https://apps.qos.dev/editor/0.1.0.qpkg".into(),
+                qpkg_url: "https://apps.tilo.dev/editor/0.1.0.qpkg".into(),
                 qpkg_root_hash_hex: "cd".repeat(32),
                 qpkg_size_bytes: 1024,
                 released_at_unix: 100,

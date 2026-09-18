@@ -13,9 +13,9 @@
 //! exactly once.
 //!
 //! Location (first match wins):
-//!   * `$QOS_CONTACTS_DATA` — explicit override.
-//!   * `$XDG_DATA_HOME/qos-contacts/addressbook.automerge`.
-//!   * `$HOME/.local/share/qos-contacts/addressbook.automerge`.
+//!   * `$TILO_CONTACTS_DATA` — explicit override.
+//!   * `$XDG_DATA_HOME/tilo-contacts/addressbook.automerge`.
+//!   * `$HOME/.local/share/tilo-contacts/addressbook.automerge`.
 
 use std::path::{Path, PathBuf};
 
@@ -25,18 +25,18 @@ use crate::doc::ContactsDoc;
 use crate::model::Contact;
 
 /// Resolve the address-book file path for the live app, honouring
-/// `QOS_CONTACTS_DATA`. Returns `None` only when no home directory can be
+/// `TILO_CONTACTS_DATA`. Returns `None` only when no home directory can be
 /// located (an extremely minimal container), in which case the app runs
 /// in-memory for the session rather than crashing.
 pub fn default_path() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("QOS_CONTACTS_DATA")
+    if let Ok(p) = std::env::var("TILO_CONTACTS_DATA")
         && !p.is_empty()
     {
         return Some(PathBuf::from(p));
     }
     Some(
         data_dir()?
-            .join("qos-contacts")
+            .join("tilo-contacts")
             .join("addressbook.automerge"),
     )
 }

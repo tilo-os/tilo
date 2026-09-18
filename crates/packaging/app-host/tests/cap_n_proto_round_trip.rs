@@ -48,7 +48,7 @@ impl Harness {
             match tokio::net::UnixStream::connect(&self.socket).await {
                 Ok(mut stream) => {
                     use tokio::io::AsyncWriteExt;
-                    let handoff = br#"{"protocol":1,"app_id":"dev.qos.store"}"#;
+                    let handoff = br#"{"protocol":1,"app_id":"dev.tilo.store"}"#;
                     stream.write_all(b"QAH1").await?;
                     stream
                         .write_all(&u32::try_from(handoff.len())?.to_be_bytes())
@@ -110,7 +110,7 @@ fn install_list_pin_resolve_over_capnp() {
             p.set_pinning(WirePinning::Tried);
             p.set_expected_root(expected_id.as_bytes());
             p.set_expected_publisher(&expected_publisher);
-            p.set_expected_app_id("dev.qos.editor");
+            p.set_expected_app_id("dev.tilo.editor");
             p.set_expected_version("1.4.2");
             p.set_expected_size_bytes(bytes.len() as u64);
         }
@@ -124,6 +124,7 @@ fn install_list_pin_resolve_over_capnp() {
         assert_eq!(entries.len(), 1);
         let entry = entries.get(0);
         assert_eq!(entry.get_pinning().unwrap(), WirePinning::Tried);
+        assert!(entry.get_user_managed(), "app-host entries are mutable");
         let id_bytes: Vec<u8> = entry.get_id().unwrap().to_vec();
         assert_eq!(&id_bytes[..], expected_id.as_bytes());
 
@@ -141,7 +142,7 @@ fn install_list_pin_resolve_over_capnp() {
         let payload_root = entry.get_payload_root().unwrap().to_string().unwrap();
         assert!(!payload_root.is_empty());
         let manifest_text = entry.get_manifest_text().unwrap().to_string().unwrap();
-        assert!(manifest_text.contains("dev.qos.editor"));
+        assert!(manifest_text.contains("dev.tilo.editor"));
 
         // diskUsage
         let du = client.disk_usage_request().send().promise.await.unwrap();

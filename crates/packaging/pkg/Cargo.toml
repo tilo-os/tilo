@@ -11,7 +11,7 @@ license.workspace = true
 name = "pkg"
 path = "src/lib.rs"
 
-# The foundation crate for qOS packages (.qpkg). Defines the manifest
+# The foundation crate for Tilo packages (.qpkg). Defines the manifest
 # schema, the BLAKE3 content-addressed package id, the on-disk blob
 # layout, and the pack/unpack/sign/verify operations. Used by all
 # package kinds (app, service, format-provider, plugin, runtime) and
@@ -26,7 +26,7 @@ atomic-file = { path = "../../../crates/system/atomic-file" }
 # bytes — not the threshold machinery — to verify a .qpkg.
 threshold-identity = { path = "../../collab/threshold-identity" }
 # Re-uses the canonical-bytes encoder + Ed25519 newtypes so the
-# signed-bytes shape matches the rest of qOS's signed wire types.
+# signed-bytes shape matches the rest of Tilo's signed wire types.
 collab-types           = { path = "../../collab/collab-types" }
 
 blake3.workspace = true

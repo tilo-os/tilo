@@ -918,7 +918,7 @@ mod tests {
     fn fonttbl_and_star_destinations_are_skipped() {
         // The font table and a `\*\generator` destination must not leak into body.
         let snap = import(
-            "{\\rtf1\\ansi{\\fonttbl{\\f0 Helvetica;}}{\\*\\generator qOS;}\n{\\pard Body\\par}}",
+            "{\\rtf1\\ansi{\\fonttbl{\\f0 Helvetica;}}{\\*\\generator Tilo;}\n{\\pard Body\\par}}",
         );
         let texts: Vec<_> = snap.blocks.iter().map(|b| b.text.clone()).collect();
         assert_eq!(

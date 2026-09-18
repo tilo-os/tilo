@@ -58,7 +58,7 @@ fn entries() -> Vec<(ShortcutAction, &'static str, &'static str, &'static str)> 
             ShortcutAction::ShortcutHelp,
             "shortcuts.help",
             "Desktop help",
-            "F1 opens the desktop guide anywhere; Super+? is the configurable shortcut for the same guide",
+            "F1 opens the desktop guide anywhere; Super+Shift+/ (Super+?) is the configurable shortcut for the same guide",
         ),
         (
             ShortcutAction::FocusPreviousWindow,
@@ -269,7 +269,7 @@ impl ShortcutPane {
             state,
             SETTINGS_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Settings", "Settings", action),
+            tilo_actions::ActionContext::for_action("org.tilo.Settings", "Settings", action),
         );
     }
 }
@@ -452,7 +452,7 @@ impl Widget for ShortcutPane {
             .into_iter()
             .collect()
     }
-    fn take_commit_context(&mut self) -> Option<ui::qos_actions::ActionContext> {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
         let pending = std::mem::take(&mut self.commit_context_pending)
             || self
                 .composed
@@ -497,6 +497,7 @@ mod tests {
             .find(|(action, ..)| *action == ShortcutAction::ShortcutHelp)
             .expect("help shortcut entry");
         assert_eq!(label, "Desktop help");
+        assert!(description.contains("Super+Shift+/"));
         assert!(description.contains("Super+?"));
         assert!(description.contains("F1"));
         assert!(description.contains("same guide"));

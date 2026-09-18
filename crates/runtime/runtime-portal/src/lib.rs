@@ -1,20 +1,20 @@
-//! `runtime-portal` — service discovery and connected-fd → RPC plumbing for
-//! qOS apps.
+//! `runtime-portal` — service discovery and connected transport → RPC plumbing for
+//! Tilo apps.
 //!
-//! qOS apps run inside a launcher-managed sandbox. The launcher opens a Unix
+//! Tilo apps run inside a launcher-managed sandbox. The launcher opens a Unix
 //! socket per system service (collab, fs, ...) and passes the connected fd
-//! to the child via `QOS_SVC_<NAME>_FD`. This crate provides:
+//! to the child via `TILO_SVC_<NAME>_FD`. This crate provides:
 //!
 //! - [`service_fd`] — pull the raw fd out of the environment.
-//! - [`is_qos_native`] — heuristic: running under a qOS compositor, or as a
+//! - [`is_tilo_native`] — heuristic: running under a Tilo compositor, or as a
 //!   stock Flatpak on a vanilla desktop?
-//! - [`UnixCapnpClient`] — lift a connected `RawFd` into a tokio Cap'n Proto
+//! - [`CapnpClient`] — lift an owned connected transport into a tokio Cap'n Proto
 //!   two-party RPC client; higher-level service crates build typed clients
 //!   on top of the bootstrap returned here.
 //! - [`NotAvailable`] — the single error type service clients surface when
 //!   the platform can't provide the requested service.
 //!
-//! qOS apps must also run as Flatpaks on stock Linux, where there is no
+//! Tilo apps must also run as Flatpaks on stock Linux, where there is no
 //! service connection: every client returns
 //! [`NotAvailable::ServiceFdMissing`] rather than panicking, and the app is
 //! expected to fall back to a local-only mode.
@@ -39,27 +39,25 @@ use std::io;
 pub use std::os::fd::RawFd;
 #[cfg(unix)]
 use std::os::fd::{BorrowedFd, FromRawFd, OwnedFd};
-/// Placeholder descriptor type on hosts that cannot receive qOS Unix-socket
+/// Placeholder descriptor type on hosts that cannot receive Tilo Unix-socket
 /// service descriptors. Service discovery always returns `None` there.
 #[cfg(not(unix))]
 pub type RawFd = i32;
 
 use capnp::capability::Promise;
-#[cfg(unix)]
 use capnp_rpc::twoparty;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp};
 #[cfg(unix)]
 use nix::fcntl::{F_GETFD, fcntl};
 #[cfg(unix)]
 use tokio::net::UnixStream;
-#[cfg(unix)]
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 /// All ways a system service can be unavailable to an app.
 #[derive(Debug, thiserror::Error)]
 pub enum NotAvailable {
     /// The launcher did not pass an fd for this service: either we're outside
-    /// qOS (stock Linux / Flatpak) or the service wasn't declared in the manifest.
+    /// Tilo (stock Linux / Flatpak) or the service wasn't declared in the manifest.
     #[error("service fd env var missing or fd is not open")]
     ServiceFdMissing,
     /// The fd was present but the socket closed or the peer hung up before RPC could start.
@@ -73,12 +71,12 @@ pub enum NotAvailable {
     Capnp(#[from] capnp::Error),
 }
 
-/// True iff we appear to be running inside a qOS session. Heuristic only —
+/// True iff we appear to be running inside a Tilo session. Heuristic only —
 /// apps must NOT use this as an authorisation gate; try the relevant
 /// service client and react to [`NotAvailable`] instead. Intended for
 /// telemetry, boot-time toggles, and friendly first-run messaging.
-pub fn is_qos_native() -> bool {
-    native::connection_metadata_is_current() && env::var_os("QOS_WORKSPACE_ID").is_some()
+pub fn is_tilo_native() -> bool {
+    native::connection_metadata_is_current() && env::var_os("TILO_WORKSPACE_ID").is_some()
 }
 
 /// Look up a service fd by canonical name (e.g. "collab", "fs"). `None` if
@@ -99,7 +97,7 @@ pub fn service_fd(name: &str) -> Option<RawFd> {
     }
     #[cfg(unix)]
     {
-        let var_name = format!("QOS_SVC_{}_FD", name.to_uppercase());
+        let var_name = format!("TILO_SVC_{}_FD", name.to_uppercase());
         let raw = env::var(&var_name).ok()?;
         let fd: RawFd = raw.parse().ok()?;
         if fd < 0 {
@@ -115,15 +113,45 @@ pub fn service_fd(name: &str) -> Option<RawFd> {
     }
 }
 
-/// A tokio Cap'n Proto two-party RPC client wrapped around an
-/// already-connected Unix socket fd. Typed service crates call
+/// A tokio Cap'n Proto two-party RPC client wrapped around an owned,
+/// already-connected transport. Typed service crates call
 /// [`Self::bootstrap`] for the root capability; this owns the driver task.
-pub struct UnixCapnpClient {
+pub struct CapnpClient {
     rpc_system: RpcSystem<rpc_twoparty_capnp::Side>,
     bootstrap_side: rpc_twoparty_capnp::Side,
 }
 
-impl UnixCapnpClient {
+/// Compatibility name for clients using launcher-provided Unix descriptors.
+pub type UnixCapnpClient = CapnpClient;
+
+impl CapnpClient {
+    /// Take ownership of a connected asynchronous byte stream. Platform launch
+    /// adapters supply the connection; this constructor does not discover a
+    /// service, authenticate either peer, or grant app/workspace authority.
+    ///
+    /// Uses the same protocol and local driver as the Unix descriptor adapter.
+    /// Windows adapters can supply an owned named pipe without casting handles
+    /// to Unix descriptors. Call [`Self::bootstrap`] inside a tokio `LocalSet`.
+    pub fn from_connected_io<S>(stream: S, side: rpc_twoparty_capnp::Side) -> Self
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
+    {
+        let (read_half, write_half) = tokio::io::split(stream);
+        let network = Box::new(twoparty::VatNetwork::new(
+            read_half.compat(),
+            write_half.compat_write(),
+            side,
+            capnp::message::ReaderOptions::default(),
+        ));
+        Self {
+            rpc_system: RpcSystem::new(network, None),
+            bootstrap_side: match side {
+                rpc_twoparty_capnp::Side::Client => rpc_twoparty_capnp::Side::Server,
+                rpc_twoparty_capnp::Side::Server => rpc_twoparty_capnp::Side::Client,
+            },
+        }
+    }
+
     /// Wrap an owned `RawFd` for a connected Unix stream socket; takes
     /// ownership, so the caller must not close it afterwards. `side` is which
     /// end of the two-party protocol we are — SDK clients are `Client`, services are `Server`.
@@ -159,29 +187,15 @@ impl UnixCapnpClient {
                 .map_err(NotAvailable::ConnectionFailed)?;
             let stream =
                 UnixStream::from_std(std_stream).map_err(NotAvailable::ConnectionFailed)?;
-            let (read_half, write_half) = stream.into_split();
-            let read_compat = read_half.compat();
-            let write_compat = write_half.compat_write();
-            let network = Box::new(twoparty::VatNetwork::new(
-                read_compat,
-                write_compat,
-                side,
-                capnp::message::ReaderOptions::default(),
-            ));
-            let rpc_system = RpcSystem::new(network, None);
-            Ok(Self {
-                rpc_system,
-                bootstrap_side: match side {
-                    rpc_twoparty_capnp::Side::Client => rpc_twoparty_capnp::Side::Server,
-                    rpc_twoparty_capnp::Side::Server => rpc_twoparty_capnp::Side::Client,
-                },
-            })
+            Ok(Self::from_connected_io(stream, side))
         }
     }
 
     /// Take the remote bootstrap capability as a typed client, spawning the RPC
     /// driver task on the current tokio `LocalSet` (capnp-rpc needs `!Send`
     /// futures, so callers must run this from a `LocalSet`-aware context).
+    /// Service availability must be established by a service call: capability
+    /// resolution alone is not a health or admission check.
     pub fn bootstrap<C>(mut self) -> C
     where
         C: capnp::capability::FromClientHook,
@@ -189,8 +203,8 @@ impl UnixCapnpClient {
         let client: C = self.rpc_system.bootstrap(self.bootstrap_side);
         // capnp-rpc futures are !Send, so the driver is spawned via `spawn_local`.
         tokio::task::spawn_local(async move {
-            // Resolves when the connection closes; the result is dropped since the
-            // higher layer sees the drop via a Disconnected capnp error on its next call.
+            // Resolves when the connection closes; higher layers observe a
+            // Disconnected error on outstanding or subsequent service calls.
             let _ = self.rpc_system.await;
         });
         client
@@ -240,33 +254,57 @@ pub type RpcPromise<T> = Promise<T, capnp::Error>;
 mod tests {
     use super::*;
 
-    fn clear_qos_env() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn connected_io_reports_peer_close() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (connection, peer) = tokio::io::duplex(512);
+                let client: capnp::capability::Client =
+                    CapnpClient::from_connected_io(connection, rpc_twoparty_capnp::Side::Client)
+                        .bootstrap();
+                drop(peer);
+                // Service clients await RPC responses. Exercise that public
+                // failure path, including a call queued before the driver polls.
+                let request = client
+                    .new_call::<capnp::any_pointer::Owned, capnp::any_pointer::Owned>(0, 0, None);
+                let error =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), request.send().promise)
+                        .await
+                        .expect("closed peer must resolve the outstanding RPC")
+                        .err()
+                        .expect("closed transport cannot complete a service call");
+                assert_eq!(error.kind, capnp::ErrorKind::Disconnected);
+            })
+            .await;
+    }
+
+    fn clear_tilo_env() {
         // SAFETY: tests are not parallel for this function — the
-        // ones that touch QOS_* env are marked `#[serial]` via
+        // ones that touch TILO_* env are marked `#[serial]` via
         // file-scoped tests... but the workspace lacks `serial_test`
         // here, so we keep these tests independent by clearing
-        // every QOS_* var both before AND after the assertion. The
+        // every TILO_* var both before AND after the assertion. The
         // test runner serialises top-level env mutation in stable
         // rust 1.x via the `std::env::set_var` `unsafe` warning;
         // these tests don't set vars concurrently with anyone else.
         for (key, _) in env::vars() {
-            if key.starts_with("QOS_") {
+            if key.starts_with("TILO_") {
                 // SAFETY: we own the test process env. No other
-                // thread reads QOS_* during test setup.
+                // thread reads TILO_* during test setup.
                 unsafe { env::remove_var(&key) };
             }
         }
     }
 
     #[test]
-    fn is_qos_native_false_without_env() {
-        clear_qos_env();
-        assert!(!is_qos_native());
+    fn is_tilo_native_false_without_env() {
+        clear_tilo_env();
+        assert!(!is_tilo_native());
     }
 
     #[test]
     fn service_fd_returns_none_when_unset() {
-        clear_qos_env();
+        clear_tilo_env();
         assert!(service_fd("collab").is_none());
         assert!(service_fd("fs").is_none());
         assert!(service_fd("identity").is_none());
@@ -274,21 +312,21 @@ mod tests {
 
     #[test]
     fn service_fd_returns_none_for_garbage_value() {
-        clear_qos_env();
+        clear_tilo_env();
         // SAFETY: see comment above; tests in this module are
-        // logically serial because they all touch QOS_* env.
-        unsafe { env::set_var("QOS_SVC_COLLAB_FD", "not-a-number") };
+        // logically serial because they all touch TILO_* env.
+        unsafe { env::set_var("TILO_SVC_COLLAB_FD", "not-a-number") };
         assert!(service_fd("collab").is_none());
-        unsafe { env::remove_var("QOS_SVC_COLLAB_FD") };
+        unsafe { env::remove_var("TILO_SVC_COLLAB_FD") };
     }
 
     #[test]
     fn service_fd_returns_none_for_closed_fd() {
-        clear_qos_env();
+        clear_tilo_env();
         // A fd well above stdin/stdout/stderr, unlikely to be open in a test process.
-        unsafe { env::set_var("QOS_SVC_COLLAB_FD", "999") };
+        unsafe { env::set_var("TILO_SVC_COLLAB_FD", "999") };
         assert!(service_fd("collab").is_none());
-        unsafe { env::remove_var("QOS_SVC_COLLAB_FD") };
+        unsafe { env::remove_var("TILO_SVC_COLLAB_FD") };
     }
 }
 

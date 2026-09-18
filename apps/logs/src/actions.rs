@@ -7,7 +7,7 @@
 //! agents; their payloads contain only small local view values or stable entry
 //! identities, never journal content.
 
-use qos_actions::{
+use tilo_actions::{
     ActionArgs, ActionParam, ActionRegistry, ActionSpec, EncodedAction, OperationKind, ParamType,
     Resource,
 };
@@ -62,7 +62,7 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<LogsOper
 }
 
 /// Logs has no durable document actions. Retained for the launch hook shared
-/// by qOS apps, so upgraded clients can open old Logs documents safely.
+/// by Tilo apps, so upgraded clients can open old Logs documents safely.
 pub fn register(_registry: &mut ActionRegistry) {}
 
 #[allow(
@@ -196,9 +196,9 @@ pub fn resources(
         OperationKind::Effect,
         &LogsOperation::Refresh,
     )
-    .retry_policy(qos_actions::RetryPolicy::Idempotent);
+    .retry_policy(tilo_actions::RetryPolicy::Idempotent);
     root = root.with_action(if allow_live {
-        refresh.requiring(qos_actions::PermissionRequirement::Read)
+        refresh.requiring(tilo_actions::PermissionRequirement::Read)
     } else {
         refresh.unavailable("journal_access_disabled", "Live journal access is disabled")
     });
@@ -214,7 +214,7 @@ pub fn resources(
             enabled: !live_tail,
         },
     )
-    .retry_policy(qos_actions::RetryPolicy::Idempotent);
+    .retry_policy(tilo_actions::RetryPolicy::Idempotent);
     root = root.with_action(if allow_live {
         live
     } else {
@@ -226,7 +226,7 @@ pub fn resources(
         OperationKind::Effect,
         &LogsOperation::ExportFiltered,
     )
-    .requiring(qos_actions::PermissionRequirement::Write);
+    .requiring(tilo_actions::PermissionRequirement::Write);
     root = root.with_action(if !allow_live {
         export.unavailable(
             "journal_access_disabled",

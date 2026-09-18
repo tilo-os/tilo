@@ -1,0 +1,85 @@
+# Video Editor — Tilo application manifest.
+#
+# Export muxing goes through GStreamer (feature `gst`) and decode
+# through openh264 (feature `decode`); both plugin trees live under
+# `/usr/lib64`, which the system read profile covers. No network.
+#
+# Beyond the system read profile it needs, as a consented capability:
+# read on the directories the user sources clips from —
+# `/var/workspace`, `~/Videos`.
+#
+
+
+[package]
+id       = "dev.tilo.video-editor"
+name     = "Video Editor"
+category = "Multimedia"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` deliberately absent from `namespaces`: this app opens no
+# socket of its own.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab = "optional@1"
+tilo-fs = "optional@1"
+
+[entrypoint]
+bin             = "bin/video-editor"
+type            = "gui"
+splash-segments = ["bin/video-editor[0x0:0x400000]"]
+splash-budget   = 250
+
+# Formats the importer probes (see `probe.rs`): ISOBMFF, Matroska/WebM, MP3,
+# WAV, and the two still-image formats.
+[providers]
+mime = [
+    "video/mp4",
+    "video/quicktime",
+    "video/x-matroska",
+    "video/webm",
+    "audio/mpeg",
+    "audio/wav",
+    "image/png",
+    "image/jpeg",
+]
+ext  = [
+    "mp4",
+    "m4v",
+    "mov",
+    "mkv",
+    "webm",
+    "mp3",
+    "wav",
+    "png",
+    "jpg",
+    "jpeg",
+]

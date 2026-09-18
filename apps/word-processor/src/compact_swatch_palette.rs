@@ -34,6 +34,16 @@ pub(super) enum PaletteChoice {
     Clear,
 }
 
+pub(super) struct PaletteRequest<'a> {
+    pub(super) kind: PaletteKind,
+    pub(super) colors: &'a [[u8; 3]],
+    pub(super) labels: Vec<String>,
+    pub(super) title: String,
+    pub(super) clear_label: String,
+    pub(super) anchor: Point,
+    pub(super) host: Rect,
+}
+
 pub(super) struct CompactSwatchPalette {
     kind: Option<PaletteKind>,
     picker: Option<ColorSwatchPicker>,
@@ -65,35 +75,23 @@ impl CompactSwatchPalette {
         self.picker.is_some()
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "palette content, labels, and bounded popover placement are independent inputs"
-    )]
-    pub(super) fn open(
-        &mut self,
-        kind: PaletteKind,
-        palette: &[[u8; 3]],
-        labels: Vec<String>,
-        title: String,
-        clear_label: String,
-        anchor: Point,
-        host: Rect,
-    ) {
-        let colors = palette
+    pub(super) fn open(&mut self, request: PaletteRequest<'_>) {
+        let colors = request
+            .colors
             .iter()
             .map(|rgb| u32::from(rgb[0]) << 16 | u32::from(rgb[1]) << 8 | u32::from(rgb[2]))
             .collect();
-        self.kind = Some(kind);
-        self.title = title;
-        self.clear_label = clear_label;
+        self.kind = Some(request.kind);
+        self.title = request.title;
+        self.clear_label = request.clear_label;
         self.clear_focused = false;
         self.picker =
-            Some(ColorSwatchPicker::with_palette(colors, 4).with_accessible_labels(labels));
+            Some(ColorSwatchPicker::with_palette(colors, 4).with_accessible_labels(request.labels));
         if let Some(picker) = self.picker.as_mut() {
             Widget::set_focus(picker, true);
         }
-        self.pointer = anchor;
-        self.layout(anchor, host);
+        self.pointer = request.anchor;
+        self.layout(request.anchor, request.host);
     }
 
     pub(super) fn close(&mut self) {
@@ -274,7 +272,6 @@ impl CompactSwatchPalette {
         picker.draw(scene, transform, text, theme, presence);
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn handle_event(
         &mut self,
         event: &WindowEvent,

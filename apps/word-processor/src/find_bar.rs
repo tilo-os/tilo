@@ -21,6 +21,7 @@ use ui::widget::{TextInput, TextInputKind, Widget};
 
 use crate::i18n::{arg, t, t_args};
 use crate::num;
+use crate::paint_context::PaintContext;
 
 /// Classic 1× bar height, the floor of the measured [`FindMetrics::bar_h`].
 pub(crate) const HEIGHT: f64 = 42.0;
@@ -176,6 +177,18 @@ struct DrawCtx<'a> {
     palette: FindPalette,
 }
 
+/// Host routing state used by both embedded text fields for one event.
+pub(crate) struct FindEventContext<'a> {
+    pub(crate) scale_factor: f64,
+    pub(crate) modifiers: Modifiers,
+    pub(crate) state: &'a mut AutoCommit,
+    pub(crate) path: &'a ObjId,
+    pub(crate) handled: &'a mut bool,
+    pub(crate) focus_target: &'a mut Option<NodeId>,
+    pub(crate) node_id: NodeId,
+    pub(crate) taffy: &'a TaffyTree<()>,
+}
+
 impl FindBar {
     pub(crate) fn is_open(&self) -> bool {
         self.open
@@ -312,21 +325,10 @@ impl FindBar {
     /// Route raw input through the shared text fields. Search query state stays
     /// local, while the returned effect lets the editor keep document changes
     /// on its existing collaborative/undoable splice path.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event for embedded fields"
-    )]
     pub(crate) fn handle_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        context: &mut FindEventContext<'_>,
         blocks: &[BlockView],
     ) -> FindEffect {
         if !self.open {
@@ -334,21 +336,24 @@ impl FindBar {
         }
 
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.pointer = Point::new(
+                position.x / context.scale_factor,
+                position.y / context.scale_factor,
+            );
             // Each field must see cursor movement so hover/drag state stays
             // correct even when focus is about to move between them.
             for input in [&mut self.query, &mut self.replacement] {
                 Widget::handle_event(
                     input,
                     event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
+                    context.scale_factor,
+                    &context.modifiers,
+                    context.state,
+                    context.path,
+                    context.handled,
+                    context.focus_target,
+                    context.node_id,
+                    context.taffy,
                 );
             }
             return FindEffect::None;
@@ -367,23 +372,27 @@ impl FindBar {
             match logical_key {
                 Key::Named(NamedKey::Escape) => {
                     self.close();
-                    *handled = true;
+                    *context.handled = true;
                     return FindEffect::None;
                 }
                 Key::Named(NamedKey::Enter) => {
-                    *handled = true;
-                    return self.jump(if modifiers.state().shift_key() { -1 } else { 1 });
+                    *context.handled = true;
+                    return self.jump(if context.modifiers.state().shift_key() {
+                        -1
+                    } else {
+                        1
+                    });
                 }
                 Key::Named(NamedKey::Tab) => {
                     self.focus_replace(!self.on_replace);
-                    *handled = true;
+                    *context.handled = true;
                     return FindEffect::None;
                 }
                 // Ctrl+F remains the editor-level open/close shortcut. Other
                 // Ctrl combinations (A/C/X/V and word navigation) belong to
                 // the shared TextInput and are forwarded below.
                 Key::Character(s)
-                    if modifiers.state().control_key() && s.eq_ignore_ascii_case("f") =>
+                    if context.modifiers.state().control_key() && s.eq_ignore_ascii_case("f") =>
                 {
                     return FindEffect::None;
                 }
@@ -413,14 +422,14 @@ impl FindBar {
         Widget::handle_event(
             input,
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
+            context.scale_factor,
+            &context.modifiers,
+            context.state,
+            context.path,
+            context.handled,
+            context.focus_target,
+            context.node_id,
+            context.taffy,
         );
 
         let query_changed = self.query.take_dirty().is_some();
@@ -588,17 +597,19 @@ impl FindBar {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
+        context: PaintContext<'_>,
         theme: &Theme,
         presence: &PresenceCtx,
         palette: FindPalette,
         bar: Rect,
     ) {
+        let PaintContext {
+            scene,
+            transform,
+            text: tr,
+        } = context;
         self.buttons.clear();
         scene.fill(Fill::NonZero, transform, palette.bar, None, &bar);
         scene.fill(
@@ -862,14 +873,16 @@ mod tests {
         let mut focus_target = None;
         let effect = bar.handle_event(
             event,
-            1.0,
-            modifiers,
-            &mut state,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            NodeId::new(0),
-            &taffy,
+            &mut FindEventContext {
+                scale_factor: 1.0,
+                modifiers,
+                state: &mut state,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: NodeId::new(0),
+                taffy: &taffy,
+            },
             blocks,
         );
         assert!(handled, "the focused find field consumes {event:?}");
@@ -944,9 +957,7 @@ mod tests {
             danger: Color::WHITE,
         };
         bar.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
+            PaintContext::new(&mut scene, Affine::IDENTITY, &mut text),
             &Theme::dark(),
             &PresenceCtx::empty(),
             palette,

@@ -54,7 +54,7 @@ except ImportError:  # pragma: no cover - environment guard
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SHELL = REPO / "target" / "debug" / "shell"
-FILES = "dev.qos.file-explorer"
+FILES = "dev.tilo.file-explorer"
 
 # `LIST_ROW_H` in apps/file-explorer/src/views/file_view.rs. Only used to
 # recognise the list *as* a list in the screenshot — never to aim.
@@ -68,7 +68,7 @@ SAMPLE = ["alder.txt", "birch.txt", "cedar.txt", "elm.txt", "hazel.txt"]
 def spawn(root: str, home: str) -> tuple[subprocess.Popen, str, str]:
     """A session with its own everything, but the machine's app registry.
 
-    `QOS_APPS_DATA_DIR` / `QOS_RUNTIME_BUNDLE_DIR` are machine state that
+    `TILO_APPS_DATA_DIR` / `TILO_RUNTIME_BUNDLE_DIR` are machine state that
     lives under `XDG_DATA_HOME`; repointing the latter to isolate the
     session's documents silently isolates them too, and every launch then
     fails with "no bundle was found".
@@ -79,18 +79,18 @@ def spawn(root: str, home: str) -> tuple[subprocess.Popen, str, str]:
     machine = os.path.expanduser("~")
     env = {
         **os.environ,
-        "QOS_TEST_CONTROL": sock,
+        "TILO_TEST_CONTROL": sock,
         "HOME": home,
-        "QOS_STATE_PATH": os.path.join(root, "config", "state.json"),
+        "TILO_STATE_PATH": os.path.join(root, "config", "state.json"),
         "XDG_DATA_HOME": os.path.join(root, "data"),
         "XDG_CACHE_HOME": os.path.join(root, "cache"),
         "XDG_STATE_HOME": os.path.join(root, "state"),
         "XDG_CONFIG_HOME": os.path.join(root, "config"),
         "XDG_RUNTIME_DIR": runtime,
-        "QOS_APPS_DATA_DIR": os.path.join(machine, ".local/share/qos-apps"),
-        "QOS_RUNTIME_BUNDLE_DIR": os.path.join(machine, ".local/share/qos-runtime"),
-        "QOS_PEER_KEY_PATH": os.path.join(root, "keys", "peer-key"),
-        "NIRIOS_HEADLESS_SIZE": "1600x1000",
+        "TILO_APPS_DATA_DIR": os.path.join(machine, ".local/share/tilo-apps"),
+        "TILO_RUNTIME_BUNDLE_DIR": os.path.join(machine, ".local/share/tilo-runtime"),
+        "TILO_PEER_KEY_PATH": os.path.join(root, "keys", "peer-key"),
+        "TILO_HEADLESS_SIZE": "1600x1000",
         # German chrome would still pass, but the shots are meant to be read.
         "LC_ALL": "en_US.UTF-8",
         "LANG": "en_US.UTF-8",

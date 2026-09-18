@@ -214,12 +214,8 @@ impl BrowserTabs {
             column = column.push(Box::new(
                 Row::new()
                     .push(Box::new(
-                        Button::new(
-                            "browser.download-exit.keep",
-                            "Keep downloading",
-                            None,
-                        )
-                        .on_effect(move || keep.set(Some(false))),
+                        Button::new("browser.download-exit.keep", "Keep downloading", None)
+                            .on_effect(move || keep.set(Some(false))),
                     ))
                     .push(Box::new(
                         Button::new(
@@ -231,7 +227,11 @@ impl BrowserTabs {
                     )),
             ));
         }
-        Box::new(Container::new().with_background().with_child(Box::new(column)))
+        Box::new(
+            Container::new()
+                .with_background()
+                .with_child(Box::new(column)),
+        )
     }
     /// Attach the normal-session store and prepare startup recovery.
     ///
@@ -319,7 +319,9 @@ impl BrowserTabs {
         // Reuse the already-created engine for the active page. Other endpoints
         // start at about:blank and defer their URL until selected.
         let active = snapshot.active;
-        let active_tab = snapshot.tabs.get(active)
+        let active_tab = snapshot
+            .tabs
+            .get(active)
             .ok_or_else(|| "Saved browser session has no active tab".to_string())?;
         self.active_mut()
             .prepare_session_uri(active_tab.url.clone(), false);
@@ -394,33 +396,46 @@ impl BrowserTabs {
         self.dirty = true;
         Ok(())
     }
-    fn hold_input_until_layout(&mut self, event: &WindowEvent, modifiers: winit::keyboard::ModifiersState) -> bool {
+    fn hold_input_until_layout(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::keyboard::ModifiersState,
+    ) -> bool {
         // A switch can be followed by another input before the host rebuilds.
         // Retained compositions still contain NodeIds from their previous tree.
         if self.layout_active_id != Some(self.active_id)
             || self.layout_immersive != Some(self.immersive())
         {
-            if self.layout_active_id != Some(self.active_id) && self.focus_new_address
+            if self.layout_active_id != Some(self.active_id)
+                && self.focus_new_address
                 && let WindowEvent::KeyboardInput { event: key, .. } = event
-                    && key.state == ElementState::Pressed
-                        && !modifiers.control_key()
-                        && !modifiers.super_key()
-                    {
-                        let replace = !self.buffered_address;
-                        if self
-                            .active_mut()
-                            .buffer_tab_address(&key.logical_key, replace)
-                        {
-                            self.buffered_address = true;
-                        }
-                    }
+                && key.state == ElementState::Pressed
+                && !modifiers.control_key()
+                && !modifiers.super_key()
+            {
+                let replace = !self.buffered_address;
+                if self
+                    .active_mut()
+                    .buffer_tab_address(&key.logical_key, replace)
+                {
+                    self.buffered_address = true;
+                }
+            }
             return true;
         }
         false
     }
     fn handle_retained_event(&mut self, context: RetainedEvent<'_>) {
         let RetainedEvent {
-            event, scale, modifiers, state, path, handled, focus, node, taffy,
+            event,
+            scale,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus,
+            node,
+            taffy,
         } = context;
         let Ok(children) = taffy.children(node) else {
             return;
@@ -436,7 +451,15 @@ impl BrowserTabs {
         if let Some(panel) = self.exit_panel.as_mut() {
             if let Some(panel_node) = children.get(1) {
                 panel.handle_event(
-                    event, scale, modifiers, state, path, handled, focus, *panel_node, taffy,
+                    event,
+                    scale,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus,
+                    *panel_node,
+                    taffy,
                 );
             }
             return;
@@ -482,17 +505,17 @@ impl BrowserTabs {
                 .tab_rects()
                 .iter()
                 .position(|rect| rect.contains(self.cursor))
-                && let Some(id) = self.bar.visible_tab_id(index) {
-                    self.close(id);
-                    *handled = true;
-                    return;
-                }
-        if !*handled
-            && let Some(page) = children.get(1) {
-                self.active_mut().handle_event(
-                    event, scale, modifiers, state, path, handled, focus, *page, taffy,
-                );
-            }
+            && let Some(id) = self.bar.visible_tab_id(index)
+        {
+            self.close(id);
+            *handled = true;
+            return;
+        }
+        if !*handled && let Some(page) = children.get(1) {
+            self.active_mut().handle_event(
+                event, scale, modifiers, state, path, handled, focus, *page, taffy,
+            );
+        }
     }
     #[cfg(feature = "wpe")]
     pub fn content_rect_handle(&self) -> std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>> {
@@ -609,9 +632,9 @@ impl BrowserTabs {
                 .tabs
                 .get(index + 1)
                 .or_else(|| self.tabs.iter().find(|tab| tab.id != id))
-            {
-                self.activate(next.id);
-            }
+        {
+            self.activate(next.id);
+        }
         let tab = self.tabs.remove(index);
         if self.closed.len() == 20 {
             self.closed.remove(0);
@@ -752,7 +775,8 @@ impl BrowserTabs {
         }
     }
     fn reorder(&mut self, from: usize, to: usize) {
-        if to < self.tabs.len() && from != to
+        if to < self.tabs.len()
+            && from != to
             && let Some(source) = self.tabs.get(from)
         {
             let pinned = self.bar.is_pinned(source.id);
@@ -874,9 +898,10 @@ impl Widget for BrowserTabs {
             self.close(id);
         }
         if self.bar.take_new_tab().is_some()
-            && let Err(error) = self.open(None, false) {
-                tracing::warn!(%error, "Cannot open tab");
-            }
+            && let Err(error) = self.open(None, false)
+        {
+            tracing::warn!(%error, "Cannot open tab");
+        }
         if self.bar.active_id() != self.active_id {
             self.activate(self.bar.active_id());
         }
@@ -903,10 +928,11 @@ impl Widget for BrowserTabs {
                 .tabs_mut()
                 .iter_mut()
                 .find(|desc| desc.id == tab.id)
-                && desc.title != title {
-                    desc.title = title;
-                    self.dirty = true;
-                }
+                && desc.title != title
+            {
+                desc.title = title;
+                self.dirty = true;
+            }
         }
         for id in closed {
             self.finish_close(id);
@@ -1044,11 +1070,9 @@ impl Widget for BrowserTabs {
         if let Ok(children) = taffy.children(node) {
             if let Some(recovery) = self.recovery.as_mut() {
                 if let Some(panel) = children.first() {
-                    recovery.panel.apply_layout(
-                        taffy,
-                        *panel,
-                        self.rect.origin(),
-                    );
+                    recovery
+                        .panel
+                        .apply_layout(taffy, *panel, self.rect.origin());
                 }
                 return;
             }
@@ -1123,11 +1147,12 @@ impl Widget for BrowserTabs {
         }
         if let Some(recovery) = self.recovery.as_mut() {
             if let Ok(children) = taffy.children(node)
-                && let Some(panel) = children.first() {
-                    recovery.panel.handle_event(
-                        event, scale, modifiers, state, path, handled, focus, *panel, taffy,
-                    );
-                }
+                && let Some(panel) = children.first()
+            {
+                recovery.panel.handle_event(
+                    event, scale, modifiers, state, path, handled, focus, *panel, taffy,
+                );
+            }
             return;
         }
         if matches!(
@@ -1202,7 +1227,15 @@ impl Widget for BrowserTabs {
             }
         }
         self.handle_retained_event(RetainedEvent {
-            event, scale, modifiers, state, path, handled, focus, node, taffy,
+            event,
+            scale,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus,
+            node,
+            taffy,
         });
     }
     fn perform_semantic_action(
@@ -1213,7 +1246,9 @@ impl Widget for BrowserTabs {
         path: &ObjId,
     ) -> bool {
         if let Some(recovery) = self.recovery.as_mut() {
-            return recovery.panel.perform_semantic_action(target, action, state, path);
+            return recovery
+                .panel
+                .perform_semantic_action(target, action, state, path);
         }
         if matches!(action, ui::a11y::Action::Activate)
             && let Some(index) = target
@@ -1259,11 +1294,11 @@ impl Widget for BrowserTabs {
     }
     fn poll_resource_operation(
         &mut self,
-        invocation: ui::qos_actions::InvocationId,
+        invocation: ui::tilo_actions::InvocationId,
         cancellation_requested: bool,
         doc: &AutoCommit,
         path: &ObjId,
-    ) -> Option<ui::qos_actions::InvocationUpdate> {
+    ) -> Option<ui::tilo_actions::InvocationUpdate> {
         self.tabs.iter_mut().find_map(|tab| {
             tab.widget
                 .poll_resource_operation(invocation, cancellation_requested, doc, path)
@@ -1429,7 +1464,7 @@ impl Widget for BrowserTabs {
         }
         self.dirty = true;
     }
-    fn take_control_invocation(&mut self) -> Option<ui::qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         if let Some(recovery) = self.recovery.as_mut() {
             return recovery.panel.take_control_invocation();
         }
@@ -1532,10 +1567,12 @@ impl Widget for BrowserTabs {
 }
 impl Drop for BrowserTabs {
     fn drop(&mut self) {
-        if self.session_initialized && !std::thread::panicking()
-            && let Err(error) = self.persist_session(true) {
-                tracing::error!(%error, "Cannot mark browser session clean");
-            }
+        if self.session_initialized
+            && !std::thread::panicking()
+            && let Err(error) = self.persist_session(true)
+        {
+            tracing::error!(%error, "Cannot mark browser session clean");
+        }
         self.active_mut().clear_history_on_workspace_exit();
     }
 }
@@ -1713,10 +1750,7 @@ mod tests {
         tabs.on_fullscreen_changed(true);
         let rects = layout_rects(&mut tabs);
         assert!(rects.contains_key("browser.surface"), "{rects:?}");
-        assert!(
-            rects.contains_key("browser.fullscreen-hint"),
-            "{rects:?}"
-        );
+        assert!(rects.contains_key("browser.fullscreen-hint"), "{rects:?}");
         assert!(!rects.contains_key("browser.tab-strip"), "{rects:?}");
         assert!(!rects.contains_key("browser.url_input"), "{rects:?}");
         assert_eq!(rects["browser.surface"], Rect::new(0.0, 0.0, 1000.0, 700.0));
@@ -1754,10 +1788,7 @@ mod tests {
         let rects = layout_rects(&mut tabs);
         assert!(rects.contains_key("browser.tab-strip"), "{rects:?}");
         assert!(rects.contains_key("browser.url_input"), "{rects:?}");
-        assert!(
-            !rects.contains_key("browser.fullscreen-hint"),
-            "{rects:?}"
-        );
+        assert!(!rects.contains_key("browser.fullscreen-hint"), "{rects:?}");
     }
 
     #[test]
@@ -1768,10 +1799,7 @@ mod tests {
         let rects = layout_rects(&mut tabs);
         assert!(rects.contains_key("browser.tab-strip"), "{rects:?}");
         assert!(rects.contains_key("browser.url_input"), "{rects:?}");
-        assert!(
-            !rects.contains_key("browser.fullscreen-hint"),
-            "{rects:?}"
-        );
+        assert!(!rects.contains_key("browser.fullscreen-hint"), "{rects:?}");
     }
 
     #[test]
@@ -1870,7 +1898,9 @@ mod tests {
         assert!(fullscreen_hint_visible(Some(deadline), entered));
         assert!(fullscreen_hint_visible(
             Some(deadline),
-            deadline.checked_sub(std::time::Duration::from_nanos(1)).unwrap()
+            deadline
+                .checked_sub(std::time::Duration::from_nanos(1))
+                .unwrap()
         ));
         assert!(!fullscreen_hint_visible(Some(deadline), deadline));
         assert!(!fullscreen_hint_visible(None, entered));
@@ -1905,8 +1935,8 @@ mod tests {
         // Exercise the exact action-bound button operation used by the host.
         let result = tabs
             .start_resource_operation(
-                ui::qos_actions::InvocationId::new(),
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::InvocationId::new(),
+                ui::tilo_actions::OperationKind::Effect,
                 "qos.ui.control.invoke",
                 &serde_json::to_vec("browser.session.fresh").unwrap(),
                 &AutoCommit::new(),
@@ -1975,7 +2005,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines, reason = "keeps the four pointer/keyboard and Restore/Fresh routes in one shared scenario")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keeps the four pointer/keyboard and Restore/Fresh routes in one shared scenario"
+    )]
     fn recovery_choices_accept_pointer_and_keyboard_through_workspace() {
         for keyboard in [false, true] {
             for restore in [false, true] {
@@ -2062,8 +2095,8 @@ mod tests {
                     .expect("ordinary input must emit the button's canonical action");
                 assert_eq!(invocation.address.resource, format!("qos.control:{id}"));
                 tabs.start_resource_operation(
-                    ui::qos_actions::InvocationId::new(),
-                    ui::qos_actions::OperationKind::Effect,
+                    ui::tilo_actions::InvocationId::new(),
+                    ui::tilo_actions::OperationKind::Effect,
                     "qos.ui.control.invoke",
                     &serde_json::to_vec(id).unwrap(),
                     &doc,
@@ -2185,27 +2218,24 @@ mod tests {
             .find(|widget| unsafe { (&***widget).test_id() == Some(id) })
             .expect("exit choice button");
         assert!(unsafe {
-            (&mut *button).perform_action(
-                &ui::a11y::Action::Activate,
-                doc,
-                &automerge::ROOT,
-            )
+            (&mut *button).perform_action(&ui::a11y::Action::Activate, doc, &automerge::ROOT)
         });
         let invocation = tabs
             .take_control_invocation()
             .expect("exit choice must reach the root action broker");
         assert_eq!(invocation.address.resource, format!("qos.control:{id}"));
-        assert!(tabs
-            .start_resource_operation(
-                ui::qos_actions::InvocationId::new(),
-                ui::qos_actions::OperationKind::Effect,
+        assert!(
+            tabs.start_resource_operation(
+                ui::tilo_actions::InvocationId::new(),
+                ui::tilo_actions::OperationKind::Effect,
                 "qos.ui.control.invoke",
                 &serde_json::to_vec(id).unwrap(),
                 doc,
                 &automerge::ROOT,
             )
             .unwrap()
-            .is_some());
+            .is_some()
+        );
     }
     #[test]
     fn fullscreen_download_close_exposes_both_exit_choices() {
@@ -2213,14 +2243,20 @@ mod tests {
         let mut doc = AutoCommit::new();
         engine.emit(WebViewEvent::FullscreenChanged(true));
         engine.emit(WebViewEvent::DownloadRuntime {
-            admitted: 1, detached: 0, accepting: true, error: String::new(),
+            admitted: 1,
+            detached: 0,
+            accepting: true,
+            error: String::new(),
         });
         tabs.sync(&mut doc, &automerge::ROOT);
         tabs.on_fullscreen_changed(true);
         let _immersive_layout = retained_layout(&mut tabs);
         assert_eq!(tabs.fullscreen_intent(), Some(true));
 
-        assert_eq!(tabs.on_window_close_requested(), WindowCloseAdmission::Defer);
+        assert_eq!(
+            tabs.on_window_close_requested(),
+            WindowCloseAdmission::Defer
+        );
         assert_eq!(tabs.fullscreen_intent(), Some(false));
         assert!(tabs.fullscreen_hint.is_none());
         assert!(tabs.take_structure_dirty());
@@ -2238,7 +2274,13 @@ mod tests {
         tabs.sync(&mut doc, &automerge::ROOT);
         assert!(tabs.exit_panel.is_none());
         assert!(!tabs.take_window_close_intent());
-        assert!(!engine.commands.lock().unwrap().contains(&WebViewCommand::CancelAllDownloads));
+        assert!(
+            !engine
+                .commands
+                .lock()
+                .unwrap()
+                .contains(&WebViewCommand::CancelAllDownloads)
+        );
     }
 
     #[test]
@@ -2248,18 +2290,28 @@ mod tests {
             let mut doc = AutoCommit::new();
             engine.emit(WebViewEvent::FullscreenChanged(true));
             engine.emit(WebViewEvent::DownloadRuntime {
-                admitted: 1, detached: 0, accepting: true, error: String::new(),
+                admitted: 1,
+                detached: 0,
+                accepting: true,
+                error: String::new(),
             });
             tabs.sync(&mut doc, &automerge::ROOT);
             tabs.on_fullscreen_changed(true);
-            assert_eq!(tabs.on_window_close_requested(), WindowCloseAdmission::Defer);
+            assert_eq!(
+                tabs.on_window_close_requested(),
+                WindowCloseAdmission::Defer
+            );
             if cancelling {
                 invoke_exit_choice(&mut tabs, "browser.download-exit.cancel", &mut doc);
                 tabs.sync(&mut doc, &automerge::ROOT);
             }
             engine.emit(WebViewEvent::FullscreenChanged(true));
             tabs.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(tabs.fullscreen_intent(), Some(false), "cancelling={cancelling}");
+            assert_eq!(
+                tabs.fullscreen_intent(),
+                Some(false),
+                "cancelling={cancelling}"
+            );
             let rects = layout_rects(&mut tabs);
             assert!(tabs.exit_panel.as_ref().unwrap().get_rect().height() > 0.0);
             if !cancelling {
@@ -2271,7 +2323,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines, reason = "keeps the local engine fixture and complete download-exit lifecycle together")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keeps the local engine fixture and complete download-exit lifecycle together"
+    )]
     fn window_close_requires_an_explicit_choice_and_waits_for_native_owner_cleanup() {
         struct ExitEngine {
             commands: std::sync::Mutex<Vec<WebViewCommand>>,
@@ -2310,12 +2365,16 @@ mod tests {
         let mut tabs = BrowserTabs::new(BrowserWidget::with_engine(engine.clone(), true));
         let mut doc = AutoCommit::new();
         tabs.sync(&mut doc, &automerge::ROOT);
-        engine.events.lock().unwrap().push(WebViewEvent::DownloadRuntime {
-            admitted: 1,
-            detached: 0,
-            accepting: true,
-            error: String::new(),
-        });
+        engine
+            .events
+            .lock()
+            .unwrap()
+            .push(WebViewEvent::DownloadRuntime {
+                admitted: 1,
+                detached: 0,
+                accepting: true,
+                error: String::new(),
+            });
         tabs.sync(&mut doc, &automerge::ROOT);
 
         assert_eq!(
@@ -2327,11 +2386,13 @@ mod tests {
         invoke_exit_choice(&mut tabs, "browser.download-exit.keep", &mut doc);
         tabs.sync(&mut doc, &automerge::ROOT);
         assert!(!tabs.take_window_close_intent());
-        assert!(!engine
-            .commands
-            .lock()
-            .unwrap()
-            .contains(&WebViewCommand::CancelAllDownloads));
+        assert!(
+            !engine
+                .commands
+                .lock()
+                .unwrap()
+                .contains(&WebViewCommand::CancelAllDownloads)
+        );
         assert_eq!(
             tabs.on_window_close_requested(),
             ui::widget::WindowCloseAdmission::Defer,
@@ -2360,11 +2421,13 @@ mod tests {
         tabs.sync(&mut doc, &automerge::ROOT);
         invoke_exit_choice(&mut tabs, "browser.download-exit.cancel", &mut doc);
         tabs.sync(&mut doc, &automerge::ROOT);
-        assert!(engine
-            .commands
-            .lock()
-            .unwrap()
-            .contains(&WebViewCommand::CancelAllDownloads));
+        assert!(
+            engine
+                .commands
+                .lock()
+                .unwrap()
+                .contains(&WebViewCommand::CancelAllDownloads)
+        );
         assert!(!tabs.take_window_close_intent());
         assert_eq!(
             tabs.on_window_close_requested(),
@@ -2392,7 +2455,10 @@ mod tests {
             },
         ]);
         tabs.sync(&mut doc, &automerge::ROOT);
-        assert!(!tabs.take_window_close_intent(), "new admission precedes cancel barrier");
+        assert!(
+            !tabs.take_window_close_intent(),
+            "new admission precedes cancel barrier"
+        );
         engine.events.lock().unwrap().extend([
             WebViewEvent::DownloadUpdated {
                 id: 12,
@@ -2413,13 +2479,20 @@ mod tests {
             },
         ]);
         tabs.sync(&mut doc, &automerge::ROOT);
-        assert!(!tabs.take_window_close_intent(), "physical owner is still closing");
-        engine.events.lock().unwrap().push(WebViewEvent::DownloadRuntime {
-            admitted: 0,
-            detached: 0,
-            accepting: false,
-            error: String::new(),
-        });
+        assert!(
+            !tabs.take_window_close_intent(),
+            "physical owner is still closing"
+        );
+        engine
+            .events
+            .lock()
+            .unwrap()
+            .push(WebViewEvent::DownloadRuntime {
+                admitted: 0,
+                detached: 0,
+                accepting: false,
+                error: String::new(),
+            });
         tabs.sync(&mut doc, &automerge::ROOT);
         assert!(tabs.take_window_close_intent());
         assert!(!tabs.take_window_close_intent(), "approval is one shot");
@@ -2591,7 +2664,10 @@ mod tests {
         assert_eq!(tabs.tabs.len(), 32);
     }
     #[test]
-    #[allow(clippy::too_many_lines, reason = "checks interactions between pinning, tab actions and overflow in one retained workspace")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "checks interactions between pinning, tab actions and overflow in one retained workspace"
+    )]
     fn pin_partition_duplicate_close_others_mute_and_overflow() {
         let mut tabs = workspace();
         tabs.open(Some("https://one.test".into()), false).unwrap();
@@ -2859,7 +2935,7 @@ mod tests {
             .unwrap();
         let args = serde_json::from_value(serde_json::json!({"url": "https://one.test"})).unwrap();
         let encoded = navigate.build_json(&args).unwrap();
-        let invocation = ui::qos_actions::InvocationId::new();
+        let invocation = ui::tilo_actions::InvocationId::new();
         tabs.start_resource_operation(
             invocation,
             navigate.kind,
@@ -2873,7 +2949,7 @@ mod tests {
         tabs.sync(&mut doc, &root);
         assert!(matches!(
             tabs.poll_resource_operation(invocation, false, &doc, &root),
-            Some(ui::qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
     #[test]
@@ -2943,7 +3019,7 @@ mod tests {
             .iter()
             .find(|action| action.id == "picture-in-picture")
             .unwrap();
-        let invocation = ui::qos_actions::InvocationId::new();
+        let invocation = ui::tilo_actions::InvocationId::new();
         tabs.start_resource_operation(
             invocation,
             pip.kind,
@@ -2961,7 +3037,7 @@ mod tests {
         assert_eq!(request.id, "browser.media-pip.1");
         assert!(matches!(
             tabs.poll_resource_operation(invocation, false, &doc, &root),
-            Some(ui::qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
 }

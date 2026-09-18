@@ -37,7 +37,7 @@ fn managed_driver_for(root: Box<dyn Widget>) -> ui::headless::Driver {
 }
 
 fn resource_snapshot(driver: &ui::headless::Driver) -> Vec<(String, String, Vec<String>)> {
-    fn collect(resource: &ui::qos_actions::Resource, out: &mut Vec<(String, String, Vec<String>)>) {
+    fn collect(resource: &ui::tilo_actions::Resource, out: &mut Vec<(String, String, Vec<String>)>) {
         out.push((
             resource.id.0.clone(),
             resource.label.clone(),
@@ -95,7 +95,7 @@ fn production_root_declares_monitor_history() {
     let definition = crate::app_root()
         .document_history_definition()
         .expect("production Monitor root declares History");
-    assert_eq!(definition.app_id, "dev.qos.monitor");
+    assert_eq!(definition.app_id, "dev.tilo.monitor");
     assert!(std::ptr::eq(
         definition,
         std::ptr::addr_of!(crate::framework_history::HISTORY)

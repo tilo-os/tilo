@@ -1,25 +1,20 @@
-# The kernel arguments the boot needs that no package supplies, and that on a
-# sealed image can ONLY come from here.
-#
-# These used to be injected at disk-image time (`bootc install --karg`), which
-# works for an unsealed install and is impossible for a sealed one: the command
-# line is signed into the UKI at build time, so an argument added at install
-# would be silently absent at boot. `bootc container ukify` reads this directory,
-# so a karg placed here ends up inside the signature and inside the PCR 11
-# measurement along with everything else. os/dev/disk-image.sh refuses --karg for
-# an image that carries a UKI rather than dropping it quietly.
+# Kernel arguments for the sealed image live here so `bootc container ukify`
+# includes them in the signed UKI and PCR 11 measurement.
 kargs = [
   # bootc mounts the root read-only without this. The sealed root itself stays
   # read-only regardless — it is `composefs:<digest> overlay ro,verity=require`,
   # and that is the point — but /var, /etc and the writable overlay above it need
   # a read-write mount to be assembled at all.
   "rw",
+  # PREEMPT_DYNAMIC permits runtime selection. Pin the interactive model in
+  # the signed UKI rather than relying on a kernel-version-specific default.
+  "preempt=full",
   # A headless boot has to leave a log somewhere a harness can read, which is the
   # only way a boot that never reaches userspace can be diagnosed. tty0 keeps the
   # framebuffer console so a screendump still shows the boot.
   "console=tty0",
   "console=ttyS0,115200",
-  # Keep the local display on the UKI's signed qOS splash. Fatal boot errors
+  # Keep the local display on the UKI's signed Tilo splash. Fatal boot errors
   # still replace it; the serial console remains complete for diagnostics.
   "quiet",
   "splash",

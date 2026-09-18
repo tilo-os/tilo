@@ -1,21 +1,20 @@
-//! Video recording — a real, self-contained Motion-JPEG / AVI encoder.
+//! Video recording — a self-contained Motion-JPEG / AVI encoder.
 //!
-//! Recording a clip is genuine work: each RGBA frame handed to [`Recorder`]
-//! is JPEG-encoded (via the `image` crate) and the finished clip is muxed
+//! Each RGBA frame handed to [`Recorder`] is JPEG-encoded (via the `image`
+//! crate) and the finished clip is muxed
 //! into a standards-compliant RIFF/AVI container with an `MJPG` video stream
-//! and an `idx1` index. The result is a real, playable `.avi` file — open it
-//! in mpv/VLC/ffmpeg — not a directory of PNG frames.
+//! and an `idx1` index. The result is a playable `.avi` file rather than a
+//! directory of PNG frames.
 //!
 //! This path is deliberately codec-in-Rust and source-agnostic: the same
-//! [`Recorder`] records frames coming off a real webcam (the `live-capture`
+//! [`Recorder`] records frames coming off a webcam (the `live-capture`
 //! pipeline hands it RGBA buffers) and the procedural frames used by the
 //! headless demo/tests. No `GStreamer`, no ffmpeg, no device required to
-//! produce or verify a real encoded video.
+//! produce or verify an encoded video.
 //!
 //! MJPEG (one JPEG per frame) is chosen over an inter-frame codec on purpose:
 //! it needs no motion estimation or bitstream state, so the encoder is small
-//! and fully deterministic — while still being a real, widely-supported video
-//! codec rather than raw frames.
+//! and fully deterministic, while remaining a widely-supported video codec.
 
 use std::io::{self, Read};
 use std::path::Path;
@@ -294,7 +293,7 @@ fn encode_avi(frames: &[Vec<u8>], w: u32, h: u32, fps: u32) -> Vec<u8> {
 
 /// Read the leading AVI headers of `path` and return `(width, height,
 /// duration_ms)`. Best-effort: `None` if the file is not a readable AVI.
-/// Lets the library show a real duration/resolution for recorded clips
+/// Lets the recent handoff show real duration/resolution for recorded clips
 /// without decoding the whole stream.
 pub fn probe_avi(path: &Path) -> Option<(u32, u32, i64)> {
     // The `avih` header lives near the top of the file; a small prefix is

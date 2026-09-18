@@ -3,7 +3,7 @@
 interpolated points, release at B. Snapshots before + after.
 
 Usage:
-  ./drag-demo.py [/tmp/nirios.sock]
+  ./drag-demo.py [/tmp/tilo.sock]
 
 The drag here moves through the middle of the screen. To drag a real
 target (e.g. a tab handle), use list_targets to find its rect first,

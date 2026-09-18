@@ -1,7 +1,8 @@
 //! Top-level `run` orchestration, matching the CLI sequence: read the
 //! manifest; resolve service sockets (per `--no-services`); stage the
 //! seccomp blob to a tempfile; build the bwrap argv; spawn `bwrap` with
-//! `pre_exec` installing Landlock (best-effort) and the seccomp fd; wait
+//! `pre_exec` wiring the mandatory seccomp fd; the in-namespace shim installs
+//! mandatory Landlock when requested, failing the launch if it cannot; wait
 //! and relay the exit code.
 
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
@@ -9,11 +10,14 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+use std::time::{Duration, Instant};
 
 use crate::capabilities::{CapabilityPlan, load_capability_file, now_unix};
 use crate::dbus_proxy::{self, DBusProxyGuard};
 use crate::manifest::{MinimalManifest, PortalPolicy, read_manifest};
-use crate::sandbox::{DBusBindKind, DBusBindPlan, build_bwrap_argv};
+use crate::sandbox::{DBusBindPlan, build_bwrap_argv};
 use crate::seccomp::compile_baseline;
 use crate::services::{
     EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext, resolve_identity_bind,
@@ -52,7 +56,7 @@ pub enum RunError {
     Io(#[from] std::io::Error),
     #[error(
         "manifest declares runtime `{runtime}` but no bundle was found at any of: {paths:?}. \
-         Install it with `qos-install runtime install --version <v> --from-host`, \
+         Install it with `tilo-install runtime install --version <v> --from-host`, \
          or pass --allow-missing-runtime to fall back to --minimal-libs / no runtime binds."
     )]
     RuntimeBundleMissing {
@@ -72,8 +76,8 @@ pub enum RunError {
     )]
     RuntimeBundleSignature { path: PathBuf, reason: String },
     #[error(
-        "`{desktop_id}` is a host application, not a qOS package: it has no manifest, so \
-         there is no sandbox to build for it. Launch it with `qos-launcher run-host \
+        "`{desktop_id}` is a host application, not a Tilo package: it has no manifest, so \
+         there is no sandbox to build for it. Launch it with `tilo-launcher run-host \
          --desktop-id {desktop_id}`, which runs it unconfined and says so."
     )]
     HostAppNotAPackage { desktop_id: String },
@@ -81,7 +85,7 @@ pub enum RunError {
         "refusing to launch: this app was granted access to {hosts:?} and that can only be \
          enforced by brokering its traffic, but the egress gate could not start ({source}). \
          Launching anyway would mean giving it unrestricted outbound access, which is not \
-         what was granted. Set QOS_LAUNCHER_NET_GATE=off to do that deliberately."
+         what was granted. Set TILO_LAUNCHER_NET_GATE=off to do that deliberately."
     )]
     EgressGate {
         hosts: Vec<String>,
@@ -100,6 +104,13 @@ pub enum RunError {
          command line silently missing one of its sandboxing directives."
     )]
     ArgvInvariant,
+    #[error("captured worker resource plan is missing or exceeds launcher bounds")]
+    InvalidCapturePlan,
+}
+
+pub use crate::capture::{CaptureCancellation, CapturedResourcePlan, CapturedRunOutput, CapturedTermination};
+impl From<crate::capture::InvalidCapturePlan> for RunError {
+    fn from(_: crate::capture::InvalidCapturePlan) -> Self { Self::InvalidCapturePlan }
 }
 
 impl RunError {
@@ -126,13 +137,13 @@ impl RunError {
 pub struct RunOptions {
     /// Skip all service-socket resolution.
     pub no_services: bool,
-    /// Explicit override for the qos-runtime bundle directory; wins over
+    /// Explicit override for the tilo-runtime bundle directory; wins over
     /// the manifest's `runtime` field.
     pub runtime_root: Option<PathBuf>,
     /// Override the bwrap binary (defaults to `bwrap`).
     pub bwrap_bin: Option<PathBuf>,
     /// Override the in-namespace launcher executable. Production leaves this
-    /// unset and re-enters the currently running `qos-launcher`; integration
+    /// unset and re-enters the currently running `tilo-launcher`; integration
     /// tests use the separately-built binary rather than their test harness.
     pub sandbox_shim_bin: Option<PathBuf>,
     /// Bind-mount the minimum host paths a dynamically-linked ELF needs to
@@ -291,13 +302,20 @@ fn validate_launch_mode(manifest: &MinimalManifest, opts: &RunOptions) -> Result
     Ok(())
 }
 
+fn is_native_game_launch(manifest: &MinimalManifest, opts: &RunOptions) -> bool {
+    matches!(&opts.mode, LaunchMode::Gui)
+        && manifest.category.as_deref().is_some_and(|category| {
+            category.eq_ignore_ascii_case("game") || category.eq_ignore_ascii_case("games")
+        })
+}
+
 #[cfg(test)]
 mod resource_claim_tests {
     use super::*;
 
     fn browser_manifest() -> MinimalManifest {
         toml::from_str(
-            "package_id = \"dev.qos.browser\"\nversion = \"1\"\n\
+            "package_id = \"dev.tilo.browser\"\nversion = \"1\"\n\
              [entrypoint]\nbin = \"bin/browser\"\n\
              [providers]\nschemes = [\"https\"]\n",
         )
@@ -328,6 +346,42 @@ mod resource_claim_tests {
             );
         }
     }
+
+    #[test]
+    fn only_gui_game_packages_receive_the_scheduler_hint() {
+        let game: MinimalManifest = toml::from_str(
+            "[package]\nid = \"dev.tilo.game\"\nversion = \"1\"\ncategory = \"Games\"\n\
+             [entrypoint]\nbin = \"bin/game\"\n",
+        )
+        .unwrap();
+        assert!(is_native_game_launch(&game, &RunOptions::default()));
+        let service = RunOptions {
+            mode: LaunchMode::Service {
+                passthrough_argv: Vec::new(),
+            },
+            ..RunOptions::default()
+        };
+        assert!(!is_native_game_launch(&game, &service));
+        assert!(!is_native_game_launch(
+            &browser_manifest(),
+            &RunOptions::default()
+        ));
+    }
+
+    #[test]
+    fn only_game_launches_receive_the_ntsync_device() {
+        let mut game = vec!["/app/game".to_string()];
+        splice_game_ntsync(&mut game, true).unwrap();
+        assert!(
+            game.windows(3)
+                .any(|window| { window == ["--dev-bind", "/dev/ntsync", "/dev/ntsync"] })
+        );
+        assert_eq!(game.last().map(String::as_str), Some("/app/game"));
+
+        let mut ordinary = vec!["/app/browser".to_string()];
+        splice_game_ntsync(&mut ordinary, false).unwrap();
+        assert_eq!(ordinary, ["/app/browser"]);
+    }
 }
 
 #[cfg(test)]
@@ -336,7 +390,7 @@ mod managed_service_tests {
 
     fn manifest(kind: &str, entrypoint_type: &str) -> MinimalManifest {
         toml::from_str(&format!(
-            "[package]\nid = \"dev.qos.worker\"\nversion = \"1\"\nkind = \"{kind}\"\n\
+            "[package]\nid = \"dev.tilo.worker\"\nversion = \"1\"\nkind = \"{kind}\"\n\
              [entrypoint]\nbin = \"bin/worker\"\ntype = \"{entrypoint_type}\"\n"
         ))
         .unwrap()
@@ -383,7 +437,7 @@ mod managed_service_tests {
     #[test]
     fn managed_service_cannot_readdress_its_authenticated_identity() {
         let opts = RunOptions {
-            app_id: Some("dev.qos.other".into()),
+            app_id: Some("dev.tilo.other".into()),
             ..service_options()
         };
         assert!(matches!(
@@ -414,7 +468,7 @@ pub fn resolve_capabilities(manifest: &MinimalManifest, opts: &RunOptions) -> Ca
         plan.participation = crate::capabilities::Participation::ReadOnly;
     }
     tracing::info!(
-        target: "qos_launcher::capabilities",
+        target: "tilo_launcher::capabilities",
         app = %app_id,
         ro = plan.ro_paths.len(),
         rw = plan.rw_paths.len(),
@@ -494,7 +548,7 @@ fn start_identity_broker(
         .try_clone()
         .map_err(|error| RunError::IdentityBroker(error.to_string()))?;
     let thread = std::thread::Builder::new()
-        .name("qos-identity-broker".into())
+        .name("tilo-identity-broker".into())
         .spawn(move || {
             if let Err(error) = runtime_identity::broker::serve(host, identity) {
                 tracing::debug!(%error, "identity broker connection ended");
@@ -522,10 +576,10 @@ pub fn resolve_gpu_selection(
     let node = opts.render_node.as_ref()?;
     let selection = crate::gpu::select_for_node(node, &crate::gpu::IcdSearch::default());
     for note in &selection.notes {
-        tracing::warn!(target: "qos_launcher::gpu", package = %manifest.package_id, "{note}");
+        tracing::warn!(target: "tilo_launcher::gpu", package = %manifest.package_id, "{note}");
     }
     tracing::info!(
-        target: "qos_launcher::gpu",
+        target: "tilo_launcher::gpu",
         package = %manifest.package_id,
         node = %selection.node.display(),
         driver = selection.driver.as_deref().unwrap_or("<unknown>"),
@@ -564,7 +618,11 @@ pub fn resolve_runtime(
     let (_, version) = raw
         .split_once('/')
         .ok_or_else(|| RunError::RuntimeReferenceMalformed(raw.to_string()))?;
-    // Look up: per-user first, then system.
+    // Look up: the configured/user root first, then the immutable system
+    // fallback. `default_bundle_path` intentionally honours
+    // TILO_RUNTIME_BUNDLE_DIR; developer sessions use it to keep the runtime
+    // matched to an overlaid registry/payload set instead of silently binding
+    // the installed `/usr` runtime.
     let per_user = runtime_bundle::default_bundle_path(version).ok();
     let system = runtime_bundle::system_bundle_path(version);
     let candidates: Vec<PathBuf> = per_user.iter().cloned().chain([system.clone()]).collect();
@@ -592,8 +650,8 @@ pub fn resolve_runtime(
 /// `allow_unsigned_runtime`, it must be signed. Publisher policy:
 ///   1. `opts.require_runtime_publisher`, if set, must match.
 ///   2. Else the system trust-list file, if present and non-empty
-///      (`/etc/qos/runtime-bundle-trusted-publishers.txt`, or
-///      `QOS_LAUNCHER_TRUSTED_PUBLISHERS_FILE`).
+///      (`/etc/tilo/runtime-bundle-trusted-publishers.txt`, or
+///      `TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE`).
 ///   3. Else any signed publisher is accepted.
 ///
 /// Layering lets the OS image bake and pin a fresh key at build time.
@@ -721,9 +779,9 @@ fn trusted_publisher_pin_from_file() -> Option<String> {
 /// Read the trusted-publisher list from disk, ignoring blank/`#` lines.
 /// `None` when neither the env override nor the default file exists.
 fn load_trusted_publisher_list() -> Option<Vec<String>> {
-    let path: PathBuf = match std::env::var_os("QOS_LAUNCHER_TRUSTED_PUBLISHERS_FILE") {
+    let path: PathBuf = match std::env::var_os("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE") {
         Some(p) => PathBuf::from(p),
-        None => PathBuf::from("/etc/qos/runtime-bundle-trusted-publishers.txt"),
+        None => PathBuf::from("/etc/tilo/runtime-bundle-trusted-publishers.txt"),
     };
     let bytes = std::fs::read(&path).ok()?;
     let text = String::from_utf8(bytes).ok()?;
@@ -767,10 +825,10 @@ pub enum LaunchMode {
     },
     /// A desktop-managed, headless process declared as `kind = "service"`.
     /// Unlike [`Self::Cli`], this is not a user shell command and therefore
-    /// does not mint a `QOS_CLI_COMMAND`; its exact argv comes from trusted
+    /// does not mint a `TILO_CLI_COMMAND`; its exact argv comes from trusted
     /// desktop code.
     Service { passthrough_argv: Vec<String> },
-    /// An application qOS did not package (a host `.desktop` entry, Flatpak
+    /// An application Tilo did not package (a host `.desktop` entry, Flatpak
     /// or otherwise).
     ///
     /// **This mode never reaches the sandbox** — `run_with` refuses it with
@@ -788,7 +846,7 @@ pub enum LaunchMode {
 
 /// Env override that turns the egress gate off, downgrading a host-scoped
 /// grant to unrestricted access. Explicit only — never a silent default.
-pub const NET_GATE_ENV: &str = "QOS_LAUNCHER_NET_GATE";
+pub const NET_GATE_ENV: &str = "TILO_LAUNCHER_NET_GATE";
 
 /// Start the egress gate if this launch needs one. Returns the bwrap bind
 /// description and the guard keeping the gate alive; both `None` when
@@ -809,7 +867,7 @@ pub const NET_GATE_ENV: &str = "QOS_LAUNCHER_NET_GATE";
 /// **On that failure we refuse the launch** rather than fall back to
 /// `--share-net`, which would silently turn "this host" into "every
 /// host" — the false assurance this code exists to remove. Cost is
-/// bounded: only a *narrowing* grant needs the gate. `QOS_LAUNCHER_NET_GATE=off`
+/// bounded: only a *narrowing* grant needs the gate. `TILO_LAUNCHER_NET_GATE=off`
 /// takes the unfiltered path deliberately, logged, so it's on the record.
 ///
 /// Landlock is the one kernel-dependent piece and is deliberately *not*
@@ -825,7 +883,7 @@ fn start_egress_gate(
     ),
     RunError,
 > {
-    // `Filtered` is the only decision needing a gate; `QOS_LAUNCHER_NET_GATE=off`
+    // `Filtered` is the only decision needing a gate; `TILO_LAUNCHER_NET_GATE=off`
     // is handled in `crate::sandbox::egress_decision` so turning it off also
     // shares the network rather than sealing the app in an empty namespace.
     let Some(policy) = egress.policy() else {
@@ -939,6 +997,24 @@ unsafe fn set_sandbox_resource_limits() -> std::io::Result<()> {
     Ok(())
 }
 
+unsafe fn set_captured_resource_limits(plan: CapturedResourcePlan) -> std::io::Result<()> {
+    let cpu = libc::rlimit {
+        rlim_cur: plan.cpu_seconds,
+        rlim_max: plan.cpu_seconds,
+    };
+    let address_space = libc::rlimit {
+        rlim_cur: plan.memory_bytes,
+        rlim_max: plan.memory_bytes,
+    };
+    // SAFETY: both pointers remain valid for the duration of the syscalls.
+    if unsafe { libc::setrlimit(libc::RLIMIT_CPU, &raw const cpu) } != 0
+        || unsafe { libc::setrlimit(libc::RLIMIT_AS, &raw const address_space) } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// Pop the trailing entrypoint token that `build_bwrap_argv` /
 /// `build_bwrap_argv_for_entry` always leave at the end of `argv`, so a
 /// splice function can insert its own flags before it and push it back.
@@ -953,7 +1029,7 @@ fn pop_entry(argv: &mut Vec<String>) -> Result<String, RunError> {
     argv.pop().ok_or(RunError::ArgvInvariant)
 }
 
-/// Splice in the `QOS_CLI_COMMAND` setenv before the trailing entrypoint
+/// Splice in the `TILO_CLI_COMMAND` setenv before the trailing entrypoint
 /// token so bwrap still parses it as a flag.
 fn splice_cli_setenv(
     argv: &mut Vec<String>,
@@ -965,6 +1041,22 @@ fn splice_cli_setenv(
         argv.push(k);
         argv.push(v);
         argv.push(entry);
+    }
+    Ok(())
+}
+
+/// Expose the upstream NT synchronization device only to GUI packages marked
+/// as games. The fresh bwrap `/dev` hides host devices by default; without this
+/// bind Wine/Proton silently falls back to slower userspace synchronization.
+fn splice_game_ntsync(argv: &mut Vec<String>, latency_sensitive: bool) -> Result<(), RunError> {
+    if latency_sensitive {
+        let entry = pop_entry(argv)?;
+        argv.extend([
+            "--dev-bind".to_string(),
+            "/dev/ntsync".to_string(),
+            "/dev/ntsync".to_string(),
+            entry,
+        ]);
     }
     Ok(())
 }
@@ -1020,7 +1112,7 @@ fn splice_tool_context(argv: &mut Vec<String>) -> Result<(), RunError> {
     if let Some(context) = validated_tool_context_from_env() {
         let entry = pop_entry(argv)?;
         argv.push("--setenv".to_string());
-        argv.push("QOS_TOOL_CONTEXT".to_string());
+        argv.push("TILO_TOOL_CONTEXT".to_string());
         argv.push(context);
         argv.push(entry);
     }
@@ -1065,7 +1157,7 @@ fn splice_trusted_identities(
     manifest: &MinimalManifest,
     opts: &RunOptions,
 ) -> Result<(), RunError> {
-    if manifest.package_id == "dev.qos.file-explorer"
+    if manifest.package_id == "dev.tilo.file-explorer"
         && let Some(host_path) = opts.trusted_identities_host_path.as_deref()
     {
         let entry = pop_entry(argv)?;
@@ -1295,6 +1387,7 @@ fn spawn_and_wait(
     mut argv: Vec<String>,
     cli_passthrough: Vec<String>,
     opts: &RunOptions,
+    latency_sensitive: bool,
     seccomp_fd: OwnedFd,
     resolved: Vec<crate::services::ResolvedService>,
     egress: &crate::netgate::EgressDecision,
@@ -1356,14 +1449,14 @@ fn spawn_and_wait(
     // The shim enforces Landlock via opts.landlock_enforce (argv splice
     // above); this just logs intent — the shim's own line has the real outcome.
     tracing::info!(
-        target: "qos_launcher::landlock",
+        target: "tilo_launcher::landlock",
         rules = landlock_plan.len(),
         net_restricted,
         enforce = opts.landlock_enforce,
         "landlock plan derived",
     );
     tracing::info!(
-        target: "qos_launcher::netgate",
+        target: "tilo_launcher::netgate",
         gated = net_gate.is_some(),
         hosts = ?egress.policy().map(super::netgate::EgressPolicy::hosts),
         shares_host_network = egress.shares_host_network(),
@@ -1386,6 +1479,9 @@ fn spawn_and_wait(
             }
             place_service_fds(&mut service_fds)?;
             set_sandbox_resource_limits()?;
+            if latency_sensitive {
+                crate::performance::apply_game_performance_hints()?;
+            }
             // Landlock is NOT installed here — bwrap needs broad FS access to set up
             // the namespace; the `__sandbox-exec` shim installs it after. See `landlock_shim`.
             Ok(())
@@ -1415,7 +1511,7 @@ fn stage_seccomp(manifest: &MinimalManifest) -> Result<OwnedFd, RunError> {
     let profile = decision.applied;
     if decision.refused {
         eprintln!(
-            "qos-launcher: {} asked for seccomp profile {:?}, which the image does not \
+            "tilo-launcher: {} asked for seccomp profile {:?}, which the image does not \
              entitle it to; applying {} (write-xor-execute enforced). Entitlement is \
              decided by {}, not by the package.",
             manifest.package_id,
@@ -1425,7 +1521,7 @@ fn stage_seccomp(manifest: &MinimalManifest) -> Result<OwnedFd, RunError> {
         );
     } else if profile.as_str() != decision.requested {
         eprintln!(
-            "qos-launcher: manifest asked for seccomp profile {:?}, which is not one we know; \
+            "tilo-launcher: manifest asked for seccomp profile {:?}, which is not one we know; \
              applying {} (write-xor-execute enforced)",
             decision.requested,
             profile.as_str()
@@ -1475,7 +1571,7 @@ fn resolve_identity_broker(
 type BuiltArgv = (Vec<String>, Option<(String, String)>, Vec<String>);
 
 /// Pick the entrypoint bin per launch mode: GUI uses `bin`; CLI uses
-/// `cli_bin()` (falling back to `bin`) and splices `QOS_CLI_COMMAND` /
+/// `cli_bin()` (falling back to `bin`) and splices `TILO_CLI_COMMAND` /
 /// forwards passthrough argv. Returns `(argv, extra_setenv, passthrough)`.
 #[allow(
     clippy::too_many_arguments,
@@ -1531,7 +1627,7 @@ fn build_initial_argv(
             );
             Ok((
                 v,
-                Some(("QOS_CLI_COMMAND".to_string(), command.clone())),
+                Some(("TILO_CLI_COMMAND".to_string(), command.clone())),
                 passthrough_argv.clone(),
             ))
         }
@@ -1613,9 +1709,9 @@ pub fn run_with(
     // 2. Seccomp baseline → tmpfile → fd.
     let seccomp_fd: OwnedFd = stage_seccomp(manifest)?;
 
-    // 2b. D-Bus proxy / direct-bind decision: try xdg-dbus-proxy, fall back
-    // to a raw-path bind on failure. `_dbus_guard` stays alive until bwrap
-    // is waited on so Drop can SIGTERM the proxy.
+    // 2b. D-Bus proxy decision. Failure leaves the bus unavailable; there is
+    // no raw-session-bus fallback. `_dbus_guard` stays alive until bwrap is
+    // waited on so Drop can SIGTERM the proxy.
     let (dbus_plan, _dbus_guard) = resolve_dbus_bind(&manifest.sandbox.portals);
 
     // 3. Argv. Runtime bundle resolution: a resolved bundle wins over
@@ -1661,7 +1757,9 @@ pub fn run_with(
         identity_arg,
         &capabilities,
     )?;
+    let latency_sensitive = is_native_game_launch(manifest, opts);
     splice_cli_setenv(&mut argv, extra_setenv)?;
+    splice_game_ntsync(&mut argv, latency_sensitive)?;
     let extra_ro_paths = splice_minimal_libs(&mut argv, opts, resolved_runtime.is_some())?;
     splice_workspace_id_bind(&mut argv, opts)?;
     splice_tool_context(&mut argv)?;
@@ -1691,6 +1789,7 @@ pub fn run_with(
         argv,
         cli_passthrough,
         opts,
+        latency_sensitive,
         seccomp_fd,
         resolved,
         &egress,
@@ -1704,15 +1803,15 @@ pub fn run_with(
 }
 
 fn validated_tool_context_from_env() -> Option<String> {
-    let context = std::env::var("QOS_TOOL_CONTEXT").ok()?;
+    let context = std::env::var("TILO_TOOL_CONTEXT").ok()?;
     if context.len() > 4 * 1024 {
-        tracing::warn!("dropping oversized QOS_TOOL_CONTEXT");
+        tracing::warn!("dropping oversized TILO_TOOL_CONTEXT");
         return None;
     }
     if let Ok(serde_json::Value::Object(_)) = serde_json::from_str::<serde_json::Value>(&context) {
         Some(context)
     } else {
-        tracing::warn!("dropping malformed QOS_TOOL_CONTEXT");
+        tracing::warn!("dropping malformed TILO_TOOL_CONTEXT");
         None
     }
 }
@@ -1793,6 +1892,278 @@ fn spawn_and_capture(
     Ok((status, buf))
 }
 
+fn reserve_output(counter: &AtomicUsize, requested: usize, limit: usize) -> usize {
+    let mut current = counter.load(AtomicOrdering::Acquire);
+    loop {
+        let available = limit.saturating_sub(current);
+        let accepted = requested.min(available);
+        let next = current.saturating_add(accepted);
+        match counter.compare_exchange_weak(
+            current,
+            next,
+            AtomicOrdering::AcqRel,
+            AtomicOrdering::Acquire,
+        ) {
+            Ok(_) => return accepted,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+fn drain_bounded(
+    mut reader: impl std::io::Read,
+    used: &AtomicUsize,
+    exceeded: &AtomicBool,
+    limit: usize,
+) -> std::io::Result<Vec<u8>> {
+    let mut captured = Vec::new();
+    let mut chunk = [0_u8; 8 * 1024];
+    loop {
+        let read = reader.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        let accepted = reserve_output(used, read, limit);
+        if let Some(bytes) = chunk.get(..accepted) {
+            captured.extend_from_slice(bytes);
+        }
+        if accepted != read {
+            exceeded.store(true, AtomicOrdering::Release);
+        }
+    }
+    Ok(captured)
+}
+
+#[cfg(test)]
+mod captured_resource_tests {
+    use super::*;
+
+    fn plan() -> CapturedResourcePlan {
+        CapturedResourcePlan {
+            cpu_seconds: 2,
+            memory_bytes: 64 * 1024 * 1024,
+            output_bytes: 8,
+            wall_time: Duration::from_secs(3),
+        }
+    }
+
+    #[test]
+    fn limits_are_nonzero_and_launcher_bounded() {
+        assert!(plan().validate().is_ok());
+        for invalid in [
+            CapturedResourcePlan {
+                cpu_seconds: 0,
+                ..plan()
+            },
+            CapturedResourcePlan {
+                memory_bytes: CapturedResourcePlan::MAX_MEMORY_BYTES.saturating_add(1),
+                ..plan()
+            },
+            CapturedResourcePlan {
+                output_bytes: 0,
+                ..plan()
+            },
+            CapturedResourcePlan {
+                wall_time: CapturedResourcePlan::MAX_WALL_TIME + Duration::from_millis(1),
+                ..plan()
+            },
+        ] {
+            assert!(matches!(
+                invalid.validate(),
+                Err(crate::capture::InvalidCapturePlan)
+            ));
+        }
+    }
+
+    #[test]
+    fn stdout_and_stderr_share_one_hard_memory_budget() {
+        let used = Arc::new(AtomicUsize::new(0));
+        let exceeded = Arc::new(AtomicBool::new(false));
+        let first = drain_bounded(
+            std::io::Cursor::new(b"123456"),
+            used.as_ref(),
+            exceeded.as_ref(),
+            8,
+        )
+        .unwrap();
+        let second = drain_bounded(
+            std::io::Cursor::new(b"abcdef"),
+            used.as_ref(),
+            exceeded.as_ref(),
+            8,
+        )
+        .unwrap();
+        assert_eq!(first, b"123456");
+        assert_eq!(second, b"ab");
+        assert_eq!(used.load(AtomicOrdering::Acquire), 8);
+        assert!(exceeded.load(AtomicOrdering::Acquire));
+    }
+
+    #[test]
+    fn cancellation_is_target_local_and_sticky() {
+        let cancellation = CaptureCancellation::default();
+        let observer = cancellation.clone();
+        assert!(!observer.is_cancelled());
+        cancellation.cancel();
+        assert!(observer.is_cancelled());
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "the bounded supervisor keeps pipe ownership, process-group teardown, and every terminal reason in one auditable transaction"
+)]
+fn spawn_and_capture_bounded(
+    mut argv: Vec<String>,
+    passthrough: Vec<String>,
+    opts: &RunOptions,
+    seccomp_fd: OwnedFd,
+    resolved: Vec<crate::services::ResolvedService>,
+    identity_broker: (
+        Option<UnixStream>,
+        Option<UnixStream>,
+        Option<std::thread::JoinHandle<()>>,
+    ),
+    plan: CapturedResourcePlan,
+    cancellation: &CaptureCancellation,
+) -> Result<CapturedRunOutput, RunError> {
+    const SECCOMP_CHILD_FD: i32 = 16;
+    let plan = plan.validate()?;
+    let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
+    let mut prefix = vec!["--seccomp".to_string(), SECCOMP_CHILD_FD.to_string()];
+    prefix.append(&mut argv);
+    argv = prefix;
+    argv.extend(passthrough);
+
+    let bwrap = opts
+        .bwrap_bin
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("bwrap"));
+    let mut cmd = Command::new(&bwrap);
+    cmd.args(&argv);
+    clear_bwrap_environment(&mut cmd);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.stdin(std::process::Stdio::null());
+
+    let host_seccomp_fd = seccomp_fd.as_raw_fd();
+    let mut service_fds: Vec<(RawFd, RawFd)> = resolved
+        .iter()
+        .map(|service| (service.host_fd(), service.child_fd as RawFd))
+        .collect();
+    if let Some(stream) = &identity_broker_app {
+        service_fds.push((
+            stream.as_raw_fd(),
+            runtime_identity::broker::BROKER_CHILD_FD,
+        ));
+    }
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::dup2(host_seccomp_fd, SECCOMP_CHILD_FD) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let flags = libc::fcntl(SECCOMP_CHILD_FD, libc::F_GETFD);
+            if flags != -1 {
+                let _ = libc::fcntl(SECCOMP_CHILD_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+            }
+            place_service_fds(&mut service_fds)?;
+            set_sandbox_resource_limits()?;
+            set_captured_resource_limits(plan)?;
+            if libc::setpgid(0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let mut child = cmd.spawn().map_err(RunError::Spawn)?;
+    drop(seccomp_fd);
+    drop(resolved);
+    drop(identity_broker_app);
+    let used = Arc::new(AtomicUsize::new(0));
+    let exceeded = Arc::new(AtomicBool::new(false));
+    let stdout = child.stdout.take().ok_or_else(|| {
+        RunError::Io(std::io::Error::other(
+            "captured worker stdout was not piped",
+        ))
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        RunError::Io(std::io::Error::other(
+            "captured worker stderr was not piped",
+        ))
+    })?;
+    let stdout_used = Arc::clone(&used);
+    let stdout_exceeded = Arc::clone(&exceeded);
+    let stdout_thread = std::thread::spawn(move || {
+        drain_bounded(
+            stdout,
+            stdout_used.as_ref(),
+            stdout_exceeded.as_ref(),
+            plan.output_bytes,
+        )
+    });
+    let stderr_used = Arc::clone(&used);
+    let stderr_exceeded = Arc::clone(&exceeded);
+    let stderr_thread = std::thread::spawn(move || {
+        drain_bounded(
+            stderr,
+            stderr_used.as_ref(),
+            stderr_exceeded.as_ref(),
+            plan.output_bytes,
+        )
+    });
+
+    let deadline = Instant::now()
+        .checked_add(plan.wall_time)
+        .ok_or(RunError::InvalidCapturePlan)?;
+    let termination = loop {
+        if let Some(status) = child.try_wait()? {
+            break CapturedTermination::Exited(status);
+        }
+        let reason = if cancellation.is_cancelled() {
+            Some(CapturedTermination::Cancelled)
+        } else if exceeded.load(AtomicOrdering::Acquire) {
+            Some(CapturedTermination::OutputLimit)
+        } else if Instant::now() >= deadline {
+            Some(CapturedTermination::TimedOut)
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            let pid = i32::try_from(child.id()).unwrap_or(i32::MAX);
+            // SAFETY: the child created its own process group before exec;
+            // a negative pid addresses only that exact group.
+            let process_group = pid.saturating_neg();
+            let killed = unsafe { libc::kill(process_group, libc::SIGKILL) } == 0;
+            if !killed {
+                let _ = child.kill();
+            }
+            let _ = child.wait();
+            break reason;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let stdout = stdout_thread
+        .join()
+        .map_err(|_| RunError::Io(std::io::Error::other("stdout capture thread panicked")))??;
+    let stderr = stderr_thread
+        .join()
+        .map_err(|_| RunError::Io(std::io::Error::other("stderr capture thread panicked")))??;
+    stop_identity_broker(identity_broker_control, identity_broker_thread);
+    Ok(CapturedRunOutput {
+        termination,
+        stdout,
+        stderr,
+    })
+}
+
+type IdentityBrokerHandles = (
+    Option<UnixStream>,
+    Option<UnixStream>,
+    Option<std::thread::JoinHandle<()>>,
+);
+
 /// [`run_with`] sibling that captures the child's stdout instead of inheriting
 /// it. It deliberately uses the same Landlock, seccomp, runtime, portal,
 /// identity, filesystem and egress decisions as a normal qpkg launch.
@@ -1814,6 +2185,57 @@ pub fn run_with_captured(
     payload_root: &Path,
     opts: &RunOptions,
 ) -> Result<(ExitStatus, Vec<u8>), RunError> {
+    run_with_capture_spawn(manifest, payload_root, opts, spawn_and_capture)
+}
+
+/// Captured sandbox launch with launcher-enforced resource limits and
+/// cancellation. Sandbox construction is exactly the same as
+/// [`run_with_captured`]; only process supervision differs.
+///
+/// # Errors
+///
+/// Returns [`RunError`] when the plan is invalid, sandbox construction fails,
+/// or the bounded child cannot be spawned, supervised, or collected.
+pub fn run_with_captured_bounded(
+    manifest: &MinimalManifest,
+    payload_root: &Path,
+    opts: &RunOptions,
+    plan: CapturedResourcePlan,
+    cancellation: CaptureCancellation,
+) -> Result<CapturedRunOutput, RunError> {
+    plan.validate()?;
+    run_with_capture_spawn(
+        manifest,
+        payload_root,
+        opts,
+        move |argv, passthrough, opts, seccomp, services, identity| {
+            spawn_and_capture_bounded(
+                argv,
+                passthrough,
+                opts,
+                seccomp,
+                services,
+                identity,
+                plan,
+                &cancellation,
+            )
+        },
+    )
+}
+
+fn run_with_capture_spawn<T>(
+    manifest: &MinimalManifest,
+    payload_root: &Path,
+    opts: &RunOptions,
+    spawn: impl FnOnce(
+        Vec<String>,
+        Vec<String>,
+        &RunOptions,
+        OwnedFd,
+        Vec<crate::services::ResolvedService>,
+        IdentityBrokerHandles,
+    ) -> Result<T, RunError>,
+) -> Result<T, RunError> {
     validate_open_uri(manifest, opts)?;
     // Same refusals as `run_with`: this is a second entry into the sandbox
     // builder, and a policy with one enforced door is a door beside it.
@@ -1904,7 +2326,7 @@ pub fn run_with_captured(
         },
     )?;
 
-    spawn_and_capture(
+    spawn(
         argv,
         passthrough,
         opts,
@@ -1939,7 +2361,7 @@ fn clear_bwrap_environment(cmd: &mut Command) {
 /// tempdir teardown and the bwrap exec; falls back to a real tempfile.
 fn stage_seccomp_blob(bytes: &[u8]) -> std::io::Result<OwnedFd> {
     // Try memfd first.
-    let name = b"qos-launcher-seccomp\0";
+    let name = b"tilo-launcher-seccomp\0";
     let raw_fd = unsafe {
         libc::syscall(
             libc::SYS_memfd_create,
@@ -2029,7 +2451,7 @@ fn write_all_pwrite(fd: RawFd, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// Narrow host paths a dynamically-linked ELF needs to `execve()`.
-/// Excludes `/usr/bin` etc. — stopgap until every app carries a qos-runtime bundle.
+/// Excludes `/usr/bin` and other non-runtime paths.
 fn minimal_loader_binds() -> &'static [&'static str] {
     &[
         // Dynamic loader itself.
@@ -2053,7 +2475,7 @@ fn minimal_loader_binds() -> &'static [&'static str] {
 
 /// Path inside the bwrap sandbox where the launcher binary is bind-mounted
 /// to be exec'd as the Landlock shim. Kept out of `/usr` and `/tmp`.
-pub const SHIM_MOUNT_PATH: &str = "/qos-launcher";
+pub const SHIM_MOUNT_PATH: &str = "/tilo-launcher";
 
 /// Decide how to expose D-Bus per the manifest's portal declaration.
 /// Spawn `xdg-dbus-proxy` filtered to portals/notifications/MPRIS.
@@ -2090,7 +2512,6 @@ fn resolve_dbus_bind(
                 let plan = DBusBindPlan {
                     host_socket: guard.socket_path().to_path_buf(),
                     sandbox_path: dbus_proxy::sandbox_bus_path(uid),
-                    kind: DBusBindKind::Proxy,
                 };
                 tracing::info!(
                     proxy_binary = %binary.display(),
@@ -2113,6 +2534,46 @@ fn resolve_dbus_bind(
         );
     }
     (None, None)
+}
+
+#[cfg(test)]
+mod dbus_resolution_tests {
+    use super::*;
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_missing_filter_proxy_never_falls_back_to_the_raw_session_bus() {
+        let old_proxy = std::env::var_os(crate::dbus_proxy::PROXY_BIN_ENV);
+        let old_bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS");
+        // SAFETY: this test is in the process_env serial group.
+        unsafe {
+            std::env::set_var(
+                crate::dbus_proxy::PROXY_BIN_ENV,
+                "/definitely/missing/xdg-dbus-proxy",
+            );
+            std::env::set_var("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1234/bus");
+        }
+        let portals = std::collections::BTreeMap::from([(
+            "notifications".to_string(),
+            PortalPolicy::ViaHost,
+        )]);
+
+        let (plan, guard) = resolve_dbus_bind(&portals);
+
+        // SAFETY: restore the serialised process environment before asserting.
+        unsafe {
+            match old_proxy {
+                Some(value) => std::env::set_var(crate::dbus_proxy::PROXY_BIN_ENV, value),
+                None => std::env::remove_var(crate::dbus_proxy::PROXY_BIN_ENV),
+            }
+            match old_bus {
+                Some(value) => std::env::set_var("DBUS_SESSION_BUS_ADDRESS", value),
+                None => std::env::remove_var("DBUS_SESSION_BUS_ADDRESS"),
+            }
+        }
+        assert!(plan.is_none(), "a raw D-Bus bind must never be planned");
+        assert!(guard.is_none(), "no proxy process should have started");
+    }
 }
 
 /// Current process UID via libc, avoiding a `users`/`nix` dependency.
@@ -2216,7 +2677,11 @@ mod identity_resolution_tests {
     fn xdg_wins_when_file_exists_there() {
         let saved = snapshot_and_clear();
         let tmp = tempfile::tempdir().unwrap();
-        let ident = tmp.path().join("qos").join("identity").join("primary.json");
+        let ident = tmp
+            .path()
+            .join("tilo")
+            .join("identity")
+            .join("primary.json");
         std::fs::create_dir_all(ident.parent().unwrap()).unwrap();
         std::fs::write(&ident, b"{}").unwrap();
         // SAFETY: this test is in the `process_env` serial group.
@@ -2235,7 +2700,7 @@ mod identity_resolution_tests {
         let ident = tmp
             .path()
             .join(".config")
-            .join("qos")
+            .join("tilo")
             .join("identity")
             .join("primary.json");
         std::fs::create_dir_all(ident.parent().unwrap()).unwrap();
@@ -2279,7 +2744,7 @@ mod app_dir_tests {
 
     #[test]
     fn workspace_launch_without_an_author_grant_is_read_only() {
-        let m = manifest("dev.qos.fixture");
+        let m = manifest("dev.tilo.fixture");
         let workspace = resolve_capabilities(&m, &opts_in(Some("room-a")));
         assert_eq!(
             workspace.participation,
@@ -2303,7 +2768,7 @@ mod app_dir_tests {
         // SAFETY: this test is in the `process_env` serial group.
         unsafe { std::env::set_var("XDG_DATA_HOME", data.path()) };
 
-        let m = manifest("dev.qos.fixture");
+        let m = manifest("dev.tilo.fixture");
         let a = resolve_app_dir(&m, &opts_in(Some("room-a"))).expect("room a");
         let b = resolve_app_dir(&m, &opts_in(Some("room-b"))).expect("room b");
         let personal = resolve_app_dir(&m, &opts_in(None)).expect("personal");
@@ -2325,7 +2790,7 @@ mod app_dir_tests {
         );
         for dir in [&a, &b, &personal] {
             assert!(
-                dir.starts_with(data.path().join("qos-rooms")),
+                dir.starts_with(data.path().join("tilo-rooms")),
                 "{dir:?} is outside the rooms tree"
             );
         }
@@ -2341,8 +2806,8 @@ mod app_dir_tests {
         // SAFETY: this test is in the `process_env` serial group.
         unsafe { std::env::set_var("XDG_DATA_HOME", data.path()) };
 
-        let mut m = manifest("dev.qos.fixture");
-        let victim = data.path().join("dev.qos.totp");
+        let mut m = manifest("dev.tilo.fixture");
+        let victim = data.path().join("dev.tilo.totp");
         m.sandbox.fs.write.push(victim.display().to_string());
         let refused = run_with(&m, Path::new("/nonexistent"), &opts_in(None));
 

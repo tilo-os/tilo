@@ -15,9 +15,10 @@ use crate::app::ReportEnvelope;
 use crate::config::{RegistryConfig, load_registries};
 use crate::flathub_client::{Remote, installed_flatpaks};
 use crate::model::{ActionKind, StoreSource};
+use crate::search_provider::StoreSearchIndex;
 use crate::sources::{
     flathub_placeholder_to_item, flathub_record_to_item, installed_flatpak_to_item,
-    installed_qos_to_store_item, merge, qos_to_store_item,
+    installed_tilo_to_store_item, merge, tilo_to_store_item,
 };
 use crate::{FlatpakRef, StoreItem};
 
@@ -63,14 +64,14 @@ pub struct Snapshot {
     pub query: Option<String>,
     pub detail: Option<StoreItem>,
     pub remotes: Vec<Remote>,
-    pub invocation: Option<qos_actions::InvocationId>,
+    pub invocation: Option<tilo_actions::InvocationId>,
     pub operation_error: Option<String>,
     pub moderation_case: Option<registry_types::ModerationCase>,
 }
 
 struct QueuedRequest {
     request: Request,
-    invocation: Option<qos_actions::InvocationId>,
+    invocation: Option<tilo_actions::InvocationId>,
 }
 
 pub struct StoreWorker {
@@ -89,13 +90,13 @@ impl StoreWorker {
         clippy::expect_used,
         reason = "thread spawn failure means the OS is out of resources; there is no fallible path back through the root widget constructor to report it, and no live app to hand back without a worker"
     )]
-    pub fn spawn(opened_ref: Option<FlatpakRef>) -> Self {
+    pub fn spawn(opened_ref: Option<FlatpakRef>, search_index: StoreSearchIndex) -> Self {
         let (request_tx, request_rx) = mpsc::channel();
         let (snapshot_tx, snapshot_rx) = mpsc::channel();
         let pending = Arc::new(AtomicUsize::new(1));
         std::thread::Builder::new()
             .name("store-worker".into())
-            .spawn(move || run(&request_rx, &snapshot_tx, opened_ref))
+            .spawn(move || run(&request_rx, &snapshot_tx, opened_ref, search_index))
             .expect("spawn store worker");
         Self {
             requests: request_tx,
@@ -111,7 +112,7 @@ impl StoreWorker {
     pub fn request_with_invocation(
         &self,
         request: Request,
-        invocation: Option<qos_actions::InvocationId>,
+        invocation: Option<tilo_actions::InvocationId>,
     ) -> bool {
         self.pending.fetch_add(1, Ordering::Relaxed);
         if self
@@ -152,15 +153,20 @@ struct State {
     remotes: Vec<Remote>,
     searches: LruMap<String, Vec<StoreItem>>,
     details: LruMap<String, StoreItem>,
+    /// The current palette/action directory. Rebuilding it is linear in a
+    /// catalogue snapshot, so it belongs on this serialized worker rather
+    /// than in the UI's snapshot-drain loop.
+    search_index: StoreSearchIndex,
 }
 
 fn run(
     requests: &mpsc::Receiver<QueuedRequest>,
     snapshots: &mpsc::Sender<Snapshot>,
     opened_ref: Option<FlatpakRef>,
+    search_index: StoreSearchIndex,
 ) {
     let staging = crate::actions::qpkg_staging_dir()
-        .unwrap_or_else(|| std::env::temp_dir().join("qos-store-staged"));
+        .unwrap_or_else(|| std::env::temp_dir().join("tilo-store-staged"));
     let _ = std::fs::create_dir_all(&staging);
     let mut state = State {
         host: app_host::client::BlockingClient::from_service()
@@ -175,6 +181,7 @@ fn run(
         remotes: Vec::new(),
         searches: LruMap::new(CACHE_CAP),
         details: LruMap::new(CACHE_CAP),
+        search_index,
     };
     refresh(&mut state);
     if !send(
@@ -224,7 +231,7 @@ fn run(
 )]
 fn handle(
     request: Request,
-    invocation: Option<qos_actions::InvocationId>,
+    invocation: Option<tilo_actions::InvocationId>,
     state: &mut State,
     snapshots: &mpsc::Sender<Snapshot>,
     staging: &std::path::Path,
@@ -413,11 +420,11 @@ fn search(query: &str, state: &mut State, snapshots: &mpsc::Sender<Snapshot>) ->
     let items = if let Some(cached) = state.searches.get(&query).cloned() {
         cached
     } else {
-        let qos = state
+        let tilo = state
             .base_items
             .iter()
             .filter(|item| {
-                matches!(item.source, StoreSource::Qos { .. }) && item.matches_query(&query)
+                matches!(item.source, StoreSource::Tilo { .. }) && item.matches_query(&query)
             })
             .cloned()
             .collect();
@@ -426,7 +433,7 @@ fn search(query: &str, state: &mut State, snapshots: &mpsc::Sender<Snapshot>) ->
             .iter()
             .map(|record| flathub_record_to_item(record, &state.installed))
             .collect();
-        let items = merge(qos, flatpak);
+        let items = merge(tilo, flatpak);
         state.searches.insert(query.clone(), items.clone());
         items
     };
@@ -440,7 +447,7 @@ fn detail(id: &str, state: &mut State, snapshots: &mpsc::Sender<Snapshot>) -> bo
     } else if let Some(item) = state
         .base_items
         .iter()
-        .find(|item| item.id == id && matches!(item.source, StoreSource::Qos { .. }))
+        .find(|item| item.id == id && matches!(item.source, StoreSource::Tilo { .. }))
         .cloned()
     {
         state.details.insert(id.to_string(), item.clone());
@@ -500,7 +507,7 @@ fn send_tracked(
     status_line: &str,
     query: Option<String>,
     detail: Option<StoreItem>,
-    invocation: Option<qos_actions::InvocationId>,
+    invocation: Option<tilo_actions::InvocationId>,
     operation_error: Option<String>,
 ) -> bool {
     snapshots
@@ -568,7 +575,7 @@ fn moderation_registry(
 fn send_moderation_result(
     state: &State,
     snapshots: &mpsc::Sender<Snapshot>,
-    invocation: Option<qos_actions::InvocationId>,
+    invocation: Option<tilo_actions::InvocationId>,
     result: Result<registry_types::ModerationCase, crate::moderation_client::ModerationClientError>,
     success: &str,
 ) -> bool {
@@ -606,7 +613,7 @@ fn send_moderation_result(
 fn send_moderation_submission_result(
     state: &State,
     snapshots: &mpsc::Sender<Snapshot>,
-    invocation: Option<qos_actions::InvocationId>,
+    invocation: Option<tilo_actions::InvocationId>,
     result: Result<registry_types::ModerationCase, crate::moderation_client::ModerationClientError>,
     success: &str,
 ) -> bool {
@@ -649,6 +656,16 @@ fn refresh(state: &mut State) {
     );
     state.searches.clear();
     state.details.clear();
+    sync_authoritative_catalogue(state);
+}
+
+/// Publish the one authoritative catalogue directory. Presentation snapshots
+/// may contain a local filtered search result or a detail projection, neither
+/// of which is allowed to remove unrelated apps from Ctrl+K, agents, history,
+/// or resource resolution. This executes on the serialized worker directly
+/// after a true `base_items` refresh, never on the UI thread.
+fn sync_authoritative_catalogue(state: &State) {
+    state.search_index.sync(&state.base_items);
 }
 
 fn collect_items(
@@ -657,7 +674,7 @@ fn collect_items(
     host: Option<&app_host::client::BlockingClient>,
 ) -> Vec<StoreItem> {
     let registries = load_registries().registries;
-    let installed_qos = host
+    let installed_tilo = host
         .and_then(|host| host.list().ok())
         .unwrap_or_default()
         .into_iter()
@@ -665,28 +682,29 @@ fn collect_items(
             id: package.app_id,
             version: package.version,
             pinned: package.pinned,
+            user_managed: package.user_managed,
             ..crate::installed::InstalledEntry::default()
         })
         .collect::<Vec<_>>();
-    let mut qos_items = Vec::new();
+    let mut tilo_items = Vec::new();
     for registry in registries.iter().filter(|registry| registry.enabled) {
         match crate::registry_client::fetch_entries(registry) {
-            Ok(entries) => qos_items.extend(
+            Ok(entries) => tilo_items.extend(
                 entries
                     .iter()
-                    .map(|entry| qos_to_store_item(entry, &registry.name, &installed_qos)),
+                    .map(|entry| tilo_to_store_item(entry, &registry.name, &installed_tilo)),
             ),
             Err(error) => tracing::warn!("registry {} refresh failed: {error}", registry.name),
         }
     }
     // The Store's action surface is also the recovery path for software that
-    // is already here. Never make installed qOS apps vanish merely because a
+    // is already here. Never make installed Tilo apps vanish merely because a
     // configured registry is offline or no longer carries an older package.
     // Catalogue rows win whenever present because they carry the signed
     // download/update metadata; these local rows intentionally cannot update.
-    for installed in &installed_qos {
-        if !qos_items.iter().any(|item| item.id == installed.id) {
-            qos_items.push(installed_qos_to_store_item(installed));
+    for installed in &installed_tilo {
+        if !tilo_items.iter().any(|item| item.id == installed.id) {
+            tilo_items.push(installed_tilo_to_store_item(installed));
         }
     }
     let mut flatpak_items = crate::flathub_client::fetch_popular(200)
@@ -711,7 +729,7 @@ fn collect_items(
         flatpak_items.insert(0, reference.clone().into_store_item(version));
     }
     tracing::debug!("{}", registries_summary(&registries));
-    merge(qos_items, flatpak_items)
+    merge(tilo_items, flatpak_items)
 }
 
 fn registries_summary(registries: &[RegistryConfig]) -> String {
@@ -778,6 +796,48 @@ impl<K: Clone + Eq + Hash, V> LruMap<K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{InstalledState, StoreItemVersion, StoreTrust};
+    use ui::search::SearchProvider;
+
+    fn item(id: &str, name: &str) -> StoreItem {
+        StoreItem {
+            id: id.into(),
+            name: name.into(),
+            description: format!("{name} Store test row"),
+            categories: vec!["Utilities".into()],
+            icon_url: None,
+            screenshot_urls: Vec::new(),
+            homepage_url: None,
+            source_url: None,
+            install_ref_path: None,
+            source: StoreSource::Tilo {
+                registry_name: "main".into(),
+            },
+            trust: StoreTrust::PublisherSigned,
+            versions: vec![StoreItemVersion {
+                version: "1.0.0".into(),
+                released_at_unix: 0,
+                download_url: None,
+                root_hash_hex: None,
+                size_bytes: 0,
+            }],
+            publisher_pubkey_hex: None,
+            installed: InstalledState::Not,
+        }
+    }
+
+    fn state_with_items(items: Vec<StoreItem>, search_index: StoreSearchIndex) -> State {
+        State {
+            host: None,
+            opened_ref: None,
+            base_items: items,
+            installed: Vec::new(),
+            remotes: Vec::new(),
+            searches: LruMap::new(CACHE_CAP),
+            details: LruMap::new(CACHE_CAP),
+            search_index,
+        }
+    }
 
     #[test]
     fn lru_revisit_is_retained_and_oldest_is_evicted() {
@@ -792,12 +852,66 @@ mod tests {
 
     #[test]
     fn request_and_drain_are_non_blocking() {
-        let worker = StoreWorker::spawn(None);
+        let worker = StoreWorker::spawn(None, StoreSearchIndex::default());
         let started = std::time::Instant::now();
         assert!(worker.request(Request::Search("editor".into())));
         assert!(started.elapsed() < Duration::from_millis(50));
         let started = std::time::Instant::now();
         let _ = worker.try_snapshot();
         assert!(started.elapsed() < Duration::from_millis(20));
+    }
+
+    #[test]
+    fn filtered_snapshot_never_truncates_authoritative_action_directory() {
+        let search_index = StoreSearchIndex::default();
+        let state = state_with_items(
+            vec![
+                item("dev.example.alpha", "Alpha"),
+                item("dev.example.beta", "Beta"),
+            ],
+            search_index.clone(),
+        );
+        sync_authoritative_catalogue(&state);
+        let (snapshots, received) = mpsc::channel();
+
+        assert!(send_tracked(
+            &snapshots,
+            &state,
+            vec![item("dev.example.alpha", "Alpha")],
+            "1 result for Alpha.",
+            Some("Alpha".into()),
+            None,
+            None,
+            None,
+        ));
+        assert_eq!(received.recv().expect("filtered snapshot").items.len(), 1);
+
+        let provider = search_index.provider();
+        assert_eq!(provider.search_limited("Beta", 10).len(), 1);
+    }
+
+    #[test]
+    fn authoritative_catalogue_replacement_updates_and_removes_directory_rows() {
+        let search_index = StoreSearchIndex::default();
+        let mut state = state_with_items(
+            vec![
+                item("dev.example.alpha", "Alpha"),
+                item("dev.example.beta", "Beta"),
+            ],
+            search_index.clone(),
+        );
+        sync_authoritative_catalogue(&state);
+        let provider = search_index.provider();
+        let cursor = provider
+            .search_page("", None, 1, 1)
+            .next
+            .expect("two directory rows produce a continuation");
+
+        state.base_items = vec![item("dev.example.gamma", "Gamma")];
+        sync_authoritative_catalogue(&state);
+
+        assert!(provider.search_limited("Beta", 10).is_empty());
+        assert_eq!(provider.search_limited("Gamma", 10).len(), 1);
+        assert!(!provider.action_directory_cursor_is_current(&cursor));
     }
 }

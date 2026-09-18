@@ -1,6 +1,6 @@
 //! Contrast-aware foreground selection for selected / active chrome.
 //!
-//! qOS's [`ui::theme::Theme`] ships **no on-accent token**: there is no
+//! Tilo's [`ui::theme::Theme`] ships **no on-accent token**: there is no
 //! field that says "the readable text colour to place on top of an accent
 //! fill". Worse, `text_primary` is *white* in the dark theme but *black* in
 //! the light theme, so any hard-coded `Color::WHITE` (or any "accent text on

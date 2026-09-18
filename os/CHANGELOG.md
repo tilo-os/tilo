@@ -17,8 +17,8 @@ additive or refactors a path that was incompatible with native mode.
   actively breaks (cage spins up its own Wayland server). greetd now
   just hands tuigreet the sessions dir and lets the user pick.
 - `usr/share/wayland-sessions/shell.desktop`: renamed visible
-  `Name=` from "qOS" to "nirios" (matching the portal
-  `UseIn=nirios` contract) and dropped the cage wrapping. Added a
+  `Name=` from "Tilo" to "tilo" (matching the portal
+  `UseIn=tilo` contract) and dropped the cage wrapping. Added a
   `Comment` so tuigreet shows a useful subtitle.
 - `usr/share/wayland-sessions/shell-peer-sync.desktop` (new):
   alternative session entry that invokes
@@ -36,7 +36,7 @@ additive or refactors a path that was incompatible with native mode.
   - `ExecStop=fusermount3 -u -z` (was `umount`) — works without
     `CAP_SYS_ADMIN` and handles a hung client without blocking
     shutdown.
-- `usr/lib/tmpfiles.d/qos.conf` (new): pre-creates
+- `usr/lib/tmpfiles.d/tilo.conf` (new): pre-creates
   `/var/workspace` and `/var/cache/quick-fs` with `0755 root:root` at
   boot via `systemd-tmpfiles-setup.service`. The `ExecStartPre=mkdir`
   in `fs.service` becomes a belt-and-suspenders fallback.
@@ -45,20 +45,20 @@ additive or refactors a path that was incompatible with native mode.
 
 - `usr/lib/systemd/user/shell-peer-sync.service` (new):
   oneshot user unit that creates a marker file at
-  `${XDG_RUNTIME_DIR}/nirios/peer-sync.enabled`. **Not enabled by
+  `${XDG_RUNTIME_DIR}/tilo/peer-sync.enabled`. **Not enabled by
   default.** Privacy reasons: libp2p's mDNS broadcasts the device and
   gossipsub accepts inbound peers.
 - `docs/peer-sync.md` (new): documents the privacy trade-off and the
   two supported opt-in paths (session picker vs `systemctl --user
   enable`). The doc is `COPY`ed into the production image at
-  `/usr/share/doc/qos/peer-sync.md` so it's discoverable
+  `/usr/share/doc/tilo/peer-sync.md` so it's discoverable
   from the .desktop and systemd `Documentation=` lines.
 
 ### Validation image (Containerfile.test)
 
 - Build-time portal config contract: the existing
   `tests/portal_config_validity.sh` is now copied to
-  `/usr/libexec/qos/portal-config-test.sh` and **executed at
+  `/usr/libexec/tilo/portal-config-test.sh` and **executed at
   image build time** with `OS_ROOT=/`. Drift between the Rust
   `portal::serve` interface list and the on-disk `.portal` config
   fails the test image build instead of slipping into a VM boot.

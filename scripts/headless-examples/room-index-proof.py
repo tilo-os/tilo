@@ -1,24 +1,21 @@
 #!/usr/bin/env python3
 """A workspace is shared: what one member puts in the room, the others have.
 
-A room *is* a workspace (`plan/collaboration.md` §4), and what a room
-holds is its **record index** (`plan/rooms.md`) — the references to the
-documents in it. This proves that index replicates between the room's
+A room *is* a workspace (`docs/architecture/collaboration.md` §4), and what a room
+holds is its **record index** (`docs/architecture/rooms.md`) — the references to the
+documents in it. This checks that the index replicates between the room's
 members, in both directions, and that a person's own view of the room
 does not travel with it.
 
-Two real compositors, separate identities, separate homes, one room.
+Two compositors with separate identities and homes share one room.
 Every claim is read back from the session that did **not** make the
 change, through the production search path: the records provider matches
 a query against the corpus each session knows about and labels each row
 with the room it lives in, so a session returning "In this room" for a
-record it never referenced is a session whose index genuinely holds it.
+record it never referenced has that record in its index.
 
-Both halves of the user's rule are asserted, because either alone is
-easy to satisfy wrongly: a window one person opens must appear for the
-other, **and** the other must stay on the tab, the strip and the focus
-they were on. Which windows exist is the workspace; which one you are
-looking at is you.
+Both halves are asserted: a window one person opens must appear for the
+other, and the other must stay on its current tab, strip and focus.
 
 Usage:
   ./room-index-proof.py [--keep]
@@ -86,8 +83,8 @@ class Session:
         self.socket = os.path.join(self.dir, "control.sock")
         env = {
             **os.environ,
-            "QOS_TEST_CONTROL": self.socket,
-            "QOS_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
+            "TILO_TEST_CONTROL": self.socket,
+            "TILO_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
             "XDG_DATA_HOME": os.path.join(self.dir, "data"),
             "XDG_CACHE_HOME": os.path.join(self.dir, "cache"),
             "XDG_STATE_HOME": os.path.join(self.dir, "state"),
@@ -97,12 +94,12 @@ class Session:
             # off, and the only visible symptom is that `peer.invite` is
             # never exported — which reads as a capability refusal rather
             # than a missing prerequisite.
-            "QOS_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
+            "TILO_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
             # Distinct identities. Without this every session falls back to
             # $USER and all of them are the same person, which would make
             # any claim about "someone else's session" meaningless.
-            "QOS_USER_ID": name,
-            "NIRIOS_HEADLESS_SIZE": "1280x800",
+            "TILO_USER_ID": name,
+            "TILO_HEADLESS_SIZE": "1280x800",
         }
         env.pop("DISPLAY", None)
         env.pop("WAYLAND_DISPLAY", None)
@@ -318,7 +315,7 @@ def main() -> int:
         print("      run: cargo build -p shell --bin shell", file=sys.stderr)
         return 1
 
-    root = tempfile.mkdtemp(prefix="qos-room-index-")
+    root = tempfile.mkdtemp(prefix="tilo-room-index-")
     shared = os.path.join(root, "documents")
     os.makedirs(shared, exist_ok=True)
     sessions: list[Session] = []

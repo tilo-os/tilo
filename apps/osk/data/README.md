@@ -1,6 +1,6 @@
 # OSK language data
 
-Compact, embedded, **offline** language data for the qOS on-screen keyboard's
+Compact, embedded, **offline** language data for the Tilo on-screen keyboard's
 swipe-to-type decoder and next-word predictor (workstream **W9**). All files
 here are `include_str!`-bundled into the `osk` binary at build time, so the
 keyboard works with no network and no model download.
@@ -31,8 +31,8 @@ Norvig distributes his n-gram contributions under the **MIT license**
 the same data backs the widely-used MIT-licensed
 [`google-10000-english`](https://github.com/first20hours/google-10000-english)
 word list. We bundle a cleaned, frequency-ranked **subset** (lowercase `[a-z]+`
-only, length-capped, size-capped) suitable for offline embedded use in a
-research OS.
+only, length-capped, size-capped) suitable for offline embedded use in the
+Tilo OS.
 
 ## Regenerating
 

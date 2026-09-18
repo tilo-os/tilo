@@ -6,7 +6,7 @@ set -euo pipefail
 
 command -v busctl >/dev/null
 command -v gdbus >/dev/null
-binary="${QOS_FILES_BINARY:-}"
+binary="${TILO_FILES_BINARY:-}"
 if [[ -z "$binary" ]]; then
     repo_root=$(git rev-parse --show-toplevel)
     binary="$repo_root/target/debug/file-explorer"
@@ -20,7 +20,7 @@ if [[ ! -x "$binary" ]]; then
     fi
 fi
 
-smoke_dir=$(mktemp -d /tmp/qos-files-atspi.XXXXXX)
+smoke_dir=$(mktemp -d /tmp/tilo-files-atspi.XXXXXX)
 app_pid=""
 cleanup() {
     if [[ -n "$app_pid" ]] && kill -0 "$app_pid" 2>/dev/null; then
@@ -28,7 +28,7 @@ cleanup() {
         wait "$app_pid" 2>/dev/null || true
     fi
     case "$smoke_dir" in
-        /tmp/qos-files-atspi.*) [[ -d "$smoke_dir" ]] && rm -r "$smoke_dir" ;;
+        /tmp/tilo-files-atspi.*) [[ -d "$smoke_dir" ]] && rm -r "$smoke_dir" ;;
     esac
 }
 trap cleanup EXIT INT TERM
@@ -43,7 +43,7 @@ atspi_address=$(
 
 env \
     XDG_CONFIG_HOME="$smoke_dir/config" \
-    QOS_USER_HOME="$smoke_dir" \
+    TILO_USER_HOME="$smoke_dir" \
     "$binary" >"$smoke_dir/file-explorer.log" 2>&1 &
 app_pid=$!
 

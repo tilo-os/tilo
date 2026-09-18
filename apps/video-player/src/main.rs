@@ -8,9 +8,10 @@
 //!
 //! Optional flags for `--shots`:
 //!   * `--viewport WxH`  — render at a custom size (default 1280x800).
-//!   * `--open PATH`     — stage a real file for the captured frame (else a
+//!   * `--open PATH`     — stage a file for the captured frame (else a
 //!     synthesized demo clip is shown).
 
+#![cfg_attr(windows, windows_subsystem = "windows")]
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
 // overflow is a tax a third-party app author would pay too. The lints that
@@ -64,12 +65,14 @@ extern crate runtime_dylib;
 /// Returns an error if launching the app or running a `--shots` capture fails.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
-        &LaunchSpec::new_with_args("dev.qos.video-player", live_root)
+        &LaunchSpec::new_with_args("dev.tilo.video-player", live_root)
+            .configure_app(|app| video_player::actions::register(app.action_registry_mut()))
             .shot_handler(render_shot)
             .allowed_live_options(&["--open"])
             .max_positionals(1)
             .scenarios(&[
                 "empty",
+                "loading",
                 "error",
                 "native-error",
                 "playing",
@@ -79,6 +82,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "library",
                 "library-focus",
                 "recent",
+                "shared",
                 "fullscreen",
             ]),
     )?;
@@ -86,9 +90,21 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn requested_path(args: &LaunchArgs) -> Option<PathBuf> {
-    args.value("--open")
-        .map(PathBuf::from)
-        .or_else(|| args.positionals().first().map(PathBuf::from))
+    args.value("--open").map(PathBuf::from).or_else(|| {
+        args.positionals()
+            .first()
+            .filter(|value| !value.starts_with("http://") && !value.starts_with("https://"))
+            .map(PathBuf::from)
+    })
+}
+
+fn requested_source(args: &LaunchArgs) -> Option<media::Source> {
+    if let Some(path) = requested_path(args) {
+        return Some(video_player::source_for_path(&path));
+    }
+    args.positionals()
+        .first()
+        .map(|url| media::Source::Remote { url: url.clone() })
 }
 
 #[allow(
@@ -96,7 +112,10 @@ fn requested_path(args: &LaunchArgs) -> Option<PathBuf> {
     reason = "signature is fixed by ui::launch::LaunchSpec::new_with_args"
 )]
 fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    Ok(video_player::app_root(requested_path(args)))
+    Ok(video_player::app_root_source(
+        requested_source(args),
+        std::env::var("TILO_MEDIA_HANDOFF_TITLE").ok(),
+    ))
 }
 
 fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
@@ -104,7 +123,23 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         LaunchError::Operation("video-player screenshot handler called without --shots".into())
     })?;
     let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-    let mut app = video_player::PlayerApp::for_shot(requested_path(args), args.scenario.as_deref());
+    let open = requested_path(args);
+    let require_decoded_frame = open.is_some()
+        && !matches!(
+            args.scenario.as_deref(),
+            Some("empty" | "error" | "native-error" | "loading")
+        );
+    let mut app = video_player::PlayerApp::for_shot(open, args.scenario.as_deref());
+    if require_decoded_frame
+        && !app
+            .player()
+            .engine()
+            .is_some_and(media::MediaEngine::is_real_decode)
+    {
+        return Err(LaunchError::Operation(
+            "A real video capture requires the GStreamer decoder and runtime".into(),
+        ));
+    }
     // Real decode prerolls asynchronously; pump until its first picture is
     // ready. The synthesized fallback produces one on the first pass.
     let mut warm = ui::State::new();
@@ -116,8 +151,26 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         }
         std::thread::sleep(std::time::Duration::from_millis(40));
     }
+    if require_decoded_frame && !app.has_media_frame() {
+        return Err(LaunchError::Operation(
+            "The video decoder did not produce a frame for the requested file".into(),
+        ));
+    }
     render_shot_to_png(Box::new(app), viewport, ui::launch::shot_theme(args), out)
         .map_err(|error| LaunchError::Operation(error.to_string()))
+}
+
+fn shot_theme(kind: Option<&str>, text_scale: Option<f32>, reduce_motion: bool) -> Theme {
+    let theme = match kind {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
+    let theme = match text_scale {
+        Some(scale) => theme.with_text_scale(scale),
+        None => theme,
+    };
+    theme.with_reduce_motion(reduce_motion)
 }
 
 /// Render one offscreen frame of `widget` and write it as a PNG. Mirrors
@@ -188,4 +241,19 @@ fn render_shot_to_png(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("video-player: wrote shot to {}", out.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod shot_tests {
+    use super::*;
+
+    #[test]
+    fn custom_shot_theme_propagates_text_scale_and_reduced_motion() {
+        let theme = shot_theme(Some("high-contrast"), Some(2.0), true);
+        assert!((theme.text_scale - 2.0).abs() < f32::EPSILON);
+        assert!(theme.reduce_motion);
+        let mut renderer = TextRenderer::new();
+        renderer.set_text_scale(theme.text_scale);
+        assert!((renderer.text_scale() - 2.0).abs() < f32::EPSILON);
+    }
 }

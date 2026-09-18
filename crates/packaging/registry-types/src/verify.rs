@@ -152,7 +152,7 @@ mod tests {
         let key = SigningKey::generate(&mut OsRng);
         let pk_hex = hex::encode(key.verifying_key().to_bytes());
         let entry = RegistryEntry {
-            package_id: "dev.qos.editor".into(),
+            package_id: "dev.tilo.editor".into(),
             name: "Editor".into(),
             description: "CRDT-native text editor".into(),
             categories: vec!["Productivity".into()],
@@ -162,7 +162,7 @@ mod tests {
             publisher_pubkey_hex: pk_hex,
             versions: vec![RegistryVersion {
                 version: "2026.06".into(),
-                qpkg_url: "https://apps.qos.dev/editor/2026.06.qpkg".into(),
+                qpkg_url: "https://apps.tilo.dev/editor/2026.06.qpkg".into(),
                 qpkg_root_hash_hex: "cd".repeat(32),
                 qpkg_size_bytes: 1024,
                 released_at_unix: 100,

@@ -1,6 +1,6 @@
-# qOS kernel hardening (security plan §11 — "table stakes"). bootc applies these
+# Tilo kernel hardening (security plan §11 — "table stakes"). bootc applies these
 # kargs to the bootloader entry at install/upgrade. All are low-risk and mostly
-# free on the Fedora kernel; the qos-security-audit.service asserts they're live.
+# free on the Fedora kernel; the tilo-security-audit.service asserts they're live.
 kargs = [
   # Zero kernel heap + page allocations on alloc and free — kills a large class
   # of kernel use-after-free / uninitialised-memory info leaks.

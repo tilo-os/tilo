@@ -5,15 +5,15 @@
 //! application's shared anchor for month, week, day, and agenda views. The
 //! root translates [`Outcome`] values into changes to that shared policy.
 
+use crate::draw_util::PaintContext;
 use std::collections::HashSet;
-
-use chrono::{Datelike, NaiveDate};
-use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect};
-use vello::peniko::Fill;
-
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use vello::Scene;
+
+use chrono::{Datelike, NaiveDate};
+use vello::kurbo::{Affine, Circle, Point, Rect};
+use vello::peniko::Fill;
 
 use crate::app::{center_text, draw_chevron};
 use crate::date;
@@ -35,6 +35,16 @@ const CELL_HEIGHT: f64 = 22.0;
 pub(crate) enum Outcome {
     SelectDate(NaiveDate),
     ShiftMonth(i32),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct MiniMonthModel<'a> {
+    pub(crate) sidebar: Rect,
+    pub(crate) occupied_until: f64,
+    pub(crate) anchor: NaiveDate,
+    pub(crate) today: NaiveDate,
+    pub(crate) event_dates: &'a HashSet<NaiveDate>,
+    pub(crate) pointer: Point,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -63,7 +73,6 @@ impl MiniMonth {
     /// Paint the component if `occupied_until` has not entered its reserved
     /// footer band. Targets are rebuilt from the same layout used for drawing.
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "the component paints one compact header and one fixed 42-cell grid; keeping the shared geometry in one pass makes its targets and pixels visibly correspond"
     )]

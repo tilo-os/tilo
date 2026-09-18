@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""A real application launches into a session and paints.
+"""An application launches into a session and paints.
 
-The claim is "you can open an app on this desktop", so it is verified
-the only way that means anything: the app is started by address through
+The app is started by address through
 the compositor's own action surface, and the compositor is then asked
 how many frames it has taken from that client. `frame_seq > 0` is the
 ground truth — a tile can look like a window while being a placeholder,
 and only the frame counter tells those apart.
 
-A PNG of the final state is written for each app so the result can be
-looked at rather than trusted.
+A PNG of the final state is written for each app for visual inspection.
 
 What a session needs before any of this works
 ---------------------------------------------
@@ -17,13 +15,13 @@ A session that keeps its own documents repoints `XDG_DATA_HOME`. Two
 things that are *machine* state and not session state live under it, so
 isolating documents silently isolates them too:
 
-  QOS_APPS_DATA_DIR      the installed-app registry. Without it the
+  TILO_APPS_DATA_DIR      the installed-app registry. Without it the
                          session enumerates zero applications.
-  QOS_RUNTIME_BUNDLE_DIR the runtime bundle every packaged app pins.
+  TILO_RUNTIME_BUNDLE_DIR the runtime bundle every packaged app pins.
                          Without it every launch fails with "no bundle
                          was found".
 
-Both are set below, pointed at the machine's real stores, while
+Both are set below, pointed at the machine's stores, while
 documents stay in the session's own directory.
 
 Usage:
@@ -48,10 +46,10 @@ import time
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SHELL = REPO / "target" / "debug" / "shell"
-LAUNCHER = REPO / "target" / "debug" / "qos-launcher"
+LAUNCHER = REPO / "target" / "debug" / "tilo-launcher"
 
 # The two the demo opens first.
-DEFAULT_APPS = ["dev.qos.file-explorer", "dev.qos.word-processor"]
+DEFAULT_APPS = ["dev.tilo.file-explorer", "dev.tilo.word-processor"]
 
 # The compositor's action surface. Launching an app is an action like
 # any other, which is what lets this drive the production path rather
@@ -81,8 +79,8 @@ class Session:
         home = os.path.expanduser("~")
         env = {
             **os.environ,
-            "QOS_TEST_CONTROL": self.socket,
-            "QOS_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
+            "TILO_TEST_CONTROL": self.socket,
+            "TILO_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
             # The session's own homes: documents and app state land here.
             "XDG_DATA_HOME": os.path.join(self.dir, "data"),
             "XDG_CACHE_HOME": os.path.join(self.dir, "cache"),
@@ -90,10 +88,10 @@ class Session:
             "XDG_CONFIG_HOME": os.path.join(self.dir, "config"),
             "XDG_RUNTIME_DIR": runtime,
             # Machine state the isolation must not take with it.
-            "QOS_APPS_DATA_DIR": os.path.join(home, ".local/share/qos-apps"),
-            "QOS_RUNTIME_BUNDLE_DIR": os.path.join(home, ".local/share/qos-runtime"),
-            "QOS_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
-            "NIRIOS_HEADLESS_SIZE": "1280x800",
+            "TILO_APPS_DATA_DIR": os.path.join(home, ".local/share/tilo-apps"),
+            "TILO_RUNTIME_BUNDLE_DIR": os.path.join(home, ".local/share/tilo-runtime"),
+            "TILO_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
+            "TILO_HEADLESS_SIZE": "1280x800",
         }
         env.pop("DISPLAY", None)
         env.pop("WAYLAND_DISPLAY", None)
@@ -187,11 +185,11 @@ def main() -> int:
     args = ap.parse_args()
     apps = args.apps or DEFAULT_APPS
 
-    for binary, what in ((SHELL, "shell"), (LAUNCHER, "qos-launcher")):
+    for binary, what in ((SHELL, "shell"), (LAUNCHER, "tilo-launcher")):
         if not binary.exists():
             print(f"missing {what} at {binary}")
             print("build it:  cargo build -p shell --bin shell && "
-                  "cargo build -p launcher --bin qos-launcher")
+                  "cargo build -p launcher --bin tilo-launcher")
             return 2
 
     # A session's unix sockets live under this root, and AF_UNIX paths

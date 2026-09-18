@@ -7,7 +7,7 @@ announcing `Hello { app_id, cluster_id, record }`, and then sending
 frames. `cluster_id` is the **room** id, which is the whole reason two
 machines can address one cluster: the launcher passes the room rather
 than the local workspace handle precisely so a peer's app and ours land
-together (`shell/src/shell/launcher.rs`).
+together (`crates/session/shell/src/shell/launcher.rs`).
 
 This script attaches such a client to each of two real compositors in
 one room and asks, frame type by frame type, what arrives at the other
@@ -64,7 +64,7 @@ SHELL = os.path.join(REPO, "target", "debug", "shell")
 # One app, one document, announced identically by both sessions. These are
 # what the broker routes on; two clients that disagree on any of the three
 # are two different conversations.
-APP_ID = "dev.qos.word-processor"
+APP_ID = "dev.tilo.word-processor"
 RECORD = "file:/work/shared.odt"
 
 failures: list[str] = []
@@ -107,12 +107,12 @@ class Session:
         self.collab = os.path.join(self.dir, "collab.sock")
         env = {
             **os.environ,
-            "QOS_TEST_CONTROL": self.socket,
+            "TILO_TEST_CONTROL": self.socket,
             # Bind the broker's app-facing JSON socket somewhere this
             # script can reach. In a real session apps take the capnp
             # descriptor from the launcher instead.
             "QUICK_COLLAB_SOCK": self.collab,
-            "QOS_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
+            "TILO_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
             "XDG_DATA_HOME": os.path.join(self.dir, "data"),
             "XDG_CACHE_HOME": os.path.join(self.dir, "cache"),
             "XDG_STATE_HOME": os.path.join(self.dir, "state"),
@@ -120,8 +120,8 @@ class Session:
             "XDG_RUNTIME_DIR": os.path.join(self.dir, "run"),
             # Without its own device key a session's peer-sync turns
             # itself off, and the only symptom is a missing peer.* action.
-            "QOS_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
-            "NIRIOS_HEADLESS_SIZE": "1280x800",
+            "TILO_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
+            "TILO_HEADLESS_SIZE": "1280x800",
         }
         env.pop("DISPLAY", None)
         env.pop("WAYLAND_DISPLAY", None)
@@ -252,7 +252,7 @@ def main() -> int:
         print("      run: cargo build -p shell --bin shell", file=sys.stderr)
         return 1
 
-    root = tempfile.mkdtemp(prefix="qos-app-collab-")
+    root = tempfile.mkdtemp(prefix="tilo-app-collab-")
     sessions: list[Session] = []
     try:
         print("\n[1] two real sessions, isolated from this machine and each other")

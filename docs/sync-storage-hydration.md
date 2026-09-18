@@ -37,8 +37,8 @@ blob publication, including deduplicated chunks. Shared chunks are excluded
 from per-file reclaim estimates. If the peer is offline or stops serving a
 component, local content is kept.
 
-The socket is `/run/qos/fs-storage.sock`, mode `0660`, below a setgid
-`root:qos-identity` directory. This deliberately reuses the existing trusted
+The socket is `/run/tilo/fs-storage.sock`, mode `0660`, below a setgid
+`root:tilo-identity` directory. This deliberately reuses the existing trusted
 device-user boundary and exposes only snapshot and safe-eviction operations;
 it does not expose document bytes or general filesystem mutation.
 

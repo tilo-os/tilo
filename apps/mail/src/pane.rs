@@ -2,7 +2,7 @@
 //! parameterised by [`Role`] so the [`ui::widget::NavShell`] can own three
 //! distinct child `Element`s that all share one [`MailState`].
 //!
-//! * [`Role::Sidebar`] — the genuine menu (accounts + folders + compose).
+//! * [`Role::Sidebar`] — the menu (accounts + folders + compose).
 //! * [`Role::List`] — the message overview (search + threaded rows).
 //! * [`Role::Reader`] — the message detail (headers + body + actions).
 //!
@@ -32,11 +32,11 @@ use crate::account::AccountStore;
 use ui::surface::{card, edge_on, pill, separator};
 
 use crate::draw::{
-    ACCOUNT_HEADER_H, BACK_CLEARANCE, CHIP_CLEARANCE, CHIP_INSET, CHIP_SIZE, FOLDER_ROW_H,
-    HEADER_H, LIST_ROW_H, draw_avatar, elide, fill_rect,
+    ACCOUNT_HEADER_H, AvatarPaintContext, BACK_CLEARANCE, CHIP_CLEARANCE, CHIP_INSET, CHIP_SIZE,
+    FOLDER_ROW_H, HEADER_H, LIST_ROW_H, draw_avatar, elide, fill_rect, fill_round, stroke_round,
 };
 use crate::model::{Addr, Folder, Message, MessageId};
-use crate::state::{CtxAction, Intent, MailState, Shared};
+use crate::state::{BulkAction, CtxAction, Intent, MailState, Shared};
 use crate::util::{format_absolute, format_relative};
 
 /// Distance (px) a horizontal drag must pass to fire a swipe action.
@@ -158,6 +158,9 @@ enum Hit {
     SearchFocus,
     SearchClear,
     Refresh,
+    ToggleBulkSelection,
+    SelectAllVisible,
+    Bulk(BulkAction),
     // reader
     Reply,
     Archive,
@@ -375,15 +378,54 @@ struct ListRowArgs<'a> {
     rect: Rect,
     len: usize,
     selected: bool,
+    bulk_selected: bool,
     hov: bool,
     swipe_dx: f64,
     now_min: i64,
+}
+
+/// Shared immediate-mode paint resources for focused pane helpers.
+struct DrawContext<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
+struct ReaderThreadLayout {
+    reader: Rect,
+    content_x: f64,
+    content_w: f32,
+    y: f64,
+    head_has_html: bool,
+}
+
+struct LargeTextFlow {
+    bounds: Rect,
+    x: f64,
+    width: f32,
+    y: f64,
+}
+
+struct EventContext<'a> {
+    scale_factor: f64,
+    modifiers: winit::event::Modifiers,
+    state: &'a mut AutoCommit,
+    path: &'a ObjId,
+    handled: &'a mut bool,
+    focus_target: &'a mut Option<NodeId>,
+    node_id: NodeId,
+    taffy: &'a TaffyTree<()>,
 }
 
 pub struct Pane {
     role: Role,
     shared: Shared,
     rect: Rect,
+    /// Captured from the host theme during the inner `NavShell` layout pass.
+    /// Canvas text is scaled by the shared renderer; this companion value
+    /// expands Mail's custom row/control geometry so 200% text has room.
+    layout_scale: f64,
     hits: Vec<(Rect, Hit)>,
     /// List pane only: the search field.
     search_input: Option<TextInput>,
@@ -441,6 +483,7 @@ impl Pane {
             role,
             shared,
             rect: Rect::ZERO,
+            layout_scale: 1.0,
             hits: Vec::new(),
             search_input,
             list_metrics: None,
@@ -486,6 +529,27 @@ impl Pane {
         (chip.x1 - self.rect.x0) + (CHIP_CLEARANCE - CHIP_INSET - CHIP_SIZE)
     }
 
+    fn scale(&self) -> f64 {
+        self.layout_scale.clamp(0.5, 4.0)
+    }
+
+    fn header_h(&self) -> f64 {
+        self.list_metrics().header_h
+    }
+
+    /// A local selection is a second, compact toolbar below the ordinary
+    /// folder/search header.  It never changes the navigation shell's pane
+    /// semantics; it only reserves enough space that list rows cannot paint
+    /// under its actions at large text sizes.
+    fn list_content_y(&self) -> f64 {
+        let selecting = self.role == Role::List && self.shared.borrow().bulk_selecting;
+        self.rect.y0 + self.header_h() + if selecting { 140.0 * self.scale() } else { 0.0 }
+    }
+
+    fn list_row_h(&self) -> f64 {
+        self.list_metrics().row_h
+    }
+
     fn header_left_inset(&self) -> f64 {
         let st = self.shared.borrow();
         match self.role {
@@ -525,8 +589,81 @@ impl Pane {
         )
     }
 
+    /// The always-visible entry to bulk triage. An outlined square is compact
+    /// enough for a narrow list header; its tooltip and accessible name make
+    /// the mode discoverable without introducing a second title row.
+    fn bulk_mode_rect(&self) -> Rect {
+        let r = self.rect;
+        let s = self.scale();
+        let x0 = r.x0 + self.header_left_inset() * s;
+        Rect::new(x0, r.y0 + 12.0 * s, x0 + 32.0 * s, r.y0 + 44.0 * s)
+    }
+
+    /// The five labelled actions presented when local selection mode is active.
+    /// Permanent deletion replaces (never sits beside) Move to Trash only for
+    /// an all-Trash selection; virtual mixed views therefore cannot suggest
+    /// that one click might mean two destructive things. Keeping
+    /// their order and hit geometry in one helper ensures painting and event
+    /// routing cannot drift.
+    fn bulk_action_rects(&self) -> Vec<(Rect, Hit, &'static str)> {
+        let r = self.rect;
+        let s = self.scale();
+        let h = 38.0 * s;
+        let gap = 8.0 * s;
+        let left = r.x0 + 14.0 * s;
+        let right = r.x1 - 14.0 * s;
+        let pair_w = (right - left - gap) / 2.0;
+        let y0 = r.y0 + self.header_h() + 6.0 * s;
+        let y1 = y0 + h + 7.0 * s;
+        let y2 = y1 + h + 7.0 * s;
+        let all_trash = {
+            let state = self.shared.borrow();
+            let ids = state.selected_bulk_ids();
+            !ids.is_empty()
+                && ids.iter().all(|id| {
+                    state
+                        .mailbox
+                        .get(*id)
+                        .is_some_and(|message| message.folder == Folder::Trash)
+                })
+        };
+        let destructive = if all_trash {
+            (Hit::Bulk(BulkAction::Purge), "Delete permanently")
+        } else {
+            (Hit::Bulk(BulkAction::Delete), "Move to Trash")
+        };
+        vec![
+            (
+                Rect::new(left, y0, left + pair_w, y0 + h),
+                Hit::SelectAllVisible,
+                "Select all",
+            ),
+            (
+                Rect::new(left + pair_w + gap, y0, right, y0 + h),
+                Hit::Bulk(BulkAction::Archive),
+                "Archive",
+            ),
+            (
+                Rect::new(left, y1, left + pair_w, y1 + h),
+                Hit::Bulk(BulkAction::MarkRead),
+                "Mark read",
+            ),
+            (
+                Rect::new(left + pair_w + gap, y1, right, y1 + h),
+                Hit::Bulk(BulkAction::MarkUnread),
+                "Mark unread",
+            ),
+            (
+                Rect::new(left, y2, right, y2 + h),
+                destructive.0,
+                destructive.1,
+            ),
+        ]
+    }
+
     fn search_box_rect(&self) -> Rect {
         let r = self.rect;
+        let s = self.scale();
         // Leave room for the refresh button on the far right.
         let x1 = self.refresh_box_rect().x0 - 10.0;
         // Adapt the search width to the (often narrow) list column, always
@@ -534,12 +671,7 @@ impl Pane {
         let sw = (r.width() * 0.46).clamp(140.0, 230.0);
         let x0 = (x1 - sw).max(r.x0 + self.header_left_inset() + 70.0);
         let h = self.list_metrics().ctl_h;
-        Rect::new(
-            x0,
-            r.y0 + HEADER_CTL_INSET,
-            x1,
-            r.y0 + HEADER_CTL_INSET + h,
-        )
+        Rect::new(x0, r.y0 + HEADER_CTL_INSET, x1, r.y0 + HEADER_CTL_INSET + h)
     }
 
     fn rebuild_hits(&mut self) {
@@ -617,20 +749,26 @@ impl Pane {
         let r = self.rect;
         let m = self.list_metrics();
         hits.push((self.refresh_box_rect(), Hit::Refresh));
-        let sr = self.search_box_rect();
-        // The input sits between the search glyph and the clear glyph, both
-        // of which are squares the box's own height so they stay centred on
-        // it at every scale.
-        let glyph_w = sr.height();
-        *search_rect = Some(Rect::new(sr.x0 + glyph_w, sr.y0, sr.x1 - glyph_w, sr.y1));
-        hits.push((sr, Hit::SearchFocus));
-        if !st.search.is_empty() {
-            hits.push((
-                Rect::new(sr.x1 - glyph_w, sr.y0, sr.x1, sr.y1),
-                Hit::SearchClear,
-            ));
+        hits.push((self.bulk_mode_rect(), Hit::ToggleBulkSelection));
+        if !st.bulk_selecting {
+            let sr = self.search_box_rect();
+            *search_rect = Some(Rect::new(sr.x0 + 30.0, sr.y0, sr.x1 - 26.0, sr.y1));
+            hits.push((sr, Hit::SearchFocus));
+            if !st.search.is_empty() {
+                hits.push((
+                    Rect::new(sr.x1 - 26.0, sr.y0, sr.x1, sr.y1),
+                    Hit::SearchClear,
+                ));
+            }
         }
-        let mut ly = r.y0 + m.header_h;
+        if st.bulk_selecting {
+            hits.extend(
+                self.bulk_action_rects()
+                    .into_iter()
+                    .map(|(rect, hit, _)| (rect, hit)),
+            );
+        }
+        let mut ly = self.list_content_y();
         for (id, _len) in st.list_rows() {
             if ly >= r.y1 {
                 break;
@@ -649,7 +787,7 @@ impl Pane {
     /// available room. Part of [`Self::rebuild_hits`].
     fn rebuild_reader_hits(&self, st: &MailState, hits: &mut Vec<(Rect, Hit)>) {
         let r = self.rect;
-        if st.selected.is_none() {
+        if st.selected.is_none() || st.bulk_selecting {
             return;
         }
         let inset = if st.narrow && st.detail_pushed {
@@ -658,7 +796,11 @@ impl Pane {
             20.0
         };
         let mut bx = r.x0 + inset;
-        let by = r.y0 + 12.0;
+        // In the accessibility reading flow the NavShell back affordance owns
+        // the first header band. Keep message actions in the second band so
+        // they remain visible and reachable rather than being translated
+        // above the narrow reader viewport.
+        let by = r.y0 + if self.scale() > 1.25 { HEADER_H } else { 0.0 } + 12.0;
         // Compact icon-only buttons when the reader column is tight (narrow
         // layout, or a slim detail pane) so five actions always fit;
         // labelled when there's room.
@@ -710,10 +852,19 @@ impl Pane {
         let sb = self.rect;
         fill_rect(scene, t, sb, c.neutral[0]);
 
-        // No app-name header: the OS owns window chrome and shows "Mail" in the
-        // titlebar. The shell's collapse chip sits at the sidebar's top-left;
-        // the compose action and account list flow up beneath it. Account
-        // settings are reached per-account (the gear on each account row).
+        // The shell's collapse chip occupies the left edge of this compact
+        // header. Keeping a quiet in-app title beside it makes that band read
+        // as intentional on desktop instead of as a stranded chevron above a
+        // blank gap; account settings remain scoped to each account row.
+        tr.draw_text_weighted(
+            scene,
+            "Mail",
+            16.0,
+            c.text_primary,
+            t * Affine::translate((sb.x0 + CHIP_INSET + CHIP_SIZE + 12.0, sb.y0 + 19.0)),
+            None,
+            TextWeight::Semibold,
+        );
 
         // Compose button.
         if let Some((rect, _)) = self.hits.iter().find(|(_, h)| matches!(h, Hit::Compose)) {
@@ -741,13 +892,35 @@ impl Pane {
         for (rect, hit) in &self.hits {
             match hit {
                 Hit::Account(ai) => {
-                    Self::draw_sidebar_account_row(scene, t, tr, theme, &st, *rect, *ai, sb);
+                    Self::draw_sidebar_account_row(
+                        &mut DrawContext {
+                            scene,
+                            transform: t,
+                            text: tr,
+                            theme,
+                        },
+                        &st,
+                        *rect,
+                        *ai,
+                        sb,
+                    );
                 }
                 Hit::AddAccount => {
                     self.draw_sidebar_add_account_row(scene, t, tr, theme, *rect);
                 }
                 Hit::Folder(ai, f) => {
-                    Self::draw_sidebar_folder_row(scene, t, tr, theme, &st, *rect, *ai, *f);
+                    Self::draw_sidebar_folder_row(
+                        &mut DrawContext {
+                            scene,
+                            transform: t,
+                            text: tr,
+                            theme,
+                        },
+                        &st,
+                        *rect,
+                        *ai,
+                        *f,
+                    );
                 }
                 _ => {}
             }
@@ -757,20 +930,17 @@ impl Pane {
     /// One account header row: expand chevron, avatar, name/email, and the
     /// per-account settings gear. A no-op if `ai` is out of range. Part of
     /// [`Self::draw_sidebar`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the row layout draw_sidebar already computed; bundling them would just move the same count into a field list"
-    )]
     fn draw_sidebar_account_row(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         st: &MailState,
         rect: Rect,
         ai: usize,
         sb: Rect,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let Some(account) = st.accounts.accounts.get(ai) else {
             return;
@@ -802,11 +972,13 @@ impl Pane {
             c.text_dim,
         );
         draw_avatar(
-            scene,
-            tr,
-            t,
-            theme,
-            &st.images,
+            &mut AvatarPaintContext {
+                scene,
+                text: tr,
+                transform: t,
+                theme,
+                images: &st.images,
+            },
             Point::new(rect.x0 + 36.0, rect.y0 + ACCOUNT_HEADER_H / 2.0),
             13.0,
             &Addr::new(
@@ -895,20 +1067,17 @@ impl Pane {
     /// One folder row within an expanded account: icon, title, unread badge
     /// (active account only), and the selected-state highlight. Part of
     /// [`Self::draw_sidebar`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the row layout draw_sidebar already computed; bundling them would just move the same count into a field list"
-    )]
     fn draw_sidebar_folder_row(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         st: &MailState,
         rect: Rect,
         ai: usize,
         f: Folder,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let active_account = ai == st.accounts.active;
         let selected = active_account && f == st.folder;
@@ -933,12 +1102,7 @@ impl Pane {
         } else {
             c.neutral[7]
         };
-        let icon_box = Rect::new(
-            rect.x0 + 12.0,
-            cy - 9.0,
-            rect.x0 + 30.0,
-            cy + 9.0,
-        );
+        let icon_box = Rect::new(rect.x0 + 12.0, cy - 9.0, rect.x0 + 30.0, cy + 9.0);
         let icon_col = if selected { c.accent[5] } else { c.neutral[6] };
         f.icon().draw(scene, t, icon_box, icon_col);
 
@@ -966,7 +1130,9 @@ impl Pane {
         let text_x = rect.x0 + 40.0;
         let label_right = badge
             .as_ref()
-            .map_or(rect.x1 - f64::from(sp.s2), |(_, _, _, b)| b.x0 - f64::from(sp.s2));
+            .map_or(rect.x1 - f64::from(sp.s2), |(_, _, _, b)| {
+                b.x0 - f64::from(sp.s2)
+            });
         let weight = if selected {
             TextWeight::Semibold
         } else {
@@ -1002,6 +1168,10 @@ impl Pane {
 
     /// The list pane's header: folder title (+ count) and the search box, plus
     /// the manual sync/refresh button beside it. Part of [`Self::draw_list`].
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the header and its contextual selection replacement share measured geometry and must remain visually synchronized"
+    )]
     fn draw_list_header(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
         let st = self.shared.borrow();
@@ -1013,12 +1183,33 @@ impl Pane {
         // Whether the collapse chip sits over this pane's header (the list is
         // then the leftmost pane); matches `header_left_inset`'s List branch.
         let chip_here = st.narrow || !st.sidebar_open;
+        let s = self.scale();
         let gap = f64::from(theme.tokens.spacing.s3);
-        let title_full = st.folder.title();
-        let (twd, th) = tr.measure_weighted(title_full, 18.0, None, TextWeight::Bold);
-        let (title_x, title_y, header_cy) =
-            list_header_layout(r, self.shell_chip(r), chip_here, gap, f64::from(th));
-        let title_budget = sr.x0 - title_x - 12.0;
+        let (layout_title_x, title_y, header_cy) = list_header_layout(
+            r,
+            self.shell_chip(r),
+            chip_here,
+            gap,
+            f64::from(tr.measure_weighted("Ag", 18.0, None, TextWeight::Bold).1),
+        );
+        let mode_rect = self.bulk_mode_rect();
+        let title_x = (mode_rect.x1 + 10.0 * s).max(layout_title_x);
+        // Selection mode is an action state, not a second search state. Hide
+        // the search input while it is active so the explicit count has a
+        // proper, non-ellipsized title instead of competing with two compact
+        // controls in a 340px list column.
+        let title_right = if st.bulk_selecting {
+            self.refresh_box_rect().x0 - 12.0 * s
+        } else {
+            sr.x0 - 12.0 * s
+        };
+        let title_budget = title_right - title_x;
+        let title_full = if st.bulk_selecting {
+            "Selected"
+        } else {
+            st.folder.title()
+        };
+        let (twd, _) = tr.measure_weighted(title_full, 18.0, None, TextWeight::Bold);
         let title = crate::draw::elide(tr, title_full, 18.0, TextWeight::Bold, title_budget);
         tr.draw_text_weighted(
             scene,
@@ -1031,12 +1222,15 @@ impl Pane {
         );
         // Count sits after the full title only when there's room for both,
         // centred on the same line.
-        let count = st.mailbox.count(st.folder);
-        let count_x = title_x + f64::from(twd) + 10.0;
-        if f64::from(twd) <= title_budget && count_x + 26.0 < sr.x0 {
+        let count = if st.bulk_selecting {
+            st.selected_bulk_ids().len()
+        } else {
+            st.mailbox.count(st.folder)
+        };
+        let count_x = title_x + f64::from(twd) + 10.0 * s;
+        if f64::from(twd) <= title_budget && count_x + 26.0 * s < title_right {
             let count_label = format!("{count}");
-            let (_, ch) = tr.measure(&count_label, 12.0, None);
-            let count_y = header_cy - f64::from(ch) / 2.0;
+            let count_y = header_cy - f64::from(tr.measure(&count_label, 12.0, None).1) / 2.0;
             tr.draw_text(
                 scene,
                 &count_label,
@@ -1046,45 +1240,75 @@ impl Pane {
                 None,
             );
         }
-        // The field's rest edge is derived from its fill (HIG §9.5); focus
-        // keeps the focus ring.
-        if st.search_focused {
-            pill(scene, t, sr, c.surfaces.raised, Some(c.border_focus), Some(9.0));
-        } else {
-            card(scene, t, sr, 9.0, c.surfaces.raised);
-        }
-        // The search and clear glyphs each own a square the box's height, so
-        // they stay centred on the box (and on the input between them) at any
-        // text scale; the glyph itself is the small icon token, text-scaled.
-        let scale = f64::from(theme.text_scale).max(1.0);
-        let icon = f64::from(theme.tokens.metrics.icon_sm) * scale;
-        let glyph_w = sr.height();
-        let cy = sr.center().y;
-        Icon::Search.draw(
+
+        // Explicit mode affordance: unchecked begins local multi-select;
+        // checked returns to ordinary reading and clears that local selection.
+        let mode_hover = mode_rect.contains(st.last_mouse);
+        fill_round(
             scene,
             t,
-            Rect::new(
-                sr.x0 + (glyph_w - icon) / 2.0,
-                cy - icon / 2.0,
-                sr.x0 + (glyph_w + icon) / 2.0,
-                cy + icon / 2.0,
-            ),
-            c.text_dim,
+            mode_rect,
+            8.0 * s,
+            if mode_hover {
+                c.lift(0.72)
+            } else {
+                c.lift(0.35)
+            },
         );
-        // The placeholder is the shared field's own (`with_placeholder`), so it
-        // shares the typed text's font, gutter and centre line.
-        if !st.search.is_empty() {
-            Icon::X.draw(
+        stroke_round(scene, t, mode_rect, 8.0 * s, 1.0, c.border_standard);
+        if st.bulk_selecting {
+            Icon::Check.draw(scene, t, mode_rect.inset(-8.0 * s), c.accent[5]);
+        } else {
+            Icon::Square.draw(scene, t, mode_rect.inset(-8.0 * s), c.neutral[7]);
+        }
+        if !st.bulk_selecting {
+            fill_round(scene, t, sr, 9.0 * s, c.surfaces.raised);
+            stroke_round(
+                scene,
+                t,
+                sr,
+                9.0 * s,
+                1.0,
+                if st.search_focused {
+                    c.border_focus
+                } else {
+                    c.border_standard
+                },
+            );
+            Icon::Search.draw(
                 scene,
                 t,
                 Rect::new(
-                    sr.x1 - (glyph_w + icon) / 2.0,
-                    cy - icon / 2.0,
-                    sr.x1 - (glyph_w - icon) / 2.0,
-                    cy + icon / 2.0,
+                    sr.x0 + 8.0 * s,
+                    sr.y0 + 8.0 * s,
+                    sr.x0 + 24.0 * s,
+                    sr.y0 + 24.0 * s,
                 ),
                 c.text_dim,
             );
+            if st.search.is_empty() && !st.search_focused {
+                tr.draw_text(
+                    scene,
+                    "Search",
+                    13.0,
+                    c.text_dim,
+                    t * Affine::translate((sr.x0 + 30.0 * s, sr.y0 + 9.0 * s)),
+                    None,
+                );
+            }
+            if !st.search.is_empty() {
+                Icon::X.draw(
+                    scene,
+                    t,
+                    Rect::new(
+                        sr.x1 - 24.0 * s,
+                        sr.y0 + 8.0 * s,
+                        sr.x1 - 8.0 * s,
+                        sr.y0 + 24.0 * s,
+                    ),
+                    c.text_dim,
+                );
+            }
         }
 
         // Manual sync / refresh button.
@@ -1094,12 +1318,76 @@ impl Pane {
         // is drawn in the face's ink.
         let face = ButtonFace::new(rb, "").radius(9.0).hovered(rb_hov);
         Button::paint(scene, t, tr, theme, &face);
+        let icon = f64::from(theme.tokens.metrics.icon_sm) * f64::from(theme.text_scale);
         Icon::Refresh.draw(
             scene,
             t,
             rb.inset(-(rb.height() - icon) / 2.0),
             face.colors(theme).2,
         );
+
+        if st.bulk_selecting {
+            self.draw_bulk_toolbar(scene, t, tr, theme, &st);
+        }
+    }
+
+    /// Paint the compact, explicit selection toolbar. The icon order matches
+    /// [`Self::bulk_action_rects`], which is also the one event routing uses.
+    fn draw_bulk_toolbar(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        state: &MailState,
+    ) {
+        let c = &theme.tokens.colors;
+        let s = self.scale();
+        let actions = self.bulk_action_rects();
+        for (rect, hit, label) in actions {
+            let hover = rect.contains(state.last_mouse);
+            fill_round(
+                scene,
+                t,
+                rect,
+                8.0 * s,
+                if hover { c.lift(0.72) } else { c.lift(0.35) },
+            );
+            stroke_round(scene, t, rect, 8.0 * s, 1.0, c.border_standard);
+            let (icon, color) = match hit {
+                Hit::SelectAllVisible => (Icon::Square, c.neutral[8]),
+                Hit::Bulk(BulkAction::Archive) => (Icon::Archive, c.neutral[8]),
+                Hit::Bulk(BulkAction::Delete) => (Icon::Trash, c.semantic.danger),
+                Hit::Bulk(BulkAction::Purge) => (Icon::Trash2, c.semantic.danger),
+                Hit::Bulk(BulkAction::MarkRead) => (Icon::Mail, c.neutral[8]),
+                Hit::Bulk(BulkAction::MarkUnread) => (Icon::Undo2, c.neutral[8]),
+                _ => continue,
+            };
+            icon.draw(
+                scene,
+                t,
+                Rect::new(
+                    rect.x0 + 10.0 * s,
+                    rect.y0 + 10.0 * s,
+                    rect.x0 + 26.0 * s,
+                    rect.y0 + 26.0 * s,
+                ),
+                color,
+            );
+            tr.draw_text_weighted(
+                scene,
+                label,
+                11.5,
+                if matches!(hit, Hit::Bulk(BulkAction::Delete | BulkAction::Purge)) {
+                    color
+                } else {
+                    c.text_primary
+                },
+                t * Affine::translate((rect.x0 + 32.0 * s, rect.y0 + 12.0 * s)),
+                None,
+                TextWeight::Semibold,
+            );
+        }
     }
 
     fn draw_list(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -1122,7 +1410,7 @@ impl Pane {
                 t,
                 tr,
                 theme,
-                Rect::new(r.x0, r.y0 + self.list_metrics().header_h, r.x1, r.y1),
+                Rect::new(r.x0, self.list_content_y(), r.x1, r.y1),
                 Some(icon),
                 title,
                 Some(message),
@@ -1145,19 +1433,23 @@ impl Pane {
                 .iter()
                 .find(|(rid, _)| *rid == id)
                 .map_or(1, |(_, l)| *l);
-            let selected = st.selected == Some(id) && !st.narrow;
+            let selected = st.selected == Some(id) && !st.narrow && !st.bulk_selecting;
+            let bulk_selected = st.bulk_selection.contains(&id);
             let hov = rect.contains(st.last_mouse);
             let swipe_dx = self.swipe.filter(|s| s.id == id).map_or(0.0, |s| s.dx);
             self.draw_list_row(
-                scene,
-                t,
-                tr,
-                theme,
+                &mut DrawContext {
+                    scene,
+                    transform: t,
+                    text: tr,
+                    theme,
+                },
                 &ListRowArgs {
                     msg,
                     rect: *rect,
                     len,
                     selected,
+                    bulk_selected,
                     hov,
                     swipe_dx,
                     now_min: st.now_min,
@@ -1170,45 +1462,37 @@ impl Pane {
     /// selection/hover background, unread dot, avatar, name/date, subject
     /// (+ thread-size badge), snippet, and star/attachment glyphs. Part of
     /// [`Self::draw_list`].
-    fn draw_list_row(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        args: &ListRowArgs<'_>,
-    ) {
+    fn draw_list_row(&self, ctx: &mut DrawContext<'_>, args: &ListRowArgs<'_>) {
         let ListRowArgs {
             msg,
             rect,
             len,
             selected,
+            bulk_selected,
             hov,
             swipe_dx,
             now_min,
         } = *args;
-        let row = Self::draw_list_row_frame(scene, t, tr, theme, rect, swipe_dx, selected, hov);
-        self.draw_list_row_content(scene, t, tr, theme, row, msg, len, now_min);
+        let row = Self::draw_list_row_frame(ctx, rect, swipe_dx, selected, bulk_selected, hov);
+        self.draw_list_row_content(ctx, row, msg, len, now_min, bulk_selected);
     }
 
     /// Draw the swipe-action overlay (if dragged past the threshold) and the
     /// row's selection/hover background + bottom divider, returning the
     /// (possibly swipe-shifted) row rect the rest of the row draws into.
     /// Part of [`Self::draw_list_row`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the row state draw_list_row already resolved; bundling them would just move the same count into a field list"
-    )]
     fn draw_list_row_frame(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         rect: Rect,
         swipe_dx: f64,
         selected: bool,
+        bulk_selected: bool,
         hov: bool,
     ) -> Rect {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         if swipe_dx.abs() > 1.0 {
             let (col, icon, label, on_left) = if swipe_dx < 0.0 {
@@ -1240,9 +1524,15 @@ impl Pane {
         }
         let row = Rect::new(rect.x0 + swipe_dx, rect.y0, rect.x1 + swipe_dx, rect.y1);
 
-        // Selection is a lift with the accent kept to the leading bar (HIG
-        // §9.3 / §9.4), the same tier the folder rows use.
-        if selected {
+        if bulk_selected {
+            fill_rect(scene, t, row, c.accent[5].with_alpha_factor(0.24));
+            fill_rect(
+                scene,
+                t,
+                Rect::new(row.x0, row.y0, row.x0 + 3.0, row.y1),
+                c.accent[5],
+            );
+        } else if selected {
             fill_rect(scene, t, row, theme.bg_active);
             fill_rect(
                 scene,
@@ -1270,50 +1560,75 @@ impl Pane {
     /// Draw one row's content within its (already framed) `row` rect: unread
     /// dot, avatar, name/date, subject (+ thread-size badge), snippet, and
     /// star/attachment glyphs. Part of [`Self::draw_list_row`].
-    #[allow(clippy::too_many_arguments)]
     fn draw_list_row_content(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         row: Rect,
         msg: &Message,
         len: usize,
         now_min: i64,
+        bulk_selected: bool,
     ) {
         let unread = !msg.read;
-        let m = self.list_metrics();
-        self.draw_list_row_identity(scene, t, tr, theme, row, msg, unread, now_min, m);
-        Self::draw_list_row_subject(scene, t, tr, theme, row, msg, len, unread, m);
+        self.draw_list_row_identity(ctx, row, msg, unread, now_min, bulk_selected);
+        self.draw_list_row_subject(ctx, row, msg, len, unread);
     }
 
     /// The unread dot, avatar, sender name, and relative date of a list row.
     /// Part of [`Self::draw_list_row_content`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the row state draw_list_row already resolved; bundling them would just move the same count into a field list"
-    )]
     fn draw_list_row_identity(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         row: Rect,
         msg: &Message,
         unread: bool,
         now_min: i64,
-        m: ListRowMetrics,
+        bulk_selected: bool,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
+        let m = self.list_metrics();
         let c = &theme.tokens.colors;
-        if unread {
+        if bulk_selected {
             scene.fill(
                 Fill::NonZero,
                 t,
                 c.accent[5],
                 None,
-                &Circle::new(Point::new(row.x0 + 14.0, row.center().y), 4.0),
+                &Circle::new(
+                    Point::new(
+                        row.x0 + 14.0 * self.scale(),
+                        row.y0 + self.list_row_h() / 2.0,
+                    ),
+                    7.0 * self.scale(),
+                ),
+            );
+            Icon::Check.draw(
+                scene,
+                t,
+                Rect::new(
+                    row.x0 + 8.0 * self.scale(),
+                    row.y0 + self.list_row_h() / 2.0 - 6.0 * self.scale(),
+                    row.x0 + 20.0 * self.scale(),
+                    row.y0 + self.list_row_h() / 2.0 + 6.0 * self.scale(),
+                ),
+                Color::WHITE,
+            );
+        } else if unread {
+            scene.fill(
+                Fill::NonZero,
+                t,
+                c.accent[5],
+                None,
+                &Circle::new(
+                    Point::new(
+                        row.x0 + 14.0 * self.scale(),
+                        row.y0 + self.list_row_h() / 2.0,
+                    ),
+                    4.0 * self.scale(),
+                ),
             );
         }
         // The disc's radius is the row's measured `avatar_r` (text-scaled, so
@@ -1322,11 +1637,13 @@ impl Pane {
         // subject and snippet lines use.
         let avatar_cx = m.avatar_cx(row.x0);
         draw_avatar(
-            scene,
-            tr,
-            t,
-            theme,
-            &self.shared.borrow().images,
+            &mut AvatarPaintContext {
+                scene,
+                text: tr,
+                transform: t,
+                theme,
+                images: &self.shared.borrow().images,
+            },
             Point::new(avatar_cx, row.y0 + m.avatar_cy),
             m.avatar_r,
             &msg.from,
@@ -1377,21 +1694,19 @@ impl Pane {
 
     /// The subject line (+ thread-size badge), snippet, and star/attachment
     /// glyphs of a list row. Part of [`Self::draw_list_row_content`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the row state draw_list_row already resolved; bundling them would just move the same count into a field list"
-    )]
     fn draw_list_row_subject(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        &self,
+        ctx: &mut DrawContext<'_>,
         row: Rect,
         msg: &Message,
         len: usize,
         unread: bool,
-        m: ListRowMetrics,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
+        let m = self.list_metrics();
         let c = &theme.tokens.colors;
         // Same column as the sender line: one `s3` past the measured disc.
         let text_x = m.text_x(row.x0, f64::from(theme.tokens.spacing.s3));
@@ -1404,7 +1719,8 @@ impl Pane {
         } else {
             TextWeight::Regular
         };
-        let subj_budget = right - text_x - if len > 1 { 48.0 } else { 16.0 };
+        let s = self.scale();
+        let subj_budget = right - text_x - if len > 1 { 48.0 * s } else { 16.0 * s };
         let subject = elide(tr, &msg.thread_subject(), 12.5, subj_weight, subj_budget);
         tr.draw_text_weighted(
             scene,
@@ -1422,7 +1738,12 @@ impl Pane {
             let subj_cy = subj_y + m.subj_h / 2.0;
             let badge_h = (f64::from(bh) + 2.0).max(16.0);
             let bx = right - f64::from(bw) - 12.0;
-            let badge = Rect::new(bx - 6.0, subj_cy - badge_h / 2.0, right, subj_cy + badge_h / 2.0);
+            let badge = Rect::new(
+                bx - 6.0,
+                subj_cy - badge_h / 2.0,
+                right,
+                subj_cy + badge_h / 2.0,
+            );
             pill(scene, t, badge, c.neutral[3], None, None);
             tr.draw_text_weighted(
                 scene,
@@ -1435,7 +1756,11 @@ impl Pane {
             );
         }
 
-        let icon_reserve = if msg.has_attachments() { 64.0 } else { 28.0 };
+        let icon_reserve = if msg.has_attachments() {
+            64.0 * s
+        } else {
+            28.0 * s
+        };
         let snippet = elide(
             tr,
             &msg.snippet(),
@@ -1475,20 +1800,17 @@ impl Pane {
 
     /// The reader's action bar: Reply/Archive/Delete/Star/Mark-unread, icon
     /// only when `compact`, icon + label otherwise. Part of [`Self::draw_reader`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the reader state draw_reader already resolved; bundling them would just move the same count into a field list"
-    )]
     fn draw_reader_action_bar(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         compact: bool,
         starred: bool,
         last_mouse: Point,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         for (rect, hit) in &self.hits {
             let (label, danger, icon) = match hit {
@@ -1566,6 +1888,45 @@ impl Pane {
         let rr = self.rect;
         fill_rect(scene, t, rr, c.surfaces.raised);
 
+        if self.shared.borrow().bulk_selecting {
+            let count = self.shared.borrow().selected_bulk_ids().len();
+            let title = format!(
+                "{count} message{} selected",
+                if count == 1 { "" } else { "s" }
+            );
+            tr.draw_text_weighted(
+                scene,
+                &title,
+                20.0,
+                c.text_primary,
+                t * Affine::translate((rr.x0 + 28.0, rr.y0 + 38.0)),
+                None,
+                TextWeight::Bold,
+            );
+            tr.draw_text(
+                scene,
+                "Choose a batch action in the message list. Individual message actions are paused while selecting.",
+                13.0,
+                c.text_dim,
+                t * Affine::translate((rr.x0 + 28.0, rr.y0 + 68.0)),
+                None,
+            );
+            self.html_view_rect = None;
+            self.html_toggle_rect = None;
+            return;
+        }
+
+        // Thread cards deliberately pack several independent lines into a
+        // compact desktop rhythm. At accessibility scales that density stops
+        // being readable, so use a single-column reading flow measured by the
+        // same TextRenderer instead of allowing the original baselines to
+        // overlap. This is a presentation reflow only; messages, actions and
+        // the selected resource remain the same.
+        if theme.text_scale > 1.25 {
+            self.draw_large_text_reader(scene, t, tr, theme, rr);
+            return;
+        }
+
         let Some((head_id, head_html, webview_rect)) =
             self.draw_reader_thread(scene, t, tr, theme, rr)
         else {
@@ -1612,6 +1973,202 @@ impl Pane {
         }
     }
 
+    /// Accessibility-scale reader presentation: a measured, single-column
+    /// thread flow.  It intentionally favours message text over dense sender /
+    /// recipient metadata, which is still available in the ordinary 1× cards.
+    fn draw_large_text_reader(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rr: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        self.reader_attachment_hits.clear();
+        self.html_view_rect = None;
+        self.html_toggle_rect = None;
+        let st = self.shared.borrow();
+        let msgs = st.selected_thread_messages();
+        if msgs.is_empty() {
+            let hint = "Select a conversation to read";
+            let (w, _) = tr.measure(hint, 14.0, None);
+            tr.draw_text(
+                scene,
+                hint,
+                14.0,
+                c.text_dim,
+                t * Affine::translate((
+                    f64::midpoint(rr.x0, rr.x1) - f64::from(w) / 2.0,
+                    rr.y0 + rr.height() / 2.0,
+                )),
+                None,
+            );
+            return;
+        }
+
+        let compact = true;
+        let starred = st
+            .selected
+            .and_then(|id| st.mailbox.get(id))
+            .is_some_and(|message| message.starred);
+        self.draw_reader_action_bar(
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            compact,
+            starred,
+            st.last_mouse,
+        );
+
+        let width = (rr.width() - 48.0).max(120.0) as f32;
+        let x = rr.x0 + 24.0;
+        let mut y = rr.y0 + HEADER_H + 68.0;
+        let Some(head) = msgs.last().copied() else {
+            return;
+        };
+        let subject = elide(
+            tr,
+            &head.thread_subject(),
+            20.0,
+            TextWeight::Bold,
+            f64::from(width),
+        );
+        let (_, title_h) = tr.measure_weighted(&subject, 20.0, Some(width), TextWeight::Bold);
+        tr.draw_text_weighted(
+            scene,
+            &subject,
+            20.0,
+            c.text_primary,
+            t * Affine::translate((x, y)),
+            Some(width),
+            TextWeight::Bold,
+        );
+        y += f64::from(title_h) + 10.0;
+        let context = format!(
+            "{} message{} · {}",
+            msgs.len(),
+            if msgs.len() == 1 { "" } else { "s" },
+            st.folder.title()
+        );
+        tr.draw_text(
+            scene,
+            &context,
+            12.0,
+            c.text_dim,
+            t * Affine::translate((x, y)),
+            Some(width),
+        );
+        y += 38.0;
+
+        Self::draw_large_text_messages(
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            &msgs,
+            &LargeTextFlow {
+                bounds: rr,
+                x,
+                width,
+                y,
+            },
+        );
+    }
+
+    fn draw_large_text_messages(
+        ctx: &mut DrawContext<'_>,
+        messages: &[&Message],
+        flow: &LargeTextFlow,
+    ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
+        let colors = &theme.tokens.colors;
+        let LargeTextFlow {
+            bounds,
+            x,
+            width,
+            mut y,
+        } = *flow;
+        for message in messages {
+            if y >= bounds.y1 - 30.0 {
+                break;
+            }
+            let sender = message.from.display();
+            tr.draw_text_weighted(
+                scene,
+                &sender,
+                14.0,
+                colors.text_primary,
+                t * Affine::translate((x, y)),
+                Some(width),
+                TextWeight::Semibold,
+            );
+            y += 28.0;
+            let when = format_absolute(message.timestamp_min);
+            tr.draw_text(
+                scene,
+                &when,
+                11.5,
+                colors.text_dim,
+                t * Affine::translate((x, y)),
+                Some(width),
+            );
+            y += 28.0;
+            let (_, body_h) = tr.measure(&message.body, 13.5, Some(width));
+            tr.draw_text(
+                scene,
+                &message.body,
+                13.5,
+                colors.text_primary,
+                t * Affine::translate((x, y)),
+                Some(width),
+            );
+            y += f64::from(body_h) + 24.0;
+            fill_rect(
+                scene,
+                t,
+                Rect::new(x, y - 12.0, bounds.x1 - 24.0, y - 11.0),
+                colors.border_standard,
+            );
+        }
+    }
+
+    fn draw_empty_reader(ctx: &mut DrawContext<'_>, bounds: Rect) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let colors = &ctx.theme.tokens.colors;
+        let center = bounds.center();
+        Icon::Mail.draw(
+            scene,
+            ctx.transform,
+            Rect::new(
+                center.x - 26.0,
+                center.y - 66.0,
+                center.x + 26.0,
+                center.y - 14.0,
+            ),
+            colors.neutral[4],
+        );
+        let hint = "Select a conversation to read";
+        let (width, _) = tr.measure(hint, 14.0, None);
+        tr.draw_text(
+            scene,
+            hint,
+            14.0,
+            colors.text_dim,
+            ctx.transform * Affine::translate((center.x - f64::from(width) / 2.0, center.y)),
+            None,
+        );
+    }
+
     /// The message-thread portion of [`Self::draw_reader`]: the empty-state
     /// placeholder, the action bar, the subject/meta header, and each message
     /// card. Returns the head message's id, its HTML body (if any), and the
@@ -1632,23 +2189,14 @@ impl Pane {
         let msgs = st.selected_thread_messages();
         if msgs.is_empty() {
             self.reader_attachment_hits.clear();
-            let cx = f64::midpoint(rr.x0, rr.x1);
-            let cy = rr.y0 + rr.height() / 2.0;
-            Icon::Mail.draw(
-                scene,
-                t,
-                Rect::new(cx - 26.0, cy - 66.0, cx + 26.0, cy - 14.0),
-                c.neutral[4],
-            );
-            let hint = "Select a conversation to read";
-            let (w, _) = tr.measure(hint, 14.0, None);
-            tr.draw_text(
-                scene,
-                hint,
-                14.0,
-                c.text_dim,
-                t * Affine::translate((cx - f64::from(w) / 2.0, cy)),
-                None,
+            Self::draw_empty_reader(
+                &mut DrawContext {
+                    scene,
+                    transform: t,
+                    text: tr,
+                    theme,
+                },
+                rr,
             );
             return None;
         }
@@ -1659,7 +2207,17 @@ impl Pane {
             .selected
             .and_then(|id| st.mailbox.get(id))
             .is_some_and(|m| m.starred);
-        self.draw_reader_action_bar(scene, t, tr, theme, compact, starred, st.last_mouse);
+        self.draw_reader_action_bar(
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            compact,
+            starred,
+            st.last_mouse,
+        );
 
         let Some(head) = msgs.last() else {
             // Unreachable: `msgs.is_empty()` returned above — but bail rather
@@ -1669,10 +2227,12 @@ impl Pane {
         let content_x = rr.x0 + 24.0;
         let content_w = (rr.width() - 48.0) as f32;
         let mut y = Self::draw_reader_thread_heading(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
             content_x,
             content_w,
             head,
@@ -1681,10 +2241,12 @@ impl Pane {
             rr.y0 + HEADER_H + 8.0,
         );
         y = Self::draw_inspection_badge(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
             content_x,
             y,
             head.read,
@@ -1706,16 +2268,20 @@ impl Pane {
         let head_id = head.id;
         let head_html = head.html_body.clone();
         let webview_rect = self.draw_reader_thread_messages(
-            scene,
-            t,
-            tr,
-            theme,
-            rr,
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
             &msgs,
-            content_x,
-            content_w,
-            y,
-            head_html.is_some(),
+            &ReaderThreadLayout {
+                reader: rr,
+                content_x,
+                content_w,
+                y,
+                head_has_html: head_html.is_some(),
+            },
             &mut chip_hits,
         );
         self.reader_attachment_hits = chip_hits;
@@ -1725,12 +2291,8 @@ impl Pane {
 
     /// Draw the conversation title and its compact count/folder context,
     /// returning the baseline after that header.
-    #[allow(clippy::too_many_arguments)]
     fn draw_reader_thread_heading(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         content_x: f64,
         content_w: f32,
         head: &Message,
@@ -1738,6 +2300,10 @@ impl Pane {
         folder: Folder,
         y: f64,
     ) -> f64 {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let subject = elide(
             tr,
@@ -1774,12 +2340,8 @@ impl Pane {
     /// Draw the persistent visual counterpart of an explicit no-side-effect
     /// inspection. Returns the next baseline unchanged when the reader is
     /// showing a normal message open.
-    #[allow(clippy::too_many_arguments)]
     fn draw_inspection_badge(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         content_x: f64,
         y: f64,
         already_read: bool,
@@ -1788,6 +2350,10 @@ impl Pane {
         if !inspecting {
             return y;
         }
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let label = if already_read {
             "Preview · read state unchanged"
@@ -1832,27 +2398,27 @@ impl Pane {
     /// when it carries an HTML body, everything else draws as a text card.
     /// Returns the reserved HTML webview rect, if any. Part of
     /// [`Self::draw_reader_thread`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_reader_thread_messages(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rr: Rect,
+        ctx: &mut DrawContext<'_>,
         msgs: &[&Message],
-        content_x: f64,
-        content_w: f32,
-        mut y: f64,
-        head_has_html: bool,
+        layout: &ReaderThreadLayout,
         chip_hits: &mut Vec<(Rect, MessageId, usize)>,
     ) -> Option<Rect> {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
+        let ReaderThreadLayout {
+            reader,
+            content_x,
+            content_w,
+            mut y,
+            head_has_html,
+        } = *layout;
         let mut webview_rect: Option<Rect> = None;
         for (i, m) in msgs.iter().enumerate() {
-            if y > rr.y1 - 40.0 {
+            if y > reader.y1 - 40.0 {
                 break;
             }
             let is_head = i == msgs.len() - 1;
@@ -1873,7 +2439,7 @@ impl Pane {
                     },
                 );
                 y += 8.0;
-                let bottom = rr.y1 - 46.0; // room for the remote-images bar
+                let bottom = reader.y1 - 46.0; // room for the remote-images bar
                 if bottom > y + 48.0 {
                     webview_rect = Some(Rect::new(
                         content_x,
@@ -1884,7 +2450,20 @@ impl Pane {
                 }
             } else {
                 y = self.draw_message_card(
-                    scene, t, tr, theme, m, content_x, y, content_w, is_head, chip_hits,
+                    &mut DrawContext {
+                        scene,
+                        transform: t,
+                        text: tr,
+                        theme,
+                    },
+                    &CardHeaderArgs {
+                        msg: m,
+                        x: content_x,
+                        y,
+                        width: content_w,
+                    },
+                    is_head,
+                    chip_hits,
                 );
                 y += 14.0;
             }
@@ -2096,11 +2675,13 @@ impl Pane {
         });
 
         draw_avatar(
-            scene,
-            tr,
-            t,
-            theme,
-            &st.images,
+            &mut AvatarPaintContext {
+                scene,
+                text: tr,
+                transform: t,
+                theme,
+                images: &st.images,
+            },
             layout.avatar_c,
             avatar_r,
             &msg.from,
@@ -2144,10 +2725,7 @@ impl Pane {
             &date,
             11.5,
             c.text_dim,
-            t * Affine::translate((
-                layout.date_x,
-                layout.name_y + layout.name_h - f64::from(dh),
-            )),
+            t * Affine::translate((layout.date_x, layout.name_y + layout.name_h - f64::from(dh))),
             None,
         );
         tr.draw_text(
@@ -2164,26 +2742,22 @@ impl Pane {
         layout.bottom
     }
 
-    #[allow(clippy::too_many_arguments)]
     /// Draw the "N attachments" label and the wrapping row of attachment
     /// chips for an expanded message card, recording each chip's hit region.
     /// Returns the y past the chips. Part of [`Self::draw_message_card`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the card layout draw_message_card already computed; bundling them would just move the same count into a field list"
-    )]
     fn draw_attachment_chips(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         msg: &Message,
         cx: f64,
         card_x1: f64,
         mut yy: f64,
         chip_hits: &mut Vec<(Rect, MessageId, usize)>,
     ) -> f64 {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         yy += 8.0;
         tr.draw_text_weighted(
@@ -2265,37 +2839,27 @@ impl Pane {
 
     /// Draw one message card in the reader thread (header + body or a
     /// collapsed preview line) and return the y past it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the thread layout draw_reader already resolved; bundling them would just move the same count into a field list"
-    )]
     fn draw_message_card(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        msg: &Message,
-        cx: f64,
-        cy: f64,
-        width: f32,
+        ctx: &mut DrawContext<'_>,
+        args: &CardHeaderArgs<'_>,
         expanded: bool,
         chip_hits: &mut Vec<(Rect, MessageId, usize)>,
     ) -> f64 {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
+        let CardHeaderArgs {
+            msg,
+            x,
+            y: _,
+            width,
+        } = *args;
+        let cx = x;
         let card_x1 = cx + f64::from(width);
-        let mut yy = self.draw_card_header(
-            scene,
-            t,
-            tr,
-            theme,
-            &CardHeaderArgs {
-                msg,
-                x: cx,
-                y: cy,
-                width,
-            },
-        );
+        let mut yy = self.draw_card_header(scene, t, tr, theme, args);
         if expanded {
             for para in msg.body.split('\n') {
                 if para.trim().is_empty() {
@@ -2316,8 +2880,19 @@ impl Pane {
                 yy += f64::from(ph.max(18.0)) + 2.0;
             }
             if msg.has_attachments() {
-                yy = self
-                    .draw_attachment_chips(scene, t, tr, theme, msg, cx, card_x1, yy, chip_hits);
+                yy = self.draw_attachment_chips(
+                    &mut DrawContext {
+                        scene,
+                        transform: t,
+                        text: tr,
+                        theme,
+                    },
+                    msg,
+                    cx,
+                    card_x1,
+                    yy,
+                    chip_hits,
+                );
             }
         } else {
             // Collapsed preview: a single elided line so a narrow reader column
@@ -2416,6 +2991,34 @@ impl Pane {
                     st.dirty = true;
                     *handled = true;
                 }
+                Hit::ToggleBulkSelection => {
+                    let selecting = self.shared.borrow().bulk_selecting;
+                    self.shared.borrow_mut().set_bulk_selecting(!selecting);
+                    *handled = true;
+                }
+                Hit::SelectAllVisible => {
+                    self.shared.borrow_mut().select_all_visible();
+                    *handled = true;
+                }
+                Hit::Bulk(action) => {
+                    if action == BulkAction::Purge {
+                        self.shared
+                            .borrow_mut()
+                            .push_intent(Intent::ConfirmBulkPurge);
+                        *handled = true;
+                        return;
+                    }
+                    let affected = self.shared.borrow_mut().apply_bulk_action(doc, action);
+                    if affected > 0 {
+                        self.shared.borrow_mut().status = Some(format!(
+                            "{} {} message{}",
+                            action.label(),
+                            affected,
+                            if affected == 1 { "" } else { "s" }
+                        ));
+                    }
+                    *handled = true;
+                }
                 Hit::SearchFocus => {
                     self.set_search_focus(true);
                     *handled = true;
@@ -2435,6 +3038,11 @@ impl Pane {
                 }
                 Hit::Row(id) => {
                     self.set_search_focus(false);
+                    if self.shared.borrow().bulk_selecting {
+                        self.shared.borrow_mut().toggle_bulk_selection(id);
+                        *handled = true;
+                        return;
+                    }
                     let is_draft = self
                         .shared
                         .borrow()
@@ -2456,7 +3064,9 @@ impl Pane {
         // A later drag past the threshold turns it into a swipe action
         // (archive/delete) on release; a release without a drag is a plain
         // tap, which already selected on press.
-        if let Some(id) = self.row_id_at(pt) {
+        if !self.shared.borrow().bulk_selecting
+            && let Some(id) = self.row_id_at(pt)
+        {
             self.mouse_down_row = Some((id, pt));
         }
     }
@@ -2506,30 +3116,13 @@ impl Pane {
         }
     }
 
-    /// Save a reader attachment's real bytes to the downloads directory, or
-    /// report that it hasn't been downloaded (hydrated) yet.
+    /// Request saving a reader attachment through the root's host-portal
+    /// boundary. A pane never invents a Downloads path or writes the host
+    /// filesystem itself.
     fn save_attachment_click(&self, mid: MessageId, ai: usize) {
-        let mut st = self.shared.borrow_mut();
-        let Some(att) = st
-            .mailbox
-            .get(mid)
-            .and_then(|m| m.attachments.get(ai))
-            .cloned()
-        else {
-            return;
-        };
-        if !att.is_downloadable() {
-            st.status = Some(format!("{} isn't downloaded yet", att.filename));
-            st.dirty = true;
-            return;
-        }
-        st.status = Some(
-            match crate::util::save_download(&att.filename, &att.content) {
-                Ok(path) => format!("Saved {} to {}", att.filename, path.display()),
-                Err(e) => format!("Couldn't save {}: {e}", att.filename),
-            },
-        );
-        st.dirty = true;
+        self.shared
+            .borrow_mut()
+            .push_intent(Intent::SaveAttachment(mid, ai));
     }
 
     fn set_search_focus(&mut self, on: bool) {
@@ -2563,22 +3156,7 @@ impl Pane {
     /// Forward pointer-move/wheel into the sandboxed HTML body view while one
     /// is actually shown in the reader, so an HTML mail scrolls; the view
     /// consumes a wheel that lands over it. Part of [`Widget::handle_event`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event's own parameter list, which is fixed by the shared framework contract (see the trait doc)"
-    )]
-    fn forward_html_view_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn forward_html_view_event(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) {
         let over_html = self.role == Role::Reader
             && self.html_view_rect.is_some()
             && matches!(
@@ -2591,14 +3169,14 @@ impl Pane {
         if let Some(view) = self.html_view.as_mut() {
             view.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
+                ctx.scale_factor,
+                &ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.handled,
+                ctx.focus_target,
+                ctx.node_id,
+                ctx.taffy,
             );
         }
     }
@@ -2609,22 +3187,7 @@ impl Pane {
     /// after this (true whenever the event was a keyboard event on the list
     /// role, matching the field regardless of whether search was focused).
     /// Part of [`Widget::handle_event`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event's own parameter list, which is fixed by the shared framework contract (see the trait doc)"
-    )]
-    fn handle_search_keyboard(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn handle_search_keyboard(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) -> bool {
         if !(matches!(event, WindowEvent::KeyboardInput { .. }) && self.role == Role::List) {
             return false;
         }
@@ -2633,14 +3196,14 @@ impl Pane {
             if let Some(inp) = self.search_input.as_mut() {
                 inp.handle_event(
                     event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
+                    ctx.scale_factor,
+                    &ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.handled,
+                    ctx.focus_target,
+                    ctx.node_id,
+                    ctx.taffy,
                 );
             }
             // Reflect the field into the query + first-row selection.
@@ -2653,7 +3216,7 @@ impl Pane {
             st.search = value;
             st.selected = st.list_rows().first().map(|(id, _)| *id);
             st.dirty = true;
-            *handled = true;
+            *ctx.handled = true;
         }
         true
     }
@@ -2669,9 +3232,10 @@ impl Widget for Pane {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.layout_scale = f64::from(theme.text_scale);
         // `Widget::build_layout` returns a bare `NodeId`, not a `Result` — a
         // framework-wide contract this one widget can't change — so a
         // `new_leaf` failure (which a valid, freshly-created `Style` cannot
@@ -2821,6 +3385,21 @@ impl Widget for Pane {
                 Hit::SearchFocus => "Search mail (/ or Ctrl+F)",
                 Hit::SearchClear => "Clear search",
                 Hit::Refresh => "Refresh (F5)",
+                Hit::ToggleBulkSelection => {
+                    if self.shared.borrow().bulk_selecting {
+                        "Done selecting messages (Esc)"
+                    } else {
+                        "Select messages for bulk actions (X)"
+                    }
+                }
+                Hit::SelectAllVisible => "Select all visible messages",
+                Hit::Bulk(BulkAction::Archive) => "Archive selected messages (E)",
+                Hit::Bulk(BulkAction::Delete) => "Move selected messages to Trash (Delete)",
+                Hit::Bulk(BulkAction::Purge) => {
+                    "Delete selected trashed messages permanently (Shift+Delete)"
+                }
+                Hit::Bulk(BulkAction::MarkRead) => "Mark selected messages read",
+                Hit::Bulk(BulkAction::MarkUnread) => "Mark selected messages unread",
                 Hit::Reply => "Reply (R)",
                 Hit::Archive => "Archive (E)",
                 Hit::Delete => "Delete (Delete)",
@@ -2857,14 +3436,16 @@ impl Widget for Pane {
 
         self.forward_html_view_event(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
+            &mut EventContext {
+                scale_factor,
+                modifiers: *modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            },
         );
         if *handled {
             return;
@@ -2872,14 +3453,16 @@ impl Widget for Pane {
 
         if self.handle_search_keyboard(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
+            &mut EventContext {
+                scale_factor,
+                modifiers: *modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            },
         ) {
             return;
         }
@@ -3198,7 +3781,10 @@ mod tests {
             row.y0 + m.icon_cy + 8.0,
         );
         assert_eq!(hit.union(glyph), hit, "star hit rect contains the glyph");
-        assert!(hit.y0 > row.y0 + m.name_y, "the target is not over the date line");
+        assert!(
+            hit.y0 > row.y0 + m.name_y,
+            "the target is not over the date line"
+        );
 
         // Doubled line boxes (200% text) grow the row instead of overlapping.
         let big = ListRowMetrics::from_line_boxes(33.75, 31.25, 28.75, 4.0, 12.0);
@@ -3285,8 +3871,14 @@ mod tests {
         // follows it, centred on its centre line and spaced past its edge.
         let big_chip = Rect::new(12.0, 12.0, 12.0 + 53.5, 12.0 + 53.5);
         let (bx, by, bcy) = list_header_layout(rect, big_chip, true, gap, 45.0);
-        assert!((bcy - big_chip.center().y).abs() < 1e-9, "centre line follows the real chip");
-        assert!((bx - (big_chip.x1 + gap)).abs() < 1e-9, "title clears the real chip");
+        assert!(
+            (bcy - big_chip.center().y).abs() < 1e-9,
+            "centre line follows the real chip"
+        );
+        assert!(
+            (bx - (big_chip.x1 + gap)).abs() < 1e-9,
+            "title clears the real chip"
+        );
         assert!((by + 22.5 - bcy).abs() < 1e-9);
         assert_eq!(nx, rect.x0 + 20.0);
     }
@@ -3299,7 +3891,7 @@ mod tests {
             crate::account::AccountStore::new(),
             crate::app::avatar_store_offline(),
         ));
-        let raw = b"From: Ada <ada@x.example>\r\nTo: you@qos.example\r\n\
+        let raw = b"From: Ada <ada@x.example>\r\nTo: you@tilo.example\r\n\
 Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
         let id = {
             let mut st = sh.borrow_mut();
@@ -3337,7 +3929,7 @@ Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
             st.mailbox
                 .messages
                 .values()
-                .find(|m| m.from.email == "news@weekly.qos.example")
+                .find(|m| m.from.email == "news@weekly.tilo.example")
                 .expect("the sample HTML newsletter is present")
                 .id
         };
@@ -3421,7 +4013,7 @@ Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
             st.mailbox
                 .messages
                 .values()
-                .find(|m| m.from.email == "news@weekly.qos.example")
+                .find(|m| m.from.email == "news@weekly.tilo.example")
                 .unwrap()
                 .id
         };
@@ -3483,10 +4075,7 @@ Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
     }
 
     #[test]
-    fn reader_attachment_chip_click_saves_real_bytes() {
-        let dir = std::env::temp_dir().join(format!("mail-dl-{}", uuid::Uuid::new_v4()));
-        unsafe { std::env::set_var("QOS_MAIL_DOWNLOADS", &dir) };
-
+    fn reader_attachment_chip_click_requests_the_root_portal_save() {
         let sh = shared();
         // The Radia message is parsed from real MIME and carries a hydrated PDF.
         let id = {
@@ -3505,7 +4094,7 @@ Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
             !p.reader_attachment_hits.is_empty(),
             "attachment chip has a hit region"
         );
-        let (rect, mid, _ai) = p.reader_attachment_hits[0];
+        let (rect, mid, ai) = p.reader_attachment_hits[0];
         assert_eq!(mid, id);
 
         sh.borrow_mut().last_mouse = rect.center();
@@ -3514,18 +4103,13 @@ Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
         p.on_left_press(&mut doc, rect.center(), &mut handled);
         assert!(handled, "chip click consumed");
 
-        let saved = dir.join("spanning-tree.pdf");
         assert!(
-            saved.exists(),
-            "the real attachment bytes were written to disk"
+            sh.borrow_mut()
+                .take_intents()
+                .iter()
+                .any(|intent| matches!(intent, Intent::SaveAttachment(found, found_index) if *found == id && *found_index == ai)),
+            "a pane hands the stable attachment address to MailApp; only the root opens the host portal and writes bytes"
         );
-        assert!(!std::fs::read(&saved).unwrap().is_empty());
-        assert!(
-            sh.borrow().status.as_ref().unwrap().contains("Saved"),
-            "toast confirms the save"
-        );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

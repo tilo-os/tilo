@@ -1,6 +1,6 @@
 //! The agent against a real socket: the production Cap'n Proto broker on a
 //! temp path, a peer that holds the document the way the word processor does
-//! (same route, answers `Arrived` with a full snapshot, absorbs incremental
+//! (same route, answers a directed snapshot request, absorbs incremental
 //! changes), and the agent joining late, reading the instruction out of the
 //! document, and carrying it out through the app's published action — asserted
 //! on the peer's replica, never on the agent's own.
@@ -21,15 +21,15 @@
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
-use qos_actions::Resource;
-use qos_agent::{Config, Session};
+use tilo_actions::Resource;
+use tilo_agent::{Config, Session};
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation, PresencePayload};
 use uuid::Uuid;
 
 mod typed_peer;
 use typed_peer::{TypedPeer as UnixStream, document_mutation, recv, send};
 
-const APP: &str = "dev.qos.word-processor";
+const APP: &str = "dev.tilo.word-processor";
 const RECORD: &str = "file:/var/workspace/Demo/brief.docx";
 
 /// The capability an inviter issues an agent for the app it was invited
@@ -242,8 +242,8 @@ fn service_word_processor_invocation(
     send(peer, &CollabRequest::UpdateInvocation { id, update }).unwrap();
 }
 
-/// Drive the peer exactly as the app would: answer the agent's Arrived with
-/// a full snapshot, apply every incremental change to the replica, and
+/// Drive the peer exactly as the app would: answer the broker's directed
+/// request with a full snapshot, apply every incremental change to the replica, and
 /// watch for the table. Returns the peer, replica, whether it settled into the
 /// table, whether Scribe's own presence was observed, and the authenticated
 /// actor attached to the broker invocation.
@@ -271,8 +271,7 @@ fn drive_peer_to_table(
                 ..
             } => {
                 // The typed SDK reports the local participant's initial
-                // presence as well as remote arrivals. Only Scribe's arrival
-                // asks this app peer to offer its document.
+                // presence as well as remote arrivals.
                 if user_id == "quinten" {
                     continue;
                 }
@@ -281,10 +280,9 @@ fn drive_peer_to_table(
                     "the relay names presence by the announced handle"
                 );
                 saw_scribe_presence = true;
-                publish_word_processor_actions(&mut peer, &replica);
-                let snap = CollabRequest::DocumentSnapshot {
-                    data: replica.save(),
-                };
+            }
+            CollabEvent::DocumentSnapshotRequested { .. } => {
+                let snap = CollabRequest::document_snapshot(replica.save());
                 send(&mut peer, &snap).unwrap();
             }
             CollabEvent::RemotePresenceUpdate {
@@ -402,6 +400,11 @@ fn the_agent_inserts_a_table_on_the_peers_replica() {
     };
     send(&mut peer, &hello).unwrap();
     let replica = seed_document();
+    // A real app publishes its action surface when the document opens, not
+    // after a prospective invoker announces itself. Publishing here also
+    // removes the race where the agent can inspect the snapshot before the
+    // peer has processed its arrival event.
+    publish_word_processor_actions(&mut peer, &replica);
     // Let the relay register the peer's Hello before the agent's frames
     // can race it (the relay handles each connection on its own thread).
     std::thread::sleep(Duration::from_millis(100));
@@ -555,7 +558,7 @@ fn connect_files_and_word_processor(
     send(
         &mut files_peer,
         &CollabRequest::Hello {
-            app_id: "dev.qos.file-explorer".into(),
+            app_id: "dev.tilo.file-explorer".into(),
             cluster_id: room,
             record: None,
             handle: Some("files".into()),
@@ -580,9 +583,8 @@ fn connect_files_and_word_processor(
     (files_peer, files_doc, wp_peer, replica)
 }
 
-/// The file manager answers every `Arrived` with its own document — the
-/// ordering that broke this once, since it answers before the word
-/// processor does.
+/// A file-manager connection on another route must never receive the directed
+/// request for the word-processor document.
 fn drive_files_peer(mut files_peer: UnixStream, mut files_doc: AutoCommit) {
     files_peer.set_read_timeout(Some(Duration::from_millis(200)));
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -590,23 +592,15 @@ fn drive_files_peer(mut files_peer: UnixStream, mut files_doc: AutoCommit) {
         let Some(event) = recv(&mut files_peer) else {
             continue;
         };
-        if let CollabEvent::RemotePresenceUpdate {
-            payload: PresencePayload::Arrived,
-            ..
-        } = event
-        {
-            let snap = CollabRequest::DocumentSnapshot {
-                data: files_doc.save(),
-            };
+        if let CollabEvent::DocumentSnapshotRequested { .. } = event {
+            let snap = CollabRequest::document_snapshot(files_doc.save());
             send(&mut files_peer, &snap).unwrap();
         }
     }
 }
 
-/// The word processor answers its own `Arrived` shortly after the file
-/// manager does — by which point the agent has already taken the wrong
-/// document, if it was going to — then watches for its instruction to
-/// resolve into a table.
+/// The word processor answers the directed request, then watches for its
+/// instruction to resolve into a table.
 fn drive_word_processor_to_table(
     mut wp_peer: UnixStream,
     mut replica: AutoCommit,
@@ -620,18 +614,11 @@ fn drive_word_processor_to_table(
             continue;
         };
         match event {
-            CollabEvent::RemotePresenceUpdate {
-                payload: PresencePayload::Arrived,
-                ..
-            } if !answered => {
+            CollabEvent::DocumentSnapshotRequested { .. } if !answered => {
                 answered = true;
-                // Shortly after the file manager, so the agent has already
-                // taken the wrong document by the time this arrives.
                 std::thread::sleep(Duration::from_millis(400));
                 publish_word_processor_actions(&mut wp_peer, &replica);
-                let snap = CollabRequest::DocumentSnapshot {
-                    data: replica.save(),
-                };
+                let snap = CollabRequest::document_snapshot(replica.save());
                 send(&mut wp_peer, &snap).unwrap();
             }
             CollabEvent::Invocation {
@@ -883,14 +870,9 @@ fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
             continue;
         };
         match event {
-            CollabEvent::RemotePresenceUpdate {
-                payload: PresencePayload::Arrived,
-                ..
-            } => {
+            CollabEvent::DocumentSnapshotRequested { .. } => {
                 publish_word_processor_actions(&mut peer, &replica);
-                let snap = CollabRequest::DocumentSnapshot {
-                    data: replica.save(),
-                };
+                let snap = CollabRequest::document_snapshot(replica.save());
                 send(&mut peer, &snap).unwrap();
             }
             CollabEvent::Invocation {
@@ -1028,14 +1010,9 @@ fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
             continue;
         };
         match event {
-            CollabEvent::RemotePresenceUpdate {
-                payload: PresencePayload::Arrived,
-                ..
-            } => {
+            CollabEvent::DocumentSnapshotRequested { .. } => {
                 publish_word_processor_actions(&mut peer, &replica);
-                let snap = CollabRequest::DocumentSnapshot {
-                    data: replica.save(),
-                };
+                let snap = CollabRequest::document_snapshot(replica.save());
                 send(&mut peer, &snap).unwrap();
             }
             CollabEvent::Invocation {

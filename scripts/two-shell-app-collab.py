@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Two qOS sessions, one shared workspace, real apps collaborating.
+"""Two Tilo sessions, one shared workspace, real apps collaborating.
 
 `two-session-collab-demo.py` proves the two sessions become one room and
 that the room's own state replicates. It never starts an app, so it says
@@ -34,7 +34,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Long paths are the thing that breaks this harness first: a Unix socket
 # address is capped at ~108 bytes and the compositor puts its broker at
-# <runtime>/qos/services/collab.sock. A runtime dir under the repo or a
+# <runtime>/tilo/services/collab.sock. A runtime dir under the repo or a
 # scratch tree overflows that, the broker fails to bind, and every app
 # then starts with collaboration silently off. Keep these short.
 RUNTIME_BASE = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
@@ -42,7 +42,7 @@ RUNTIME_BASE = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
 APPS = {
     "word-processor": {
         "bin": "word-processor",
-        "package": "dev.qos.word-processor",
+        "package": "dev.tilo.word-processor",
         # The document both windows open. Its path is its record id, which
         # is the collaboration address, so both sides must name it
         # identically.
@@ -50,7 +50,7 @@ APPS = {
     },
     "file-explorer": {
         "bin": "file-explorer",
-        "package": "dev.qos.file-explorer",
+        "package": "dev.tilo.file-explorer",
         "needs_doc": False,
     },
 }
@@ -122,11 +122,11 @@ class Session:
 
     @property
     def collab_sock(self) -> str:
-        return os.path.join(self.runtime_dir, "qos", "services", "collab.sock")
+        return os.path.join(self.runtime_dir, "tilo", "services", "collab.sock")
 
     @property
     def collab_json_sock(self) -> str:
-        return os.path.join(self.runtime_dir, "qos", "services", "collab-json.sock")
+        return os.path.join(self.runtime_dir, "tilo", "services", "collab-json.sock")
 
     # -- lifecycle ---------------------------------------------------
 
@@ -135,7 +135,7 @@ class Session:
         # Nothing inherited may make the two sessions share state, and
         # nothing may point an app at a broker other than its own session's.
         for k in ("DISPLAY", "WAYLAND_DISPLAY", "QUICK_COLLAB_SOCK",
-                  "QUICK_COLLAB_CAPNP_SOCK", "QOS_SVC_COLLAB_FD"):
+                  "QUICK_COLLAB_CAPNP_SOCK", "TILO_SVC_COLLAB_FD"):
             env.pop(k, None)
         env.update(
             XDG_RUNTIME_DIR=self.runtime_dir,
@@ -151,15 +151,15 @@ class Session:
         os.makedirs(self.runtime_dir, mode=0o700, exist_ok=True)
         env = self.base_env()
         env.update(
-            QOS_USER_ID=self.user,
+            TILO_USER_ID=self.user,
             # Without a writable key path the compositor refuses to run
             # peer sync at all ("peer sync stays off rather than syncing an
             # unsalted id space"), and the two sessions never become one
             # room however the invite goes.
-            QOS_PEER_KEY_PATH=os.path.join(self.dir, "keys", "peer-key"),
-            QOS_FS_ACL_PATH=os.path.join(self.dir, "config", "fs-capabilities.json"),
-            QOS_TEST_CONTROL=self.sock,
-            NIRIOS_HEADLESS_SIZE=self.size,
+            TILO_PEER_KEY_PATH=os.path.join(self.dir, "keys", "peer-key"),
+            TILO_FS_ACL_PATH=os.path.join(self.dir, "config", "fs-capabilities.json"),
+            TILO_TEST_CONTROL=self.sock,
+            TILO_HEADLESS_SIZE=self.size,
             RUST_LOG=env.get("RUST_LOG", "info"),
         )
         self._log = open(self.log_path, "w")
@@ -382,8 +382,8 @@ class Session:
         """Start a real app process against this session's own broker.
 
         The app is addressed exactly as the launcher addresses one:
-        `QOS_PACKAGE_ID` is the routing identity the broker keys document
-        traffic on, `QOS_WORKSPACE_ID` is the room. `QUICK_APP_ID` is this
+        `TILO_PACKAGE_ID` is the routing identity the broker keys document
+        traffic on, `TILO_WORKSPACE_ID` is the room. `QUICK_APP_ID` is this
         window's own identity — it drives the Automerge actor, so two
         windows are two distinguishable authors.
         """
@@ -392,10 +392,10 @@ class Session:
         env.update(
             WAYLAND_DISPLAY=self.wayland,
             QUICK_COLLAB_SOCK=self.collab_json_sock,
-            QOS_PACKAGE_ID=spec["package"],
+            TILO_PACKAGE_ID=spec["package"],
             QUICK_APP_ID=peer_id,
-            QOS_WORKSPACE_ID=room,
-            QUICK_COLLAB_DEBUG="1",
+            TILO_WORKSPACE_ID=room,
+            RUST_LOG="tilo.state=debug",
             RUST_LOG="warn",
         )
         argv = [os.path.join(REPO, "target", "debug", spec["bin"])]
@@ -483,7 +483,7 @@ def main() -> int:
               file=sys.stderr)
         return 2
 
-    out = args.out or os.path.join("/tmp", f"qos-app-collab-{os.getpid()}")
+    out = args.out or os.path.join("/tmp", f"tilo-app-collab-{os.getpid()}")
     os.makedirs(out, exist_ok=True)
     print(f"artefacts: {out}")
 

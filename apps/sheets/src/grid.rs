@@ -1,4 +1,4 @@
-//! The spreadsheet grid — a hand-rolled view that paints A1 headers, a
+//! The spreadsheet grid — a direct-painted view with A1 headers, a
 //! scrollable cell matrix, selection (single + range), an in-cell editor,
 //! and column/row resize handles directly into the Vello scene.
 //!
@@ -18,6 +18,7 @@ use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::text_edit::{EditCore, Motion};
 use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 
@@ -88,29 +89,59 @@ pub enum GridCmd {
 #[derive(Clone)]
 struct EditState {
     addr: Addr,
-    chars: Vec<char>,
-    caret: usize,
-    /// Selection anchor. When `Some` and different from `caret`, the text
-    /// between the two is selected (highlighted, replaced on type/paste,
-    /// removed on backspace). `None` means a plain caret with no selection.
-    sel: Option<usize>,
+    text: String,
+    /// Shared caret/selection core. The grid keeps its custom cell painting
+    /// and point-mode formula insertion, but all text editing semantics come
+    /// from the same byte-safe core as the other editable surfaces.
+    core: EditCore,
 }
 
 impl EditState {
     fn text(&self) -> String {
-        self.chars.iter().collect()
+        self.text.clone()
     }
 
     /// The ordered `(start, end)` char indices of the current selection, or
     /// `None` when nothing is selected.
     fn selection(&self) -> Option<(usize, usize)> {
-        let anchor = self.sel?;
-        let (a, b) = (anchor.min(self.caret), anchor.max(self.caret));
-        if a == b {
-            None
-        } else {
-            Some((a, b.min(self.chars.len())))
+        let range = self.core.range();
+        if range.is_empty() {
+            return None;
         }
+        Some((
+            self.text
+                .get(..range.start)
+                .map_or(0, |prefix| prefix.chars().count()),
+            self.text
+                .get(..range.end)
+                .map_or(0, |prefix| prefix.chars().count()),
+        ))
+    }
+
+    fn caret(&self) -> usize {
+        self.text
+            .get(..self.core.caret().min(self.text.len()))
+            .map_or(0, |prefix| prefix.chars().count())
+    }
+
+    fn set_caret(&mut self, char_idx: usize, extend: bool) {
+        let byte = self
+            .text
+            .char_indices()
+            .nth(char_idx)
+            .map_or(self.text.len(), |(byte, _)| byte);
+        self.core.place(byte, extend);
+    }
+
+    fn apply_edit(&mut self, edit: &ui::text_edit::Edit) {
+        if edit.is_noop() {
+            return;
+        }
+        self.text.replace_range(
+            edit.at..edit.at.saturating_add(edit.removed),
+            &edit.inserted,
+        );
+        self.core.clamp_to(&self.text);
     }
 }
 
@@ -192,6 +223,7 @@ struct FillDrag {
 struct CellTextStyle {
     size: f32,
     color: Color,
+    right_align: bool,
 }
 
 /// Text and band metrics for the grid, resolved from the renderer that paints
@@ -294,6 +326,10 @@ impl Default for GridMetrics {
 )]
 pub struct Grid {
     pub rect: Rect,
+    /// Geometry follows the active accessibility text scale. The grid is a
+    /// custom canvas rather than a toolkit table, so it must grow its rows,
+    /// headers, hit targets, and default columns alongside token typography.
+    text_scale: f64,
     scroll_x: f64,
     scroll_y: f64,
     col_widths: HashMap<u32, f64>,
@@ -365,6 +401,7 @@ impl Grid {
     pub fn new() -> Self {
         let mut g = Self {
             rect: Rect::ZERO,
+            text_scale: 1.0,
             scroll_x: 0.0,
             scroll_y: 0.0,
             col_widths: HashMap::new(),
@@ -402,6 +439,22 @@ impl Grid {
     /// Adopt freshly resolved metrics. A change re-derives the automatic row
     /// geometry (manual sizes are untouched) and re-fits columns, since both
     /// depend on the cell text size.
+    pub fn set_text_scale(&mut self, scale: f64) {
+        let scale = if scale.is_finite() {
+            scale.clamp(0.5, 4.0)
+        } else {
+            1.0
+        };
+        if (self.text_scale - scale).abs() <= f64::EPSILON {
+            return;
+        }
+        self.text_scale = scale;
+        self.needs_autofit = true;
+        self.rebuild_geom();
+        self.scroll_x = self.scroll_x.min(self.max_scroll_x());
+        self.scroll_y = self.scroll_y.min(self.max_scroll_y());
+    }
+
     pub fn set_metrics(&mut self, metrics: GridMetrics) {
         if self.metrics == metrics {
             return;
@@ -824,9 +877,12 @@ impl Grid {
         // A manual resize wins; otherwise use the auto-fitted width; otherwise
         // the default.
         if let Some(w) = self.col_widths.get(&c) {
-            return *w;
+            return *w * self.text_scale;
         }
-        self.auto_col_w.get(&c).copied().unwrap_or(DEFAULT_COL_W)
+        self.auto_col_w
+            .get(&c)
+            .copied()
+            .unwrap_or(DEFAULT_COL_W * self.text_scale)
     }
     fn row_h(&self, r: u32) -> f64 {
         self.row_heights
@@ -842,7 +898,7 @@ impl Grid {
             x
         } else {
             let last = self.col_x.last().copied().unwrap_or(0.0);
-            last + f64::from(c.saturating_sub(self.n_cols)) * DEFAULT_COL_W
+            last + f64::from(c.saturating_sub(self.n_cols)) * DEFAULT_COL_W * self.text_scale
         }
     }
     fn row_top(&self, r: u32) -> f64 {
@@ -908,7 +964,7 @@ impl Grid {
             length
         } else {
             (length * viewport / content)
-                .max(SCROLLBAR_MIN_THUMB)
+                .max(SCROLLBAR_MIN_THUMB * self.text_scale)
                 .min(length)
         };
         let max_scroll = (content - viewport).max(0.0);
@@ -959,11 +1015,11 @@ impl Grid {
         let cell = self.cell_screen_rect(c1, r1);
         let (cx, cy) = (cell.x1, cell.y1);
         let body = self.body_rect();
-        let m = FILL_HANDLE_SIZE;
+        let m = FILL_HANDLE_SIZE * self.text_scale;
         if cx < body.x0 - m || cx > body.x1 + m || cy < body.y0 - m || cy > body.y1 + m {
             return None;
         }
-        let h = FILL_HANDLE_SIZE / 2.0;
+        let h = FILL_HANDLE_SIZE * self.text_scale / 2.0;
         Some(Rect::new(cx - h, cy - h, cx + h, cy + h))
     }
 
@@ -1077,7 +1133,7 @@ impl Grid {
             let mut x = self.grid_x0() - self.scroll_x;
             for c in 0..self.n_cols {
                 x += self.col_w(c);
-                if (p.x - x).abs() <= RESIZE_GRAB {
+                if (p.x - x).abs() <= RESIZE_GRAB * self.text_scale {
                     return Some(ResizeTarget::Col(c));
                 }
                 if x > self.rect.x1 {
@@ -1090,7 +1146,7 @@ impl Grid {
             let mut y = self.grid_y0() - self.scroll_y;
             for r in 0..self.n_rows {
                 y += self.row_h(r);
-                if (p.y - y).abs() <= RESIZE_GRAB {
+                if (p.y - y).abs() <= RESIZE_GRAB * self.text_scale {
                     return Some(ResizeTarget::Row(r));
                 }
                 if y > self.rect.y1 {
@@ -1153,22 +1209,15 @@ impl Grid {
     /// Begin editing the active cell. `seed` replaces the content (typed
     /// character) or, when `None`, loads the existing raw for in-place edit.
     pub fn begin_edit(&mut self, seed: Option<String>) {
-        let chars: Vec<char> = match seed {
-            Some(s) => s.chars().collect(),
-            None => self
-                .raw
-                .get(&self.active)
-                .cloned()
-                .unwrap_or_default()
-                .chars()
-                .collect(),
+        let text = match seed {
+            Some(s) => s,
+            None => self.raw.get(&self.active).cloned().unwrap_or_default(),
         };
-        let caret = chars.len();
+        let caret = text.len();
         self.edit = Some(EditState {
             addr: self.active,
-            chars,
-            caret,
-            sel: None,
+            core: EditCore::at(caret),
+            text,
         });
         self.point_anchor = None;
         self.point_selecting = false;
@@ -1199,9 +1248,7 @@ impl Grid {
     /// (begins with `=`). Formula edits enter "point mode": clicking cells
     /// inserts their references instead of moving the selection.
     pub fn editing_formula(&self) -> bool {
-        self.edit
-            .as_ref()
-            .is_some_and(|e| e.chars.first() == Some(&'='))
+        self.edit.as_ref().is_some_and(|e| e.text.starts_with('='))
     }
 
     /// The formula body (text after `=`) whose references should be
@@ -1226,16 +1273,17 @@ impl Grid {
     /// pending replacement or the caret sits right after an operator/opener.
     fn can_point(&self) -> bool {
         let Some(e) = &self.edit else { return false };
-        if e.chars.first() != Some(&'=') {
+        if !e.text.starts_with('=') {
             return false;
         }
         if self.point_anchor.is_some() {
             return true;
         }
-        let prev = if e.caret == 0 {
+        let caret = e.caret();
+        let prev = if caret == 0 {
             None
         } else {
-            e.chars.get(e.caret - 1).copied()
+            e.text.chars().nth(caret - 1)
         };
         matches!(
             prev,
@@ -1250,19 +1298,22 @@ impl Grid {
         let insert_at = match self.point_anchor {
             Some(a) => {
                 if let Some(e) = &mut self.edit {
-                    e.chars.truncate(a);
-                    e.caret = a;
+                    let byte = e
+                        .text
+                        .char_indices()
+                        .nth(a)
+                        .map_or(e.text.len(), |(byte, _)| byte);
+                    e.text.truncate(byte);
+                    e.core.set_caret(byte);
                 }
                 a
             }
-            None => self.edit.as_ref().map_or(0, |e| e.caret),
+            None => self.edit.as_ref().map_or(0, EditState::caret),
         };
         let s = addr_to_a1(addr.0, addr.1);
         if let Some(e) = &mut self.edit {
-            for ch in s.chars() {
-                e.chars.insert(e.caret, ch);
-                e.caret += 1;
-            }
+            let edit = e.core.insert(&s);
+            e.apply_edit(&edit);
         }
         self.point_anchor = Some(insert_at);
         self.point_drag_start = addr;
@@ -1285,12 +1336,15 @@ impl Grid {
             format!("{}:{}", addr_to_a1(tl.0, tl.1), addr_to_a1(br.0, br.1))
         };
         if let Some(e) = &mut self.edit {
-            e.chars.truncate(anchor);
-            e.caret = anchor;
-            for ch in text.chars() {
-                e.chars.insert(e.caret, ch);
-                e.caret += 1;
-            }
+            let byte = e
+                .text
+                .char_indices()
+                .nth(anchor)
+                .map_or(e.text.len(), |(byte, _)| byte);
+            e.text.truncate(byte);
+            e.core.set_caret(byte);
+            let edit = e.core.insert(&text);
+            e.apply_edit(&edit);
         }
         self.dirty = true;
     }
@@ -1631,12 +1685,14 @@ impl Grid {
         if let Some(drag) = &self.resize {
             match drag.target {
                 ResizeTarget::Col(c) => {
-                    let w = (drag.origin_size + (p.x - drag.origin_px)).max(MIN_COL_W);
-                    self.col_widths.insert(c, w);
+                    let w = (drag.origin_size + (p.x - drag.origin_px))
+                        .max(MIN_COL_W * self.text_scale);
+                    self.col_widths.insert(c, w / self.text_scale);
                 }
                 ResizeTarget::Row(r) => {
-                    let h = (drag.origin_size + (p.y - drag.origin_px)).max(MIN_ROW_H);
-                    self.row_heights.insert(r, h);
+                    let h = (drag.origin_size + (p.y - drag.origin_px))
+                        .max(MIN_ROW_H * self.text_scale);
+                    self.row_heights.insert(r, h / self.text_scale);
                 }
             }
             self.rebuild_geom();
@@ -1792,25 +1848,20 @@ impl Grid {
                 true
             }
             Key::Named(NamedKey::Backspace) => {
-                // Backspace removes the selection when there is one, else the
-                // character before the caret.
-                if !self.delete_selection()
-                    && let Some(e) = &mut self.edit
-                    && e.caret > 0
-                {
-                    e.chars.remove(e.caret - 1);
-                    e.caret -= 1;
+                if let Some(e) = &mut self.edit {
+                    let text = e.text.clone();
+                    let edit = e.core.delete_backward(&text, false);
+                    e.apply_edit(&edit);
                 }
                 self.point_anchor = None;
                 self.dirty = true;
                 true
             }
             Key::Named(NamedKey::Delete) => {
-                if !self.delete_selection()
-                    && let Some(e) = &mut self.edit
-                    && e.caret < e.chars.len()
-                {
-                    e.chars.remove(e.caret);
+                if let Some(e) = &mut self.edit {
+                    let text = e.text.clone();
+                    let edit = e.core.delete_forward(&text, false);
+                    e.apply_edit(&edit);
                 }
                 self.point_anchor = None;
                 self.dirty = true;
@@ -1853,14 +1904,9 @@ impl Grid {
     }
 
     fn insert_text(&mut self, s: &str) {
-        // Typing over a selection replaces it (standard text-field behaviour).
-        self.delete_selection();
         if let Some(e) = &mut self.edit {
-            for ch in s.chars() {
-                e.chars.insert(e.caret, ch);
-                e.caret += 1;
-            }
-            e.sel = None;
+            let edit = e.core.insert(s);
+            e.apply_edit(&edit);
             // Typing commits any click-inserted reference into ordinary text,
             // so the next click appends a fresh reference instead of replacing.
             self.point_anchor = None;
@@ -1874,12 +1920,12 @@ impl Grid {
         let Some(e) = &mut self.edit else {
             return false;
         };
-        let Some((start, end)) = e.selection() else {
+        let text = e.text.clone();
+        let edit = e.core.delete_backward(&text, false);
+        if edit.is_noop() {
             return false;
-        };
-        e.chars.drain(start..end);
-        e.caret = start;
-        e.sel = None;
+        }
+        e.apply_edit(&edit);
         self.point_anchor = None;
         self.dirty = true;
         true
@@ -1887,7 +1933,7 @@ impl Grid {
 
     /// The caret's char index within the current edit buffer, if editing.
     pub fn edit_caret(&self) -> Option<usize> {
-        self.edit.as_ref().map(|e| e.caret.min(e.chars.len()))
+        self.edit.as_ref().map(EditState::caret)
     }
 
     /// The ordered `(start, end)` selection within the edit buffer, if any.
@@ -1901,15 +1947,7 @@ impl Grid {
     /// and drag-select. A no-op when not editing.
     pub fn set_edit_caret(&mut self, idx: usize, extend: bool) {
         if let Some(e) = &mut self.edit {
-            let idx = idx.min(e.chars.len());
-            if extend {
-                if e.sel.is_none() {
-                    e.sel = Some(e.caret);
-                }
-            } else {
-                e.sel = None;
-            }
-            e.caret = idx;
+            e.set_caret(idx.min(e.text.chars().count()), extend);
             self.point_anchor = None;
             self.dirty = true;
         }
@@ -1918,8 +1956,8 @@ impl Grid {
     /// Select the whole edit buffer (Ctrl+A inside the formula bar / cell).
     pub fn select_all_edit(&mut self) {
         if let Some(e) = &mut self.edit {
-            e.sel = Some(0);
-            e.caret = e.chars.len();
+            let text = e.text.clone();
+            e.core.select_all(&text);
             self.point_anchor = None;
             self.dirty = true;
         }
@@ -1929,8 +1967,10 @@ impl Grid {
     /// there is no selection.
     pub fn edit_selected_text(&self) -> Option<String> {
         let e = self.edit.as_ref()?;
-        let (start, end) = e.selection()?;
-        Some(e.chars.get(start..end)?.iter().collect())
+        let range = e.core.range();
+        (!range.is_empty())
+            .then(|| e.text.get(range).map(str::to_owned))
+            .flatten()
     }
 
     /// Cut: return the selected text and remove it from the buffer.
@@ -1955,27 +1995,13 @@ impl Grid {
     /// in the motion's direction.
     fn edit_move_caret(&mut self, mv: CaretMove, shift: bool) {
         if let Some(e) = &mut self.edit {
-            let len = e.chars.len();
-            let sel = e.selection();
-            let stepped = |caret: usize| match mv {
-                CaretMove::Left => caret.saturating_sub(1),
-                CaretMove::Right => (caret + 1).min(len),
-                CaretMove::Home => 0,
-                CaretMove::End => len,
+            let motion = match mv {
+                CaretMove::Left => Motion::Left,
+                CaretMove::Right => Motion::Right,
+                CaretMove::Home => Motion::LineStart,
+                CaretMove::End => Motion::LineEnd,
             };
-            if shift {
-                if e.sel.is_none() {
-                    e.sel = Some(e.caret);
-                }
-                e.caret = stepped(e.caret);
-            } else {
-                match (sel, mv) {
-                    (Some((start, _)), CaretMove::Left) => e.caret = start,
-                    (Some((_, end)), CaretMove::Right) => e.caret = end,
-                    _ => e.caret = stepped(e.caret),
-                }
-                e.sel = None;
-            }
+            e.core.motion(&e.text, motion, shift);
             self.point_anchor = None;
             self.dirty = true;
         }
@@ -2039,16 +2065,19 @@ impl Grid {
                 continue;
             }
             let (tw, _) = tr.measure(&text, size, None);
-            let want = f64::from(tw) + CELL_PAD_X * 2.0;
+            let want = f64::from(tw) + CELL_PAD_X * self.text_scale * 2.0;
             let entry = widest.entry(c).or_insert(0.0);
             if want > *entry {
                 *entry = want;
             }
         }
         for (c, want) in widest {
-            let fitted = want.clamp(DEFAULT_COL_W, MAX_AUTOFIT_W);
+            let fitted = want.clamp(
+                DEFAULT_COL_W * self.text_scale,
+                MAX_AUTOFIT_W * self.text_scale,
+            );
             // Only record a widening; narrower columns fall back to the default.
-            if fitted > DEFAULT_COL_W {
+            if fitted > DEFAULT_COL_W * self.text_scale {
                 self.auto_col_w.insert(c, fitted);
             }
         }
@@ -2180,7 +2209,7 @@ impl Grid {
                     } else {
                         colors.text_primary
                     };
-                    Self::draw_cell_text(
+                    self.draw_cell_text(
                         scene,
                         transform,
                         tr,
@@ -2188,6 +2217,7 @@ impl Grid {
                         &CellTextStyle {
                             size: text_size,
                             color,
+                            right_align: false,
                         },
                         cell,
                         false,
@@ -2210,7 +2240,7 @@ impl Grid {
                         colors.text_primary
                     };
                     let right_align = val.is_numeric() && fmt != CellFormat::Text;
-                    Self::draw_cell_text(
+                    self.draw_cell_text(
                         scene,
                         transform,
                         tr,
@@ -2218,6 +2248,7 @@ impl Grid {
                         &CellTextStyle {
                             size: text_size,
                             color,
+                            right_align,
                         },
                         cell,
                         right_align,
@@ -2379,6 +2410,7 @@ impl Grid {
     }
 
     fn draw_cell_text(
+        &self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
@@ -2399,7 +2431,7 @@ impl Grid {
         let tx = if right_align {
             cell.x1 - CELL_PAD_X - f64::from(tw)
         } else {
-            cell.x0 + CELL_PAD_X
+            cell.x0 + CELL_PAD_X * self.text_scale
         };
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &inner);
         tr.draw_text(
@@ -2506,7 +2538,12 @@ impl Grid {
             transform,
             ui::surface::edge_on(colors.surfaces.raised),
             None,
-            &Rect::new(self.rect.x0, self.grid_y0() - 1.0, self.rect.x1, self.grid_y0()),
+            &Rect::new(
+                self.rect.x0,
+                self.grid_y0() - 1.0,
+                self.rect.x1,
+                self.grid_y0(),
+            ),
         );
     }
 
@@ -2577,7 +2614,12 @@ impl Grid {
             transform,
             ui::surface::edge_on(colors.surfaces.raised),
             None,
-            &Rect::new(self.grid_x0() - 1.0, self.rect.y0, self.grid_x0(), self.rect.y1),
+            &Rect::new(
+                self.grid_x0() - 1.0,
+                self.rect.y0,
+                self.grid_x0(),
+                self.rect.y1,
+            ),
         );
     }
 
@@ -2595,7 +2637,8 @@ impl Grid {
         let (tw, _) = tr.measure(text, size, None);
         // Text width + padding on both sides + caret room, never narrower
         // than the cell itself.
-        (f64::from(tw) + CELL_PAD_X * 2.0 + 8.0).max(self.col_w(0))
+        (f64::from(tw) + CELL_PAD_X * self.text_scale * 2.0 + 8.0 * self.text_scale)
+            .max(self.col_w(0))
     }
 
     /// Compute how far the floating editor for cell `addr` may extend to the
@@ -2713,7 +2756,7 @@ impl Grid {
             size,
             colors.text_primary,
             Point::new(tx, ty),
-            Some(e.caret.min(e.chars.len())),
+            Some(e.caret()),
         );
         scene.stroke(
             &Stroke::new(1.5),
@@ -2861,10 +2904,22 @@ mod tests {
     fn measured_metrics_drive_automatic_geometry_but_never_manual_sizes() {
         let mut tr = TextRenderer::new();
         let one_x = GridMetrics::resolve(&mut tr, &Theme::dark());
-        assert!((one_x.default_row_h() - DEFAULT_ROW_H).abs() < 0.01, "1x row");
-        assert!((one_x.col_header_h() - COL_HEADER_H).abs() < 0.01, "1x header");
-        assert!((one_x.row_header_w() - ROW_HEADER_W).abs() < 0.01, "1x row header");
-        assert!((one_x.cell_size - 14.0).abs() < 0.01, "cell text is the base token");
+        assert!(
+            (one_x.default_row_h() - DEFAULT_ROW_H).abs() < 0.01,
+            "1x row"
+        );
+        assert!(
+            (one_x.col_header_h() - COL_HEADER_H).abs() < 0.01,
+            "1x header"
+        );
+        assert!(
+            (one_x.row_header_w() - ROW_HEADER_W).abs() < 0.01,
+            "1x row header"
+        );
+        assert!(
+            (one_x.cell_size - 14.0).abs() < 0.01,
+            "cell text is the base token"
+        );
 
         let mut g = Grid::new();
         g.row_heights.insert(3, 40.0);
@@ -2883,9 +2938,18 @@ mod tests {
         assert!(two_x.row_header_w() >= two_x.row_label_w + 2.0 * two_x.pad - 0.01);
 
         g.set_metrics(two_x);
-        assert!((g.row_h(3) - 40.0).abs() < 0.01, "manual row height is byte-for-byte");
-        assert!((g.row_h(4) - two_x.default_row_h()).abs() < 0.01, "automatic row follows text");
-        assert!(g.row_top(2) > one_x_top_of_row_2, "prefix sums were rebuilt");
+        assert!(
+            (g.row_h(3) - 40.0).abs() < 0.01,
+            "manual row height is byte-for-byte"
+        );
+        assert!(
+            (g.row_h(4) - two_x.default_row_h()).abs() < 0.01,
+            "automatic row follows text"
+        );
+        assert!(
+            g.row_top(2) > one_x_top_of_row_2,
+            "prefix sums were rebuilt"
+        );
         assert!((g.row_top(4) - (3.0 * two_x.default_row_h() + 40.0)).abs() < 0.01);
         assert!((g.grid_y0() - g.rect.y0 - two_x.col_header_h()).abs() < 0.01);
         assert!((g.grid_x0() - g.rect.x0 - two_x.row_header_w()).abs() < 0.01);
@@ -3318,6 +3382,18 @@ mod tests {
         g.select_all_edit();
         g.edit_paste_text("=A1+B2");
         assert_eq!(g.active_display_raw(), "=A1+B2");
+    }
+
+    #[test]
+    fn shared_edit_core_keeps_unicode_selection_on_grapheme_boundaries() {
+        let mut g = Grid::new();
+        g.begin_edit(Some("a🙂b".into()));
+        g.set_edit_caret(1, false);
+        g.set_edit_caret(2, true);
+        assert_eq!(g.edit_selected_text().as_deref(), Some("🙂"));
+        g.insert_text_public("X");
+        assert_eq!(g.edit_selected_text(), None);
+        assert_eq!(g.active_display_raw(), "aXb");
     }
 
     #[test]

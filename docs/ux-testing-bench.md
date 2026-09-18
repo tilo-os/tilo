@@ -46,7 +46,7 @@ The runner creates an isolated HOME, profile and 81 fixture documents inside the
 
 ## Measurements
 
-Scenario JSON has a `name`, user `goal`, `viewport`, `budget` for clicks and keys, and ordered `steps`. Optional fields select fixture, theme, input scale and text scale. See `scripts/ux-bench/*.json` for executable examples and `ui/src/ux_bench.rs` for the strict schema.
+Scenario JSON has a `name`, user `goal`, `viewport`, `budget` for clicks and keys, and ordered `steps`. Optional fields select fixture, theme, input scale and text scale. See `scripts/ux-bench/*.json` for executable examples and `crates/sdk/ui-core/src/ux_bench.rs` for the strict schema.
 
 - `input` reuses the existing headless action model: named pointer clicks, coordinates, keys, typing, modifiers and semantic actions. `semantic:` selectors resolve real pointer targets. Direct semantic invocations are counted separately and cannot pass a visible interaction-budget journey.
 - `wheel` injects line or physical-pixel input at a logical pointer position or the visible center of a unique semantic `target`, with gesture phase. Scale converts physical movement to logical distance.

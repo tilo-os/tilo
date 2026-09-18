@@ -1,7 +1,7 @@
 //! Mobile-broadband SIM operations through `ModemManager`.
 //!
 //! The PIN is sent as a D-Bus message body. It never appears in argv, an
-//! environment variable, `NetworkManager` profile storage, or qOS settings.
+//! environment variable, `NetworkManager` profile storage, or Tilo settings.
 
 use std::sync::OnceLock;
 

@@ -1,13 +1,8 @@
 name: Release / desktop
 
-# Native builds are intentional: the compositor links the distribution's
-# graphics/input stack and cannot be safely produced by a generic cross image.
-# Each amd64 distribution runs in its own isolated job on the generic runner.
-# Release tags add the native ARM64 runner only when the explicit capability
-# switch below is enabled; ordinary changes retain one amd64 lane. Pull
-# requests build and install-test the affected release payload.
-# Version tags additionally publish
-# the verified artifacts to Forgejo releases and its native package registries.
+# Native builds cover the compositor's distribution graphics/input stack.
+# Pull requests run cheap preflight only. Full distro builds run weekly, on
+# release tags, or by explicit dispatch while CI capacity is constrained.
 on:
   pull_request:
     branches: [main]
@@ -19,35 +14,20 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
-      - "shell/**"
+      - "crates/session/shell/**"
       - "apps/imager/**"
-      - "crates/app/qos-app/**"
-      - "ui/**"
+      - "crates/sdk/tilo-app/**"
+      - "crates/sdk/ui-core/**"
       - "crates/packaging/launcher/**"
-      - "crates/session/qos-unlock-helper/**"
+      - "crates/session/tilo-unlock-helper/**"
       - ".forgejo/workflows/package-desktop.yml"
       - "docs/install-contract.json"
       - "scripts/check-install-contract.py"
+  schedule:
+    # One weekly candidate, separated from Saturday's OS image build.
+    - cron: "0 4 * * 5"
   push:
-    branches: ["main", "codex/package-desktop-release"]
     tags: ["desktop-v*"]
-    paths:
-      - "dist/**"
-      - "flake.nix"
-      - "flake.lock"
-      - ".cargo/config.toml"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - "shell/**"
-      - "apps/imager/**"
-      - "crates/app/qos-app/**"
-      - "ui/**"
-      - "crates/packaging/launcher/**"
-      - "crates/session/qos-unlock-helper/**"
-      - ".forgejo/workflows/package-desktop.yml"
-      - "docs/install-contract.json"
-      - "scripts/check-install-contract.py"
   workflow_dispatch:
     inputs:
       full_native:
@@ -57,19 +37,20 @@ on:
         default: false
 
 concurrency:
-  group: package-desktop-${{ github.ref }}
+  # Preserve explicit full-native rehearsals across unrelated main pushes.
+  group: package-desktop-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/desktop-v') }}
 
 env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: never
-  # Retain the complete ARM64 lane and artifact contract, but do not schedule
-  # it until a native `runner-arm64` host is available. Re-enable in one place.
-  QOS_DESKTOP_ARM64_RELEASES: "0"
+  # Tags and explicit full-native dispatches use the native-ARM pool.
+  TILO_DESKTOP_ARM64_RELEASES: "1"
 
 jobs:
   validate:
     runs-on: runner
+    timeout-minutes: 30
     outputs:
       matrix: ${{ steps.lanes.outputs.matrix }}
       release_arches: ${{ steps.lanes.outputs.release_arches }}
@@ -89,7 +70,7 @@ jobs:
             diagnostic=qemu-wrapper-compile
           elif ! test "$(<dist/VERSION)" = "$(sed -n 's/^pkgver=//p' dist/arch/PKGBUILD)"; then
             diagnostic=arch-version-drift
-          elif ! grep -Fxq "%{!?qos_version:%global qos_version $(<dist/VERSION)}" dist/rpm/qos-session.spec; then
+          elif ! grep -Fxq "%{!?tilo_version:%global tilo_version $(<dist/VERSION)}" dist/rpm/tilo-session.spec; then
             diagnostic=rpm-version-drift
           elif ! dist/ci/run-dev-session-test.sh; then
             diagnostic=dev-session-contract
@@ -114,35 +95,46 @@ jobs:
           FULL_NATIVE: ${{ github.event.inputs.full_native }}
         shell: bash
         run: |
-          targets=$(cat <<'EOF'
-          arch|docker.io/menci/archlinuxarm@sha256:dbb3df8941d78f13e4277cec63beeac61096b474864974cfeff64efebd1aa81c|
-          nix|docker.io/nixos/nix@sha256:f6f7814c2224dad18b14479fed5f0620be65d54625a4b97ae8b24b407e1b43a2|
-          ubuntu-24.04|docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316|1+ubuntu24.04
-          debian-13|docker.io/library/debian@sha256:6788062a1b42ac281f053ac876170b79a3eaed5d61383b8ed7eaca6c6965f3b1|1+deb13
-          fedora-44|registry.fedoraproject.org/fedora@sha256:f98ed268d20699492eb8b9688b36dac864227accf4570b22cd03888dffd3c91b|
+          # Shared references must pin multi-architecture indexes, not amd64
+          # child manifests: Docker selects the immutable native child for
+          # each matrix lane from the index.
+          common_targets=$(cat <<'EOF'
+          nix|docker.io/nixos/nix@sha256:7a007c766426c1877758ddc5cb87a965ac131fc78c582ce0083d922d51ae945c|
+          ubuntu-24.04|docker.io/library/ubuntu@sha256:69cecf4bbf72d2d44a9eef1b71fb98c7fb973d78af11399deccef19beb008ad9|1+ubuntu24.04
+          debian-13|docker.io/library/debian@sha256:f324c7ff54321e8d9c588493a20244965938ce0aa50bbd1022d38010e9ffc4b1|1+deb13
+          fedora-44|registry.fedoraproject.org/fedora@sha256:61beafd34111e1cb85fb49377ceadeee0a53622dbc20670ed8ca303f0e17ed9c|
           EOF
           )
+          # Fat-LTO desktop packaging needs the larger runner class.
+          amd64_runner=runner-large
+          arm64_runner=runner-large-arm64
+          # menci's cross-build image deliberately declares an amd64 OCI
+          # config around an ARM rootfs. Keep it for the x86/QEMU fallback,
+          # but give native runners an arm64-declared image.
+          amd64_targets="arch|docker.io/menci/archlinuxarm@sha256:dbb3df8941d78f13e4277cec63beeac61096b474864974cfeff64efebd1aa81c|"$'\n'"$common_targets"
+          arm64_targets="arch|docker.io/gomasy/archlinuxarm@sha256:2b73dc79eaf9b816d0e41345258766ac3cb6bb2b407125d9f5b31cf94e177488|"$'\n'"$common_targets"
           release_arches=amd64
-          if [[ ${QOS_DESKTOP_ARM64_RELEASES:-0} == 1 ]] &&
+          if [[ ${TILO_DESKTOP_ARM64_RELEASES:-0} == 1 ]] &&
              [[ "$GITHUB_REF" == refs/tags/desktop-v* || ${FULL_NATIVE:-false} == true ]]; then
             release_arches=amd64,arm64
-            matrix=$(jq -cn --arg targets "$targets" '{include:[
-              {arch:"amd64",runner:"runner",targets:$targets},
-              {arch:"arm64",runner:"runner-arm64",targets:$targets}
+            matrix=$(jq -cn --arg amd64_targets "$amd64_targets" --arg arm64_targets "$arm64_targets" --arg amd64_runner "$amd64_runner" --arg arm64_runner "$arm64_runner" '{include:[
+              {arch:"amd64",runner:$amd64_runner,targets:$amd64_targets},
+              {arch:"arm64",runner:$arm64_runner,targets:$arm64_targets}
             ]}')
           else
-            matrix=$(jq -cn --arg targets "$targets" '{include:[
-              {arch:"amd64",runner:"runner",targets:$targets}
+            matrix=$(jq -cn --arg amd64_targets "$amd64_targets" --arg amd64_runner "$amd64_runner" '{include:[
+              {arch:"amd64",runner:$amd64_runner,targets:$amd64_targets}
             ]}')
           fi
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "release_arches=$release_arches" >> "$GITHUB_OUTPUT"
 
   package:
+    # Full five-distro compilation is opt-in for branch/PR changes.
+    if: github.event_name != 'pull_request'
     needs: validate
     name: package lane / ${{ matrix.arch }}
-    # AMD64 uses the registered generic runner; native ARM64 tags and explicit
-    # full-native runs retain their architecture-specific runner.
+    # Desktop packaging uses the larger native runner class.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 600
     # One architecture job runs all five native userspaces serially. Forgejo
@@ -160,8 +152,9 @@ jobs:
         uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: os/external-assets/cache
-          key: desktop-external-inputs-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+          key: desktop-external-inputs-${{ matrix.arch }}-${{ hashFiles('os/external-assets/github-assets.tsv') }}
           restore-keys: |
+            desktop-external-inputs-${{ matrix.arch }}-
             github-assets-all-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
             github-assets-all-v1-
       - name: Materialize the architecture-specific compiler cache client
@@ -178,20 +171,22 @@ jobs:
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: os/external-assets/cache
-          key: desktop-external-inputs-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+          key: desktop-external-inputs-${{ matrix.arch }}-${{ hashFiles('os/external-assets/github-assets.tsv') }}
       - name: Build and install-test all five target userspaces
         env:
           # Runner-level cache credentials must never enter pull-request code.
-          QOS_ENABLE_REMOTE_CACHE: ${{ github.event_name != 'pull_request' && '1' || '0' }}
-          QOS_LANE_TARGETS: ${{ matrix.targets }}
+          TILO_ENABLE_REMOTE_CACHE: ${{ github.event_name != 'pull_request' && '1' || '0' }}
+          # The larger runner supports six native compiler processes.
+          TILO_CARGO_JOBS: "6"
+          TILO_LANE_TARGETS: ${{ matrix.targets }}
           # RPM signing is restricted to protected desktop tags and happens in
           # the Fedora packaging userspace, where rpm-sign is installed. The
           # key is never available to pull requests or ordinary branch builds.
-          QOS_RPM_SIGNING_ENABLED: ${{ startsWith(github.ref, 'refs/tags/desktop-v') && '1' || '0' }}
-          QOS_RPM_SIGNING_KEY_ARTIFACT: ${{ matrix.arch == 'amd64' && '1' || '0' }}
-          QOS_RPM_SIGNING_KEY_B64: ${{ secrets.QOS_RPM_SIGNING_KEY_B64 }}
-          QOS_RPM_SIGNING_KEY_ID: ${{ secrets.QOS_RPM_SIGNING_KEY_ID }}
-          QOS_RPM_SIGNING_FINGERPRINT: ${{ vars.QOS_RPM_SIGNING_FINGERPRINT }}
+          TILO_RPM_SIGNING_ENABLED: ${{ startsWith(github.ref, 'refs/tags/desktop-v') && '1' || '0' }}
+          TILO_RPM_SIGNING_KEY_ARTIFACT: ${{ matrix.arch == 'amd64' && '1' || '0' }}
+          TILO_RPM_SIGNING_KEY_B64: ${{ secrets.TILO_RPM_SIGNING_KEY_B64 }}
+          TILO_RPM_SIGNING_KEY_ID: ${{ secrets.TILO_RPM_SIGNING_KEY_ID }}
+          TILO_RPM_SIGNING_FINGERPRINT: ${{ vars.TILO_RPM_SIGNING_FINGERPRINT }}
         shell: bash
         run: |
           while IFS='|' read -r distro image revision; do
@@ -203,7 +198,7 @@ jobs:
               exit 1
             fi
             echo "::endgroup::"
-          done <<<"$QOS_LANE_TARGETS"
+          done <<<"$TILO_LANE_TARGETS"
       # Forgejo's native artifact service implements the v3 protocol. Upstream
       # v4 targets GitHub's Artifact API v2 and fails on this Forgejo instance.
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
@@ -238,9 +233,10 @@ jobs:
           if-no-files-found: error
 
   publish-os-payload:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     needs: package
     runs-on: runner
+    timeout-minutes: 120
     enable-openid-connect: true
     steps:
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
@@ -248,13 +244,14 @@ jobs:
           path: release
       - name: Publish immutable desktop payloads and advance their channels
         env:
-          DESKTOP_AUDIENCE: ${{ vars.QOS_DESKTOP_RELEASE_AUDIENCE }}
-          CONTINUOUS_OS_RELEASE: ${{ vars.QOS_CONTINUOUS_OS_RELEASE }}
+          DESKTOP_AUDIENCE: ${{ vars.TILO_DESKTOP_RELEASE_AUDIENCE }}
+          # Keep future chaining available, but never publish OS versions automatically.
+          CONTINUOUS_OS_RELEASE: "0"
         shell: bash
         run: |
           set -euo pipefail
           [[ -n ${DESKTOP_AUDIENCE:-} ]] || {
-            printf 'QOS_DESKTOP_RELEASE_AUDIENCE is required\n' >&2
+            printf 'TILO_DESKTOP_RELEASE_AUDIENCE is required\n' >&2
             exit 1
           }
           jwt=$(curl --fail --silent --show-error \
@@ -268,7 +265,7 @@ jobs:
           variable_api="${GITHUB_API_URL:-$GITHUB_SERVER_URL/api/v1}/repos/$GITHUB_REPOSITORY/actions/variables"
           put_immutable() {
             local file=$1 url=$2 response status remote
-            response=$(mktemp "$RUNNER_TEMP/qos-desktop-response.XXXXXX")
+            response=$(mktemp "$RUNNER_TEMP/tilo-desktop-response.XXXXXX")
             status=$(curl --silent --show-error --retry 3 --retry-all-errors \
               --output "$response" --write-out '%{http_code}' \
               --header "Authorization: Bearer $jwt" \
@@ -276,7 +273,7 @@ jobs:
             case "$status" in
               200|201|204) ;;
               409)
-                remote=$(mktemp "$RUNNER_TEMP/qos-existing-desktop.XXXXXX")
+                remote=$(mktemp "$RUNNER_TEMP/tilo-existing-desktop.XXXXXX")
                 curl --fail --silent --show-error --retry 3 --retry-all-errors \
                   --header "Authorization: Bearer $jwt" "$url" --output "$remote"
                 cmp --silent "$file" "$remote"
@@ -297,22 +294,22 @@ jobs:
           }
           shopt -s nullglob
           found=0
-          for bundle in release/fedora-44-*/qos-desktop-os-*.tar.gz; do
+          for bundle in release/fedora-44-*/tilo-desktop-os-*.tar.gz; do
             found=1
-            arch=${bundle##*qos-desktop-os-}
+            arch=${bundle##*tilo-desktop-os-}
             arch=${arch%.tar.gz}
             digest_file="$bundle.sha256"
             (cd "$(dirname "$bundle")" && sha256sum --check --strict "${digest_file##*/}")
-            url="$package_api/qos-desktop-os/$version/${bundle##*/}"
+            url="$package_api/tilo-desktop-os/$version/${bundle##*/}"
             put_immutable "$bundle" "$url"
             put_immutable "$digest_file" "$url.sha256"
             digest=$(awk '{print $1}' "$digest_file")
             upper=${arch^^}
-            update_variable "QOS_DESKTOP_PAYLOAD_URL_$upper" "$url"
-            update_variable "QOS_DESKTOP_PAYLOAD_SHA256_$upper" "$digest"
+            update_variable "TILO_DESKTOP_PAYLOAD_URL_$upper" "$url"
+            update_variable "TILO_DESKTOP_PAYLOAD_SHA256_$upper" "$digest"
             if [[ $arch == x86_64 ]]; then
-              update_variable QOS_DESKTOP_PAYLOAD_URL "$url"
-              update_variable QOS_DESKTOP_PAYLOAD_SHA256 "$digest"
+              update_variable TILO_DESKTOP_PAYLOAD_URL "$url"
+              update_variable TILO_DESKTOP_PAYLOAD_SHA256 "$digest"
             fi
           done
           [[ $found == 1 ]]
@@ -330,6 +327,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/desktop-v')
     needs: validate
     runs-on: runner
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -337,19 +335,13 @@ jobs:
           fetch-depth: 0
       - name: Require this exact commit to be checked on main
         shell: bash
-        run: |
-          git fetch --no-tags origin \
-            +refs/heads/main:refs/remotes/origin/main \
-            +refs/notes/qos-check-ci:refs/notes/qos-check-ci
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
-          receipt=$(git notes --ref=qos-check-ci show "$GITHUB_SHA")
-          grep -Eq '^select=success affected=success run=[0-9]+ sha='"$GITHUB_SHA"'$' \
-            <<<"$receipt"
+        run: tools/ci/receipt.sh verify "$GITHUB_SHA" origin
 
   release:
     if: startsWith(github.ref, 'refs/tags/desktop-v')
     needs: [validate, package, release-guard]
     runs-on: runner
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -375,7 +367,7 @@ jobs:
           (cd release && sha256sum -- * > SHA256SUMS)
       - name: Publish package-manager repositories
         env:
-          QOS_FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          TILO_FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: dist/ci/publish-forgejo-packages.sh release "${GITHUB_REF_NAME#desktop-v}"
       - name: Publish checksummed, install-tested artifacts
         uses: https://code.forgejo.org/actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd # v2.13.4
@@ -387,4 +379,4 @@ jobs:
           token: ${{ secrets.RELEASE_TOKEN }}
           release-dir: release
           override: true
-          release-notes: "qOS desktop session ${{ github.ref_name }}. Every attached package was built and install-tested inside its target distribution and architecture userspace."
+          release-notes: "Tilo Desktop session ${{ github.ref_name }}. Every attached package was built and install-tested inside its target distribution and architecture userspace."

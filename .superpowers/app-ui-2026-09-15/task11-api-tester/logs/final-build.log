@@ -1,7 +1,0 @@
-    Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on package cache
-   Compiling ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
-   Compiling qos-app v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/app/qos-app)
-   Compiling api_tester v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/api_tester)
-    Finished `dev` profile [unoptimized] target(s) in 13.04s

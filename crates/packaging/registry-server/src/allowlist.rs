@@ -1,5 +1,5 @@
 //! Owner-controlled publisher allowlist — the `publishers.toml`
-//! file the registry owner edits (via `qos-registry-server
+//! file the registry owner edits (via `tilo-registry-server
 //! add-publisher` or by hand) to decide who can post entries.
 //!
 //! ```toml

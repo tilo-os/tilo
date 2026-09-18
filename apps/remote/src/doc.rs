@@ -16,7 +16,7 @@
 //!         ├── "host"      (Str)
 //!         ├── "port"      (Int)
 //!         ├── "user"      (Str)
-//!         ├── "kind"      (Str)    # SSH / VNC / RDP / qOS
+//!         ├── "kind"      (Str)    # SSH / VNC / RDP / Tilo
 //!         ├── "auth"      (Str)    # auth method label
 //!         ├── "last_used" (Str)
 //!         ├── "presence"  (Str)    # online / offline / unknown
@@ -348,7 +348,7 @@ mod tests {
 
         // B joins from A's state, then adds its own.
         let mut b = AutoCommit::load(&a.save()).unwrap();
-        RemoteDoc::upsert(&mut b, &conn("B", ConnectionKind::Qos));
+        RemoteDoc::upsert(&mut b, &conn("B", ConnectionKind::Tilo));
 
         let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
         a.merge(&mut b_loaded).unwrap();

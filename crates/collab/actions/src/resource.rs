@@ -21,20 +21,21 @@
 //! name — the presentation stays local, but a faithful *description* of it can
 //! now cross.
 //!
-//! The projection is derived from the same closure the palette uses, never a
-//! second copy of it: [`immediate`](ActionSpec::immediate) projects to zero
-//! parameters returning its pre-encoded action, and
+//! The projection is derived from the same closure the palette uses:
+//! [`immediate`](ActionSpec::immediate) projects to zero parameters returning
+//! its pre-encoded action, and
 //! [`prompted`](ActionSpec::prompted) projects to one required
 //! [`Text`](ParamType::Text) parameter named [`PROMPTED_PARAM`] that calls the
-//! app's closure. So an affordance, its palette row, and an external invocation
-//! all run through one function and produce the byte-identical action — the
-//! covenant holds structurally rather than by test discipline.
+//! app's closure. An affordance, its palette row, and an external invocation
+//! therefore run through one function and produce the same action.
 //!
-//! [`typed`](ActionSpec::typed) is the constructor for an action whose argument
-//! deserves a real type (a number in `0..=1`, a fixed set of filter names)
-//! instead of prose a lenient parser guesses at.
+//! [`typed`](ActionSpec::typed) constructs an action whose argument has a
+//! domain type (a number in `0..=1`, a fixed set of filter names) instead of
+//! relying on a lenient prose parser.
 
 use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
 
 use crate::action::{Action, ActionError, EncodedAction, ExecutionLocus, OperationKind};
 use crate::contract::{
@@ -217,7 +218,7 @@ pub const PROMPTED_PARAM: &str = "value";
 /// Inert envelope produced when the legacy one-field palette cannot satisfy a
 /// typed contract. Hosts recognize it as a refusal; it is never registered or
 /// dispatched as an application operation.
-pub const INVALID_ARGUMENTS_TYPE: &str = "qos.invalid_arguments";
+pub const INVALID_ARGUMENTS_TYPE: &str = "tilo.invalid_arguments";
 
 /// Stable identity of a resource within the publishing app instance
 /// (e.g. `tube.video:dQw4w9WgXcQ`, `ebook.annotation:<uuid>`).
@@ -233,6 +234,33 @@ impl ResourceId {
     }
 }
 
+/// Bounded, declarative search presentation for a resource.
+///
+/// This is data, never app-provided drawing code: the shell chooses the
+/// typography, colours, icons, and layout.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ResourcePresentation {
+    pub detail: Option<String>,
+    pub badge: Option<String>,
+}
+
+impl ResourcePresentation {
+    pub const MAX_DETAIL_BYTES: usize = 160;
+    pub const MAX_BADGE_BYTES: usize = 32;
+
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.detail
+            .as_ref()
+            .is_none_or(|value| value.len() <= Self::MAX_DETAIL_BYTES && !value.contains('\n'))
+            && self
+                .badge
+                .as_ref()
+                .is_none_or(|value| value.len() <= Self::MAX_BADGE_BYTES && !value.contains('\n'))
+    }
+}
+
 /// One open/presented resource and the actions it exports. Resources
 /// nest via [`children`](Resource::children).
 #[derive(Clone)]
@@ -243,6 +271,9 @@ pub struct Resource {
     pub kind: String,
     /// Human, localisable label shown in the palette.
     pub label: String,
+    /// Optional shell-rendered metadata used by system search and resource
+    /// browsers. Invalid or oversized values are omitted at the boundary.
+    pub presentation: Option<ResourcePresentation>,
     pub children: Vec<Resource>,
     pub actions: Vec<ActionSpec>,
 }
@@ -253,9 +284,16 @@ impl Resource {
             id: ResourceId::new(id),
             kind: kind.into(),
             label: label.into(),
+            presentation: None,
             children: Vec::new(),
             actions: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_presentation(mut self, presentation: ResourcePresentation) -> Self {
+        self.presentation = presentation.is_valid().then_some(presentation);
+        self
     }
 
     #[must_use]
@@ -1025,5 +1063,39 @@ mod tests {
         assert_eq!(invocation.address, ActionAddress::new("view:1", "zoom"));
         assert_eq!(invocation.arguments["factor"], 1.5);
         assert!(ActionBinding::unit_for(&resource, "missing").is_err());
+    }
+
+    #[test]
+    fn resource_presentation_is_bounded_before_publication() {
+        let valid = ResourcePresentation {
+            detail: Some("19 °C".into()),
+            badge: Some("LIVE".into()),
+        };
+        assert!(valid.is_valid());
+        assert!(
+            Resource::new("weather:home", "weather", "Home")
+                .with_presentation(valid.clone())
+                .presentation
+                .is_some()
+        );
+
+        let oversized = ResourcePresentation {
+            detail: Some("x".repeat(ResourcePresentation::MAX_DETAIL_BYTES + 1)),
+            badge: None,
+        };
+        assert!(!oversized.is_valid());
+        assert!(
+            Resource::new("weather:home", "weather", "Home")
+                .with_presentation(oversized)
+                .presentation
+                .is_none()
+        );
+        assert!(
+            !ResourcePresentation {
+                detail: None,
+                badge: Some("unsafe\nsecond line".into()),
+            }
+            .is_valid()
+        );
     }
 }

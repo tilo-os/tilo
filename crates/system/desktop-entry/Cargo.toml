@@ -1,5 +1,5 @@
 [package]
-name = "qos-desktop-entry"
+name = "tilo-desktop-entry"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
@@ -11,8 +11,8 @@ name = "desktop_entry"
 path = "src/lib.rs"
 
 [[bin]]
-name = "qos-desktop-scan"
-path = "src/bin/qos-desktop-scan.rs"
+name = "tilo-desktop-scan"
+path = "src/bin/tilo-desktop-scan.rs"
 
 [dependencies]
 thiserror = { workspace = true }

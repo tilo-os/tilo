@@ -1,12 +1,12 @@
-//! `channel-crypto` — per-channel MLS group encryption for qOS.
+//! `channel-crypto` — per-channel MLS group encryption for Tilo.
 //!
-//! Each qOS channel becomes one MLS group; the group key rotates on
+//! Each Tilo channel becomes one MLS group; the group key rotates on
 //! every membership change; `SignedOp.payload` ships encrypted while
 //! the envelope's metadata (author, artifact, `op_class`, timestamp, seq)
 //! stays cleartext so the broker routes by artifact and filters by op
 //! class without decrypting.
 //!
-//! ## Minimum-viable scope
+//! ## Supported operations
 //!
 //! [`MemberKey::generate`] mints a fresh per-member signer + provider;
 //! [`MemberKey::fresh_key_package`] mints a key package to ship to a
@@ -19,12 +19,11 @@
 //! removal commit that advances surviving members and deactivates the removed
 //! member.
 //!
-//! Out of scope for now: external commits/joins; late-join history
-//! backfill (joiners start at the inviter's current epoch, older
-//! ciphertexts are dropped); epoch rotation triggered by anything other
-//! than membership changes; direct-share/cross-channel envelopes. Sealed
-//! persistence exists, but vault-key custody belongs to the production
-//! identity service.
+//! This crate does not support external commits or joins, late-join history
+//! backfill (joiners start at the inviter's current epoch, and older
+//! ciphertexts are dropped), epoch rotation outside membership changes, or
+//! direct-share/cross-channel envelopes. Sealed persistence exists, but
+//! vault-key custody belongs to the production identity service.
 //!
 //! One fixed ciphersuite: [`crypto::CIPHERSUITE`] =
 //! `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` (rationale in

@@ -1,19 +1,19 @@
-//! `qos-runtime-bundle` — CLI over the [`runtime_bundle`] crate.
+//! `tilo-runtime-bundle` — CLI over the [`runtime_bundle`] crate.
 //!
 //! ```text
-//! qos-runtime-bundle build   --version <ver> --out <dir> [--from <host-path>] \
+//! tilo-runtime-bundle build   --version <ver> --out <dir> [--from <host-path>] \
 //!                            [--arch <arch>] [--identity <path>]
-//! qos-runtime-bundle verify  <dir> [--require-publisher <hex>]
+//! tilo-runtime-bundle verify  <dir> [--require-publisher <hex>]
 //!                                  [--require-signature]
 //!                                  [--require-arch <arch>]
-//! qos-runtime-bundle path    --version <ver>            # print resolved default
-//! qos-runtime-bundle key generate --out <path>          # write a fresh identity
+//! tilo-runtime-bundle path    --version <ver>            # print resolved default
+//! tilo-runtime-bundle key generate --out <path>          # write a fresh identity
 //! ```
 //!
 //! The default `path` lookup order matches the launcher:
-//! `$XDG_DATA_HOME/qos-runtime/<v>/` if it exists, otherwise
-//! `/usr/lib/qos-runtime/<v>/`, otherwise print the per-user path
-//! (which is where `qos-install runtime install` would write to).
+//! `$XDG_DATA_HOME/tilo-runtime/<v>/` if it exists, otherwise
+//! `/usr/lib/tilo-runtime/<v>/`, otherwise print the per-user path
+//! (which is where `tilo-install runtime install` would write to).
 
 #![cfg_attr(
     test,
@@ -39,8 +39,8 @@ use runtime_bundle::{
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "qos-runtime-bundle",
-    about = "Produce and verify qOS runtime bundles."
+    name = "tilo-runtime-bundle",
+    about = "Produce and verify Tilo runtime bundles."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -53,7 +53,7 @@ enum Cmd {
     /// content-addressed bundle directory.
     Build {
         /// Bundle version tag. Written into `bundle.toml` and used by
-        /// the launcher to match `runtime = "qos-runtime/<version>"`
+        /// the launcher to match `runtime = "tilo-runtime/<version>"`
         /// in package manifests.
         #[arg(long)]
         version: String,
@@ -72,12 +72,12 @@ enum Cmd {
         /// Path to an identity JSON file for signing the bundle.
         /// Format: `{ "secret_key_hex": "<64-hex>" }`. When set, the
         /// finished `bundle.toml` gains `publisher_hex` +
-        /// `signature_hex`. Same shape as `qos-pkg`'s identity files.
+        /// `signature_hex`. Same shape as `tilo-pkg`'s identity files.
         #[arg(long)]
         identity: Option<PathBuf>,
         /// Extra shared object to place at the top of the bundle's
         /// `lib/` (repeatable). Use it to fold the Rust
-        /// `libstd-<hash>.so` and the qOS `libruntime_dylib.so` into
+        /// `libstd-<hash>.so` and the Tilo `libruntime_dylib.so` into
         /// the bundle so thin (`-C prefer-dynamic`) apps resolve them
         /// via the launcher's `LD_LIBRARY_PATH=<mount>/lib`. Each is
         /// hashed + signed like every other bundle file.
@@ -106,7 +106,7 @@ enum Cmd {
         /// Runtime version tag.
         #[arg(long)]
         version: String,
-        /// Print the system fallback (`/usr/lib/qos-runtime/<v>/`)
+        /// Print the system fallback (`/usr/lib/tilo-runtime/<v>/`)
         /// even if no bundle is installed there.
         #[arg(long)]
         system: bool,
@@ -194,7 +194,7 @@ fn cmd_build(
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("qos-runtime-bundle build: {e}");
+            eprintln!("tilo-runtime-bundle build: {e}");
             ExitCode::from(1)
         }
     }
@@ -226,7 +226,7 @@ fn cmd_verify(
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("qos-runtime-bundle verify: {e}");
+            eprintln!("tilo-runtime-bundle verify: {e}");
             ExitCode::from(1)
         }
     }
@@ -247,7 +247,7 @@ fn cmd_path(version: &str, system: bool) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("qos-runtime-bundle path: {e}");
+            eprintln!("tilo-runtime-bundle path: {e}");
             ExitCode::from(1)
         }
     }
@@ -265,11 +265,11 @@ fn key_generate(out: &Path) -> ExitCode {
     if let Some(parent) = out.parent()
         && let Err(e) = std::fs::create_dir_all(parent)
     {
-        eprintln!("qos-runtime-bundle key generate: {e}");
+        eprintln!("tilo-runtime-bundle key generate: {e}");
         return ExitCode::from(1);
     }
     if let Err(e) = std::fs::write(out, identity.to_json_bytes()) {
-        eprintln!("qos-runtime-bundle key generate: {e}");
+        eprintln!("tilo-runtime-bundle key generate: {e}");
         return ExitCode::from(1);
     }
     // Best-effort restrict permissions on the secret file.
@@ -290,7 +290,7 @@ fn key_pubkey(identity: &Path) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("qos-runtime-bundle key pubkey: {e}");
+            eprintln!("tilo-runtime-bundle key pubkey: {e}");
             ExitCode::from(1)
         }
     }

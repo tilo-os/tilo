@@ -2,13 +2,20 @@
 os/output/
 os/external-assets/cache/
 os/external-assets/cosign-cache/
-os/quick-desktop
+os/external-assets/kernel-cache/
+# OEM firmware is staged locally for an explicit hardware image, never committed.
+os/hardware/firmware/*
+!os/hardware/firmware/.gitkeep
+os/tilo-desktop
 **/target/
 # rpmbuild's _topdir for the host session package (dist/rpm/build-rpm.sh):
 # staged payload, tarball and the built RPMs.
 dist/rpm/build/
 
-# BranchBox
+# Local build routing (see DEVELOPMENT.md)
+.build-container
+
+# Legacy BranchBox credentials and local state (keep untracked)
 .branchbox/registry.json
 .branchbox/secure/
 .branchbox/secure/tunnels/
@@ -23,38 +30,54 @@ scripts/headless-examples/__pycache__/
 scripts/__pycache__/
 tools/__pycache__/
 tools/**/__pycache__/
+os/**/__pycache__/
+apps/**/__pycache__/
 
-# qOS signing keys — PRIVATE material is NEVER committed (see keys/README.md).
+# Tilo signing keys — PRIVATE material is NEVER committed (see keys/README.md).
 # Public keys (keys/*.pub, keys/*.public.pem) ARE tracked — verifiers need them.
 keys/*.key
 keys/*.password
 keys/*.private.pem
 keys/**/*.key
 keys/**/*.private.pem
-# runtime CRDT session artifacts (e.g. ui/examples write session.crdt)
+# runtime CRDT session artifacts (e.g. ui-core examples write session.crdt)
 *.crdt
+rustypipe_cache.json
 .claude/test-scratch/
 # Local build infrastructure and feature worktrees. These live under
 # .claude so they travel with the checkout, but none of them belong in
-# history: the sccache alone is ~11 GB, and .claude/qos is a nested
+# history: the sccache alone is ~11 GB, and .claude/tilo is a nested
 # clone that a fresh clone of this repo could never populate.
-.claude/qos/
-.claude/qos-sccache/
-.claude/qos-build-sem/
-.claude/qos-target/
-.claude/qos-tools/
-.claude/qos-logs/
-.claude/qos-tmp/
+.claude/tilo/
+.claude/tilo-sccache/
+.claude/tilo-build-sem/
+.claude/tilo-target/
+.claude/tilo-tools/
+.claude/tilo-logs/
+.claude/tilo-tmp/
 .claude/build/
 .claude/clippy-campaign/
 .claude/worktrees/
 .claude/app-status.md
 .claude/*.log
+.claude/table-shots/
 
 # build.sh copies the real hardening kargs, the rollback machinery and the
-# freshly built qos-rollback binary into the composefs build context
+# freshly built tilo-rollback binary into the composefs build context
 os/dev/composefs/01-hardening.toml
 os/dev/composefs/stage/
 
 # Vendored crates carry their own lock files; ours is the workspace one.
 vendor/*/Cargo.lock
+.gstack/
+
+# Local agent captures, logs, source snapshots and review scratch.
+/.superpowers/
+
+# Python bytecode is regenerated from source.
+__pycache__/
+*.pyc
+
+# Generated audit output; keep written design and review explanations.
+/docs/superpowers/audits/**/*.log
+/docs/superpowers/audits/**/*.json

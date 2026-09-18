@@ -4,18 +4,18 @@
 //! with the controls that operate that state. Calendar-specific lists and
 //! tasks remain in `CalendarApp`; the mini-month is its own footer component.
 
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-
+use crate::draw_util::PaintContext;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 
 use crate::app::{
     center_text, draw_chevron, draw_cross, draw_download, draw_icon_button, draw_upload,
 };
 use crate::draw_util::{fill_rect, fill_round, hairline, selected_row};
-use ui::surface::card;
 use crate::model::View;
+use ui::surface::card;
 
 const WIDTH: f64 = 252.0;
 const PERSISTENT_MIN: f64 = 900.0;
@@ -43,6 +43,26 @@ pub(crate) enum Action {
 pub(crate) struct Chrome {
     pub(crate) body_y: f64,
     pub(crate) hits: Vec<(Rect, Action)>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ChromeModel {
+    pub(crate) window: Rect,
+    pub(crate) content: Rect,
+    pub(crate) detail: Rect,
+    pub(crate) switcher_in_topbar: bool,
+    pub(crate) view: View,
+    pub(crate) pointer: Point,
+}
+
+#[derive(Clone, Copy)]
+struct ChromeLayout {
+    rect: Rect,
+    window: Rect,
+    overlay: bool,
+    pointer: Point,
+    pad: f64,
+    y: f64,
 }
 
 pub(crate) struct Sidebar {
@@ -207,10 +227,6 @@ impl Sidebar {
     /// drawer covers the full window) button, top-right of the sidebar
     /// header. Split out of [`Self::draw_chrome`] to keep that under the
     /// line cap.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_chrome_collapse_or_dismiss(
         scene: &mut Scene,
         transform: Affine,
@@ -243,10 +259,6 @@ impl Sidebar {
     /// when the switcher doesn't already live in the top bar. Returns the
     /// vertical space it consumed (`0.0` if not drawn). Split out of
     /// [`Self::draw_chrome`] to keep that under the line cap.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_chrome_view_switcher(
         scene: &mut Scene,
         transform: Affine,
@@ -264,7 +276,13 @@ impl Sidebar {
         let track_radius = f64::from(theme.tokens.radii.lg);
         // Segmented track (HIG §9.5): the base tier with its derived edge; the
         // chosen segment is the selection lift, never an accent fill.
-        card(scene, transform, segmented, track_radius, colors.surfaces.base);
+        card(
+            scene,
+            transform,
+            segmented,
+            track_radius,
+            colors.surfaces.base,
+        );
         let cell_width = segmented.width() / View::ALL.len() as f64;
         let seg_inset = f64::from(theme.tokens.spacing.s1) / 2.0 + 1.0;
         for (index, candidate) in View::ALL.iter().enumerate() {
@@ -305,10 +323,6 @@ impl Sidebar {
     /// The Export/Import footer buttons, side by side at the bottom of the
     /// sidebar header. Split out of [`Self::draw_chrome`] to keep that under
     /// the line cap.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_chrome_footer_buttons(
         scene: &mut Scene,
         transform: Affine,

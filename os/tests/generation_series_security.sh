@@ -42,8 +42,8 @@ EOF
 chmod +x "$tmp/bin/cosign"
 
 resolve() {
-  env PATH="$tmp/bin:$PATH" QOS_GENERATION_VERIFY_KEY="$tmp/cosign.pub" \
-    QOS_PUBLISH_REPO=registry.invalid/qos MOCK_TAGS="$1" \
+  env PATH="$tmp/bin:$PATH" TILO_GENERATION_VERIFY_KEY="$tmp/cosign.pub" \
+    TILO_PUBLISH_REPO=registry.invalid/tilo MOCK_TAGS="$1" \
     "$repo/os/dev/next-generation.sh" 2>/dev/null
 }
 

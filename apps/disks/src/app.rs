@@ -27,12 +27,12 @@ use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
 use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
+use ui::theme::Theme;
+use ui::tilo_actions::{
     ActionContract, ActionSpec, Availability, ConfirmationPolicy, ExecutionMode, OperationKind,
     PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
 };
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
-use ui::theme::Theme;
 use ui::widget::{
     Button, ButtonFace, FlapState, SegmentedFace, SplitLayout, TextInput, ToggleGroup, Widget,
 };
@@ -181,7 +181,11 @@ fn refresh_type_ramp(tr: &TextRenderer, theme: &Theme) {
 /// The renderer's accessibility text scale, sanitised for layout arithmetic.
 fn renderer_scale(tr: &TextRenderer) -> f64 {
     let scale = f64::from(tr.text_scale());
-    if scale.is_finite() && scale > 0.0 { scale } else { 1.0 }
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -381,6 +385,26 @@ struct PartitionColumns {
     used: f64,
 }
 
+#[derive(Clone, Copy)]
+struct PartitionRow<'a> {
+    area: Rect,
+    columns: PartitionColumns,
+    y: f64,
+    index: usize,
+    partition: &'a Partition,
+    selected: bool,
+    hovered: bool,
+}
+
+/// Mutable rendering resources shared by the app's immediate-mode paint
+/// passes. Geometry and domain data remain explicit at each boundary.
+struct PaintContext<'a> {
+    scene: &'a mut Scene,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+    transform: Affine,
+}
+
 pub struct DisksApp {
     topo: Topology,
     topo_json_cache: String,
@@ -399,8 +423,8 @@ pub struct DisksApp {
     live: bool,
     /// Receiver for the currently-running background action, if any.
     action_rx: Option<mpsc::Receiver<ActionResult>>,
-    action_invocation: Option<qos_actions::InvocationId>,
-    completed_action: Option<qos_actions::InvocationUpdate>,
+    action_invocation: Option<tilo_actions::InvocationId>,
+    completed_action: Option<tilo_actions::InvocationUpdate>,
     /// One-time first-frame setup: the live seed and the initial layout
     /// settle. Grouped so they don't pile up as same-shaped bools next to
     /// `dirty` and `live`.
@@ -682,7 +706,12 @@ impl DisksApp {
         let mut cards = Vec::new();
         let mut cy = list_body.y0 - self.list_scroll;
         for _ in &self.topo.drives {
-            cards.push(Rect::new(list_x0, cy, list_x0 + LIST_W, cy + (CARD_H * self.k)));
+            cards.push(Rect::new(
+                list_x0,
+                cy,
+                list_x0 + LIST_W,
+                cy + (CARD_H * self.k),
+            ));
             cy += (CARD_H * self.k) + CARD_GAP;
         }
         (list_header, list_body, cards)
@@ -698,7 +727,12 @@ impl DisksApp {
         dx1: f64,
         header: Rect,
     ) -> (Rect, Vec<(Rect, ActionKind, bool)>) {
-        let action_bar = Rect::new(dx0, header.y1 + 12.0, dx1, header.y1 + 12.0 + (ACTIONBAR_H * self.k));
+        let action_bar = Rect::new(
+            dx0,
+            header.y1 + 12.0,
+            dx1,
+            header.y1 + 12.0 + (ACTIONBAR_H * self.k),
+        );
         let mut action_buttons = Vec::new();
         let drive_ref = self.drive();
         let btn_h = 32.0 * self.k;
@@ -799,11 +833,15 @@ impl DisksApp {
     }
 
     // ---- drawing primitives -------------------------------------------
-    // Each of `txt` / `txt_right` / `txt_center` takes every value it draws
-    // independently (position, size, colour, weight, ...); bundling them
-    // into a params struct would just move the same field count into a
-    // call-site literal at 74 call sites for no behavioural difference.
-    #[allow(clippy::too_many_arguments, reason = "see the comment above")]
+    // This is the one leaf adapter around `TextRenderer::draw_text_weighted`.
+    // Its text, typography, origin and optional clipping width are independent
+    // at 57 call sites; a parameter object would add construction noise but
+    // express no invariant. Alignment-aware adapters below group their anchor
+    // into a `Point` and therefore remain lint-clean.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "leaf adapter mirrors independently variable renderer inputs at 57 call sites; no domain invariant exists to model"
+    )]
     fn txt(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -1183,6 +1221,8 @@ impl DisksApp {
         );
     }
 
+    /// Health dot + short label at a glance (part of [`Self::draw_drive_row`]).
+
     // ---- detail header -------------------------------------------------
     fn draw_header(
         scene: &mut Scene,
@@ -1481,10 +1521,9 @@ impl DisksApp {
         );
     }
 
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     #[allow(
         clippy::many_single_char_names,
-        reason = "t/x/y/w/r are the standard graphics convention: transform, position, measured width, resulting rect"
+        reason = "x/y/w/r are the standard graphics convention: position, measured width, resulting rect"
     )]
     /// Draw a capsule chip at `(x, y)` and return its rect so the caller can
     /// place the next chip after this one's measured width. The capsule wraps
@@ -3332,6 +3371,12 @@ impl DisksApp {
         }))
     }
 
+    /// Refresh scroll extents and derive the frame's shared geometry before
+    /// any paint pass consumes it.
+
+    /// Paint the selected drive's header, action band, tabs, and clipped tab
+    /// content. The empty state follows the same detail-pane boundary.
+
     /// Resolve an operation payload against the latest locally-probed
     /// topology. Resource invocations may arrive after a collaborator's
     /// document snapshot or a search result has gone stale, so a leaf name in
@@ -3577,7 +3622,7 @@ impl Widget for DisksApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         kind: OperationKind,
         type_id: &str,
         payload: &[u8],
@@ -3625,11 +3670,11 @@ impl Widget for DisksApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         _cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if self
             .completed_action
             .as_ref()
@@ -3725,18 +3770,18 @@ impl Widget for DisksApp {
         if let Some(res) = result {
             if let Some(invocation) = self.action_invocation.take() {
                 self.completed_action = Some(match &res.error {
-                    Some(error) => qos_actions::InvocationUpdate::Failed {
+                    Some(error) => tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "disks.operation_failed".into(),
                             message: error.clone(),
                             details: None,
                             retryable: false,
                         },
                     },
-                    None => qos_actions::InvocationUpdate::Succeeded {
+                    None => tilo_actions::InvocationUpdate::Succeeded {
                         invocation,
-                        output: qos_actions::ActionOutput::default(),
+                        output: tilo_actions::ActionOutput::default(),
                     },
                 });
             }
@@ -3754,9 +3799,9 @@ impl Widget for DisksApp {
         if clear {
             self.action_rx = None;
             if !had_result && let Some(invocation) = self.action_invocation.take() {
-                self.completed_action = Some(qos_actions::InvocationUpdate::Failed {
+                self.completed_action = Some(tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "disks.worker_disconnected".into(),
                         message: "disk operation worker disconnected without a result".into(),
                         details: None,
@@ -3857,7 +3902,14 @@ impl Widget for DisksApp {
         self.list_h = lh;
         let v = self.rect;
         let list_body_h = (v.y1 - PAD) - ((TOPBAR_H * self.k) + PAD + (LIST_HEADER_H * self.k));
-        let content_top = (TOPBAR_H * self.k) + PAD + (HEADER_H * self.k) + 12.0 + (ACTIONBAR_H * self.k) + 12.0 + (TAB_H * self.k) + PAD;
+        let content_top = (TOPBAR_H * self.k)
+            + PAD
+            + (HEADER_H * self.k)
+            + 12.0
+            + (ACTIONBAR_H * self.k)
+            + 12.0
+            + (TAB_H * self.k)
+            + PAD;
         let content_avail = (v.y1 - PAD) - content_top;
         self.content_scroll = self
             .content_scroll
@@ -4072,6 +4124,7 @@ impl Widget for DisksApp {
                         .confirm_body(&format!("/dev/{expected}"), self.live),
                 )
                 .with_bounds(ml.card)
+                .with_hashed_key("disks.confirmation-dialog")
                 .with_state(AccessState::new().modal(true));
             dialog.children.push(
                 AccessNode::new(Role::TextInput)
@@ -4117,6 +4170,7 @@ impl Widget for DisksApp {
             // unbounded Toolbar / List / TabBar were invisible to both.
             let mut toolbar = AccessNode::new(Role::Toolbar)
                 .with_name("Storage controls")
+                .with_hashed_key("disks.toolbar")
                 .with_bounds(Rect::new(
                     self.rect.x0,
                     self.rect.y0,
@@ -4149,6 +4203,7 @@ impl Widget for DisksApp {
             if self.list_open() {
                 let mut list = AccessNode::new(Role::List)
                     .with_name("Drives")
+                    .with_hashed_key("disks.drives")
                     .with_bounds(lay.list_header.union(lay.list_body));
                 let n = self.topo.drives.len();
                 for (i, drive) in self.topo.drives.iter().enumerate() {
@@ -4188,7 +4243,9 @@ impl Widget for DisksApp {
                 root.children.push(list);
             }
 
-            let mut tabs = AccessNode::new(Role::TabBar).with_name("Drive details");
+            let mut tabs = AccessNode::new(Role::TabBar)
+                .with_name("Drive details")
+                .with_hashed_key("disks.drive-details");
             if let Some(strip) = lay.tabs.iter().map(|(r, _)| *r).reduce(|a, b| a.union(b)) {
                 tabs = tabs.with_bounds(strip);
             }
@@ -4210,6 +4267,7 @@ impl Widget for DisksApp {
             if let Some(drive) = self.drive() {
                 let mut actions = AccessNode::new(Role::Group)
                     .with_name(format!("Actions for /dev/{}", drive.name))
+                    .with_hashed_key("disks.drive-actions")
                     .with_bounds(lay.action_bar);
                 for (bounds, action, enabled) in &lay.action_buttons {
                     actions.children.push(
@@ -4268,6 +4326,7 @@ impl Widget for DisksApp {
             root.children.push(
                 AccessNode::new(Role::StaticText)
                     .with_name(self.status.clone())
+                    .with_hashed_key("disks.status")
                     .with_live(Politeness::Polite),
             );
         }
@@ -4854,7 +4913,7 @@ mod tests {
     #[test]
     fn worker_result_becomes_terminal_lifecycle_update() {
         let (mut app, mut doc) = seeded_app();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let (tx, rx) = mpsc::channel();
         app.action_invocation = Some(invocation);
         app.action_rx = Some(rx);
@@ -4867,7 +4926,7 @@ mod tests {
         app.sync(&mut doc, &ui::automerge::ROOT);
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &ui::automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
 
@@ -4919,7 +4978,11 @@ mod tests {
             lay.header,
             lay.action_bar
         );
-        let first_button = lay.action_buttons.first().map(|(r, _, _)| *r).expect("buttons");
+        let first_button = lay
+            .action_buttons
+            .first()
+            .map(|(r, _, _)| *r)
+            .expect("buttons");
         assert!(
             (first_button.x0 - (lay.action_bar.x0 + CARD_INSET)).abs() < f64::EPSILON,
             "first action button {first_button:?} starts on the shared card inset"
@@ -5206,6 +5269,38 @@ mod tests {
             DisksDoc::selected(&h.doc),
             2,
             "selection persisted to the CRDT"
+        );
+    }
+
+    #[test]
+    fn smart_tab_activation_persists_and_draws_its_full_content() {
+        let mut h = Harness::new(1280.0, 800.0);
+        let selected_before = h.app.selected;
+        let smart_tab = h
+            .lay()
+            .tabs
+            .iter()
+            .find(|(_, tab)| *tab == Tab::Smart)
+            .map(|(rect, _)| *rect)
+            .expect("SMART tab has a hit target");
+
+        assert!(h.click(center(smart_tab)), "the SMART tab claims its click");
+        assert_eq!(h.app.tab, Tab::Smart);
+        assert_eq!(DisksDoc::tab(&h.doc), Tab::Smart.key());
+        assert_eq!(
+            h.app.selected, selected_before,
+            "changing detail tabs must not retarget the selected drive"
+        );
+
+        h.draw();
+        let expected_height = h
+            .app
+            .drive()
+            .map(|drive| h.app.content_height(drive))
+            .expect("the seeded app has a selected drive");
+        assert_eq!(
+            h.app.content_h, expected_height,
+            "the real draw pass publishes the SMART tab's complete scroll extent"
         );
     }
 

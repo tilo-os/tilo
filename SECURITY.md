@@ -1,6 +1,6 @@
 # Security policy
 
-Please report suspected vulnerabilities privately to the qOS maintainers using
+Please report suspected vulnerabilities privately to the Tilo maintainers using
 the repository host's private security-advisory channel. Do not open a public
 issue containing exploit details, private keys, identity records, invite tokens,
 or user data. Include the affected commit/image digest, configuration, impact,

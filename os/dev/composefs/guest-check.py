@@ -4,7 +4,7 @@
   ./os/dev/composefs/vm.sh ssh 'python3 -' < os/dev/composefs/guest-check.py
 
 The question this exists to answer is narrow: does PCR 11 actually carry
-`qos.generation=`? "PCR 11 is non-zero" does not answer it — a UKI measures
+`tilo.generation=`? "PCR 11 is non-zero" does not answer it — a UKI measures
 several sections into PCR 11 and a non-zero value proves only that something
 was measured. So the check is done by construction instead:
 
@@ -13,7 +13,7 @@ was measured. So the check is done by construction instead:
   3. find that exact digest in the TPM event log's PCR 11 chain,
   4. replay the whole PCR 11 chain and confirm it folds to the live PCR 11.
 
-If all four hold, the bytes containing `qos.generation=` are provably part of
+If all four hold, the bytes containing `tilo.generation=` are provably part of
 what PCR 11 is bound to, and a seal against PCR 11 is a seal against the
 generation number.
 """
@@ -83,23 +83,23 @@ print("=== composefs + UKI: boot-side evidence ===\n")
 cmdline = open("/proc/cmdline").read().strip()
 info(f"/proc/cmdline: {cmdline}")
 
-m = re.search(r"(?:^|\s)qos\.generation=(\d+)(?:\s|$)", cmdline)
+m = re.search(r"(?:^|\s)tilo\.generation=(\d+)(?:\s|$)", cmdline)
 gen = m.group(1) if m else None
 if gen:
-    ok(f"qos.generation={gen} is on the kernel command line")
+    ok(f"tilo.generation={gen} is on the kernel command line")
 else:
-    no("no qos.generation= on the kernel command line")
+    no("no tilo.generation= on the kernel command line")
 
-if os.path.exists("/usr/lib/qos/generation"):
-    file_gen = open("/usr/lib/qos/generation").read().strip()
+if os.path.exists("/usr/lib/tilo/generation"):
+    file_gen = open("/usr/lib/tilo/generation").read().strip()
     if file_gen == gen:
-        ok(f"/usr/lib/qos/generation agrees with the command line ({file_gen})")
+        ok(f"/usr/lib/tilo/generation agrees with the command line ({file_gen})")
     else:
-        no(f"/usr/lib/qos/generation is {file_gen} but the command line says {gen}")
+        no(f"/usr/lib/tilo/generation is {file_gen} but the command line says {gen}")
 else:
-    no("/usr/lib/qos/generation is missing")
+    no("/usr/lib/tilo/generation is missing")
 
-# qOS's hardening kargs have to survive into the sealed command line too, or the
+# Tilo's hardening kargs have to survive into the sealed command line too, or the
 # UKI path silently drops the hardening the ostree path applies at deploy time.
 HARDENING = [
     "init_on_alloc=1",
@@ -276,13 +276,13 @@ else:
                 f"(sha256 {matched[1][:16]}… found in the PCR 11 chain; framing: {matched[0]})"
             )
             txt = uki_cmdline.rstrip(b"\0").decode(errors="replace")
-            if gen and f"qos.generation={gen}" in txt:
+            if gen and f"tilo.generation={gen}" in txt:
                 ok(
-                    f"PCR 11 CARRIES qos.generation={gen} — the measured bytes "
+                    f"PCR 11 CARRIES tilo.generation={gen} — the measured bytes "
                     f"contain it"
                 )
             else:
-                no("the measured .cmdline does not contain qos.generation=")
+                no("the measured .cmdline does not contain tilo.generation=")
         else:
             no("the UKI's .cmdline digest is NOT in the PCR 11 event chain")
             for label, blob in candidates.items():

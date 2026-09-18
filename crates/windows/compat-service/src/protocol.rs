@@ -180,7 +180,7 @@ pub enum ProtocolResponse {
         /// from whichever application rows happen to be published.
         vm_availability: VmAvailability,
         /// The singleton installer operation, when one was started through
-        /// the qOS portal. Candidate IDs remain opaque.
+        /// the Tilo portal. Candidate IDs remain opaque.
         vm_installation: Option<VmInstallation>,
         vm_uninstallation: Option<VmUninstallation>,
     },

@@ -3,7 +3,7 @@
 //!
 //! This is **gated**: nothing here runs during `--shots` or in the headless
 //! renderer. The live app calls [`Backend::detect`] once at startup; if
-//! `firewall-cmd` is on `$PATH` *and* `QOS_FIREWALL_APPLY=1` is set, applies
+//! `firewall-cmd` is on `$PATH` *and* `TILO_FIREWALL_APPLY=1` is set, applies
 //! are executed for real. Otherwise the backend stays in **dry-run** mode
 //! and only records the commands it *would* run, which the UI surfaces in
 //! the apply preview. This keeps the app safe to demo on any machine while
@@ -14,13 +14,18 @@
 //! would persist changes.
 
 use std::process::Command;
+use std::time::Duration;
 
 use crate::model::{Action, FirewallConfig, Matcher, Proto, Rule, Target, Zone, ZoneKind};
+
+const COMMAND_OUTPUT_LIMIT: usize = 1024 * 1024;
+const QUERY_TIMEOUT: Duration = Duration::from_secs(3);
+const APPLY_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 
 /// How the backend will treat apply requests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
-    /// `firewall-cmd` present and `QOS_FIREWALL_APPLY=1` — commands run.
+    /// `firewall-cmd` present and `TILO_FIREWALL_APPLY=1` — commands run.
     Live,
     /// Commands are generated but never executed.
     DryRun,
@@ -71,7 +76,7 @@ impl Backend {
     /// Inspect the environment and decide the operating mode.
     pub fn detect() -> Self {
         let has_cmd = which_firewall_cmd();
-        let armed = std::env::var("QOS_FIREWALL_APPLY").as_deref() == Ok("1");
+        let armed = std::env::var("TILO_FIREWALL_APPLY").as_deref() == Ok("1");
         let mode = if has_cmd && armed {
             Mode::Live
         } else {
@@ -117,10 +122,11 @@ impl Backend {
             return Ok(());
         }
         for invocation in &plan {
-            let output = Command::new(invocation.program)
-                .args(&invocation.args)
-                .output()
-                .map_err(|error| format!("could not start {}: {error}", invocation.program))?;
+            let mut command = Command::new(invocation.program);
+            command.args(&invocation.args);
+            let output =
+                bounded_command::run_prepared(command, None, COMMAND_OUTPUT_LIMIT, APPLY_TIMEOUT)
+                    .map_err(|error| format!("could not run {}: {error}", invocation.program))?;
             if !output.status.success() {
                 return Err(command_failure(invocation, &output));
             }
@@ -129,7 +135,7 @@ impl Backend {
     }
 }
 
-fn command_failure(invocation: &Invocation, output: &std::process::Output) -> String {
+fn command_failure(invocation: &Invocation, output: &bounded_command::Output) -> String {
     let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
     let guidance = if detail.contains("Access denied")
         || detail.contains("not authorized")
@@ -168,10 +174,14 @@ fn which_firewall_cmd() -> bool {
 /// firewall has no side effects and needs no elevation on a normal
 /// polkit-configured host.
 fn query(args: &[&str]) -> Result<String, String> {
-    let out = Command::new("firewall-cmd")
-        .args(args)
-        .output()
-        .map_err(|e| format!("spawn firewall-cmd: {e}"))?;
+    let out = bounded_command::run(
+        "firewall-cmd",
+        args,
+        None,
+        COMMAND_OUTPUT_LIMIT,
+        QUERY_TIMEOUT,
+    )
+    .map_err(|e| format!("run firewall-cmd: {e}"))?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
     }
@@ -640,14 +650,14 @@ public (active)
 
     #[test]
     fn detect_defaults_to_dry_run_without_env() {
-        // Without QOS_FIREWALL_APPLY=1 we must never be Live, regardless of
+        // Without TILO_FIREWALL_APPLY=1 we must never be Live, regardless of
         // whether firewall-cmd happens to exist on this host.
-        let prev = std::env::var("QOS_FIREWALL_APPLY").ok();
-        unsafe { std::env::remove_var("QOS_FIREWALL_APPLY") };
+        let prev = std::env::var("TILO_FIREWALL_APPLY").ok();
+        unsafe { std::env::remove_var("TILO_FIREWALL_APPLY") };
         let b = Backend::detect();
         assert_eq!(b.mode(), Mode::DryRun);
         if let Some(v) = prev {
-            unsafe { std::env::set_var("QOS_FIREWALL_APPLY", v) };
+            unsafe { std::env::set_var("TILO_FIREWALL_APPLY", v) };
         }
     }
 }

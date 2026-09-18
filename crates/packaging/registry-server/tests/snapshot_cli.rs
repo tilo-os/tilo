@@ -40,7 +40,7 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
         })
         .unwrap();
     let mut entry = RegistryEntry {
-        package_id: "dev.qos.test".into(),
+        package_id: "dev.tilo.test".into(),
         name: "Test".into(),
         description: "Test app".into(),
         categories: vec!["Test".into()],
@@ -64,7 +64,7 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
     let key_path = offline.path().join("offline-owner.seed");
     std::fs::write(&key_path, hex::encode(owner.to_bytes())).unwrap();
     std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_qos-registry-server"))
+    let output = Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
         .arg("--data-dir")
         .arg(temp.path())
         .arg("sign-snapshot")
@@ -97,7 +97,7 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
     );
 
     std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644)).unwrap();
-    let refused = Command::new(env!("CARGO_BIN_EXE_qos-registry-server"))
+    let refused = Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
         .arg("--data-dir")
         .arg(temp.path())
         .arg("sign-snapshot")

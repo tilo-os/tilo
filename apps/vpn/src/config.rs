@@ -375,7 +375,7 @@ pub fn default_backend(_kind: ConnKind) -> Backend {
 /// Production uses the narrow live backend directly. Unit tests stay
 /// hermetic unless a specifically marked integration run opts in.
 pub fn exec_allowed() -> bool {
-    !cfg!(test) || std::env::var("QOS_VPN_ALLOW_EXEC").as_deref() == Ok("1")
+    !cfg!(test) || std::env::var("TILO_VPN_ALLOW_EXEC").as_deref() == Ok("1")
 }
 
 /// The command that would toggle the system Tor service.
@@ -401,7 +401,7 @@ pub fn tor_plan(enable: bool) -> CommandPlan {
 ///
 /// # Errors
 /// Returns `Err` when execution is disabled in the current process (e.g.
-/// tests, unless `QOS_VPN_ALLOW_EXEC` opts in), when `plan` isn't the
+/// tests, unless `TILO_VPN_ALLOW_EXEC` opts in), when `plan` isn't the
 /// narrow `nmcli connection up|down <name>` vocabulary this function
 /// accepts, or when the underlying `NetworkManager` call fails.
 pub fn execute(plan: &CommandPlan) -> Result<String, String> {

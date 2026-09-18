@@ -1,4 +1,4 @@
-//! The signed registry index — the wire format a qOS registry serves.
+//! The signed registry index — the wire format a Tilo registry serves.
 //!
 //! Maps a reverse-DNS **app-id** to published versions, each naming its
 //! qpkg by content hash (blake3, same as iroh-blobs) plus the metadata
@@ -23,8 +23,8 @@ use pkg::pack::SigningIdentity;
 /// Version of the index wire format; bumped when the canonical signing bytes change shape.
 pub const INDEX_FORMAT: u32 = 1;
 
-const INDEX_MAGIC: &[u8; 12] = b"QOSIDX-DOC\0\0";
-const ENTRY_MAGIC: &[u8; 12] = b"QOSIDX-ENT\0\0";
+const INDEX_MAGIC: &[u8; 12] = b"TLOIDX-DOC\0\0";
+const ENTRY_MAGIC: &[u8; 12] = b"TLOIDX-ENT\0\0";
 
 /// Errors surfaced by index construction / verification.
 #[derive(Debug, thiserror::Error)]
@@ -124,7 +124,7 @@ pub struct RuntimeRef {
 }
 
 impl RuntimeRef {
-    /// Parse `qos-runtime/1.2.0`.
+    /// Parse `tilo-runtime/1.2.0`.
     ///
     /// # Errors
     ///
@@ -145,7 +145,7 @@ impl RuntimeRef {
         })
     }
 
-    /// `qos-runtime/1.2.0` wire form.
+    /// `tilo-runtime/1.2.0` wire form.
     pub fn to_wire(&self) -> String {
         format!("{}/{}", self.name, self.version)
     }
@@ -228,7 +228,7 @@ impl HostProfile {
 /// One published version of one app.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexEntry {
-    /// Reverse-DNS app id, e.g. `dev.qos.editor`.
+    /// Reverse-DNS app id, e.g. `dev.tilo.editor`.
     pub app_id: String,
     /// Semver of this build.
     pub version: String,
@@ -598,7 +598,7 @@ mod tests {
     #[test]
     fn entry_sign_verify_roundtrip() {
         let id = SigningIdentity::generate();
-        let mut e = sample_entry("dev.qos.editor", "1.0.0", "x86_64-v3");
+        let mut e = sample_entry("dev.tilo.editor", "1.0.0", "x86_64-v3");
         e.sign(&id).unwrap();
         e.verify_publisher().unwrap();
     }
@@ -606,7 +606,7 @@ mod tests {
     #[test]
     fn tampered_entry_fails_publisher_verify() {
         let id = SigningIdentity::generate();
-        let mut e = sample_entry("dev.qos.editor", "1.0.0", "x86_64-v3");
+        let mut e = sample_entry("dev.tilo.editor", "1.0.0", "x86_64-v3");
         e.sign(&id).unwrap();
         // Flip the advertised hash — signature must no longer verify.
         e.qpkg_hash = hex::encode([1u8; 32]);
@@ -618,8 +618,8 @@ mod tests {
         let registry = SigningIdentity::generate();
         let other = SigningIdentity::generate();
         let publisher = SigningIdentity::generate();
-        let mut idx = RegistryIndex::new("dev.qos.central");
-        let mut e = sample_entry("dev.qos.editor", "1.0.0", "x86_64-v3");
+        let mut idx = RegistryIndex::new("dev.tilo.central");
+        let mut e = sample_entry("dev.tilo.editor", "1.0.0", "x86_64-v3");
         e.sign(&publisher).unwrap();
         idx.upsert(e);
         idx.sign(&registry).unwrap();
@@ -631,42 +631,42 @@ mod tests {
     #[test]
     fn resolve_picks_highest_runnable_isa_then_semver() {
         let publisher = SigningIdentity::generate();
-        let mut idx = RegistryIndex::new("dev.qos.central");
+        let mut idx = RegistryIndex::new("dev.tilo.central");
         for (ver, isa) in [
             ("1.0.0", "x86_64"),
             ("1.0.0", "x86_64-v3"),
             ("1.0.0", "x86_64-v4"),
             ("0.9.0", "x86_64-v3"),
         ] {
-            let mut e = sample_entry("dev.qos.editor", ver, isa);
+            let mut e = sample_entry("dev.tilo.editor", ver, isa);
             e.sign(&publisher).unwrap();
             idx.upsert(e);
         }
         // A v3 host cannot run the v4 build; must pick 1.0.0 / v3.
         let host = x86_host(X86_64Level::V3);
-        let best = idx.resolve_best("dev.qos.editor", None, &host).unwrap();
+        let best = idx.resolve_best("dev.tilo.editor", None, &host).unwrap();
         assert_eq!(best.version, "1.0.0");
         assert_eq!(best.isa, "x86_64-v3");
 
         // A v4 host prefers the v4 build.
         let host4 = x86_host(X86_64Level::V4);
-        let best4 = idx.resolve_best("dev.qos.editor", None, &host4).unwrap();
+        let best4 = idx.resolve_best("dev.tilo.editor", None, &host4).unwrap();
         assert_eq!(best4.isa, "x86_64-v4");
     }
 
     #[test]
     fn resolve_respects_version_req() {
         let publisher = SigningIdentity::generate();
-        let mut idx = RegistryIndex::new("dev.qos.central");
+        let mut idx = RegistryIndex::new("dev.tilo.central");
         for ver in ["1.0.0", "1.2.0", "2.0.0"] {
-            let mut e = sample_entry("dev.qos.editor", ver, "x86_64");
+            let mut e = sample_entry("dev.tilo.editor", ver, "x86_64");
             e.sign(&publisher).unwrap();
             idx.upsert(e);
         }
         let host = x86_host(X86_64Level::Baseline);
         let req = semver::VersionReq::parse("^1").unwrap();
         let best = idx
-            .resolve_best("dev.qos.editor", Some(&req), &host)
+            .resolve_best("dev.tilo.editor", Some(&req), &host)
             .unwrap();
         assert_eq!(best.version, "1.2.0");
     }
@@ -674,32 +674,32 @@ mod tests {
     #[test]
     fn runtime_gate_blocks_missing_runtime() {
         let publisher = SigningIdentity::generate();
-        let mut idx = RegistryIndex::new("dev.qos.central");
-        let mut e = sample_entry("dev.qos.editor", "1.0.0", "x86_64");
-        e.runtime = Some("qos-runtime/1.2.0".into());
+        let mut idx = RegistryIndex::new("dev.tilo.central");
+        let mut e = sample_entry("dev.tilo.editor", "1.0.0", "x86_64");
+        e.runtime = Some("tilo-runtime/1.2.0".into());
         e.sign(&publisher).unwrap();
         idx.upsert(e);
 
         // No runtime installed → not selectable.
         let host = x86_host(X86_64Level::Baseline);
-        assert!(idx.resolve_best("dev.qos.editor", None, &host).is_none());
+        assert!(idx.resolve_best("dev.tilo.editor", None, &host).is_none());
 
         // A compatible runtime present → selectable.
-        let host = host.with_runtime(RuntimeRef::parse("qos-runtime/1.5.0").unwrap());
-        assert!(idx.resolve_best("dev.qos.editor", None, &host).is_some());
+        let host = host.with_runtime(RuntimeRef::parse("tilo-runtime/1.5.0").unwrap());
+        assert!(idx.resolve_best("dev.tilo.editor", None, &host).is_some());
 
         // A different-major runtime does NOT satisfy.
         let host = x86_host(X86_64Level::Baseline)
-            .with_runtime(RuntimeRef::parse("qos-runtime/2.0.0").unwrap());
-        assert!(idx.resolve_best("dev.qos.editor", None, &host).is_none());
+            .with_runtime(RuntimeRef::parse("tilo-runtime/2.0.0").unwrap());
+        assert!(idx.resolve_best("dev.tilo.editor", None, &host).is_none());
     }
 
     #[test]
     fn json_roundtrip_preserves_signature() {
         let registry = SigningIdentity::generate();
         let publisher = SigningIdentity::generate();
-        let mut idx = RegistryIndex::new("dev.qos.central");
-        let mut e = sample_entry("dev.qos.editor", "1.0.0", "x86_64-v3");
+        let mut idx = RegistryIndex::new("dev.tilo.central");
+        let mut e = sample_entry("dev.tilo.editor", "1.0.0", "x86_64-v3");
         e.sign(&publisher).unwrap();
         idx.upsert(e);
         idx.sign(&registry).unwrap();

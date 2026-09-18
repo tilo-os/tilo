@@ -4,9 +4,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
 
-use ui::text_render::TextRenderer;
-
 use crate::num;
+use crate::paint_context::PaintContext;
+use ui::text_render::TextRenderer;
 
 pub(crate) const MIN: f64 = 0.4;
 pub(crate) const MAX: f64 = 3.0;
@@ -17,6 +17,14 @@ enum Action {
     Out,
     Reset,
     In,
+}
+
+#[derive(Clone, Copy)]
+struct ButtonStyle {
+    center_y: f64,
+    scale: f64,
+    chip: Color,
+    text: Color,
 }
 
 /// Owns the local zoom preference, transform geometry and toolbar interaction.
@@ -55,6 +63,14 @@ impl Default for Metrics {
 }
 
 impl ZoomControl {
+    pub(crate) const WIDTH: f64 = 88.0;
+    /// Stable semantic targets for the three controls painted by this component.
+    /// Keeping these beside the hit-testing means assistive technology and the
+    /// pointer path cannot grow different zoom behaviours.
+    pub(crate) const TARGET_OUT: &'static str = "word-processor.zoom:out";
+    pub(crate) const TARGET_RESET: &'static str = "word-processor.zoom:reset";
+    pub(crate) const TARGET_IN: &'static str = "word-processor.zoom:in";
+
     pub(crate) fn new() -> Self {
         Self {
             factor: 1.0,
@@ -158,6 +174,39 @@ impl ZoomControl {
         else {
             return false;
         };
+        self.apply(action)
+    }
+
+    /// Activate a painted zoom control by its stable accessibility target.
+    /// This deliberately uses the same `apply` routine as pointer input.
+    pub(crate) fn activate_target(&mut self, target: &str) -> bool {
+        let action = match target {
+            Self::TARGET_OUT => Action::Out,
+            Self::TARGET_RESET => Action::Reset,
+            Self::TARGET_IN => Action::In,
+            _ => return false,
+        };
+        self.apply(action);
+        true
+    }
+
+    /// The rendered hit bounds paired with their stable semantic target.
+    /// Empty until the component has been drawn, just like the pointer targets.
+    pub(crate) fn accessibility_targets(&self) -> Vec<(&'static str, Rect)> {
+        self.hits
+            .iter()
+            .map(|(action, rect)| {
+                let target = match action {
+                    Action::Out => Self::TARGET_OUT,
+                    Action::Reset => Self::TARGET_RESET,
+                    Action::In => Self::TARGET_IN,
+                };
+                (target, *rect)
+            })
+            .collect()
+    }
+
+    fn apply(&mut self, action: Action) -> bool {
         match action {
             Action::Out => self.step(-STEP),
             Action::Reset => self.set(1.0),
@@ -167,13 +216,14 @@ impl ZoomControl {
 
     pub(crate) fn draw(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
+        context: &mut PaintContext<'_>,
         row: Rect,
         chip: Color,
         text_color: Color,
     ) {
+        let scene = &mut *context.scene;
+        let transform = context.transform;
+        let text = &mut *context.text;
         self.hits.clear();
         self.measure(text);
         let metrics = self.metrics;
@@ -230,7 +280,6 @@ impl ZoomControl {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn draw_button(
     scene: &mut Scene,
     transform: Affine,
@@ -273,9 +322,7 @@ mod tests {
                 text.set_text_scale(scale);
                 let row = Rect::new(0.0, 0.0, 480.0, 64.0);
                 zoom.draw(
-                    &mut Scene::new(),
-                    Affine::IDENTITY,
-                    &mut text,
+                    &mut PaintContext::new(&mut Scene::new(), Affine::IDENTITY, &mut text),
                     row,
                     Color::BLACK,
                     Color::WHITE,
@@ -315,9 +362,7 @@ mod tests {
             let mut text = TextRenderer::new();
             text.set_text_scale(scale);
             zoom.draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut text,
+                &mut PaintContext::new(&mut Scene::new(), Affine::IDENTITY, &mut text),
                 Rect::new(0.0, 0.0, 480.0, 64.0),
                 Color::BLACK,
                 Color::WHITE,

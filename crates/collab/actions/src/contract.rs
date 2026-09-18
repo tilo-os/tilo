@@ -41,6 +41,13 @@ pub enum RiskLevel {
     Destructive,
     /// Crosses an administrative or security boundary.
     Privileged,
+    /// Reads or exports private user data. It needs an explicit confirmation,
+    /// but unlike deletion it does not itself alter the source resource.
+    ///
+    /// This is deliberately appended: `RiskLevel` is also encoded by compact
+    /// serde formats, where reordering variants would reinterpret old audit
+    /// records and envelopes.
+    Sensitive,
 }
 
 /// Minimum authority required to see and invoke an action. Capability-denied
@@ -114,7 +121,7 @@ pub enum DiscoveryScope {
 }
 
 /// Shape of a successful result. Schemas use JSON Schema so non-Rust callers
-/// do not need a parallel qOS-only type system.
+/// do not need a parallel Tilo-only type system.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResultSpec {
@@ -234,8 +241,10 @@ impl ActionContract {
         {
             errors.push("unavailable action needs a code and reason".into());
         }
-        if matches!(self.risk, RiskLevel::Destructive | RiskLevel::Privileged)
-            && matches!(self.confirmation, ConfirmationPolicy::None)
+        if matches!(
+            self.risk,
+            RiskLevel::Sensitive | RiskLevel::Destructive | RiskLevel::Privileged
+        ) && matches!(self.confirmation, ConfirmationPolicy::None)
         {
             errors.push("consequential action requires confirmation".into());
         }
@@ -283,6 +292,31 @@ impl ActionContract {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn risk_level_keeps_existing_compact_wire_discriminants() {
+        // `RiskLevel` appears in recorded action contracts. Postcard encodes
+        // enum variants by ordinal, so the old values are a compatibility
+        // boundary rather than an implementation detail.
+        assert_eq!(postcard::to_allocvec(&RiskLevel::None).unwrap(), vec![0]);
+        assert_eq!(postcard::to_allocvec(&RiskLevel::Low).unwrap(), vec![1]);
+        assert_eq!(
+            postcard::to_allocvec(&RiskLevel::Destructive).unwrap(),
+            vec![2]
+        );
+        assert_eq!(
+            postcard::to_allocvec(&RiskLevel::Privileged).unwrap(),
+            vec![3]
+        );
+        assert_eq!(
+            postcard::from_bytes::<RiskLevel>(&[2]).unwrap(),
+            RiskLevel::Destructive
+        );
+        assert_eq!(
+            postcard::from_bytes::<RiskLevel>(&[3]).unwrap(),
+            RiskLevel::Privileged
+        );
+    }
 
     #[test]
     fn broker_owned_job_identity_is_not_a_second_application_result() {

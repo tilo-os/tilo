@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Install the qos-session RPMs into the *running* system via
+# Install the tilo-session RPMs into the *running* system via
 # `rpm-ostree usroverlay`, without a reboot.
 #
-# `rpm-ostree install` is the real install: it layers the package into a new
-# deployment, which the machine boots into. That is what you want long-term,
-# and it needs a reboot. `usroverlay` instead mounts a writable overlay over
+# `rpm-ostree install` creates a new deployment by layering the package into it.
+# The machine boots into that deployment; this is the long-term path and needs a
+# reboot. `usroverlay` instead mounts a writable overlay over
 # /usr for as long as this boot lasts, so the files are there immediately and
 # gone at the next reboot. Good for "does the session entry show up in the
-# login screen", not a way to run qOS day to day.
+# login screen", not a way to run Tilo day to day.
 #
 #   sudo dist/rpm/usroverlay-install.sh             # runtime package only
 #   sudo dist/rpm/usroverlay-install.sh --devel     # runtime + developer entry
 #
 # Everything this writes lives under /usr (transient) except the PAM stack in
-# /etc, which is a genuinely writable directory on an ostree host and so
+# /etc, which is writable on an ostree host and so
 # persists; it is inert without the compositor, and `--uninstall` removes it.
 set -euo pipefail
 
@@ -22,19 +22,19 @@ rpm_arch=$(rpm --eval '%{_arch}')
 rpms_dir=$repo_root/dist/rpm/build/RPMS/$rpm_arch
 
 runtime_files=(
-    /usr/bin/qos-shell
-    /usr/bin/qos-launcher
-    /usr/libexec/qos-session
-    /usr/libexec/qos-unlock-helper
-    /usr/lib/systemd/user/qos-graphical-session.target
-    /usr/share/wayland-sessions/qos.desktop
-    /usr/share/xdg-desktop-portal/nirios-portals.conf
-    /usr/share/xdg-desktop-portal/portals/qos.portal
-    /etc/pam.d/qos-unlock
+    /usr/bin/tilo-shell
+    /usr/bin/tilo-launcher
+    /usr/libexec/tilo-session
+    /usr/libexec/tilo-unlock-helper
+    /usr/lib/systemd/user/tilo-graphical-session.target
+    /usr/share/wayland-sessions/tilo.desktop
+    /usr/share/xdg-desktop-portal/tilo-portals.conf
+    /usr/share/xdg-desktop-portal/portals/tilo.portal
+    /etc/pam.d/tilo-unlock
 )
 devel_files=(
-    /usr/libexec/qos-session-dev
-    /usr/share/wayland-sessions/qos-dev.desktop
+    /usr/libexec/tilo-session-dev
+    /usr/share/wayland-sessions/tilo-dev.desktop
 )
 
 files=("${runtime_files[@]}" "${devel_files[@]}")
@@ -62,11 +62,11 @@ fi
 # pattern also prevents an older devel package from being unpacked by accident.
 if (( include_devel )); then
     mapfile -t rpms < <(find "$rpms_dir" -maxdepth 1 -type f \
-        \( -name 'qos-session-[0-9]*.rpm' -o -name 'qos-session-devel-[0-9]*.rpm' \) \
+        \( -name 'tilo-session-[0-9]*.rpm' -o -name 'tilo-session-devel-[0-9]*.rpm' \) \
         -print | sort)
 else
     mapfile -t rpms < <(find "$rpms_dir" -maxdepth 1 -type f \
-        -name 'qos-session-[0-9]*.rpm' -print | sort)
+        -name 'tilo-session-[0-9]*.rpm' -print | sort)
 fi
 (( ${#rpms[@]} )) || { echo "no runtime RPMs in $rpms_dir — run dist/rpm/build-rpm.sh first" >&2; exit 1; }
 if (( ! include_devel )); then
@@ -78,8 +78,8 @@ fi
 # the thing that must not happen by accident.
 for f in "${files[@]}"; do
     if [[ -e $f && ! -L $f ]]; then
-        # Ours from a previous run of this script is fine to replace; a file
-        # owned by a real package is not.
+        # A file from a previous run of this script is fine to replace; a file
+        # owned by another package is not.
         if rpm -qf "$f" >/dev/null 2>&1; then
             echo "refusing: $f belongs to $(rpm -qf "$f")" >&2
             exit 1

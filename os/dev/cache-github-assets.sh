@@ -9,7 +9,7 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd -- "$script_dir/../.." && pwd)"
 manifest="$repo/os/external-assets/github-assets.tsv"
-cache_dir="${QOS_GITHUB_ASSET_CACHE:-$repo/os/external-assets/cache}"
+cache_dir="${TILO_GITHUB_ASSET_CACHE:-$repo/os/external-assets/cache}"
 mkdir -p "$cache_dir"
 
 wanted() {
@@ -41,12 +41,12 @@ while IFS=$'\t' read -r expected name url; do
   target="$cache_dir/$name"
   if verify "$expected" "$target"; then
     [ ! -e "$target.part" ] || unlink -- "$target.part"
-    printf '[qos] cached %s\n' "$name"
+    printf '[tilo] cached %s\n' "$name"
     continue
   fi
 
   part="$target.part"
-  printf '[qos] fetching %s\n' "$name"
+  printf '[tilo] fetching %s\n' "$name"
   verified=0
   for integrity_attempt in 1 2; do
     if ! curl --location --fail --show-error \
@@ -54,7 +54,7 @@ while IFS=$'\t' read -r expected name url; do
       --speed-limit 1024 --speed-time 120 --continue-at - \
       --output "$part" "$url"; then
       if [ "$integrity_attempt" = 1 ] && [ -f "$part" ]; then
-        printf '[qos] resume failed for %s; retrying once from byte zero\n' "$name" >&2
+        printf '[tilo] resume failed for %s; retrying once from byte zero\n' "$name" >&2
         unlink -- "$part"
         continue
       fi
@@ -69,7 +69,7 @@ while IFS=$'\t' read -r expected name url; do
       "$name" "$expected" "$actual" >&2
     unlink -- "$part"
     if [ "$integrity_attempt" = 1 ]; then
-      printf '[qos] retrying %s once from byte zero\n' "$name" >&2
+      printf '[tilo] retrying %s once from byte zero\n' "$name" >&2
     fi
   done
   [ "$verified" = 1 ] || exit 1
@@ -84,7 +84,7 @@ while IFS= read -r cached; do
   case "$name" in *.part) continue ;; esac
   awk -F '\t' -v n="$name" '$1 !~ /^#/ && $2 == n { found=1 } END { exit !found }' \
     "$manifest" || {
-      printf '[qos] pruning stale cached asset %s\n' "$name"
+      printf '[tilo] pruning stale cached asset %s\n' "$name"
       unlink -- "$cached"
     }
 done < <(find "$cache_dir" -maxdepth 1 -type f -print)
@@ -95,5 +95,10 @@ done < <(find "$cache_dir" -maxdepth 1 -type f -print)
 chmod 0755 "$cache_dir"
 find "$cache_dir" -maxdepth 1 -type f ! -name '*.part' -exec chmod 0644 {} +
 if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
-  chcon -R -t container_file_t -- "$cache_dir"
+  # A previous private container mount may leave a valid-looking type with
+  # container-specific MCS categories (for example c123,c456). A later build
+  # receives different categories and is then denied despite mode 0644. The
+  # cache is an immutable, checksum-verified build context shared by jobs, so
+  # give it the shared container level as well as the correct type.
+  chcon -R -t container_file_t -l s0 -- "$cache_dir"
 fi

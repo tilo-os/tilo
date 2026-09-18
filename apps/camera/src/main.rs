@@ -1,4 +1,4 @@
-//! Camera — standard qOS application entry point.
+//! Camera — standard Tilo application entry point.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -56,23 +56,17 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
             ("--dir", "CAMERA_DIR"),
             ("--scroll", "CAMERA_SCROLL"),
             ("--hover", "CAMERA_SHOT_HOVER"),
-            ("--library-loading", "CAMERA_SHOT_LIBRARY_LOADING"),
+            ("--mode", "CAMERA_SHOT_MODE"),
         ] {
             if let Some(value) = args.value(option) {
                 std::env::set_var(variable, value);
             }
         }
-        if args.has("--select") {
-            std::env::set_var("CAMERA_SELECT", "1");
-        }
         if args.has("--scan-first") {
             std::env::set_var("CAMERA_SCAN_FIRST", "1");
         }
-        if args.has("--confirm-delete") {
-            std::env::set_var("CAMERA_CONFIRM_DELETE", "1");
-        }
-        if args.has("--library-loading") {
-            std::env::set_var("CAMERA_SHOT_LIBRARY_LOADING", "1");
+        if args.has("--timer-running") {
+            std::env::set_var("CAMERA_SHOT_TIMER_RUNNING", "1");
         }
         if let Some(state) = args.value("--camera-state") {
             std::env::set_var("CAMERA_SHOT_CAMERA_STATE", state);
@@ -82,6 +76,9 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         // fixture clock explicitly when it needs a particular reference time.
         if args.shots.is_some() && std::env::var_os("CAMERA_SHOT_NOW").is_none() {
             std::env::set_var("CAMERA_SHOT_NOW", "1800000000");
+        }
+        if args.has("--crop") {
+            std::env::set_var("CAMERA_CROP", "1");
         }
     }
 
@@ -112,21 +109,15 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         theme,
     )
     .render_png(out);
-    println!("dev.qos.camera: wrote shot to {}", out.display());
+    println!("dev.tilo.camera: wrote shot to {}", out.display());
     Ok(())
 }
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.camera", camera::app_root)
+        &LaunchSpec::new("dev.tilo.camera", camera::app_root)
             .shot_handler(render_shot)
-            .allowed_flags(&[
-                "--select",
-                "--scan-first",
-                "--confirm-delete",
-                "--disk",
-                "--library-loading",
-            ])
+            .allowed_flags(&["--scan-first", "--disk", "--crop", "--timer-running"])
             .allowed_options(&[
                 "--screen",
                 "--mode",
@@ -136,6 +127,7 @@ pub fn main() {
                 "--width",
                 "--height",
                 "--camera-state",
+                "--mode",
             ])
             .allowed_live_options(&["--emit-photos"])
             .command_handler(command)
@@ -156,7 +148,7 @@ fn emit_photos(dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> 
         4,
         900,
         640,
-        "WIFI:T:WPA2;S:qOS Lounge;P:welcome-aboard;H:false;;",
+        "WIFI:T:WPA2;S:Tilo Lounge;P:welcome-aboard;H:false;;",
     );
     camera::library::write_photo(dir, &qr, PhotoFormat::Png)?;
     Ok(())

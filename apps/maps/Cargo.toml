@@ -18,8 +18,8 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
-qos-actions = { path = "../../crates/collab/actions" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -28,14 +28,11 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
-# Explicit rustls ring provider so we can install_default() at startup — the tree
-# has both ring + aws-lc-rs, which rustls 0.23 won't auto-disambiguate.
+# Explicit rustls ring provider so we can install_default() at startup.
 rustls.workspace = true
 png.workspace = true
-# Device location through the XDG Desktop Portal (org.freedesktop.portal.Location,
-# GeoClue2 behind it). Runs off the UI thread on its own small Tokio runtime; the
-# fix is delivered back over a channel (see `location`). Honest failure states —
-# never a fabricated position.
+# Device location through the XDG Location portal (GeoClue2). Runs off the UI
+# thread and reports unavailable/error states when no position is available.
 ashpd.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time"] }
 futures-util.workspace = true

@@ -1,6 +1,0 @@
-    Blocking waiting for file lock on build directory
-   Compiling ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
-   Compiling qos-app v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/app/qos-app)
-   Compiling qos-scratchpad v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/scratchpad)
-    Finished `test` profile [unoptimized] target(s) in 28.12s
-  Executable tests/task3_surface.rs (target/debug/deps/task3_surface-b32c6a49fb72a68a)

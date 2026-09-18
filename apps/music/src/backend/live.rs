@@ -1,4 +1,4 @@
-//! Live backend — real `YouTube` Music via the pure-Rust `rustypipe` `InnerTube`
+//! Live backend — `YouTube` Music via the pure-Rust `rustypipe` `InnerTube`
 //! client. **Compiled only under `--features live`.**
 //!
 //! `rustypipe` is async (tokio); the [`MusicBackend`] trait is sync because it
@@ -10,15 +10,15 @@
 //! ## API surface used (rustypipe 0.11.x — verified against the crate source)
 //! * construct: `RustyPipe::builder()…build()?`, then `rp.query()`
 //! * `query.music_search_tracks(q).await` → `MusicSearchResult<TrackItem>`
-//!   (real `YouTube` Music song search — titles, artists, album, duration, id)
+//!   (`YouTube` Music song search — titles, artists, album, duration, id)
 //! * `query.player(id).await` → `VideoPlayer` whose `audio_streams` carry
 //!   directly-playable googlevideo URLs. With no `BotGuard` configured rustypipe
-//!   uses the iOS/TV player clients, which return real stream URLs **without a
+//!   uses the iOS/TV player clients, which return stream URLs **without a
 //!   `PoToken`** (see [`crate::backend::potoken`]).
 //!
 //! Search and metadata stay pure Rust through rustypipe. Stream resolution
-//! prefers the independently packaged `yt-dlp` helper when available, then
-//! falls back to rustypipe's direct player response.
+//! first queries the keyless Android VR `InnerTube` client directly, then falls
+//! back to rustypipe's direct player response.
 
 #![cfg(feature = "live")]
 
@@ -34,6 +34,18 @@ use crate::backend::{
     HomeItem, HomeItemKind, HomeSection, MusicBackend, PlaylistHit, PlaylistPage, ResolveOutcome,
     ResolvedStream, SearchBundle, SearchKind, SearchOutcome, SearchTop, TrackHit,
 };
+
+/// No metadata or player request may monopolise Music's serial background
+/// worker indefinitely. Dropping the timed-out future cancels rustypipe's HTTP
+/// work; the UI receives an ordinary terminal failure and can retry.
+const LIVE_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
+/// External result collections are presentation pages, not an authority to
+/// allocate an unbounded response into the app model.
+const SEARCH_RESULT_LIMIT: usize = 96;
+const DETAIL_TRACK_LIMIT: usize = 512;
+const DETAIL_RELEASE_LIMIT: usize = 96;
+const DETAIL_ARTIST_LIMIT: usize = 48;
+const DESCRIPTION_LIMIT: usize = 16 * 1024;
 
 /// The live rustypipe-backed data source.
 pub struct RustyPipeBackend {
@@ -88,12 +100,50 @@ impl RustyPipeBackend {
         })
     }
 
-    fn block<F, T>(&self, fut: F) -> T
+    fn block<F, T, E>(&self, operation: &str, fut: F) -> Result<T, BackendError>
     where
-        F: std::future::Future<Output = T>,
+        F: std::future::Future<Output = Result<T, E>>,
+        E: std::fmt::Display,
     {
-        self.rt.block_on(fut)
+        block_with_deadline(&self.rt, operation, LIVE_REQUEST_TIMEOUT, fut)
     }
+}
+
+fn block_with_deadline<F, T, E>(
+    runtime: &tokio::runtime::Runtime,
+    operation: &str,
+    deadline: std::time::Duration,
+    future: F,
+) -> Result<T, BackendError>
+where
+    F: std::future::Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    runtime.block_on(async {
+        tokio::time::timeout(deadline, future)
+            .await
+            .map_err(|_| {
+                BackendError(format!(
+                    "{operation} timed out after {} seconds",
+                    deadline.as_secs_f64()
+                ))
+            })?
+            .map_err(|error| BackendError(format!("{operation}: {error}")))
+    })
+}
+
+fn bounded_text(mut value: String, limit: usize) -> String {
+    if value.len() <= limit {
+        return value;
+    }
+    let boundary = value
+        .char_indices()
+        .take_while(|(index, _)| *index <= limit)
+        .map(|(index, _)| index)
+        .last()
+        .unwrap_or(0);
+    value.truncate(boundary);
+    value
 }
 
 /// Where rustypipe keeps its deobfuscation cache (player.js signature data).
@@ -102,9 +152,10 @@ impl RustyPipeBackend {
 fn cache_dir() -> std::path::PathBuf {
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
+        .filter(|path| path.is_absolute())
+        .or_else(dirs::cache_dir)
         .unwrap_or_else(std::env::temp_dir);
-    let dir = base.join("qos-music");
+    let dir = base.join("tilo-music");
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
@@ -344,22 +395,30 @@ impl MusicBackend for RustyPipeBackend {
 
     fn search_tracks(&self, query: &str) -> SearchOutcome {
         let q = self.rp.query();
-        let res = self
-            .block(async { q.music_search_tracks(query).await })
-            .map_err(|e| BackendError(format!("music search: {e}")))?;
-        Ok(res.items.items.into_iter().map(map_track_item).collect())
+        let res = self.block("music search", async { q.music_search_tracks(query).await })?;
+        Ok(res
+            .items
+            .items
+            .into_iter()
+            .take(SEARCH_RESULT_LIMIT)
+            .map(map_track_item)
+            .collect())
     }
 
     fn search_all(&self, query: &str) -> Result<SearchBundle, BackendError> {
         let q = self.rp.query();
-        let res = self
-            .block(async { q.music_search_main(query).await })
-            .map_err(|e| BackendError(format!("music search: {e}")))?;
+        let res = self.block("music search", async { q.music_search_main(query).await })?;
 
         let mut bundle = SearchBundle::default();
         // YouTube Music returns the top-result card first, so the first item is
         // the hero. Bucket the rest by type, preserving ranking order.
-        for (i, item) in res.items.items.into_iter().enumerate() {
+        for (i, item) in res
+            .items
+            .items
+            .into_iter()
+            .take(SEARCH_RESULT_LIMIT)
+            .enumerate()
+        {
             match item {
                 MusicItem::Track(t) => {
                     let hit = map_track_item(t);
@@ -400,30 +459,52 @@ impl MusicBackend for RustyPipeBackend {
         let mut bundle = SearchBundle::default();
         match kind {
             SearchKind::Songs => {
-                let res = self
-                    .block(async { q.music_search_tracks(query).await })
-                    .map_err(|e| BackendError(format!("song search: {e}")))?;
-                bundle.tracks = res.items.items.into_iter().map(map_track_item).collect();
+                let res =
+                    self.block("song search", async { q.music_search_tracks(query).await })?;
+                bundle.tracks = res
+                    .items
+                    .items
+                    .into_iter()
+                    .take(SEARCH_RESULT_LIMIT)
+                    .map(map_track_item)
+                    .collect();
             }
             SearchKind::Albums => {
-                let res = self
-                    .block(async { q.music_search_albums(query).await })
-                    .map_err(|e| BackendError(format!("album search: {e}")))?;
-                bundle.albums = res.items.items.into_iter().map(map_album_hit).collect();
+                let res =
+                    self.block("album search", async { q.music_search_albums(query).await })?;
+                bundle.albums = res
+                    .items
+                    .items
+                    .into_iter()
+                    .take(SEARCH_RESULT_LIMIT)
+                    .map(map_album_hit)
+                    .collect();
             }
             SearchKind::Artists => {
-                let res = self
-                    .block(async { q.music_search_artists(query).await })
-                    .map_err(|e| BackendError(format!("artist search: {e}")))?;
-                bundle.artists = res.items.items.into_iter().map(map_artist_hit).collect();
+                let res = self.block("artist search", async {
+                    q.music_search_artists(query).await
+                })?;
+                bundle.artists = res
+                    .items
+                    .items
+                    .into_iter()
+                    .take(SEARCH_RESULT_LIMIT)
+                    .map(map_artist_hit)
+                    .collect();
             }
             SearchKind::Playlists => {
                 // Community playlists give the richest, most Spotify-like set of
                 // human-made playlists for a query.
-                let res = self
-                    .block(async { q.music_search_playlists(query, true).await })
-                    .map_err(|e| BackendError(format!("playlist search: {e}")))?;
-                bundle.playlists = res.items.items.into_iter().map(map_playlist_hit).collect();
+                let res = self.block("playlist search", async {
+                    q.music_search_playlists(query, true).await
+                })?;
+                bundle.playlists = res
+                    .items
+                    .items
+                    .into_iter()
+                    .take(SEARCH_RESULT_LIMIT)
+                    .map(map_playlist_hit)
+                    .collect();
             }
         }
         Ok(bundle)
@@ -432,12 +513,12 @@ impl MusicBackend for RustyPipeBackend {
     fn resolve_audio(&self, video_id: &str) -> ResolveOutcome {
         // Prefer the independent full-track resolver before asking InnerTube's
         // player endpoint. YouTube can reject rustypipe's iOS/TV player client
-        // while yt-dlp's android_vr client still works; resolving the fallback
+        // while the Android VR client still works; resolving the fallback
         // first used to turn that recoverable condition into a hard failure.
-        // A yt-dlp URL is already fully rangeable, so it needs no truncating
+        // An Android VR URL is already fully rangeable, so it needs no truncating
         // direct-stream fallback.
-        if let Some(full) = crate::backend::ytdlp::resolve_full_audio(video_id) {
-            tracing::info!(target: "music::resolve", itag = full.itag, "using yt-dlp full-track URL (whole song streams)");
+        if let Some(full) = crate::backend::android_vr::resolve_full_audio(video_id) {
+            tracing::info!(target: "music::resolve", itag = full.itag, "using Rust-native Android VR full-track URL");
             return Ok(full);
         }
 
@@ -445,11 +526,14 @@ impl MusicBackend for RustyPipeBackend {
         // when the player endpoint accepts this client, but is PoToken/SABR-
         // gated and may only serve the first ~1-minute segment.
         let q = self.rp.query();
-        let player = self
-            .block(async { q.player(video_id).await })
-            .map_err(|e| BackendError(format!("player: {e}")))?;
+        let player = self.block("player", async { q.player(video_id).await })?;
         let best = best_audio(&player.audio_streams)
             .ok_or_else(|| BackendError("no playable audio streams".to_string()))?;
+        if !crate::backend::trusted_googlevideo_url(&best.url) {
+            return Err(BackendError(
+                "player returned an untrusted media origin".to_string(),
+            ));
+        }
         let direct = map_stream(video_id, best);
         tracing::info!(
             target: "music::resolve",
@@ -483,11 +567,9 @@ impl MusicBackend for RustyPipeBackend {
         // Charts drive the primary sections (top + trending songs, top artists,
         // genre playlists); new albums come from a second endpoint. Both are
         // real YouTube-Music browse responses.
-        let charts = self
-            .block(async { q.music_charts(None).await })
-            .map_err(|e| BackendError(format!("music charts: {e}")))?;
+        let charts = self.block("music charts", async { q.music_charts(None).await })?;
         let new_albums = self
-            .block(async { q.music_new_albums().await })
+            .block("new albums", async { q.music_new_albums().await })
             .unwrap_or_default();
 
         let mut sections = Vec::new();
@@ -543,13 +625,19 @@ impl MusicBackend for RustyPipeBackend {
 
     fn artist(&self, artist_id: &str) -> Result<ArtistPage, BackendError> {
         let q = self.rp.query();
-        let a = self
-            .block(async { q.music_artist(artist_id, false).await })
-            .map_err(|e| BackendError(format!("music artist: {e}")))?;
-        let tracks = a.tracks.into_iter().map(map_track_item).collect();
+        let a = self.block("music artist", async {
+            q.music_artist(artist_id, false).await
+        })?;
+        let tracks = a
+            .tracks
+            .into_iter()
+            .take(DETAIL_TRACK_LIMIT)
+            .map(map_track_item)
+            .collect();
         let albums = a
             .albums
             .into_iter()
+            .take(DETAIL_RELEASE_LIMIT)
             .map(|al| ArtistAlbum {
                 title: al.name,
                 year: u32::from(al.year.unwrap_or(0)),
@@ -558,12 +646,17 @@ impl MusicBackend for RustyPipeBackend {
                 id: al.id,
             })
             .collect();
-        let similar = a.similar_artists.into_iter().map(map_artist_hit).collect();
+        let similar = a
+            .similar_artists
+            .into_iter()
+            .take(DETAIL_ARTIST_LIMIT)
+            .map(map_artist_hit)
+            .collect();
         Ok(ArtistPage {
             id: a.id,
             name: a.name,
             subscriber_count: a.subscriber_count.unwrap_or(0),
-            description: a.description.unwrap_or_default(),
+            description: bounded_text(a.description.unwrap_or_default(), DESCRIPTION_LIMIT),
             wikipedia_url: a.wikipedia_url.unwrap_or_default(),
             header_url: cover_url(&a.header_image, 600),
             tracks,
@@ -574,12 +667,15 @@ impl MusicBackend for RustyPipeBackend {
 
     fn album(&self, album_id: &str) -> Result<AlbumPage, BackendError> {
         let q = self.rp.query();
-        let al = self
-            .block(async { q.music_album(album_id).await })
-            .map_err(|e| BackendError(format!("music album: {e}")))?;
+        let al = self.block("music album", async { q.music_album(album_id).await })?;
         let artist_name = artists_name(&al.artists, al.by_va);
         let cover = cover_url(&al.cover, 400);
-        let tracks = al.tracks.into_iter().map(map_track_item).collect();
+        let tracks = al
+            .tracks
+            .into_iter()
+            .take(DETAIL_TRACK_LIMIT)
+            .map(map_track_item)
+            .collect();
         Ok(AlbumPage {
             id: al.id,
             title: al.name,
@@ -593,9 +689,9 @@ impl MusicBackend for RustyPipeBackend {
 
     fn playlist(&self, playlist_id: &str) -> Result<PlaylistPage, BackendError> {
         let q = self.rp.query();
-        let pl = self
-            .block(async { q.music_playlist(playlist_id).await })
-            .map_err(|e| BackendError(format!("music playlist: {e}")))?;
+        let pl = self.block("music playlist", async {
+            q.music_playlist(playlist_id).await
+        })?;
         let owner = pl.channel.as_ref().map_or_else(
             || {
                 if pl.from_ytm {
@@ -608,13 +704,21 @@ impl MusicBackend for RustyPipeBackend {
         );
         let count = pl.track_count.unwrap_or(pl.tracks.items.len() as u64);
         let subtitle = format!("{owner} \u{00b7} {count} songs");
-        let description = pl
-            .description
-            .as_ref()
-            .map(rustypipe::model::richtext::ToPlaintext::to_plaintext)
-            .unwrap_or_default();
+        let description = bounded_text(
+            pl.description
+                .as_ref()
+                .map(rustypipe::model::richtext::ToPlaintext::to_plaintext)
+                .unwrap_or_default(),
+            DESCRIPTION_LIMIT,
+        );
         let cover = cover_url(&pl.thumbnail, 400);
-        let tracks = pl.tracks.items.into_iter().map(map_track_item).collect();
+        let tracks = pl
+            .tracks
+            .items
+            .into_iter()
+            .take(DETAIL_TRACK_LIMIT)
+            .map(map_track_item)
+            .collect();
         Ok(PlaylistPage {
             id: pl.id,
             title: pl.name,
@@ -623,5 +727,60 @@ impl MusicBackend for RustyPipeBackend {
             cover_url: cover,
             tracks,
         })
+    }
+}
+
+#[cfg(test)]
+mod bounded_transport_tests {
+    use super::*;
+
+    #[cfg(all(windows, target_arch = "aarch64"))]
+    #[test]
+    fn native_quickjs_bindings_execute_stream_signature_operations() {
+        let runtime = rquickjs::Runtime::new().expect("native QuickJS runtime");
+        let context = rquickjs::Context::full(&runtime).expect("JavaScript context");
+        context.with(|ctx| {
+            // Stream resolvers pass strings into JavaScript and read strings
+            // back. Exercise that ABI, including allocation and Unicode.
+            let result: String = ctx
+                .eval("Array.from('a🎵bc').reverse().join('')")
+                .expect("evaluate signature-style string transform");
+            assert_eq!(result, "cb🎵a");
+            assert!(
+                ctx.eval::<String, _>("throw new Error('invalid signature')")
+                    .is_err()
+            );
+        });
+    }
+
+    #[test]
+    fn live_request_deadline_cancels_a_stalled_future() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let result = block_with_deadline(
+            &runtime,
+            "test request",
+            std::time::Duration::from_millis(5),
+            async {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                Ok::<_, &str>(())
+            },
+        );
+        assert!(
+            result
+                .expect_err("stalled future must be cancelled")
+                .to_string()
+                .contains("timed out")
+        );
+    }
+
+    #[test]
+    fn external_text_is_utf8_safe_and_bounded() {
+        let text = "🎵".repeat(DESCRIPTION_LIMIT);
+        let bounded = bounded_text(text, DESCRIPTION_LIMIT);
+        assert!(bounded.len() <= DESCRIPTION_LIMIT);
+        assert!(bounded.is_char_boundary(bounded.len()));
     }
 }

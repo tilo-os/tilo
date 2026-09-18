@@ -10,17 +10,17 @@ server=${server%/}
 repository=${FORGEJO_REPOSITORY:-${GITHUB_REPOSITORY:?missing repository name}}
 owner=${repository%%/*}
 actor=${FORGEJO_ACTOR:-${GITHUB_ACTOR:?missing Forgejo actor}}
-if [[ ${QOS_PUBLISH_DRY_RUN:-0} == 1 ]]; then
+if [[ ${TILO_PUBLISH_DRY_RUN:-0} == 1 ]]; then
     token=dry-run
 else
-    token=${QOS_FORGEJO_TOKEN:?missing QOS_FORGEJO_TOKEN}
+    token=${TILO_FORGEJO_TOKEN:?missing TILO_FORGEJO_TOKEN}
 fi
 
 upload() {
     local file=$1
     local url=$2
     local mode=${3:-file}
-    if [[ ${QOS_PUBLISH_DRY_RUN:-0} == 1 ]]; then
+    if [[ ${TILO_PUBLISH_DRY_RUN:-0} == 1 ]]; then
         printf 'would publish %s -> %s\n' "$(basename "$file")" "$url"
         return
     fi
@@ -71,5 +71,5 @@ done
 for file in "$release_dir"/*.nar.gz "$release_dir/SHA256SUMS"; do
     [[ -f $file ]] || continue
     upload "$file" \
-        "$server/api/packages/$owner/generic/qos-session-nix/$version/$(basename "$file")"
+        "$server/api/packages/$owner/generic/tilo-session-nix/$version/$(basename "$file")"
 done

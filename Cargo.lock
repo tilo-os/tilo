@@ -131,14 +131,17 @@ name = "accounts"
 version = "0.1.0"
 dependencies = [
  "atomic-file",
+ "bounded-command",
  "chacha20poly1305",
  "dirs 6.0.0",
  "getrandom 0.2.17",
- "libc",
+ "private-fs",
  "serde",
  "serde_json",
  "tracing",
+ "url",
  "uuid",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 
@@ -303,17 +306,17 @@ dependencies = [
  "hex",
  "photos",
  "qdoc",
- "qos-actions",
- "qos-app",
- "qos-model-gateway",
- "qos-reference",
- "qos-user-identity",
  "runtime-collab",
  "runtime-dylib",
  "runtime-identity",
  "serde_json",
  "shell",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-model-gateway",
+ "tilo-reference",
+ "tilo-user-identity",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -483,18 +486,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
-name = "api_tester"
+name = "api-tester"
 version = "0.1.0"
 dependencies = [
  "automerge",
  "base64 0.22.1",
- "qos-actions",
- "qos-app",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "uuid",
  "vello",
  "winit",
@@ -507,6 +510,7 @@ dependencies = [
  "app-registry",
  "atomic-file",
  "blake3",
+ "bounded-command",
  "clap",
  "dirs 6.0.0",
  "ed25519-dalek 2.2.0",
@@ -545,6 +549,7 @@ dependencies = [
  "anyhow",
  "app-registry",
  "atomic-file",
+ "bounded-command",
  "capnp",
  "capnp-rpc",
  "capnpc",
@@ -553,6 +558,7 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "futures",
  "hex",
+ "libc",
  "parking_lot",
  "pkg",
  "rand 0.8.8",
@@ -604,7 +610,9 @@ dependencies = [
  "atomic-file",
  "automerge",
  "cli",
+ "dirs 6.0.0",
  "libc",
+ "same-file",
  "serial_test",
  "tempfile",
  "thiserror 2.0.18",
@@ -1071,6 +1079,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "authenticode"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e68f4bbb3221256060f0e164b8d41b659cdee9f3c1fb7f97706a25d3148875a3"
+dependencies = [
+ "cms",
+ "const-oid 0.9.6",
+ "der 0.7.10",
+ "digest 0.10.7",
+ "object 0.39.1",
+ "spki 0.7.3",
+ "x509-cert",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1101,30 +1124,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aws-lc-rs"
-version = "1.17.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00bdb5da18dac48ca2cc7cd4a98e533e8635a58e2361d13a1a4ee3888e0d72f1"
-dependencies = [
- "aws-lc-sys",
- "untrusted 0.7.1",
- "zeroize",
-]
-
-[[package]]
-name = "aws-lc-sys"
-version = "0.43.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43103168cc76fe62678a375e722fc9cb3a0146159ac5828bc4f0dfd755c2224c"
-dependencies = [
- "cc",
- "cmake",
- "dunce",
- "fs_extra",
- "pkg-config",
-]
-
-[[package]]
 name = "az"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1146,14 +1145,14 @@ name = "backups"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "vello",
  "walkdir",
  "winit",
@@ -1262,6 +1261,29 @@ dependencies = [
 
 [[package]]
 name = "bindgen"
+version = "0.69.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "271383c67ccabffb7381723dea0672a673f292304fcb45c01cc648c7a8d58088"
+dependencies = [
+ "bitflags 2.11.0",
+ "cexpr",
+ "clang-sys",
+ "itertools 0.12.1",
+ "lazy_static",
+ "lazycell",
+ "log",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash 1.1.0",
+ "shlex",
+ "syn 2.0.117",
+ "which",
+]
+
+[[package]]
+name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
@@ -1270,7 +1292,7 @@ dependencies = [
  "bitflags 2.11.0",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools 0.12.1",
  "log",
  "prettyplease",
  "proc-macro2",
@@ -1475,6 +1497,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bounded-command"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
+ "thiserror 2.0.18",
+ "zeroize",
+]
+
+[[package]]
 name = "brotli"
 version = "8.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1500,6 +1532,7 @@ name = "browser"
 version = "0.1.0"
 dependencies = [
  "accesskit_consumer",
+ "atomic-file",
  "automerge",
  "base64 0.22.1",
  "blake3",
@@ -1507,8 +1540,6 @@ dependencies = [
  "libc",
  "png 0.18.1",
  "pollster",
- "qos-actions",
- "qos-app",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
@@ -1516,6 +1547,8 @@ dependencies = [
  "sha2 0.10.9",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "tracing",
  "url",
  "uuid",
@@ -1626,12 +1659,12 @@ name = "calculator"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "vello",
  "winit",
 ]
@@ -1644,8 +1677,8 @@ dependencies = [
  "atomic-file",
  "automerge",
  "chrono",
- "qos-actions",
- "qos-app",
+ "chrono-tz",
+ "mail",
  "reqwest 0.12.28",
  "roxmltree",
  "runtime-dylib",
@@ -1653,8 +1686,11 @@ dependencies = [
  "serde_json",
  "serial_test",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
  "vello",
  "winit",
@@ -1732,16 +1768,19 @@ dependencies = [
  "gstreamer-app",
  "gstreamer-video",
  "image",
+ "os-actions",
  "png 0.18.1",
  "qdoc",
- "qos-actions",
- "qos-app",
+ "qdoc-pdf",
  "qrcode",
  "rqrr",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-ocr",
  "vello",
  "winit",
 ]
@@ -1962,9 +2001,9 @@ dependencies = [
 
 [[package]]
 name = "chacha20"
-version = "0.10.0"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f8d983286843e49675a4b7a2d174efe136dc93a18d69130dd18198a6c167601"
+checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
 dependencies = [
  "cfg-if",
  "cipher 0.5.2",
@@ -2017,16 +2056,16 @@ dependencies = [
  "image",
  "iroh",
  "qdoc",
- "qos-actions",
- "qos-app",
- "qos-callstream",
- "qos-reference",
  "runtime-dylib",
  "runtime-identity",
  "serde",
  "serde_json",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-callstream",
+ "tilo-reference",
  "tokio",
  "uuid",
  "vello",
@@ -2041,7 +2080,7 @@ checksum = "3e964125508474a83c95eb935697abbeb446ff4e9d62c71ce880e3986d1c606b"
 dependencies = [
  "chinese-variant",
  "enum-ordinalize",
- "num-bigint",
+ "num-bigint 0.4.6",
  "num-traits",
 ]
 
@@ -2063,6 +2102,16 @@ dependencies = [
  "serde",
  "wasm-bindgen",
  "windows-link",
+]
+
+[[package]]
+name = "chrono-tz"
+version = "0.10.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6139a8597ed92cf816dfb33f5dd6cf0bb93a6adc938f11039f371bc5bcd26c3"
+dependencies = [
+ "chrono",
+ "phf 0.12.1",
 ]
 
 [[package]]
@@ -2206,6 +2255,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "clocks"
+version = "0.1.0"
+dependencies = [
+ "atomic-file",
+ "automerge",
+ "chrono",
+ "chrono-tz",
+ "private-fs",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "taffy",
+ "tempfile",
+ "tilo-actions",
+ "tilo-app",
+ "uuid",
+ "vello",
+ "winit",
+]
+
+[[package]]
 name = "cmake"
 version = "0.1.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2221,6 +2291,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
+name = "cms"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b77c319abfd5219629c45c34c89ba945ed3c5e49fcde9d16b6c3885f118a730"
+dependencies = [
+ "const-oid 0.9.6",
+ "der 0.7.10",
+ "spki 0.7.3",
+ "x509-cert",
+]
+
+[[package]]
 name = "cobs"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2230,13 +2312,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "code_editor"
+name = "code-editor"
 version = "0.1.0"
 dependencies = [
  "atomic-file",
  "automerge",
- "qos-actions",
- "qos-app",
+ "libc",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -2245,6 +2326,8 @@ dependencies = [
  "taffy",
  "tempfile",
  "terminal",
+ "tilo-actions",
+ "tilo-app",
  "tracing",
  "url",
  "uuid",
@@ -2269,7 +2352,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -2474,14 +2557,14 @@ dependencies = [
  "atomic-file",
  "automerge",
  "pkg",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "serial_test",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "tracing",
  "unicode-normalization",
  "uuid",
@@ -2496,14 +2579,24 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "blake3",
- "qos-actions",
- "qos-app",
+ "bounded-command",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "vello",
  "winit",
+]
+
+[[package]]
+name = "convert_case"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec182b0ca2f35d8fc196cf3404988fd8b8c739a4d270ff118a398feb0cbec1ca"
+dependencies = [
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -2566,7 +2659,7 @@ dependencies = [
  "bitflags 1.3.2",
  "core-foundation 0.9.4",
  "core-graphics-types",
- "foreign-types 0.5.0",
+ "foreign-types",
  "libc",
 ]
 
@@ -2664,7 +2757,7 @@ version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc7459e07732f6de74001fcf73a3fdfbb0f368e4fd8e2392f4a2206a065e6e95"
 dependencies = [
- "bindgen",
+ "bindgen 0.72.1",
  "cc",
  "pkg-config",
 ]
@@ -2944,6 +3037,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "crypto-primes"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3633a51a39c69ebbaa4feaa694bd83d241e4093901c84a0963b19d9bb3f0cf8f"
+dependencies = [
+ "crypto-bigint 0.7.5",
+ "rand_core 0.10.0",
+]
+
+[[package]]
 name = "csv"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3101,7 +3204,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ab67060fc6b8ef687992d439ca0fa36e7ed17e9a0b16b25b601e8757df720de"
 dependencies = [
  "data-encoding",
- "syn 2.0.117",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -3111,20 +3214,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
-name = "db_client"
+name = "db-client"
 version = "0.1.0"
 dependencies = [
  "automerge",
  "chrono",
  "mysql",
  "postgres",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "rusqlite",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "uuid",
  "vello",
  "winit",
@@ -3154,6 +3257,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
  "const-oid 0.9.6",
+ "der_derive",
+ "flagset",
  "pem-rfc7468 0.7.0",
  "zeroize",
 ]
@@ -3178,9 +3283,20 @@ dependencies = [
  "asn1-rs",
  "displaydoc",
  "nom 7.1.3",
- "num-bigint",
+ "num-bigint 0.4.6",
  "num-traits",
  "rusticata-macros",
+]
+
+[[package]]
+name = "der_derive"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8034092389675178f570469e6c3b0465d3d30b4505c294a6550db47f3c17ad18"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -3230,7 +3346,7 @@ version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "799a97264921d8623a957f6c3b9011f3b5492f557bbb7a5a19b7fa6d06ba8dcb"
 dependencies = [
- "convert_case",
+ "convert_case 0.10.0",
  "proc-macro2",
  "quote",
  "rustc_version",
@@ -3291,13 +3407,13 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "blake3",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "similar",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "uuid",
  "vello",
  "winit",
@@ -3391,14 +3507,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "disks"
+name = "disk-usage"
 version = "0.1.0"
 dependencies = [
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
+ "tilo-app",
+]
+
+[[package]]
+name = "disks"
+version = "0.1.0"
+dependencies = [
+ "bounded-command",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "tilo-app",
  "zbus 4.4.0",
 ]
 
@@ -3526,8 +3653,6 @@ dependencies = [
  "automerge",
  "blake3",
  "image",
- "qos-actions",
- "qos-app",
  "roxmltree",
  "runtime-dylib",
  "serde",
@@ -3536,6 +3661,8 @@ dependencies = [
  "settings-store",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "tracing",
  "unicode-bidi",
  "uuid",
@@ -3926,18 +4053,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd2e7510819d6fbf51a5545c8f922716ecfb14df168a3242f7d33e0239efe6a1"
 
 [[package]]
-name = "fastbloom"
-version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef975e30683b2d965054bb0a836f8973857c4ebf6acf274fe46617cd285060d8"
-dependencies = [
- "foldhash 0.2.0",
- "libm",
- "portable-atomic",
- "siphasher",
-]
-
-[[package]]
 name = "fastdivide"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4048,13 +4163,13 @@ dependencies = [
  "automerge",
  "chrono",
  "feed-rs",
- "qos-actions",
- "qos-app",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "tokio",
  "tokio-rustls",
  "uuid",
@@ -4099,7 +4214,7 @@ version = "8.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a314bc0e022a33a99567ed4bd2576bd58ffd8fcff7891c29194cfecc26a62547"
 dependencies = [
- "bindgen",
+ "bindgen 0.72.1",
  "cc",
  "libc",
  "num_cpus",
@@ -4129,6 +4244,7 @@ dependencies = [
  "collab-types",
  "dirs 6.0.0",
  "ed25519-dalek 2.2.0",
+ "flate2",
  "fluent",
  "fs",
  "fuser",
@@ -4141,9 +4257,6 @@ dependencies = [
  "mime_guess",
  "open",
  "qdoc",
- "qos-actions",
- "qos-app",
- "qos-user-identity",
  "reqwest 0.12.28",
  "roxmltree",
  "runtime-dylib",
@@ -4152,8 +4265,12 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "taffy",
+ "tar",
  "tempfile",
  "thumbnail",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-user-identity",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -4200,12 +4317,13 @@ name = "firewall"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
- "qos-app",
+ "bounded-command",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "uuid",
  "vello",
  "winit",
@@ -4227,6 +4345,12 @@ name = "fixedbitset"
 version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
+
+[[package]]
+name = "flagset"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7ac824320a75a52197e8f2d787f6a38b6718bb6897a35142d749af3c0e8f4fe"
 
 [[package]]
 name = "flatbuffers"
@@ -4318,7 +4442,7 @@ checksum = "5e139bc46ca777eb5efaf62df0ab8cc5fd400866427e56c68b22e414e53bd3be"
 dependencies = [
  "futures-core",
  "futures-sink",
- "spin 0.9.8",
+ "spin 0.9.9",
 ]
 
 [[package]]
@@ -4382,21 +4506,12 @@ dependencies = [
 
 [[package]]
 name = "foreign-types"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6f339eb8adc052cd2ca78910fda869aefa38d22d5cb648e6485e4d3fc06f3b1"
-dependencies = [
- "foreign-types-shared 0.1.1",
-]
-
-[[package]]
-name = "foreign-types"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d737d9aa519fb7b749cbc3b962edcf310a8dd1f4b67c91c4f83975dbdd17d965"
 dependencies = [
  "foreign-types-macros",
- "foreign-types-shared 0.3.1",
+ "foreign-types-shared",
 ]
 
 [[package]]
@@ -4409,12 +4524,6 @@ dependencies = [
  "quote",
  "syn 2.0.117",
 ]
-
-[[package]]
-name = "foreign-types-shared"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 
 [[package]]
 name = "foreign-types-shared"
@@ -4531,6 +4640,7 @@ dependencies = [
  "atomic-file",
  "automerge",
  "blake3",
+ "bounded-command",
  "bytes",
  "clap",
  "collab-types",
@@ -4549,8 +4659,6 @@ dependencies = [
  "moka",
  "postcard",
  "qdoc",
- "qos-power-mgmt",
- "qos-user-identity",
  "rand 0.8.8",
  "runtime-fs",
  "serde",
@@ -4559,6 +4667,8 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "thumbnail",
+ "tilo-power-mgmt",
+ "tilo-user-identity",
  "tokio",
  "toml 0.8.23",
  "uuid",
@@ -4584,12 +4694,6 @@ dependencies = [
  "rustix 0.38.44",
  "windows-sys 0.52.0",
 ]
-
-[[package]]
-name = "fs_extra"
-version = "1.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "fsevent-sys"
@@ -4645,7 +4749,7 @@ dependencies = [
  "diatomic-waker",
  "futures-core",
  "pin-project-lite",
- "spin 0.10.0",
+ "spin 0.10.1",
 ]
 
 [[package]]
@@ -4970,6 +5074,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "git-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "automerge",
+ "bounded-command",
+ "chrono",
+ "futures-util",
+ "git2",
+ "rcgen 0.14.7",
+ "reqwest 0.12.28",
+ "runtime-dylib",
+ "russh",
+ "rustls",
+ "serde",
+ "serde_json",
+ "shlex",
+ "taffy",
+ "tempfile",
+ "tilo-actions",
+ "tilo-app",
+ "tokio",
+ "url",
+ "vello",
+ "winit",
+ "zeroize",
+]
+
+[[package]]
 name = "git2"
 version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4979,25 +5112,7 @@ dependencies = [
  "libc",
  "libgit2-sys",
  "log",
-]
-
-[[package]]
-name = "git_client"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "automerge",
- "chrono",
- "git2",
- "qos-actions",
- "qos-app",
- "runtime-dylib",
- "serde",
- "serde_json",
- "taffy",
- "tempfile",
- "vello",
- "winit",
+ "url",
 ]
 
 [[package]]
@@ -5186,6 +5301,7 @@ name = "greeter"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "bounded-command",
  "greetd_ipc",
  "taffy",
  "tracing",
@@ -5193,6 +5309,7 @@ dependencies = [
  "ui",
  "vello",
  "winit",
+ "zeroize",
 ]
 
 [[package]]
@@ -5472,7 +5589,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "01a33cb227f97ee5c419064c31d7c55a7d895f28d8019ccdadc311cc036500c4"
 dependencies = [
  "hax-lib-macros",
- "num-bigint",
+ "num-bigint 0.4.6",
  "num-traits",
 ]
 
@@ -5615,7 +5732,7 @@ dependencies = [
  "hash32",
  "rustc_version",
  "serde",
- "spin 0.9.8",
+ "spin 0.9.9",
  "stable_deref_trait",
 ]
 
@@ -5661,25 +5778,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "hex-literal"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e712f64ec3850b98572bffac52e2c6f282b29fe6c5fa6d42334b30be438d95c1"
-
-[[package]]
-name = "hex_editor"
+name = "hex-editor"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "vello",
  "winit",
 ]
+
+[[package]]
+name = "hex-literal"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e712f64ec3850b98572bffac52e2c6f282b29fe6c5fa6d42334b30be438d95c1"
 
 [[package]]
 name = "hexane"
@@ -5811,6 +5928,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "home"
+version = "0.5.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "hpke-rs"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5823,7 +5949,7 @@ dependencies = [
  "log",
  "serde",
  "subtle",
- "tls_codec",
+ "tls_codec 0.5.0",
  "zeroize",
 ]
 
@@ -5983,22 +6109,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hyper-tls"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70206fc6890eaca9fde8a0bf71caa2ddfc9fe045ac9e5c70df101a7dbde866e0"
-dependencies = [
- "bytes",
- "http-body-util",
- "hyper",
- "hyper-util",
- "native-tls",
- "tokio",
- "tokio-native-tls",
- "tower-service",
-]
-
-[[package]]
 name = "hyper-util"
 version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6016,11 +6126,9 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "socket2 0.6.3",
- "system-configuration",
  "tokio",
  "tower-service",
  "tracing",
- "windows-registry",
 ]
 
 [[package]]
@@ -6548,6 +6656,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "image-editor"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "image",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-actions",
+ "tilo-app",
+ "uuid",
+]
+
+[[package]]
 name = "image-webp"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6562,13 +6685,12 @@ name = "imager"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "bounded-command",
  "cap-fs-ext",
  "cap-primitives",
  "cap-std",
  "dirs 6.0.0",
  "libc",
- "qos-actions",
- "qos-app",
  "qos-ntfs-protocol",
  "reqwest 0.12.28",
  "runtime-dylib",
@@ -6577,6 +6699,8 @@ dependencies = [
  "sha2 0.10.9",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "vello",
  "windows-sys 0.61.2",
  "winit",
@@ -6718,11 +6842,14 @@ name = "installer"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "bounded-command",
+ "libc",
  "os-actions",
  "serde",
  "serde_json",
  "taffy",
  "tempfile",
+ "tilo-power-mgmt",
  "tracing-subscriber",
  "ui",
  "uuid",
@@ -6741,18 +6868,6 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
  "web-sys",
-]
-
-[[package]]
-name = "internal-russh-num-bigint"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae8e22120c32fb4d19ec55fba35015f57095cd95a2e3b732e44457f5915b2ee8"
-dependencies = [
- "num-integer",
- "num-traits",
- "rand 0.10.1",
- "rand_core 0.10.0",
 ]
 
 [[package]]
@@ -6938,7 +7053,6 @@ dependencies = [
  "n0-error",
  "n0-future",
  "nested_enum_utils",
- "noq",
  "postcard",
  "rand 0.10.1",
  "range-collections",
@@ -7142,15 +7256,11 @@ version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3623d6ff582b415904b29bbe6ebcb4a4f9a262ccdee05a45fdd003ef0950c386"
 dependencies = [
- "futures-buffered",
  "futures-util",
  "irpc-derive",
  "n0-error",
  "n0-future",
- "noq",
  "postcard",
- "rcgen 0.14.7",
- "rustls",
  "serde",
  "smallvec",
  "tokio",
@@ -7511,7 +7621,6 @@ dependencies = [
  "landlock",
  "libc",
  "pkg",
- "qos-desktop-entry",
  "runtime-bundle",
  "runtime-identity",
  "seccompiler",
@@ -7520,6 +7629,7 @@ dependencies = [
  "serial_test",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-desktop-entry",
  "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
@@ -7531,6 +7641,12 @@ name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
+
+[[package]]
+name = "lazycell"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
 
 [[package]]
 name = "leb128"
@@ -7641,7 +7757,7 @@ dependencies = [
  "libcrux-curve25519",
  "libcrux-p256",
  "rand 0.10.1",
- "tls_codec",
+ "tls_codec 0.5.0",
 ]
 
 [[package]]
@@ -7724,7 +7840,7 @@ dependencies = [
  "libcrux-sha3",
  "libcrux-traits",
  "rand 0.10.1",
- "tls_codec",
+ "tls_codec 0.5.0",
 ]
 
 [[package]]
@@ -7880,10 +7996,8 @@ dependencies = [
 [[package]]
 name = "libspa-sys"
 version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b6e17bdaf63ed0d5e4144022624032b41fd9733112e8c74ac26fc9bf1291924"
 dependencies = [
- "bindgen",
+ "bindgen 0.72.1",
  "cc",
  "system-deps",
 ]
@@ -7988,6 +8102,7 @@ version = "0.1.0"
 dependencies = [
  "agent-provider-config",
  "atomic-file",
+ "bounded-command",
  "clap",
  "ed25519-dalek 2.2.0",
  "hex",
@@ -8000,6 +8115,7 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.18",
+ "zeroize",
  "zstd",
 ]
 
@@ -8100,12 +8216,13 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "blake3",
- "qos-actions",
- "qos-app",
+ "bounded-command",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "ui",
  "vello",
  "winit",
@@ -8202,13 +8319,13 @@ version = "0.1.0"
 dependencies = [
  "accounts",
  "async-imap",
+ "atomic-file",
  "automerge",
  "futures",
  "lettre",
  "mail-builder",
  "mail-parser",
- "qos-actions",
- "qos-app",
+ "qdoc",
  "rcgen 0.13.2",
  "reqwest 0.12.28",
  "runtime-dylib",
@@ -8217,6 +8334,8 @@ dependencies = [
  "serde_json",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "tokio",
  "tokio-rustls",
  "tracing",
@@ -8253,14 +8372,14 @@ dependencies = [
  "chrono",
  "futures-util",
  "png 0.18.1",
- "qos-actions",
- "qos-app",
  "reqwest 0.12.28",
  "runtime-dylib",
  "rustls",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "tokio",
  "tracing",
  "vello",
@@ -8281,6 +8400,15 @@ name = "maybe-owned"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4facc753ae494aeb6e3c22f839b158aebd4f9270f55cd3c79906c45476c47ab4"
+
+[[package]]
+name = "mcf"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2044bdbade272ded4a1529324f4f30ca7b0c5b496541f2a9095bbd1c9d03cb06"
+dependencies = [
+ "base64ct",
+]
 
 [[package]]
 name = "md-5"
@@ -8338,12 +8466,18 @@ name = "media"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "blake3",
+ "bounded-command",
  "gstreamer",
  "gstreamer-app",
  "gstreamer-video",
+ "hex",
+ "libc",
+ "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
@@ -8517,13 +8651,13 @@ name = "monitor"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "sysinfo",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "ui",
  "vello",
  "winit",
@@ -8564,24 +8698,30 @@ dependencies = [
  "atomic-file",
  "automerge",
  "base64 0.22.1",
+ "bounded-command",
+ "dirs 6.0.0",
  "gstreamer",
  "image",
- "qos-actions",
- "qos-app",
+ "media",
  "reqwest 0.12.28",
+ "rquickjs",
  "runtime-dylib",
  "rustypipe",
  "serde",
  "serde_json",
+ "serial_test",
  "sha2 0.10.9",
  "taffy",
+ "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
  "vello",
  "winit",
- "zbus 4.4.0",
 ]
 
 [[package]]
@@ -8621,7 +8761,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "478b0ff3f7d67b79da2b96f56f334431aef65e15ba4b29dd74a4236e29582bdc"
 dependencies = [
  "base64 0.21.7",
- "bindgen",
+ "bindgen 0.69.5",
  "bitflags 2.11.0",
  "btoi",
  "byteorder",
@@ -8631,7 +8771,7 @@ dependencies = [
  "crc32fast",
  "flate2",
  "lazy_static",
- "num-bigint",
+ "num-bigint 0.4.6",
  "num-traits",
  "rand 0.8.8",
  "regex",
@@ -8743,23 +8883,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "706bf8a5e8c8ddb99128c3291d31bd21f4bcde17f0f4c20ec678d85c74faa149"
 dependencies = [
  "log",
-]
-
-[[package]]
-name = "native-tls"
-version = "0.2.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d5d26952a508f321b4d3d2e80e78fc2603eaefcdf0c30783867f19586518bdc"
-dependencies = [
- "libc",
- "log",
- "openssl",
- "openssl-probe",
- "openssl-sys",
- "schannel",
- "security-framework",
- "security-framework-sys",
- "tempfile",
 ]
 
 [[package]]
@@ -9017,7 +9140,6 @@ dependencies = [
  "bytes",
  "derive_more",
  "enum-assoc",
- "fastbloom",
  "getrandom 0.4.1",
  "identity-hash",
  "lru-slab",
@@ -9027,7 +9149,6 @@ dependencies = [
  "rustc-hash 2.1.1",
  "rustls",
  "rustls-pki-types",
- "rustls-platform-verifier 0.7.0",
  "slab",
  "sorted-index-buffer",
  "thiserror 2.0.18",
@@ -9058,14 +9179,16 @@ dependencies = [
  "automerge",
  "blake3",
  "dirs 6.0.0",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
+ "runtime-portal-xdg",
  "serde",
  "serde_json",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "tracing",
+ "url",
  "uuid",
  "vello",
  "winit",
@@ -9134,6 +9257,18 @@ checksum = "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9"
 dependencies = [
  "num-integer",
  "num-traits",
+]
+
+[[package]]
+name = "num-bigint"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93e7820bc0a80a0238e650327316f929ba18d5be054b647490a3a6a339f3e7c0"
+dependencies = [
+ "num-integer",
+ "num-traits",
+ "rand 0.10.1",
+ "rand_core 0.10.0",
 ]
 
 [[package]]
@@ -9583,6 +9718,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "oid"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c19903c598813dba001b53beeae59bb77ad4892c5c1b9b3500ce4293a0d06c2"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "oid-registry"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9625,6 +9769,7 @@ version = "5.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2fbaa89d2ddc8473c78a3adf69eea8cffa28c483b8e02a971ef31527cd0fc92c"
 dependencies = [
+ "dunce",
  "is-wsl",
  "libc",
  "pathdiff",
@@ -9664,7 +9809,7 @@ dependencies = [
  "serde",
  "serde_bytes",
  "thiserror 2.0.18",
- "tls_codec",
+ "tls_codec 0.5.0",
  "zeroize",
 ]
 
@@ -9681,7 +9826,7 @@ dependencies = [
  "p384 0.13.1",
  "rand_core 0.6.4",
  "serde",
- "tls_codec",
+ "tls_codec 0.5.0",
  "zeroize",
 ]
 
@@ -9722,7 +9867,7 @@ dependencies = [
  "rand_core 0.6.4",
  "sha2 0.11.0",
  "thiserror 2.0.18",
- "tls_codec",
+ "tls_codec 0.5.0",
 ]
 
 [[package]]
@@ -9744,51 +9889,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac13edad8698eb1917cbc1dab99591fa1594d84320904fe3fc5121854f95831c"
 dependencies = [
  "serde",
- "tls_codec",
-]
-
-[[package]]
-name = "openssl"
-version = "0.10.75"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08838db121398ad17ab8531ce9de97b244589089e290a384c900cb9ff7434328"
-dependencies = [
- "bitflags 2.11.0",
- "cfg-if",
- "foreign-types 0.3.2",
- "libc",
- "once_cell",
- "openssl-macros",
- "openssl-sys",
-]
-
-[[package]]
-name = "openssl-macros"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a948666b637a0f465e8564c73e89d4dde00d72d4d473cc972f390fc3dcee7d9c"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "openssl-probe"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
-
-[[package]]
-name = "openssl-sys"
-version = "0.9.111"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82cab2d520aa75e3c58898289429321eb788c3106963d0dc886ec7a5f4adc321"
-dependencies = [
- "cc",
- "libc",
- "pkg-config",
- "vcpkg",
+ "tls_codec 0.5.0",
 ]
 
 [[package]]
@@ -9839,11 +9940,17 @@ dependencies = [
 name = "os-actions"
 version = "0.1.0"
 dependencies = [
- "qos-bluez",
- "qos-power-mgmt",
+ "bounded-command",
+ "libc",
+ "nix 0.30.1",
+ "rand_core 0.6.4",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.18",
+ "tilo-bluez",
+ "tilo-crypto",
+ "tilo-power-mgmt",
  "tokio",
  "tracing",
  "zbus 4.4.0",
@@ -9866,13 +9973,13 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "libc",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde_json",
  "swipe",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "tracing",
  "vello",
  "wayland-client",
@@ -10063,7 +10170,28 @@ version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aab41826031698d6ffcd9cff78ef56ef998e39dc7e5067cdfebe373842d4723b"
 dependencies = [
+ "getrandom 0.4.1",
  "phc",
+]
+
+[[package]]
+name = "passwords"
+version = "0.1.0"
+dependencies = [
+ "accounts",
+ "argon2",
+ "atomic-file",
+ "automerge",
+ "chacha20poly1305",
+ "getrandom 0.2.17",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "taffy",
+ "tilo-app",
+ "vello",
+ "winit",
+ "zeroize",
 ]
 
 [[package]]
@@ -10112,6 +10240,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "pdf-viewer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "automerge",
+ "image",
+ "pdf-extract",
+ "pdfium-render",
+ "qdoc",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "taffy",
+ "tempfile",
+ "tilo-actions",
+ "tilo-app",
+ "tracing",
+ "uuid",
+ "vello",
+ "winit",
+]
+
+[[package]]
 name = "pdf-writer"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10121,30 +10273,6 @@ dependencies = [
  "itoa",
  "memchr",
  "ryu",
-]
-
-[[package]]
-name = "pdf_viewer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "automerge",
- "image",
- "pdf-extract",
- "pdfium-render",
- "qdoc",
- "qos-actions",
- "qos-app",
- "runtime-dylib",
- "serde",
- "serde_json",
- "serial_test",
- "taffy",
- "tempfile",
- "tracing",
- "uuid",
- "vello",
- "winit",
 ]
 
 [[package]]
@@ -10248,6 +10376,7 @@ checksum = "44dc769b75f93afdddd8c7fa12d685292ddeff1e66f7f0f3a234cf1818afe892"
 dependencies = [
  "base64ct",
  "ctutils",
+ "getrandom 0.4.1",
 ]
 
 [[package]]
@@ -10257,6 +10386,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd6780a80ae0c52cc120a26a1a42c1ae51b247a253e4e06113d23d2c2edd078"
 dependencies = [
  "phf_shared 0.11.3",
+]
+
+[[package]]
+name = "phf"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "913273894cec178f401a31ec4b656318d95473527be05c0752cc41cdc32be8b7"
+dependencies = [
+ "phf_shared 0.12.1",
 ]
 
 [[package]]
@@ -10338,6 +10476,15 @@ dependencies = [
 
 [[package]]
 name = "phf_shared"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06005508882fb681fd97892ecff4b7fd0fee13ef1aa569f8695dae7ab9099981"
+dependencies = [
+ "siphasher",
+]
+
+[[package]]
+name = "phf_shared"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e57fef6bc5981e38c2ce2d63bfa546861309f875b8a75f092d1d54ae2d64f266"
@@ -10358,21 +10505,101 @@ dependencies = [
 name = "photos"
 version = "0.1.0"
 dependencies = [
+ "agent-provider-config",
+ "atomic-file",
  "automerge",
  "image",
+ "kamadak-exif",
  "png 0.18.1",
  "qdoc",
- "qos-actions",
- "qos-app",
- "qos-reference",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-ocr",
+ "tilo-reference",
+ "tilo-vision",
  "vello",
  "vello_encoding",
  "winit",
+]
+
+[[package]]
+name = "picky"
+version = "7.0.0-rc.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07ad9686b270be4eb3f3c23027d202ad488a25c2bec6d6be20c2164b28d2c86c"
+dependencies = [
+ "base64 0.22.1",
+ "byteorder",
+ "crypto-bigint 0.7.5",
+ "crypto-common 0.2.2",
+ "digest 0.11.3",
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "inout 0.2.2",
+ "md-5 0.11.0",
+ "p256 0.14.0",
+ "p384 0.14.0",
+ "p521",
+ "picky-asn1",
+ "picky-asn1-der",
+ "picky-asn1-x509",
+ "pkcs1",
+ "rand 0.10.1",
+ "rand_core 0.10.0",
+ "rsa",
+ "serde",
+ "sha1 0.11.0",
+ "sha2 0.11.0",
+ "sha3 0.12.0",
+ "thiserror 2.0.18",
+ "time",
+ "x25519-dalek 3.0.0",
+ "zeroize",
+]
+
+[[package]]
+name = "picky-asn1"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ff038f9360b934342fb3c0a1d6e82c438a2624b51c3c6e3e6d7cf252b6f3ee3"
+dependencies = [
+ "oid",
+ "serde",
+ "serde_bytes",
+ "time",
+ "zeroize",
+]
+
+[[package]]
+name = "picky-asn1-der"
+version = "0.5.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d413165e4bf7f808b9a27cbaba657657a2921f0965db833f488c4d4be96dcd2e"
+dependencies = [
+ "picky-asn1",
+ "serde",
+ "serde_bytes",
+]
+
+[[package]]
+name = "picky-asn1-x509"
+version = "0.15.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "859d4117bd1b1dc5646359ee7243c50c5000c0920ea2d1fb120335a2f4c684b8"
+dependencies = [
+ "base64 0.22.1",
+ "crypto-bigint 0.7.5",
+ "oid",
+ "picky-asn1",
+ "picky-asn1-der",
+ "serde",
+ "widestring",
+ "zeroize",
 ]
 
 [[package]]
@@ -10444,7 +10671,7 @@ version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ce653f53e63e5b93853218092ee9a8906a5d082c92f3f1db26316955dd63ce0"
 dependencies = [
- "bindgen",
+ "bindgen 0.72.1",
  "libspa-sys",
  "system-deps",
 ]
@@ -10462,6 +10689,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47945e80a49d08350e4a007ac4294c6498d23956c18ea5e6ff480dc93d31643c"
 dependencies = [
  "ttf-parser",
+]
+
+[[package]]
+name = "pkcs1"
+version = "0.8.0-rc.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "986d2e952779af96ea048f160fd9194e1751b4faea78bcf3ceb456efe008088e"
+dependencies = [
+ "der 0.8.1",
+ "spki 0.8.0",
 ]
 
 [[package]]
@@ -10920,6 +11157,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "print-centre"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "image",
+ "os-actions",
+ "qdoc-pdf",
+ "runtime-dylib",
+ "serde_json",
+ "taffy",
+ "tempfile",
+ "thumbnail",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-ocr",
+ "vello",
+ "winit",
+]
+
+[[package]]
+name = "private-fs"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "proc-macro-crate"
 version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11173,7 +11439,6 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "blake3",
- "libc",
  "proptest",
  "pulldown-cmark",
  "quick-xml 0.41.0",
@@ -11190,7 +11455,6 @@ name = "qdoc-epub"
 version = "0.1.0"
 dependencies = [
  "qdoc",
- "qdoc-html",
  "zip 4.6.1",
 ]
 
@@ -11218,122 +11482,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos-actions"
-version = "0.1.0"
-dependencies = [
- "automerge",
- "chrono",
- "regex",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "uuid",
-]
-
-[[package]]
-name = "qos-app"
-version = "0.1.0"
-dependencies = [
- "ui",
-]
-
-[[package]]
-name = "qos-bluez"
-version = "0.1.0"
-dependencies = [
- "futures-util",
- "tokio",
- "tracing",
- "zbus 4.4.0",
-]
-
-[[package]]
-name = "qos-callstream"
-version = "0.1.0"
-dependencies = [
- "openh264",
- "serde",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
 name = "qos-chromium-blocker"
 version = "0.1.0"
 dependencies = [
  "adblock",
  "serde_json",
  "url",
-]
-
-[[package]]
-name = "qos-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
-]
-
-[[package]]
-name = "qos-desktop-entry"
-version = "0.1.0"
-dependencies = [
- "serial_test",
- "tempfile",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "qos-dev"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "fluent",
- "fluent-syntax",
- "image",
- "libc",
- "notify",
- "pkg",
- "qos-headless-schema",
- "qos-ui-graph",
- "serde",
- "serde_json",
- "syn 2.0.117",
- "tempfile",
- "toml 0.8.23",
-]
-
-[[package]]
-name = "qos-dev-template-smoke"
-version = "0.1.0"
-dependencies = [
- "qos-app",
- "qos-dev",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "qos-headless-schema"
-version = "0.1.0"
-dependencies = [
- "serde_json",
-]
-
-[[package]]
-name = "qos-model-gateway"
-version = "0.1.0"
-dependencies = [
- "accounts",
- "agent-provider-config",
- "clap",
- "libc",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "zeroize",
 ]
 
 [[package]]
@@ -11355,179 +11509,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
-]
-
-[[package]]
-name = "qos-power"
-version = "0.1.0"
-dependencies = [
- "tempfile",
-]
-
-[[package]]
-name = "qos-power-mgmt"
-version = "0.1.0"
-dependencies = [
- "atomic-file",
- "futures-util",
- "serde",
- "serde_json",
- "settings-store",
- "tempfile",
- "tokio",
- "tracing",
- "zbus 4.4.0",
-]
-
-[[package]]
-name = "qos-projector"
-version = "0.1.0"
-dependencies = [
- "fcast-sender-sdk",
- "futures-util",
- "libc",
- "mdns-sd",
- "qos-callstream",
- "rand 0.8.8",
- "serde",
- "serde_json",
- "tokio",
- "zbus 4.4.0",
-]
-
-[[package]]
-name = "qos-reference"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "qos-actions",
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
-name = "qos-relay"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "atomic-file",
- "automerge",
- "blake3",
- "chacha20poly1305",
- "clap",
- "collab-types",
- "ed25519-dalek 2.2.0",
- "fs",
- "hex",
- "iroh",
- "iroh-base",
- "libc",
- "postcard",
- "qos-user-identity",
- "rand 0.8.8",
- "runtime-identity",
- "sd-notify",
- "serde",
- "serde_bytes",
- "serde_json",
- "socket2 0.6.3",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "toml 0.8.23",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "x25519-dalek 2.0.1",
-]
-
-[[package]]
-name = "qos-rollback"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "atomic-file",
- "base64 0.22.1",
- "clap",
- "hex",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "zeroize",
-]
-
-[[package]]
-name = "qos-scratchpad"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "atomic-file",
- "automerge",
- "clap",
- "dirs 6.0.0",
- "fs",
- "iroh-blobs",
- "qos-actions",
- "qos-app",
- "serde",
- "serde_json",
- "taffy",
- "tempfile",
- "tokio",
- "vello",
- "winit",
-]
-
-[[package]]
-name = "qos-startup-metrics"
-version = "0.1.0"
-dependencies = [
- "parking_lot",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "qos-ui-builder"
-version = "0.1.0"
-dependencies = [
- "atomic-file",
- "ui",
-]
-
-[[package]]
-name = "qos-ui-graph"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "qos-unlock-helper"
-version = "0.1.0"
-dependencies = [
- "libc",
-]
-
-[[package]]
-name = "qos-user-identity"
-version = "0.1.0"
-dependencies = [
- "atomic-file",
- "automerge",
- "base32",
- "blake3",
- "ed25519-dalek 2.2.0",
- "postcard",
- "rand 0.8.8",
- "serde",
- "serde_bytes",
- "tempfile",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -11681,7 +11662,7 @@ version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2e8e8bcc7961af1fdac401278c6a831614941f6164ee3bf4ce61b7edb162207"
 dependencies = [
- "chacha20 0.10.0",
+ "chacha20 0.10.2",
  "getrandom 0.4.1",
  "rand_core 0.10.0",
 ]
@@ -12081,6 +12062,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "relative-path"
+version = "1.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba39f3699c378cd8970968dcbff9c43159ea4cfbd88d43c00b22f2ef10a435d2"
+
+[[package]]
 name = "remote"
 version = "0.1.0"
 dependencies = [
@@ -12089,10 +12076,6 @@ dependencies = [
  "automerge",
  "des 0.8.1",
  "iroh",
- "qos-actions",
- "qos-app",
- "qos-callstream",
- "qos-relay",
  "runtime-collab",
  "runtime-dylib",
  "russh",
@@ -12100,6 +12083,10 @@ dependencies = [
  "serde_json",
  "serial_test",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-callstream",
+ "tilo-relay",
  "tokio",
  "uuid",
  "vello",
@@ -12121,22 +12108,17 @@ checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
  "base64 0.22.1",
  "bytes",
- "encoding_rs",
  "futures-channel",
  "futures-core",
  "futures-util",
- "h2",
  "http",
  "http-body",
  "http-body-util",
  "hyper",
  "hyper-rustls",
- "hyper-tls",
  "hyper-util",
  "js-sys",
  "log",
- "mime",
- "native-tls",
  "percent-encoding",
  "pin-project-lite",
  "quinn",
@@ -12147,7 +12129,6 @@ dependencies = [
  "serde_urlencoded",
  "sync_wrapper",
  "tokio",
- "tokio-native-tls",
  "tokio-rustls",
  "tower",
  "tower-http",
@@ -12181,7 +12162,7 @@ dependencies = [
  "pin-project-lite",
  "rustls",
  "rustls-pki-types",
- "rustls-platform-verifier 0.6.2",
+ "rustls-platform-verifier",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
@@ -12268,7 +12249,7 @@ dependencies = [
  "cfg-if",
  "getrandom 0.2.17",
  "libc",
- "untrusted 0.9.0",
+ "untrusted",
  "windows-sys 0.52.0",
 ]
 
@@ -12302,6 +12283,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c5227859c4dfc83f428e58f9569bf439e628c8d139020e7faff437e6f5abaa0"
 dependencies = [
  "rquickjs-core",
+ "rquickjs-macro",
 ]
 
 [[package]]
@@ -12310,7 +12292,25 @@ version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e82e0ca83028ad5b533b53b96c395bbaab905a5774de4aaf1004eeacafa3d85d"
 dependencies = [
+ "relative-path",
  "rquickjs-sys",
+]
+
+[[package]]
+name = "rquickjs-macro"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4d2eccd988a924a470a76fbd81a191b22d1f5f4f4619cf5662a8c1ab4ca1db7"
+dependencies = [
+ "convert_case 0.6.0",
+ "fnv",
+ "ident_case",
+ "indexmap",
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "rquickjs-core",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -12319,7 +12319,27 @@ version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7fed0097b0b4fbb2a87f6dd3b995a7c64ca56de30007eb7e867dfdfc78324ba5"
 dependencies = [
+ "bindgen 0.69.5",
  "cc",
+]
+
+[[package]]
+name = "rsa"
+version = "0.10.0-rc.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30b2aa4ba0d89f73d1e332df05be0eeab8840351c36ca5654341dfdb57bb3caf"
+dependencies = [
+ "const-oid 0.10.2",
+ "crypto-bigint 0.7.5",
+ "crypto-primes",
+ "digest 0.11.3",
+ "pkcs1",
+ "pkcs8 0.11.0",
+ "rand_core 0.10.0",
+ "sha2 0.11.0",
+ "signature 3.0.0",
+ "spki 0.8.0",
+ "zeroize",
 ]
 
 [[package]]
@@ -12370,18 +12390,46 @@ dependencies = [
 name = "runtime-dylib"
 version = "0.1.0"
 dependencies = [
+ "accounts",
+ "agent-provider-config",
+ "app-catalogue",
+ "app-host",
+ "atomic-file",
+ "chrono-tz",
  "cli",
+ "collab-types",
  "comemo",
+ "desktop-policy",
  "iroh",
- "qos-callstream",
+ "launcher",
+ "media",
+ "mime_guess",
+ "os-actions",
+ "pdfium-render",
+ "registry-types",
+ "roxmltree",
  "runtime",
+ "runtime-fs",
+ "runtime-identity",
+ "runtime-portal-xdg",
  "rustypipe",
+ "settings-store",
+ "thumbnail",
+ "tilo-actions",
+ "tilo-bluez",
+ "tilo-callstream",
+ "tilo-desktop-entry",
+ "tilo-model-gateway",
+ "tilo-relay",
+ "tilo-user-identity",
  "tiny-skia",
  "typst",
  "typst-assets",
  "typst-pdf",
  "typst-render",
  "ui",
+ "vte",
+ "xattr",
 ]
 
 [[package]]
@@ -12408,6 +12456,7 @@ name = "runtime-identity"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "bounded-command",
  "chacha20poly1305",
  "ed25519-dalek 2.2.0",
  "getrandom 0.2.17",
@@ -12467,12 +12516,11 @@ dependencies = [
 
 [[package]]
 name = "russh"
-version = "0.63.1"
+version = "0.63.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35bab1b87d915817d5d9cc352637cd40d5f0b298a48c6309af9156a4addc3031"
+checksum = "036204edbd199552a5b3832f63c60dcdf395dc44c7f06b4af1c0e8139cc11bce"
 dependencies = [
  "aes 0.9.3",
- "aws-lc-rs",
  "bitflags 2.11.0",
  "block-padding 0.4.2",
  "byteorder",
@@ -12498,13 +12546,12 @@ dependencies = [
  "hex-literal",
  "hmac 0.13.0",
  "inout 0.2.2",
- "internal-russh-num-bigint",
  "keccak",
  "log",
  "md5",
  "ml-kem",
  "module-lattice",
- "num-bigint",
+ "num-bigint 0.5.1",
  "p256 0.14.0",
  "p384 0.14.0",
  "p521",
@@ -12515,6 +12562,7 @@ dependencies = [
  "polyval 0.7.3",
  "rand 0.10.1",
  "rand_core 0.10.0",
+ "ring",
  "russh-cryptovec",
  "russh-util",
  "salsa20",
@@ -12662,9 +12710,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.36"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c665f33d38cea657d9614f766881e4d510e0eda4239891eea56b4cadcf01801b"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "log",
  "once_cell",
@@ -12678,13 +12726,9 @@ dependencies = [
 [[package]]
 name = "rustls-native-certs"
 version = "0.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "612460d5f7bea540c490b2b6395d8e34a953e52b491accd6c86c8164c5932a63"
 dependencies = [
- "openssl-probe",
  "rustls-pki-types",
- "schannel",
- "security-framework",
+ "tempfile",
 ]
 
 [[package]]
@@ -12719,27 +12763,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustls-platform-verifier"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26d1e2536ce4f35f4846aa13bff16bd0ff40157cdb14cc056c7b14ba41233ba0"
-dependencies = [
- "core-foundation 0.10.1",
- "core-foundation-sys",
- "jni 0.22.4",
- "log",
- "once_cell",
- "rustls",
- "rustls-native-certs",
- "rustls-platform-verifier-android",
- "rustls-webpki",
- "security-framework",
- "security-framework-sys",
- "webpki-root-certs",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "rustls-platform-verifier-android"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12753,7 +12776,7 @@ checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
 dependencies = [
  "ring",
  "rustls-pki-types",
- "untrusted 0.9.0",
+ "untrusted",
 ]
 
 [[package]]
@@ -12871,15 +12894,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "schannel"
-version = "0.1.28"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "891d81b926048e76efe18581bf793546b4c0eaf8448d72be8de2bbee5fd166e1"
-dependencies = [
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "scoped-tls"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12890,6 +12904,29 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "scratchpad"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "atomic-file",
+ "automerge",
+ "clap",
+ "dirs 6.0.0",
+ "fs",
+ "iroh-blobs",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "taffy",
+ "tempfile",
+ "tilo-actions",
+ "tilo-app",
+ "tokio",
+ "vello",
+ "winit",
+]
 
 [[package]]
 name = "scrypt"
@@ -13239,6 +13276,7 @@ dependencies = [
  "agent-provider-config",
  "atomic-file",
  "automerge",
+ "bounded-command",
  "collab-types",
  "desktop-policy",
  "dirs 6.0.0",
@@ -13246,13 +13284,6 @@ dependencies = [
  "mail",
  "media",
  "os-actions",
- "qos-actions",
- "qos-app",
- "qos-bluez",
- "qos-desktop-entry",
- "qos-model-gateway",
- "qos-relay",
- "qos-user-identity",
  "quick-xml 0.41.0",
  "rcgen 0.14.7",
  "reqwest 0.12.28",
@@ -13266,6 +13297,13 @@ dependencies = [
  "settings-store",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-bluez",
+ "tilo-desktop-entry",
+ "tilo-model-gateway",
+ "tilo-relay",
+ "tilo-user-identity",
  "tracing",
  "uuid",
  "vello",
@@ -13284,6 +13322,19 @@ dependencies = [
  "serde_json",
  "serial_test",
  "tempfile",
+]
+
+[[package]]
+name = "sha-crypt"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32ee31e0190f9dc366d26b032ac36a99328532f40a237a79385a20d2d7f29810"
+dependencies = [
+ "base64ct",
+ "ctutils",
+ "mcf",
+ "password-hash",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -13392,17 +13443,18 @@ name = "sheets"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atomic-file",
  "automerge",
  "calamine",
  "dirs 6.0.0",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "rust_xlsxwriter",
  "serde",
  "serde_json",
  "settings-store",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "uuid",
  "vello",
  "winit",
@@ -13419,6 +13471,7 @@ dependencies = [
  "automerge",
  "base64 0.22.1",
  "blake3",
+ "bounded-command",
  "browser",
  "bs58",
  "bytes",
@@ -13461,15 +13514,6 @@ dependencies = [
  "postcard",
  "qcms",
  "qdoc",
- "qos-actions",
- "qos-bluez",
- "qos-callstream",
- "qos-desktop-entry",
- "qos-power-mgmt",
- "qos-projector",
- "qos-relay",
- "qos-startup-metrics",
- "qos-user-identity",
  "rand 0.8.8",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
@@ -13490,10 +13534,20 @@ dependencies = [
  "sysinfo",
  "taffy",
  "tantivy",
+ "tar",
  "tempfile",
  "terminal",
  "thiserror 2.0.18",
  "threshold-identity",
+ "tilo-actions",
+ "tilo-bluez",
+ "tilo-callstream",
+ "tilo-desktop-entry",
+ "tilo-power-mgmt",
+ "tilo-projector",
+ "tilo-relay",
+ "tilo-startup-metrics",
+ "tilo-user-identity",
  "tokio",
  "tokio-util",
  "toml 0.8.23",
@@ -13510,6 +13564,7 @@ dependencies = [
  "windows-vm",
  "winit",
  "word-processor",
+ "x25519-dalek 2.0.1",
  "xattr",
  "zbus 4.4.0",
  "zeroize",
@@ -13661,13 +13716,13 @@ dependencies = [
  "automerge",
  "image",
  "qdoc",
- "qos-actions",
- "qos-app",
  "quick-xml 0.41.0",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "uuid",
  "vello",
  "vello_encoding",
@@ -13824,12 +13879,12 @@ name = "snippets"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "uuid",
  "vello",
  "winit",
@@ -13889,6 +13944,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea06cc588e43c632923a55450401b8f25e628131571d4e1baea1bdfdb2b5ed06"
 
 [[package]]
+name = "speed-test"
+version = "0.1.0"
+dependencies = [
+ "reqwest 0.12.28",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tilo-app",
+]
+
+[[package]]
 name = "spellcheck"
 version = "0.1.0"
 
@@ -13905,18 +13971,18 @@ dependencies = [
 
 [[package]]
 name = "spin"
-version = "0.9.8"
+version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 dependencies = [
  "lock_api",
 ]
 
 [[package]]
 name = "spin"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
+checksum = "023a211cb3138dbc438680b32560ad89f699977624c9f8dbb95a47d5b4c07dd3"
 
 [[package]]
 name = "spirv"
@@ -13962,7 +14028,7 @@ dependencies = [
  "aead 0.6.1",
  "aes 0.9.3",
  "aes-gcm 0.11.1",
- "chacha20 0.10.0",
+ "chacha20 0.10.2",
  "cipher 0.5.2",
  "ctutils",
  "des 0.9.0",
@@ -14066,15 +14132,15 @@ version = "0.1.2"
 dependencies = [
  "app-catalogue",
  "app-host",
+ "atomic-file",
  "automerge",
  "blake3",
+ "bounded-command",
  "dirs 6.0.0",
  "ed25519-dalek 2.2.0",
  "getrandom 0.2.17",
  "hex",
  "png 0.18.1",
- "qos-actions",
- "qos-app",
  "registry-types",
  "reqwest 0.12.28",
  "runtime-dylib",
@@ -14085,6 +14151,8 @@ dependencies = [
  "taffy",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-actions",
+ "tilo-app",
  "toml 0.8.23",
  "tracing",
  "vello",
@@ -14393,6 +14461,7 @@ dependencies = [
  "atomic-file",
  "ed25519-dalek 2.2.0",
  "hex",
+ "libc",
  "postcard",
  "serde",
  "serde_json",
@@ -14609,13 +14678,14 @@ dependencies = [
  "libc",
  "portable-pty",
  "qdoc",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "runtime-portal",
  "serde_json",
  "serial_test",
  "taffy",
+ "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "tracing",
  "unicode-segmentation",
  "unicode-width 0.2.2",
@@ -14630,13 +14700,13 @@ name = "themes"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "settings-store",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "uuid",
  "vello",
  "winit",
@@ -14747,6 +14817,333 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-actions"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "chrono",
+ "postcard",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "uuid",
+]
+
+[[package]]
+name = "tilo-app"
+version = "0.1.0"
+dependencies = [
+ "ui",
+]
+
+[[package]]
+name = "tilo-bluez"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "tokio",
+ "tracing",
+ "zbus 4.4.0",
+]
+
+[[package]]
+name = "tilo-callstream"
+version = "0.1.0"
+dependencies = [
+ "openh264",
+ "serde",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "tilo-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+]
+
+[[package]]
+name = "tilo-crypto"
+version = "0.1.0"
+dependencies = [
+ "authenticode",
+ "cms",
+ "const-oid 0.9.6",
+ "der 0.7.10",
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "libc",
+ "object 0.39.1",
+ "p256 0.13.2",
+ "picky",
+ "picky-asn1",
+ "picky-asn1-der",
+ "picky-asn1-x509",
+ "rand 0.10.1",
+ "rand 0.8.8",
+ "rcgen 0.14.7",
+ "ring",
+ "rsa",
+ "sha-crypt",
+ "sha2 0.10.9",
+ "spki 0.7.3",
+ "tempfile",
+ "time",
+ "x509-cert",
+ "x509-parser 0.18.1",
+ "zeroize",
+]
+
+[[package]]
+name = "tilo-desktop-entry"
+version = "0.1.0"
+dependencies = [
+ "serial_test",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "tilo-dev"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fluent",
+ "fluent-syntax",
+ "image",
+ "libc",
+ "notify",
+ "pkg",
+ "serde",
+ "serde_json",
+ "syn 2.0.117",
+ "tempfile",
+ "tilo-headless-schema",
+ "tilo-ui-graph",
+ "toml 0.8.23",
+]
+
+[[package]]
+name = "tilo-dev-template-smoke"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-app",
+ "tilo-dev",
+]
+
+[[package]]
+name = "tilo-headless-schema"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "tilo-model-gateway"
+version = "0.1.0"
+dependencies = [
+ "accounts",
+ "agent-provider-config",
+ "base64 0.22.1",
+ "clap",
+ "libc",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "url",
+ "zeroize",
+]
+
+[[package]]
+name = "tilo-ocr"
+version = "0.1.0"
+dependencies = [
+ "bounded-command",
+ "image",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "tilo-power-mgmt"
+version = "0.1.0"
+dependencies = [
+ "atomic-file",
+ "bounded-command",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "zbus 4.4.0",
+]
+
+[[package]]
+name = "tilo-projector"
+version = "0.1.0"
+dependencies = [
+ "fcast-sender-sdk",
+ "futures-util",
+ "libc",
+ "mdns-sd",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "tilo-callstream",
+ "tokio",
+ "zbus 4.4.0",
+]
+
+[[package]]
+name = "tilo-reference"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "uuid",
+]
+
+[[package]]
+name = "tilo-relay"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "atomic-file",
+ "automerge",
+ "blake3",
+ "bounded-command",
+ "chacha20poly1305",
+ "clap",
+ "collab-types",
+ "ed25519-dalek 2.2.0",
+ "fs",
+ "hex",
+ "install",
+ "iroh",
+ "iroh-base",
+ "launcher",
+ "libc",
+ "pkg",
+ "postcard",
+ "rand 0.8.8",
+ "runtime-identity",
+ "sd-notify",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "socket2 0.6.3",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tilo-user-identity",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "x25519-dalek 2.0.1",
+]
+
+[[package]]
+name = "tilo-rollback"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "atomic-file",
+ "base64 0.22.1",
+ "bounded-command",
+ "clap",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tilo-crypto",
+ "zeroize",
+]
+
+[[package]]
+name = "tilo-startup-metrics"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "tilo-ui-builder"
+version = "0.1.0"
+dependencies = [
+ "atomic-file",
+ "ui",
+]
+
+[[package]]
+name = "tilo-ui-graph"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "tilo-unlock-helper"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "tilo-user-identity"
+version = "0.1.0"
+dependencies = [
+ "atomic-file",
+ "automerge",
+ "base32",
+ "blake3",
+ "ed25519-dalek 2.2.0",
+ "libc",
+ "postcard",
+ "private-fs",
+ "rand 0.8.8",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "zeroize",
+]
+
+[[package]]
+name = "tilo-vision"
+version = "0.1.0"
+dependencies = [
+ "agent-provider-config",
+ "base64 0.22.1",
+ "hex",
+ "image",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tilo-model-gateway",
+ "url",
+]
+
+[[package]]
 name = "time"
 version = "0.3.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14785,6 +15182,7 @@ name = "tinker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bounded-command",
  "clap",
  "libc",
  "serde",
@@ -14858,14 +15256,35 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tls_codec"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0de2e01245e2bb89d6f05801c564fa27624dbd7b1846859876c7dad82e90bf6b"
+dependencies = [
+ "tls_codec_derive 0.4.2",
+ "zeroize",
+]
+
+[[package]]
+name = "tls_codec"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "18cc98286004cea38f717e2b03d990fc774fbfd38a82720de40e5c94365067c8"
 dependencies = [
  "serde",
  "serde_bytes",
- "tls_codec_derive",
+ "tls_codec_derive 0.5.0",
  "zeroize",
+]
+
+[[package]]
+name = "tls_codec_derive"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d2e76690929402faae40aebdda620a2c0e25dd6d3b9afe48867dfd95991f4bd"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -14906,16 +15325,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "tokio-native-tls"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbae76ab933c85776efabc971569dd6119c580d8f5d448769dec1764bf796ef2"
-dependencies = [
- "native-tls",
- "tokio",
 ]
 
 [[package]]
@@ -15127,12 +15536,12 @@ dependencies = [
  "atomic-file",
  "automerge",
  "base32",
+ "bounded-command",
  "chacha20poly1305",
  "getrandom 0.2.17",
  "hmac 0.12.1",
  "image",
- "qos-actions",
- "qos-app",
+ "private-fs",
  "qrcode",
  "rqrr",
  "runtime-dylib",
@@ -15141,9 +15550,12 @@ dependencies = [
  "sha1 0.10.6",
  "sha2 0.10.9",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "tracing",
  "uuid",
  "vello",
+ "windows-sys 0.61.2",
  "winit",
  "zeroize",
 ]
@@ -15308,7 +15720,9 @@ dependencies = [
 name = "tts"
 version = "0.1.0"
 dependencies = [
+ "bounded-command",
  "log",
+ "nix 0.30.1",
  "ssip-client",
  "thiserror 2.0.18",
 ]
@@ -15318,16 +15732,19 @@ name = "tube"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atomic-file",
  "automerge",
  "base64 0.22.1",
+ "blake3",
+ "bounded-command",
  "dirs 6.0.0",
  "flate2",
+ "libc",
  "media",
  "png 0.18.1",
- "qos-actions",
- "qos-app",
  "reqwest 0.12.28",
  "runtime-dylib",
+ "runtime-identity",
  "runtime-portal-xdg",
  "rustypipe",
  "serde",
@@ -15336,6 +15753,8 @@ dependencies = [
  "snow",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -15429,6 +15848,28 @@ name = "typst-assets"
 version = "0.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5613cb719a6222fe9b74027c3625d107767ec187bff26b8fc931cf58942c834f"
+
+[[package]]
+name = "typst-editor"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "comemo",
+ "dirs 6.0.0",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "taffy",
+ "tilo-actions",
+ "tilo-app",
+ "tiny-skia",
+ "typst",
+ "typst-assets",
+ "typst-pdf",
+ "typst-render",
+ "vello",
+ "winit",
+]
 
 [[package]]
 name = "typst-eval"
@@ -15719,28 +16160,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "typst_editor"
-version = "0.1.0"
-dependencies = [
- "automerge",
- "comemo",
- "dirs 6.0.0",
- "qos-actions",
- "qos-app",
- "runtime-dylib",
- "serde",
- "serde_json",
- "taffy",
- "tiny-skia",
- "typst",
- "typst-assets",
- "typst-pdf",
- "typst-render",
- "vello",
- "winit",
-]
-
-[[package]]
 name = "udev"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15797,6 +16216,7 @@ dependencies = [
  "image",
  "libc",
  "media",
+ "mime_guess",
  "open",
  "openh264",
  "percent-encoding",
@@ -15804,11 +16224,8 @@ dependencies = [
  "png 0.18.1",
  "pollster",
  "postcard",
+ "private-fs",
  "qdoc",
- "qos-actions",
- "qos-headless-schema",
- "qos-startup-metrics",
- "qos-ui-graph",
  "qrcode",
  "rand_core 0.6.4",
  "regex",
@@ -15827,10 +16244,15 @@ dependencies = [
  "smithay-client-toolkit 0.20.0",
  "smithay-clipboard",
  "spellcheck",
+ "syntect",
  "taffy",
  "tempfile",
  "thiserror 2.0.18",
  "threshold-identity",
+ "tilo-actions",
+ "tilo-headless-schema",
+ "tilo-startup-metrics",
+ "tilo-ui-graph",
  "tokio",
  "tokio-util",
  "toml 0.8.23",
@@ -15847,6 +16269,8 @@ dependencies = [
  "vello_encoding",
  "wgpu",
  "wgpu-hal",
+ "windows 0.62.2",
+ "windows-sys 0.61.2",
  "winit",
  "zbus 4.4.0",
  "zeroize",
@@ -16029,12 +16453,6 @@ checksum = "e9df2af067a7953e9c3831320f35c1cc0600c30d44d9f7a12b01db1cd88d6b47"
 
 [[package]]
 name = "untrusted"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a156c684c91ea7d62626509bce3cb4e1d9ed5c4d978f7b4352658f96a4c26b4a"
-
-[[package]]
-name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
@@ -16063,6 +16481,7 @@ name = "ush"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bounded-command",
  "collab-types",
  "dirs 6.0.0",
  "landlock",
@@ -16219,26 +16638,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "video-player"
-version = "0.1.0"
-dependencies = [
- "automerge",
- "collab-types",
- "media",
- "qos-actions",
- "qos-app",
- "runtime-dylib",
- "serde",
- "serde_json",
- "settings-store",
- "taffy",
- "tracing",
- "vello",
- "winit",
-]
-
-[[package]]
-name = "video_editor"
+name = "video-editor"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -16247,15 +16647,34 @@ dependencies = [
  "gstreamer-app",
  "media",
  "png 0.18.1",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "serial_test",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "tracing",
  "uuid",
+ "vello",
+ "winit",
+]
+
+[[package]]
+name = "video-player"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "collab-types",
+ "media",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "taffy",
+ "tilo-actions",
+ "tilo-app",
+ "tracing",
  "vello",
  "winit",
 ]
@@ -16276,14 +16695,15 @@ name = "vpn"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "bounded-command",
  "os-actions",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "serial_test",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "uuid",
  "vello",
  "winit",
@@ -16490,7 +16910,7 @@ version = "0.51.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bb321403ce594274827657a908e13d1d9918aa02257b8bf8391949d9764023ff"
 dependencies = [
- "spin 0.9.8",
+ "spin 0.9.9",
  "wasmi_collections",
  "wasmi_core",
  "wasmi_ir",
@@ -17047,14 +17467,14 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "chrono",
- "qos-actions",
- "qos-app",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
  "serde_json",
  "settings-store",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "tokio",
  "tracing-subscriber",
  "uuid",
@@ -17282,6 +17702,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "which"
+version = "4.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87ba24419a2078cd2b0f2ede2691b6c66d8e47836da3b6db8265ebad47afbfc7"
+dependencies = [
+ "either",
+ "home",
+ "once_cell",
+ "rustix 0.38.44",
+]
+
+[[package]]
 name = "whoami"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17418,15 +17850,16 @@ name = "windows-app"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "bounded-command",
  "compat-service",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "runtime-portal",
  "serde",
  "serde_json",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "vello",
  "winit",
 ]
@@ -17544,17 +17977,6 @@ checksum = "6e2e40844ac143cdb44aead537bbf727de9b044e107a0f1220392177d15b0f26"
 dependencies = [
  "windows-core 0.62.2",
  "windows-link",
-]
-
-[[package]]
-name = "windows-registry"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02752bf7fbdcce7f2a27a742f798510f3e5ad88dbe84871e5168e2120c3d5720"
-dependencies = [
- "windows-link",
- "windows-result 0.4.1",
- "windows-strings",
 ]
 
 [[package]]
@@ -17715,6 +18137,7 @@ name = "windows-vm"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "bounded-command",
  "hex",
  "launcher",
  "libc",
@@ -18158,19 +18581,21 @@ dependencies = [
 
 [[package]]
 name = "wnaf"
-version = "0.14.0"
+version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab12e7090f27e2ffd9322651492942d50c2926094af30601e1964337db39daf1"
+checksum = "795ca18b3fdb5e62bf982199278341ddcf7ebf7d32e25e212ad05d496e95f6fa"
 dependencies = [
  "ff 0.14.0",
  "group 0.14.0",
  "hybrid-array",
+ "primefield",
 ]
 
 [[package]]
 name = "word-processor"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "automerge",
  "fluent",
  "qdoc",
@@ -18178,15 +18603,16 @@ dependencies = [
  "qdoc-html",
  "qdoc-pdf",
  "qdoc-rtf",
- "qos-actions",
- "qos-app",
  "regex",
  "runtime-dylib",
  "serde",
  "serde_json",
  "spellcheck",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "unic-langid",
+ "url",
  "vello",
  "winit",
 ]
@@ -18303,6 +18729,19 @@ checksum = "e7e8131a03190127fb2263afc72b322ecadae46b6ff8c6f399ff5d02f5559af6"
 dependencies = [
  "curve25519-dalek 5.0.0",
  "rand_core 0.10.0",
+ "zeroize",
+]
+
+[[package]]
+name = "x509-cert"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1301e935010a701ae5f8655edc0ad17c44bad3ac5ce8c39185f75453b720ae94"
+dependencies = [
+ "const-oid 0.9.6",
+ "der 0.7.10",
+ "spki 0.7.3",
+ "tls_codec 0.4.2",
 ]
 
 [[package]]

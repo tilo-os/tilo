@@ -12,9 +12,20 @@ fail=0
 ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
-grep -Fq 'group: qos-os-image-series' "$workflow" \
+grep -Fq 'group: tilo-os-image-series' "$workflow" \
   && ok 'OS generation publication is globally serialized' \
   || bad 'release jobs can race and reuse one generation'
+
+kernel_verify_line="$(grep -n 'cosign verify --key keys/cosign.pub "$ref"' "$workflow" | tail -1 | cut -d: -f1)"
+kernel_export_line="$(grep -n 'echo "KERNEL_RPMS_REF=$ref" >> "$GITHUB_ENV"' "$workflow" | head -1 | cut -d: -f1)"
+kernel_build_arg_line="$(grep -n 'KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}' "$workflow" | head -1 | cut -d: -f1)"
+if [ -n "$kernel_verify_line" ] && [ -n "$kernel_export_line" ] && [ -n "$kernel_build_arg_line" ] \
+   && [ "$kernel_verify_line" -lt "$kernel_export_line" ] \
+   && [ "$kernel_export_line" -lt "$kernel_build_arg_line" ]; then
+  ok 'kernel signature verification precedes export and every image build'
+else
+  bad 'kernel repository reaches an image build before signature verification'
+fi
 
 publication_guards="$(grep -Fc "if: steps.release-mode.outputs.publish == 'true'" "$workflow")"
 if grep -Fq 'REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}' "$workflow" \
@@ -38,14 +49,14 @@ grep -Fq 'Independently rebuild the release candidate' "$workflow" \
   && ok 'release compares uncached base and final sealed OS rebuilds' \
   || bad 'reproducibility is claimed without a release-blocking comparison'
 
-grep -Fq -- '--type https://qos.dev/security/release-freshness/v1' "$workflow" \
+grep -Fq -- '--type https://tilo.dev/security/release-freshness/v1' "$workflow" \
   && grep -Fq 'release freshness attestation is absent, expired, or does not bind this release' "$workflow" \
   && grep -Fq '604800' "$freshness" \
   && ok 'channel promotion requires a bounded signed freshness statement' \
   || bad 'release freshness is unsigned, unbounded, or not promotion-blocking'
 
 sign_line="$(grep -n 'cosign sign ' "$workflow" | head -1 | cut -d: -f1)"
-promote_line="$(grep -n 'promote release channels' "$workflow" | head -1 | cut -d: -f1)"
+promote_line="$(grep -n 'Assemble, sign, attest, and promote the OS index' "$workflow" | head -1 | cut -d: -f1)"
 [ -n "$sign_line" ] && [ -n "$promote_line" ] && [ "$sign_line" -lt "$promote_line" ] \
   && ok 'channel tags are promoted only after signing and attestation' \
   || bad 'release channels can expose an unsigned candidate'
@@ -55,18 +66,53 @@ grep -Fq 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' "$workflow" \
   && ok 'release signing requires a non-exportable KMS/HSM key' \
   || bad 'release signing still accepts an exportable private key secret'
 
+if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$workflow" \
+   && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$workflow" \
+   && grep -Fq 'needs: [plan, signing-preflight]' "$workflow"; then
+  ok 'OS construction starts only after release KMS identity preflight'
+else
+  bad 'OS release construction can start before its signing authority is identity-bound'
+fi
+
 if grep -Eq -- '--tlog-upload=false|--insecure-ignore-tlog' "$workflow"; then
   bad 'OS release disables transparency-log publication or verification'
 else
   ok 'release signatures and attestations require transparency-log evidence'
 fi
 
-if grep -Fq "key='\${{ vars.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}'" "$workflow" \
-   && grep -Fq 'QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}' "$workflow" \
+attestation_consumers=(
+  "$repo/.forgejo/workflows/build-image.yml"
+  "$repo/.forgejo/workflows/build-kernel.yml"
+  "$repo/.forgejo/workflows/snapshot-rpms.yml"
+  "$repo/os/dev/build-image.sh"
+)
+attestation_shape_safe=1
+for consumer in "${attestation_consumers[@]}"; do
+  grep -Fq '[(if type == "array" then .[] else . end) | .payload' "$consumer" \
+    || attestation_shape_safe=0
+  grep -Fq '[.[].payload' "$consumer" && attestation_shape_safe=0
+done
+encoded_predicate="$(printf '%s' '{"predicate":{"shapeSafe":true}}' | base64 -w0)"
+for envelope in \
+  "{\"payload\":\"$encoded_predicate\"}" \
+  "[{\"payload\":\"$encoded_predicate\"}]"; do
+  printf '%s' "$envelope" | jq -e '
+    [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
+    == [{"shapeSafe":true}]
+  ' >/dev/null || attestation_shape_safe=0
+done
+if [ "$attestation_shape_safe" = 1 ]; then
+  ok 'Cosign provenance accepts one verified envelope or an envelope array'
+else
+  bad 'Cosign provenance assumes only one verify-attestation JSON root shape'
+fi
+
+if grep -Fq "key='\${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}'" "$workflow" \
+   && grep -Fq 'TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}' "$workflow" \
    && grep -Fq "if [[ '\${{ steps.release-mode.outputs.publish }}' == true ]]" "$workflow" \
-   && grep -Fq 'publishing requires QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY' "$workflow" \
-   && grep -Fq 'QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY must be a non-placeholder 32-byte hex key' "$repo/os/Containerfile" \
-   && grep -Fxq 'ARG QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY' "$repo/os/Containerfile"; then
+   && grep -Fq 'publishing requires TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY' "$workflow" \
+   && grep -Fq 'TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY must be a non-placeholder 32-byte hex key' "$repo/os/Containerfile" \
+   && grep -Fxq 'ARG TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY' "$repo/os/Containerfile"; then
   ok 'fresh images carry a release-validated pinned marketplace owner key'
 else
   bad 'marketplace trust anchor is missing, placeholder, or not a release build input'
@@ -79,6 +125,36 @@ grep -Fq 'verify_signed_generation "$current"' "$repo/os/dev/next-generation.sh"
   && ok 'generation allocation authenticates provenance and the latest channel' \
   || bad 'generation allocation still trusts registry tags alone'
 
+if grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
+   && grep -Fq 'runner":"imager-linux-aarch64"' "$workflow" \
+   && grep -Fq 'matrix: ${{ fromJSON(needs.plan.outputs.build-matrix) }}' "$workflow" \
+   && grep -Fq 'candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ matrix.arch }}' "$workflow" \
+   && grep -Fq 'expected exactly two native child descriptors' "$workflow" \
+   && grep -Fq 'descriptor points to $actual_registry_arch content' "$workflow" \
+   && grep -Fq 'podman manifest push --all' "$workflow" \
+   && grep -Fq 'published OCI index does not contain exactly the verified native children' "$workflow" \
+   && grep -Fq 'externalParameters.children == $children' "$workflow" \
+   && grep -Fq 'tilo-buildcache:${{ matrix.arch }}' "$workflow" \
+   && grep -Fq 'promote_immutable "$tag"' "$workflow" \
+   && grep -Fq 'latest="code.podesta.ai/qos/tilo:latest"' "$workflow" \
+   && grep -Fq 'registry did not commit latest as $index_digest' "$workflow"; then
+  ok 'OS publication promotes one signed two-architecture index after both native gates'
+else
+  bad 'OS publication can omit a native architecture or promote child manifests independently'
+fi
+
+durable_promotion_line="$(grep -n 'for tag in "${durable_tags\[@\]}"' "$workflow" | head -1 | cut -d: -f1)"
+latest_promotion_line="$(grep -n 'latest="code.podesta.ai/qos/tilo:latest"' "$workflow" | head -1 | cut -d: -f1)"
+if [ -n "$durable_promotion_line" ] && [ -n "$latest_promotion_line" ] \
+   && [ "$durable_promotion_line" -lt "$latest_promotion_line" ] \
+   && grep -Fq 'bad semver/source name cannot strand a newly written genN' "$workflow" \
+   && grep -Fq 'immutable release tag $tag already binds $existing' "$workflow" \
+   && grep -Fq 'registry did not persist $tag as $index_digest' "$workflow"; then
+  ok 'immutable release tags are idempotent and verified before latest moves'
+else
+  bad 'latest can move before durable release tags are safely committed'
+fi
+
 if grep -E 'uses: [^#[:space:]]+@(v[0-9]|main|master)([[:space:]#]|$)' "$workflow"; then
   bad 'OS release workflow executes a mutable third-party action reference'
 else
@@ -88,23 +164,41 @@ fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 hex="$(printf 'a%.0s' {1..64})"
-if RELEASE_DIGEST="sha256:$hex" QOS_GENERATION=42 SOURCE_DATE_EPOCH=1 \
+if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=42 SOURCE_DATE_EPOCH=1 \
    BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
-   KERNEL_RPMS_REF="kernel@sha256:$hex" QOS_APP_COLLECTION_SHA256="$hex" \
-   QOS_DESKTOP_PAYLOAD_SHA256="$hex" \
+   KERNEL_RPMS_REF="kernel@sha256:$hex" TILO_APP_COLLECTION_SHA256="$hex" \
+   TILO_DESKTOP_PAYLOAD_SHA256="$hex" \
    GITHUB_SHA="$hex" GITHUB_RUN_ID=test \
    "$provenance" "$tmp/provenance.json" \
    && jq -e '.buildDefinition.externalParameters.generation == 42' "$tmp/provenance.json" >/dev/null \
-   && jq -e '.buildDefinition.resolvedDependencies[] | select(.uri == "qos-app-collection:sha256:'"$hex"'")' "$tmp/provenance.json" >/dev/null \
-   && jq -e '.buildDefinition.resolvedDependencies[] | select(.uri == "qos-desktop-payload:sha256:'"$hex"'")' "$tmp/provenance.json" >/dev/null \
+   && jq -e '.buildDefinition.resolvedDependencies[] | select(.uri == "tilo-app-collection:sha256:'"$hex"'")' "$tmp/provenance.json" >/dev/null \
+   && jq -e '.buildDefinition.resolvedDependencies[] | select(.uri == "tilo-desktop-payload:sha256:'"$hex"'")' "$tmp/provenance.json" >/dev/null \
    && jq -e '.buildDefinition.internalParameters.expectedReleaseDigest == "sha256:'"$hex"'"' "$tmp/provenance.json" >/dev/null \
-   && jq -e '.runDetails.byproducts[0].uri == "urn:qos:verification:manifest-digest-equal"' "$tmp/provenance.json" >/dev/null; then
+   && jq -e '.runDetails.byproducts[0].uri == "urn:tilo:verification:manifest-digest-equal"' "$tmp/provenance.json" >/dev/null; then
   ok 'SLSA provenance binds generation, source inputs, app collection and image digest'
 else
   bad 'release provenance generator did not produce a bound predicate'
 fi
 
-if RELEASE_DIGEST="sha256:$hex" QOS_GENERATION=42 SOURCE_DATE_EPOCH=1 \
+children='[{"architecture":"x86_64","digest":"sha256:'"$hex"'"},{"architecture":"aarch64","digest":"sha256:'"$(printf 'b%.0s' {1..64})"'"}]'
+kernel_refs='[{"architecture":"x86_64","ref":"code.podesta.ai/qos/qos-kernel@sha256:'"$hex"'"},{"architecture":"aarch64","ref":"code.podesta.ai/qos/qos-kernel@sha256:'"$(printf 'b%.0s' {1..64})"'"}]'
+if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=42 SOURCE_DATE_EPOCH=1 \
+   BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
+   TILO_KERNEL_REFS_JSON="$kernel_refs" TILO_RELEASE_CHILDREN_JSON="$children" \
+   GITHUB_SHA="$hex" GITHUB_RUN_ID=test \
+   "$provenance" "$tmp/index-provenance.json" \
+   && jq -e --argjson children "$children" \
+     '.buildDefinition.externalParameters.children == $children' \
+     "$tmp/index-provenance.json" >/dev/null \
+   && jq -e --argjson kernels "$kernel_refs" \
+     '.buildDefinition.externalParameters.kernelInputs == $kernels' \
+     "$tmp/index-provenance.json" >/dev/null; then
+  ok 'index provenance binds exact architecture child and kernel digests'
+else
+  bad 'index provenance omits or rewrites native child or kernel inputs'
+fi
+
+if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=42 SOURCE_DATE_EPOCH=1 \
    BASE_REF='base:latest' RPMS_REF="rpms@sha256:$hex" \
    KERNEL_RPMS_REF="kernel@sha256:$hex" GITHUB_SHA="$hex" \
    "$provenance" "$tmp/bad.json" >/dev/null 2>&1; then

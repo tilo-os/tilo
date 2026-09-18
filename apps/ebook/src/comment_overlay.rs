@@ -5,7 +5,7 @@
 //! its hit regions private so clicks cannot fall through to the page beneath.
 
 use automerge::{AutoCommit, ObjId};
-use taffy::{NodeId, TaffyTree};
+use ui::theme::Theme;
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -13,9 +13,9 @@ use winit::event::{Modifiers, WindowEvent};
 
 use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
-use ui::theme::Theme;
 use ui::widget::{TextInput, Widget};
 
+use crate::input_controls::{InputEventCtx, InputPaintCtx};
 use crate::model::{AnnoKind, Annotation, HiColor};
 use crate::paint;
 use crate::reader_theme::ReaderPalette;
@@ -41,6 +41,25 @@ pub(crate) enum CommentSemanticOutcome {
 struct Hit {
     rect: Rect,
     action: CommentAction,
+}
+
+pub(crate) struct CommentOverlayView<'a> {
+    pub viewport: Rect,
+    pub cursor: Point,
+    pub annotations: &'a [Annotation],
+    pub default_color: HiColor,
+}
+
+struct CommentLayout {
+    card: Rect,
+    pad: f64,
+    header_height: f64,
+    inner_x0: f64,
+    inner_x1: f64,
+    inner_width: f32,
+    text_width: f32,
+    row_gap: f64,
+    add_height: f64,
 }
 
 pub(crate) struct CommentOverlay {
@@ -280,32 +299,24 @@ impl CommentOverlay {
 
     /// Route native editing events through the shared multiline input. The
     /// overlay owns transient editing state and emits only domain-ready text.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn handle_event(
         &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-        handled: &mut bool,
+        ctx: &mut InputEventCtx<'_>,
     ) -> (Option<(Uuid, String)>, bool) {
         let Some(id) = self.editing else {
             return (None, false);
         };
         let mut focus_target = None;
         self.editor.handle_event(
-            event,
-            scale_factor,
-            &modifiers,
-            state,
-            root,
-            handled,
+            ctx.event,
+            ctx.scale_factor,
+            &ctx.modifiers,
+            ctx.state,
+            ctx.root,
+            ctx.handled,
             &mut focus_target,
-            node_id,
-            taffy,
+            ctx.node_id,
+            ctx.taffy,
         );
         if focus_target.is_some() {
             self.editor.set_focus(true);
@@ -649,7 +660,10 @@ impl CommentOverlay {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winit::event::{ElementState, KeyEvent};
+    use taffy::{NodeId, TaffyTree};
+    use ui::theme::Theme;
+    use vello::Scene;
+    use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
     use winit::keyboard::{Key, NamedKey, PhysicalKey};
 
     fn key(logical_key: Key) -> WindowEvent {
@@ -753,29 +767,29 @@ mod tests {
         let modifiers = Modifiers::default();
         let mut handled = false;
 
-        let (changed, submitted) = overlay.handle_event(
-            &key(Key::Character("world".into())),
-            1.0,
+        let (changed, submitted) = overlay.handle_event(&mut InputEventCtx {
+            event: &key(Key::Character("world".into())),
+            scale_factor: 1.0,
             modifiers,
-            &mut doc,
-            &automerge::ROOT,
-            NodeId::new(0),
-            &taffy,
-            &mut handled,
-        );
+            state: &mut doc,
+            root: &automerge::ROOT,
+            node_id: NodeId::new(0),
+            taffy: &taffy,
+            handled: &mut handled,
+        });
         assert_eq!(changed, Some((id, "world".into())));
         assert!(!submitted);
 
-        let (_, submitted) = overlay.handle_event(
-            &key(Key::Named(NamedKey::Enter)),
-            1.0,
+        let (_, submitted) = overlay.handle_event(&mut InputEventCtx {
+            event: &key(Key::Named(NamedKey::Enter)),
+            scale_factor: 1.0,
             modifiers,
-            &mut doc,
-            &automerge::ROOT,
-            NodeId::new(0),
-            &taffy,
-            &mut handled,
-        );
+            state: &mut doc,
+            root: &automerge::ROOT,
+            node_id: NodeId::new(0),
+            taffy: &taffy,
+            handled: &mut handled,
+        });
         assert!(submitted);
         assert_eq!(overlay.editing_id(), None);
     }

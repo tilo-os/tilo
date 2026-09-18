@@ -9,7 +9,7 @@
 //! - Scrollback: `fetch_scrollback_for` decodes `ScrollbackBatch`.
 //!
 //! No real broker — everything runs against a hand-rolled fake server over
-//! an in-memory `UnixStream` pair.
+//! a bounded in-memory byte stream.
 
 // capnp's generated `Server` traits declare each verb as `-> impl Future`,
 // and these fakes return capnp's own `Promise`, which is the concrete type
@@ -28,13 +28,11 @@
 )]
 
 use std::cell::RefCell;
-use std::os::fd::IntoRawFd;
 use std::rc::Rc;
 
 use capnp::capability::Promise;
 use capnp::message::ReaderOptions;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
-use tokio::net::UnixStream;
 use tokio::task::LocalSet;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -43,7 +41,7 @@ use runtime_collab::raw::{
     presence_handle, presence_payload, presence_stream, scrollback_batch, stream,
 };
 use runtime_collab::{CollabClient, CollabServiceClient, PresencePayload};
-use runtime_portal::UnixCapnpClient;
+use runtime_portal::CapnpClient;
 
 // shared capture state
 
@@ -56,6 +54,7 @@ struct Captures {
     presence_arrived: Vec<Vec<u8>>,
     presence_left: Vec<Vec<u8>>,
     presence_cursor: Vec<(f32, f32)>,
+    presence_status: Vec<(Vec<u8>, String, bool)>,
     scrollback_requests: Vec<(Vec<u8>, u64, u32)>,
 }
 
@@ -83,6 +82,7 @@ enum PresencePayloadKind {
     Caret { pos: u64 },
     Selection { start: u64, end: u64 },
     Typing { start: u64, end: u64 },
+    Status { text: String, automatic: bool },
     Arrived,
     Left,
 }
@@ -113,6 +113,14 @@ fn every_presence_payload() -> Vec<SeedPresence> {
             user_id: "carol-typing".into(),
             key_bytes: b"key-typing".to_vec(),
             payload: PresencePayloadKind::Typing { start: 12, end: 15 },
+        },
+        SeedPresence {
+            user_id: "frank".into(),
+            key_bytes: b"key-status".to_vec(),
+            payload: PresencePayloadKind::Status {
+                text: "Reconciling forecast".into(),
+                automatic: true,
+            },
         },
         SeedPresence {
             user_id: "dave".into(),
@@ -169,6 +177,11 @@ impl presence_stream::Server for FakePresenceStream {
                 let mut b = payload.init_typing();
                 b.set_start(start);
                 b.set_end(end);
+            }
+            PresencePayloadKind::Status { text, automatic } => {
+                let mut b = payload.init_status();
+                b.set_text(&text);
+                b.set_automatic(automatic);
             }
             PresencePayloadKind::Arrived => payload.set_arrived(()),
             PresencePayloadKind::Left => payload.set_left(()),
@@ -312,6 +325,34 @@ impl presence_handle::Server for FakePresence {
             Err(e) => return Promise::err(e),
         };
         self.captures.borrow_mut().presence_left.push(key);
+        Promise::ok(())
+    }
+
+    fn publish_status(
+        self: Rc<Self>,
+        params: presence_handle::PublishStatusParams,
+        _results: presence_handle::PublishStatusResults,
+    ) -> Promise<(), capnp::Error> {
+        let r = match params.get() {
+            Ok(r) => r,
+            Err(e) => return Promise::err(e),
+        };
+        let key = match r.get_key_bytes() {
+            Ok(b) => b.to_vec(),
+            Err(e) => return Promise::err(e),
+        };
+        let text_reader = match r.get_text() {
+            Ok(text) => text,
+            Err(e) => return Promise::err(e),
+        };
+        let text = match text_reader.to_str() {
+            Ok(text) => text.to_owned(),
+            Err(e) => return Promise::err(capnp::Error::failed(e.to_string())),
+        };
+        self.captures
+            .borrow_mut()
+            .presence_status
+            .push((key, text, r.get_automatic()));
         Promise::ok(())
     }
 
@@ -551,10 +592,10 @@ impl collab_service::Server for FakeBroker {
 }
 
 fn stand_up_client(broker: FakeBroker) -> CollabClient {
-    let (server_side, client_side) = UnixStream::pair().unwrap();
+    let (server_side, client_side) = tokio::io::duplex(512);
 
     let broker_client: collab_service::Client = capnp_rpc::new_client(broker);
-    let (server_read, server_write) = server_side.into_split();
+    let (server_read, server_write) = tokio::io::split(server_side);
     let server_network = Box::new(twoparty::VatNetwork::new(
         server_read.compat(),
         server_write.compat_write(),
@@ -566,10 +607,8 @@ fn stand_up_client(broker: FakeBroker) -> CollabClient {
         let _ = server_rpc.await;
     });
 
-    let client_fd = client_side.into_std().unwrap().into_raw_fd();
-    let unix =
-        UnixCapnpClient::from_connected_fd(client_fd, rpc_twoparty_capnp::Side::Client).unwrap();
-    let client: CollabServiceClient = unix.bootstrap();
+    let connection = CapnpClient::from_connected_io(client_side, rpc_twoparty_capnp::Side::Client);
+    let client: CollabServiceClient = connection.bootstrap();
     CollabClient::from_raw(client)
 }
 
@@ -602,6 +641,10 @@ async fn presence_variants_publish_and_stream_round_trip() {
             presence.publish_caret(b"art-a", 100).await.unwrap();
             presence.publish_selection(b"art-b", 3, 9).await.unwrap();
             presence.publish_typing(b"art-typing", 6, 10).await.unwrap();
+            presence
+                .publish_status(b"room", "Reconciling forecast", true)
+                .await
+                .unwrap();
             presence.publish_arrived(b"art-c").await.unwrap();
             presence.publish_left(b"art-d").await.unwrap();
 
@@ -615,6 +658,10 @@ async fn presence_variants_publish_and_stream_round_trip() {
                 assert_eq!(c.presence_caret, vec![(b"art-a".to_vec(), 100)]);
                 assert_eq!(c.presence_selection, vec![(b"art-b".to_vec(), 3, 9)]);
                 assert_eq!(c.presence_typing, vec![(b"art-typing".to_vec(), 6, 10)]);
+                assert_eq!(
+                    c.presence_status,
+                    vec![(b"room".to_vec(), "Reconciling forecast".into(), true)]
+                );
                 assert_eq!(c.presence_arrived, vec![b"art-c".to_vec()]);
                 assert_eq!(c.presence_left, vec![b"art-d".to_vec()]);
             }
@@ -647,12 +694,22 @@ async fn presence_variants_publish_and_stream_round_trip() {
             assert_eq!(e5.payload, PresencePayload::Typing { start: 12, end: 15 });
 
             let e6 = stream.read().await.unwrap();
-            assert_eq!(e6.user_id, "dave");
-            assert_eq!(e6.payload, PresencePayload::Arrived);
+            assert_eq!(e6.user_id, "frank");
+            assert_eq!(
+                e6.payload,
+                PresencePayload::Status {
+                    text: "Reconciling forecast".into(),
+                    automatic: true
+                }
+            );
 
             let e7 = stream.read().await.unwrap();
-            assert_eq!(e7.user_id, "eve");
-            assert_eq!(e7.payload, PresencePayload::Left);
+            assert_eq!(e7.user_id, "dave");
+            assert_eq!(e7.payload, PresencePayload::Arrived);
+
+            let e8 = stream.read().await.unwrap();
+            assert_eq!(e8.user_id, "eve");
+            assert_eq!(e8.payload, PresencePayload::Left);
         })
         .await;
 }

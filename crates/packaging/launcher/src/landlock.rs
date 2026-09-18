@@ -27,7 +27,7 @@ use landlock::{
     RestrictionStatus, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetError, RulesetStatus,
 };
 
-/// qOS requires ABI 5 so device-node ioctls are policy-controlled. ABI 6 scope
+/// Tilo requires ABI 5 so device-node ioctls are policy-controlled. ABI 6 scope
 /// enforcement remains blocked on kernels that cannot attest the relevant
 /// Landlock errata; accepting a `PartiallyEnforced` result would be ambiguous.
 pub const TARGET_ABI: ABI = ABI::V5;

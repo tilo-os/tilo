@@ -1,16 +1,16 @@
 //! Consumer-side trust policy — trusted attestors + revoked publisher
-//! keys, loaded from user config by the caller (usually `qos-install`)
+//! keys, loaded from user config by the caller (usually `tilo-install`)
 //! and threaded into [`crate::verify::verify`]. The foundation crate
 //! itself never touches `$HOME`.
 //!
 //! ```text
-//! ~/.config/qos/trusted-attestors.toml   # [[attestor]] id/pubkey_hex/scope
-//! ~/.config/qos/revoked-keys.toml        # [[revoked]] pubkey_hex/reason
+//! ~/.config/tilo/trusted-attestors.toml   # [[attestor]] id/pubkey_hex/scope
+//! ~/.config/tilo/revoked-keys.toml        # [[revoked]] pubkey_hex/reason
 //! ```
 //!
 //! An attestor's signature covers a domain-separated message:
-//! `b"qos-pkg-attest-v1\0" || payload_root_hash[32] || publisher_pubkey[32]`
-//! (82 bytes, Ed25519 → 64-byte signature).
+//! `b"tilo-pkg-attest-v1\0" || payload_root_hash[32] || publisher_pubkey[32]`
+//! (83 bytes, Ed25519 → 64-byte signature).
 //!
 //! **Why `payload_root_hash` and not `package_id`?** `package_id`
 //! transitively includes the manifest bytes, which include the
@@ -33,7 +33,8 @@ use thiserror::Error;
 use crate::blobs::BlobHash;
 
 /// Domain-separation prefix for attestation signatures.
-pub const ATTESTATION_DOMAIN: &[u8] = b"qos-pkg-attest-v1\0";
+pub const ATTESTATION_DOMAIN: &[u8] = b"tilo-pkg-attest-v1\0";
+const ATTESTATION_PREIMAGE_LEN: usize = ATTESTATION_DOMAIN.len() + 32 + 32;
 
 /// Compute the preimage the attestor signs: `DOMAIN ||
 /// payload_root_hash || publisher_pubkey` (see module docs).
@@ -42,11 +43,13 @@ pub const ATTESTATION_DOMAIN: &[u8] = b"qos-pkg-attest-v1\0";
     clippy::arithmetic_side_effects,
     reason = "every index and length here is a compile-time constant \
               (ATTESTATION_DOMAIN.len() plus two fixed 32-byte fields \
-              summing to the 82-byte output), not data-dependent"
+              summing to the fixed-size output), not data-dependent"
 )]
-pub fn attestation_preimage(payload_root_hash: &BlobHash, publisher_pubkey: &[u8; 32]) -> [u8; 82] {
-    // 18 (domain) + 32 (payload root) + 32 (pubkey) = 82.
-    let mut out = [0u8; 82];
+pub fn attestation_preimage(
+    payload_root_hash: &BlobHash,
+    publisher_pubkey: &[u8; 32],
+) -> [u8; ATTESTATION_PREIMAGE_LEN] {
+    let mut out = [0u8; ATTESTATION_PREIMAGE_LEN];
     out[..ATTESTATION_DOMAIN.len()].copy_from_slice(ATTESTATION_DOMAIN);
     let mut off = ATTESTATION_DOMAIN.len();
     out[off..off + 32].copy_from_slice(&payload_root_hash.0);
@@ -119,7 +122,7 @@ impl AttestorScope {
 /// One row of trusted-attestors.toml — an attestor we accept third-party attestations from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrustedAttestor {
-    /// Human-readable id, e.g. `qos-curated/2026.07`; must match the
+    /// Human-readable id, e.g. `tilo-curated/2026.07`; must match the
     /// `attestor` field in `[[trust.attested_by]]` for a signature to count.
     pub id: String,
     /// The attestor's Ed25519 public key, hex encoded (64 chars).
@@ -353,7 +356,7 @@ impl RevocationList {
 }
 
 /// Standard config-dir paths for the trust registry + revocation
-/// list; follows XDG (`$XDG_CONFIG_HOME`, fallback `~/.config`) under a `qos/` subdir.
+/// list; follows XDG (`$XDG_CONFIG_HOME`, fallback `~/.config`) under a `tilo/` subdir.
 pub fn default_trusted_attestors_path() -> Option<PathBuf> {
     config_dir().map(|d| d.join("trusted-attestors.toml"))
 }
@@ -367,12 +370,12 @@ fn config_dir() -> Option<PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME")
         && !xdg.is_empty()
     {
-        return Some(PathBuf::from(xdg).join("qos"));
+        return Some(PathBuf::from(xdg).join("tilo"));
     }
     if let Ok(home) = std::env::var("HOME")
         && !home.is_empty()
     {
-        return Some(PathBuf::from(home).join(".config").join("qos"));
+        return Some(PathBuf::from(home).join(".config").join("tilo"));
     }
     None
 }
@@ -424,10 +427,10 @@ mod tests {
 
     #[test]
     fn scope_roundtrip_prefix() {
-        let s = AttestorScope::Prefix(vec!["dev.qos.".into(), "dev.example.".into()]);
-        assert_eq!(s.render(), "prefix:dev.qos.,dev.example.");
+        let s = AttestorScope::Prefix(vec!["dev.tilo.".into(), "dev.example.".into()]);
+        assert_eq!(s.render(), "prefix:dev.tilo.,dev.example.");
         assert_eq!(
-            AttestorScope::parse("prefix:dev.qos.,dev.example.").unwrap(),
+            AttestorScope::parse("prefix:dev.tilo.,dev.example.").unwrap(),
             s
         );
     }
@@ -446,8 +449,8 @@ mod tests {
 
     #[test]
     fn scope_covers_matches_prefix() {
-        let s = AttestorScope::Prefix(vec!["dev.qos.".into()]);
-        assert!(s.covers("dev.qos.editor", &[]));
+        let s = AttestorScope::Prefix(vec!["dev.tilo.".into()]);
+        assert!(s.covers("dev.tilo.editor", &[]));
         assert!(!s.covers("com.example.foo", &[]));
     }
 
@@ -463,7 +466,7 @@ mod tests {
         let orig = TrustedAttestors {
             attestor: vec![
                 TrustedAttestor {
-                    id: "qos-curated/2026.07".into(),
+                    id: "tilo-curated/2026.07".into(),
                     pubkey_hex: "aa".repeat(32),
                     scope: AttestorScope::All,
                 },

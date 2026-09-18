@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Portable, secret-safe model-provider configuration for qOS agents."
+description = "Portable, secret-safe model-provider configuration for Tilo agents."
 
 [lib]
 name = "agent_provider_config"

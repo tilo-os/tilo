@@ -54,15 +54,15 @@ pub(crate) fn preference_commit_context(
     slug: &str,
     label: &str,
     action_label: &str,
-) -> Option<ui::qos_actions::ActionContext> {
+) -> Option<ui::tilo_actions::ActionContext> {
     pending.then(|| {
-        ui::qos_actions::ActionContext::for_resource(
+        ui::tilo_actions::ActionContext::for_resource(
             action_label,
             format!("settings.preference:{slug}"),
             "settings.preference-pane",
             label,
         )
-        .with_app("org.qos.Settings", "Settings")
+        .with_app("org.tilo.Settings", "Settings")
     })
 }
 
@@ -94,7 +94,7 @@ mod tests {
         );
         assert_eq!(
             context.app.as_ref().map(|app| app.id.as_str()),
-            Some("org.qos.Settings")
+            Some("org.tilo.Settings")
         );
     }
 }

@@ -1,7 +1,7 @@
-//! qOS on-screen keyboard (OSK) — app + layout/rendering/input model.
+//! Tilo on-screen keyboard (OSK) — app + layout/rendering/input model.
 //!
 //! This is the first-class on-screen keyboard for touch and pointer use, designed to also
-//! be the foundation for the future qOS **smartphone** keyboard. The sizing
+//! be the foundation for the future Tilo **smartphone** keyboard. The sizing
 //! model is responsive (it fills the available surface width and derives key
 //! size from it), so the *same* code serves a narrow phone surface and a wide
 //! desktop surface — only the surface dimensions change.
@@ -31,7 +31,7 @@
 //! * [`inject`] provides the `virtual-keyboard-v1` client used only for editing
 //!   keys the current winit text-input client cannot consume, plus a standalone
 //!   compatibility fallback for other compositors.
-//! * The qOS compositor exposes both privileged globals only on its
+//! * The Tilo compositor exposes both privileged globals only on its
 //!   process-credential-gated OSK socket and floats the stable
 //!   [`KEYBOARD_APP_ID`] surface outside the workspace tile tree.
 //!
@@ -79,7 +79,7 @@
 /// Stable package/window identity. The compositor only promotes this id to
 /// the keyboard overlay when it also arrived on the private OSK Wayland
 /// socket; the string alone never grants input-method privileges.
-pub const KEYBOARD_APP_ID: &str = "dev.qos.osk";
+pub const KEYBOARD_APP_ID: &str = "dev.tilo.osk";
 
 pub mod dict;
 pub mod futo;

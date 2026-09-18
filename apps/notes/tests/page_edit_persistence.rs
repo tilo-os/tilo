@@ -71,10 +71,7 @@ fn split_and_save_round_trip_through_disk() {
     let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).expect("spawn");
     let welcome_id = app.workspace_pages_for_test()[0].id;
 
-    // Reset the welcome page to a single empty paragraph so the
-    // remainder of the test seeds the body from scratch. Phase 3's
-    // seed_welcome ships several demo blocks which would otherwise
-    // appear in the saved body alongside the test's edits.
+    // Reset the welcome page so its demo blocks do not mix with the fixture.
     {
         let panel = app.main_panel_mut();
         panel.load_page(welcome_id, "Welcome", String::new());
@@ -115,9 +112,8 @@ fn heading_promotion_survives_save_reload() {
     let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).expect("spawn");
     let welcome_id = app.workspace_pages_for_test()[0].id;
 
-    // Reset to an empty body — Phase 3's welcome seed pre-fills
-    // multiple blocks, and try_promote_to_heading only acts on
-    // empty Paragraphs.
+    // Heading promotion only acts on an empty paragraph, so discard the
+    // starter page's demo blocks.
     {
         let panel = app.main_panel_mut();
         panel.load_page(welcome_id, "Welcome", String::new());

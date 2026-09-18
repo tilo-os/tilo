@@ -169,9 +169,6 @@ impl AppearancePane {
                 choice_row("Theme", Box::new(theme)),
                 choice_row("UI scale", Box::new(ui_scale)),
                 choice_row("Text size", Box::new(size)),
-                caption(
-                    "These are safe everyday choices. Theme Studio is the advanced editor for custom palettes, typography, spacing, import, and export.",
-                ),
             ]),
         );
 
@@ -229,7 +226,7 @@ impl AppearancePane {
             "Shared with your apps",
             rows(vec![caption(
                 "Your theme, contrast, motion, UI-scale, and text-size choices \
-                 are read by the compositor and every qOS app, so the whole \
+                 are read by the compositor and every Tilo app, so the whole \
                  system follows the look you pick here. UI scale grows the \
                  entire interface and composes with each display's own \
                  fractional scale; text size adjusts type on top.",
@@ -245,7 +242,7 @@ impl AppearancePane {
         let mut p = SystemPrefs::load();
         p.appearance = self.prefs.clone();
         if let Err(e) = p.save() {
-            warn!(target: "qos::settings", op = "appearance_save", error = %e, "failed to persist appearance prefs");
+            warn!(target: "tilo::settings", op = "appearance_save", error = %e, "failed to persist appearance prefs");
         }
     }
 
@@ -279,7 +276,7 @@ impl AppearancePane {
             state,
             SETTINGS_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Settings", "Settings", action),
+            tilo_actions::ActionContext::for_action("org.tilo.Settings", "Settings", action),
         );
     }
 
@@ -503,7 +500,7 @@ impl Widget for AppearancePane {
             .collect()
     }
 
-    fn take_commit_context(&mut self) -> Option<ui::qos_actions::ActionContext> {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
         let pending = std::mem::take(&mut self.commit_context_pending)
             || self
                 .composed

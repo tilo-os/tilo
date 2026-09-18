@@ -6,7 +6,7 @@
 //! data model is the same either way: a `Vec<LyricsLine>` whose timestamps are
 //! `None` for plain lyrics.
 //!
-//! ## Real vs. gated
+//! ## Bundled and live lyrics
 //! A small **bundled** library of sample lyrics ([`bundled`]) is always
 //! compiled so the `--shots` screenshot and the offline first-run show a
 //! populated, highlightable lyrics view with zero network. The **live** fetch
@@ -185,7 +185,7 @@ fn live_fetch(meta: &TrackMeta) -> Option<Lyrics> {
 fn live_fetch_uncached(meta: &TrackMeta) -> Option<Lyrics> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
-        .user_agent("qOS-Music (https://qos)")
+        .user_agent("Tilo-Music (https://tilo)")
         .build()
         .ok()?;
     // 1. Exact match by (normalised) track/artist/album/duration.
@@ -204,6 +204,8 @@ fn live_fetch_uncached(meta: &TrackMeta) -> Option<Lyrics> {
 /// moves on to the next strategy rather than burning retries on a real miss.
 #[cfg(any(feature = "lyrics", feature = "live"))]
 fn get_text_retry(client: &reqwest::blocking::Client, url: &str) -> Option<String> {
+    use std::io::Read;
+    const MAX_LYRICS_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
     for attempt in 0..3u64 {
         match client.get(url).send() {
             Ok(resp) => {
@@ -218,7 +220,19 @@ fn get_text_retry(client: &reqwest::blocking::Client, url: &str) -> Option<Strin
                 if !status.is_success() {
                     return None;
                 }
-                if let Ok(body) = resp.text() {
+                if resp
+                    .content_length()
+                    .is_some_and(|len| len > MAX_LYRICS_RESPONSE_BYTES)
+                {
+                    return None;
+                }
+                let mut body = String::new();
+                if resp
+                    .take(MAX_LYRICS_RESPONSE_BYTES + 1)
+                    .read_to_string(&mut body)
+                    .is_ok()
+                    && body.len() <= MAX_LYRICS_RESPONSE_BYTES as usize
+                {
                     return Some(body);
                 }
                 std::thread::sleep(std::time::Duration::from_millis(300 * (attempt + 1)));
@@ -471,9 +485,9 @@ fn cache_put(key: String, value: Option<Lyrics>) {
 }
 
 /// An async lyrics worker: a background thread that resolves lyrics off the UI
-/// thread and delivers them over a channel. The default (no `lyrics` feature)
-/// build still uses it — it resolves the always-present bundled lyrics — so
-/// the UI code path is identical with or without live fetch.
+/// thread and delivers them over a channel. The default live build can fetch
+/// network lyrics; builds without `live` and `lyrics` resolve bundled lyrics
+/// through the same worker interface.
 pub struct LyricsWorker {
     tx: std::sync::mpsc::Sender<TrackMeta>,
     rx: std::sync::mpsc::Receiver<(String, Lyrics)>,

@@ -1,0 +1,93 @@
+#!/bin/bash
+# Tilo graphical-session entry point. Greetd runs this in the authenticated
+# user's PAM session; it owns the corresponding systemd --user target for
+# exactly as long as the compositor lives.
+set -euo pipefail
+ulimit -c 0
+
+readonly SYSTEMCTL=/usr/bin/systemctl
+readonly SHELL_BIN=/usr/bin/shell
+readonly MKDTEMP=/usr/bin/mktemp
+readonly RM=/usr/bin/rm
+readonly RMDIR=/usr/bin/rmdir
+readonly SESSION_TARGET=tilo-graphical-session.target
+
+target_started=0
+shell_pid=""
+logout_request_dir=""
+logout_request_path=""
+
+# The compositor cannot safely ask the display-manager wrapper to log out by
+# shelling out to logind: the wrapper owns the user target and must stop it
+# before returning control to the greeter. Give the compositor a private,
+# absolute, one-shot request file for that hand-off. A graphical login must
+# provide the user-owned runtime directory; falling back to shared /tmp would
+# turn a security-sensitive control channel into a best-effort convention.
+runtime_dir="${XDG_RUNTIME_DIR:-}"
+case "$runtime_dir" in
+  /*) ;;
+  *) printf '%s\n' 'tilo-session: XDG_RUNTIME_DIR must be an absolute path' >&2; exit 1 ;;
+esac
+[ -d "$runtime_dir" ] || { printf 'tilo-session: runtime directory does not exist: %s\n' "$runtime_dir" >&2; exit 1; }
+logout_request_dir="$($MKDTEMP -d "$runtime_dir/tilo-session.XXXXXX")"
+logout_request_path="$logout_request_dir/logout-request"
+export TILO_SESSION_LOGOUT_REQUEST="$logout_request_path"
+
+stop_target() {
+  if [ "$target_started" = 1 ]; then
+    "$SYSTEMCTL" --user stop "$SESSION_TARGET" >/dev/null 2>&1 || true
+    target_started=0
+  fi
+}
+
+cleanup_logout_channel() {
+  if [ -n "$logout_request_path" ]; then
+    "$RM" -f -- "$logout_request_path" 2>/dev/null || true
+  fi
+  if [ -n "$logout_request_dir" ]; then
+    "$RMDIR" -- "$logout_request_dir" 2>/dev/null || true
+  fi
+}
+
+terminate_session() {
+  local signal="$1" status="$2"
+  trap - HUP INT TERM
+  if [ -n "$shell_pid" ] && kill -0 "$shell_pid" 2>/dev/null; then
+    kill "-$signal" "$shell_pid" 2>/dev/null || true
+    wait "$shell_pid" 2>/dev/null || true
+  fi
+  exit "$status"
+}
+
+trap 'stop_target; cleanup_logout_channel' EXIT
+trap 'terminate_session HUP 129' HUP
+trap 'terminate_session INT 130' INT
+trap 'terminate_session TERM 143' TERM
+
+run_managed() {
+  "$@" &
+  shell_pid=$!
+  local status
+  if wait "$shell_pid"; then
+    status=0
+  else
+    status=$?
+  fi
+  shell_pid=""
+  return "$status"
+}
+
+# This blocks until graphical-session-pre.target (whose identity unit performs
+# idempotent migration/repair) and graphical-session.target complete. A missing
+# identity is intentionally a no-op here: the native compositor owns first-login
+# OOBE because it is the first trusted display surface. Starting the Tilo-owned
+# target is necessary because the standard graphical targets carry
+# RefuseManualStart=yes.
+"$SYSTEMCTL" --user start "$SESSION_TARGET"
+target_started=1
+
+set +e
+run_managed "$SHELL_BIN" "$@"
+status=$?
+set -e
+exit "$status"

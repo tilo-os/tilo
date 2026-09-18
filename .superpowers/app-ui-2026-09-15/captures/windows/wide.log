@@ -1,2 +1,0 @@
-[2m2026-09-15T16:05:52.792321Z[0m [31mERROR[0m [2mwgpu_hal::gles::egl[0m[2m:[0m EGL 'eglCreateContext' code 0x3009: eglCreateContext
-dev.qos.windows: wrote shot to /media/psf/Home/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/captures/windows/wide.png

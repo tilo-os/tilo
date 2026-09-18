@@ -2,7 +2,7 @@
 //!
 //! This panel edits [`crate::region::RegionSettings`], the global per-user
 //! locale document persisted at
-//! [`RegionSettings::store_path`] (`~/.config/qos/settings.json`). The
+//! [`RegionSettings::store_path`] (`~/.config/tilo/settings.json`). The
 //! Sheets app reads `locale.currency` / `locale.date_format` /
 //! `locale.time_format` for its cell formatting, and the Weather app reads
 //! `locale.measurement` for its °C/°F + km/h vs mph toggle. Editing here is
@@ -228,7 +228,7 @@ impl RegionPane {
             state,
             SETTINGS_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Settings", "Settings", action),
+            tilo_actions::ActionContext::for_action("org.tilo.Settings", "Settings", action),
         );
     }
 
@@ -343,7 +343,7 @@ impl Widget for RegionPane {
         }
 
         if changed && let Err(e) = self.settings.save() {
-            warn!(target: "qos::settings", op = "region_save", error = %e, "failed to persist region settings");
+            warn!(target: "tilo::settings", op = "region_save", error = %e, "failed to persist region settings");
         }
 
         if let Some(c) = &mut self.composed {
@@ -451,7 +451,7 @@ impl Widget for RegionPane {
             .collect()
     }
 
-    fn take_commit_context(&mut self) -> Option<ui::qos_actions::ActionContext> {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
         let pending = std::mem::take(&mut self.commit_context_pending)
             || self
                 .composed

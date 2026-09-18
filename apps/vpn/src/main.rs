@@ -1,4 +1,4 @@
-//! VPN — standard qOS application entry point.
+//! VPN — standard Tilo application entry point.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -44,7 +44,7 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
             | "connecting" | "unprovisioned" | "setup"),
         ) => vpn::app_root_demo_state(state),
         Some("empty") => vpn::app_root_demo_state("empty"),
-        _ if std::env::var("QOS_VPN_SAMPLE").as_deref() == Ok("1") => vpn::app_root_demo(),
+        _ if std::env::var("TILO_VPN_SAMPLE").as_deref() == Ok("1") => vpn::app_root_demo(),
         _ => vpn::app_root(),
     })
 }
@@ -54,7 +54,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.vpn", vpn::app_root)
+        &LaunchSpec::new("dev.tilo.vpn", vpn::app_root)
             .shot_root(shot_root)
             .scenarios(&[
                 "confirm",

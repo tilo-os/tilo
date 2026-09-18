@@ -23,12 +23,12 @@ use std::rc::Rc;
 use ui::PathSegment;
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Politeness, Role};
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::tilo_actions::{
     ActionAddress, ActionSpec, ControlInvocation, OperationKind, PermissionRequirement, Resource,
     RetryPolicy, flatten,
 };
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
@@ -655,7 +655,7 @@ impl ContainersApp {
     }
 
     /// Attach a real interactive shell to a running container by spawning the
-    /// qOS terminal app running `podman exec -it <id> <shell>`.
+    /// Tilo terminal app running `podman exec -it <id> <shell>`.
     pub(crate) fn attach_shell(&mut self, id: &str) {
         let short = id.chars().take(12).collect::<String>();
         if self.engine.live {
@@ -687,7 +687,7 @@ impl ContainersApp {
             self.combo.close();
             if let Some(tx) = self.bg_tx.clone() {
                 std::thread::spawn(move || {
-                    let out = std::process::Command::new("podman").args(&args).output();
+                    let out = podman::run_once(&args);
                     // Whatever the result, push a fresh snapshot so the new
                     // container appears (or the failure is implied by absence).
                     let _ = out;
@@ -744,7 +744,7 @@ impl ContainersApp {
             .take_control_invocation()
             .expect("palette emitted a resource action");
         let resources = self.resources(doc);
-        let spec = ui::qos_actions::door::resolve(&resources, &intent.address)
+        let spec = ui::tilo_actions::door::resolve(&resources, &intent.address)
             .expect("palette address resolves");
         let kind = spec.kind;
         let encoded = spec
@@ -1694,7 +1694,7 @@ impl Widget for ContainersApp {
             // An optional env hook selects a demo scene for screenshots
             // (`containers` / `images` / `volumes` / `distrobox` / `stats` /
             // `inspect` / `create` / `combo` / `pull` / `collapsed`).
-            let scene = std::env::var("QOS_CONTAINERS_DEMO").unwrap_or_default();
+            let scene = std::env::var("TILO_CONTAINERS_DEMO").unwrap_or_default();
             match scene.as_str() {
                 "images" => ViewDoc::set_section(doc, Section::Images),
                 "volumes" => ViewDoc::set_section(doc, Section::Volumes),
@@ -2411,7 +2411,7 @@ impl Widget for ContainersApp {
         }
     }
 
-    fn take_control_invocation(&mut self) -> Option<ui::qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         self.palette
             .take_control_invocation()
             .or_else(|| self.pending_control_invocation.take())

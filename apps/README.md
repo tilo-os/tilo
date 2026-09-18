@@ -1,16 +1,18 @@
-# qOS apps
+# Tilo apps
 
-Every app here is a native qOS application built on the public
-[`qos-app`](../crates/app/qos-app) SDK (normally renamed to `ui` in Cargo).
-`qos-app` re-exports the complete retained-widget, layout, canvas,
-custom-painting, native-view and GPU API: the action-native boundary does not
-limit presentation. The lower [`ui-core`](../ui) package is an implementation
-dependency for the shell and SDK, not an application dependency.
+Use hyphens for multiword package names, app directories, and executables.
+Rust library names and imports use underscores (`code_editor`).
+
+
+Every app here is a native Tilo application built on the public
+[`tilo-app`](../crates/sdk/tilo-app) SDK (normally renamed to `ui` in Cargo).
+`tilo-app` re-exports the complete retained-widget, layout, canvas,
+custom-painting, native-view and GPU API. The internal [`ui-core`](../crates/sdk/ui-core) package
+is a dependency of the shell and SDK; apps use `tilo-app`.
 
 Apps are retained-mode and CRDT-native: durable state lives in a shared
-Automerge document, so undo/redo, persistence and live collaboration ride one
-mechanism, while Vello and Taffy remain available for arbitrary rendering and
-layout. Each app is its own workspace crate and has a `--shots PATH` headless
+Automerge document for undo/redo, persistence and collaboration. Vello and Taffy
+provide rendering and layout. Each app is its own workspace crate and has a `--shots PATH` headless
 mode that renders the live production root offscreen for review and CI. Apps
 that reach the network or hardware keep that behind an off-by-default feature
 (`live`, `audio`, …) and fall back to bundled sample data, so default builds
@@ -20,10 +22,8 @@ Toolkit exception: `browser` embeds Servo for page rendering.
 
 ## Application contract (required)
 
-The resource/action surface is the application API. A feature is not complete
-when it is only reachable from a button, key binding, private message enum, or
-test hook. Its UI and every non-visual caller must converge on the same typed
-operation:
+Expose each operation through the resource/action API. UI controls, scripts and
+agents must invoke the same typed operation:
 
 1. `Widget::resources` publishes stable resource and action IDs, labels,
    availability, permission, risk/confirmation, retry, execution, discovery,
@@ -42,7 +42,7 @@ operation:
    Apps never accept a boolean such as `trusted` as authority and never report
    simulated external success.
 
-For a small zero-argument control, use the action-native convenience path:
+For a zero-argument control:
 
 ```rust
 let sync = ui::Button::new("sync", "Sync", None)
@@ -51,12 +51,11 @@ let preview = ui::Button::new("preview", "Preview", None)
     .on_view(move || preview_state.toggle());
 ```
 
-Both publish a real operation; they are not callback-only controls. For a
-domain operation, bind the actual advertised spec instead:
+To bind a declared resource action:
 
 ```rust
 let resource = project_resource(&project);
-let binding = ui::qos_actions::ActionBinding::unit_for(&resource, "build")?;
+let binding = ui::tilo_actions::ActionBinding::unit_for(&resource, "build")?;
 let build = ui::Button::new("build", "Build", None).on_action(binding);
 ```
 
@@ -66,7 +65,7 @@ required, and routes document/effect/view work through the shared execution
 and lifecycle machinery. Do not mirror the operation in `on_click`, a private
 message bus, or a hand-maintained command list.
 
-Ctrl+K is native and automatic: the host recursively flattens
+For Ctrl+K, the host recursively flattens
 `Widget::resources` into command rows, semantic actions and the same broker
 catalogue consumed by scripts and agents. Custom widgets retain arbitrary
 rendering by owning an `ActionEmitter<T>`, exposing its metadata through
@@ -76,37 +75,67 @@ the same intent.
 
 The toolkit validates the live surface before publishing it, and the broker
 validates untrusted descriptors again. Presubmit runs
-`tools/check_app_resource_action_contract.py`, so an app without this surface or
-with an unattached operation handler cannot land. Exercise exactly what an agent
-sees with:
+`tools/policy/check_app_resource_action_contract.py` to reject missing resources and
+unattached operation handlers. Invoke and inspect actions with:
 
 ```bash
-cargo run -q --bin qos-control -- actions list
-cargo run -q --bin qos-control -- actions invoke <provider> <id> --args-json '{"name":"value"}'
-cargo run -q --bin qos-control -- actions status <broker-invocation-id>
-cargo run -q --bin qos-control -- actions cancel <broker-invocation-id>
+cargo run -q --bin tilo-control -- actions list
+cargo run -q --bin tilo-control -- actions invoke <provider> <id> --args-json '{"name":"value"}'
+cargo run -q --bin tilo-control -- actions status <broker-invocation-id>
+cargo run -q --bin tilo-control -- actions cancel <broker-invocation-id>
 ```
 
 The same catalogue and invocation/status/cancel protocol is available to
 workspace agents through the certified collaboration channel. Do not add a
 second app-specific automation protocol.
 
-The application boundary is zero tolerance. Validate one app, or the complete
-graphical workspace, with:
+Validate one app or the graphical workspace:
 
 ```bash
-qos-dev check apps/my-app
-qos-dev certify apps/my-app
-qos-dev certify . --workspace
+tilo-dev check apps/my-app
+tilo-dev certify apps/my-app
+tilo-dev certify . --workspace
 ```
 
 `check` includes structural validation, app-local formatting and Clippy,
 tests, runtime certification and audited scenarios. `certify` runs the focused
 production-root native audit. Direct `ui-core` dependencies, legacy callbacks,
 stale bindings, missing semantics, and invalid or unhandled operations are
-certification failures—not advisory warnings. Direct CRDT field controls are
-the small collaborative primitive: the SDK projects them into searchable
-semantic actions and records their mutations in shared history.
+certification failures. The SDK exposes direct CRDT field controls as searchable
+actions and records their mutations in shared history.
+
+Generic controls are toolkit-owned. Application code must compose retained
+widgets or their documented immediate-mode faces; drawing a button, segmented
+selector, card, field, dialog, list row, or sidebar from raw rounded rectangles
+is not a normal implementation option. Custom painting is reserved for the
+app's domain visualization (for example a graph, map, waveform, or document
+canvas), and every interactive custom region must publish a stable semantic
+target, name, bounds, state, and the same action used by pointer input. Source
+presubmit ratchets app-owned rounded-rectangle painting at its existing debt
+ceiling, so new exceptions require an explicit baseline change and review.
+
+For a control inside a legitimate domain canvas, construct one shared face and
+reuse it for paint, input, and semantics. `minimum_target` preserves compact
+painting while adapting the other bounds to the host pointer environment:
+
+```rust
+let add = ui::ButtonFace::icon_only(add_rect, ui::Icon::Plus, "Add function")
+    .ghost()
+    .minimum_target(self.interaction);
+
+ui::Button::paint(scene, transform, text, theme, &add);
+if add.hit_test(pointer) {
+    self.invoke("graph:add");
+}
+let semantics = add.accessibility("graph:add");
+```
+
+Store the environment delivered by `Widget::set_interaction_environment`; do
+not assume mouse sizing. `ButtonFace` and `SegmentedFace` keep paint, input, and
+accessibility paired, while icon-only faces require a spoken name. Native
+certification rejects discrete actionable targets below the 24×24 WCAG floor;
+the preferred toolkit baseline remains 32×32 for fine pointers and 48×48 for
+touch. Expanded neighbouring targets must not overlap.
 
 ## Productivity & documents
 
@@ -118,11 +147,11 @@ semantic actions and records their mutations in shared history.
 | `notes` | Markdown note-taking: page side-tree, block editor, `[[Page]]` links, on-disk `~/notes/` storage with debounced save. |
 | `calendar` | Calendar + task manager (Planify-style): month/week/day/agenda, recurrence, tasks; iCalendar interop and live CalDAV sync (PROPFIND/REPORT/ETag PUT, worker thread, `live` on by default). |
 | `contacts` | Address book with vCard import/export. |
-| `typst_editor` | Split-view Typst editor: source pane + live compiled preview (`typst` / `typst-render` / tiny-skia), diagnostics panel, page thumbnails, background compile. |
+| `typst-editor` | Split-view Typst editor: source pane + live compiled preview (`typst` / `typst-render` / tiny-skia), diagnostics panel, page thumbnails, background compile. |
 | `calculator` | Scientific calculator with 2D/3D function graphing. |
 | `snippets` | Snippet manager: taggable library, `${placeholder}` expansion, syntax-highlighted preview. |
-| `ebook` | EPUB reader ("Books"): in-tree ZIP+OPF+XHTML parser, reflowable pagination, real embedded cover art, shared annotation model. |
-| `pdf_viewer` | Collaborative PDF reader ("PDF"): pdfium rasterisation (dynamically loaded) with a pure-Rust text-extract fallback; highlight/ink/sticky-note annotations + signing. |
+| `ebook` | EPUB reader ("Books"): in-tree ZIP+OPF+XHTML parser, reflowable pagination, embedded cover art, shared annotation model. |
+| `pdf-viewer` | Collaborative PDF reader ("PDF"): pdfium rasterisation (dynamically loaded) with a pure-Rust text-extract fallback; highlight/ink/sticky-note annotations + signing. |
 
 ## Media
 
@@ -130,9 +159,10 @@ semantic actions and records their mutations in shared history.
 |---|---|
 | `music` | Streaming + local library: swappable YouTube-Music backend (rustypipe InnerTube under `live`), GStreamer `playbin` audio (`audio`), lrclib synced lyrics, iroh P2P library sync — all off by default over a bundled sample library. |
 | `tube` | Privacy YouTube client: Invidious metadata, SponsorBlock skip, DeArrow de-clickbait; openh264 H.264 decode; optional rustypipe `live` backend and Grayjay device sync over the Noise protocol. |
-| `video_editor` | Non-linear editor: multi-track timeline; clips reference FUSE `/var/workspace` paths and hydrate on demand; `ui::VideoPlayer`/openh264 preview decode and GStreamer export, both feature-gated. |
-| `camera` | Camera + gallery + QR/barcode scanner (real decode via rqrr, encode via qrcode); live v4l2 capture via GStreamer behind a feature. |
-| `imager` | Install-media creator + qOS installer ("Install Media"): `lsblk` target enumeration, dd-style ISO write + verify, structured/unattended install config. |
+| `video-editor` | Non-linear editor: multi-track timeline; clips reference FUSE `/var/workspace` paths and hydrate on demand; `ui::VideoPlayer`/openh264 preview decode and GStreamer export, both feature-gated. |
+| `image-editor` | Non-destructive raster editor and reusable typed node-graph test bed; edits stay independently adjustable, projects are CRDT-native, and preview/export traverse the same DAG. |
+| `camera` | Camera with QR/barcode and multi-page document scanning; typed SANE capture, reversible crop/rotation, and shared structured OCR; captured photos and videos open in their owning media apps; live v4l2 capture via GStreamer. |
+| `imager` | Install-media creator + Tilo installer ("Install Media"): `lsblk` target enumeration, dd-style ISO write + verify, structured/unattended install config. |
 | `maps` | OpenStreetMap client: Nominatim search, OSRM routing (car/bike/foot), Transitous/MOTIS transit; Vello vector basemap; device location via the XDG Location portal (GeoClue2). |
 | `weather` | Weather from the keyless Open-Meteo API: current conditions, 24h chart, 7-day forecast; reads display units from the shared Settings store. |
 
@@ -142,7 +172,7 @@ semantic actions and records their mutations in shared history.
 |---|---|
 | `mail` | Email client: MIME parse/build via mail-parser / mail-builder; live IMAP (async-imap) + SMTP (lettre) behind the `live` feature. |
 | `chat` | Workspace-scoped collaborative chat + calls; Automerge document persisted to disk; voice/screen-share over iroh QUIC + GStreamer + the ScreenCast portal behind `live-media`. |
-| `remote` | Remote-access app: SSH terminals, VNC/RDP desktops, and qOS-to-qOS relay sessions (SSH opens an embedded terminal grid). |
+| `remote` | Remote-access app: SSH terminals, VNC/RDP desktops, and Tilo-to-Tilo relay sessions (SSH opens an embedded terminal grid). |
 | `feeds` | RSS/Atom/JSON-feed + Gemini reader (feed-rs, reqwest, tokio-rustls TOFU); OPML import/export. |
 
 ## System & OS
@@ -150,37 +180,40 @@ semantic actions and records their mutations in shared history.
 | Crate | What it is |
 |---|---|
 | `settings` | OS settings hub; owns the shared external-accounts and region/format stores consumed by Mail/Calendar/Sheets/Weather; drives hardware via the `os-actions` crate. |
-| `permissions` | qOS's OS-wide permission model (roles / members / contexts / registered `PermissionDef`s) — both a reusable library and a standalone role/permission editor. |
+| `passwords` | Password and secret manager: encrypted metadata and credentials, strong-password generation, exact-origin matching, and consent-brokered app access. |
+| `permissions` | Tilo's OS-wide permission model (roles / members / contexts / registered `PermissionDef`s) — both a reusable library and a standalone role/permission editor. |
 | `themes` | Theme studio: browse presets, edit the OS token set live, duplicate/export themes. |
-| `store` | Unified qOS app store: verified registry packages plus Flatpak/Flathub search, details, remotes, install, update, launch, and removal. |
+| `store` | Unified Tilo app store: verified registry packages plus Flatpak/Flathub search, details, remotes, install, update, launch, and removal. |
 | `containers` | Rootless-podman + distrobox manager; mirrors live `podman` engine state with lifecycle actions and Logs/Stats/Inspect/Terminal tabs. |
 | `disks` | Disk utility: `lsblk` + `smartctl` topology, proportional partition map, SMART health summary. |
 | `backups` | Snapshot/backup manager: sources, snapshot timeline, storage gauges, retention policy, restore sheet. |
 | `monitor` | Activity monitor: `sysinfo` process table + resource dashboard, process tree, Vello charts. |
+| `print-centre` | Print Centre: live queues, per-job progress/recovery, IPP diagnostics and supplies, secure driverless discovery, and scanner inventory over the shared printing service. |
 | `logs` | systemd-journal viewer: `journalctl -o json`, unit/boot/priority filters, live tail. |
 | `firewall` | firewalld/nftables front-end: zone rail, per-zone rules table, services; applies via `firewall-cmd`. |
 | `vpn` | WireGuard / OpenVPN client: saved connection fleet, live detail pane with animated throughput chart. |
+| `speed-test` | Responsive internet speed test: latency, jitter, download and upload measurement with region selection and result history. |
 | `totp` | 2FA authenticator ("Authenticator"): RFC 6238 TOTP on RustCrypto HMAC/SHA, QR import (rqrr), XChaCha20-Poly1305 encrypted-at-rest vault. |
-| `osk` | On-screen keyboard: data-driven layouts, responsive sizing, SHARK²/FUTO swipe-typing (`swipe` crate, ExecuTorch FFI), text injection via `virtual-keyboard-v1`. Foundation for the qOS phone keyboard. |
+| `osk` | On-screen keyboard: data-driven layouts, responsive sizing, SHARK²/FUTO swipe-typing (`swipe` crate, ExecuTorch FFI), text injection via `virtual-keyboard-v1`. Foundation for the Tilo phone keyboard. |
 
 ## Developer tools
 
 | Crate | What it is |
 |---|---|
 | `terminal` | GPU-accelerated terminal: portable-pty + vte; embeddable as a tile widget in the shell. |
-| `code_editor` | Code editor / light IDE ("Code"): file-tree, editor tabs, syntect highlighting, command palette, problems panel. |
-| `git_client` | Graphical git client ("Git"): libgit2 via `git2`; changes with per-hunk staging, commit-graph history, branches/remotes. |
+| `code-editor` | Code editor / light IDE ("Code"): file-tree, editor tabs, syntect highlighting, command palette, problems panel. |
+| `git-client` | Graphical git client ("Git"): libgit2 via `git2`; changes with per-hunk staging, commit-graph history, branches/remotes. |
 | `diffmerge` | Diff + 3-way merge tool ("Diff"): `similar` line diff, per-hunk conflict resolution, editable merged output. |
-| `db_client` | Database client ("Database"): PostgreSQL/MySQL/SQLite, bundled SQLite sample (rusqlite), schema browser + SQL editor + results grid. |
-| `hex_editor` | Hex editor ("Hex"): CRDT byte buffer, data inspector, hex/text search, goto-offset. |
-| `api_tester` | HTTP client (Postman/Insomnia-class): reqwest, request collections, `{{variable}}` environments, JSON/raw/preview body viewer. |
+| `db-client` | Database client ("Database"): PostgreSQL/MySQL/SQLite, bundled SQLite sample (rusqlite), schema browser + SQL editor + results grid. |
+| `hex-editor` | Hex editor ("Hex"): CRDT byte buffer, data inspector, hex/text search, goto-offset. |
+| `api-tester` | HTTP client (Postman/Insomnia-class): reqwest, request collections, `{{variable}}` environments, JSON/raw/preview body viewer. |
 
 ## Files & web
 
 | Crate | What it is |
 |---|---|
-| `file-explorer` | Spatial file manager: walkdir / trash / infer / mime_guess; opens editable documents in the word processor via `qdoc`. Binary `file-explorer`. |
-| `agent` | `qos-agent`: a participant without a window. Consumes the broker-published live catalogue for arbitrary applications, plans typed arguments from their descriptors, invokes through broker permission/confirmation policy, and follows invocation receipts through terminal status. |
+| `file-explorer` | Spatial file manager with safe native ZIP/TAR inspection, extraction and creation; opens editable documents in the word processor via `qdoc`. Binary `file-explorer`. |
+| `agent` | `tilo-agent`: a participant without a window. Consumes the broker-published live catalogue for arbitrary applications, plans typed arguments from their descriptors, invokes through broker permission/confirmation policy, and follows invocation receipts through terminal status. |
 | `browser` | Web browser embedding Servo (libservo + surfman + glow) with adblock; chrome is a `ui` widget (migrated off iced). |
 
 ## Building
@@ -194,6 +227,6 @@ cargo run -p notes -- --shots out.png        # headless offscreen frame
 ```
 
 Each app depends on the public SDK under the concise source name
-`ui = { package = "qos-app", path = "../../crates/app/qos-app" }`. Direct
+`ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }`. Direct
 dependencies on the internal `ui` package are reserved for framework code and
 are rejected at the app boundary.

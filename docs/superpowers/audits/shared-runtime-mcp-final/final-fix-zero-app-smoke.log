@@ -1,5 +1,0 @@
-host_status=0
-validation_status=0
-stdout_lines=2
-stderr_bytes=724
-[{"id":1,"jsonrpc":"2.0","result":{"capabilities":{"resources":{},"tools":{}},"protocolVersion":"2025-06-18","serverInfo":{"name":"qos-runtime","version":"0.1.0"}}},{"id":2,"jsonrpc":"2.0","result":{}}]

@@ -15,26 +15,21 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
-# A video player's core is decoding video, so `decode` ships on by default: a
-# normally-built `video-player` really decodes the opened file/stream through
-# the shared media layer (GStreamer). `--shots` still renders the synthesized
-# representative frame at runtime (no file is decoded during a shot), so the
-# screenshot path stays hermetic even with the decoder compiled in.
+# `decode` ships by default for GStreamer-backed playback. Shots render a
+# synthesized frame and do not decode a file.
 default = ["decode", "portal"]
-# Real GStreamer decode of the opened file/stream, via the shared media layer.
+# GStreamer decode of the opened file/stream, via the shared media layer.
 decode = ["media/decode"]
-# Real host-native file picking via the XDG FileChooser portal (ashpd). This is
-# part of the shipped default: an Open button that cannot open a picker is not
-# a complete player. Hermetic tests use `--no-default-features`; `--open PATH`
-# remains available for direct, portal-granted launches.
+# Host-native file picking via the XDG FileChooser portal (ashpd). Hermetic
+# tests use `--no-default-features`; `--open PATH` supports direct launches.
 portal = ["ui/portal"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
-qos-actions = { path = "../../crates/collab/actions" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+tilo-actions = { path = "../../crates/collab/actions" }
 settings-store = { path = "../../crates/system/settings-store" }
-media = { path = "../../crates/media" }
+media = { path = "../../crates/media/core" }
 collab-types = { path = "../../crates/collab/collab-types" }
 automerge.workspace = true
 serde.workspace = true

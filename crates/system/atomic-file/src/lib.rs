@@ -2,15 +2,14 @@
 //!
 //! # Why one crate
 //!
-//! Twenty-two places in this tree wrote a file by the same three-step dance — write a temp
-//! file, rename it over the target — and eighteen omitted the step that makes it work.
+//! Writing a temp file and renaming it over the target is insufficient without
+//! syncing the file and containing directory.
 //!
 //! `rename(2)` is atomic with respect to the *directory entry*: a reader sees either the old
 //! file or the new one, never a half-written one — but it says nothing about whether the new
 //! file's **contents** reached disk. Without an `fsync` on the temp file before the rename, a
 //! power loss can leave the directory entry pointing at a file whose data blocks were never
-//! written: the empty-or-garbage file the temp dance was meant to prevent, reached through a
-//! narrower but still real window.
+//! written.
 //!
 //! [`write`] does all four steps: write the temp file, `fsync` it, rename, and `fsync` the
 //! containing directory so the rename itself is durable.
@@ -38,9 +37,12 @@
     )
 )]
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Replace `path`'s contents with `bytes`, durably. On success the file holds exactly
 /// `bytes`, and a crash at any point leaves either the previous contents or the new ones.
@@ -53,6 +55,58 @@ use std::path::{Path, PathBuf};
 /// than the temp file, or if `path`'s parent doesn't exist).
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_inner(path, bytes, None)
+}
+
+/// Atomically save a user document, following an existing symbolic link and
+/// retaining the existing target's Unix permission bits. Other [`write`]
+/// consumers retain their directory-entry replacement semantics.
+///
+/// Existing targets must be writable regular files. Dangling links and Unix
+/// multiply-linked files fail closed rather than replacing a link or detaching
+/// another name from the edited document. New paths use [`write`] defaults.
+/// As with [`write`], callers must control the containing directory: resolution
+/// is not a defense against concurrent hostile namespace changes. This retains
+/// permission bits, not extended ACLs, ownership, or other inode metadata.
+///
+/// # Errors
+/// Returns resolution/access errors, rejects unsupported targets, and propagates
+/// [`write`] durability errors (which may occur after publication).
+pub fn write_preserving_target(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return write(path, bytes),
+        Err(error) => return Err(error),
+        Ok(_) => {}
+    }
+    let target = fs::canonicalize(path)?;
+    let metadata = fs::metadata(&target)?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "document target is not a regular file",
+        ));
+    }
+    if metadata.permissions().readonly() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "document target is read-only",
+        ));
+    }
+    // Do not let directory replacement bypass the target's write access. This
+    // opens without truncating, so an access refusal leaves its bytes intact.
+    drop(OpenOptions::new().write(true).open(&target)?);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if metadata.nlink() != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "atomic document save cannot preserve multiple hard links",
+            ));
+        }
+        write_with_mode(&target, bytes, metadata.permissions().mode() & 0o7777)
+    }
+    #[cfg(not(unix))]
+    write(&target, bytes)
 }
 
 /// [`write`], creating the parent directory first when it is missing.
@@ -99,22 +153,12 @@ pub fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
 }
 
 fn write_inner(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<()> {
-    let tmp = temp_path(path);
-
-    // Scoped so the handle is closed before the rename.
-    {
-        let mut f = File::create(&tmp)?;
-        #[cfg(unix)]
-        if let Some(mode) = mode {
-            use std::os::unix::fs::PermissionsExt;
-            f.set_permissions(fs::Permissions::from_mode(mode))?;
-        }
-        #[cfg(not(unix))]
-        let _ = mode;
-        f.write_all(bytes)?;
-        // The step the copies of this pattern kept omitting: without it the rename below can be
-        // durable while these bytes are not.
-        f.sync_all()?;
+    let (tmp, mut file) = create_temp(path, mode)?;
+    let written = file.write_all(bytes).and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(error) = written {
+        let _ = fs::remove_file(&tmp);
+        return Err(error);
     }
 
     if let Err(e) = fs::rename(&tmp, path) {
@@ -123,39 +167,119 @@ fn write_inner(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<()> {
         return Err(e);
     }
 
-    // Make the rename itself durable. Failure here isn't fatal (data is already fsync'd, entry
-    // visible), and some filesystems refuse to open a directory for this, so it's best-effort.
-    if let Some(dir) = path.parent() {
-        let dir = if dir.as_os_str().is_empty() {
-            Path::new(".")
-        } else {
-            dir
-        };
-        if let Ok(d) = File::open(dir) {
-            let _ = d.sync_all();
-        }
-    }
+    // The data is durable before rename, but the new directory entry is not
+    // durable until its containing directory is synced. Reporting success
+    // without this step can resurrect an old rollback floor after power loss.
+    // A failure happens after publication, so callers may observe the new file,
+    // but they must not treat it as crash-durable and may safely retry.
+    let dir = path.parent().map_or_else(
+        || Path::new("."),
+        |parent| {
+            if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            }
+        },
+    );
+    sync_directory(dir)?;
     Ok(())
+}
+
+/// Flush an existing directory after publishing or renaming a file inside it.
+///
+/// Windows requires a writable directory handle with backup semantics for
+/// `FlushFileBuffers`; opening it with `File::open` fails before the flush.
+/// Callers requiring a strict durability barrier should propagate this result.
+///
+/// # Errors
+/// Returns the open/flush error, or `InvalidInput` if `path` is not a directory.
+pub fn sync_directory(path: &Path) -> io::Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        options.write(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+    }
+    let directory = options.open(path)?;
+    if !directory.metadata()?.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected a directory",
+        ));
+    }
+    directory.sync_all()
 }
 
 /// The temp file's path: beside the target so the rename never crosses a filesystem
 /// boundary, dot-prefixed so a directory listing (or a `pages/*.md` glob) doesn't treat it
 /// as real content, and process-id-suffixed so two processes writing the same file don't
 /// clobber each other's temp file.
-fn temp_path(path: &Path) -> PathBuf {
+fn temp_path(path: &Path, sequence: u64) -> PathBuf {
     let name = path
         .file_name()
         .map_or_else(|| "file".to_string(), |n| n.to_string_lossy().into_owned());
-    let tmp_name = format!(".{name}.{}.tmp", std::process::id());
+    let tmp_name = format!(".{name}.{}.{sequence}.tmp", std::process::id());
     match path.parent() {
         Some(d) if !d.as_os_str().is_empty() => d.join(tmp_name),
         _ => PathBuf::from(tmp_name),
     }
 }
 
+fn create_temp(path: &Path, mode: Option<u32>) -> io::Result<(PathBuf, File)> {
+    for _ in 0..32 {
+        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let tmp = temp_path(path, sequence);
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        if let Some(mode) = mode {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(mode);
+        }
+        #[cfg(not(unix))]
+        let _ = mode;
+        match options.open(&tmp) {
+            Ok(file) => {
+                #[cfg(unix)]
+                if let Some(mode) = mode {
+                    use std::os::unix::fs::PermissionsExt;
+                    // `mode()` is filtered by umask. Restore the caller's
+                    // exact contract while the file still has only its hidden
+                    // temporary name; the initial mode can only be stricter.
+                    if let Err(error) = file.set_permissions(fs::Permissions::from_mode(mode)) {
+                        drop(file);
+                        let _ = fs::remove_file(&tmp);
+                        return Err(error);
+                    }
+                }
+                return Ok((tmp, file));
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate a unique atomic-write temporary file",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directory_barrier_flushes_the_directory_and_reports_invalid_targets() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("saved.txt");
+        fs::write(&file, b"saved").unwrap();
+        sync_directory(root.path()).unwrap();
+        assert!(sync_directory(&file).is_err());
+        assert!(sync_directory(&root.path().join("missing")).is_err());
+    }
     use tempfile::TempDir;
 
     #[test]
@@ -193,8 +317,8 @@ mod tests {
     fn the_temp_file_sits_beside_the_target() {
         // A temp file in /tmp would make the rename cross a filesystem and fail with EXDEV on any
         // machine where /tmp is a separate mount.
-        let t = temp_path(Path::new("/var/lib/qos/state.automerge"));
-        assert_eq!(t.parent(), Some(Path::new("/var/lib/qos")));
+        let t = temp_path(Path::new("/var/lib/tilo/state.automerge"), 7);
+        assert_eq!(t.parent(), Some(Path::new("/var/lib/tilo")));
         assert!(
             t.file_name().unwrap().to_string_lossy().starts_with('.'),
             "temp file should be hidden: {t:?}"
@@ -207,8 +331,10 @@ mod tests {
     }
 
     #[test]
-    fn two_processes_would_not_share_a_temp_path() {
-        let a = temp_path(Path::new("/x/doc"));
+    fn two_writes_do_not_share_a_temp_path() {
+        let a = temp_path(Path::new("/x/doc"), 1);
+        let b = temp_path(Path::new("/x/doc"), 2);
+        assert_ne!(a, b, "every write needs a no-clobber temporary path");
         assert!(
             a.to_string_lossy()
                 .contains(&std::process::id().to_string()),
@@ -259,18 +385,45 @@ mod tests {
     }
 
     #[test]
-    fn an_existing_file_survives_a_failed_write() {
-        // The point of the whole dance: a write that cannot complete must leave the previous contents readable.
+    fn a_failed_rename_cleans_up_and_preserves_the_target() {
         let d = TempDir::new().unwrap();
-        let p = d.path().join("a.json");
-        write(&p, b"original").unwrap();
+        let target = d.path().join("target");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("marker"), b"original").unwrap();
 
-        // A directory where the temp file wants to be makes File::create fail.
-        let tmp = temp_path(&p);
-        fs::create_dir(&tmp).unwrap();
-        assert!(write(&p, b"replacement").is_err());
-        assert_eq!(fs::read(&p).unwrap(), b"original", "old contents survive");
-        fs::remove_dir(&tmp).unwrap();
+        assert!(write(&target, b"replacement").is_err());
+        assert_eq!(fs::read(target.join("marker")).unwrap(), b"original");
+        let leftovers = fs::read_dir(d.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0, "failed rename must remove its temporary file");
+    }
+
+    #[test]
+    fn concurrent_writers_publish_only_complete_values() {
+        use std::sync::{Arc, Barrier};
+
+        let d = TempDir::new().unwrap();
+        let target = Arc::new(d.path().join("state"));
+        let barrier = Arc::new(Barrier::new(8));
+        let mut threads = Vec::new();
+        for byte in 0_u8..8 {
+            let target = Arc::clone(&target);
+            let barrier = Arc::clone(&barrier);
+            threads.push(std::thread::spawn(move || {
+                let payload = vec![byte; 64 * 1024];
+                barrier.wait();
+                write(&target, &payload).unwrap();
+            }));
+        }
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let final_value = fs::read(&*target).unwrap();
+        assert_eq!(final_value.len(), 64 * 1024);
+        assert!(final_value.iter().all(|byte| *byte == final_value[0]));
     }
 
     #[test]
@@ -280,5 +433,80 @@ mod tests {
         write(&p, b"seed").unwrap();
         write(&p, b"").unwrap();
         assert_eq!(fs::read(&p).unwrap(), b"");
+    }
+}
+
+#[cfg(test)]
+mod document_target_tests {
+    use super::*;
+
+    #[test]
+    fn document_save_readonly_target_refuses_without_changing_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("document");
+        fs::write(&path, b"original").unwrap();
+        let original = fs::metadata(&path).unwrap().permissions();
+        let mut readonly = original.clone();
+        readonly.set_readonly(true);
+        fs::set_permissions(&path, readonly).unwrap();
+        let result = write_preserving_target(&path, b"replacement");
+        fs::set_permissions(&path, original).unwrap();
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(fs::read(&path).unwrap(), b"original");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn document_save_follows_relative_symlink_and_preserves_private_mode() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("private");
+        let link = dir.path().join("document");
+        fs::write(&target, b"original").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+        symlink("private", &link).unwrap();
+        write_preserving_target(&link, b"replacement").unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"replacement");
+        assert_eq!(fs::read_link(&link).unwrap(), PathBuf::from("private"));
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+            0o600
+        );
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn document_save_refuses_dangling_and_multiple_hard_links() {
+        use std::os::unix::fs::{MetadataExt, symlink};
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("original");
+        let hardlink = dir.path().join("hardlink");
+        let dangling = dir.path().join("dangling");
+        fs::write(&target, b"original").unwrap();
+        fs::hard_link(&target, &hardlink).unwrap();
+        symlink("missing", &dangling).unwrap();
+        assert_eq!(
+            write_preserving_target(&hardlink, b"replacement")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert_eq!(
+            write_preserving_target(&dangling, b"replacement")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"original");
+        assert_eq!(fs::read(&hardlink).unwrap(), b"original");
+        assert_eq!(
+            fs::metadata(&target).unwrap().ino(),
+            fs::metadata(&hardlink).unwrap().ino()
+        );
+        assert_eq!(fs::read_link(&dangling).unwrap(), PathBuf::from("missing"));
+        assert!(!dir.path().join("missing").exists());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 3);
     }
 }

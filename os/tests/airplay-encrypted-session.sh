@@ -26,8 +26,8 @@ trap cleanup EXIT
 
 receiver_log="$test_root/receiver.log"
 sender_log="$test_root/sender.log"
-receiver_bin="${QOS_DOUBLETAKE_TEST_RECEIVER:-/usr/libexec/qos-doubletake-test-receiver}"
-sender_bin="${QOS_DOUBLETAKE:-/usr/libexec/qos-doubletake}"
+receiver_bin="${TILO_DOUBLETAKE_TEST_RECEIVER:-/usr/libexec/tilo-doubletake-test-receiver}"
+sender_bin="${TILO_DOUBLETAKE:-/usr/libexec/tilo-doubletake}"
 "$receiver_bin" \
   -listen 127.0.0.1:17000 -profile modern -auth pin -code 4821 -stats-interval 1s \
   >"$receiver_log" 2>&1 &

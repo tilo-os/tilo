@@ -59,7 +59,7 @@ fn runs_on(bytes: &[u8], block: &str) -> Vec<(usize, usize, String)> {
 fn what_the_agent_wrote_carries_its_name_in_the_document() {
     let (bytes, block) = a_page_somebody_wrote();
     let mut editor =
-        qos_agent::apply::Editor::from_snapshot(&bytes, AGENT).expect("seed the replica");
+        tilo_agent::apply::Editor::from_snapshot(&bytes, AGENT).expect("seed the replica");
 
     let note = " The bullet says 18:00.";
     editor
@@ -111,7 +111,7 @@ fn what_the_agent_wrote_carries_its_name_in_the_document() {
 fn the_sentence_the_person_typed_is_left_alone() {
     let (bytes, block) = a_page_somebody_wrote();
     let mut editor =
-        qos_agent::apply::Editor::from_snapshot(&bytes, AGENT).expect("seed the replica");
+        tilo_agent::apply::Editor::from_snapshot(&bytes, AGENT).expect("seed the replica");
     editor
         .apply(&WordProcessorAction::SpliceText {
             region: RegionKind::Body,
@@ -144,7 +144,7 @@ fn a_page_nobody_attributed_stays_unattributed() {
     );
 
     let mut editor =
-        qos_agent::apply::Editor::from_snapshot(&bytes, AGENT).expect("seed the replica");
+        tilo_agent::apply::Editor::from_snapshot(&bytes, AGENT).expect("seed the replica");
     // An edit that removes text authors nothing.
     editor
         .apply(&WordProcessorAction::SpliceText {

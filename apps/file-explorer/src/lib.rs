@@ -1,13 +1,9 @@
-//! Library root for the nirios-shell file explorer.
+//! Library root for the tilo-shell file explorer.
 //! Hosts the `FileExplorerWidget` (built over Tasks 8–13) and helper modules.
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
+// Apps run in isolated processes, so app-local arithmetic checks are relaxed.
+// Panic-producing lints remain denied; shared crates retain the full lint set
+// because a fault there can affect the session or every app.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -30,6 +26,7 @@
 )]
 
 pub mod actions;
+pub mod archive;
 pub mod breadcrumb_bar;
 pub mod breadcrumbs;
 pub mod command;
@@ -38,12 +35,16 @@ pub mod external_drag;
 pub mod favorites;
 pub mod fileops;
 pub mod files_app;
-pub mod history_control;
+pub mod filesystem_metadata;
 pub mod framework_history;
+pub mod history_control;
+mod history_panel;
 pub mod i18n;
 pub mod identity_directory;
+mod metadata_refresh;
 pub mod model;
 pub mod native_fixture;
+pub mod nearby_send;
 pub mod path_bar;
 pub mod places_sidebar;
 pub mod received_shares;

@@ -1,4 +1,4 @@
-//! Notes as a qOS global-search source.
+//! Notes as a Tilo global-search source.
 //!
 //! Mirrors the reference wiring in [`apps/contacts`]: Notes declares its
 //! searchable type by implementing [`SearchProvider`] over a snapshot of the
@@ -211,8 +211,8 @@ impl SearchProvider for NoteSearchProvider {
 
     fn resolve_action_resource(
         &self,
-        address: &qos_actions::ActionAddress,
-    ) -> Option<qos_actions::Resource> {
+        address: &tilo_actions::ActionAddress,
+    ) -> Option<tilo_actions::Resource> {
         let snapshot = self
             .snapshot
             .read()
@@ -222,7 +222,11 @@ impl SearchProvider for NoteSearchProvider {
             .iter()
             .find(|page| crate::actions::open_page_address(page.id) == *address)
         {
-            return Some(crate::actions::page_resource(page, &snapshot.pages));
+            return Some(crate::actions::page_resource(
+                page,
+                &snapshot.pages,
+                &automerge::AutoCommit::new(),
+            ));
         }
         snapshot.blocks.iter().find_map(|(page, blocks)| {
             blocks

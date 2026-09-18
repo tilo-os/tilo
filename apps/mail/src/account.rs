@@ -1,11 +1,11 @@
 //! Mail's view of the shared multi-account store.
 //!
 //! ## One shared store, one vault
-//! Account *management* in qOS lives in the **Settings app**, not in Mail —
+//! Account *management* in Tilo lives in the **Settings app**, not in Mail —
 //! the same way display, network, and Bluetooth settings do. Mail only
 //! *consumes* the account list to fetch and send. The canonical store is the
 //! shared [`accounts`] crate: a single JSON document under
-//! `$XDG_CONFIG_HOME/qos/accounts/` holding every account of every type, with
+//! `$XDG_CONFIG_HOME/tilo/accounts/` holding every account of every type, with
 //! credentials kept out of it entirely and sealed in the encrypted
 //! [`accounts::SecretVault`].
 //!
@@ -171,8 +171,8 @@ impl AccountStore {
         Self { accounts, active }
     }
 
-    /// Persist to the default qOS config root
-    /// (`$XDG_CONFIG_HOME/qos/accounts/`). The in-app account add/edit/remove
+    /// Persist to the default Tilo config root
+    /// (`$XDG_CONFIG_HOME/tilo/accounts/`). The in-app account add/edit/remove
     /// flow calls this so accounts survive a restart; a no-op (Ok) when the
     /// config root can't be resolved (read-only environment / `--shots`).
     ///
@@ -237,9 +237,8 @@ impl AccountStore {
         if let Some(active) = self.accounts.get(self.active) {
             shared.set_active(&ty, &AccountId::from(active.id.clone()));
         }
-        shared.save_in(config_root)?;
-        vault.save();
-        Ok(())
+        vault.try_save().map_err(std::io::Error::other)?;
+        shared.save_in(config_root)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -324,7 +323,7 @@ mod tests {
     }
 
     fn temp_root() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("qos-mail-accounts-{}", uuid::Uuid::new_v4()))
+        std::env::temp_dir().join(format!("tilo-mail-accounts-{}", uuid::Uuid::new_v4()))
     }
 
     #[test]
@@ -462,5 +461,37 @@ mod tests {
             "password rehydrates from the vault"
         );
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn damaged_vault_rejects_account_changes_and_preserves_recovery_data() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = cfg("a@x.example", "Original");
+        config.password = "fixture-original-secret".into();
+        let mut store = AccountStore::single(config);
+        store.persist_in(root.path()).unwrap();
+        let metadata_path = accounts::store_path_in(root.path());
+        let original_metadata = std::fs::read(&metadata_path).unwrap();
+        let vault_path = accounts::vault_dir_in(root.path()).join("vault.enc");
+        let original_vault = std::fs::read(&vault_path).unwrap();
+        let damaged = b"damaged fixture vault";
+        std::fs::write(&vault_path, damaged).unwrap();
+        store.accounts[0].config.display_name = "Unsaved change".into();
+        store.accounts[0].config.password = "fixture-new-secret".into();
+
+        let error = store
+            .persist_in(root.path())
+            .expect_err("custody must succeed first");
+        assert!(error.to_string().contains("vault recovery required"));
+        assert_eq!(std::fs::read(&vault_path).unwrap(), damaged);
+        assert_eq!(std::fs::read(&metadata_path).unwrap(), original_metadata);
+
+        std::fs::write(&vault_path, original_vault).unwrap();
+        let restored = AccountStore::load_in(root.path());
+        assert_eq!(restored.accounts[0].config.display_name, "Original");
+        assert_eq!(
+            restored.accounts[0].config.password,
+            "fixture-original-secret"
+        );
     }
 }

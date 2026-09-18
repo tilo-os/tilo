@@ -1,0 +1,516 @@
+diff --git a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+index 805a731..6299d79 100644
+--- a/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/MemoryOps.cpp
+@@ -651,54 +651,15 @@ ARMEmitter::Register Arm64JITCore::ApplyMemOperand(IR::OpSize AccessSize, ARMEmi
+ }
+ 
+ ARMEmitter::SVEMemOperand Arm64JITCore::GenerateSVEMemOperand(IR::OpSize AccessSize, ARMEmitter::Register Base, IR::OrderedNodeWrapper Offset,
+-                                                              IR::MemOffsetType OffsetType, [[maybe_unused]] uint8_t OffsetScale) {
+-  if (Offset.IsInvalid()) {
+-    return ARMEmitter::SVEMemOperand(Base.X(), 0);
+-  }
+-
+-  uint64_t Const {};
+-  if (IsInlineConstant(Offset, &Const)) {
+-    if (Const == 0) {
+-      return ARMEmitter::SVEMemOperand(Base.X(), 0);
+-    }
+-
+-    const auto SignedConst = static_cast<int64_t>(Const);
+-    const auto SignedSVESize = static_cast<int64_t>(HostSupportsSVE256 ? Core::CPUState::XMM_AVX_REG_SIZE : Core::CPUState::XMM_SSE_REG_SIZE);
+-
+-    const auto IsCleanlyDivisible = (SignedConst % SignedSVESize) == 0;
+-    const auto Index = SignedConst / SignedSVESize;
+-
+-    // SVE's immediate variants of load stores are quite limited in terms
+-    // of immediate range. They also operate on a by-vector-length basis.
+-    //
+-    // e.g. On a 256-bit SVE capable system:
+-    //
+-    //      LD1B Dst.B, Predicate/Z, [Reg, #1, MUL VL]
+-    //
+-    //      Will add 32 to the base register as the offset
+-    //
+-    // So if we have a constant that cleanly lies along a 256-bit offset
+-    // and is also within the limitations of the immediate of -8 to 7
+-    // then we can encode it as an immediate offset.
+-    //
+-    if (IsCleanlyDivisible && Index >= -8 && Index <= 7) {
+-      return ARMEmitter::SVEMemOperand(Base.X(), static_cast<uint64_t>(Index));
+-    }
+-
+-    // If we can't do that for whatever reason, then unfortunately, we need
+-    // to move it over to a temporary to use as an offset.
+-    mov(TMP1, Const);
+-    return ARMEmitter::SVEMemOperand(Base.X(), TMP1);
+-  }
+-
+-  // Otherwise handle it like normal.
+-  // Note that we do nothing with the offset type and offset scale,
+-  // since SVE loads and stores don't have the ability to perform an
+-  // optional extension or shift as part of their behavior.
+-  LOGMAN_THROW_A_FMT(OffsetType == IR::MemOffsetType::SXTX, "Currently only the default offset type (SXTX) is supported.");
+-
+-  const auto RegOffset = GetReg(Offset);
+-  return ARMEmitter::SVEMemOperand(Base.X(), RegOffset.X());
++                                                              IR::MemOffsetType OffsetType, uint8_t OffsetScale) {
++  // SVE immediate offsets scale by the active host vector length, while
++  // register offsets scale by the memory element size. Neither is the byte
++  // offset of a fixed-width guest access. Form the complete address first,
++  // including the IR's extension and scale, then use a zero SVE immediate.
++  // ApplyMemOperand preserves the zero-offset fast path and uses LoadConstant
++  // for signed offsets and constants larger than a MOVZ immediate.
++  const auto Address = ApplyMemOperand(AccessSize, Base, TMP1, Offset, OffsetType, OffsetScale);
++  return ARMEmitter::SVEMemOperand(Address.X(), 0);
+ }
+ 
+ DEF_OP(LoadMem) {
+@@ -2510,17 +2471,23 @@ DEF_OP(VStoreNonTemporal) {
+   const auto Is128Bit = OpSize == IR::OpSize::i128Bit;
+ 
+   const auto Value = GetVReg(Op->Value);
+-  const auto MemReg = GetReg(Op->Addr);
++  auto MemReg = GetReg(Op->Addr);
+   const auto Offset = Op->Offset;
+ 
++  if ((Is256Bit || (Is128Bit && HostSupportsSVE128)) && Offset != 0) {
++    // Non-temporal SVE immediates also scale by the active host vector length.
++    // Form the byte address explicitly and use the zero-offset encoding.
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP1, Offset);
++    add(ARMEmitter::Size::i64Bit, TMP1, MemReg, TMP1);
++    MemReg = TMP1;
++  }
++
+   if (Is256Bit) {
+     const auto GoverningPredicate = PRED_TMP_32B.Zeroing();
+-    const auto OffsetScaled = Offset / 32;
+-    stnt1b(Value.Z(), GoverningPredicate, MemReg, OffsetScaled);
++    stnt1b(Value.Z(), GoverningPredicate, MemReg);
+   } else if (Is128Bit && HostSupportsSVE128) {
+     const auto GoverningPredicate = PRED_TMP_16B.Zeroing();
+-    const auto OffsetScaled = Offset / 16;
+-    stnt1b(Value.Z(), GoverningPredicate, MemReg, OffsetScaled);
++    stnt1b(Value.Z(), GoverningPredicate, MemReg);
+   } else {
+     // Treat the non-temporal store as a regular vector store in this case for compatibility
+     str(Value.Q(), MemReg, Offset);
+@@ -2552,17 +2519,23 @@ DEF_OP(VLoadNonTemporal) {
+   const auto Is128Bit = OpSize == IR::OpSize::i128Bit;
+ 
+   const auto Dst = GetVReg(Node);
+-  const auto MemReg = GetReg(Op->Addr);
++  auto MemReg = GetReg(Op->Addr);
+   const auto Offset = Op->Offset;
+ 
++  if ((Is256Bit || (Is128Bit && HostSupportsSVE128)) && Offset != 0) {
++    // Non-temporal SVE immediates also scale by the active host vector length.
++    // Form the byte address explicitly and use the zero-offset encoding.
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP1, Offset);
++    add(ARMEmitter::Size::i64Bit, TMP1, MemReg, TMP1);
++    MemReg = TMP1;
++  }
++
+   if (Is256Bit) {
+     const auto GoverningPredicate = PRED_TMP_32B.Zeroing();
+-    const auto OffsetScaled = Offset / 32;
+-    ldnt1b(Dst.Z(), GoverningPredicate, MemReg, OffsetScaled);
++    ldnt1b(Dst.Z(), GoverningPredicate, MemReg);
+   } else if (Is128Bit && HostSupportsSVE128) {
+     const auto GoverningPredicate = PRED_TMP_16B.Zeroing();
+-    const auto OffsetScaled = Offset / 16;
+-    ldnt1b(Dst.Z(), GoverningPredicate, MemReg, OffsetScaled);
++    ldnt1b(Dst.Z(), GoverningPredicate, MemReg);
+   } else {
+     // Treat the non-temporal store as a regular vector store in this case for compatibility
+     ldr(Dst.Q(), MemReg, Offset);
+diff --git a/unittests/ASM/VEX/vmaskmov_sve_byte_address.asm b/unittests/ASM/VEX/vmaskmov_sve_byte_address.asm
+new file mode 100644
+index 0000000..1f357c7
+--- /dev/null
++++ b/unittests/ASM/VEX/vmaskmov_sve_byte_address.asm
+@@ -0,0 +1,102 @@
++%ifdef CONFIG
++{
++  "HostFeatures": [
++    "AVX"
++  ],
++  "RegData": {
++    "XMM0": [
++      "0x1111000000000024",
++      "0x1111000000000025",
++      "0x1111000000000026",
++      "0x1111000000000027"
++    ],
++    "XMM1": [
++      "0x111100000000001c",
++      "0x111100000000001d",
++      "0x111100000000001e",
++      "0x111100000000001f"
++    ],
++    "XMM2": [
++      "0x1111000000000028",
++      "0x1111000000000029",
++      "0x111100000000002a",
++      "0x111100000000002b"
++    ],
++    "XMM3": [
++      "0x1111000000000018",
++      "0x1111000000000019",
++      "0x111100000000001a",
++      "0x111100000000001b"
++    ],
++    "XMM4": [
++      "0x1111000000000022",
++      "0x1111000000000023",
++      "0",
++      "0"
++    ],
++    "XMM5": [
++      "0x111100000000001e",
++      "0x111100000000001f",
++      "0",
++      "0"
++    ],
++    "XMM6": [
++      "0x1111000000000024",
++      "0x1111000000000025",
++      "0x1111000000000026",
++      "0x1111000000000027"
++    ],
++    "RAX": "0x1111000000000024",
++    "RBX": "0x1111000000000027",
++    "RCX": "0x111100000000001c",
++    "R8": "0x111100000000001f",
++    "R9": "0x1111000000000028",
++    "R10": "0x111100000000002b",
++    "R11": "0x1111000000000018",
++    "R12": "0x111100000000001b",
++    "R13": "0x1111000000000022",
++    "R14": "0x1111000000000023"
++  }
++}
++%endif
++
++; Masked element loads/stores must use byte addresses, independent of both
++; host vector length and the SVE word/doubleword register-offset scale.
++mov rdx, 0xe0000200
++%assign slot 0
++%rep 128
++  mov rax, 0x1111000000000000 + slot
++  mov [rdx - 256 + slot * 8], rax
++%assign slot slot + 1
++%endrep
++vmovups ymm15, [rel .mask]
++vmaskmovps ymm0, ymm15, [rdx + 32]
++vmaskmovps ymm1, ymm15, [rdx - 32]
++vmaskmovpd ymm2, ymm15, [rdx + 64]
++vmaskmovpd ymm3, ymm15, [rdx - 64]
++vmaskmovps xmm4, xmm15, [rdx + 16]
++vmaskmovpd xmm5, xmm15, [rdx - 16]
++mov rcx, 32
++vmaskmovps ymm6, ymm15, [rdx + rcx]
++
++mov rdi, 0xe0000800
++vmaskmovps [rdi + 32], ymm15, ymm0
++vmaskmovps [rdi - 32], ymm15, ymm1
++vmaskmovpd [rdi + 64], ymm15, ymm2
++vmaskmovpd [rdi - 64], ymm15, ymm3
++vmaskmovps [rdi + 128], xmm15, xmm4
++mov rax, [rdi + 32]
++mov rbx, [rdi + 56]
++mov rcx, [rdi - 32]
++mov r8, [rdi - 8]
++mov r9, [rdi + 64]
++mov r10, [rdi + 88]
++mov r11, [rdi - 64]
++mov r12, [rdi - 40]
++mov r13, [rdi + 128]
++mov r14, [rdi + 136]
++hlt
++
++align 32
++.mask:
++dq -1, -1, -1, -1
+diff --git a/unittests/ASM/VEX/vmovnt_sve_offsets.asm b/unittests/ASM/VEX/vmovnt_sve_offsets.asm
+new file mode 100644
+index 0000000..c448945
+--- /dev/null
++++ b/unittests/ASM/VEX/vmovnt_sve_offsets.asm
+@@ -0,0 +1,70 @@
++%ifdef CONFIG
++{
++  "HostFeatures": [
++    "AVX"
++  ],
++  "RegData": {
++    "XMM0": [
++      "0x1111000000000004",
++      "0x1111000000000005",
++      "0",
++      "0"
++    ],
++    "XMM1": [
++      "0x1111000000000008",
++      "0x1111000000000009",
++      "0x111100000000000a",
++      "0x111100000000000b"
++    ],
++    "XMM2": [
++      "0x1111000000000002",
++      "0x1111000000000003",
++      "0",
++      "0"
++    ],
++    "XMM3": [
++      "0x111100000000000c",
++      "0x111100000000000d",
++      "0x111100000000000e",
++      "0x111100000000000f"
++    ],
++    "RAX": "0x1111000000000004",
++    "RBX": "0x1111000000000005",
++    "RCX": "0x1111000000000008",
++    "R8": "0x111100000000000b",
++    "R9": "0x1111000000000002",
++    "R10": "0x1111000000000003",
++    "R11": "0x111100000000000c",
++    "R12": "0x111100000000000f"
++  }
++}
++%endif
++
++; Exercise both single-register and split 128-bit non-temporal paths.
++; Run also with SVE128 code generation on a host VL wider than 128 bits.
++mov rdx, 0xe0000200
++%assign slot 0
++%rep 64
++  mov rax, 0x1111000000000000 + slot
++  mov [rdx - 128 + slot * 8], rax
++%assign slot slot + 1
++%endrep
++vmovntdqa xmm0, [rdx - 96]
++vmovntdqa ymm1, [rdx - 64]
++vmovntdqa xmm2, [rdx - 112]
++vmovntdqa ymm3, [rdx - 32]
++mov rdi, 0xe0000800
++vmovntps [rdi + 16], xmm0
++vmovntps [rdi + 32], ymm1
++vmovntps [rdi - 16], xmm2
++vmovntps [rdi - 64], ymm3
++sfence
++mov rax, [rdi + 16]
++mov rbx, [rdi + 24]
++mov rcx, [rdi + 32]
++mov r8, [rdi + 56]
++mov r9, [rdi - 16]
++mov r10, [rdi - 8]
++mov r11, [rdi - 64]
++mov r12, [rdi - 40]
++hlt
+diff --git a/unittests/ASM/VEX/vmovups_mem_sve_byte_offsets.asm b/unittests/ASM/VEX/vmovups_mem_sve_byte_offsets.asm
+new file mode 100644
+index 0000000..7e90703
+--- /dev/null
++++ b/unittests/ASM/VEX/vmovups_mem_sve_byte_offsets.asm
+@@ -0,0 +1,98 @@
++%ifdef CONFIG
++{
++  "HostFeatures": [
++    "AVX"
++  ],
++  "RegData": {
++    "XMM0": [
++      "0x2122000000000000",
++      "0x2122000000000001",
++      "0x2122000000000002",
++      "0x2122000000000003"
++    ],
++    "XMM1": [
++      "0x2122000000000010",
++      "0x2122000000000011",
++      "0x2122000000000012",
++      "0x2122000000000013"
++    ],
++    "XMM2": [
++      "0x2122000000000020",
++      "0x2122000000000021",
++      "0x2122000000000022",
++      "0x2122000000000023"
++    ],
++    "XMM3": [
++      "0x2122000000000030",
++      "0x2122000000000031",
++      "0x2122000000000032",
++      "0x2122000000000033"
++    ],
++    "RAX": "0x2122000000000000",
++    "RBX": "0x2122000000000003",
++    "RCX": "0x2122000000000010",
++    "R8": "0x2122000000000013",
++    "R9": "0x2122000000000020",
++    "R10": "0x2122000000000023",
++    "R11": "0x2122000000000030",
++    "R12": "0x2122000000000033"
++  },
++  "MemoryRegions": {
++    "0xe1000000": "1048576"
++  }
++}
++%endif
++
++; Byte offsets that cannot be encoded as a scaled SVE immediate.
++; Include signed offsets and values outside a MOVZ immediate.
++mov rdx, 0xe1020000
++mov rdi, 0xe1060000
++mov rax, 0x2122000000000000
++mov [rdx + -30 + 0], rax
++mov rax, 0x2122000000000001
++mov [rdx + -30 + 8], rax
++mov rax, 0x2122000000000002
++mov [rdx + -30 + 16], rax
++mov rax, 0x2122000000000003
++mov [rdx + -30 + 24], rax
++vmovups ymm0, [rdx + -30]
++vmovups [rdi + -30], ymm0
++mov rax, 0x2122000000000010
++mov [rdx + 30 + 0], rax
++mov rax, 0x2122000000000011
++mov [rdx + 30 + 8], rax
++mov rax, 0x2122000000000012
++mov [rdx + 30 + 16], rax
++mov rax, 0x2122000000000013
++mov [rdx + 30 + 24], rax
++vmovups ymm1, [rdx + 30]
++vmovups [rdi + 30], ymm1
++mov rax, 0x2122000000000020
++mov [rdx + -65537 + 0], rax
++mov rax, 0x2122000000000021
++mov [rdx + -65537 + 8], rax
++mov rax, 0x2122000000000022
++mov [rdx + -65537 + 16], rax
++mov rax, 0x2122000000000023
++mov [rdx + -65537 + 24], rax
++vmovups ymm2, [rdx + -65537]
++vmovups [rdi + -65537], ymm2
++mov rax, 0x2122000000000030
++mov [rdx + 65537 + 0], rax
++mov rax, 0x2122000000000031
++mov [rdx + 65537 + 8], rax
++mov rax, 0x2122000000000032
++mov [rdx + 65537 + 16], rax
++mov rax, 0x2122000000000033
++mov [rdx + 65537 + 24], rax
++vmovups ymm3, [rdx + 65537]
++vmovups [rdi + 65537], ymm3
++mov rax, [rdi + -30]
++mov rbx, [rdi + -30 + 24]
++mov rcx, [rdi + 30]
++mov r8, [rdi + 30 + 24]
++mov r9, [rdi + -65537]
++mov r10, [rdi + -65537 + 24]
++mov r11, [rdi + 65537]
++mov r12, [rdi + 65537 + 24]
++hlt
+diff --git a/unittests/ASM/VEX/vmovups_mem_sve_vl_offsets.asm b/unittests/ASM/VEX/vmovups_mem_sve_vl_offsets.asm
+new file mode 100644
+index 0000000..2456fb1
+--- /dev/null
++++ b/unittests/ASM/VEX/vmovups_mem_sve_vl_offsets.asm
+@@ -0,0 +1,96 @@
++%ifdef CONFIG
++{
++  "HostFeatures": [
++    "AVX"
++  ],
++  "RegData": {
++    "XMM0": [
++      "0x1111000000000014",
++      "0x1111000000000015",
++      "0x1111000000000016",
++      "0x1111000000000017"
++    ],
++    "XMM1": [
++      "0x1111000000000018",
++      "0x1111000000000019",
++      "0x111100000000001a",
++      "0x111100000000001b"
++    ],
++    "XMM2": [
++      "0x111100000000000c",
++      "0x111100000000000d",
++      "0x111100000000000e",
++      "0x111100000000000f"
++    ],
++    "XMM3": [
++      "0x1111000000000008",
++      "0x1111000000000009",
++      "0x111100000000000a",
++      "0x111100000000000b"
++    ],
++    "XMM4": [
++      "0x1111000000000012",
++      "0x1111000000000013",
++      "0",
++      "0"
++    ],
++    "XMM5": [
++      "0x111100000000000e",
++      "0x111100000000000f",
++      "0",
++      "0"
++    ],
++    "RAX": "0x1111000000000014",
++    "RBX": "0x1111000000000017",
++    "RCX": "0x1111000000000018",
++    "R8": "0x111100000000001b",
++    "R9": "0x111100000000000c",
++    "R10": "0x111100000000000f",
++    "R11": "0x1111000000000008",
++    "R12": "0x111100000000000b",
++    "R13": "0x5555555555555555",
++    "R14": "0x5555555555555555"
++  }
++}
++%endif
++
++; Distinct scalar initialization makes a wrong vector load observable.
++; Check positive and negative byte offsets at every host SVE vector length.
++mov rdx, 0xe0000200
++%assign slot 0
++%rep 64
++  mov rax, 0x1111000000000000 + slot
++  mov [rdx - 128 + slot * 8], rax
++%assign slot slot + 1
++%endrep
++
++vmovups ymm0, [rdx + 32]
++vmovups ymm1, [rdx + 64]
++vmovups ymm2, [rdx - 32]
++vmovups ymm3, [rdx - 64]
++vmovups xmm4, [rdx + 16]
++vmovups xmm5, [rdx - 16]
++
++; Scalar reads independently check stores, including the last byte range.
++mov rdi, 0xe0000800
++mov rax, 0x5555555555555555
++%assign slot 0
++%rep 128
++  mov [rdi - 512 + slot * 8], rax
++%assign slot slot + 1
++%endrep
++vmovups [rdi + 32], ymm0
++vmovups [rdi + 64], ymm1
++vmovups [rdi - 32], ymm2
++vmovups [rdi - 64], ymm3
++mov rax, [rdi + 32]
++mov rbx, [rdi + 56]
++mov rcx, [rdi + 64]
++mov r8, [rdi + 88]
++mov r9, [rdi - 32]
++mov r10, [rdi - 8]
++mov r11, [rdi - 64]
++mov r12, [rdi - 40]
++mov r13, [rdi - 72]
++mov r14, [rdi + 96]
++hlt

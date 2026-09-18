@@ -25,10 +25,9 @@ carry this session's own name.
 
     scripts/headless-examples/no-pill-for-yourself-proof.py
 
-    cargo build -p shell -p qos-launcher -p word-processor -p file-explorer
+    cargo build -p shell -p tilo-launcher -p word-processor -p file-explorer
 
-The control that keeps this fix honest is a separate script, and it is
-not optional: `peers-cross-both-ways.py` puts two real people in a room
+The related check is `peers-cross-both-ways.py`, which puts two people in a room
 and requires each to keep seeing the other's caret and pointer, named
 and coloured. A guard that silences your own pill by silencing
 everybody passes this file and fails that one.
@@ -57,7 +56,7 @@ APPLICATIONS = "applications"
 # participant, not the process or the package. A word processor and a
 # file manager side by side are still one person, and if the rule were
 # keyed on the app id instead this pair would slip past it.
-APPS = ("dev.qos.word-processor", "dev.qos.file-explorer")
+APPS = ("dev.tilo.word-processor", "dev.tilo.file-explorer")
 
 # The name this session runs under. Set explicitly so the assertion has
 # a literal to look for rather than having to guess what the machine
@@ -105,25 +104,23 @@ class Session:
         home = os.path.expanduser("~")
         env = {
             **os.environ,
-            "QOS_TEST_CONTROL": self.socket,
-            "QOS_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
+            "TILO_TEST_CONTROL": self.socket,
+            "TILO_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
             "XDG_DATA_HOME": os.path.join(self.dir, "data"),
             "XDG_CACHE_HOME": os.path.join(self.dir, "cache"),
             "XDG_STATE_HOME": os.path.join(self.dir, "state"),
             "XDG_CONFIG_HOME": os.path.join(self.dir, "config"),
             "XDG_RUNTIME_DIR": runtime,
-            "QOS_USER_ID": WHO,
-            "QOS_APPS_DATA_DIR": apps_dir or os.path.join(home, ".local/share/qos-apps"),
-            "QOS_RUNTIME_BUNDLE_DIR": os.path.join(home, ".local/share/qos-runtime"),
-            "QOS_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
-            "NIRIOS_HEADLESS_SIZE": "1280x800",
+            "TILO_USER_ID": WHO,
+            "TILO_APPS_DATA_DIR": apps_dir or os.path.join(home, ".local/share/tilo-apps"),
+            "TILO_RUNTIME_BUNDLE_DIR": os.path.join(home, ".local/share/tilo-runtime"),
+            "TILO_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
+            "TILO_HEADLESS_SIZE": "1280x800",
             "LC_ALL": "en_US.UTF-8",
             "LANG": "en_US.UTF-8",
-            # Makes a `ui` app say on the session log when a peer's
-            # arrival reached it. That line is this rig's witness that
-            # presence actually crossed between the two apps — see
-            # `presence_traffic`.
-            "QUICK_COLLAB_DEBUG": "1",
+            # Capture the toolkit's structured state/presence events. The
+            # self-filter event is this rig's witness that presence crossed.
+            "RUST_LOG": "tilo.state=debug",
         }
         env.pop("DISPLAY", None)
         env.pop("WAYLAND_DISPLAY", None)
@@ -294,7 +291,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--keep", action="store_true", help="leave the session and files behind")
     ap.add_argument("--out", default=None, help="where to write the screenshot")
-    ap.add_argument("--apps", default=None, help="override QOS_APPS_DATA_DIR")
+    ap.add_argument("--apps", default=None, help="override TILO_APPS_DATA_DIR")
     args = ap.parse_args()
 
     if not SHELL.exists():

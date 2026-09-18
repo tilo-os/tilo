@@ -1,10 +1,8 @@
 //! Choosing *which* exported action answers an instruction.
 //!
-//! Everything else the agent does is already real: it holds a live replica of
-//! the same document everyone else has, edits it through the word processor's
-//! own exported actions under its own actor, and shows up attributed in the
-//! history strip. The one thing that was scripted is the decision — which
-//! action to take — and that is what this module hands to a model.
+//! The agent holds a live replica of the shared document, edits it through the
+//! word processor's exported actions under its own actor, and appears in the
+//! history strip. This module supplies the decision about which action to take.
 //!
 //! The shape is deliberately narrow, because the narrowness is the point:
 //!
@@ -131,7 +129,7 @@ impl Chooser {
     }
 
     /// Construct a chooser over a profile selected in Settings. The profile
-    /// is non-secret metadata; qos-model-gateway owns credential resolution.
+    /// is non-secret metadata; tilo-model-gateway owns credential resolution.
     pub fn with_provider(enabled: bool, timeout: Duration, selection: ProviderSelection) -> Self {
         Self {
             provider: Some(ProviderConnection { selection }),
@@ -144,7 +142,7 @@ impl Chooser {
     /// logging at startup so an operator knows before the beat which path
     /// this run will take.
     pub fn is_live(&self) -> bool {
-        self.enabled && self.provider.is_some() && qos_model_gateway::available()
+        self.enabled && self.provider.is_some() && tilo_model_gateway::available()
     }
 
     /// Decide what `rest` asks for, given the document it was written into.
@@ -160,7 +158,7 @@ impl Chooser {
             return fallback(Fallback::Disabled);
         }
         let answer = if let Some(provider) = &self.provider {
-            if !qos_model_gateway::available() {
+            if !tilo_model_gateway::available() {
                 return fallback(Fallback::NoKey);
             }
             self.ask_provider(provider, rest, blocks)
@@ -203,7 +201,7 @@ impl Chooser {
             return fallback(Fallback::Disabled);
         }
         let answer = if let Some(provider) = &self.provider {
-            if !qos_model_gateway::available() {
+            if !tilo_model_gateway::available() {
                 return fallback(Fallback::NoKey);
             }
             self.ask_actions_provider(provider, rest, blocks, catalogue, most_steps)
@@ -301,7 +299,7 @@ fn action_request_body_for(
     serde_json::json!({
         "model": selection.model.id,
         "max_tokens": 4096,
-        "system": "Drive qOS exclusively through the resource/action tools. Discover before planning. Preserve every argument's declared JSON type. Never invent an operation id or parameter.",
+        "system": "Drive Tilo exclusively through the resource/action tools. Discover before planning. Preserve every argument's declared JSON type. Never invent an operation id or parameter.",
         "tools": tools::definitions(revealed, most_steps),
         "messages": messages,
     })
@@ -387,7 +385,7 @@ fn post_provider(
     // reference. All profile lookup, credential resolution, and egress happen
     // at the per-user model gateway reached through a launcher-issued FD.
     let timeout = remaining().ok_or_else(|| AskError::Failed("the call timed out".into()))?;
-    qos_model_gateway::plan(
+    tilo_model_gateway::plan(
         &provider.selection.profile_id,
         &provider.selection.model.id,
         body.clone(),
@@ -638,9 +636,9 @@ fn first_chars(s: &str, n: usize) -> String {
 mod tests {
     use super::*;
     use crate::surface::Offer;
-    use qos_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
-    use qos_actions::{ActionContract, ActionParam, ExecutionLocus, OperationKind, ParamType};
     use std::collections::BTreeMap;
+    use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
+    use tilo_actions::{ActionContract, ActionParam, ExecutionLocus, OperationKind, ParamType};
 
     fn block(kind: &str, text: &str) -> Block {
         Block {

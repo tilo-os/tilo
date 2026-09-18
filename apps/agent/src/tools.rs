@@ -1,27 +1,9 @@
 //! What the agent can be *asked*: named tools over the room's own surface.
 //!
-//! The decision — which exported operation answers an instruction — used to
-//! be made from a single flat list: every operation every open app exported,
-//! plus the editorial changes, plus one "open" entry per app that was not
-//! open, all pasted into one turn and the answer pinned to an enum of all of
-//! it, capped at a hundred and twenty.
-//!
-//! It worked, and the shape of it is what a run of failures had in common:
-//!
-//! * "What may be named" and "what fits in one message" were the **same
-//!   quantity**. Past the cap an operation could not be named at all, so a
-//!   folder of a thousand files spent the whole budget on renames and put
-//!   the rest of the room out of reach.
-//! * A prompted operation's own words were one clause of one line among a
-//!   hundred and twenty, and its own example went with them.
-//! * What an application says about a resource **with no operation on it**
-//!   was dropped entirely — a flat survey walks past a resource that
-//!   publishes a fact (a photograph's pixel size, say) but exports nothing.
-//!
-//! None of that is fixed by a longer list. What they share is that discovery
-//! was something the agent had to have been *handed*, whole, in advance of
-//! knowing what it was looking for. So this module makes it something the
-//! agent **asks for**:
+//! Discovery is queried through separate tools instead of a single flat list.
+//! This keeps the set of operations independent from response size, preserves
+//! operation details and examples, and includes resources that publish facts
+//! without actions. The agent asks for the scope it needs:
 //!
 //! | Tool | The question it answers |
 //! |---|---|
@@ -471,7 +453,7 @@ fn operations(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> 
         }
         revealed.reveal(o.id());
         let _ = write!(s, "  {} — {}", o.id(), o.descriptor.action_label);
-        if let qos_actions::Availability::Unavailable { reason, .. } =
+        if let tilo_actions::Availability::Unavailable { reason, .. } =
             &o.descriptor.contract.availability
         {
             let _ = write!(s, "; currently unavailable: {reason}");
@@ -525,8 +507,8 @@ fn describe(input: &Value, catalogue: &Catalogue) -> String {
     }
     let c = &d.contract;
     match &c.availability {
-        qos_actions::Availability::Available => s.push_str("  availability: available\n"),
-        qos_actions::Availability::Unavailable { code, reason } => {
+        tilo_actions::Availability::Available => s.push_str("  availability: available\n"),
+        tilo_actions::Availability::Unavailable { code, reason } => {
             let _ = writeln!(s, "  availability: unavailable ({code}) — {reason}");
         }
     }
@@ -671,8 +653,8 @@ pub fn read_plan(input: &Value, revealed: &Revealed, most_steps: usize) -> Resul
 mod tests {
     use super::*;
     use crate::surface::ResourceFacts;
-    use qos_actions::door::{ActionAddress, ActionDescriptor};
-    use qos_actions::{Collects, ExecutionLocus, InputSpec};
+    use tilo_actions::door::{ActionAddress, ActionDescriptor};
+    use tilo_actions::{Collects, ExecutionLocus, InputSpec};
 
     const STEPS: usize = 4;
 
@@ -686,9 +668,9 @@ mod tests {
     ) -> Offer {
         let params = matches!(&input, InputSpec::Text { .. })
             .then(|| {
-                vec![qos_actions::ActionParam::required(
+                vec![tilo_actions::ActionParam::required(
                     "value",
-                    qos_actions::ParamType::Text,
+                    tilo_actions::ParamType::Text,
                     "value",
                 )]
             })
@@ -703,8 +685,8 @@ mod tests {
                 action_label: label.to_string(),
                 description: None,
                 locus: ExecutionLocus::ClientLocal,
-                kind: qos_actions::OperationKind::Document,
-                contract: qos_actions::ActionContract::default(),
+                kind: tilo_actions::OperationKind::Document,
+                contract: tilo_actions::ActionContract::default(),
                 params,
                 input,
             },
@@ -776,8 +758,8 @@ mod tests {
                     action_label: "open the conversation".to_string(),
                     description: None,
                     locus: ExecutionLocus::ServerPreferred,
-                    kind: qos_actions::OperationKind::Effect,
-                    contract: qos_actions::ActionContract::default(),
+                    kind: tilo_actions::OperationKind::Effect,
+                    contract: tilo_actions::ActionContract::default(),
                     params: Vec::new(),
                     input: InputSpec::None,
                 },
@@ -840,6 +822,24 @@ mod tests {
                 Value::String("a.png".into())
             )])]
         );
+    }
+
+    #[test]
+    fn one_published_operation_can_be_planned_repeatedly_with_distinct_arguments() {
+        let mut revealed = Revealed::new();
+        let _ = operations(&json!({"kind": "files.entry"}), &room(), &mut revealed);
+        let operation = "files.entry:/home/q/harbour.png#rename";
+        let call = json!({
+            "steps": [
+                {"operation": operation, "arguments": {"value": "first.png"}},
+                {"operation": operation, "arguments": {"value": "second.png"}}
+            ],
+            "why": "the same canonical operation applies to two requested values",
+            "then": null
+        });
+        let answer = read_plan(&call, &revealed, STEPS).expect("both uses were listed");
+        assert_eq!(answer.actions, vec![operation, operation]);
+        assert_ne!(answer.arguments.first(), answer.arguments.last());
     }
 
     /// A kind crosses applications by construction: the filter is the

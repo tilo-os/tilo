@@ -15,7 +15,8 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
@@ -266,9 +267,7 @@ fn cmd_shell(store: &Store, args: &ShellArgs) -> Result<()> {
 
         let layer = store.load(&name)?;
         if layer.kind == LayerKind::Ephemeral {
-            // The one moment where the whole design pays off: the layer is still
-            // on disk, so the offer to keep it is real and not a consolation
-            // message about work already deleted.
+            // The layer is still on disk, so the user can choose to keep it.
             let d = diff::compute(&store.upper_dir(&name), Some(&store.base_path(&layer.base)))?;
             if d.is_empty() {
                 store.discard(&name)?;
@@ -301,7 +300,7 @@ impl std::fmt::Display for ChildExit {
 
 impl std::error::Error for ChildExit {}
 
-/// What the user sees when a throwaway shell that actually changed something
+/// What the user sees when a temporary shell changed something
 /// exits. It must state the deadline and both commands, because an offer whose
 /// expiry is unclear is an offer people resolve by never using the tool again.
 fn report_ephemeral_exit(name: &str, d: &Diff) {
@@ -478,36 +477,87 @@ fn cmd_base_add(store: &Store, name: &str, image: &str) -> Result<()> {
         bail!("could not pull {image}");
     }
 
-    let out = Command::new("podman")
-        .args(["create", image, "/bin/true"])
-        .output()?;
+    let out = match bounded_command::run(
+        "podman",
+        &["create", image, "/bin/true"],
+        None,
+        64 * 1024,
+        Duration::from_secs(30),
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = std::fs::remove_dir(&dest);
+            return Err(error).context("podman create failed");
+        }
+    };
     if !out.status.success() {
-        bail!(
-            "podman create failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        let _ = std::fs::remove_dir(&dest);
+        bail!("podman create failed");
     }
-    let cid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let cid = String::from_utf8(out.stdout)
+        .context("podman returned a non-UTF-8 container id")?
+        .trim()
+        .to_string();
+    if cid.is_empty()
+        || cid.len() > 128
+        || !cid
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        let _ = bounded_command::run(
+            "podman",
+            &["rm", &cid],
+            None,
+            64 * 1024,
+            Duration::from_secs(30),
+        );
+        let _ = std::fs::remove_dir(&dest);
+        bail!("podman returned an invalid container id");
+    }
 
     eprintln!("tinker: unpacking into {}", dest.display());
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "podman export {} | tar -x -C {} --exclude='dev/*'",
-            shell_quote(&cid),
-            shell_quote(&dest.to_string_lossy())
-        ))
-        .status()?;
-    let _ = Command::new("podman").args(["rm", &cid]).output();
-    if !status.success() {
+    let mut export = Command::new("podman")
+        .args(["export", &cid])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("could not start OCI export")?;
+    let Some(exported) = export.stdout.take() else {
+        let _ = export.kill();
+        let _ = export.wait();
+        bail!("podman export did not expose its output stream");
+    };
+    let mut unpack = match Command::new("tar")
+        .args(["-x", "-C"])
+        .arg(&dest)
+        .arg("--exclude=dev/*")
+        .stdin(Stdio::from(exported))
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            let _ = export.kill();
+            let _ = export.wait();
+            return Err(error).context("could not start OCI extraction");
+        }
+    };
+    let unpack_status = unpack.wait()?;
+    if !unpack_status.success() {
+        let _ = export.kill();
+    }
+    let export_status = export.wait()?;
+    let _ = bounded_command::run(
+        "podman",
+        &["rm", &cid],
+        None,
+        64 * 1024,
+        Duration::from_secs(30),
+    );
+    if !unpack_status.success() || !export_status.success() {
         bail!("unpacking {image} failed");
     }
     println!("Base '{name}' ready. `tinker --base {name}` opens a layer on it.");
     Ok(())
-}
-
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 /// The discoverability surface. A tinkerer who cannot find out how something
@@ -608,10 +658,5 @@ mod tests {
         for required in ["does NOT protect", "kernel", "--share", "discard"] {
             assert!(t.contains(required), "explain text omits {required:?}");
         }
-    }
-
-    #[test]
-    fn shell_quoting_survives_a_quote() {
-        assert_eq!(shell_quote("a'b"), r"'a'\''b'");
     }
 }

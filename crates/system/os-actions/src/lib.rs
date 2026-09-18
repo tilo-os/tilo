@@ -1,5 +1,5 @@
 //! OS-level action wrappers (brightness, audio, Wi-Fi, Bluetooth, power-profile) shared
-//! between the qOS compositor (`shell`) and the standalone Settings app (`apps/settings`).
+//! between the Tilo compositor (`shell`) and the standalone Settings app (`apps/settings`).
 //! Both needed the same brightnessctl/wpctl/nmcli/bluetoothctl/powerprofilesctl bindings, and
 //! the Settings app must not depend on the compositor (they're peers, not parent/child), so
 //! the bindings live here as a single source of truth for both.
@@ -17,7 +17,7 @@
 //! ## Dispatcher trait
 //!
 //! Bluetooth is the exception to the CLI wrappers: it uses the persistent
-//! `qos-bluez` D-Bus client because discovery and pairing are connection-bound.
+//! `tilo-bluez` D-Bus client because discovery and pairing are connection-bound.
 //!
 //! [`Dispatcher`] is the side-effect interface used by the click handlers. The default
 //! production impl ([`RealDispatcher`]) calls the free functions in the per-domain modules;
@@ -44,8 +44,15 @@ pub mod bluetooth;
 pub mod bluez;
 pub mod display;
 pub mod firmware;
+#[cfg(target_os = "linux")]
+pub mod linux_physical_gamepad;
+#[cfg(not(target_os = "linux"))]
+#[path = "unsupported_physical_gamepad.rs"]
+pub mod linux_physical_gamepad;
+pub mod linux_virtual_gamepad;
 pub mod modem;
 pub mod network;
+pub mod peripheral_forwarding;
 pub mod power;
 pub mod printing;
 pub mod privacy;
@@ -65,7 +72,8 @@ pub use battery::{
     set_charge_limit, set_charge_limit_checked,
 };
 pub use bluetooth::{
-    BtDeviceInfo, bt_connect, bt_disconnect, get_bluetooth, list_bt_devices, set_bluetooth,
+    BluetoothHandoffTarget, BtDeviceInfo, bt_connect, bt_disconnect, get_bluetooth,
+    inspect_bluetooth_handoff_target, list_bt_devices, pair_bluetooth_handoff, set_bluetooth,
 };
 pub use display::{
     AmbientBrightnessController, ambient_lux, get_brightness, has_ambient_light_sensor,
@@ -75,20 +83,35 @@ pub use firmware::{
     FirmwareEvent, FirmwareHistoryEntry, FirmwareInstallOutcome, FirmwareUpdate,
     get_firmware_history, get_firmware_updates, refresh_firmware_metadata, start_firmware_install,
 };
+pub use linux_physical_gamepad::{
+    LinuxPhysicalGamepadCatalog, LinuxPhysicalGamepadSource, PhysicalGamepadDrain,
+    PhysicalGamepadId, PhysicalGamepadInfo,
+};
+pub use linux_virtual_gamepad::{
+    LinuxGamepadDevice, LinuxGamepadDeviceProvider, LinuxVirtualGamepadFactory,
+    UinputGamepadDeviceProvider,
+};
 pub use modem::{SimInfo, list_mobile_sims, unlock_mobile_sim, unlock_mobile_sim_on};
 pub use network::{
     CertificateInfo, ConnectionDiagnostics, ConnectionPolicy, ConnectionPolicyPatch,
     ConnectionProfileSettings, ConnectivityState, EnterpriseEapMethod, EnterpriseWifiConfiguration,
     HOTSPOT_PROFILE, HotspotBand, HotspotClient, HotspotConfiguration, IpConfiguration, LinkKind,
     LinkStatus, MacPolicy, MeteredPolicy, ProxyConfiguration, RadioState, SavedNetworkProfile,
-    VpnConnectionInfo, WifiNetworkInfo, WiredInfo, captive_portal_uri, configure_connection_policy,
-    configure_connection_policy_patch, configure_hotspot, configure_ipv4, connect_enterprise_wifi,
-    connect_wifi, connection_diagnostics, connection_profile_settings, create_mobile_profile,
-    delete_vpn_connection, delete_vpn_connection_uuid, forget_network_profile, get_connectivity,
+    VpnConnectionInfo, WifiNetworkInfo, WifiSecurity, WiredInfo, captive_portal_uri,
+    configure_connection_policy, configure_connection_policy_patch, configure_hotspot,
+    configure_ipv4, connect_enterprise_wifi, connect_wifi, connection_diagnostics,
+    connection_profile_settings, create_mobile_profile, delete_vpn_connection,
+    delete_vpn_connection_uuid, disconnect_wifi, forget_network_profile, get_connectivity,
     get_link_status, get_radio_state, get_wifi, get_wired, import_vpn_config, inspect_certificate,
     list_hotspot_clients, list_saved_network_profiles, list_vpn_connections, list_wifi_networks,
-    set_airplane_mode, set_hotspot, set_mobile_broadband, set_network_autoconnect,
-    set_vpn_connection, set_vpn_connection_uuid, set_wifi, set_wired,
+    portable_wifi_profile_secret, set_airplane_mode, set_hotspot, set_mobile_broadband,
+    set_network_autoconnect, set_vpn_connection, set_vpn_connection_uuid, set_wifi, set_wired,
+};
+pub use peripheral_forwarding::{
+    AUTHORIZATION_TTL, ForwardedGamepadEvent, ForwardedPeripheralBroker,
+    ForwardedPeripheralIdentity, GamepadAxis, GamepadButton, PeripheralAuditEvent,
+    PeripheralBrokerError, PeripheralDeviceId, PeripheralLeaseId, PeripheralRevocation,
+    VirtualGamepad, VirtualGamepadFactory, VirtualGamepadPlan,
 };
 pub use power::{PowerProfile, available_power_profiles, get_power_profile, set_power_profile};
 pub use printing::{DiscoveredPrinter, PrintJob, PrinterQueue, QueueState, Scanner};
@@ -143,6 +166,24 @@ pub trait Dispatcher {
     /// Returns an error message if the Bluetooth stack is unavailable or the underlying call
     /// fails.
     fn set_bluetooth(&self, enabled: bool) -> Result<(), String>;
+    /// Connect an accessory that is already paired on this machine.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the address is unknown locally or `BlueZ` cannot
+    /// establish the requested profiles.
+    fn connect_bluetooth(&self, address: &str) -> Result<(), String> {
+        bluetooth::bt_connect(address)
+    }
+    /// Disconnect an accessory without forgetting its local bond.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the address is unknown locally or `BlueZ` rejects
+    /// the disconnect.
+    fn disconnect_bluetooth(&self, address: &str) -> Result<(), String> {
+        bluetooth::bt_disconnect(address)
+    }
     /// Enable or disable wired (ethernet) networking.
     ///
     /// # Errors
@@ -242,6 +283,12 @@ impl Dispatcher for RealDispatcher {
     fn set_bluetooth(&self, enabled: bool) -> Result<(), String> {
         bluez::set_powered(enabled)
     }
+    fn connect_bluetooth(&self, address: &str) -> Result<(), String> {
+        bluetooth::bt_connect(address)
+    }
+    fn disconnect_bluetooth(&self, address: &str) -> Result<(), String> {
+        bluetooth::bt_disconnect(address)
+    }
     fn set_wired(&self, enabled: bool) -> Result<(), String> {
         network::set_wired(enabled)
     }
@@ -264,7 +311,7 @@ impl Dispatcher for RealDispatcher {
 /// ```
 pub fn log_result(op: &str, result: Result<(), String>) {
     if let Err(e) = result {
-        warn!(target: "qos::os_actions", op = op, error = %e, "os action failed");
+        warn!(target: "tilo::os_actions", op = op, error = %e, "os action failed");
     }
 }
 
@@ -273,7 +320,7 @@ pub fn log_get<T>(op: &str, result: Result<T, String>) -> Option<T> {
     match result {
         Ok(v) => Some(v),
         Err(e) => {
-            warn!(target: "qos::os_actions", op = op, error = %e, "os get failed");
+            warn!(target: "tilo::os_actions", op = op, error = %e, "os get failed");
             None
         }
     }

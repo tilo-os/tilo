@@ -16,7 +16,7 @@ thing a person actually waits through.
   → staged          the `.qpkg` has been fetched and written to the
                     staging dir  (resolve + fetch)
   → installed       the install root now lists the package, so
-                    `qos-install` has verified the ed25519 publisher
+                    `tilo-install` has verified the ed25519 publisher
                     signature and the BLAKE3 digest and unpacked it
                     (verify + unpack)
   → first frame     the compositor has taken a buffer from the client
@@ -35,8 +35,8 @@ film does not take.
 
 Why it is a clean session every run
 -----------------------------------
-Each run gets an empty `QOS_APPS_DATA_DIR` (so the app is genuinely
-absent, not absent-by-assertion) and an empty `QOS_STORE_CACHE_DIR`
+Each run gets an empty `TILO_APPS_DATA_DIR` (so the app is genuinely
+absent, not absent-by-assertion) and an empty `TILO_STORE_CACHE_DIR`
 (so the `.qpkg` is genuinely fetched rather than found already staged).
 The runtime bundle every packaged app pins is *not* reset: it is
 machine state installed once, like a base image, and it is present on
@@ -46,7 +46,7 @@ What the network is
 -------------------
 Loopback. `serve-test-registry` binds `127.0.0.1` and serves a really
 packed, really signed `.qpkg`, which is what happens on the day
-(`plan/yc-demo.md` — a local registry is served on set). A run against
+(`docs/demo-script.md` — a local registry is served on set). A run against
 a registry across the internet is a different measurement and this
 script does not pretend otherwise. Every run prints the conditions it
 measured under — payload size, filesystem, load average — alongside the
@@ -82,7 +82,7 @@ import urllib.request
 from reaper import die_with_parent, track
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-PACKAGE_ID = "dev.qos.word-processor"
+PACKAGE_ID = "dev.tilo.word-processor"
 DISPLAY_NAME = "Word Processor"
 # What the operator types. The row has to be found by typing, the way a
 # person finds it.
@@ -135,7 +135,7 @@ class Session:
         # measurement decision rather than tidiness. `/tmp` here is a
         # 16 GB tmpfs, so an install root under it unpacks 446 MB into
         # RAM and reports a verify-and-unpack time no disk can match.
-        # `scripts/yc-demo.py` puts its session dirs under `--out`, on
+        # `scripts/demo/run.py` puts its session dirs under `--out`, on
         # the filesystem the repo lives on, so this does too.
         self.dir = root
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -157,25 +157,25 @@ class Session:
 
         env = {k: v for k, v in os.environ.items() if k not in SCRUB}
         env.update({
-            "QOS_TEST_CONTROL": self.sock,
-            "QOS_STATE_PATH": str(self.dir / "config" / "state.json"),
+            "TILO_TEST_CONTROL": self.sock,
+            "TILO_STATE_PATH": str(self.dir / "config" / "state.json"),
             "HOME": str(home),
             "XDG_DATA_HOME": str(self.dir / "data"),
             "XDG_CACHE_HOME": str(self.dir / "cache"),
             "XDG_STATE_HOME": str(self.dir / "state"),
             "XDG_CONFIG_HOME": str(self.dir / "config"),
             "XDG_RUNTIME_DIR": str(runtime),
-            "QOS_PEER_KEY_PATH": str(self.dir / "keys" / "peer-key"),
+            "TILO_PEER_KEY_PATH": str(self.dir / "keys" / "peer-key"),
             # Empty: this is what makes "the machine does not have it"
             # a fact about a directory rather than a claim.
-            "QOS_APPS_DATA_DIR": str(self.apps_dir),
+            "TILO_APPS_DATA_DIR": str(self.apps_dir),
             # Machine state a launch cannot do without, and not part of
             # what an install fetches.
-            "QOS_RUNTIME_BUNDLE_DIR": str(runtime_bundles),
-            "QOS_STORE_CONFIG_DIR": str(store_config),
+            "TILO_RUNTIME_BUNDLE_DIR": str(runtime_bundles),
+            "TILO_STORE_CONFIG_DIR": str(store_config),
             # Empty: so the `.qpkg` is fetched, not found.
-            "QOS_STORE_CACHE_DIR": str(self.store_cache),
-            "NIRIOS_HEADLESS_SIZE": "1280x800",
+            "TILO_STORE_CACHE_DIR": str(self.store_cache),
+            "TILO_HEADLESS_SIZE": "1280x800",
             "RUST_LOG": "info",
         })
         env.update(tools)
@@ -490,18 +490,18 @@ def measure_run(s: Session, timeout: float, shot: pathlib.Path | None) -> dict:
 def breakdown(tools: dict, store_config: pathlib.Path, base_url: str,
               scratch: pathlib.Path) -> dict:
     """Split the fetch into resolve and transfer, by running the same
-    two things `qos-catalogue install` runs internally.
+    two things `tilo-catalogue install` runs internally.
 
     `install()` resolves against a live `GET /entries` every time — it
     does not reuse the palette's cache — so timing the same call is
     timing the same work, not a proxy for it.
     """
-    env = {**os.environ, "QOS_STORE_CONFIG_DIR": str(store_config),
-           "QOS_APPS_DATA_DIR": str(scratch / "empty-apps")}
+    env = {**os.environ, "TILO_STORE_CONFIG_DIR": str(store_config),
+           "TILO_APPS_DATA_DIR": str(scratch / "empty-apps")}
     (scratch / "empty-apps").mkdir(parents=True, exist_ok=True)
 
     t = time.monotonic()
-    out = subprocess.run([tools["QOS_CATALOGUE_BIN"], "list", "--json"],
+    out = subprocess.run([tools["TILO_CATALOGUE_BIN"], "list", "--json"],
                          env=env, capture_output=True, text=True, check=True)
     resolve_s = time.monotonic() - t
     listing = json.loads(out.stdout)
@@ -522,13 +522,13 @@ def breakdown(tools: dict, store_config: pathlib.Path, base_url: str,
     apps_dir = scratch / "install-probe"
     shutil.rmtree(apps_dir, ignore_errors=True)
     apps_dir.mkdir(parents=True, exist_ok=True)
-    ienv = {**os.environ, "QOS_APPS_DATA_DIR": str(apps_dir)}
+    ienv = {**os.environ, "TILO_APPS_DATA_DIR": str(apps_dir)}
     t = time.monotonic()
-    res = subprocess.run([tools["QOS_INSTALL_BIN"], "install", str(dest), "--force"],
+    res = subprocess.run([tools["TILO_INSTALL_BIN"], "install", str(dest), "--force"],
                          env=ienv, capture_output=True, text=True)
     install_s = time.monotonic() - t
     if res.returncode != 0:
-        raise Failure(f"qos-install refused the package: {res.stderr.strip()}")
+        raise Failure(f"tilo-install refused the package: {res.stderr.strip()}")
 
     return {"resolve_s": resolve_s, "transfer_s": transfer_s,
             "install_s": install_s, "bytes": len(data)}
@@ -577,7 +577,7 @@ def main() -> int:
     p.add_argument("--shell", type=pathlib.Path, default=None,
                    help="compositor binary (default: target/demo/shell, "
                         "falling back to target/debug/shell — the same "
-                        "resolution scripts/yc-demo.py does)")
+                        "resolution scripts/demo/run.py does)")
     p.add_argument("--payload", type=pathlib.Path, default=None,
                    help="the word-processor binary to pack and serve "
                         "(default: the one yc-demo.py serves)")
@@ -599,12 +599,12 @@ def main() -> int:
     shell = args.shell or tool("shell")
     example = REPO / "target" / "debug" / "examples" / "serve-test-registry"
     payload = args.payload or (
-        REPO / "target" / "qos-apps-live" / "payloads" / PACKAGE_ID / "bin"
+        REPO / "target" / "tilo-apps-live" / "payloads" / PACKAGE_ID / "bin"
         / "word-processor")
     tools = {}
-    for var, name in (("QOS_CATALOGUE_BIN", "qos-catalogue"),
-                      ("QOS_INSTALL_BIN", "qos-install"),
-                      ("QOS_LAUNCHER_BIN", "qos-launcher")):
+    for var, name in (("TILO_CATALOGUE_BIN", "tilo-catalogue"),
+                      ("TILO_INSTALL_BIN", "tilo-install"),
+                      ("TILO_LAUNCHER_BIN", "tilo-launcher")):
         found = tool(name)
         if found:
             tools[var] = str(found)
@@ -616,7 +616,7 @@ def main() -> int:
         missing.append(f"serve-test-registry ({example})")
     if not payload.exists():
         missing.append(f"word-processor payload ({payload})")
-    for var in ("QOS_CATALOGUE_BIN", "QOS_INSTALL_BIN", "QOS_LAUNCHER_BIN"):
+    for var in ("TILO_CATALOGUE_BIN", "TILO_INSTALL_BIN", "TILO_LAUNCHER_BIN"):
         if var not in tools:
             missing.append(var)
     if missing:
@@ -625,7 +625,7 @@ def main() -> int:
               "\n  cargo build -p app-catalogue --bins --examples", file=sys.stderr)
         return 2
 
-    runtime_bundles = pathlib.Path.home() / ".local/share/qos-runtime"
+    runtime_bundles = pathlib.Path.home() / ".local/share/tilo-runtime"
     if not runtime_bundles.exists():
         print(f"FAIL: no runtime bundle store at {runtime_bundles}. Every "
               f"packaged app pins one and none ship it; without it a launch "
@@ -663,7 +663,7 @@ def main() -> int:
         print(f"  transfer (GET the .qpkg, {b['bytes'] / 1e6:.0f} MB)        "
               f"{b['transfer_s']:.2f}s  "
               f"({b['bytes'] / 1e6 / max(b['transfer_s'], 1e-6):.0f} MB/s)")
-        print(f"  qos-install (ed25519 + BLAKE3 + unpack)    {b['install_s']:.2f}s")
+        print(f"  tilo-install (ed25519 + BLAKE3 + unpack)    {b['install_s']:.2f}s")
         print()
 
         for i in range(1, args.runs + 1):

@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn admission_debug_redacts_the_only_secret_bearing_field() {
-        let secret = "qos-file://v2/payload#0123456789abcdef";
+        let secret = "tilo-file://v2/payload#0123456789abcdef";
         let request = RecipientControlRequestV1 {
             protocol_version: RECIPIENT_CONTROL_VERSION,
             operation: RecipientControlOperationV1::AdmitV2 { uri: secret.into() },

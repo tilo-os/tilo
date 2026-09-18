@@ -3,7 +3,7 @@
 //!
 //! ## The split — the imager is mostly external
 //!
-//! The qOS action-model recipe (`docs/action-model-recipe.md`) sorts every
+//! The Tilo action-model recipe (`docs/action-model-recipe.md`) sorts every
 //! interaction into exactly one of two buckets: a *document-mutating* operation
 //! becomes an [`Action`] (a serializable value that deterministically changes
 //! the shared Automerge document, so undo and multi-peer replay come for free),
@@ -34,7 +34,7 @@
 //! That leaves exactly one thing: the **guided-customization install profile**
 //! (see [`InstallProfile`](crate::model::InstallProfile)) — the non-secret
 //! identity / region fields that the live installer actually consumes
-//! (hostname, full name, username, locale, timezone, keyboard). These are
+//! (hostname, full name, username, locale, timezone, keyboard, filesystem). These are
 //! user-authored, they survive restarts, and they replicate to collaborators,
 //! so editing one is a document-mutating operation: an
 //! [`Action`]. Each carries the **absolute** target value in its payload, so
@@ -44,7 +44,7 @@
 //! every replica. A malformed install-mode string normalises to the canonical
 //! form rather than erroring, so a bad replay can't wedge a peer.
 //!
-//! The resource tree mirrors that: an *installable* qOS image (the only source a
+//! The resource tree mirrors that: an authenticated, installable Tilo image (the only source a
 //! profile applies to) is the presented resource, and those applied fields are
 //! the [`ActionSpec`]s Ctrl+K offers for it. A plain ISO — written as-is, no
 //! customization — publishes nothing. Credentials, destructive disk choices,
@@ -53,7 +53,7 @@
 
 use automerge::AutoCommit;
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
     ConfirmationPolicy, DiscoveryScope, Doc, EncodedAction, ExecutionLocus, ExecutionMode,
     OperationKind, ParamType, PermissionRequirement, Resource, ResourceProvider, ResultSpec,
@@ -61,7 +61,7 @@ use qos_actions::{
 };
 
 use crate::doc::ImagerDoc;
-use crate::model::{InstallMode, InstallProfile, Source, TargetDrive};
+use crate::model::{Filesystem, InstallMode, InstallProfile, Source, SourceKind, TargetDrive};
 
 /// Registry `type_id` for every imager action.
 pub const IMAGER_ACTION_TYPE: &str = "imager.action";
@@ -289,6 +289,8 @@ pub enum ImagerAction {
     SetTimezone { value: String },
     /// Set the keyboard layout.
     SetKeyboard { value: String },
+    /// Set the installed system's filesystem.
+    SetFilesystem { filesystem: Filesystem },
 }
 
 impl Action for ImagerAction {
@@ -329,6 +331,9 @@ impl Action for ImagerAction {
             }
             ImagerAction::SetKeyboard { value } => {
                 ImagerDoc::set_profile_text(doc, "keyboard", value);
+            }
+            ImagerAction::SetFilesystem { filesystem } => {
+                ImagerDoc::set_profile_filesystem(doc, *filesystem);
             }
         }
         Ok(())
@@ -390,7 +395,7 @@ fn profile_contract() -> ActionContract {
 
 /// Add the identity/region prompted fields — hostname, full name, username,
 /// timezone, keyboard — to `res` in order. Split out of [`provide_resources`]
-/// to keep it under the line budget; these five don't depend on `profile`,
+/// to keep it under the line budget; these fields don't depend on `profile`,
 /// only on the shape of [`ImagerAction`]. The password is intentionally
 /// absent: a secret must never be echoed through a palette prompt.
 fn with_identity_fields(mut res: Resource) -> Resource {
@@ -414,7 +419,7 @@ fn with_identity_fields(mut res: Resource) -> Resource {
             "hostname",
             "Set hostname",
             "Hostname",
-            "qos",
+            "tilo",
             ExecutionLocus::ClientLocal,
             |text| {
                 encode(&ImagerAction::SetHostname {
@@ -429,7 +434,7 @@ fn with_identity_fields(mut res: Resource) -> Resource {
             "full-name",
             "Set full name",
             "Full name",
-            "qOS User",
+            "Tilo User",
             ExecutionLocus::ClientLocal,
             |text| {
                 encode(&ImagerAction::SetFullName {
@@ -487,13 +492,32 @@ fn with_identity_fields(mut res: Resource) -> Resource {
     res
 }
 
+fn with_filesystem(res: Resource, profile: &InstallProfile) -> Resource {
+    let current = profile.filesystem;
+    res.with_action(
+        ActionSpec::prompted(
+            "filesystem",
+            "Set filesystem",
+            "Filesystem (btrfs, ext4 or xfs)",
+            current.key(),
+            ExecutionLocus::ClientLocal,
+            move |text| {
+                encode(&ImagerAction::SetFilesystem {
+                    filesystem: Filesystem::from_key(&text.to_ascii_lowercase()).unwrap_or(current),
+                })
+            },
+        )
+        .with_contract(profile_contract()),
+    )
+}
+
 /// The applied, non-secret install-profile fields exported as Ctrl+K actions on
 /// an open customizable image. This list intentionally mirrors
 /// `InstallProfile::to_media_profile_json`: never advertise a host-side choice
 /// that the live installer cannot consume.
-pub fn provide_resources(source_label: &str, _profile: &InstallProfile) -> Vec<Resource> {
+pub fn provide_resources(source_label: &str, profile: &InstallProfile) -> Vec<Resource> {
     let label = if source_label.trim().is_empty() {
-        "qOS install options".to_string()
+        "Tilo install options".to_string()
     } else {
         format!("Customize {source_label}")
     };
@@ -504,7 +528,7 @@ pub fn provide_resources(source_label: &str, _profile: &InstallProfile) -> Vec<R
     );
 
     // Identity / region fields — prompted (the palette collects the new value).
-    let res = with_identity_fields(res);
+    let res = with_filesystem(with_identity_fields(res), profile);
 
     vec![res]
 }
@@ -555,7 +579,13 @@ pub fn plan_resources(
     );
     resources.push(source_root);
 
-    if let Some(source) = source.filter(|source| source.installable) {
+    if let Some(source) = source.filter(|source| {
+        source.installable
+            && source.kind == SourceKind::TiloImage
+            && source.expected_sha256.as_deref().is_some_and(|digest| {
+                digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+    }) {
         resources.extend(provide_resources(&source.name, profile));
     }
 
@@ -613,7 +643,7 @@ impl ResourceProvider for crate::app::ImagerApp {
 mod tests {
     use super::*;
     use crate::model::{Source, SourceKind, sample_targets};
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -629,10 +659,10 @@ mod tests {
         let encoded = encode(action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
     }
 
-    /// A populated demo document (sample drives + an installable qOS image +
+    /// A populated demo document (sample drives + an installable Tilo image +
     /// the default profile), so editing a profile field is a genuine change and
     /// the customizable source publishes its resource tree.
     fn seeded() -> AutoCommit {
@@ -688,6 +718,12 @@ mod tests {
             },
         );
         dispatch(&mut doc, &ImagerAction::SetKeyboard { value: "nl".into() });
+        dispatch(
+            &mut doc,
+            &ImagerAction::SetFilesystem {
+                filesystem: Filesystem::Xfs,
+            },
+        );
 
         let p = ImagerDoc::profile(&doc);
         assert_eq!(p.mode, InstallMode::Persistent);
@@ -703,6 +739,7 @@ mod tests {
         assert_eq!(p.locale, "nl_NL.UTF-8");
         assert_eq!(p.timezone, "Europe/Amsterdam");
         assert_eq!(p.keyboard, "nl");
+        assert_eq!(p.filesystem, Filesystem::Xfs);
     }
 
     /// A single field-set leaves every *other* profile field untouched — the
@@ -748,7 +785,7 @@ mod tests {
     /// Drives the real resource-builder and the real [`ui::ActionPalette`].
     #[test]
     fn ctrl_k_publishes_the_customization_and_profile_actions() {
-        let resources = provide_resources("qOS 1.0", &InstallProfile::default());
+        let resources = provide_resources("Tilo 1.0", &InstallProfile::default());
         assert!(
             resources[0]
                 .actions
@@ -759,8 +796,8 @@ mod tests {
         assert_eq!(resources.len(), 1, "one customization root");
         let root = &resources[0];
         assert_eq!(root.kind, "imager.customization");
-        assert_eq!(root.label, "Customize qOS 1.0");
-        assert_eq!(root.id.as_str(), "imager.customization:qOS 1.0");
+        assert_eq!(root.label, "Customize Tilo 1.0");
+        assert_eq!(root.id.as_str(), "imager.customization:Tilo 1.0");
 
         let ids: Vec<&str> = root.actions.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(
@@ -772,6 +809,7 @@ mod tests {
                 "username",
                 "timezone",
                 "keyboard",
+                "filesystem",
             ],
         );
         // The password is deliberately never a palette row.
@@ -815,7 +853,7 @@ mod tests {
         let encoded = write
             .build_args([(
                 "confirmation".to_string(),
-                qos_actions::ArgValue::Text("/dev/sdz".into()),
+                tilo_actions::ArgValue::Text("/dev/sdz".into()),
             )])
             .unwrap();
         assert_eq!(
@@ -838,7 +876,7 @@ mod tests {
         assert!(!write.contract.availability.is_available());
         assert!(matches!(
             &write.contract.availability,
-            qos_actions::Availability::Unavailable { code, .. }
+            tilo_actions::Availability::Unavailable { code, .. }
                 if code == "write_backend_disabled"
         ));
     }
@@ -868,14 +906,14 @@ mod tests {
     }
 
     /// A plain ISO stays a first-class source resource, but never publishes a
-    /// qOS customization resource it cannot apply.
+    /// Tilo customization resource it cannot apply.
     #[test]
     fn plain_iso_publishes_no_resources() {
         use crate::app::ImagerApp;
         let mut app = ImagerApp::new();
         let mut doc = seeded();
         app.sync(&mut doc, &automerge::ROOT);
-        // Seeded source is an installable qOS image → it publishes.
+        // Seeded source is an installable Tilo image → it publishes.
         assert!(!ResourceProvider::resources(&app, &doc).is_empty());
 
         // Switch to a plain, non-installable ISO → nothing to customize.
@@ -910,7 +948,7 @@ mod tests {
     /// on-screen field dispatches for the same typed value.
     #[test]
     fn prompted_field_builds_the_expected_action() {
-        let resources = provide_resources("qOS 1.0", &InstallProfile::default());
+        let resources = provide_resources("Tilo 1.0", &InstallProfile::default());
         let hostname = resources[0]
             .actions
             .iter()
@@ -924,6 +962,22 @@ mod tests {
             built,
             encode(&ImagerAction::SetHostname {
                 value: "lab01".into()
+            })
+        );
+
+        let filesystem = resources[0]
+            .actions
+            .iter()
+            .find(|action| action.id == "filesystem")
+            .unwrap();
+        let built = match &filesystem.input {
+            ActionInput::Prompted { build, .. } => build("xfs"),
+            ActionInput::Immediate(_) => panic!("filesystem is a prompted action"),
+        };
+        assert_eq!(
+            built,
+            encode(&ImagerAction::SetFilesystem {
+                filesystem: Filesystem::Xfs,
             })
         );
     }
@@ -942,7 +996,7 @@ mod tests {
         let encoded = encode(&ImagerAction::SetEncrypt { on: true });
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert!(
@@ -979,8 +1033,8 @@ mod tests {
             value: "lab01".into(),
         };
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -1074,7 +1128,7 @@ mod tests {
     /// documents but are not offered as if the live installer would apply them.
     #[test]
     fn palette_does_not_advertise_untransported_choices() {
-        let resources = provide_resources("qOS 1.0", &InstallProfile::default());
+        let resources = provide_resources("Tilo 1.0", &InstallProfile::default());
         let ids = resources[0]
             .actions
             .iter()

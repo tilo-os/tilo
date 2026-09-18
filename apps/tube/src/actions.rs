@@ -2,8 +2,10 @@
 //!
 //! These are the collaborative, replicable operations on Tube's shared CRDT
 //! state — likes, the watch queue, comment likes + replies — as distinct from
-//! Tube's device-local presentation (fetched catalogues, playhead, route and
-//! watch history). An action mutates a structured sub-tree under the
+//! Tube's device-local presentation (fetched catalogues, playhead and route).
+//! Watch history is intentionally absent: it is held by the separate
+//! owner-local action/store in `history_store`, never in collaboration data.
+//! An action mutates a structured sub-tree under the
 //! document's `"tube"` map so it replicates + replays deterministically:
 //!
 //! ```text
@@ -11,7 +13,8 @@
 //! ├── "likes"           (Map)  video_id            -> bool
 //! ├── "queue"           (Map)  video_id -> bool (membership/tombstone)
 //! ├── "comment_likes"   (Map)  comment_id -> bool (membership/tombstone)
-//! └── "comment_replies" (Map)  comment_id -> (Map reply_id -> reply record)
+//! ├── "comment_replies" (Map)  comment_id -> (Map reply_id -> reply record)
+//! └── "settings"        (Map)  durable shared preferences
 //! ```
 //!
 //! Liking a video / comment is [`ExecutionLocus::ClientLocal`]; adding to the
@@ -28,7 +31,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
     ResourceProvider, RetryPolicy,
@@ -49,6 +52,7 @@ pub const TUBE_OPERATION_TYPE: &str = "tube.operation";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TubeOperation {
     TogglePlayback,
+    ToggleSidebar,
     Share {
         video_id: String,
     },
@@ -79,6 +83,13 @@ pub enum TubeOperation {
     RevokeDevice {
         peer_id: String,
     },
+    RecordHistory {
+        video_id: String,
+    },
+    RemoveHistory {
+        video_id: String,
+    },
+    ClearHistory,
 }
 
 pub fn operation_kind(operation: &TubeOperation) -> OperationKind {
@@ -88,8 +99,12 @@ pub fn operation_kind(operation: &TubeOperation) -> OperationKind {
         | TubeOperation::SyncDevices
         | TubeOperation::ApproveDevice { .. }
         | TubeOperation::RevokeDevice { .. }
-        | TubeOperation::Download { .. } => OperationKind::Effect,
+        | TubeOperation::Download { .. }
+        | TubeOperation::RecordHistory { .. }
+        | TubeOperation::RemoveHistory { .. }
+        | TubeOperation::ClearHistory => OperationKind::Effect,
         TubeOperation::TogglePlayback
+        | TubeOperation::ToggleSidebar
         | TubeOperation::Navigate { .. }
         | TubeOperation::OpenVideo { .. }
         | TubeOperation::OpenChannel { .. }
@@ -302,6 +317,21 @@ pub enum TubeAction {
         video_id: String,
         queued: bool,
     },
+    /// Legacy shared-history envelope. Kept only so a replay can be rejected
+    /// safely; owner history has a distinct local-only action type.
+    SetHistoryEntry {
+        owner_id: String,
+        video_id: String,
+        watched_at_ms: u64,
+        present: bool,
+        mutation_id: String,
+    },
+    /// Legacy shared-history envelope, refused before it can write a document.
+    ClearHistory {
+        owner_id: String,
+        cleared_at_ms: u64,
+        clear_id: String,
+    },
     /// Legacy receiver-dependent subscription toggle. Kept only for decoding;
     /// new authors must use [`Self::SetSubscription`].
     ToggleSubscription {
@@ -390,9 +420,15 @@ impl Action for TubeAction {
         match self {
             TubeAction::LikeVideo { .. }
             | TubeAction::ToggleSubscription { .. }
-            | TubeAction::CyclePreferredQuality => {
+            | TubeAction::CyclePreferredQuality
+            // History has a separate owner-local action type/store. Refusing
+            // these legacy envelopes here is deliberate: an encoded public
+            // Tube action must never recreate a history subtree in a shared
+            // collaboration document.
+            | TubeAction::SetHistoryEntry { .. }
+            | TubeAction::ClearHistory { .. } => {
                 return Err(ActionError::Refused(
-                    "legacy Tube toggle/cycle actions cannot replay deterministically".into(),
+                    "this Tube action is not accepted by the shared document".into(),
                 ));
             }
             TubeAction::SetPreferredQuality { quality }
@@ -408,7 +444,9 @@ impl Action for TubeAction {
         match self {
             TubeAction::LikeVideo { .. }
             | TubeAction::ToggleSubscription { .. }
-            | TubeAction::CyclePreferredQuality => {
+            | TubeAction::CyclePreferredQuality
+            | TubeAction::SetHistoryEntry { .. }
+            | TubeAction::ClearHistory { .. } => {
                 return Err(ActionError::Refused(
                     "legacy Tube toggle/cycle actions cannot replay deterministically".into(),
                 ));
@@ -525,9 +563,12 @@ impl Action for TubeAction {
             | TubeAction::SetQueueMembership { .. }
             | TubeAction::ReplyToComment { .. }
             | TubeAction::SetCommentReply { .. } => ExecutionLocus::ServerPreferred,
-            // Personal, replicable state.
+            // Client-local shared-document mutations. History variants above
+            // are rejected by `apply` and cannot enter this document.
             TubeAction::LikeVideo { .. }
             | TubeAction::SetVideoLiked { .. }
+            | TubeAction::SetHistoryEntry { .. }
+            | TubeAction::ClearHistory { .. }
             | TubeAction::LikeComment { .. }
             | TubeAction::SetCommentLiked { .. }
             | TubeAction::ToggleSubscription { .. }
@@ -694,6 +735,18 @@ fn video_resource(model: &TubeModel, video_id: &str, include_comments: bool) -> 
             })
             .reversible(),
         );
+    if let Some(mark_watched) = view_spec(
+        "mark-watched",
+        "Mark watched",
+        &TubeOperation::RecordHistory {
+            video_id: video_id.to_string(),
+        },
+    ) {
+        resource =
+            resource.with_action(mark_watched.with_description(
+                "Add this video to owner-local, device-synchronised watch history",
+            ));
+    }
     if let Some(download) = view_spec(
         "download",
         "Download video",
@@ -824,6 +877,7 @@ fn navigation_resource() -> Resource {
         ("home", "Open Home", Route::Home),
         ("trending", "Open Trending", Route::Trending),
         ("subscriptions", "Open subscriptions", Route::Subscriptions),
+        ("queue", "Open shared watch queue", Route::Queue),
         ("history", "Open watch history", Route::History),
         ("settings", "Open settings", Route::Settings),
     ] {
@@ -831,8 +885,52 @@ fn navigation_resource() -> Resource {
             navigation = navigation.with_action(spec);
         }
     }
+    if let Some(spec) = view_spec(
+        "toggle-sidebar",
+        "Show or hide navigation",
+        &TubeOperation::ToggleSidebar,
+    ) {
+        navigation = navigation.with_action(spec);
+    }
 
     navigation
+}
+
+/// Return the exact navigation binding used by Tube's visible rail.  Keeping
+/// this beside `navigation_resource` means a redesign cannot accidentally
+/// leave a pretty custom control on a private callback path while Ctrl+K and
+/// agents use a different operation.
+pub fn navigation_binding(route: &Route) -> Option<tilo_actions::ActionBinding<()>> {
+    let action_id = match route {
+        Route::Home => "home",
+        Route::Trending => "trending",
+        Route::Subscriptions => "subscriptions",
+        Route::Queue => "queue",
+        Route::History => "history",
+        Route::Settings => "settings",
+        // Entity routes require an id and are therefore reached by their
+        // corresponding entity resource rather than a generic rail button.
+        Route::Watch(_) | Route::Channel(_) | Route::Playlist(_) | Route::Search(_) => {
+            return None;
+        }
+    };
+    tilo_actions::ActionBinding::unit_for(&navigation_resource(), action_id).ok()
+}
+
+/// Binding for the visible navigation-drawer toggle. The rail state is local
+/// presentation state, but the verb remains an addressable view action so
+/// keyboard users, assistive technology, Ctrl+K, and agents use one route.
+pub fn sidebar_binding() -> Option<tilo_actions::ActionBinding<()>> {
+    tilo_actions::ActionBinding::unit_for(&navigation_resource(), "toggle-sidebar").ok()
+}
+
+/// Resolve the canonical queue-membership action used by a visible video
+/// control. It stays an action binding rather than a local UI mutation: queue
+/// writes are host-serialised shared-document changes, so an unavailable host
+/// can never make the app pretend a video was saved.
+pub fn queue_binding(model: &TubeModel, video_id: &str) -> Option<tilo_actions::ActionBinding<()>> {
+    let resource = video_resource(model, video_id, false)?;
+    tilo_actions::ActionBinding::unit_for(&resource, "queue").ok()
 }
 
 fn library_resource(model: &TubeModel) -> Resource {
@@ -999,21 +1097,28 @@ fn subscriptions_resource(model: &TubeModel) -> Resource {
     subscriptions
 }
 
-/// Ordered device-local watch history. Entries are membership resources rather
-/// than aliases of `tube.video:*`, preserving both the original video identity
-/// and the user's chronological history identity for local automation clients.
+/// Ordered private-per-profile history. Entries are keyed membership resources
+/// instead of aliases of `tube.video:*`, preserving both video identity and a
+/// stable history address for the owner's devices. This collection is not a
+/// collaborator activity feed.
 fn history_resource(model: &TubeModel) -> Resource {
     let mut history = Resource::new("tube.history", "tube.collection", "Watch history");
+    if let Some(clear) = view_spec("clear", "Clear watch history", &TubeOperation::ClearHistory) {
+        history = history.with_action(
+            clear
+                .with_description("Clear owner-local, device-synchronised watch history")
+                .destructive(),
+        );
+    }
     for video_id in model.history.iter().take(MAX_RESOURCE_ENTITIES) {
-        let Some(video) = model.video(video_id) else {
-            // Do not invent a title for an evicted/unknown video. The durable
-            // id remains useful to clients, and opening it will fail closed.
-            continue;
-        };
+        let label = model.video(video_id).map_or_else(
+            || resource_label(&format!("Watched video {video_id}")),
+            |video| resource_label(&video.title),
+        );
         let mut entry = Resource::new(
             format!("tube.history:{video_id}"),
             "tube.history-entry",
-            resource_label(&video.title),
+            label,
         );
         if let Some(open) = view_spec(
             "open",
@@ -1023,6 +1128,15 @@ fn history_resource(model: &TubeModel) -> Resource {
             },
         ) {
             entry = entry.with_action(open);
+        }
+        if let Some(remove) = view_spec(
+            "remove",
+            "Remove from history",
+            &TubeOperation::RemoveHistory {
+                video_id: video_id.clone(),
+            },
+        ) {
+            entry = entry.with_action(remove);
         }
         history = history.with_child(entry);
     }
@@ -1219,7 +1333,7 @@ mod tests {
     use super::*;
     use crate::app::TubeApp;
     use crate::model::Route;
-    use qos_actions::{ActionRegistry, LocalTransport};
+    use tilo_actions::{ActionRegistry, LocalTransport};
     use ui::widget::Widget;
 
     /// A `TubeApp` sitting on the watch page of a sample video that has comments.
@@ -1362,12 +1476,44 @@ mod tests {
                 .iter()
                 .any(|action| action.id == "remove")
         );
+        assert!(history.actions.iter().any(|action| action.id == "clear"));
+        assert!(
+            history.children[0]
+                .actions
+                .iter()
+                .any(|action| action.id == "remove")
+        );
+        let videos = library
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "tube.videos")
+            .expect("videos collection");
+        assert!(
+            videos.children[0]
+                .actions
+                .iter()
+                .any(|action| action.id == "mark-watched")
+        );
+    }
+
+    #[test]
+    fn legacy_shared_history_actions_are_refused() {
+        let mut doc = AutoCommit::new();
+        let watch = TubeAction::SetHistoryEntry {
+            owner_id: "user:alice".into(),
+            video_id: "v1".into(),
+            watched_at_ms: 10,
+            present: true,
+            mutation_id: "alice:watch:v1:10".into(),
+        };
+        assert!(watch.apply(&mut doc).is_err());
+        assert!(doc.get(&ROOT, "tube").unwrap().is_none());
     }
 
     #[test]
     fn queue_membership_is_an_absolute_keyed_tombstone() {
         let mut doc = AutoCommit::new();
-        qos_actions::Action::apply(
+        tilo_actions::Action::apply(
             &TubeAction::SetQueueMembership {
                 video_id: "video-1".into(),
                 queued: true,
@@ -1375,7 +1521,7 @@ mod tests {
             &mut doc,
         )
         .expect("queue add applies");
-        qos_actions::Action::apply(
+        tilo_actions::Action::apply(
             &TubeAction::SetQueueMembership {
                 video_id: "video-1".into(),
                 queued: false,
@@ -1400,7 +1546,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         let comment_id = "video-1#comment".to_string();
         let reply_id = reply_key(&comment_id, "Useful explanation");
-        qos_actions::Action::apply(
+        tilo_actions::Action::apply(
             &TubeAction::SetCommentLiked {
                 comment_id: comment_id.clone(),
                 liked: false,
@@ -1408,7 +1554,7 @@ mod tests {
             &mut doc,
         )
         .expect("comment-like tombstone applies");
-        qos_actions::Action::apply(
+        tilo_actions::Action::apply(
             &TubeAction::SetCommentReply {
                 comment_id: comment_id.clone(),
                 reply_id: reply_id.clone(),
@@ -1463,7 +1609,7 @@ mod tests {
             TubeAction::CyclePreferredQuality,
         ] {
             assert!(matches!(
-                qos_actions::Action::apply(&action, &mut doc),
+                tilo_actions::Action::apply(&action, &mut doc),
                 Err(ActionError::Refused(_))
             ));
         }
@@ -1635,9 +1781,9 @@ mod tests {
         palette: &mut ui::ActionPalette,
         doc: &mut AutoCommit,
         registry: &ActionRegistry,
-        transport: &mut dyn qos_actions::ActionTransport,
+        transport: &mut dyn tilo_actions::ActionTransport,
         needle: &str,
-    ) -> qos_actions::Dispatched {
+    ) -> tilo_actions::Dispatched {
         let idx = palette
             .result_labels()
             .iter()
@@ -1664,7 +1810,7 @@ mod tests {
         assert_eq!(read_bool(&doc, "likes", &vid), None, "not liked yet");
         let mut tx = LocalTransport::new();
         let d = run_row(&mut palette, &mut doc, &registry(), &mut tx, "Like video");
-        assert!(matches!(d, qos_actions::Dispatched::AppliedLocal(_)));
+        assert!(matches!(d, tilo_actions::Dispatched::AppliedLocal(_)));
         assert_eq!(
             read_bool(&doc, "likes", &vid),
             Some(true),
@@ -1712,7 +1858,7 @@ mod tests {
             &mut tx,
             "Cycle preferred quality",
         );
-        assert!(matches!(quality, qos_actions::Dispatched::AppliedLocal(_)));
+        assert!(matches!(quality, tilo_actions::Dispatched::AppliedLocal(_)));
         assert_eq!(
             read_str(&doc, "settings", "preferred_quality").as_deref(),
             Some("720p")
@@ -1727,7 +1873,10 @@ mod tests {
             &mut tx,
             "Cycle Sponsor handling",
         );
-        assert!(matches!(category, qos_actions::Dispatched::AppliedLocal(_)));
+        assert!(matches!(
+            category,
+            tilo_actions::Dispatched::AppliedLocal(_)
+        ));
         let (Value::Object(ObjType::Map), tube) = doc.get(&ROOT, "tube").unwrap().unwrap() else {
             panic!("tube root exists");
         };
@@ -1788,7 +1937,7 @@ mod tests {
             .take_dispatch(&mut doc, &registry(), &mut tx)
             .expect("the selected action attempted dispatch")
             .unwrap_err();
-        assert!(matches!(error, qos_actions::ActionError::Refused(_)));
+        assert!(matches!(error, tilo_actions::ActionError::Refused(_)));
         assert!(doc.get(&ROOT, "tube").unwrap().is_none());
         let _ = vid;
     }
@@ -1824,7 +1973,7 @@ mod tests {
         assert_eq!(pair.kind, OperationKind::Effect);
         assert!(!matches!(
             pair.contract.confirmation,
-            qos_actions::ConfirmationPolicy::None
+            tilo_actions::ConfirmationPolicy::None
         ));
         let revoke = resource.children[0]
             .actions
@@ -1835,7 +1984,7 @@ mod tests {
         assert_eq!(revoke.contract.retry, RetryPolicy::Idempotent);
         assert!(!matches!(
             revoke.contract.confirmation,
-            qos_actions::ConfirmationPolicy::None
+            tilo_actions::ConfirmationPolicy::None
         ));
         assert_eq!(pair.params()[0].ty, ParamType::Secret);
     }

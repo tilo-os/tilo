@@ -51,8 +51,8 @@ pub fn breadcrumb_components(
         }
         return out;
     }
-    out.push(("/".into(), PathBuf::from("/")));
-    let mut current = PathBuf::from("/");
+    let mut current = filesystem_root(cwd);
+    out.push((current.display().to_string(), current.clone()));
     for comp in cwd.components() {
         if let std::path::Component::Normal(name) = comp {
             current.push(name);
@@ -60,4 +60,33 @@ pub fn breadcrumb_components(
         }
     }
     out
+}
+
+/// The drive or share root on Windows; `/` for unprefixed paths.
+pub fn filesystem_root(path: &Path) -> PathBuf {
+    if let Some(std::path::Component::Prefix(prefix)) = path.components().next() {
+        let mut root = PathBuf::from(prefix.as_os_str());
+        root.push(std::path::MAIN_SEPARATOR_STR);
+        root
+    } else {
+        PathBuf::from("/")
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn breadcrumbs_stay_on_the_selected_drive_or_share() {
+        for (directory, root) in [
+            (r"D:\projects\notes", r"D:\"),
+            (r"\\server\share\projects\notes", r"\\server\share\"),
+        ] {
+            let trail = breadcrumb_components(Path::new(directory), None, &[]);
+            assert_eq!(trail.first().unwrap().1, PathBuf::from(root));
+            assert_eq!(trail.last().unwrap().1, PathBuf::from(directory));
+            assert!(trail.iter().all(|(_, path)| path.starts_with(root)));
+        }
+    }
 }

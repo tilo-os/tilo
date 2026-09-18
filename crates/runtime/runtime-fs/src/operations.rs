@@ -821,7 +821,7 @@ fn copy_publish(
         ctx.effect(auth, Some(into), || reject_ancestry(source, &destination))?;
     }
     let stage_name =
-        EntryName::new(format!(".qos-stage-{}-{}", ctx.work.id.native(), ctx.item).into())?;
+        EntryName::new(format!(".tilo-stage-{}-{}", ctx.work.id.native(), ctx.item).into())?;
     let mut step = ctx.work.owner.step(&ctx.work.id, ctx.item)?;
     step.source = source.as_ref().map(|(_, s)| s.locator.clone());
     step.stage = Some(ctx.session().mutation_locator(into, &stage_name, None)?);
@@ -1489,7 +1489,7 @@ fn fingerprint(
     name: &EntryName,
 ) -> Result<Fingerprint, FsError> {
     #[cfg(test)]
-    if name.as_os_str().as_bytes().starts_with(b".qos-stage-") {
+    if name.as_os_str().as_bytes().starts_with(b".tilo-stage-") {
         ctx.barrier("stage-fingerprint");
         if ctx.work.hooks.stage_fingerprint_error {
             return Err(FsError::Io(rustix::io::Errno::IO.into()));
@@ -1860,7 +1860,7 @@ pub(super) mod tests {
     fn owner() -> FsOwner {
         FsOwner {
             workspace: "test-room".into(),
-            app_id: "dev.qos.file-explorer".into(),
+            app_id: "dev.tilo.file-explorer".into(),
         }
     }
     fn rights() -> Vec<FsRight> {
@@ -2016,7 +2016,7 @@ pub(super) mod tests {
                     p.file_name()
                         .unwrap()
                         .to_string_lossy()
-                        .starts_with(".qos-stage-")
+                        .starts_with(".tilo-stage-")
                 })
                 .unwrap()
         }

@@ -1,10 +1,10 @@
-# qOS coherence architecture — how the layers become one system
+# Tilo coherence architecture — how the layers become one system
 
 The through-line, top to bottom, every layer keyed on the same two vocabularies —
 **one identity** and **one typed action/resource model**:
 
 ```
-identity (TPM+FIDO2)                     ← qos-user-identity
+identity (TPM+FIDO2)                     ← tilo-user-identity
   └─ workspace = {host, collaborators, permissions, virtual desktops}
        └─ state = CRDT docs + a fuse-fs subtree           ← automerge + fs (iroh/blake3)
             └─ actions  (typed, signed, replayable, permission-gated, EXPORTABLE)
@@ -33,8 +33,8 @@ model right and the rest composes.
 
 There is **no single cloud**. The unit of sync is a **workspace**: its CRDT doc-set +
 its fuse-fs subtree, replicated between an authoritative **host** and its **clients** over
-iroh. A host is any qOS machine in host mode: your laptop (P2P invites), your always-on
-home server, or a company cluster (`qos-relay`, `compositor/hosted.rs`).
+iroh. A host is any Tilo machine in host mode: your laptop (P2P invites), your always-on
+home server, or a company cluster (`tilo-relay`, `compositor/hosted.rs`).
 
 - **Phone + desktop + home server sync:** all three are *clients* of one personal
   workspace whose durable host is the home server; when the server is off they P2P and
@@ -60,10 +60,10 @@ home server, or a company cluster (`qos-relay`, `compositor/hosted.rs`).
 - **Ad-hoc / limited invites = attenuable capability tokens.** A signed invite grants
   {this identity, this workspace, this role, optionally time-boxed, optionally one
   sub-resource}. Tokens can only *narrow*, never widen.
-- **Off-qOS reach.** (a) *Our apps off qOS*: they're Rust + the ui toolkit + the collab
+- **Off-Tilo reach.** (a) *Our apps off Tilo*: they're Rust + the ui toolkit + the collab
   library — run as a normal binary on any OS, speak iroh+CRDT to a workspace host; OS
   integration (portals/fuse/presence) degrades gracefully. The collab layer is a
-  **library, not an OS feature.** (b) *Generic non-qOS Linux apps*: can't speak CRDT →
+  **library, not an OS feature.** (b) *Generic non-Tilo Linux apps*: can't speak CRDT →
   compositor surface-stream + input-injection (shared-screen-with-multi-input). Kept as
   the honest fallback tier; not true co-edit.
 
@@ -137,8 +137,8 @@ sane roles (owner/editor/commenter/viewer) that a user can then refine.
   (global). Apps that want a visible field use a thin `SearchField` that opens the *same*
   palette scoped to them — one implementation, zero duplication. Search does **not live in
   the app**; the app only *exports resources + actions*.
-- **Off-qOS:** the palette ships with the toolkit (app-scoped works anywhere); only the
-  *global* provider (fs full-text, all installed resource types) is qOS-only. Graceful.
+- **Off-Tilo:** the palette ships with the toolkit (app-scoped works anywhere); only the
+  *global* provider (fs full-text, all installed resource types) is Tilo-only. Graceful.
 - **LLM-navigable = actions exportable headlessly.** Resources are typed, addressable
   (`ResourceId`), nested, and carry actions. An external caller (LLM/script/app) can
   enumerate → select by id → invoke an action **without rendering** — this is exactly why
@@ -158,7 +158,7 @@ sane roles (owner/editor/commenter/viewer) that a user can then refine.
   odt/docx · desktop-env (resize/reorder/h-scroll/drag-file) · fractional scaling · HDR ·
   terminal redesign.
 - **Next coherence wave (after these land):** (1) workspace/host/sync runtime +
-  per-app-backend placement + durability (on qos-relay + hosted.rs); (2) capability
+  per-app-backend placement + durability (on tilo-relay + hosted.rs); (2) capability
   permission system + FUSE enforcement + the role-matrix UI; (3) make Ctrl+K canonical
   (retire app search bars, permission-aware ranked providers, headless action API);
   (4) the admin-workspace app for server management.

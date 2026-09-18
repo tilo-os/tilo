@@ -1,0 +1,306 @@
+#!/bin/sh
+# Common display-manager lifecycle for both package-owned Tilo session entries.
+#
+# The caller must be one of the package-owned wrappers. The production wrapper
+# supplies its fixed /usr/bin/tilo-shell path; the developer wrapper supplies a
+# canonical path only after validating ownership, permissions, and the build
+# marker. This helper never discovers a compositor through the environment.
+set -eu
+
+case $# in
+    0) echo 'tilo-session-runner: missing compositor path' >&2; exit 2 ;;
+esac
+TILO_SHELL=$1
+shift
+case "$TILO_SHELL" in
+    /*) ;;
+    *) echo 'tilo-session-runner: compositor path must be absolute' >&2; exit 2 ;;
+esac
+[ -x "$TILO_SHELL" ] || {
+    echo "tilo-session-runner: $TILO_SHELL is missing or not executable" >&2
+    exit 1
+}
+
+SYSTEMCTL=/usr/bin/systemctl
+SYSTEMD_CAT=/usr/bin/systemd-cat
+DBUS_UPDATE=/usr/bin/dbus-update-activation-environment
+FLIGHT_RECORDER=/usr/libexec/tilo-flight-recorder
+SESSION_TARGET=tilo-graphical-session.target
+target_started=0
+environment_imported=0
+shell_pid=
+logout_request=
+flight_log=
+flight_pipe=
+flight_relay_pid=
+
+# `DesktopNames=tilo` in the .desktop entry selects tilo-portals.conf;
+# display managers export it as XDG_CURRENT_DESKTOP, but not every one does,
+# so make it certain.
+XDG_CURRENT_DESKTOP=tilo
+XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
+
+if [ ! -x "$TILO_SHELL" ]; then
+    echo "tilo-session: $TILO_SHELL is missing or not executable" >&2
+    exit 1
+fi
+
+if [ ! -x "$SYSTEMCTL" ]; then
+    echo "tilo-session: $SYSTEMCTL is missing or not executable" >&2
+    exit 1
+fi
+
+if [ ! -x "$SYSTEMD_CAT" ]; then
+    echo "tilo-session: $SYSTEMD_CAT is missing or not executable" >&2
+    exit 1
+fi
+
+if [ ! -x "$DBUS_UPDATE" ]; then
+    echo "tilo-session: $DBUS_UPDATE is missing or not executable" >&2
+    exit 1
+fi
+
+if [ ! -x "$FLIGHT_RECORDER" ]; then
+    echo "tilo-session: $FLIGHT_RECORDER is missing or not executable" >&2
+    exit 1
+fi
+
+stop_target() {
+    if [ -n "$flight_relay_pid" ]; then
+        wait "$flight_relay_pid" 2>/dev/null || true
+        flight_relay_pid=
+    fi
+    if [ -n "$flight_pipe" ]; then
+        rm -f -- "$flight_pipe"
+        flight_pipe=
+    fi
+    if [ -n "$logout_request" ]; then
+        rm -f -- "$logout_request"
+        logout_request=
+    fi
+    if [ "$target_started" = 1 ]; then
+        "$SYSTEMCTL" --user stop "$SESSION_TARGET" >/dev/null 2>&1 || true
+        target_started=0
+    fi
+    if [ "$environment_imported" = 1 ]; then
+        # D-Bus has no unset operation, so empty its Tilo identity before
+        # removing every imported selector from the user manager. Do this
+        # even when starting the session target failed part-way through.
+        "$DBUS_UPDATE" --systemd \
+            XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE= >/dev/null 2>&1 || true
+        "$SYSTEMCTL" --user unset-environment \
+            DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION \
+            XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE \
+            >/dev/null 2>&1 || true
+        environment_imported=0
+    fi
+}
+
+# Failures before the compositor starts would otherwise go only to whatever
+# transient stderr handling the display manager happens to provide.  Keep this
+# message fixed and credential-free: it is the breadcrumb needed to distinguish
+# a Tilo grey screen caused by session handoff from one caused by the compositor.
+# Do not exec through systemd-cat here; the normal compositor path below owns
+# its single long-lived stdout/stderr relay.
+journal_startup_failure() {
+    phase=$1
+    status=$2
+    printf 'tilo-session: startup failed during %s (exit status %s)\n' \
+        "$phase" "$status" |
+        "$SYSTEMD_CAT" --identifier=tilo-session --priority=err \
+            --level-prefix=false >/dev/null 2>&1 || true
+}
+
+# A compositor return without the private logout marker is never a successful
+# desktop logout, even when a bug in the compositor happens to return status 0.
+# Preserve a non-zero compositor status verbatim, but turn a silent zero into a
+# failure and leave one stable journal breadcrumb for post-login diagnosis.
+journal_unexpected_shell_exit() {
+    status=$1
+    printf 'tilo-session: compositor exited without a logout request (exit status %s)\n' \
+        "$status" |
+        "$SYSTEMD_CAT" --identifier=tilo-session --priority=err \
+            --level-prefix=false >/dev/null 2>&1 || true
+}
+
+# The user manager is shared by every login of this Unix account.  Normally a
+# display manager has stopped the prior desktop's graphical targets before it
+# invokes us, but a killed wrapper or a failed logout can leave them active.
+# Starting Tilo on top of that state changes the manager's desktop variables
+# without restarting the already-running portal frontend, which leaves the
+# old desktop backend selected.  Tear the stale lifecycle down *before*
+# publishing Tilo's identity so service stop hooks still observe their own
+# previous environment.
+#
+# A same-user graphical session is necessarily exclusive here: both
+# XDG_CURRENT_DESKTOP and D-Bus activation are user-manager globals.  It was
+# never safe to run this wrapper alongside another desktop for the same user;
+# making that state explicit and deterministic is safer than silently mixing
+# their portal services.
+stop_predecessor_graphical_session() {
+    predecessor_active=0
+    for target in "$SESSION_TARGET" graphical-session.target graphical-session-pre.target; do
+        if "$SYSTEMCTL" --user is-active --quiet "$target"; then
+            predecessor_active=1
+            break
+        fi
+    done
+    if [ "$predecessor_active" = 1 ]; then
+        if "$SYSTEMCTL" --user stop \
+            "$SESSION_TARGET" graphical-session.target graphical-session-pre.target; then
+            :
+        else
+            status=$?
+            journal_startup_failure 'previous graphical session shutdown' "$status"
+            exit "$status"
+        fi
+    fi
+}
+
+forward_signal() {
+    signal=$1
+    status=$2
+    trap - HUP INT TERM
+    if [ -n "$shell_pid" ] && kill -0 "$shell_pid" 2>/dev/null; then
+        kill "-$signal" "$shell_pid" 2>/dev/null || true
+        wait "$shell_pid" 2>/dev/null || true
+    fi
+    exit "$status"
+}
+
+trap stop_target EXIT
+trap 'forward_signal HUP 129' HUP
+trap 'forward_signal INT 130' INT
+trap 'forward_signal TERM 143' TERM
+
+# A systemd user manager and the D-Bus activation environment survive desktop
+# switches. Remove display values from the manager that just ended, then put
+# Tilo's desktop identity in both activation paths before owning the standard
+# graphical-session targets for exactly as long as this compositor lives.
+# xdg-desktop-portal refuses activation unless graphical-session.target is
+# active and otherwise may retain the previous desktop's backend selection.
+#
+# The D-Bus update is also relevant to non-systemd services such as GCR's
+# SystemPrompter. It deliberately does not publish DISPLAY/WAYLAND_DISPLAY:
+# the compositor creates its socket after this wrapper starts, and the
+# activation API cannot safely guess or remove the previous socket value.
+stop_predecessor_graphical_session
+"$SYSTEMCTL" --user unset-environment \
+    DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION \
+    XDG_SESSION_DESKTOP >/dev/null 2>&1 || true
+# From here on, an unsuccessful handoff still attempts cleanup.  The D-Bus
+# update is a single request, but treating it as potentially partial makes the
+# failure path safe if a future implementation changes that detail.
+environment_imported=1
+if "$DBUS_UPDATE" --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE >/dev/null 2>&1; then
+    :
+else
+    status=$?
+    journal_startup_failure 'D-Bus activation environment update' "$status"
+    exit "$status"
+fi
+if "$SYSTEMCTL" --user import-environment \
+    XDG_CURRENT_DESKTOP XDG_SESSION_TYPE; then
+    :
+else
+    status=$?
+    journal_startup_failure 'systemd user environment import' "$status"
+    exit "$status"
+fi
+if "$SYSTEMCTL" --user start "$SESSION_TARGET"; then
+    :
+else
+    status=$?
+    journal_startup_failure 'Tilo graphical session target start' "$status"
+    exit "$status"
+fi
+target_started=1
+
+# The compositor must not terminate its own logind session: that kills this
+# cleanup-owning wrapper in the same cgroup and leaves Tilo's user targets active
+# for the next desktop. Give it a private, unpredictable request path instead.
+# On logout the shell creates this file and exits; the wrapper's normal EXIT
+# trap then tears down the target and activation environment before GDM starts
+# another session.
+session_runtime=${XDG_RUNTIME_DIR:?}/tilo-session
+mkdir -p -- "$session_runtime"
+chmod 0700 "$session_runtime"
+logout_request=$session_runtime/logout-request-$$
+rm -f -- "$logout_request"
+TILO_SESSION_LOGOUT_REQUEST=$logout_request
+export TILO_SESSION_LOGOUT_REQUEST
+
+# Keep a small persistent flight recorder in addition to journald. Abrupt
+# resets, boot-loader fallback, and journal vacuuming must not erase the only
+# evidence from a failed graphical login. The file contains compositor/app
+# diagnostics only; retain one previous session. A bounded
+# relay keeps only the latest 4 MiB while still streaming every byte to
+# journald, so a pathological app cannot fill the home filesystem.
+flight_dir=${XDG_STATE_HOME:-$HOME/.local/state}/tilo/session-logs
+mkdir -p -- "$flight_dir"
+chmod 0700 "$flight_dir"
+if [ -f "$flight_dir/latest.log" ]; then
+    tail -c 4194304 -- "$flight_dir/latest.log" >"$flight_dir/previous.log.tmp" || true
+    chmod 0600 "$flight_dir/previous.log.tmp"
+    mv -f -- "$flight_dir/previous.log.tmp" "$flight_dir/previous.log"
+fi
+flight_log=$flight_dir/latest.log
+: >"$flight_log"
+chmod 0600 "$flight_log"
+printf 'tilo-flight-record-v1 start=%s pid=%s shell=%s\n' \
+    "$(date --iso-8601=seconds)" "$$" "$TILO_SHELL" >>"$flight_log"
+export TILO_PAINT_STATS=1
+export TILO_LOOP_TIMING=1
+flight_pipe=$session_runtime/flight-record-$$.pipe
+rm -f -- "$flight_pipe"
+mkfifo -m 0600 -- "$flight_pipe"
+"$FLIGHT_RECORDER" "$flight_log" <"$flight_pipe" |
+    "$SYSTEMD_CAT" --identifier=tilo-session --level-prefix=false &
+flight_relay_pid=$!
+
+# --host-desktop-session is the package-owned, distro-neutral declaration that
+# this is a session added to an existing Linux installation. It keeps device
+# identity material in this login's XDG data tree and selects the reduced
+# identity-only OOBE. Do not infer this from distro files or XDG desktop names:
+# neither says how this binary was installed.
+#
+# --backend drm: this is a real login session on a seat of its own, driving
+# KMS directly. The winit backend (the default) is for running nested inside
+# another compositor and would have nothing to attach to here.
+#
+# --firstboot: on the Tilo image a systemd unit creates the user's config
+# directories once before the session. A host has no such unit, so the wrapper
+# performs that idempotent preparation and then falls through to the
+# compositor. Identity creation itself stays interactive in trusted compositor
+# chrome; it is never minted silently by this wrapper.
+# Keep the wrapper alive so normal logout stops the session target and a
+# display-manager termination signal reaches the compositor before cleanup.
+set +e
+# GDM does not provide a portable per-session log file.  Route both streams
+# directly to journald under one stable identifier so a grey screen or early
+# crash remains diagnosable with `journalctl --user -t tilo-session` after the
+# user returns to another desktop.  systemd-cat execs the command and relays
+# its exit status/signals; disabling level-prefix parsing prevents app output
+# from forging journal priorities.
+"$TILO_SHELL" --host-desktop-session --firstboot --backend drm "$@" \
+    >"$flight_pipe" 2>&1 &
+shell_pid=$!
+wait "$shell_pid"
+status=$?
+set -e
+shell_pid=
+wait "$flight_relay_pid" 2>/dev/null || true
+flight_relay_pid=
+printf 'tilo-flight-record-v1 end=%s status=%s logout_request=%s\n' \
+    "$(date --iso-8601=seconds)" "$status" "$([ -e "$logout_request" ] && printf yes || printf no)" \
+    >>"$flight_log"
+if [ -e "$logout_request" ]; then
+    status=0
+else
+    journal_unexpected_shell_exit "$status"
+    if [ "$status" = 0 ]; then
+        status=1
+    fi
+fi
+exit "$status"

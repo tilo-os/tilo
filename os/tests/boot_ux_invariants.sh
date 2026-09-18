@@ -5,18 +5,24 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 uki="$root/os/dev/uki.sh"
 kargs="$root/os/usr/lib/bootc/kargs.d/03-boot.toml"
 containerfile="$root/os/Containerfile"
-theme="$root/os/usr/share/plymouth/themes/qos/qos.plymouth"
-script="$root/os/usr/share/plymouth/themes/qos/qos.script"
+theme="$root/os/usr/share/plymouth/themes/tilo/tilo.plymouth"
+script="$root/os/usr/share/plymouth/themes/tilo/tilo.script"
 
-grep -Fq -- '--splash /out/qos-splash.bmp' "$uki"
-grep -Fq 'make-boot-splash.py /out/qos-splash.bmp' "$uki"
-grep -Fq 'COPY os/dev/make-boot-splash.py' "$containerfile"
-grep -Fq 'plymouth-plugin-script' "$containerfile"
-if ! grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth qos-rollback"' "$containerfile"; then
-  printf 'initramfs must explicitly include crypt, TPM, Plymouth, and qOS rollback unlock modules\n' >&2
+grep -Fq -- '--splash /out/tilo-splash.bmp' "$uki"
+grep -Fq 'make-boot-splash.py /out/tilo-splash.bmp' "$uki"
+# Check the installed path, including grouped COPY instructions.
+# shellcheck source=lib/containerfile.sh
+. "$root/os/tests/lib/containerfile.sh"
+if ! containerfile_has_copy "$containerfile" os/dev/make-boot-splash.py /usr/local/bin/make-boot-splash.py; then
+  printf 'image must install the boot splash generator at its runtime path\n' >&2
   exit 1
 fi
-grep -Fq 'plymouth-set-default-theme qos' "$containerfile"
+grep -Fq 'plymouth-plugin-script' "$containerfile"
+if ! grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback"' "$containerfile"; then
+  printf 'initramfs must explicitly include crypt, TPM, Plymouth, and Tilo rollback unlock modules\n' >&2
+  exit 1
+fi
+grep -Fq 'plymouth-set-default-theme tilo' "$containerfile"
 grep -Fq 'ModuleName=script' "$theme"
 grep -Fq 'Plymouth.SetDisplayPasswordFunction(display_password)' "$script"
 grep -Fq 'if (!global.dialog)' "$script"
@@ -54,7 +60,7 @@ PY
 python3 - "$tmp/plymouth" <<'PY'
 import pathlib, struct, sys
 root = pathlib.Path(sys.argv[1])
-expected = {"qos-logo.png", "entry.png", "lock.png", "bullet.png",
+expected = {"tilo-logo.png", "entry.png", "lock.png", "bullet.png",
             "unlock-heading.png", "unlock-help.png",
             "progress-background.png", "progress-fill.png"}
 assert {path.name for path in root.iterdir()} == expected

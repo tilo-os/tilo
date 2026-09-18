@@ -1,11 +1,11 @@
-//! The whole path, on real code: a signed `.qpkg` published to a real
+//! End-to-end registry-to-install coverage: a signed `.qpkg` published to an
 //! HTTP registry, listed as available, fetched, verified by
-//! `qos-install`, and present in the registry the desktop enumerates
+//! `tilo-install`, and present in the registry the desktop enumerates
 //! installed apps from.
 //!
-//! Nothing here is mocked: real socket, real signed package, real
-//! `qos-install` child process. The assertion that matters:
-//! `launcher::registry` (the compositor's own reader) returns the app.
+//! The test uses a socket, signed package, and `tilo-install` child process;
+//! the final assertion is that `launcher::registry` (the compositor's own
+//! reader) returns the app.
 
 #![allow(
     clippy::unwrap_used,
@@ -32,7 +32,7 @@ use registry_types::{
 };
 
 /// The .qpkg-authoring the local test registry does, shared verbatim
-/// so tests hold the served package to its real contract.
+/// so tests use the same manifest contract as the served package.
 #[path = "../examples/support/authoring.rs"]
 mod authoring;
 
@@ -45,23 +45,23 @@ fn env_lock() -> MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Locate the `qos-install` binary this workspace builds. A missing
-/// binary **fails** the test rather than skipping it — a check that
-/// can't reach its subject proves nothing, and a silent skip would read as a pass.
-fn qos_install_bin() -> PathBuf {
+/// Locate the `tilo-install` binary this workspace builds. A missing
+/// binary **fails** the test rather than skipping it; without the binary the
+/// installation path cannot be exercised.
+fn tilo_install_bin() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let root = manifest_dir
         .ancestors()
         .nth(3)
         .expect("workspace root is three levels above this crate");
     for profile in ["debug", "release"] {
-        let candidate = root.join("target").join(profile).join("qos-install");
+        let candidate = root.join("target").join(profile).join("tilo-install");
         if candidate.exists() {
             return candidate;
         }
     }
     panic!(
-        "qos-install is not built under {}/target/{{debug,release}}. \
+        "tilo-install is not built under {}/target/{{debug,release}}. \
          This test installs a real package with the real installer; \
          build it first with `cargo build -p install`.",
         root.display()
@@ -74,7 +74,7 @@ fn author_qpkg(package_id: &str, identity: &SigningIdentity) -> Vec<u8> {
     let dir = tempfile::tempdir().unwrap();
     let payload = dir.path().join("payload");
     std::fs::create_dir_all(payload.join("bin")).unwrap();
-    std::fs::write(payload.join("bin").join("app"), b"#!/bin/true\nqos app\n").unwrap();
+    std::fs::write(payload.join("bin").join("app"), b"#!/bin/true\ntilo app\n").unwrap();
     let manifest_toml = format!(
         r#"
 [package]
@@ -90,7 +90,7 @@ signature = ""
 
 [sandbox]
 namespaces = ["user"]
-seccomp = "qos-default"
+seccomp = "tilo-default"
 landlock = "strict"
 
 [sandbox.net]
@@ -164,7 +164,7 @@ fn signed_snapshot_json(entry: RegistryEntry, owner: &SigningKey) -> String {
     serde_json::to_string(&snapshot).unwrap()
 }
 
-/// A minimal real HTTP server: GET /entries returns the catalogue JSON, GET /<name>.qpkg returns the package bytes.
+/// A minimal HTTP server: GET /entries returns the catalogue JSON, GET /<name>.qpkg returns the package bytes.
 struct Registry {
     port: u16,
     _thread: std::thread::JoinHandle<()>,
@@ -261,7 +261,7 @@ impl Drop for Env {
     }
 }
 
-const PACKAGE_ID: &str = "dev.qos.catalogue-e2e";
+const PACKAGE_ID: &str = "dev.tilo.catalogue-e2e";
 
 #[test]
 fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
@@ -276,7 +276,7 @@ fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
     let url = format!("http://127.0.0.1:{planned_port}/sheets.qpkg");
     let entry = signed_entry(PACKAGE_ID, &url, &qpkg);
     let entries_json = signed_snapshot_json(entry, &owner);
-    // Bind for real; if the planned port was taken, fall back to whatever we get and rewrite the URL.
+    // Bind the server; if the planned port was taken, fall back to whatever we get and rewrite the URL.
     let registry = Registry::start(entries_json, qpkg.clone());
     let registry = if registry.port == planned_port {
         registry
@@ -303,12 +303,12 @@ fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
     )
     .unwrap();
 
-    let installer_bin = qos_install_bin();
+    let installer_bin = tilo_install_bin();
     let _env = Env::set(&[
-        ("QOS_STORE_CONFIG_DIR", config_dir.path()),
-        ("QOS_STORE_CACHE_DIR", cache_dir.path()),
-        ("QOS_APPS_DATA_DIR", apps_dir.path()),
-        ("QOS_INSTALL_BIN", &installer_bin),
+        ("TILO_STORE_CONFIG_DIR", config_dir.path()),
+        ("TILO_STORE_CACHE_DIR", cache_dir.path()),
+        ("TILO_APPS_DATA_DIR", apps_dir.path()),
+        ("TILO_INSTALL_BIN", &installer_bin),
     ]);
 
     // 1. The registry's entry shows up as available.
@@ -337,7 +337,7 @@ fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
         "the scratch install root must start empty"
     );
 
-    // 3. Install it through the real installer.
+    // 3. Install it through the installer.
     let installed = app_catalogue::install::install(PACKAGE_ID)
         .unwrap_or_else(|e| panic!("install must succeed: {}", e.user_message()));
     assert_eq!(installed.package_id, PACKAGE_ID);
@@ -376,13 +376,13 @@ fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
 fn a_corrupted_download_never_becomes_an_installed_app() {
     let publisher = test_publisher();
     let owner = SigningKey::from_bytes(&[12; 32]);
-    let good = author_qpkg("dev.qos.catalogue-corrupt", &publisher);
+    let good = author_qpkg("dev.tilo.catalogue-corrupt", &publisher);
     // Serve a truncated archive under the same entry.
     let corrupted = good[..good.len() / 2].to_vec();
 
     let registry = Registry::start(String::new(), corrupted.clone());
     let url = format!("http://127.0.0.1:{}/sheets.qpkg", registry.port);
-    let entry = signed_entry("dev.qos.catalogue-corrupt", &url, &good);
+    let entry = signed_entry("dev.tilo.catalogue-corrupt", &url, &good);
     let registry = Registry::start(signed_snapshot_json(entry, &owner), corrupted);
 
     let config_dir = tempfile::tempdir().unwrap();
@@ -402,12 +402,12 @@ fn a_corrupted_download_never_becomes_an_installed_app() {
     )
     .unwrap();
 
-    let installer = qos_install_bin();
+    let installer = tilo_install_bin();
     let _env = Env::set(&[
-        ("QOS_STORE_CONFIG_DIR", config_dir.path()),
-        ("QOS_STORE_CACHE_DIR", cache_dir.path()),
-        ("QOS_APPS_DATA_DIR", apps_dir.path()),
-        ("QOS_INSTALL_BIN", &installer),
+        ("TILO_STORE_CONFIG_DIR", config_dir.path()),
+        ("TILO_STORE_CACHE_DIR", cache_dir.path()),
+        ("TILO_APPS_DATA_DIR", apps_dir.path()),
+        ("TILO_INSTALL_BIN", &installer),
     ]);
 
     // The entry has to actually be on offer, or the refusal below would prove nothing about the bytes.
@@ -416,12 +416,12 @@ fn a_corrupted_download_never_becomes_an_installed_app() {
         listing
             .apps
             .iter()
-            .any(|a| a.package_id == "dev.qos.catalogue-corrupt"),
+            .any(|a| a.package_id == "dev.tilo.catalogue-corrupt"),
         "the entry must be offered before its download can be the thing \
          that fails: {listing:?}"
     );
 
-    let err = app_catalogue::install::install("dev.qos.catalogue-corrupt")
+    let err = app_catalogue::install::install("dev.tilo.catalogue-corrupt")
         .expect_err("truncated bytes must not install");
     assert!(
         !matches!(err, app_catalogue::install::InstallError::NotOffered { .. }),
@@ -439,7 +439,7 @@ fn a_corrupted_download_never_becomes_an_installed_app() {
 
 // Installing an app and opening it is the ordinary path.
 
-/// A payload root shaped exactly like what `qos-install` leaves
+/// A payload root shaped exactly like what `tilo-install` leaves
 /// behind: manifest.toml beside a bin/ — what every harness points a
 /// local registry's --payload at.
 fn packaged_payload_root(dir: &Path, package_id: &str) -> PathBuf {
@@ -463,7 +463,7 @@ signature = ""
 
 [sandbox]
 namespaces = ["user", "pid", "uts", "ipc", "mount"]
-seccomp = "qos-default"
+seccomp = "tilo-default"
 landlock = "strict"
 
 [sandbox.net]
@@ -471,7 +471,7 @@ mode = "off"
 
 [sandbox.services]
 collab = "optional@1"
-qos-fs = "optional@1"
+tilo-fs = "optional@1"
 
 [entrypoint]
 bin = "bin/word-processor"
@@ -484,7 +484,7 @@ type = "gui"
     root
 }
 
-/// Serve `qpkg` under `package_id` and install it with the real installer, returning what the desktop's own reader then sees.
+/// Serve `qpkg` under `package_id` and install it with the installer, returning what the desktop's own reader then sees.
 fn publish_and_install(
     package_id: &str,
     qpkg: Vec<u8>,
@@ -518,12 +518,12 @@ fn publish_and_install(
     )
     .unwrap();
 
-    let installer = qos_install_bin();
+    let installer = tilo_install_bin();
     let _env = Env::set(&[
-        ("QOS_STORE_CONFIG_DIR", config_dir.path()),
-        ("QOS_STORE_CACHE_DIR", cache_dir.path()),
-        ("QOS_APPS_DATA_DIR", apps_dir),
-        ("QOS_INSTALL_BIN", &installer),
+        ("TILO_STORE_CONFIG_DIR", config_dir.path()),
+        ("TILO_STORE_CACHE_DIR", cache_dir.path()),
+        ("TILO_APPS_DATA_DIR", apps_dir),
+        ("TILO_INSTALL_BIN", &installer),
         ("XDG_RUNTIME_DIR", runtime_dir),
     ]);
 
@@ -541,7 +541,7 @@ fn publish_and_install(
 /// gets must equal what the package declared, service for service.
 #[test]
 fn an_app_installed_from_a_registry_keeps_the_services_it_declared() {
-    const PKG: &str = "dev.qos.catalogue-collab";
+    const PKG: &str = "dev.tilo.catalogue-collab";
     let scratch = tempfile::tempdir().unwrap();
     let root = packaged_payload_root(scratch.path(), PKG);
 
@@ -614,7 +614,7 @@ fn an_app_installed_from_a_registry_keeps_the_services_it_declared() {
 
 /// A payload that is not part of a package still installs (the local
 /// registry accepts --payload /bin/true), but is published as
-/// declaring no services rather than silently passing for a real package.
+/// declaring no services rather than silently passing for a package.
 #[test]
 fn a_payload_with_no_manifest_is_published_as_declaring_no_services() {
     let bare = tempfile::tempdir().unwrap();
@@ -622,6 +622,6 @@ fn a_payload_with_no_manifest_is_published_as_declaring_no_services() {
     std::fs::write(&bin, b"#!/bin/true\n").unwrap();
 
     let publisher = test_publisher();
-    let authored = authoring::author("dev.qos.bare", "Bare", &bin, None, &publisher).unwrap();
+    let authored = authoring::author("dev.tilo.bare", "Bare", &bin, None, &publisher).unwrap();
     assert_eq!(authored.source, authoring::ManifestSource::Synthesised);
 }

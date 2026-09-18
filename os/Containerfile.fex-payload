@@ -1,0 +1,24 @@
+# syntax=docker/dockerfile:1.7
+# Offline ARM payload build. Both OCI inputs must be promoted digest references.
+# Named fex-source context must include the verified checkout and recursive .git
+# metadata; it is mounted read-only and checked again before compilation.
+ARG FEX_BUILDROOT_REF
+ARG FEX_X86_SDK_REF
+# This stage supplies files to the ARM compiler; it never executes x86 code.
+FROM --platform=linux/amd64 ${FEX_X86_SDK_REF} AS x86-sdk
+FROM ${FEX_BUILDROOT_REF} AS build
+ARG FEX_BUILDROOT_REF
+ARG FEX_X86_SDK_REF
+ARG BUILD_JOBS=2
+COPY os/external-assets/fex-source.env /tilo/os/external-assets/fex-source.env
+COPY os/dev/fetch-fex-source.sh os/dev/build-fex-payload.sh os/dev/validate-fex-payload.py os/dev/apply-fex-patches.py /tilo/os/dev/
+COPY os/external-assets/fex-patches/ /tilo/os/external-assets/fex-patches/
+COPY os/dev/toolchains/ /tilo/os/dev/toolchains/
+RUN --network=none --mount=type=bind,from=fex-source,source=/,target=/src,ro \
+    --mount=type=bind,from=x86-sdk,source=/,target=/x86-sdk,ro \
+    bash /tilo/os/dev/build-fex-payload.sh
+
+# Artifact image, not an executable OS or acceptance claim. Release promotion
+# also requires the full upstream suite and the Tilo runtime/capsule tests.
+FROM scratch
+COPY --from=build /stage/ /

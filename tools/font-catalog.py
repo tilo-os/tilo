@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Verify and stage qOS fonts. Requires Python 3.11+; no third-party modules."""
+"""Verify and stage Tilo fonts. Requires Python 3.11+; no third-party modules."""
 import argparse
 import hashlib
 from pathlib import Path
 import shutil
 import tomllib
 
-AUTHORITATIVE = Path(__file__).resolve().parents[1] / "ui/assets/fonts/manifest.toml"
+AUTHORITATIVE = Path(__file__).resolve().parents[1] / "crates/sdk/ui-core/assets/fonts/manifest.toml"
 
 def manifest(root):
     path = root / "manifest.toml"
@@ -14,7 +14,7 @@ def manifest(root):
         raise ValueError(f"missing manifest: {path}")
     raw = path.read_bytes()
     if raw != AUTHORITATIVE.read_bytes():
-        raise ValueError(f"manifest differs from this qOS build: {path}")
+        raise ValueError(f"manifest differs from this Tilo build: {path}")
     result = tomllib.loads(raw.decode())
     if result["schema"] != 1:
         raise ValueError(f"unsupported schema: {path}")
@@ -84,7 +84,7 @@ def main():
         else:
             stage(args.source, args.dest, args.scope)
     except (ValueError, OSError) as error:
-        parser.exit(1, f"qOS font catalog: {error}\n")
+        parser.exit(1, f"Tilo font catalog: {error}\n")
 
 if __name__ == "__main__":
     main()

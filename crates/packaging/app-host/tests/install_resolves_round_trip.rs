@@ -1,4 +1,4 @@
-//! Round-trip test: install a real .qpkg via the library surface,
+//! Round-trip test: install a .qpkg via the library surface,
 //! then resolve it and check the payload landed on disk.
 
 #![allow(
@@ -34,7 +34,7 @@ fn install_qpkg_then_resolve_recovers_entry() {
     assert!(entry.payload_root.join("share/splash.png").exists());
     // Manifest text is stored verbatim.
     assert!(!entry.manifest_text.is_empty());
-    assert!(entry.manifest_text.contains("dev.qos.editor"));
+    assert!(entry.manifest_text.contains("dev.tilo.editor"));
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn verified_install_binds_every_registry_identity_before_writing() {
     let store = Store::open(dir.path()).unwrap();
     let (bytes, id) = common::build_qpkg(1);
     let mut expected = expectation(&bytes, id);
-    expected.app_id = "dev.qos.impostor".into();
+    expected.app_id = "dev.tilo.impostor".into();
     assert!(install_verified_qpkg(&store, &bytes, Pinning::Tried, &expected).is_err());
     assert!(
         store.list().is_empty(),

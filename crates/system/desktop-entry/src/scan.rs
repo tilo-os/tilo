@@ -23,7 +23,7 @@ use crate::locale::locale_candidates;
 
 /// `XDG_CURRENT_DESKTOP` this desktop announces, and the name `OnlyShowIn` / `NotShowIn`
 /// are matched against.
-pub const CURRENT_DESKTOP: &str = "nirios";
+pub const CURRENT_DESKTOP: &str = "tilo";
 
 /// What a scan turned up, plus what it declined and why. The counters are not decoration:
 /// "the app I installed is not in the palette" has half a dozen legitimate causes
@@ -346,7 +346,7 @@ mod tests {
         format!("[Desktop Entry]\nType=Application\nName={name}\nExec=/bin/true\n")
     }
 
-    fn nirios() -> Vec<String> {
+    fn tilo() -> Vec<String> {
         vec![CURRENT_DESKTOP.to_string()]
     }
 
@@ -354,7 +354,7 @@ mod tests {
     fn a_subdirectory_becomes_part_of_the_id() {
         let tmp = tempfile::tempdir().unwrap();
         write(tmp.path(), "kde4/konsole.desktop", &app("Konsole"));
-        let scan = scan_dirs(&[tmp.path().to_path_buf()], &nirios());
+        let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo());
         assert_eq!(scan.entries.len(), 1);
         assert_eq!(scan.entries[0].id, "kde4-konsole");
     }
@@ -369,7 +369,7 @@ mod tests {
         write(system.path(), "x.desktop", &app("Theirs"));
         let scan = scan_dirs(
             &[user.path().to_path_buf(), system.path().to_path_buf()],
-            &nirios(),
+            &tilo(),
         );
         assert_eq!(
             scan.entries.len(),
@@ -389,7 +389,7 @@ mod tests {
         write(tmp.path(), "vendor-chat.desktop", body);
         write(tmp.path(), "chat.desktop", body);
 
-        let scan = scan_dirs(&[tmp.path().to_path_buf()], &nirios());
+        let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo());
         assert_eq!(scan.entries.len(), 1, "aliases must not become two apps");
         assert_eq!(scan.stats.duplicate_aliases, 1);
     }
@@ -411,7 +411,7 @@ mod tests {
              X-Flatpak=org.example.Chat\nStartupWMClass=org.example.Chat\n",
         );
 
-        let scan = scan_dirs(&[tmp.path().to_path_buf()], &nirios());
+        let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo());
         assert_eq!(scan.entries.len(), 1, "one application must have one row");
         assert_eq!(scan.stats.duplicate_aliases, 1);
         assert!(matches!(
@@ -437,7 +437,7 @@ mod tests {
              X-Flatpak=org.example.Chat\nStartupWMClass=org.example.Chat\n",
         );
 
-        let scan = scan_dirs(&[tmp.path().to_path_buf()], &nirios());
+        let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo());
         assert_eq!(scan.entries.len(), 2, "names alone must never merge apps");
         assert_eq!(scan.stats.duplicate_aliases, 0);
     }
@@ -452,7 +452,7 @@ mod tests {
             "[Desktop Entry]\nType=Application\nName=Editor\nExec=/bin/true --safe\n",
         );
 
-        let scan = scan_dirs(&[tmp.path().to_path_buf()], &nirios());
+        let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo());
         assert_eq!(scan.entries.len(), 2);
         assert_eq!(scan.stats.duplicate_aliases, 0);
     }
@@ -469,7 +469,7 @@ mod tests {
         write(system.path(), "x.desktop", &app("X"));
         let scan = scan_dirs(
             &[user.path().to_path_buf(), system.path().to_path_buf()],
-            &nirios(),
+            &tilo(),
         );
         assert!(scan.entries.is_empty(), "{:?}", scan.entries);
         assert_eq!(scan.stats.tombstoned, 1);
@@ -494,7 +494,7 @@ mod tests {
             "[Desktop Entry]\nType=Application\nName=C\n",
         );
         write(tmp.path(), "d.desktop", &app("D"));
-        let scan = scan_dirs(&[tmp.path().to_path_buf()], &nirios());
+        let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo());
         assert_eq!(scan.entries.len(), 1);
         assert_eq!(scan.entries[0].name, "D");
         assert_eq!(scan.stats.no_display, 1);
@@ -517,7 +517,7 @@ mod tests {
             "here.desktop",
             "[Desktop Entry]\nType=Application\nName=Here\nExec=/bin/true\nTryExec=/bin/true\n",
         );
-        let scan = scan_dirs(&[tmp.path().to_path_buf()], &nirios());
+        let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo());
         assert_eq!(scan.entries.len(), 1);
         assert_eq!(scan.entries[0].name, "Here");
         assert_eq!(scan.stats.try_exec_missing, 1);
@@ -529,7 +529,7 @@ mod tests {
         write(tmp.path(), "z.desktop", &app("alpha"));
         write(tmp.path(), "a.desktop", &app("Zulu"));
         write(tmp.path(), "m.desktop", &app("Mike"));
-        let scan = scan_dirs(&[tmp.path().to_path_buf()], &nirios());
+        let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo());
         let names: Vec<&str> = scan.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["alpha", "Mike", "Zulu"]);
     }
@@ -543,7 +543,7 @@ mod tests {
             "[Desktop Entry]\nType=Application\nName=App\n\
              Exec=/usr/bin/flatpak run com.x.App\nX-Flatpak=com.x.App\n",
         );
-        let scan = scan_dirs(&[tmp.path().to_path_buf()], &nirios());
+        let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo());
         assert_eq!(
             scan.entries[0].source,
             EntrySource::Flatpak {
@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn a_missing_directory_is_not_an_error() {
-        let scan = scan_dirs(&[PathBuf::from("/nonexistent/qos/applications")], &nirios());
+        let scan = scan_dirs(&[PathBuf::from("/nonexistent/tilo/applications")], &tilo());
         assert!(scan.entries.is_empty());
         assert_eq!(scan.stats.files_seen, 0);
     }

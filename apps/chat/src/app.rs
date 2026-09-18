@@ -26,11 +26,13 @@ use winit::event::WindowEvent;
 
 use ui::ColorCompat;
 use ui::Widget;
+use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{TextInput, TooltipHost, VideoPlayer};
+use ui::widget::tooltip::TooltipHost;
+use ui::widget::{ContextMenu as SharedContextMenu, MenuItem, TextInput, VideoPlayer};
 
 use crate::actions::{self, ChatAction};
 use crate::call::{CallState, SoundEngine};
@@ -67,11 +69,53 @@ pub(crate) enum Focus {
 
 /// A right-click context menu over a channel or category row, or the
 /// inline rename editor it can open.
-#[derive(Clone, Debug)]
 pub(crate) struct ContextMenu {
     pub target: MenuTarget,
-    pub anchor: Point,
     pub items: Vec<MenuAction>,
+    /// Toolkit-owned paint, clamping, pointer/keyboard routing, focus trap,
+    /// and accessibility. Chat only maps the selected row to its domain
+    /// action.
+    pub widget: SharedContextMenu,
+}
+
+impl ContextMenu {
+    pub(crate) fn new(
+        target: MenuTarget,
+        anchor: Point,
+        items: Vec<MenuAction>,
+        viewport: Rect,
+    ) -> Self {
+        let mut widget = SharedContextMenu::new();
+        for action in &items {
+            let item = if action.is_destructive() {
+                MenuItem::destructive_selection(action.label())
+            } else {
+                MenuItem::selection(action.label())
+            };
+            let icon = match action {
+                MenuAction::Rename | MenuAction::EditMessage => Icon::Pencil,
+                MenuAction::Delete | MenuAction::DeleteMessage => Icon::Trash,
+                MenuAction::MoveUp => Icon::ChevronUp,
+                MenuAction::MoveDown | MenuAction::ToggleCollapse => Icon::ChevronDown,
+                MenuAction::NewChannelHere
+                | MenuAction::NewVoiceChannelHere
+                | MenuAction::NewCategory => Icon::Plus,
+                MenuAction::Archive => Icon::Archive,
+                MenuAction::PinMessage => Icon::Pin,
+            };
+            widget.push(item.with_icon(icon));
+        }
+        if viewport.width() > 0.0 && viewport.height() > 0.0 {
+            widget.open_at_clamped([anchor.x as f32, anchor.y as f32], viewport);
+        } else {
+            widget.open_at([anchor.x as f32, anchor.y as f32]);
+        }
+        Self {
+            target,
+            items,
+            widget,
+        }
+    }
 }
 
 /// What a context menu / create flow acts on.
@@ -230,20 +274,15 @@ pub(crate) const SWIPE_COMMIT_DX: f64 = 88.0;
 #[derive(Clone, Debug)]
 pub(crate) enum Hit {
     /// Open the cross-workspace conversation inbox. This is navigation, not a
-    /// second kind of qOS workspace.
+    /// second kind of Tilo workspace.
     Inbox,
-    /// Return from Inbox to channels belonging to the active qOS workspace.
+    /// Return from Inbox to channels belonging to the active Tilo workspace.
     CurrentContext,
     Channel(Id),
     /// A voice-channel member chip in the sidebar — clicking joins the call.
     VoiceChannel(Id),
     /// Toggle a category's collapsed state.
     CategoryToggle(Id),
-    /// Execute a context-menu / create action.
-    MenuAction {
-        target: MenuTarget,
-        action: MenuAction,
-    },
     /// The "+" create-channel button on a category header.
     AddChannel {
         workspace: Id,
@@ -281,6 +320,9 @@ pub(crate) enum Hit {
     FocusMain,
     FocusThread,
     Send,
+    /// Return a scrolled conversation to its newest message without changing
+    /// any shared document state.
+    JumpToLatest,
     ComposerEmoji(Point),
     /// Open the workspace file picker to share an attachment.
     Attach,
@@ -330,6 +372,7 @@ impl Hit {
             Self::FocusRename => "chat.rename".into(),
             Self::FocusEdit => "chat.message-edit".into(),
             Self::Send => "chat.send".into(),
+            Self::JumpToLatest => "chat.jump-to-latest".into(),
             Self::ComposerEmoji(_) => "chat.composer-emoji".into(),
             Self::Attach => "chat.attach".into(),
             Self::AttachPick(path) => format!("chat.attach-pick:{path}"),
@@ -489,19 +532,15 @@ pub struct ChatApp {
     pub(crate) draft_main: String,
     pub(crate) draft_thread: String,
 
-    /// The message composers — shared multiline [`TextInput`]s (Enter sends,
-    /// Shift+Enter inserts a newline) so the composer gets real caret,
-    /// selection, clipboard (Ctrl+C/V/X), focus ring, a11y, and theming for
-    /// free instead of a hand-rolled `String` + caret index. One per surface:
-    /// the main timeline and the open thread. Both are local-mode; each
-    /// keystroke is written back into the per-channel/thread draft `Text` in
-    /// the CRDT (diff-spliced) so a draft stays collaborative + persistent.
+    /// The message composers are shared multiline [`TextInput`]s: Enter sends,
+    /// Shift+Enter inserts a newline, and each maintains a collaborative,
+    /// persistent CRDT draft for its surface.
     pub(crate) composer_main: TextInput,
     pub(crate) composer_thread: TextInput,
 
     // Per-peer view state.
     pub(crate) active_ws: Id,
-    /// The qOS workspace Chat was opened in. Inbox may temporarily display a
+    /// The Tilo workspace Chat was opened in. Inbox may temporarily display a
     /// conversation sourced from another workspace; this anchor lets the
     /// person return to their contextual channels without changing OS state.
     pub(crate) context_ws: Id,
@@ -510,9 +549,24 @@ pub struct ChatApp {
     pub(crate) inbox_open: bool,
     pub(crate) active_channel: Id,
     pub(crate) focus: Focus,
+    /// Offset from the newest edge of the timeline. Zero means the reader is
+    /// looking at the newest message; negative values move back through
+    /// history. The renderer owns its exact bounds because wrapping and media
+    /// cards determine them.
     pub(crate) scroll: f64,
+    /// A durable read watermark is only advanced while the reader can actually
+    /// see the newest edge. This flag is local presentation state, refreshed
+    /// from the measured timeline during paint.
+    pub(crate) timeline_at_end: bool,
+    /// Last measured timeline height. Keeps a reader's visual anchor stable if
+    /// new messages arrive while they are reading older messages.
+    pub(crate) timeline_total_height: f64,
     pub(crate) thread_open: Option<Id>,
     pub(crate) revealed_message: Option<Id>,
+    /// A search result needs one initial scroll into view. Keeping this
+    /// separate from `revealed_message` lets its visual accent remain while
+    /// the reader subsequently scrolls through nearby context.
+    pub(crate) reveal_scroll_pending: bool,
     pub(crate) revealed_person: Option<Id>,
     pub(crate) emoji_open: bool,
     pub(crate) emoji_target: Option<Id>,
@@ -558,6 +612,7 @@ pub struct ChatApp {
     /// `(renderer scale, theme scale, catalogue revision)` the overlay metrics
     /// were measured at; unchanged means the measurement is skipped.
     pub(crate) call_overlay_metrics_key: Option<(u32, u32, u64)>,
+    pub(crate) realtime: crate::continuity::ChatRealtimeContinuity,
     pub(crate) call_chrome_motion: CallChromeMotion,
     pub(crate) pending_floating: Option<ui::floating_surface::FloatingSurfaceRequest>,
     /// Authoritative combined-output bounds supplied by the shell. Standalone
@@ -569,6 +624,9 @@ pub struct ChatApp {
     pub(crate) right_flap: FlapState,
     pub(crate) left_mode: FlapMode,
     pub(crate) right_mode: FlapMode,
+    /// Local text preference also changes usable layout width; it is never
+    /// shared with collaborators.
+    pub(crate) layout_text_scale: f32,
 
     // The local peer's identity: how this peer authors messages, reactions,
     // voice membership, and its own read watermark in the shared document.
@@ -607,7 +665,7 @@ pub struct ChatApp {
     // Persistence (None for ephemeral / `--shots` instances).
 
     // Background image loader/cache for attachment thumbnails (decodes off
-    // the UI thread; real bytes come from the FUSE mount).
+    // the UI thread; real bytes come from qdoc's blob store).
     pub(crate) images: ui::ImageStore,
 
     // Layout + render caches.
@@ -675,25 +733,25 @@ pub struct ChatApp {
     speaker: Option<crate::audio::SpeakerPlayback>,
     #[cfg(feature = "live-media")]
     camera: Option<crate::video::CameraCapture>,
-    // Camera encode reuses the shared qOS video stack's bare H.264 encoder
+    // Camera encode reuses the shared Tilo video stack's bare H.264 encoder
     // (raw NALUs: the local self-preview feeds them to `ui`'s VideoPlayer,
     // and they publish as the camera track). No second in-app codec.
     #[cfg(feature = "live-media")]
-    cam_encoder: Option<qos_callstream::H264Encoder>,
+    cam_encoder: Option<tilo_callstream::H264Encoder>,
     #[cfg(feature = "live-media")]
     screen: Option<crate::video::ScreenCapture>,
     // Screen-share encode + framing runs the shared stack's throttle +
     // encoder → `SurfaceFrame` sender seam — the same composition the
     // compositor's `SharedFlatpakSession` performs for a Wayland surface.
     #[cfg(feature = "live-media")]
-    screen_session: Option<qos_callstream::VideoStreamSender>,
+    screen_session: Option<tilo_callstream::VideoStreamSender>,
     // Remote **camera** decoders (raw-NALU H.264 → RGBA), keyed by sender.
     #[cfg(feature = "live-media")]
-    remote_decoders: HashMap<String, qos_callstream::H264Decoder>,
+    remote_decoders: HashMap<String, tilo_callstream::H264Decoder>,
     // Remote **screen-share** receivers (reframe + decode) → featured tile,
     // keyed by sender. The receive half of the shared stack.
     #[cfg(feature = "live-media")]
-    remote_screen_rx: HashMap<String, qos_callstream::VideoStreamReceiver>,
+    remote_screen_rx: HashMap<String, tilo_callstream::VideoStreamReceiver>,
     /// Highest accepted sequence per remote sender + track. The transport is
     /// deliberately lossy under pressure; rejecting late frames here prevents
     /// a delayed packet from visibly rewinding a peer's camera or screen.
@@ -777,8 +835,11 @@ impl ChatApp {
             active_channel: "c_crit".into(),
             focus: Focus::Main,
             scroll: 0.0,
+            timeline_at_end: true,
+            timeline_total_height: 0.0,
             thread_open: Some("m_concept".into()),
             revealed_message: None,
+            reveal_scroll_pending: false,
             revealed_person: None,
             emoji_open: false,
             emoji_target: None,
@@ -805,6 +866,7 @@ impl ChatApp {
             call: CallState::default(),
             call_overlay_metrics: crate::render_call::CallOverlayMetrics::default(),
             call_overlay_metrics_key: None,
+            realtime: crate::continuity::ChatRealtimeContinuity::default(),
             call_chrome_motion: CallChromeMotion::default(),
             pending_floating: None,
             floating_surface_bounds: Rect::ZERO,
@@ -812,6 +874,7 @@ impl ChatApp {
             right_flap: FlapState::closed_by_default(),
             left_mode: FlapMode::Docked,
             right_mode: FlapMode::Docked,
+            layout_text_scale: 1.0,
             me: LocalIdentity::demo(),
             room_names: HashMap::new(),
             room_colors: HashMap::new(),
@@ -906,11 +969,11 @@ impl ChatApp {
         );
     }
 
-    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
-    /// affordance dispatched, for the affordance == [`ActionSpec`](qos_actions::ActionSpec)
+    /// The last [`EncodedAction`](tilo_actions::EncodedAction) an on-screen
+    /// affordance dispatched, for the affordance == [`ActionSpec`](tilo_actions::ActionSpec)
     /// covenant test: a control and its Ctrl+K entry must build the identical action.
     #[cfg(test)]
-    pub(crate) fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+    pub(crate) fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
@@ -940,16 +1003,31 @@ impl ChatApp {
                 archived: c.archived,
             })
             .collect();
-        let messages = self
-            .messages
-            .iter()
-            .map(|m| actions::MessageResource {
-                id: m.id.clone(),
-                label: self.message_resource_label(m),
-                pinned: m.pinned,
-                parent: m.parent.clone(),
-            })
-            .collect();
+        let messages =
+            self.messages
+                .iter()
+                .map(|m| actions::MessageResource {
+                    id: m.id.clone(),
+                    label: self.message_resource_label(m),
+                    pinned: m.pinned,
+                    parent: m.parent.clone(),
+                    attachment: m.attachment.as_ref().map(|attachment| {
+                        actions::AttachmentResource {
+                            name: attachment.name().to_owned(),
+                            blob: attachment.blob().to_owned(),
+                        }
+                    }),
+                    reactions: m
+                        .reactions
+                        .iter()
+                        .map(|reaction| actions::ReactionResource {
+                            emoji: reaction.emoji.clone(),
+                            count: reaction.count(),
+                            reacted_by_me: reaction.reacted_by(&self.me.id),
+                        })
+                        .collect(),
+                })
+                .collect();
         actions::ChatResourceCtx {
             me: self.me.id.clone(),
             workspace_id: self.active_ws.clone(),
@@ -1011,6 +1089,16 @@ impl ChatApp {
                 self.thread_open = None;
                 self.call = CallState::default();
             }
+            "history" => {
+                // A reader deliberately looking above the newest message. This
+                // is the visual-review state for the local live-edge return
+                // affordance; no synthetic message or read receipt is made.
+                self.thread_open = None;
+                self.right_flap.snap(false);
+                self.call = CallState::default();
+                self.scroll = 220.0;
+                self.timeline_at_end = false;
+            }
             "compact" => {
                 // Medium window: docked channel list, conversation reflowed,
                 // members/thread summoned on demand (not forced open), no call.
@@ -1040,11 +1128,12 @@ impl ChatApp {
                 self.call = CallState::default();
             }
             "context" => {
-                self.menu = Some(ContextMenu {
-                    target: MenuTarget::Channel("c_frontend".into()),
-                    anchor: Point::new(240.0, 230.0),
-                    items: MenuAction::for_channel().to_vec(),
-                });
+                self.menu = Some(ContextMenu::new(
+                    MenuTarget::Channel("c_frontend".into()),
+                    Point::new(240.0, 230.0),
+                    MenuAction::for_channel().to_vec(),
+                    self.rect,
+                ));
             }
             "call" => {
                 // The expanded full-window call overlay against the demo
@@ -1083,8 +1172,8 @@ impl ChatApp {
             }
             "attach" => {
                 // Show the workspace file picker with real, decodable
-                // thumbnails (the demo scheme drives the same decode path a
-                // projected FUSE image would). Ephemeral shot only.
+                // thumbnails (the demo scheme drives the same decode path as
+                // a qdoc image). Ephemeral shot only.
                 self.thread_open = None;
                 self.right_flap.snap(false);
                 self.call = CallState::default();
@@ -1156,11 +1245,12 @@ impl ChatApp {
                 self.right_flap.snap(false);
                 self.thread_open = None;
                 self.call = CallState::default();
-                self.menu = Some(ContextMenu {
-                    target: MenuTarget::Message("m_me2".into()),
-                    anchor: Point::new(360.0, 300.0),
-                    items: MenuAction::for_message().to_vec(),
-                });
+                self.menu = Some(ContextMenu::new(
+                    MenuTarget::Message("m_me2".into()),
+                    Point::new(360.0, 300.0),
+                    MenuAction::for_message().to_vec(),
+                    self.rect,
+                ));
             }
             _ => {
                 self.thread_open = None;
@@ -1334,7 +1424,7 @@ impl ChatApp {
             self.camera =
                 crate::video::CameraCapture::new(crate::video::DEFAULT_W, crate::video::DEFAULT_H);
             // Camera encode reuses the shared stack's H.264 encoder.
-            self.cam_encoder = qos_callstream::H264Encoder::new(
+            self.cam_encoder = tilo_callstream::H264Encoder::new(
                 crate::video::DEFAULT_W,
                 crate::video::DEFAULT_H,
                 crate::video::DEFAULT_FPS,
@@ -1448,7 +1538,7 @@ impl ChatApp {
     }
 
     #[cfg(feature = "live-media")]
-    fn stop_screen_for_error(&mut self, error: &qos_callstream::FrameError) {
+    fn stop_screen_for_error(&mut self, error: &tilo_callstream::FrameError) {
         self.media_error = Some(format!("Screen sharing stopped: {error}"));
         self.call.sharing = false;
         self.release_screen();
@@ -1558,7 +1648,7 @@ impl ChatApp {
     /// shared voice membership.
     ///
     /// The source selection stays the xdg-desktop-portal `ScreenCast` picker;
-    /// the encode + framing route through [`qos_callstream::VideoStreamSender`]
+    /// the encode + framing route through [`tilo_callstream::VideoStreamSender`]
     /// — the same throttle+encoder+`SurfaceFrame` composition the compositor's
     /// `SharedFlatpakSession` performs — instead of a second in-app codec.
     #[cfg_attr(
@@ -1579,7 +1669,7 @@ impl ChatApp {
         {
             if let Some(scr) = crate::video::ScreenCapture::new(src.node, src.width, src.height) {
                 self.screen = Some(scr);
-                self.screen_session = qos_callstream::VideoStreamSender::new(
+                self.screen_session = tilo_callstream::VideoStreamSender::new(
                     src.width,
                     src.height,
                     crate::video::DEFAULT_FPS,
@@ -1595,7 +1685,7 @@ impl ChatApp {
             // A fake portal source has no real PipeWire node. Tests still use
             // the production sender/transport contract, but must never block
             // opening a host device merely to verify the shared call state.
-            self.screen_session = qos_callstream::VideoStreamSender::new(
+            self.screen_session = tilo_callstream::VideoStreamSender::new(
                 src.width,
                 src.height,
                 crate::video::DEFAULT_FPS,
@@ -2121,7 +2211,7 @@ impl ChatApp {
     /// navigates away. Idempotent (a no-op when nothing new arrived), so it is
     /// safe to call every frame.
     pub(crate) fn mark_active_read(&mut self, doc: &mut AutoCommit) {
-        if self.active_channel.is_empty() {
+        if self.active_channel.is_empty() || !self.timeline_at_end {
             return;
         }
         let count = ChatDoc::top_level_count(doc, &self.active_channel) as i64;
@@ -2152,8 +2242,9 @@ impl ChatApp {
         self.inbox_open = false;
         self.thread_open = None;
         self.revealed_message = None;
+        self.reveal_scroll_pending = false;
         self.revealed_person = None;
-        self.scroll = 0.0;
+        self.reset_timeline_to_latest();
         self.focus = Focus::Main;
         Ok(())
     }
@@ -2185,8 +2276,9 @@ impl ChatApp {
         self.inbox_open = false;
         self.thread_open = None;
         self.revealed_message = None;
+        self.reveal_scroll_pending = false;
         self.revealed_person = None;
-        self.scroll = 0.0;
+        self.reset_timeline_to_latest();
         self.focus = Focus::Main;
         Ok(())
     }
@@ -2327,13 +2419,15 @@ impl ChatApp {
             self.center_left(),
             self.rect.y0,
             self.center_right(),
-            self.rect.y0 + HEADER_H,
+            self.rect.y0 + HEADER_H * f64::from(self.layout_text_scale),
         )
     }
     pub(crate) fn composer_height(&self, tr: &mut TextRenderer) -> f64 {
         let w = (self.center_right() - self.center_left() - 48.0).max(40.0) as f32;
         let (_, h) = tr.measure(self.draft_main.as_str(), 15.0, Some(w));
-        (COMPOSER_MIN_H + (f64::from(h) - 19.0).max(0.0)).clamp(COMPOSER_MIN_H, COMPOSER_MAX_H)
+        let scale = f64::from(self.layout_text_scale);
+        (COMPOSER_MIN_H * scale + (f64::from(h) - 19.0 * scale).max(0.0))
+            .clamp(COMPOSER_MIN_H * scale, COMPOSER_MAX_H * scale)
     }
     pub(crate) fn composer_rect(&self, tr: &mut TextRenderer) -> Rect {
         let h = self.composer_height(tr);
@@ -2353,8 +2447,8 @@ impl ChatApp {
         let inset = 12.0;
         let w = (panel.width() - 2.0 * inset - 48.0).max(40.0) as f32;
         let (_, h) = tr.measure(self.composer_thread.value(), 15.0, Some(w));
-        let h = (COMPOSER_MIN_H + (f64::from(h) - 19.0).max(0.0))
-            .clamp(COMPOSER_MIN_H, COMPOSER_MAX_H);
+        let h =
+            (COMPOSER_MIN_H + (f64::from(h) - 19.0).max(0.0)).clamp(COMPOSER_MIN_H, COMPOSER_MAX_H);
         Rect::new(
             panel.x0 + inset,
             panel.y1 - h - inset,
@@ -2366,7 +2460,7 @@ impl ChatApp {
         let composer = self.composer_rect(tr);
         Rect::new(
             self.center_left(),
-            self.rect.y0 + HEADER_H,
+            self.rect.y0 + HEADER_H * f64::from(self.layout_text_scale),
             self.center_right(),
             composer.y0 - 6.0,
         )
@@ -2385,7 +2479,7 @@ impl ChatApp {
     /// reveals. Called once per frame at the top of `draw`. Returns true
     /// while either flap is still animating (so the host keeps redrawing).
     pub(crate) fn reconcile_flaps(&mut self) -> bool {
-        let w = self.rect.width();
+        let w = self.rect.width() / f64::from(self.layout_text_scale.max(1.0));
         // Ignore a degenerate pre-layout frame: resolving the flap mode from a
         // zero width would snap it to the overlay default before the real
         // window size is known. Wait for a genuine allocation so the first
@@ -2527,7 +2621,7 @@ impl ChatApp {
                             .workspaces
                             .iter()
                             .find(|workspace| workspace.id == channel.workspace)
-                            .map_or("qOS workspace", |workspace| workspace.name.as_str());
+                            .map_or("Tilo workspace", |workspace| workspace.name.as_str());
                         let unread = if channel.unread == 0 {
                             String::new()
                         } else {
@@ -2565,6 +2659,7 @@ impl ChatApp {
                         false,
                     ),
                     Hit::Send => ("Send message".into(), Role::Button, false),
+                    Hit::JumpToLatest => ("Jump to latest message".into(), Role::Button, false),
                     Hit::ComposerEmoji(_) => ("Insert emoji".into(), Role::Button, false),
                     Hit::Attach => ("Attach a workspace file".into(), Role::Button, false),
                     Hit::AttachPick(path) => (
@@ -2730,18 +2825,118 @@ pub(crate) fn frac_rect(win: Rect, f: (f64, f64, f64, f64)) -> Rect {
     Rect::new(x0, y0, x0 + f.2 * win.width(), y0 + f.3 * win.height())
 }
 
-fn chat_navigation_kind(kind: qos_actions::OperationKind) -> Result<bool, String> {
+fn chat_navigation_kind(kind: tilo_actions::OperationKind) -> Result<bool, String> {
     match kind {
-        qos_actions::OperationKind::Document => Ok(false),
-        qos_actions::OperationKind::View => Ok(true),
-        qos_actions::OperationKind::Effect => {
+        tilo_actions::OperationKind::Document => Ok(false),
+        tilo_actions::OperationKind::View => Ok(true),
+        tilo_actions::OperationKind::Effect => {
             Err("Chat navigation requires a View operation".into())
         }
     }
 }
 
 impl Widget for ChatApp {
+    fn continuation_metadata(
+        &self,
+        _state: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<ui::collaboration::ContinuationMetadata> {
+        let continuation = self.call_continuation()?;
+        let bytes = serde_json::to_vec(&continuation).ok()?;
+        Some(ui::collaboration::ContinuationMetadata {
+            schema_version: crate::continuity::CHAT_CONTINUATION_SCHEMA,
+            bytes,
+        })
+    }
+
+    fn restore_continuation_metadata(
+        &mut self,
+        metadata: &ui::collaboration::ContinuationMetadata,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        self.restore_call_continuation(metadata, state)
+    }
+
+    fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
+        self.queue_realtime_registration();
+        if self.realtime.target_media_ready {
+            self.realtime.target_media_ready = false;
+            let _ = self.realtime_target_media_ready();
+        }
+        std::mem::take(&mut self.realtime.requests)
+    }
+
+    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
+        match event {
+            ui::collaboration::CollabEvent::RealtimeCommandResult { result, .. } => match result {
+                Ok(ui::realtime_continuity::RealtimeReply::Registered { session }) => {
+                    self.realtime.registration_pending = false;
+                    self.realtime.session = Some(session.clone());
+                }
+                Ok(ui::realtime_continuity::RealtimeReply::Accepted) => {
+                    self.realtime.accepted_target = true;
+                }
+                Ok(ui::realtime_continuity::RealtimeReply::Rejected { .. }) | Err(_) => {
+                    self.realtime.registration_pending = false;
+                }
+                _ => {}
+            },
+            ui::collaboration::CollabEvent::Realtime(
+                ui::realtime_continuity::RealtimeEvent::Offer {
+                    session, intent, ..
+                },
+            ) if intent.provider == "tilo.chat" => {
+                let Some(workspace_id) = intent.semantic_position.clone() else {
+                    return;
+                };
+                let offered = crate::continuity::ChatCallContinuation {
+                    workspace_id,
+                    channel_id: intent.room_id.clone(),
+                    media: intent.media,
+                    controls: intent.controls,
+                };
+                if offered.valid() {
+                    self.realtime.offer = Some((session.clone(), offered));
+                }
+            }
+            ui::collaboration::CollabEvent::Realtime(
+                ui::realtime_continuity::RealtimeEvent::CaptureAuthorized {
+                    session,
+                    capture_authorizations,
+                },
+            ) if self
+                .realtime
+                .offer
+                .as_ref()
+                .is_some_and(|(offered_session, _)| offered_session == session) =>
+            {
+                let _ = self.accept_realtime_offer(capture_authorizations.clone());
+            }
+            ui::collaboration::CollabEvent::Realtime(
+                ui::realtime_continuity::RealtimeEvent::StopSource { session },
+            ) if self.realtime.session.as_ref() == Some(session) => {
+                self.realtime.stop_source = Some(session.clone());
+            }
+            ui::collaboration::CollabEvent::Realtime(
+                ui::realtime_continuity::RealtimeEvent::RolledBack { session },
+            ) if self.realtime.session.as_ref() == Some(session) => {
+                // Source deliberately remains live. Only discard the pending
+                // target edge; no call/media mutation occurs here.
+                self.realtime.offer = None;
+            }
+            ui::collaboration::CollabEvent::Realtime(
+                ui::realtime_continuity::RealtimeEvent::Ended { session },
+            ) if self.realtime.session.as_ref() == Some(session) => {
+                self.realtime.session = None;
+            }
+            _ => {}
+        }
+    }
+
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+        self.apply_realtime_stop(doc);
+        self.establish_realtime_target();
         if self.is_live {
             // Live instance. `app-state` has already restored the previous
             // session's document by now, so an unseeded document really is a
@@ -2938,6 +3133,7 @@ impl Widget for ChatApp {
         presence: &PresenceCtx,
     ) {
         // Resolve flap modes + advance their eased reveals for this frame.
+        self.layout_text_scale = theme.text_scale;
         self.reconcile_flaps();
         self.reconcile_huddle_motion(theme);
         self.tooltips.tick(std::time::Instant::now());
@@ -2952,7 +3148,12 @@ impl Widget for ChatApp {
         self.draw_header(scene, tf, tr, theme, &mut hits);
         let msg_area = self.messages_rect(tr);
         crate::paint::push_clip(scene, tf, msg_area);
-        self.draw_messages(scene, tf, tr, theme, presence, msg_area, &mut hits);
+        self.draw_messages(
+            crate::paint::PaintContext::new(scene, tf, tr, theme),
+            presence,
+            msg_area,
+            &mut hits,
+        );
         scene.pop_layer();
         self.draw_composer(scene, tf, tr, theme, presence, &mut hits);
 
@@ -3020,6 +3221,10 @@ impl Widget for ChatApp {
             self.draw_host_camera_off(scene, tf, tr, theme);
             self.draw_call_overlay_fg(scene, tf, tr, theme, &mut hits);
         } else if self.call.active
+            // At enlarged text, the labelled Call control remains reachable
+            // in the header; a fixed floating huddle would cover the thread
+            // and composer instead of forming a usable secondary surface.
+            && theme.text_scale <= 1.25
             && ((!self.call.placement.is_return_pending()
                 && matches!(
                     self.call.placement.attachment(),
@@ -3031,8 +3236,9 @@ impl Widget for ChatApp {
         }
 
         // Top-most popovers.
-        if let Some(menu) = self.menu.clone() {
-            self.draw_context_menu(scene, tf, tr, theme, &menu, &mut hits);
+        if let Some(mut menu) = self.menu.take() {
+            menu.widget.draw(scene, tf, tr, theme, presence);
+            self.menu = Some(menu);
         }
         if self.emoji_open {
             self.draw_emoji_picker(scene, tf, tr, theme, &mut hits);
@@ -3102,15 +3308,15 @@ impl Widget for ChatApp {
 
     /// The resource tree Chat currently has open — the active workspace, its
     /// channels, and the open channel's messages — each exporting the actions
-    /// Ctrl+K offers. Delegates to the [`ResourceProvider`](qos_actions::ResourceProvider)
+    /// Ctrl+K offers. Delegates to the [`ResourceProvider`](tilo_actions::ResourceProvider)
     /// impl in [`crate::actions`], the same builder the affordance covenant tests
     /// drive. Recomputed each frame; empty until a workspace is selected.
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -3188,13 +3394,18 @@ impl Widget for ChatApp {
             children.push(heading);
         }
         children.push(conversation);
+        if let Some(menu) = self.menu.as_ref()
+            && let Some(menu_node) = menu.widget.accessibility()
+        {
+            children.push(menu_node);
+        }
         Some(
             AccessNode::new(Role::Group)
                 .with_name("Chat")
                 .with_description(if self.inbox_open {
-                    "Inbox: conversations across qOS workspaces"
+                    "Inbox: conversations across Tilo workspaces"
                 } else {
-                    "Channels in the current qOS workspace"
+                    "Channels in the current Tilo workspace"
                 })
                 .with_children(children),
         )
@@ -3230,6 +3441,27 @@ impl Widget for ChatApp {
         state: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
+        if target.starts_with("context-menu:item:") {
+            let Some(mut menu) = self.menu.take() else {
+                return false;
+            };
+            let menu_handled = menu
+                .widget
+                .perform_semantic_action(target, action, state, path);
+            let selection = menu.widget.take_selection();
+            let selected = selection.and_then(|index| menu.items.get(index).copied());
+            let menu_target = menu.target.clone();
+            if menu.widget.is_open() {
+                self.menu = Some(menu);
+            }
+            if let Some(selected) = selected {
+                if self.can_participate() {
+                    self.apply_menu_action(menu_target, selected, state);
+                }
+                return true;
+            }
+            return menu_handled;
+        }
         let hit = self
             .semantic_hits()
             .into_iter()
@@ -3343,7 +3575,7 @@ impl Widget for ChatApp {
     )]
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -3354,7 +3586,7 @@ impl Widget for ChatApp {
         };
         match &operation {
             crate::actions::ChatOperation::ImportAttachment { .. } => {
-                if kind != qos_actions::OperationKind::Effect {
+                if kind != tilo_actions::OperationKind::Effect {
                     return Err("attachment import requires an Effect operation".into());
                 }
             }
@@ -3378,8 +3610,9 @@ impl Widget for ChatApp {
                 self.inbox_open = false;
                 self.thread_open = None;
                 self.revealed_message = None;
+                self.reveal_scroll_pending = false;
                 self.revealed_person = None;
-                self.scroll = 0.0;
+                self.reset_timeline_to_latest();
                 self.focus = Focus::Main;
             }
             crate::actions::ChatOperation::OpenCategory {
@@ -3410,8 +3643,10 @@ impl Widget for ChatApp {
                 self.inbox_open = false;
                 self.thread_open = parent;
                 self.revealed_message = Some(message);
+                self.reveal_scroll_pending = true;
                 self.revealed_person = None;
-                self.scroll = 0.0;
+                self.timeline_total_height = 0.0;
+                self.timeline_at_end = false;
                 self.focus = if self.thread_open.is_some() {
                     Focus::Thread
                 } else {
@@ -3472,6 +3707,18 @@ impl Widget for ChatApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn traps_focus(&self) -> bool {
+        self.menu
+            .as_ref()
+            .is_some_and(|menu| menu.widget.traps_focus())
+    }
+
+    fn modal_capture(&self) -> Option<Rect> {
+        self.menu
+            .as_ref()
+            .and_then(|menu| menu.widget.modal_capture())
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -3659,7 +3906,7 @@ impl ChatApp {
 
 /// Wrap a decoded RGBA frame as a `peniko` image for painting into a call tile.
 #[cfg(feature = "live-media")]
-fn rgba_to_image(frame: &qos_callstream::DecodedFrame) -> vello::peniko::ImageData {
+fn rgba_to_image(frame: &tilo_callstream::DecodedFrame) -> vello::peniko::ImageData {
     use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
     ImageData {
         data: Blob::new(std::sync::Arc::new(frame.rgba.clone())),
@@ -3671,7 +3918,7 @@ fn rgba_to_image(frame: &qos_callstream::DecodedFrame) -> vello::peniko::ImageDa
 }
 
 /// Screen-share reuse proof: a remote peer's screen frame, encoded through the
-/// shared qOS video-streaming stack, must travel the real receive path into
+/// shared Tilo video-streaming stack, must travel the real receive path into
 /// the featured-tile map. Gated on `live-media` because the video stack (and
 /// the featured-tile decode) only compile there — the default/`--shots` build
 /// carries no codec and shows the honest placeholder.
@@ -3679,8 +3926,8 @@ fn rgba_to_image(frame: &qos_callstream::DecodedFrame) -> vello::peniko::ImageDa
 mod screenshare_reuse_tests {
     use super::*;
     use crate::media::{MediaEngine, MediaObject, TrackKind};
-    use qos_callstream::VideoStreamSender;
     use std::time::{Duration, Instant};
+    use tilo_callstream::VideoStreamSender;
 
     fn gradient(width: u32, height: u32) -> Vec<u8> {
         let mut out = Vec::with_capacity((width * height * 4) as usize);
@@ -3756,7 +4003,7 @@ mod screenshare_reuse_tests {
         app.screen_session = VideoStreamSender::new(96, 64, 30).ok();
         app.media.transport_mut().publish(TrackKind::Screen);
 
-        app.stop_screen_for_error(&qos_callstream::FrameError::SequenceExhausted);
+        app.stop_screen_for_error(&tilo_callstream::FrameError::SequenceExhausted);
 
         assert!(!app.call.sharing);
         assert!(app.screen_session.is_none());

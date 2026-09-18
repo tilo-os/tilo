@@ -1,0 +1,118 @@
+//! `QuickSettings` — the top-right status-area popover. Owns the headline
+//! controls (brightness, volume) and popover navigation (root →
+//! WiFi/Bluetooth drill-in via `nav_stack`). `wifi_ssid`/`bluetooth_device`
+//! populate the toggle-card sub-line, falling back to "Not connected" when off or unset.
+
+pub mod actions;
+pub(crate) mod bluetooth;
+pub(crate) mod drill_in;
+pub mod refresh;
+pub(crate) mod root;
+pub(crate) mod vpn;
+pub(crate) mod wifi;
+
+/// A single frame in the `QuickSettings` navigation stack.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum QsLevel {
+    Root,
+    Wifi,
+    WifiDetails(String),
+    Bluetooth,
+    BluetoothDetails(String),
+    /// Configured `NetworkManager` VPN profiles.
+    Vpn,
+    /// Session-local notification history owned by shell chrome.
+    Notifications,
+    /// Private clipboard history, including authenticated same-person copies.
+    Clipboard,
+    /// Certified personal devices, local audio outputs, and media routes.
+    Devices,
+}
+
+/// A `WiFi` entry in the drill-in list. `signal` is a strength bucket
+/// `[0, 4]` (mapped to bar-count); `secure` shows the lock icon;
+/// `connected` flags the active-radio dot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WifiNetwork {
+    pub ssid: String,
+    pub signal: u8,
+    pub secure: bool,
+    pub connected: bool,
+}
+
+/// An in-flight "join this protected network" prompt. `connect_wifi(ssid,
+/// None)` fails for every protected network not seen before — every
+/// network on first boot — and there's nowhere else to type a passphrase
+/// on a machine with no network yet, so the chrome asks for it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WifiPasswordPrompt {
+    pub ssid: String,
+    /// Held in the clear only while the prompt is up — cleared on
+    /// submit, cancel, or popover close.
+    pub password: String,
+    pub selection: ui::text_selection::Selection,
+    /// Set after a failed attempt, so a wrong passphrase says so
+    /// instead of reopening an empty prompt.
+    pub error: Option<String>,
+    /// True while `nmcli` is associating, so the prompt stays inert
+    /// instead of looking unresponsive.
+    pub connecting: bool,
+}
+
+impl WifiPasswordPrompt {
+    pub fn new(ssid: impl Into<String>) -> Self {
+        Self {
+            ssid: ssid.into(),
+            password: String::new(),
+            selection: ui::text_selection::Selection::collapsed(0),
+            error: None,
+            connecting: false,
+        }
+    }
+
+    /// An empty passphrase is rejected by every WPA network.
+    pub fn can_submit(&self) -> bool {
+        !self.connecting && !self.password.is_empty()
+    }
+}
+
+/// A Bluetooth device entry in the drill-in list. `connected` flags the active-radio dot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BtDevice {
+    pub name: String,
+    /// Stable `BlueZ` address used only for local actions and ephemeral
+    /// exact-device handoff. It is never replicated in personal-fabric state.
+    pub address: String,
+    pub battery: u8,
+    pub connected: bool,
+}
+
+/// The three canonical profiles `powerprofilesctl` exposes on Linux.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PowerProfile {
+    Saver,
+    Balanced,
+    Performance,
+}
+
+impl PowerProfile {
+    pub fn label(self) -> &'static str {
+        match self {
+            PowerProfile::Saver => "Power Saver",
+            PowerProfile::Balanced => "Balanced",
+            PowerProfile::Performance => "Performance",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn power_profile_label_matches_variant() {
+        assert_eq!(PowerProfile::Saver.label(), "Power Saver");
+        assert_eq!(PowerProfile::Balanced.label(), "Balanced");
+        assert_eq!(PowerProfile::Performance.label(), "Performance");
+    }
+}

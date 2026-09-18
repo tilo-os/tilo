@@ -8,7 +8,7 @@
 //! codec ([`crate::video`]); screen capture is requested from the
 //! **xdg-desktop-portal `ScreenCast`** API via ashpd. None of ALSA / `PulseAudio` /
 //! ffmpeg / the `opus` crate are used — only `GStreamer`, the portal, and openh264,
-//! matching the qOS build env.
+//! matching the Tilo build env.
 //!
 //! ## Real vs. gated
 //! The *transport contract* ([`MediaTransport`]) and a *simulated*
@@ -354,7 +354,7 @@ mod live {
 
     /// ALPN for the chat call media stream. Versioned so a protocol change is a
     /// clean break rather than a silent mis-parse.
-    const MEDIA_ALPN: &[u8] = b"qos-chat-media/0";
+    const MEDIA_ALPN: &[u8] = b"tilo-chat-media/0";
 
     /// Hard cap on a single wire frame (`DoS` guard). One audio/video access unit
     /// is far smaller than this.

@@ -1,6 +1,6 @@
-//! Provider-neutral configuration for qOS agents.
+//! Provider-neutral configuration for Tilo agents.
 //!
-//! This crate deliberately stores *descriptions* of model providers, never a
+//! This crate stores *descriptions* of model providers, never a
 //! bearer token. A profile can point at a system-vault item via
 //! [`SecretReference`], while the process that owns the secret service is
 //! responsible for resolving that reference at call time. Keeping this
@@ -42,7 +42,7 @@ impl ProviderProtocol {
 }
 
 /// Where an endpoint runs. This is an explicit trust cue in the UI: a local
-/// vLLM server must never look like a hosted API merely because it shares the
+/// vLLM server must remain distinct from a hosted API even though it shares the
 /// `OpenAI` wire protocol.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -50,7 +50,7 @@ pub enum EndpointLocation {
     /// A provider-operated internet endpoint.
     #[default]
     Hosted,
-    /// A loopback endpoint on this qOS device, e.g. vLLM or Ollama.
+    /// A loopback endpoint on this Tilo device, e.g. vLLM or Ollama.
     ThisDevice,
     /// An endpoint on a LAN, VPN, or a user-managed server.
     PrivateNetwork,
@@ -75,12 +75,12 @@ impl EndpointLocation {
 /// A stable pointer to a secret held outside this configuration document.
 ///
 /// `locator` is an opaque non-secret item name such as
-/// `agent-provider/01J.../api-key`. It is intentionally not an environment
+/// `agent-provider/01J.../api-key`. It is not an environment
 /// variable name: the desktop broker can apply per-agent access policy before
 /// handing the secret to an outbound request.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecretReference {
-    /// The broker/vault namespace, usually `qos.secret-service`.
+    /// The broker/vault namespace, usually `tilo.secret-service`.
     pub vault: String,
     /// Opaque item locator within `vault`; never the secret value.
     pub locator: String,
@@ -89,7 +89,7 @@ pub struct SecretReference {
 impl SecretReference {
     pub fn provider_api_key(profile_id: &str) -> Self {
         Self {
-            vault: "qos.secret-service".to_string(),
+            vault: "tilo.secret-service".to_string(),
             locator: format!("agent-provider/{profile_id}/api-key"),
         }
     }
@@ -114,7 +114,20 @@ pub struct ModelDescriptor {
     pub label: String,
     /// Best known input-context size. `None` means unknown, not unlimited.
     pub context_window: Option<u32>,
+    /// Immutable release revision when this model comes from the signed local
+    /// model catalogue. Hosted providers often cannot supply one, so absence
+    /// means "not attested", never "latest".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    /// A declared capability, not an inference from a model's friendly name.
+    /// For locally managed models this value is copied from the signed
+    /// catalogue; hosted profiles remain an explicit user/provider claim.
     pub vision: bool,
+    /// Signed declaration that this exact local model exposes the bounded
+    /// Photos face-detection/embedding/clustering protocol. This is separate
+    /// from generic vision: image descriptions must never enable biometrics.
+    #[serde(default)]
+    pub face_recognition: bool,
     pub tool_calling: bool,
 }
 
@@ -124,7 +137,9 @@ impl Default for ModelDescriptor {
             id: String::new(),
             label: String::new(),
             context_window: None,
+            revision: None,
             vision: false,
+            face_recognition: false,
             tool_calling: true,
         }
     }
@@ -158,7 +173,7 @@ pub struct ProviderProfile {
     pub protocol: ProviderProtocol,
     pub endpoint: String,
     pub location: EndpointLocation,
-    /// Absent for an intentionally unauthenticated local endpoint. The secret
+    /// Absent for an unauthenticated local endpoint. The secret
     /// itself is never accepted or serialised by this type.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credential: Option<SecretReference>,
@@ -213,7 +228,7 @@ impl ProviderProfile {
         }
     }
 
-    /// An OpenAI-compatible local profile suitable for vLLM. It is deliberately
+    /// An OpenAI-compatible local profile suitable for vLLM. It is
     /// unauthenticated by default because a loopback server need not have a
     /// token; users can attach a vault reference if their deployment requires
     /// one.
@@ -471,7 +486,7 @@ mod tests {
     fn hosted_profiles_hold_only_a_vault_reference() {
         let profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
         let json = serde_json::to_string(&profile).unwrap();
-        assert!(json.contains("qos.secret-service"));
+        assert!(json.contains("tilo.secret-service"));
         assert!(json.contains("agent-provider/"));
         assert!(!json.contains("sk-ant-"));
         assert!(!json.contains("api_key\":\""));

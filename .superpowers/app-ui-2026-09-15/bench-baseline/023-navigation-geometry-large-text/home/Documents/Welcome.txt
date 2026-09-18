@@ -1,1 +1,0 @@
-UX bench fixture: the intended file is open.

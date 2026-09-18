@@ -1,5 +1,11 @@
 //! RenderDoc integration - <https://renderdoc.org/>
-#![cfg_attr(not(any(feature = "gles", feature = "vulkan")), allow(dead_code))]
+#![cfg_attr(
+    not(any(feature = "gles", feature = "vulkan")),
+    allow(
+        dead_code,
+        reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+    )
+)]
 
 use alloc::format;
 use alloc::string::String;
@@ -67,21 +73,22 @@ impl RenderDoc {
                     reason: format!(
                         "Unable to load renderdoc library '{renderdoc_filename}': {e:?}"
                     ),
-                }
+                };
             }
         };
 
-        let get_api: libloading::Symbol<GetApiFn> =
-            match unsafe { renderdoc_lib.get(c"RENDERDOC_GetAPI".to_bytes()) } {
-                Ok(api) => api,
-                Err(e) => {
-                    return RenderDoc::NotAvailable {
-                        reason: format!(
-                            "Unable to get RENDERDOC_GetAPI from renderdoc library '{renderdoc_filename}': {e:?}"
-                        ),
-                    }
-                }
-            };
+        let get_api: libloading::Symbol<GetApiFn> = match unsafe {
+            renderdoc_lib.get(c"RENDERDOC_GetAPI".to_bytes())
+        } {
+            Ok(api) => api,
+            Err(e) => {
+                return RenderDoc::NotAvailable {
+                    reason: format!(
+                        "Unable to get RENDERDOC_GetAPI from renderdoc library '{renderdoc_filename}': {e:?}"
+                    ),
+                };
+            }
+        };
         let mut obj = ptr::null_mut();
         match unsafe { get_api(10401, &mut obj) } {
             1 => RenderDoc::Available {

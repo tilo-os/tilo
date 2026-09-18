@@ -6,14 +6,14 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "qOS app host — content-addressed package store + Cap'n Proto control socket. Resolves package_id → manifest + payload-root for the launcher, tracks Pinned vs LRU, runs size-pressure GC."
+description = "Tilo app host — content-addressed package store + Cap'n Proto control socket. Resolves package_id → manifest + payload-root for the launcher, tracks Pinned vs LRU, runs size-pressure GC."
 
 [package.metadata.cargo-machete]
 # Invoked by build.rs to compile the Cap'n Proto schema.
 ignored = ["capnpc"]
 
 [[bin]]
-name = "qos-app-host"
+name = "tilo-app-host"
 path = "src/main.rs"
 
 [lib]
@@ -23,6 +23,7 @@ path = "src/lib.rs"
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../../crates/system/atomic-file" }
+bounded-command = { path = "../../system/bounded-command" }
 pkg = { path = "../pkg" }
 app-registry = { path = "../app-registry" }
 runtime-portal = { path = "../../runtime/runtime-portal" }
@@ -48,16 +49,17 @@ thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-tar.workspace = true
+libc.workspace = true
 tempfile.workspace = true
 
-# systemd notify (sd_notify) — best-effort; we degrade if env vars missing.
+# systemd notify (sd_notify); missing environment variables are tolerated.
 sd-notify.workspace = true
 
 [build-dependencies]
 capnpc.workspace = true
 
 [dev-dependencies]
+tar.workspace = true
 tokio = { workspace = true, features = ["full"] }
 ed25519-dalek.workspace = true
 rand.workspace = true

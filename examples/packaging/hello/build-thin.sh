@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# Thin-app proof — end to end, using only committed, non-breaking machinery.
+#
+# Ships a Tilo app as a tiny binary that links the SDK + libstd as SHARED
+# libraries out of a content-addressed runtime bundle, instead of baking
+# the whole SDK into every binary. Prints before/after sizes and runs the
+# relinked apps against the bundle.
+#
+# How it works (all committed — nothing is patched at build time):
+#
+#   * `crates/runtime/runtime-dylib` is a `crate-type = ["dylib"]` wrapper
+#     over the `runtime` umbrella + `cli` helpers. It is a workspace member
+#     but is kept OUT of `default-members`, so a normal `cargo build` never
+#     compiles it. It is built only under `--profile thin-app`.
+#
+#   * `[profile.thin-app]` (root Cargo.toml) is the release profile with
+#     the two settings dynamic linking demands: `panic = "unwind"` and
+#     `lto = false`. Nothing builds under it unless `--profile thin-app`
+#     is passed, so the default `panic = "abort"` release path is
+#     untouched (verify: `cargo build --release -p hello` still works).
+#
+#   * The apps carry a `thin` feature that pulls `runtime-dylib` in and a
+#     one-line `#[cfg(feature="thin")] extern crate runtime_dylib;` so the
+#     linker keeps the dylib. Built with `-C prefer-dynamic`, rustc then
+#     serves `runtime`/`cli` (and libstd) from the shared libs; the app
+#     binary holds only its own code.
+#
+#   * `tilo-runtime-bundle build --include <libstd> --include <libruntime>`
+#     folds those two shared objects into the signed, content-addressed
+#     bundle at `lib/`, alongside the host loader + libc set. The launcher
+#     mounts the bundle and sets `LD_LIBRARY_PATH=<mount>/lib`, so a thin
+#     app resolves everything by soname inside the sandbox. Here we point
+#     `LD_LIBRARY_PATH` straight at the bundle to prove the apps run.
+set -euo pipefail
+
+WT=$(cd "$(dirname "$0")/../../.." && pwd)
+RUNTIME_VERSION=${RUNTIME_VERSION:-thin-1}
+BUNDLE_ROOT="$WT/target/thin-bundle"
+BUNDLE_DIR="$BUNDLE_ROOT/tilo-runtime/$RUNTIME_VERSION"
+IDENTITY_JSON="$BUNDLE_ROOT/identity.json"
+
+run() { distrobox enter my-distrobox -- bash -c "cd '$WT' && $*"; }
+hr() { printf '\n─── %s ───\n' "$*"; }
+size() { stat -c%s "$1"; }
+# No CARGO_TARGET_DIR, SCCACHE_DIR or RUSTC_WRAPPER here: `run` already cd's to
+# $WT, so cargo's default target dir is the one this used to name, and the cargo
+# shim on PATH picks the sccache server belonging to the container's namespace.
+# Naming the target dir is not free — sccache hashes CARGO_TARGET_DIR into its
+# Rust cache key, so setting it even to the path cargo would have chosen anyway
+# turns every compilation into a private namespace nothing else can hit.
+env_prefix=""
+
+hr "1. baseline: static release (whole SDK baked into each app)"
+run "$env_prefix cargo build --release -p hello -p notes-cli >/dev/null 2>&1"
+cp "$WT/target/release/tilo-hello" "$WT/target/tilo-hello.static-baseline"
+cp "$WT/target/release/notes" "$WT/target/notes.static-baseline"
+HELLO_STATIC=$(size "$WT/target/tilo-hello.static-baseline")
+NOTES_STATIC=$(size "$WT/target/notes.static-baseline")
+printf '  tilo-hello (static): %s bytes\n' "$HELLO_STATIC"
+printf '  notes     (static): %s bytes\n' "$NOTES_STATIC"
+
+hr "2. thin: runtime-dylib + prefer-dynamic (--profile thin-app, --features thin)"
+# `cargo rustc -- <flag>`, not `RUSTFLAGS=<flag> cargo build`. RUSTFLAGS
+# REPLACES build.rustflags from .cargo/config.toml, so the env-var form
+# silently drops target-cpu=x86-64-v3 and every link-time hardening flag
+# -- full RELRO, BIND_NOW, noexecstack and the GNU_PROPERTY shadow-stack
+# mark -- from the very binaries this script exists to show off. The
+# `--` form is additive, so the config list survives. Verified three
+# ways on a one-file crate whose build.rustflags asks for `-z shstk`:
+# plain build keeps the mark, RUSTFLAGS= loses it, `cargo rustc --`
+# keeps it.
+#
+# One invocation per binary, because `cargo rustc` takes a single target.
+run "$env_prefix cargo rustc --profile thin-app -p runtime-dylib \
+     -- -C prefer-dynamic 2>&1 | tail -2"
+run "$env_prefix cargo rustc --profile thin-app -p hello --bin tilo-hello --features thin \
+     -- -C prefer-dynamic 2>&1 | tail -2"
+run "$env_prefix cargo rustc --profile thin-app -p notes-cli --bin notes --features thin \
+     -- -C prefer-dynamic 2>&1 | tail -2"
+HELLO_THIN=$(size "$WT/target/thin-app/tilo-hello")
+NOTES_THIN=$(size "$WT/target/thin-app/notes")
+LIBRT="$WT/target/thin-app/libruntime_dylib.so"
+printf '  tilo-hello (thin):        %s bytes\n' "$HELLO_THIN"
+printf '  notes     (thin):        %s bytes\n' "$NOTES_THIN"
+printf '  libruntime_dylib.so:     %s bytes (shared, ships once)\n' "$(size "$LIBRT")"
+
+hr "3. build the signed {libstd, libruntime} runtime bundle"
+run "$env_prefix cargo build --release -p runtime-bundle >/dev/null 2>&1"
+BUNDLE_BIN="$WT/target/release/tilo-runtime-bundle"
+rm -rf "$BUNDLE_ROOT"
+mkdir -p "$BUNDLE_ROOT"
+run "'$BUNDLE_BIN' key generate --out '$IDENTITY_JSON' >/dev/null"
+PUBKEY=$(run "'$BUNDLE_BIN' key pubkey --identity '$IDENTITY_JSON'")
+# The exact libstd the thin apps linked (its hash is in their DT_NEEDED).
+LIBSTD=$(run "ls \$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/lib/libstd-*.so | head -1")
+run "'$BUNDLE_BIN' build --version '$RUNTIME_VERSION' --arch x86_64 --from / \
+       --identity '$IDENTITY_JSON' \
+       --include '$LIBSTD' --include '$LIBRT' \
+       --out '$BUNDLE_DIR'"
+run "'$BUNDLE_BIN' verify '$BUNDLE_DIR' --require-publisher '$PUBKEY' --require-signature"
+
+hr "4. run the thin apps against the shared bundle"
+run "LP='$BUNDLE_DIR/lib' && \
+     echo '--- ldd notes (shared libs come from the bundle) ---' && \
+     LD_LIBRARY_PATH=\$LP ldd '$WT/target/thin-app/notes' | grep -Ei 'runtime|libstd' && \
+     echo '--- run tilo-hello ---' && \
+     LD_LIBRARY_PATH=\$LP '$WT/target/thin-app/tilo-hello' | sed -n '1,2p' && \
+     echo '--- run notes ---' && \
+     LD_LIBRARY_PATH=\$LP '$WT/target/thin-app/notes' --version"
+
+hr "result"
+awk -v hs="$HELLO_STATIC" -v ht="$HELLO_THIN" -v ns="$NOTES_STATIC" -v nt="$NOTES_THIN" 'BEGIN{
+  printf "  tilo-hello: %d → %d bytes (%.1f%% smaller) — under 2 MB: %s\n", hs, ht, (1-ht/hs)*100, (ht < 2*1024*1024 ? "YES" : "NO");
+  printf "  notes:     %d → %d bytes (%.1f%% smaller) — under 2 MB: %s\n", ns, nt, (1-nt/ns)*100, (nt < 2*1024*1024 ? "YES" : "NO");
+}'
+echo "  bundle: $BUNDLE_DIR (signed by ed25519:$PUBKEY)"

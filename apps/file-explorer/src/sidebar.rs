@@ -1,16 +1,9 @@
-//! Sidebar shortcuts builder — returns the tiered structure of labelled
-//! destinations matching the `nirios-concept` `FilesApp` sidebar: a
-//! **Favorites** group (user xdg-dirs) and a **System** group (root).
-//!
-//! Replaces the flat list that originally mirrored the iced
-//! `render_sidebar` (AUDIT.md S1) so the quick-ui file-explorer renders
-//! the same Favorites/System tier chrome as the TypeScript mockup.
+//! Sidebar shortcuts grouped into user favorites and system locations.
 
 use std::path::{Path, PathBuf};
 use ui::icons::Icon;
 
-/// Fixed sidebar width in logical pixels, mirroring the original iced app
-/// (AUDIT.md S3).
+/// Fixed sidebar width in logical pixels.
 pub const SIDEBAR_WIDTH_PX: f32 = 180.0;
 
 /// One clickable shortcut row: a themed vector [`Icon`], its label, and the
@@ -27,8 +20,7 @@ pub struct SidebarTier {
     pub entries: Vec<Shortcut>,
 }
 
-/// Returns the sidebar structured as Favorites + System tiers, matching
-/// `nirios-concept/src/components/apps/FilesApp.tsx` (lines 94/127).
+/// Returns the sidebar structured as Favorites and System tiers.
 ///
 /// - **Favorites**: Home, Documents, Downloads, Pictures, Music, Videos
 ///   (populated from `$HOME` when available), each with a distinctive
@@ -81,7 +73,7 @@ pub fn build_tiers(home: Option<&Path>) -> Vec<SidebarTier> {
         entries: vec![(
             Icon::HardDrive,
             crate::i18n::t("files-place-root"),
-            PathBuf::from("/"),
+            home.map_or_else(|| PathBuf::from("/"), crate::breadcrumbs::filesystem_root),
         )],
     });
     tiers
@@ -98,7 +90,6 @@ pub fn build_shortcuts(home: Option<&Path>) -> Vec<Shortcut> {
 }
 
 /// Returns the index of the shortcut whose path equals `current`, if any.
-/// Used by list rendering to mark the active shortcut (AUDIT.md S2).
 pub fn active_shortcut_index(shortcuts: &[Shortcut], current: &Path) -> Option<usize> {
     shortcuts.iter().position(|(_, _, p)| p == current)
 }
@@ -125,17 +116,13 @@ mod tests {
     }
 
     #[test]
-    fn favorites_order_matches_the_concept() {
+    fn favorites_order_is_stable() {
         let tiers = build_tiers(Some(Path::new("/home/user")));
         let labels: Vec<&str> = tiers[0]
             .entries
             .iter()
             .map(|(_, l, _)| l.as_str())
             .collect();
-        // The concept lists Home first followed by the xdg-user-dirs in
-        // Documents→Videos order; keep the parity strict so a visual
-        // diff against the mockup stays aligned. Labels are clean text —
-        // the glyph is a themed vector [`Icon`], not a font codepoint.
         assert_eq!(
             labels,
             vec![

@@ -1,12 +1,12 @@
 //! Integration tests for the app-fs FUSE mount.
 //!
 //! Fast, always-run tests exercise the FUSE handler code path through
-//! the crate's public helpers (`QosAppFs::ino_of`, `blob_at`,
-//! `cache().read()`) without a real kernel mount, proving the
+//! the crate's public helpers (`TiloAppFs::ino_of`, `blob_at`,
+//! `cache().read()`) without a kernel mount, verifying the
 //! "page-fault streaming" contract through the same page cache the
 //! FUSE `read` handler uses.
 //!
-//! `#[ignore]`d real-mount tests spin up a real FUSE3 session via
+//! `#[ignore]`d mount tests spin up a FUSE3 session via
 //! `Mount::spawn`, cat a file with `std::fs`, and check the bytes; they
 //! need `/dev/fuse` + `fusermount3` and are skipped in constrained CI
 //! (`cargo test -p app-fs -- --include-ignored` locally).
@@ -24,13 +24,13 @@
 use std::sync::Arc;
 
 use app_fs::{
-    Collection, CounterSnapshot, MemoryBlobStore, Mount, MountOptions, PAGE_SIZE, QosAppFs,
+    Collection, CounterSnapshot, MemoryBlobStore, Mount, MountOptions, PAGE_SIZE, TiloAppFs,
     store::CountingStore,
 };
 
 /// (fs, counter, hash, bytes) as returned by [`fixture_1k`].
 type Fixture = (
-    QosAppFs<Arc<CountingStore<MemoryBlobStore>>>,
+    TiloAppFs<Arc<CountingStore<MemoryBlobStore>>>,
     Arc<CountingStore<MemoryBlobStore>>,
     [u8; 32],
     Vec<u8>,
@@ -48,7 +48,7 @@ fn fixture_1k() -> Fixture {
     let hash = inner.put(&bytes);
     let counter = Arc::new(CountingStore::new(inner));
     let collection = Collection::from_entries([("bin/hello".to_string(), hash)]);
-    let fs = QosAppFs::new(&collection, Arc::clone(&counter)).expect("build fs");
+    let fs = TiloAppFs::new(&collection, Arc::clone(&counter)).expect("build fs");
     (fs, counter, hash, bytes)
 }
 

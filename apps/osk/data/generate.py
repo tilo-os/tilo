@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate compact embedded dictionary + bigram data for the qOS OSK.
+"""Generate compact embedded dictionary + bigram data for the Tilo OSK.
 
 Sources (both derived from the Google Web Trillion Word Corpus, distributed
 under MIT-spirit/educational terms via Peter Norvig's ngrams page):

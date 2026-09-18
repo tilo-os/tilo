@@ -57,15 +57,17 @@ pub struct Harness<W: Widget> {
 impl<W: Widget> Harness<W> {
     /// Build a harness at the given logical viewport and run the first frame.
     pub fn new(app: W, viewport: (f32, f32)) -> Self {
-        Self::with_text_scale(app, viewport, 1.0)
+        Self::with_theme(app, viewport, Theme::dark())
     }
 
-    /// Same frame as [`Self::new`], with the accessibility text scale applied
-    /// the way the live host and `ui::headless::FrameHarness` apply it: baked
-    /// into the theme's type tokens *and* set on the renderer, so measurement
-    /// and paint see the same glyph sizes.
     pub fn with_text_scale(app: W, viewport: (f32, f32), text_scale: f32) -> Self {
-        let theme = Theme::dark().with_text_scale(text_scale);
+        Self::with_theme(app, viewport, Theme::dark().with_text_scale(text_scale))
+    }
+
+    /// Build a harness with the exact theme and text scale a real offscreen
+    /// shot would use. Keeping the renderer's scale in lockstep with the theme
+    /// is essential for rect assertions at 200% text.
+    pub fn with_theme(app: W, viewport: (f32, f32), theme: Theme) -> Self {
         let mut text = TextRenderer::new();
         text.set_text_scale(theme.text_scale);
         let mut h = Harness {
@@ -229,21 +231,21 @@ impl<W: Widget> Harness<W> {
     fn dispatch_control_invocations(&mut self) {
         while let Some(intent) = self.app.take_control_invocation() {
             let resources = self.app.resources(&self.state.doc);
-            let spec = qos_actions::door::resolve(&resources, &intent.address)
+            let spec = tilo_actions::door::resolve(&resources, &intent.address)
                 .expect("action-bound test control must resolve in the current resource tree");
             assert!(
                 matches!(
                     spec.contract.confirmation,
-                    qos_actions::ConfirmationPolicy::None
+                    tilo_actions::ConfirmationPolicy::None
                 ),
                 "the harness must not manufacture confirmation"
             );
             let encoded =
-                qos_actions::door::encode_json(&resources, &intent.address, &intent.arguments)
+                tilo_actions::door::encode_json(&resources, &intent.address, &intent.arguments)
                     .expect("bound control arguments must satisfy their contract");
             self.app
                 .start_resource_operation(
-                    qos_actions::InvocationId::new(),
+                    tilo_actions::InvocationId::new(),
                     spec.kind,
                     &encoded.type_id,
                     &encoded.payload,

@@ -19,9 +19,10 @@
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
+use std::fmt::Write;
 use uuid::Uuid;
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionAddress, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
     ExecutionLocus, OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
@@ -47,12 +48,19 @@ pub fn open_snippet_address(id: SnippetId) -> ActionAddress {
 /// Stable resource id for a tag. Hex encoding preserves arbitrary Unicode tag
 /// names without letting punctuation become resource-address syntax.
 pub fn tag_resource_id(tag: &str) -> String {
-    let encoded = tag
+    format!("snippets.tag:{}", stable_key(tag))
+}
+
+/// Stable, punctuation-safe component for custom-painted semantic controls.
+pub fn stable_key(value: &str) -> String {
+    value
         .as_bytes()
         .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    format!("snippets.tag:{encoded}")
+        .fold(String::new(), |mut encoded, byte| {
+            // Writing formatted integers to a String is infallible.
+            let _ = write!(encoded, "{byte:02x}");
+            encoded
+        })
 }
 
 /// Canonical view action that reveals all snippets carrying `tag`.
@@ -67,6 +75,10 @@ pub enum SnippetsOperation {
     FocusSearch,
 }
 
+/// Decode a Snippets view operation when the type matches.
+///
+/// # Errors
+/// Returns an error for malformed operation payloads.
 pub fn decode_operation(
     type_id: &str,
     payload: &[u8],
@@ -79,13 +91,17 @@ pub fn decode_operation(
         .map_err(|error| error.to_string())
 }
 
-fn view_operation(id: &str, label: &str, operation: SnippetsOperation) -> ActionSpec {
+#[allow(
+    clippy::expect_used,
+    reason = "SnippetsOperation contains only serializable strings and UUIDs"
+)]
+fn view_operation(id: &str, label: &str, operation: &SnippetsOperation) -> ActionSpec {
     ActionSpec::operation(
         id,
         label,
         OperationKind::View,
         SNIPPETS_OPERATION_TYPE,
-        &operation,
+        operation,
     )
     .expect("SnippetsOperation is always serializable")
     .retry_policy(RetryPolicy::Idempotent)
@@ -108,6 +124,8 @@ pub enum SnippetsAction {
     DeleteSnippet { id: String },
     /// Replace a snippet's title.
     Rename { id: String, title: String },
+    /// Replace body text, preserving indentation and trailing newlines.
+    SetBody { id: String, body: String },
     /// Set the body language, carried as the stable slug (`"rust"`, `"shell"`,
     /// …) so the wire form is independent of the enum's memory layout.
     SetLanguage { id: String, language: String },
@@ -156,6 +174,9 @@ impl Action for SnippetsAction {
             }
             SnippetsAction::Rename { id, title } => {
                 Self::edit(doc, id, |s| s.title.clone_from(title));
+            }
+            SnippetsAction::SetBody { id, body } => {
+                Self::edit(doc, id, |s| s.body.clone_from(body));
             }
             SnippetsAction::SetLanguage { id, language } => {
                 let lang = Language::from_slug(language);
@@ -218,6 +239,13 @@ pub fn create_snippet_action(snippet: Snippet) -> SnippetsAction {
 
 pub fn delete_snippet_action(id: SnippetId) -> SnippetsAction {
     SnippetsAction::DeleteSnippet { id: id.to_string() }
+}
+
+pub fn set_body_action(id: SnippetId, body: &str) -> SnippetsAction {
+    SnippetsAction::SetBody {
+        id: id.to_string(),
+        body: body.to_owned(),
+    }
 }
 
 pub fn rename_action(id: SnippetId, title: &str) -> SnippetsAction {
@@ -321,7 +349,7 @@ pub fn provide_contextual_resources(ctx: &SnippetsResourceCtx) -> Vec<Resource> 
     lib = lib.with_action(view_operation(
         "search",
         "Search snippets",
-        SnippetsOperation::FocusSearch,
+        &SnippetsOperation::FocusSearch,
     ));
 
     // Library-level: create a new snippet at the current folder. The uuid is
@@ -352,7 +380,7 @@ pub fn provide_tag_resource(tag: String) -> Resource {
     Resource::new(tag_resource_id(&tag), "snippets.tag", &tag).with_action(view_operation(
         "reveal",
         "Reveal tagged snippets",
-        SnippetsOperation::RevealTag { tag },
+        &SnippetsOperation::RevealTag { tag },
     ))
 }
 
@@ -367,9 +395,17 @@ pub fn provide_snippet_resource(s: &Snippet) -> Resource {
     r = r.with_action(view_operation(
         "open",
         "Open snippet",
-        SnippetsOperation::OpenSnippet { id },
+        &SnippetsOperation::OpenSnippet { id },
     ));
 
+    r = r.with_action(ActionSpec::prompted(
+        "edit-body",
+        ui::i18n!("snippets-edit-body"),
+        ui::i18n!("snippets-body-placeholder"),
+        ui::i18n!("snippets-body-placeholder"),
+        ExecutionLocus::ClientLocal,
+        move |text: &str| encode(&set_body_action(id, text)),
+    ));
     r = r.with_action(ActionSpec::prompted(
         "rename",
         "Rename",
@@ -458,7 +494,7 @@ impl ResourceProvider for crate::app::SnippetsApp {
 mod tests {
     use super::*;
     use crate::app::SnippetsApp;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -609,7 +645,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert!(
@@ -648,8 +684,8 @@ mod tests {
         let action = rename_action(target.id, "Converged Title");
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -678,7 +714,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         let left = SnippetsDoc::list(&doc);
         assert_eq!(left.len(), before - 1, "exactly one snippet removed");

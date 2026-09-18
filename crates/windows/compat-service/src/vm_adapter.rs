@@ -1,10 +1,10 @@
-//! Live adapter from qOS's compatibility service to the one Windows appliance.
+//! Live adapter from Tilo's compatibility service to the one Windows appliance.
 //!
 //! The adapter owns no Windows policy.  In particular it cannot turn a host
 //! path, a catalogue recipe, or a manager request into an RDP drive.  The
-//! A future, canonical qOS portal/capability broker may supply an
+//! A future, canonical Tilo portal/capability broker may supply an
 //! already-resolved [`windows_vm::VmLaunchGrants`] projection, but only after
-//! qOS has probed a local RAIL surface that can carry its redirects.
+//! Tilo has probed a local RAIL surface that can carry its redirects.
 //! `windows-vm` then materialises and revokes the corresponding lease around
 //! the `RemoteApp` process. The live app-focused SPICE path remains deny-all.
 
@@ -181,11 +181,11 @@ impl<C: windows_vm::CapabilityBroker> windows_vm::CapabilityBroker
     }
 }
 
-/// Privileged qOS authority for a future RAIL capability projection used by
+/// Privileged Tilo authority for a future RAIL capability projection used by
 /// the Windows appliance. It is intentionally an injected adapter rather than
 /// a second permission database: an implementation must use the ordinary
 /// portal document handles and workspace decision records already owned by
-/// qOS, after a local RAIL surface has been probed.
+/// Tilo, after a local RAIL surface has been probed.
 ///
 /// A portal implementation may return opaque `portal_documents`, clipboard,
 /// or a network lease only when it has materialised and can later revoke that
@@ -261,7 +261,7 @@ impl VmPortalAuthority for PortalRailPortalAuthority {
     }
 }
 
-/// Live projection of canonical qOS grants which have an exact RAIL
+/// Live projection of canonical Tilo grants which have an exact RAIL
 /// transport and revocation boundary today.
 ///
 /// Clipboard is represented by the ordinary `Device("clipboard")` grant and
@@ -404,7 +404,7 @@ impl VmPortalAuthority for DenyAllVmPortalAuthority {
 /// Lease broker for the live app-focused SPICE fallback. That presentation
 /// cannot carry RDP redirectors, so it materializes an explicit empty lease
 /// instead of pretending requested host resources reached Windows. A future
-/// RAIL-only broker must materialise and revoke canonical qOS grants.
+/// RAIL-only broker must materialise and revoke canonical Tilo grants.
 #[derive(Debug, Default)]
 pub struct DenyAllVmCapabilityBroker {
     next: AtomicU64,
@@ -428,7 +428,7 @@ impl windows_vm::CapabilityBroker for DenyAllVmCapabilityBroker {
 /// App-focused SPICE presentation constrained to a per-launch private audio
 /// graph. This live fallback exposes playback only; microphone capture,
 /// clipboard, file shares, and egress remain unavailable until a probed local
-/// RAIL surface can carry grants from a canonical qOS broker.
+/// RAIL surface can carry grants from a canonical Tilo broker.
 pub struct AudioIsolatedSpiceLauncher<R> {
     runner: R,
     root: PathBuf,
@@ -436,7 +436,7 @@ pub struct AudioIsolatedSpiceLauncher<R> {
     uid: u32,
 }
 
-/// Native RAIL presentation through qOS's rootless Xwayland bridge and a
+/// Native RAIL presentation through Tilo's rootless Xwayland bridge and a
 /// private audio graph. Playback is always present; the proxy publishes a
 /// source only when the brokered shared-session lease includes microphone.
 pub struct AudioIsolatedRailLauncher<R> {
@@ -453,7 +453,7 @@ impl<R> AudioIsolatedRailLauncher<R> {
         let uid = unsafe { libc::geteuid() };
         Self {
             runner,
-            root: PathBuf::from(format!("/run/user/{uid}/qos-windows-vm")),
+            root: PathBuf::from(format!("/run/user/{uid}/tilo-windows-vm")),
             next: AtomicU64::new(0),
             uid,
         }
@@ -486,7 +486,7 @@ impl<R: windows_vm::CommandRunner> windows_vm::RemoteAppLauncher for AudioIsolat
             })?
             .to_path_buf();
         let request = windows_vm::FreeRdpLauncher::new(())
-            .with_binary("/usr/libexec/qos-windows-rail")
+            .with_binary("/usr/libexec/tilo-windows-rail")
             .command(guest, brokered)?
             .env("PIPEWIRE_RUNTIME_DIR", audio_runtime)
             .env("PIPEWIRE_REMOTE", "pipewire-0")
@@ -515,7 +515,7 @@ impl<R> AudioIsolatedSpiceLauncher<R> {
         let uid = unsafe { libc::geteuid() };
         Self {
             runner,
-            root: PathBuf::from(format!("/run/user/{uid}/qos-windows-vm")),
+            root: PathBuf::from(format!("/run/user/{uid}/tilo-windows-vm")),
             next: AtomicU64::new(0),
             uid,
         }
@@ -567,13 +567,13 @@ impl<R: windows_vm::CommandRunner> windows_vm::RemoteAppLauncher for AudioIsolat
     }
 }
 
-/// Concrete delegate installed in qOS's privileged compatibility host.
+/// Concrete delegate installed in Tilo's privileged compatibility host.
 ///
 /// `WindowsAppliance` provides the singleton libvirt backend, authenticated
 /// guest bridge, catalogue validation, selected RAIL/SPICE presentation, and
 /// short-lived resource revocation.  This type supplies the missing service
 /// glue: only the catalogue-selected published application id crosses the
-/// boundary and only the normal qOS portal may project grants.
+/// boundary and only the normal Tilo portal may project grants.
 pub struct LiveVmDelegate<B, A, C, L, P> {
     appliance: windows_vm::WindowsAppliance<B, A, C, L>,
     portal: P,
@@ -595,7 +595,7 @@ struct ActiveVmUninstallation {
 }
 
 struct ActiveVmInstallation {
-    /// The authenticated qOS workspace that started this transaction. This
+    /// The authenticated Tilo workspace that started this transaction. This
     /// deliberately outlives a manager connection so reconnects in the same
     /// workspace can resume it, while other workspaces cannot observe or
     /// publish its candidates.
@@ -1103,7 +1103,7 @@ fn vm_entry_id(published_id: &str) -> String {
 }
 
 fn vm_app_id(published_id: &str) -> String {
-    format!("dev.qos.windows.vm.{}", vm_identity_digest(published_id))
+    format!("dev.tilo.windows.vm.{}", vm_identity_digest(published_id))
 }
 
 fn vm_identity_digest(published_id: &str) -> String {
@@ -1127,7 +1127,7 @@ fn vm_candidate_entry_id(
 }
 
 fn vm_published_application_id(candidate_id: &str) -> String {
-    format!("qos-app-{}", vm_identity_digest(candidate_id))
+    format!("tilo-app-{}", vm_identity_digest(candidate_id))
 }
 
 fn candidate_map(
@@ -1335,7 +1335,7 @@ mod tests {
                     clipboard: true,
                     microphone: false,
                     shares: vec![windows_vm::ShareBinding {
-                        drive_name: "QOS1".to_string(),
+                        drive_name: "TILO1".to_string(),
                         portal_document_id: "portal-document".to_string(),
                         host_path: windows_vm::portal_lease_root()
                             .join("server-lease/portal-document"),
@@ -1434,7 +1434,7 @@ mod tests {
         let entry = vm_entry_id("guest-word");
         let app = vm_app_id("guest-word");
         assert!(entry.starts_with("windows-vm-"));
-        assert!(app.starts_with("dev.qos.windows.vm."));
+        assert!(app.starts_with("dev.tilo.windows.vm."));
         assert_ne!(entry, "guest-word");
         assert_ne!(app, "guest-word");
         assert_eq!(entry, vm_entry_id("guest-word"));

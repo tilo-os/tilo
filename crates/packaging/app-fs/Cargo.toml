@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "FUSE3 driver that page-fault streams qOS package payloads from a content-addressed blob store."
+description = "FUSE3 driver that page-fault streams Tilo package payloads from a content-addressed blob store."
 
 [lib]
 name = "app_fs"
@@ -24,8 +24,8 @@ default = ["cli"]
 cli = ["clap"]
 
 [[bin]]
-name = "qos-app-mount"
-path = "src/bin/qos-app-mount.rs"
+name = "tilo-app-mount"
+path = "src/bin/tilo-app-mount.rs"
 required-features = ["cli"]
 
 [dev-dependencies]

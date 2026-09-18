@@ -1,4 +1,4 @@
-//! `threshold-identity` — FROST threshold-shared Ed25519 identity for qOS.
+//! `threshold-identity` — FROST threshold-shared Ed25519 identity for Tilo.
 //!
 //! A single logical Ed25519 keypair representing a human whose secret
 //! half is split across the user's devices via FROST(Ed25519, SHA-512)
@@ -25,7 +25,7 @@
 //! Non-goals: no device-enrolment UI (protocol primitives only; QR
 //! pairing/confirmation-code UX is a `shell`+`ui` follow-up); no
 //! persistence (the identity record is in-memory, the enrolment flow
-//! writes it under `~/.config/qos/identity/`); no proactive secret
+//! writes it under `~/.config/tilo/identity/`); no proactive secret
 //! sharing/refresh (each DKG run produces a fresh group public key); no
 //! threshold *encryption* (this crate signs only).
 //!
@@ -35,7 +35,7 @@
 //! [`signing::SigningRound1Commitment`], and
 //! [`signing::SigningRound2Partial`] derive `Serialize + Deserialize`,
 //! wrapping opaque `frost-ed25519` round-package bytes inside a small
-//! qOS header (sender's share index) so the broker can route them
+//! Tilo header (sender's share index) so the broker can route them
 //! without parsing the FROST payload.
 
 #![cfg_attr(

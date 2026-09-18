@@ -110,7 +110,7 @@ impl Default for Graph3dScreen {
             panel_open: true,
             // Shots-only: force the panel open for the headless narrow-width
             // screenshot (no effect when unset; live default is unchanged).
-            user_toggled: std::env::var_os("QOS_CALC_PANEL_OPEN").is_some(),
+            user_toggled: std::env::var_os("TILO_CALC_PANEL_OPEN").is_some(),
             toggle_rect: Rect::ZERO,
             scrim_rect: Rect::ZERO,
             hovered_row: None,
@@ -353,9 +353,9 @@ impl Graph3dScreen {
                 .map(|f| MathField::new(&f.expr).with_size(20.0))
                 .collect();
             if let Some(field) = self.fields.get_mut(model.active_surface) {
-                if std::env::var_os("QOS_CALC_LONG_DEMO").is_some() {
+                if std::env::var_os("TILO_CALC_LONG_DEMO").is_some() {
                     field.park_caret_at_end();
-                } else if std::env::var_os("QOS_CALC_SELECTION_DEMO").is_some() {
+                } else if std::env::var_os("TILO_CALC_SELECTION_DEMO").is_some() {
                     field.park_demo_selection();
                 } else {
                     field.park_caret_in_structure();

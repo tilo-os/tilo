@@ -22,19 +22,18 @@ thin = ["dep:runtime-dylib"]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
-ui = { package = "qos-app", path = "../../crates/app/qos-app", features = ["portal"] }
-# The qOS action model: every document-mutating operation is a serializable,
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+# The Tilo action model: every document-mutating operation is a serializable,
 # replayable action dispatched through one executor, so undo, multi-peer replay
 # and the Ctrl+K command palette all work from a single implementation. The
 # SearchProvider stays the navigation side (find a contact); actions are the
 # mutation side (create / delete / edit / favourite a contact).
-qos-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 tracing.workspace = true
-zbus.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
@@ -47,20 +46,24 @@ unicode-normalization = "0.1.25"
 # Import (open) and Export (save) go through
 # org.freedesktop.portal.FileChooser (via ashpd) — an app never draws its
 # own file picker and never keys off an env var (HIG §5). On GNOME the user
-# sees GNOME's file chooser; on qOS the compositor's portal backend renders
-# qOS's picker (and hosts the per-cluster file-access prompt). The portal
+# sees GNOME's file chooser; on Tilo the compositor's portal backend renders
+# Tilo's picker (and hosts the per-cluster file-access prompt). The portal
 # call runs off the UI thread on its own small Tokio runtime and the chosen
 # paths come back over a shared `ui::portal` channel. All three are already
 # resolved in the shared workspace lockfile, so this adds no registry fetch.
+
+[target.'cfg(unix)'.dependencies]
+# Launcher-authenticated priority projection to the Tilo shell notification service.
+zbus.workspace = true
 
 [dev-dependencies]
 # Serialises the tests that construct scratch files / drive the portal
 # drain path so parallel runs don't race on the shared temp dir.
 serial_test.workspace = true
 tempfile.workspace = true
-# Schema-validate the app manifest (`qos-app.toml`) in a test so the vCard
-# file-type association it declares is checked against the real packaging
-# schema, not just eyeballed. Already resolved in the workspace lockfile.
+# Schema-validate the app manifest (`tilo-app.toml`) in a test so the vCard
+# file-type association it declares is checked against the packaging schema.
+# Already resolved in the workspace lockfile.
 pkg = { path = "../../crates/packaging/pkg" }
 
 [[test]]

@@ -1,0 +1,14 @@
+[Desktop Entry]
+# Developer session entry. Starts the compositor named in
+# ~/.config/tilo/dev-session instead of the installed one; see
+# /usr/libexec/tilo-session-dev for the checks it makes first.
+#
+# Named distinctly so it is available only with the tilo-session-devel
+# subpackage.
+Name=Tilo (my build)
+GenericName=Collaborative spatial desktop, developer build
+Comment=Start the compositor named in ~/.config/tilo/dev-session
+Exec=/usr/libexec/tilo-session-dev
+TryExec=/usr/libexec/tilo-session-dev
+Type=Application
+DesktopNames=tilo

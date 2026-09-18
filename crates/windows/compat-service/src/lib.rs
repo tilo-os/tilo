@@ -1,4 +1,4 @@
-//! qOS's single broker for launching Windows software.
+//! Tilo's single broker for launching Windows software.
 //!
 //! The catalogue chooses a route, but grants no authority. This service
 //! resolves the ordinary [`collab_types::caps::CapOverride`] records through
@@ -29,6 +29,7 @@
 
 mod audio_proxy;
 mod catalogue;
+mod dxvk;
 mod execute;
 mod installer;
 mod plan;
@@ -37,6 +38,7 @@ mod resources;
 mod service;
 mod session;
 mod store;
+mod translated;
 mod vm_adapter;
 
 pub use audio_proxy::{AudioProxyError, AudioProxyLease};
@@ -75,6 +77,7 @@ pub use store::{
     CAPSULE_SCHEMA_VERSION, CapsuleError, CapsuleProgram, CapsuleState, CapsuleStore,
     InstallationRecord, InstallationStatus, InstallerKind, ProgramKind, RegisteredProgram,
 };
+pub use translated::run_translated_command;
 pub use vm_adapter::{
     AudioIsolatedRailLauncher, AudioIsolatedSpiceLauncher, CanonicalRailCapabilityBroker,
     CanonicalRailPortalAuthority, DenyAllVmCapabilityBroker, DenyAllVmPortalAuthority,

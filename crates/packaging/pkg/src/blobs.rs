@@ -1,6 +1,6 @@
 //! Content-addressed blob storage abstracted behind a small synchronous trait.
 //!
-//! Why not iroh-blobs directly: `qos-pkg` packages must also be
+//! Why not iroh-blobs directly: `tilo-pkg` packages must also be
 //! produceable as Flatpaks with no iroh runtime, and `iroh-blobs` is
 //! async-tokio with a large surface that would force every consumer
 //! (CLI, build tools, tests) into a tokio runtime. The on-wire
@@ -9,7 +9,7 @@
 //! small deterministic blob (see [`Collection`]).
 //!
 //! The iroh-blobs-backed adapter lives in the loader (a follow-on
-//! crate), implementing [`BlobStore`] over a real iroh `Store` so a
+//! crate), implementing [`BlobStore`] over an iroh `Store` so a
 //! node can ingest a `.qpkg` and re-serve its blobs to peers.
 
 use std::collections::BTreeMap;
@@ -160,7 +160,7 @@ impl Collection {
     /// Canonical encoding for hashing + signing. Layout:
     ///
     /// ```text
-    /// MAGIC (8 bytes) "QOSCOL\0\0"
+    /// MAGIC (8 bytes) "TLOCOL\0\0"
     /// u32 LE count
     /// for each entry, sorted by path:
     ///     u32 LE path-byte-length
@@ -172,7 +172,7 @@ impl Collection {
     pub fn encode(&self) -> Vec<u8> {
         let mut out =
             Vec::with_capacity(12usize.saturating_add(self.entries.len().saturating_mul(36)));
-        out.extend_from_slice(b"QOSCOL\0\0");
+        out.extend_from_slice(b"TLOCOL\0\0");
         out.extend_from_slice(
             &u32::try_from(self.entries.len())
                 .unwrap_or(u32::MAX)
@@ -201,7 +201,7 @@ impl Collection {
     /// bytes remain after the declared entries.
     pub fn decode(bytes: &[u8]) -> Result<Self, CollectionDecodeError> {
         let header = bytes.get(0..8).ok_or(CollectionDecodeError::BadMagic)?;
-        if header != b"QOSCOL\0\0" {
+        if header != b"TLOCOL\0\0" {
             return Err(CollectionDecodeError::BadMagic);
         }
         let count_bytes = bytes.get(8..12).ok_or(CollectionDecodeError::Truncated)?;

@@ -9,11 +9,9 @@ license.workspace = true
 name = "collab_fixtures"
 path = "src/lib.rs"
 
-# Signed test fixtures for `collab-types`. Every integration test that
-# needs a valid `RoleAttestation` or `SignedOp` has to mint one the same
-# way production does — build the struct, canonicalise it, sign it. That
-# is a dozen lines of exact ceremony, and it was copy-pasted into six
-# test files that then drifted apart. This crate is the one copy.
+# Signed test fixtures for `collab-types`. Integration tests use the same
+# canonicalisation and signing path as production to build valid
+# `RoleAttestation` and `SignedOp` values.
 #
 # Depend on it from `[dev-dependencies]` only: nothing here belongs in a
 # shipped binary.

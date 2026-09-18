@@ -1,0 +1,643 @@
+//! Dedicated authenticated session for personal-mesh compute control.
+//!
+//! This protocol intentionally does not extend the frozen relay-v1 postcard
+//! enum. It has its own ALPN, frame ceiling, client, and server handler while
+//! reusing the same certified-device challenge/response authentication.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use iroh::endpoint::{Connection, Endpoint, RecvStream, SendStream};
+use iroh::protocol::{AcceptError, ProtocolHandler};
+use iroh_base::EndpointAddr;
+use thiserror::Error;
+use tilo_user_identity::{DeviceCert, RevocationList};
+use tokio::sync::mpsc;
+
+use crate::auth::{self, AuthenticatedPeer, Hello, HelloAck, HelloAck2};
+use crate::compute::ComputeJobSpec;
+use crate::compute_transport::{
+    COMPUTE_ALPN, ComputeEnvelope, ComputeJobBinding, ComputeRouteOutcome, ComputeTransportError,
+    MAX_COMPUTE_FRAME_BYTES,
+};
+use crate::daemon::{read_frame, write_frame};
+use crate::peer::WorkspaceRegistry;
+use crate::policy::TrustPolicy;
+use crate::workspace::SharedWorkspace;
+
+const COMPUTE_OUTBOUND_CAPACITY: usize = 32;
+static COMPUTE_QUEUE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Error)]
+/// Failure while authenticating or using the dedicated compute stream.
+pub enum ComputeSessionError {
+    /// Framing or stream I/O failed.
+    #[error("compute transport I/O: {0}")]
+    Io(#[from] std::io::Error),
+    /// A postcard message was invalid.
+    #[error("compute transport codec: {0}")]
+    Codec(#[from] postcard::Error),
+    /// Certified-device authentication failed.
+    #[error("compute transport authentication: {0}")]
+    Auth(#[from] crate::auth::AuthError),
+    /// A compute route, lifecycle, or bound was rejected.
+    #[error("compute transport policy: {0}")]
+    Transport(#[from] ComputeTransportError),
+    /// Durable workspace state failed.
+    #[error("compute transport store: {0}")]
+    Store(#[from] crate::store::StoreError),
+    /// The peer violated the compute protocol state machine.
+    #[error("compute transport protocol violation: {0}")]
+    Protocol(String),
+    /// The Iroh connection could not be established.
+    #[error("compute transport connection: {0}")]
+    Connection(String),
+}
+
+/// Iroh handler for the versioned personal-compute ALPN.
+#[derive(Clone)]
+pub(crate) struct ComputeProtocol {
+    workspaces: WorkspaceRegistry,
+    own_user_public_key: [u8; 32],
+    own_cert: DeviceCert,
+    own_signing_key: ed25519_dalek::SigningKey,
+    revocations: Arc<std::sync::RwLock<RevocationList>>,
+}
+
+impl ComputeProtocol {
+    pub(crate) fn new(
+        workspaces: WorkspaceRegistry,
+        own_user_public_key: [u8; 32],
+        own_cert: DeviceCert,
+        own_signing_key: ed25519_dalek::SigningKey,
+        revocations: Arc<std::sync::RwLock<RevocationList>>,
+    ) -> Self {
+        Self {
+            workspaces,
+            own_user_public_key,
+            own_cert,
+            own_signing_key,
+            revocations,
+        }
+    }
+}
+
+impl std::fmt::Debug for ComputeProtocol {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ComputeProtocol")
+    }
+}
+
+impl ProtocolHandler for ComputeProtocol {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        let this = self.clone();
+        let (send, receive) = connection.accept_bi().await?;
+        tokio::spawn(async move {
+            if let Err(error) = run_server_session(this, connection.clone(), send, receive).await {
+                tracing::debug!(%error, "personal compute session ended");
+                connection.close(0u32.into(), b"compute session ended");
+            }
+        });
+        Ok(())
+    }
+}
+
+async fn run_server_session(
+    protocol: ComputeProtocol,
+    connection: Connection,
+    mut send: SendStream,
+    mut receive: RecvStream,
+) -> Result<(), ComputeSessionError> {
+    let peer = authenticate_server(&protocol, &mut send, &mut receive).await?;
+    let (outbound, mut outbound_rx) = mpsc::channel(COMPUTE_OUTBOUND_CAPACITY);
+    let (disconnect, mut disconnect_rx) = mpsc::channel(1);
+    let mut attached = Vec::new();
+
+    let outcome = async {
+        loop {
+            tokio::select! {
+                biased;
+                _ = connection.closed() => break Ok(()),
+                _ = disconnect_rx.recv() => {
+                    break Err(ComputeSessionError::Protocol("outbound compute queue saturated".into()));
+                }
+                outgoing = outbound_rx.recv() => {
+                    let Some(outgoing) = outgoing else { break Ok(()); };
+                    write_compute(&mut send, &outgoing).await?;
+                }
+                incoming = read_compute(&mut receive) => {
+                    let incoming = incoming?;
+                    if let ComputeEnvelope::Attach { workspace_id } = incoming {
+                        let admitted = attach_workspace(
+                            &protocol.workspaces,
+                            &peer,
+                            workspace_id,
+                            &outbound,
+                            &disconnect,
+                            &mut send,
+                        ).await?;
+                        if admitted && !attached.contains(&workspace_id) {
+                            attached.push(workspace_id);
+                        }
+                        continue;
+                    }
+                    if let Some(workspace_id) = incoming.workspace_id()
+                        && !attached.contains(&workspace_id)
+                    {
+                        break Err(ComputeSessionError::Protocol(
+                            "compute message sent before workspace attach".into(),
+                        ));
+                    }
+                    if let Some(reply) = dispatch_compute(&protocol.workspaces, &peer, incoming).await? {
+                        write_compute(&mut send, &reply).await?;
+                    }
+                }
+            }
+        }
+    }
+    .await;
+
+    for workspace_id in attached {
+        if let Some(workspace) = find_workspace(&protocol.workspaces, workspace_id).await {
+            workspace
+                .lock()
+                .await
+                .compute
+                .detach(&peer.device_public_key);
+        }
+    }
+    outcome
+}
+
+/// Clone a workspace handle without carrying the registry lock into work on
+/// that workspace. Registry membership and workspace state have independent
+/// lock domains; nesting them needlessly serializes unrelated sessions.
+async fn find_workspace(
+    workspaces: &WorkspaceRegistry,
+    workspace_id: u64,
+) -> Option<SharedWorkspace> {
+    workspaces.lock().await.get(&workspace_id).cloned()
+}
+
+async fn authenticate_server(
+    protocol: &ComputeProtocol,
+    send: &mut SendStream,
+    receive: &mut RecvStream,
+) -> Result<AuthenticatedPeer, ComputeSessionError> {
+    let hello: Hello = postcard::from_bytes(&read_frame(receive, MAX_COMPUTE_FRAME_BYTES).await?)?;
+    let revocations = protocol
+        .revocations
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let peer = auth::accept_hello(
+        &hello,
+        &protocol.own_user_public_key,
+        &TrustPolicy::AllowMatchingUser,
+        &revocations,
+        crate::peer::now_ns(),
+    )?;
+    if peer.user_public_key != protocol.own_user_public_key {
+        return Err(ComputeSessionError::Protocol(
+            "compute peer does not chain to the relay owner".into(),
+        ));
+    }
+    let mut nonce = [0; 32];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+    let acknowledgement = auth::build_hello_ack(
+        protocol.own_cert.clone(),
+        &protocol.own_signing_key,
+        nonce,
+        &hello.client_nonce,
+    );
+    write_frame(send, &postcard::to_allocvec(&acknowledgement)?).await?;
+    let final_ack: HelloAck2 =
+        postcard::from_bytes(&read_frame(receive, MAX_COMPUTE_FRAME_BYTES).await?)?;
+    auth::verify_hello_ack2(&final_ack, &peer.device_public_key, &nonce)?;
+    Ok(peer)
+}
+
+async fn attach_workspace(
+    workspaces: &WorkspaceRegistry,
+    peer: &AuthenticatedPeer,
+    workspace_id: u64,
+    outbound: &mpsc::Sender<ComputeEnvelope>,
+    disconnect: &mpsc::Sender<()>,
+    send: &mut SendStream,
+) -> Result<bool, ComputeSessionError> {
+    let Some(workspace) = find_workspace(workspaces, workspace_id).await else {
+        write_compute(
+            send,
+            &ComputeEnvelope::NotAuthorised {
+                workspace_id,
+                reason: "workspace not bound on this relay".into(),
+            },
+        )
+        .await?;
+        return Ok(false);
+    };
+    let (pending, admitted) = {
+        let mut workspace = workspace.lock().await;
+        let devices = workspace.store.load_membership()?;
+        workspace.membership.set(devices);
+        let admitted = if workspace.membership.contains(&peer.device_public_key) {
+            true
+        } else if workspace.admit_authenticated {
+            workspace.admit_device(peer.device_public_key)?;
+            true
+        } else {
+            false
+        };
+        if admitted {
+            let pending = workspace
+                .store
+                .load_compute_pending(&peer.device_public_key)?;
+            workspace
+                .compute
+                .attach(peer.device_public_key, outbound.clone(), disconnect.clone());
+            drop(workspace);
+            (pending, true)
+        } else {
+            (Vec::new(), false)
+        }
+    };
+    if !admitted {
+        write_compute(
+            send,
+            &ComputeEnvelope::NotAuthorised {
+                workspace_id,
+                reason: "device not in workspace membership".into(),
+            },
+        )
+        .await?;
+        return Ok(false);
+    }
+    let pending_count = u32::try_from(pending.len()).unwrap_or(u32::MAX);
+    for entry in pending {
+        if entry.bytes.len() > MAX_COMPUTE_FRAME_BYTES {
+            return Err(ComputeSessionError::Protocol(
+                "persisted compute frame exceeds protocol bound".into(),
+            ));
+        }
+        let envelope: ComputeEnvelope = postcard::from_bytes(&entry.bytes)?;
+        write_compute(send, &envelope).await?;
+    }
+    write_compute(
+        send,
+        &ComputeEnvelope::Ready {
+            workspace_id,
+            pending: pending_count,
+        },
+    )
+    .await?;
+    Ok(true)
+}
+
+async fn dispatch_compute(
+    workspaces: &WorkspaceRegistry,
+    peer: &AuthenticatedPeer,
+    envelope: ComputeEnvelope,
+) -> Result<Option<ComputeEnvelope>, ComputeSessionError> {
+    if matches!(envelope, ComputeEnvelope::Ping) {
+        return Ok(Some(ComputeEnvelope::Pong));
+    }
+    if let ComputeEnvelope::Ack {
+        workspace_id,
+        sequence,
+    } = envelope
+    {
+        let Some(workspace) = find_workspace(workspaces, workspace_id).await else {
+            return Ok(Some(ComputeEnvelope::NotAuthorised {
+                workspace_id,
+                reason: "workspace not bound on this relay".into(),
+            }));
+        };
+        workspace
+            .lock()
+            .await
+            .store
+            .ack_compute_pending(&peer.device_public_key, sequence)?;
+        return Ok(None);
+    }
+    if is_server_only(&envelope) {
+        return Err(ComputeSessionError::Protocol(
+            "client sent a server-only compute envelope".into(),
+        ));
+    }
+    let workspace_id = envelope.workspace_id().ok_or_else(|| {
+        ComputeSessionError::Protocol("compute envelope has no workspace binding".into())
+    })?;
+    let Some(workspace) = find_workspace(workspaces, workspace_id).await else {
+        return Ok(Some(ComputeEnvelope::NotAuthorised {
+            workspace_id,
+            reason: "workspace not bound on this relay".into(),
+        }));
+    };
+    let mut workspace = workspace.lock().await;
+    let outcome = {
+        let crate::workspace::WorkspaceRuntime { compute, store, .. } = &mut *workspace;
+        match &envelope {
+            ComputeEnvelope::Advertise { advertisement, .. } => {
+                if !peer.cert.capabilities.can_act_as_host {
+                    return Err(ComputeSessionError::Protocol(
+                        "worker advertisement requires a host-capable certificate".into(),
+                    ));
+                }
+                compute.advertise(
+                    peer.device_public_key,
+                    workspace_id,
+                    now_ms(),
+                    advertisement.clone(),
+                )?;
+                return Ok(None);
+            }
+            ComputeEnvelope::Request { spec } => compute.accept_request(
+                peer.device_public_key,
+                workspace_id,
+                now_ms(),
+                store,
+                spec,
+            )?,
+            ComputeEnvelope::Cancel { binding } => {
+                compute.accept_cancel(peer.device_public_key, store, binding)?
+            }
+            ComputeEnvelope::Status { update } => {
+                if !peer.cert.capabilities.can_act_as_host {
+                    return Err(ComputeSessionError::Protocol(
+                        "worker status requires a host-capable certificate".into(),
+                    ));
+                }
+                compute.accept_status(peer.device_public_key, store, update)?
+            }
+            ComputeEnvelope::Result { result } => {
+                if !peer.cert.capabilities.can_act_as_host {
+                    return Err(ComputeSessionError::Protocol(
+                        "worker result requires a host-capable certificate".into(),
+                    ));
+                }
+                compute.accept_result(peer.device_public_key, store, result)?
+            }
+            _ => {
+                return Err(ComputeSessionError::Protocol(
+                    "unexpected compute envelope".into(),
+                ));
+            }
+        }
+    };
+    if let ComputeRouteOutcome::Route(target) = outcome {
+        let crate::workspace::WorkspaceRuntime { compute, store, .. } = &mut *workspace;
+        compute.route(target, &envelope, store, next_queue_sequence())?;
+    }
+    drop(workspace);
+    Ok(None)
+}
+
+fn is_server_only(envelope: &ComputeEnvelope) -> bool {
+    matches!(
+        envelope,
+        ComputeEnvelope::Ready { .. }
+            | ComputeEnvelope::NotAuthorised { .. }
+            | ComputeEnvelope::Pong
+            | ComputeEnvelope::Attach { .. }
+            | ComputeEnvelope::Delivery { .. }
+    )
+}
+
+fn next_queue_sequence() -> u64 {
+    let observed = crate::peer::now_ns();
+    COMPUTE_QUEUE_SEQUENCE
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |previous| {
+            Some(observed.max(previous.saturating_add(1)))
+        })
+        .map_or(observed, |previous| {
+            observed.max(previous.saturating_add(1))
+        })
+}
+
+fn now_ms() -> u64 {
+    crate::peer::now_ns() / 1_000_000
+}
+
+async fn read_compute(receive: &mut RecvStream) -> Result<ComputeEnvelope, ComputeSessionError> {
+    let bytes = read_frame(receive, MAX_COMPUTE_FRAME_BYTES).await?;
+    Ok(postcard::from_bytes(&bytes)?)
+}
+
+async fn write_compute(
+    send: &mut SendStream,
+    envelope: &ComputeEnvelope,
+) -> Result<(), ComputeSessionError> {
+    let bytes = postcard::to_allocvec(envelope)?;
+    if bytes.len() > MAX_COMPUTE_FRAME_BYTES {
+        return Err(ComputeSessionError::Protocol(
+            "encoded compute frame exceeds protocol bound".into(),
+        ));
+    }
+    write_frame(send, &bytes).await?;
+    Ok(())
+}
+
+/// Mutable authenticated client for the dedicated personal-compute stream.
+pub struct ComputeClient {
+    relay_peer: AuthenticatedPeer,
+    own_device: [u8; 32],
+    send: SendStream,
+    receive: RecvStream,
+    connection: Connection,
+    endpoint: Endpoint,
+}
+
+/// One received compute message and its optional durable delivery token.
+pub struct ComputeDelivery {
+    /// Workspace whose durable queue owns this delivery.
+    pub workspace_id: Option<u64>,
+    /// Sequence to acknowledge after the consumer has accepted the message.
+    pub sequence: Option<u64>,
+    /// Typed compute message.
+    pub envelope: ComputeEnvelope,
+}
+
+impl ComputeClient {
+    /// Connect and mutually authenticate to an exact same-owner relay.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when dialing, framing, or certified-device
+    /// authentication fails, including a mismatched pinned relay device.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "all identity inputs are explicit trust anchors"
+    )]
+    pub async fn connect(
+        endpoint: Endpoint,
+        relay_address: EndpointAddr,
+        expected_server_user: [u8; 32],
+        expected_server_device: Option<[u8; 32]>,
+        own_cert: DeviceCert,
+        own_signing_key: ed25519_dalek::SigningKey,
+        revocations: RevocationList,
+    ) -> Result<Self, ComputeSessionError> {
+        let connection = endpoint
+            .connect(relay_address, COMPUTE_ALPN)
+            .await
+            .map_err(|error| ComputeSessionError::Connection(error.to_string()))?;
+        let (mut send, mut receive) = connection
+            .open_bi()
+            .await
+            .map_err(|error| ComputeSessionError::Connection(error.to_string()))?;
+        let mut nonce = [0; 32];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+        let own_device = own_cert.device_public_key;
+        let hello = Hello {
+            cert: own_cert,
+            client_nonce: nonce,
+        };
+        write_frame(&mut send, &postcard::to_allocvec(&hello)?).await?;
+        let acknowledgement: HelloAck =
+            postcard::from_bytes(&read_frame(&mut receive, MAX_COMPUTE_FRAME_BYTES).await?)?;
+        let relay_peer = auth::verify_hello_ack(
+            &acknowledgement,
+            &expected_server_user,
+            &revocations,
+            crate::peer::now_ns(),
+            &nonce,
+        )?;
+        if expected_server_device.is_some_and(|expected| relay_peer.device_public_key != expected) {
+            return Err(ComputeSessionError::Protocol(
+                "relay device does not match the pinned enrollment".into(),
+            ));
+        }
+        let final_ack = auth::build_hello_ack2(&own_signing_key, &acknowledgement.server_nonce);
+        write_frame(&mut send, &postcard::to_allocvec(&final_ack)?).await?;
+        Ok(Self {
+            relay_peer,
+            own_device,
+            send,
+            receive,
+            connection,
+            endpoint,
+        })
+    }
+
+    #[must_use]
+    /// Authenticated view of the relay certificate.
+    pub fn relay_peer(&self) -> &AuthenticatedPeer {
+        &self.relay_peer
+    }
+
+    /// Send one bounded typed compute envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when encoding or writing the frame fails.
+    pub async fn send(&mut self, envelope: &ComputeEnvelope) -> Result<(), ComputeSessionError> {
+        write_compute(&mut self.send, envelope).await
+    }
+
+    /// Receive the next typed compute envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on EOF, an oversize frame, or invalid encoding.
+    pub async fn receive(&mut self) -> Result<ComputeDelivery, ComputeSessionError> {
+        let envelope = read_compute(&mut self.receive).await?;
+        if let ComputeEnvelope::Delivery {
+            workspace_id,
+            sequence,
+            message,
+        } = envelope
+        {
+            if message.workspace_id() != Some(workspace_id)
+                || matches!(
+                    *message,
+                    ComputeEnvelope::Delivery { .. } | ComputeEnvelope::Ack { .. }
+                )
+            {
+                return Err(ComputeSessionError::Protocol(
+                    "invalid nested compute delivery".into(),
+                ));
+            }
+            return Ok(ComputeDelivery {
+                workspace_id: Some(workspace_id),
+                sequence: Some(sequence),
+                envelope: *message,
+            });
+        }
+        Ok(ComputeDelivery {
+            workspace_id: envelope.workspace_id(),
+            sequence: None,
+            envelope,
+        })
+    }
+
+    /// Acknowledge a durable delivery after the consumer accepts it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the acknowledgement frame cannot be written.
+    pub async fn acknowledge(
+        &mut self,
+        delivery: &ComputeDelivery,
+    ) -> Result<(), ComputeSessionError> {
+        let (Some(workspace_id), Some(sequence)) = (delivery.workspace_id, delivery.sequence)
+        else {
+            return Ok(());
+        };
+        self.send(&ComputeEnvelope::Ack {
+            workspace_id,
+            sequence,
+        })
+        .await
+    }
+
+    /// Attach this certified connection to one workspace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the attach frame cannot be written.
+    pub async fn attach(&mut self, workspace_id: u64) -> Result<(), ComputeSessionError> {
+        self.send(&ComputeEnvelope::Attach { workspace_id }).await
+    }
+
+    /// Submit a job whose requester is this exact certified device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a spoofed requester or when the request frame
+    /// cannot be written.
+    pub async fn submit(&mut self, spec: &ComputeJobSpec) -> Result<(), ComputeSessionError> {
+        if spec.requester != self.own_device {
+            return Err(ComputeSessionError::Protocol(
+                "compute request does not belong to this certified client".into(),
+            ));
+        }
+        self.send(&ComputeEnvelope::Request { spec: spec.clone() })
+            .await
+    }
+
+    /// Cancel one exact job route owned by this certified requester.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a spoofed requester or when the cancellation
+    /// frame cannot be written.
+    pub async fn cancel(&mut self, binding: &ComputeJobBinding) -> Result<(), ComputeSessionError> {
+        if binding.requester != self.own_device {
+            return Err(ComputeSessionError::Protocol(
+                "compute cancellation does not belong to this certified client".into(),
+            ));
+        }
+        self.send(&ComputeEnvelope::Cancel {
+            binding: binding.clone(),
+        })
+        .await
+    }
+}
+
+impl Drop for ComputeClient {
+    fn drop(&mut self) {
+        self.connection
+            .close(0u32.into(), b"compute client dropped");
+        let _ = &self.endpoint;
+    }
+}

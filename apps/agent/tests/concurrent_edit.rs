@@ -27,13 +27,13 @@
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
-use qos_agent::{Config, Session};
-use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation, PresencePayload};
+use tilo_agent::{Config, Session};
+use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
 
 mod typed_peer;
 use typed_peer::{TypedPeer, document_mutation};
 
-const APP: &str = "dev.qos.word-processor";
+const APP: &str = "dev.tilo.word-processor";
 const RECORD: &str = "file:/var/workspace/Demo/brief.docx";
 
 /// What the person types while the agent's app action is still in flight.
@@ -124,7 +124,7 @@ fn granted(name: &str) -> ui::permissions::PermissionContext {
 /// The live resource tree the Word Processor itself publishes for this
 /// document. The table anchor is the final bullet, matching where a person
 /// would leave the caret after entering the list.
-fn word_processor_resources(doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+fn word_processor_resources(doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
     let b = blocks(doc);
     let anchor = b
         .iter()
@@ -178,13 +178,8 @@ fn drive_peer_and_type(
             continue;
         };
         match event {
-            CollabEvent::RemotePresenceUpdate {
-                payload: PresencePayload::Arrived,
-                ..
-            } => {
-                let snap = CollabRequest::DocumentSnapshot {
-                    data: replica.save(),
-                };
+            CollabEvent::DocumentSnapshotRequested { .. } => {
+                let snap = CollabRequest::document_snapshot(replica.save());
                 peer.send(&snap).unwrap();
             }
             CollabEvent::Invocation {
@@ -214,7 +209,7 @@ fn drive_peer_and_type(
                 // host report terminal success to the agent.
                 if let Some(ch) = TYPED.chars().nth(typed) {
                     let delta = type_one(replica, head, &ch.to_string());
-                    peer.send(&CollabRequest::DocumentIncremental { data: delta })
+                    peer.send(&CollabRequest::document_incremental(delta))
                         .unwrap();
                     typed += 1;
                 }
@@ -235,7 +230,7 @@ fn drive_peer_and_type(
                 // rather than merely overlapping.
                 if let Some(ch) = TYPED.chars().nth(typed) {
                     let delta = type_one(replica, head, &ch.to_string());
-                    let msg = CollabRequest::DocumentIncremental { data: delta };
+                    let msg = CollabRequest::document_incremental(delta);
                     peer.send(&msg).unwrap();
                     typed += 1;
                 }

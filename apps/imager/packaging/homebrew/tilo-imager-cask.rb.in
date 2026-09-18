@@ -1,0 +1,13 @@
+cask "tilo-imager" do
+  arch arm: "aarch64", intel: "x86_64"
+
+  version "@VERSION@"
+  sha256 arm: "@MACOS_ARM64_SHA256@", intel: "@MACOS_X86_64_SHA256@"
+
+  url "@BASE_URL@/tilo-imager-macos-#{arch}.dmg"
+  name "Tilo Imager"
+  desc "Create and verify customised Tilo installation media"
+  homepage "@RELEASE_PAGE@"
+
+  app "Tilo Imager.app"
+end

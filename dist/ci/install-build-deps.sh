@@ -9,30 +9,30 @@ debian)
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
     apt-get install -y --no-install-recommends \
-        curl ca-certificates build-essential clang libclang-dev cmake \
+        curl ca-certificates build-essential binutils clang libclang-dev cmake \
         pkg-config capnproto file dpkg-dev \
         libxkbcommon-dev libwayland-dev libseat-dev libinput-dev libudev-dev \
         libdrm-dev libgbm-dev libgl-dev libegl-dev libpipewire-0.3-dev \
-        libdbus-1-dev libssl-dev libfontconfig-dev libfreetype-dev \
+        libdbus-1-dev libfontconfig-dev libfreetype-dev \
         libharfbuzz-dev libfuse3-dev libgstreamer1.0-dev \
         libgstreamer-plugins-base1.0-dev
     ;;
 fedora)
     dnf install -y --setopt=install_weak_deps=False \
-        curl gcc gcc-c++ make clang clang-devel cmake perl \
+        curl git jq gcc gcc-c++ binutils make clang clang-devel cmake perl \
         pkgconf-pkg-config capnproto file rpm-build rpm-sign rpmlint \
         libxkbcommon-devel wayland-devel libseat-devel libinput-devel \
         systemd-devel libdrm-devel mesa-libgbm-devel mesa-libGL-devel \
-        mesa-libEGL-devel pipewire-devel dbus-devel openssl-devel \
+        mesa-libEGL-devel pipewire-devel dbus-devel \
         fontconfig-devel freetype-devel harfbuzz-devel fuse3-devel \
         gstreamer1-devel gstreamer1-plugins-base-devel
     dnf clean all
     ;;
 arch)
     packages=(
-        curl git base-devel rustup clang cmake pkgconf capnproto file namcap
+        curl git base-devel binutils rustup clang cmake pkgconf capnproto file namcap
         libxkbcommon wayland seatd libinput systemd-libs libdrm mesa
-        pipewire dbus openssl fontconfig freetype2 harfbuzz fuse3
+        pipewire dbus fontconfig freetype2 harfbuzz fuse3
         gstreamer gst-plugins-base-libs
     )
     # Under QEMU/PRoot, libalpm's faccessat probe cannot reopen sync databases

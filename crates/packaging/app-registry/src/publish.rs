@@ -70,6 +70,7 @@ pub fn build_entry(
     ticket: Option<&str>,
 ) -> Result<(IndexEntry, PackageId)> {
     let meta = qpkg::load(qpkg_bytes)?;
+    qpkg::validate_payload_shape(&meta)?;
 
     let declared = meta
         .manifest
@@ -81,6 +82,22 @@ pub fn build_entry(
             "signing identity ed25519:{} does not match the manifest publisher ed25519:{}",
             hex::encode(publisher.public_key_bytes()),
             hex::encode(declared)
+        );
+    }
+
+    // Publishing is a trust boundary too: a manifest that merely names this
+    // key is not proof that the signed root authenticates the in-band blobs.
+    // Fail before upload/index mutation even for a self-hosted registry.
+    qpkg::verify_bytes(qpkg_bytes, meta.package_id, publisher.public_key_bytes())?;
+
+    if !pkg::qpkg_size_allowed(
+        meta.manifest.package.kind,
+        u64::try_from(qpkg_bytes.len()).unwrap_or(u64::MAX),
+    ) {
+        bail!(
+            "application .qpkg is {} bytes; limit is {} bytes (put shared dependencies in the runtime bundle)",
+            qpkg_bytes.len(),
+            pkg::MAX_APP_QPKG_BYTES
         );
     }
 
@@ -150,10 +167,14 @@ pub async fn publish_to_dir(
     registry_id: &str,
     arch: Option<Arch>,
 ) -> Result<PublishReceipt> {
-    // Upload the blob; the returned hash is the iroh content hash.
-    let (hash, ticket) = node.add_and_ticket(qpkg_bytes.to_vec()).await?;
+    // Authenticate and enforce payload budgets before mutating blob storage.
+    let (mut entry, package_id) = build_entry(qpkg_bytes, publisher, arch, None)?;
 
-    let (entry, package_id) = build_entry(qpkg_bytes, publisher, arch, Some(&ticket.to_string()))?;
+    // Upload only accepted bytes, then bind the resulting fetch source into
+    // the publisher-signed entry.
+    let (hash, ticket) = node.add_and_ticket(qpkg_bytes.to_vec()).await?;
+    entry.ticket = ticket.to_string();
+    entry.sign(publisher)?;
 
     // The uploaded blob's hash must match the entry's advertised hash.
     if entry.qpkg_hash_bytes()? != *hash.as_bytes() {
@@ -207,7 +228,7 @@ pub async fn emit_entry_https(base_url: &str, entry: &IndexEntry) -> Result<()> 
     let resp = client
         .post(&url)
         .header("content-type", "application/json")
-        .header("x-qos-publisher", &entry.publisher_identity)
+        .header("x-tilo-publisher", &entry.publisher_identity)
         .body(body)
         .send()
         .await
@@ -228,4 +249,96 @@ pub fn sign_index(index: &mut RegistryIndex, registry_key: &SigningIdentity) -> 
     index
         .sign(registry_key)
         .map_err(|e| anyhow!("sign index: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::qpkg::{self, test_fixture::signed_qpkg};
+    use pkg::{BlobStore, MemoryBlobStore, SignedRoot};
+
+    #[test]
+    fn build_entry_accepts_a_cryptographically_valid_bundle() {
+        let publisher = SigningIdentity::generate();
+        let (bytes, id) = signed_qpkg(&publisher);
+        let (entry, actual) = build_entry(&bytes, &publisher, None, None).unwrap();
+        assert_eq!(actual, id);
+        assert_eq!(entry.package_id, id.to_string());
+    }
+
+    #[test]
+    fn build_entry_rejects_a_manifest_that_names_publisher_but_has_bad_signature() {
+        let publisher = SigningIdentity::generate();
+        let (bytes, id) = signed_qpkg(&publisher);
+        let meta = qpkg::load(&bytes).unwrap();
+        let root_bytes = meta
+            .store
+            .get(&pkg::BlobHash(*id.as_bytes()))
+            .unwrap()
+            .unwrap();
+        let mut root = SignedRoot::decode(&root_bytes).unwrap();
+        let mut signature = root.signature.unwrap();
+        signature[0] ^= 1;
+        root.signature = Some(signature);
+
+        let mut tampered_store = MemoryBlobStore::new();
+        for (hash, blob) in meta.store.iter() {
+            if hash != &pkg::BlobHash(*id.as_bytes()) {
+                tampered_store.put(blob).unwrap();
+            }
+        }
+        tampered_store.put(&root.encode()).unwrap();
+        let tampered = qpkg::write_bytes(root.package_id(), &tampered_store).unwrap();
+
+        let error = build_entry(&tampered, &publisher, None, None).unwrap_err();
+        let message = error.to_string().to_ascii_lowercase();
+        assert!(
+            message.contains("signature") || message.contains("verify"),
+            "unexpected rejection: {error:#}"
+        );
+    }
+
+    #[test]
+    fn build_entry_rejects_signed_deduplication_amplification() {
+        let publisher = SigningIdentity::generate();
+        let (bytes, id) = signed_qpkg(&publisher);
+        let meta = qpkg::load(&bytes).unwrap();
+        let root_bytes = meta
+            .store
+            .get(&pkg::BlobHash(*id.as_bytes()))
+            .unwrap()
+            .unwrap();
+        let mut root = SignedRoot::decode(&root_bytes).unwrap();
+
+        let mut malicious_store = MemoryBlobStore::new();
+        for (hash, blob) in meta.store.iter() {
+            if hash != &pkg::BlobHash(*id.as_bytes()) {
+                malicious_store.put(blob).unwrap();
+            }
+        }
+        // 2,049 references expand beyond 5 MiB while remaining under the
+        // independent 4,096-entry ceiling, so this specifically exercises
+        // the materialized-byte boundary.
+        let repeated = malicious_store.put(&vec![0x5a; 3072]).unwrap();
+        let mut collection = pkg::Collection::default();
+        for index in 0..=2048 {
+            collection
+                .entries
+                .insert(format!("share/repeated-{index}"), repeated);
+        }
+        root.payload_root_hash = malicious_store.put(&collection.encode()).unwrap();
+        root.signature = Some(publisher.sign_signed_root(&root).unwrap());
+        malicious_store.put(&root.encode()).unwrap();
+        let malicious = qpkg::write_bytes(root.package_id(), &malicious_store).unwrap();
+        assert!(
+            u64::try_from(malicious.len()).unwrap_or(u64::MAX) < pkg::MAX_APP_QPKG_BYTES,
+            "fixture must exercise materialization rather than wire-size rejection"
+        );
+
+        let error = build_entry(&malicious, &publisher, None, None).unwrap_err();
+        assert!(
+            error.to_string().contains("materializes"),
+            "unexpected rejection: {error:#}"
+        );
+    }
 }

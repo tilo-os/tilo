@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Drive dist/session/qos-session-dev against the inputs it is supposed to
+# Drive dist/session/tilo-session-dev against the inputs it is supposed to
 # refuse, and one it is supposed to accept.
 #
 # The script deliberately reads exactly one path — the invoking user's
-# ~/.config/qos/dev-session, resolved from the passwd database, with no
+# ~/.config/tilo/dev-session, resolved from the passwd database, with no
 # environment variable or argument that can point it elsewhere. That is what
 # makes it worth testing on the real path rather than a temporary one, so this
 # saves any existing config and puts it back on the way out.
@@ -16,13 +16,17 @@ set -uo pipefail
 umask 0077
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-wrapper=$here/../qos-session-dev
+wrapper=$here/../tilo-session-dev
 home=$(getent passwd "$(id -u)" | cut -d: -f6)
-conf=$home/.config/qos/dev-session
+conf=$home/.config/tilo/dev-session
 # Under the home directory, not /tmp: the accepting case needs a target no one
 # else can write, and /tmp is 1777 by definition.
 mkdir -p "$home/.cache"
-scratch=$(mktemp -d "$home/.cache/qos-dev-session-test.XXXXXX")
+scratch=$(mktemp -d "$home/.cache/tilo-dev-session-test.XXXXXX")
+# Minimal packaging containers do not run logind and therefore have no
+# /run/user/<uid>. Use a private per-test runtime directory, matching the
+# writable XDG_RUNTIME_DIR a real login session supplies.
+export XDG_RUNTIME_DIR="$scratch/runtime"
 saved=
 
 cleanup() {
@@ -72,8 +76,8 @@ refuse "target does not exist"
 
 # A world-writable directory anywhere above the target means someone else can
 # decide what runs as this session.
-marked=/tmp/qos-dev-session-test-$$
-printf '#!/bin/sh\n# qos-dev-session-build-marker-v1\nexit 0\n' >"$marked"
+marked=/tmp/tilo-dev-session-test-$$
+printf '#!/bin/sh\n# tilo-dev-session-build-marker-v1\nexit 0\n' >"$marked"
 chmod 0755 "$marked"
 echo "$marked" >"$conf"
 refuse "target under a world-writable directory"
@@ -81,7 +85,7 @@ rm -f "$marked"
 
 # Same binary, this time somewhere only this user can write.
 marked=$scratch/marked-shell
-printf '#!/bin/sh\n# qos-dev-session-build-marker-v1\nprintf "started %%s\\n" "$*"\n' >"$marked"
+printf '#!/bin/sh\n# tilo-dev-session-build-marker-v1\nprintf "started %%s\\n" "$*"\n' >"$marked"
 chmod 0755 "$marked"
 chmod 0755 "$scratch"
 
@@ -98,16 +102,56 @@ echo "$unmarked" >"$conf"
 refuse "target carries no dev-session build marker"
 
 # And the accepting case, so the refusals above are known to be about the
-# thing being tested rather than the wrapper refusing everything.
+# thing being tested rather than the wrapper refusing everything. Install a
+# sibling lifecycle fixture: the real developer wrapper must hand the verified
+# binary to the package-owned session lifecycle instead of bypassing it.
 echo "$marked" >"$conf"
 err=$scratch/accept.err
-out=$("$wrapper" 2>"$err"); rc=$?
-if (( rc == 0 )) && [[ $out == "started --host-desktop-session --firstboot --backend drm" ]]; then
-    echo "ok: a marked, privately-owned build starts, with host-session identity setup"
+wrapper_copy=$scratch/tilo-session-dev
+lifecycle=$scratch/tilo-session-runner
+test_runtime=$scratch/runtime
+cp "$wrapper" "$wrapper_copy"
+mkdir -m 0700 "$test_runtime"
+cat >"$lifecycle" <<'SH'
+#!/bin/sh
+case "${1:-}" in /*) ;; *) exit 73 ;; esac
+test -x "$1" || exit 74
+env | grep '^TILO_TEST_CONTROL=' >"$(dirname -- "$XDG_RUNTIME_DIR")/managed-environment"
+printf 'managed %s ::' "$1"
+shift
+if (( $# )); then
+    printf ' %s' "$@"
+fi
+printf '\n'
+SH
+chmod 0755 "$wrapper_copy" "$lifecycle"
+out=$(XDG_RUNTIME_DIR="$test_runtime" "$wrapper_copy" 2>"$err"); rc=$?
+expected="managed $(realpath -e "$marked") ::"
+if (( rc == 0 )) && [[ $out == "$expected" ]]; then
+    echo "ok: a marked, privately-owned build enters the package session lifecycle"
     pass=$((pass + 1))
 else
-    echo "FAIL: expected the marked build to start; rc=$rc out=<$out>"
+    echo "FAIL: expected the marked build to enter the lifecycle; rc=$rc out=<$out>"
     sed 's/^/    /' "$err"
+    fails=$((fails + 1))
+fi
+
+attest=$test_runtime/tilo-dev-session/active
+if [[ -r $attest ]] \
+    && grep -Fqx "path=$(realpath -e "$marked")" "$attest" \
+    && grep -Eq '^sha256=[0-9a-f]{64}$' "$attest"; then
+    echo "ok: developer launch records a protected binary attestation"
+    pass=$((pass + 1))
+else
+    echo "FAIL: developer launch attestation is missing or malformed"
+    fails=$((fails + 1))
+fi
+
+if grep -Fqx "TILO_TEST_CONTROL=$test_runtime/tilo-dev-session/control.sock" "$scratch/managed-environment"; then
+    echo "ok: developer lifecycle receives a private live-control endpoint"
+    pass=$((pass + 1))
+else
+    echo "FAIL: developer lifecycle did not receive its private live-control endpoint"
     fails=$((fails + 1))
 fi
 

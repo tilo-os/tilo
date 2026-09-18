@@ -4,7 +4,7 @@ set -euo pipefail
 # Brokered Kata runners expose the guest kernel's misc device, but a fresh
 # nested job container may not carry its /dev node. Recreate that node from
 # the kernel-owned major/minor; this still fails closed when the running
-# kernel has no real FUSE device.
+# kernel has no FUSE device.
 if [[ ! -c /dev/fuse && -r /sys/class/misc/fuse/dev ]]; then
     IFS=: read -r fuse_major fuse_minor < /sys/class/misc/fuse/dev
     mknod -m 0666 /dev/fuse c "$fuse_major" "$fuse_minor"
@@ -23,7 +23,7 @@ if [[ ! -r /dev/fuse || ! -w /dev/fuse ]]; then
 fi
 
 fuse_helper="$(command -v fusermount3)" || {
-    echo "qOS builder image does not contain fusermount3" >&2
+    echo "Tilo builder image does not contain fusermount3" >&2
     exit 1
 }
 

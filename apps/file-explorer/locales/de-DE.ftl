@@ -3,6 +3,21 @@
 
 files-time-unknown = unbekannter Zeitpunkt
 
+## Tastaturkurzbefehle
+files-shortcuts-title = Tastaturkurzbefehle
+files-shortcuts-summary = Dateien-Steuerung mit der Tastaturkonvention des aktuellen Desktops
+files-shortcuts-primary = Primäre Modifikatortaste: Strg auf den meisten Desktops, Befehl unter macOS
+files-shortcuts-navigate = Auswahl bewegen: ↑ / ↓ · Bereich auswählen: Umschalt + ↑ / ↓
+files-shortcuts-grid = Raster-Navigation: ← / → bewegen sich horizontal; ↑ / ↓ nach sichtbarer Zeile
+files-shortcuts-open = Auswahl öffnen: Eingabe · umbenennen: F2 · in Papierkorb verschieben: Entf
+files-shortcuts-location = Ort bearbeiten: Primär + L · aktualisieren: F5
+files-shortcuts-new-folder = Neuer Ordner: Primär + Umschalt + N
+files-shortcuts-edit = Kopieren, ausschneiden, einfügen, Papierkorb rückgängig, alles auswählen: Primär + C / X / V / Z / A
+files-shortcuts-hidden = Versteckte Dateien zeigen oder ausblenden: Primär + H
+files-shortcuts-size = Elementgröße ändern: Primär + + / − · Größe zurücksetzen: Primär + 0
+files-shortcuts-context = Kontextmenü: Menütaste oder Rechtsklick
+files-shortcuts-close = Diese Hilfe öffnen: ? oder F1 · Blätter und Menüs schließen: Esc
+
 ## Verfügbarkeit: Aktionen und Status
 files-keep-offline = Offline verfügbar halten
 files-use-automatic-storage = Automatische Speicherverwaltung verwenden
@@ -202,14 +217,14 @@ files-merge-review-menu = Zusammenführung prüfen
 files-merge-review-title = Zusammenführung prüfen — { $name }
 files-merge-review-summary = Es wurden noch keine Änderungen vorgenommen
 files-merge-review-checking = Die genauen unveränderlichen Versionen werden geprüft…
-files-merge-review-checking-detail = qOS vergleicht beide Änderungen mit ihrer gemeinsamen Basis. Währenddessen wird nichts geändert.
+files-merge-review-checking-detail = Tilo vergleicht beide Änderungen mit ihrer gemeinsamen Basis. Währenddessen wird nichts geändert.
 files-merge-review-safe = Sicher zusammenführbar
 files-merge-review-needs-review = Prüfung nötig — es wird nichts zusammengeführt
 files-merge-review-unavailable = Die Zusammenführungsprüfung ist nicht verfügbar. Aktualisieren Sie die Datei und vergleichen Sie die Versionen manuell.
 files-merge-review-no-apply = Behalten Sie beide Versionen oder wählen Sie nach dem Prüfen des unveränderlichen Diffs eine Version aus.
 files-merge-review-incoming = Eingehende Version von Gerät { $device }
 files-merge-review-diff = In der Versionshistorie können Sie die beiden unveränderlichen Versionen vor der Zusammenführung vergleichen.
-files-merge-review-guard = qOS prüft die genaue Basis und beide Versionen unmittelbar vor dem Speichern erneut. Überlappen sich die Änderungen oder haben sie sich verändert, wird nichts zusammengeführt.
+files-merge-review-guard = Tilo prüft die genaue Basis und beide Versionen unmittelbar vor dem Speichern erneut. Überlappen sich die Änderungen oder haben sie sich verändert, wird nichts zusammengeführt.
 files-merge-review-undo = Die Zusammenführung erstellt einen signierten Verlaufseintrag. So können Sie eine frühere Version wiederherstellen, ohne spätere Arbeit rückgängig zu machen.
 files-merge-apply-safe = Sichere Zusammenführung anwenden
 files-merge-apply-safe-detail = Dies wird nur ausgeführt, wenn die deterministische Vorprüfung weiterhin beide Versionen sicher erhalten kann.
@@ -448,7 +463,6 @@ files-menu-add-favourite = Zu Favoriten hinzufügen
 files-menu-remove-favourite = Aus Favoriten entfernen
 files-menu-hide-hidden = Verborgene Dateien ausblenden
 files-menu-show-hidden = Verborgene Dateien anzeigen
-files-menu-show-hidden-checked = ✓ Verborgene Dateien anzeigen
 files-menu-sort-name = Nach Name sortieren
 files-menu-sort-size = Nach Größe sortieren
 files-menu-sort-type = Nach Typ sortieren
@@ -460,10 +474,33 @@ files-sort-type = Typ
 files-sort-date = Datum
 files-sort-ascending = Aufsteigend
 files-sort-descending = Absteigend
-files-menu-checked = ✓ { $label }
-files-menu-unchecked =      { $label }
 files-new-from-template = Neu: { $name }
 files-drag-items = { $count } Elemente
+
+## Archive
+files-archive-extract = Archiv entpacken…
+files-archive-extract-here = Hier entpacken
+files-archive-compress = Als ZIP komprimieren
+files-archive-select-compress = Wählen Sie Dateien oder Ordner zum Komprimieren aus
+files-archive-read-only = Archive können erst nach dem Entpacken geändert werden
+files-archive-open-after-extract = Entpacken Sie dieses Archiv, um enthaltene Dateien zu öffnen oder zu bearbeiten
+files-archive-select = Wählen Sie zum Entpacken ein ZIP-, TAR- oder TAR.GZ-Archiv aus
+files-archive-extracted =
+    { $count ->
+        [one] 1 Datei entpackt
+       *[other] { $count } Dateien entpackt
+}
+files-undo-move-trash = In Papierkorb verschieben rückgängig
+files-undo-trash-restored = { $count } { $count ->
+    [one] 1 Element wiederhergestellt
+   *[other] { $count } Elemente wiederhergestellt
+}
+files-undo-trash-unavailable = Rückgängig ist nicht mehr verfügbar, weil sich der Papierkorb geändert hat
+files-undo-trash-failed = Papierkorbelemente konnten nicht wiederhergestellt werden: { $error }
+files-archive-extracted-partial = { $count } Dateien entpackt; { $failures }
+files-archive-extract-failed = Archiv konnte nicht entpackt werden: { $error }
+files-archive-created = { $name } erstellt
+files-archive-create-failed = Archiv konnte nicht erstellt werden: { $error }
 
 ## Validierung von Dateivorgängen
 files-folder-name-empty = Ordnername darf nicht leer sein
@@ -473,3 +510,33 @@ files-name-slash = Name darf kein „/“ enthalten
 files-no-parent = Kein übergeordneter Ordner
 files-name-exists = „{ $name }“ ist bereits vorhanden
 files-source-no-name = Quelle hat keinen Dateinamen
+files-menu-send-nearby = An Gerät in der Nähe senden…
+files-action-send-nearby-device = An { $device } senden
+files-nearby-send-to-device = An { $device } senden
+files-nearby-select-one = Wählen Sie eine Datei oder einen Ordner zum Senden aus.
+files-nearby-loading-devices = Zertifizierte Geräte werden gesucht…
+files-nearby-no-devices = Keine zertifizierten Geräte sind online.
+files-nearby-choose-device = Wählen Sie ein zertifiziertes Gerät.
+files-nearby-queueing = Sicheres Senden wird vorbereitet…
+files-nearby-accepted = Senden angenommen.
+files-nearby-declined = Senden abgelehnt.
+files-nearby-cancelled = Senden abgebrochen.
+files-nearby-retrying = Senden wird erneut versucht…
+files-nearby-accept = Annehmen
+files-nearby-retry = Erneut versuchen
+files-nearby-consent-detail = Nichts wird gespeichert, bevor Sie genau diese Übertragung annehmen.
+files-nearby-retry-detail = Die Quelle bleibt verfügbar, daher kann die fortsetzbare Übertragung sicher erneut versucht werden.
+files-nearby-offer-title = Senden von { $device }
+files-nearby-offer-summary = { $name } empfangen?
+files-nearby-offer-size = Übertragungsgröße: { $bytes } Bytes
+files-nearby-failed-title = Senden fehlgeschlagen
+files-nearby-failed-device = Zertifiziertes Gerät: { $device }
+files-nearby-choose-destination = Speicherort wählen
+files-nearby-no-destinations = Kein freigegebener beschreibbarer Arbeitsbereichsordner ist verfügbar.
+files-nearby-destination-count = Wählen Sie aus { $count } freigegebenen Speicherorten.
+files-nearby-save-to-destination = In { $destination } speichern
+files-nearby-save-and-remember = In { $destination } speichern und für diese Sitzung merken
+
+files-share-not-available = Freigabedienst ist auf diesem Gerät nicht verfügbar
+
+files-name-invalid = Gib einen gültigen Datei- oder Ordnernamen ein

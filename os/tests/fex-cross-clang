@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Put this script on the test PATH as `clang`. FEX's structure verifier asks
+# the native Clang driver for each target's include paths before using libclang.
+# Feed it the actual target SDK, never the ARM host's C++ configuration headers.
+set -euo pipefail
+compiler=${TILO_FEX_CLANG:-/usr/bin/clang}
+for argument in "$@"; do
+    case "$argument" in
+        --target=i686-linux-unknown|--target=x86_64-linux-unknown)
+            sdk=${TILO_FEX_X86_SYSROOT:?set TILO_FEX_X86_SYSROOT to the complete x86 SDK}
+            test -d "$sdk/usr/include"
+            test -d "$sdk/usr/lib/gcc"
+            exec "$compiler" --sysroot="$sdk" --gcc-toolchain="$sdk/usr" "$@"
+            ;;
+    esac
+done
+exec "$compiler" "$@"

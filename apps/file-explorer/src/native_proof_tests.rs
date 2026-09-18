@@ -202,16 +202,31 @@ fn control_presence_real_files_scroll_skips_file_accessibility_but_inventory_kee
         std::fs::write(temp.path().join(format!("file-{index:04}.txt")), b"note").unwrap();
     }
     let mut h = H::new(Some(temp.path()), 1200.0, 720.0);
-    let snapshot = h.w.native_input_snapshot(&h.state.doc, &h.state.root).unwrap();
+    let snapshot =
+        h.w.native_input_snapshot(&h.state.doc, &h.state.root)
+            .unwrap();
     let vp = snapshot["viewport_rect"].as_array().unwrap();
-    h.cursor(vp[0].as_f64().unwrap() + 50.0, vp[1].as_f64().unwrap() + 60.0);
-    let expected = h.w.control_action_bindings().iter().any(|b| matches!(b.kind, ui::widget::ControlBindingKind::Action(_)));
-    let body_expected = h.w.nav.control_action_bindings().iter().any(|b| matches!(b.kind, ui::widget::ControlBindingKind::Action(_)));
+    h.cursor(
+        vp[0].as_f64().unwrap() + 50.0,
+        vp[1].as_f64().unwrap() + 60.0,
+    );
+    let expected =
+        h.w.control_action_bindings()
+            .iter()
+            .any(|b| matches!(b.kind, ui::widget::ControlBindingKind::Action(_)));
+    let body_expected =
+        h.w.nav
+            .control_action_bindings()
+            .iter()
+            .any(|b| matches!(b.kind, ui::widget::ControlBindingKind::Action(_)));
     ACCESSIBILITY_BUILDS.with(|count| count.set(0));
     for _ in 0..4 {
         assert_eq!(h.w.has_action_control_bindings(), expected);
-        assert_eq!(h.w.nav.has_action_control_bindings(), body_expected,
-            "also exercise the file body without a toolbar emitter short-circuit");
+        assert_eq!(
+            h.w.nav.has_action_control_bindings(),
+            body_expected,
+            "also exercise the file body without a toolbar emitter short-circuit"
+        );
         h.dispatch(&winit::event::WindowEvent::MouseWheel {
             device_id: unsafe { std::mem::zeroed() },
             delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
@@ -219,16 +234,35 @@ fn control_presence_real_files_scroll_skips_file_accessibility_but_inventory_kee
         });
         h.w.apply_layout(&h.taffy, h.node, Point::ORIGIN);
         assert_eq!(h.w.has_action_control_bindings(), expected);
-        assert_eq!(h.w.nav.has_action_control_bindings(), body_expected,
-            "also exercise the file body without a toolbar emitter short-circuit");
+        assert_eq!(
+            h.w.nav.has_action_control_bindings(),
+            body_expected,
+            "also exercise the file body without a toolbar emitter short-circuit"
+        );
     }
-    assert!(h.w.native_input_snapshot(&h.state.doc, &h.state.root).unwrap()["offset_y"].as_f64().unwrap() > 0.0);
-    assert_eq!(ACCESSIBILITY_BUILDS.with(std::cell::Cell::get), 0,
-        "presence queries must not materialize all 1200 file nodes");
+    assert!(
+        h.w.native_input_snapshot(&h.state.doc, &h.state.root)
+            .unwrap()["offset_y"]
+            .as_f64()
+            .unwrap()
+            > 0.0
+    );
+    assert_eq!(
+        ACCESSIBILITY_BUILDS.with(std::cell::Cell::get),
+        0,
+        "presence queries must not materialize all 1200 file nodes"
+    );
     let inventory = h.w.control_action_bindings();
-    assert_eq!(inventory.iter().any(|b| matches!(b.kind, ui::widget::ControlBindingKind::Action(_))), expected);
-    assert!(ACCESSIBILITY_BUILDS.with(std::cell::Cell::get) > 0,
-        "explicit inventory must retain full semantic traversal");
+    assert_eq!(
+        inventory
+            .iter()
+            .any(|b| matches!(b.kind, ui::widget::ControlBindingKind::Action(_))),
+        expected
+    );
+    assert!(
+        ACCESSIBILITY_BUILDS.with(std::cell::Cell::get) > 0,
+        "explicit inventory must retain full semantic traversal"
+    );
 }
 
 #[test]
@@ -236,10 +270,19 @@ fn control_presence_files_collaboration_panel_matches_inventory() {
     let mut h = H::new(None, 1200.0, 720.0);
     for modal in [false, true, false] {
         h.w.collab_panel = modal.then(|| CollabPanel {
-            title: "Review".into(), summary: "Summary".into(), lines: vec![], action: None,
+            title: "Review".into(),
+            summary: "Summary".into(),
+            lines: vec![],
+            action: None,
+            history: None,
         });
-        let expected = h.w.control_action_bindings().iter().any(|b| matches!(b.kind, ui::widget::ControlBindingKind::Action(_)));
+        let expected =
+            h.w.control_action_bindings()
+                .iter()
+                .any(|b| matches!(b.kind, ui::widget::ControlBindingKind::Action(_)));
         assert_eq!(h.w.has_action_control_bindings(), expected);
-        if modal { assert!(!expected, "collaboration panel hides underlying emitters"); }
+        if modal {
+            assert!(!expected, "collaboration panel hides underlying emitters");
+        }
     }
 }

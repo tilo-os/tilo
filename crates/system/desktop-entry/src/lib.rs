@@ -1,11 +1,11 @@
 //! freedesktop.org desktop entries — parsing, scanning, and launching.
 //!
-//! This is how qOS learns about applications it did not package: the
+//! This is how Tilo learns about applications it did not package: the
 //! `.desktop` files a distribution, a Flatpak, or the user dropped into
 //! an `applications` directory. It is deliberately a *separate* concept
-//! from a qOS package:
+//! from a Tilo package:
 //!
-//! - a qOS package is a signed `.qpkg` with a manifest, launched into a
+//! - a Tilo package is a signed `.qpkg` with a manifest, launched into a
 //!   bubblewrap sandbox with one writable directory and a room id;
 //! - a desktop entry is a text file naming a command line, and running
 //!   it runs that command line on the host.

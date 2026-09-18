@@ -1,26 +1,27 @@
 //! Per-user hosted model gateway.
 //!
-//! This intentionally is a narrow OpenAI-compatible/Anthropic relay, not a
-//! general `LiteLLM` deployment. qOS needs one profile-selected planning call;
-//! adding `LiteLLM` would introduce an unpinned Python control plane and more
-//! provider surface than is audited here.
+//! This is a narrow OpenAI-compatible/Anthropic relay for a profile-selected
+//! planning call. It does not include a general `LiteLLM` control plane.
 
 use std::fs;
 use std::io::Read;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use accounts::{AccountId, Secret, SecretVault};
-use agent_provider_config::{ProviderConfig, ProviderProfile, ProviderProtocol};
+use agent_provider_config::{EndpointLocation, ProviderConfig, ProviderProfile, ProviderProtocol};
+use base64::Engine as _;
 use clap::{Parser, Subcommand};
-use qos_model_gateway::{Frame, RPC_VERSION, Request, Response, read_frame, write_frame};
+use tilo_model_gateway::{
+    FaceImage, Frame, RPC_VERSION, Request, Response, VisionImage, read_frame, write_frame,
+};
 use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Parser)]
-#[command(name = "qos-model-gateway", about = "qOS hosted model gateway")]
+#[command(name = "tilo-model-gateway", about = "Tilo hosted model gateway")]
 struct Cli {
     #[command(subcommand)]
     action: Action,
@@ -45,8 +46,16 @@ enum Action {
 }
 
 const MAX_HANDOFF: usize = 4096;
-const SETTINGS_APP: &str = "dev.qos.settings";
-const AGENT_APP: &str = "dev.qos.agent";
+const SETTINGS_APP: &str = "dev.tilo.settings";
+const AGENT_APP: &str = "dev.tilo.agent";
+const PHOTOS_APP: &str = "dev.tilo.photos";
+const MAX_VISION_IMAGE_BYTES: usize = 1024 * 1024;
+/// Face batches are intentionally small.  A large library is scanned as
+/// bounded background batches by Photos, never materialized into one giant
+/// biometric request or kept in the gateway's memory.
+const MAX_FACE_IMAGES: usize = 12;
+const MAX_FACE_IMAGE_BYTES: usize = 128 * 1024;
+const VISION_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[derive(serde::Deserialize)]
 struct Handoff {
@@ -68,13 +77,13 @@ fn main() {
     if let Err(error) = result {
         // Never interpolate a request or provider response here; either could
         // contain a bearer value or user document content.
-        eprintln!("qos-model-gateway: {error}");
+        eprintln!("tilo-model-gateway: {error}");
         std::process::exit(1);
     }
 }
 
 fn control(request: Request) -> Result<(), String> {
-    let response = qos_model_gateway::request(request).map_err(|error| error.to_string())?;
+    let response = tilo_model_gateway::request(request).map_err(|error| error.to_string())?;
     if let Some(configured) = response.configured {
         println!("{configured}");
     }
@@ -82,6 +91,21 @@ fn control(request: Request) -> Result<(), String> {
 }
 
 fn serve(socket: &PathBuf) -> Result<(), String> {
+    let listener = if let Some(listener) = systemd_listener(socket)? {
+        listener
+    } else {
+        bind_listener(socket)?
+    };
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => serve_client(stream),
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(())
+}
+
+fn bind_listener(socket: &PathBuf) -> Result<UnixListener, String> {
     if let Some(parent) = socket.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -95,13 +119,46 @@ fn serve(socket: &PathBuf) -> Result<(), String> {
     let listener = UnixListener::bind(socket).map_err(|error| error.to_string())?;
     fs::set_permissions(socket, fs::Permissions::from_mode(0o600))
         .map_err(|error| error.to_string())?;
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => serve_client(stream),
-            Err(error) => return Err(error.to_string()),
-        }
+    Ok(listener)
+}
+
+fn systemd_listener(expected: &Path) -> Result<Option<UnixListener>, String> {
+    const SYSTEMD_LISTEN_FD: i32 = 3;
+
+    let pid_matches = std::env::var("LISTEN_PID")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        == Some(std::process::id());
+    if !pid_matches {
+        return Ok(None);
     }
-    Ok(())
+    if std::env::var("LISTEN_FDS").as_deref() != Ok("1") {
+        return Err("systemd must pass exactly one model-gateway listener".into());
+    }
+    // SAFETY: fcntl only validates whether fd 3 is open; it consumes no pointer.
+    if unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_GETFD) } == -1 {
+        return Err("systemd model-gateway listener fd is closed".into());
+    }
+    // SAFETY: systemd's LISTEN_PID/FDS contract transfers ownership of fd 3
+    // to this process exactly once.
+    let listener = unsafe { UnixListener::from_raw_fd(SYSTEMD_LISTEN_FD) };
+    let actual = listener.local_addr().map_err(|error| error.to_string())?;
+    if actual.as_pathname() != Some(expected) {
+        return Err("systemd model-gateway listener has an unexpected path".into());
+    }
+    // systemd supplies activation descriptors without CLOEXEC.
+    // This daemon can launch request-handling subprocesses; none may inherit
+    // the session's authenticated listener or activation metadata.
+    if unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
+        return Err("cannot mark systemd model-gateway listener close-on-exec".into());
+    }
+    // SAFETY: activation is consumed once, before worker threads exist.
+    unsafe {
+        std::env::remove_var("LISTEN_PID");
+        std::env::remove_var("LISTEN_FDS");
+        std::env::remove_var("LISTEN_FDNAMES");
+    }
+    Ok(Some(listener))
 }
 
 fn serve_client(mut stream: UnixStream) {
@@ -139,7 +196,11 @@ fn read_handoff(stream: &mut UnixStream) -> Result<Handoff, String> {
         .map_err(|_| "truncated launcher authentication".to_string())?;
     let handoff: Handoff =
         serde_json::from_slice(&body).map_err(|_| "invalid launcher authentication".to_string())?;
-    if handoff.protocol != 1 || (handoff.app_id != SETTINGS_APP && handoff.app_id != AGENT_APP) {
+    if handoff.protocol != 1
+        || (handoff.app_id != SETTINGS_APP
+            && handoff.app_id != AGENT_APP
+            && handoff.app_id != PHOTOS_APP)
+    {
         return Err("launcher is not authorized for the model gateway".into());
     }
     Ok(handoff)
@@ -164,7 +225,37 @@ fn handle(app_id: &str, request: Request) -> Response {
             configured: None,
             error: None,
         }),
-        Request::Plan { .. } => Err("only qos-agent may plan through the model gateway".into()),
+        Request::Plan { .. } => Err("only tilo-agent may plan through the model gateway".into()),
+        Request::AnalyzeImage {
+            profile_id,
+            model_id,
+            image,
+        } if app_id == PHOTOS_APP => {
+            analyze_image(&profile_id, &model_id, &image).map(|output| Response {
+                ok: true,
+                output: Some(output),
+                configured: None,
+                error: None,
+            })
+        }
+        Request::AnalyzeImage { .. } => {
+            Err("only Photos may request fixed local image analysis".into())
+        }
+        Request::ClusterFaces {
+            profile_id,
+            model_id,
+            images,
+        } if app_id == PHOTOS_APP => {
+            cluster_faces(&profile_id, &model_id, &images).map(|output| Response {
+                ok: true,
+                output: Some(output),
+                configured: None,
+                error: None,
+            })
+        }
+        Request::ClusterFaces { .. } => {
+            Err("only Photos may request fixed local face clustering".into())
+        }
         Request::SecretStatus { profile_id } if app_id == SETTINGS_APP => {
             secret_status(&profile_id).map(|configured| Response {
                 ok: true,
@@ -298,17 +389,232 @@ fn plan(
     let result = while_busy(
         || timeout.checked_sub(began.elapsed()),
         std::thread::sleep,
-        |budget| provider_attempt(&client, &profile, &endpoint, secret.as_str(), body, budget),
+        |budget| {
+            provider_attempt(
+                &client,
+                &profile,
+                &endpoint,
+                Some(secret.as_str()),
+                body,
+                budget,
+            )
+        },
     );
     secret.zeroize();
     result
+}
+
+/// Run Photos' one fixed local-only visual-analysis operation. No arbitrary
+/// prompt crosses the app boundary: the schema, token budget, and image URL
+/// shape are all constructed here after validating the launcher-authenticated
+/// caller and model capability.
+fn analyze_image(profile_id: &str, model_id: &str, image: &VisionImage) -> Result<String, String> {
+    validate_vision_image(image)?;
+    let profile = configured_profile(profile_id)?;
+    if profile.location != EndpointLocation::ThisDevice
+        || profile.protocol != ProviderProtocol::OpenAiCompatible
+        || !loopback_http_endpoint(&profile.endpoint)
+    {
+        return Err("image analysis requires a supervised loopback OpenAI-compatible model".into());
+    }
+    let model = profile
+        .models
+        .iter()
+        .find(|model| model.id == model_id)
+        .ok_or_else(|| "model is not configured for this provider".to_string())?;
+    if !model.vision {
+        return Err("the selected local model does not declare image-analysis capability".into());
+    }
+    if !model.revision.as_deref().is_some_and(is_pinned_revision) {
+        return Err("the selected local vision model has no pinned revision".into());
+    }
+
+    let endpoint = provider_url(&profile);
+    let body = local_vision_body(model_id, image);
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|_| "gateway HTTP client is unavailable".to_string())?;
+    let began = Instant::now();
+    // A local vLLM endpoint is normally unauthenticated. Do not invent a
+    // bearer token, and never look up a hosted-provider secret for it.
+    while_busy(
+        || VISION_TIMEOUT.checked_sub(began.elapsed()),
+        std::thread::sleep,
+        |budget| provider_attempt(&client, &profile, &endpoint, None, &body, budget),
+    )
+}
+
+/// Run one fixed face-clustering request against the separate signed local
+/// capability.  An OpenAI-compatible local runner can expose its face model
+/// behind the normal chat endpoint, but it must explicitly advertise
+/// `face_recognition`; generic image description models cannot use this path.
+fn cluster_faces(profile_id: &str, model_id: &str, images: &[FaceImage]) -> Result<String, String> {
+    validate_face_images(images)?;
+    let profile = configured_profile(profile_id)?;
+    if profile.location != EndpointLocation::ThisDevice
+        || profile.protocol != ProviderProtocol::OpenAiCompatible
+        || !loopback_http_endpoint(&profile.endpoint)
+    {
+        return Err("face clustering requires a supervised loopback local model".into());
+    }
+    let model = profile
+        .models
+        .iter()
+        .find(|model| model.id == model_id)
+        .ok_or_else(|| "model is not configured for this provider".to_string())?;
+    if !model.face_recognition {
+        return Err("the selected local model does not declare face-recognition capability".into());
+    }
+    if !model.revision.as_deref().is_some_and(is_pinned_revision) {
+        return Err("the selected local face model has no pinned revision".into());
+    }
+    let endpoint = provider_url(&profile);
+    let body = local_face_body(model_id, images);
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|_| "gateway HTTP client is unavailable".to_string())?;
+    let began = Instant::now();
+    while_busy(
+        || VISION_TIMEOUT.checked_sub(began.elapsed()),
+        std::thread::sleep,
+        |budget| provider_attempt(&client, &profile, &endpoint, None, &body, budget),
+    )
+}
+
+fn validate_vision_image(image: &VisionImage) -> Result<(), String> {
+    if !matches!(
+        image.media_type.as_str(),
+        "image/jpeg" | "image/png" | "image/webp"
+    ) {
+        return Err("image analysis accepts JPEG, PNG, or WebP previews only".into());
+    }
+    if image.source_content_hash.len() != 64
+        || !image
+            .source_content_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("image analysis requires a SHA-256 source-content hash".into());
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(&image.data_base64)
+        .map_err(|_| "image analysis preview is not valid base64".to_string())?;
+    if decoded.is_empty() || decoded.len() > MAX_VISION_IMAGE_BYTES {
+        return Err("image analysis preview exceeds the 1 MiB input limit".into());
+    }
+    Ok(())
+}
+
+fn validate_face_images(images: &[FaceImage]) -> Result<(), String> {
+    if images.is_empty() || images.len() > MAX_FACE_IMAGES {
+        return Err("face clustering accepts 1 through 12 bounded photographs".into());
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    for image in images {
+        if !image.photo_id.starts_with("photos.photo:")
+            || image.photo_id.len() > 4096
+            || image.photo_id.chars().any(char::is_control)
+            || !ids.insert(&image.photo_id)
+        {
+            return Err("face clustering requires unique Photos resource ids".into());
+        }
+        if image.media_type != "image/jpeg"
+            || image.source_content_hash.len() != 64
+            || !image
+                .source_content_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err("face clustering requires hashed JPEG previews".into());
+        }
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&image.data_base64)
+            .map_err(|_| "face preview is not valid base64".to_string())?;
+        if decoded.is_empty() || decoded.len() > MAX_FACE_IMAGE_BYTES {
+            return Err("face preview exceeds the 128 KiB input limit".into());
+        }
+    }
+    Ok(())
+}
+
+fn loopback_http_endpoint(endpoint: &str) -> bool {
+    let Ok(url) = url::Url::parse(endpoint) else {
+        return false;
+    };
+    if !matches!(url.scheme(), "http" | "https") || url.username() != "" || url.password().is_some()
+    {
+        return false;
+    }
+    match url.host() {
+        Some(url::Host::Domain("localhost")) => true,
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        _ => false,
+    }
+}
+
+fn is_pinned_revision(revision: &str) -> bool {
+    matches!(revision.len(), 40 | 64)
+        && revision
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        && revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn local_vision_body(model_id: &str, image: &VisionImage) -> serde_json::Value {
+    const INSTRUCTIONS: &str = "You are a device-local image indexing component. Return JSON only, with exactly these keys: description (a concise factual caption, at most 480 Unicode characters), labels (an array of up to 24 common visible object, animal, place, or activity labels; do not guess identity or sensitive traits), pets (an array of up to 24 visible companion-animal labels, or an empty array), ocr (literal visible text, or an empty string). A pet must be visibly present; do not infer one from context. Do not name people: face identity requires a separate consented face-clustering capability. If uncertain, omit the label or use an empty value.";
+    let data_url = format!("data:{};base64,{}", image.media_type, image.data_base64);
+    serde_json::json!({
+        "model": model_id,
+        "temperature": 0,
+        "max_tokens": 700,
+        "response_format": { "type": "json_object" },
+        "messages": [
+            { "role": "system", "content": INSTRUCTIONS },
+            { "role": "user", "content": [
+                { "type": "text", "text": "Index this photo using the fixed JSON schema." },
+                { "type": "image_url", "image_url": { "url": data_url, "detail": "low" } }
+            ] }
+        ]
+    })
+}
+
+fn local_face_body(model_id: &str, images: &[FaceImage]) -> serde_json::Value {
+    const INSTRUCTIONS: &str = "You are a device-local face detection and clustering component. Return JSON only with exactly one key, clusters: an array of objects with id and photo_ids. Detect visible faces and group only faces that you can determine are the same person among the supplied photographs. Never output a person's name, age, gender, race, emotion, face rectangle, crop, confidence, embedding, or any biometric value. A cluster id must be a short opaque token and photo_ids must contain only supplied ids. Omit uncertain matches and omit single-photo clusters.";
+    let mut content = Vec::with_capacity(images.len() + 1);
+    content.push(serde_json::json!({
+        "type": "text",
+        "text": "Detect and cluster faces in this bounded local batch using the fixed JSON schema."
+    }));
+    for image in images {
+        content.push(serde_json::json!({
+            "type": "text",
+            "text": format!("Photo resource id: {}", image.photo_id),
+        }));
+        content.push(serde_json::json!({
+            "type": "image_url",
+            "image_url": { "url": format!("data:{};base64,{}", image.media_type, image.data_base64), "detail": "low" }
+        }));
+    }
+    serde_json::json!({
+        "model": model_id,
+        "temperature": 0,
+        "max_tokens": 700,
+        "response_format": { "type": "json_object" },
+        "messages": [
+            { "role": "system", "content": INSTRUCTIONS },
+            { "role": "user", "content": content }
+        ]
+    })
 }
 
 fn provider_attempt(
     client: &reqwest::blocking::Client,
     profile: &ProviderProfile,
     endpoint: &str,
-    secret: &str,
+    secret: Option<&str>,
     body: &serde_json::Value,
     budget: Duration,
 ) -> Result<String, ProviderFailure> {
@@ -318,11 +624,21 @@ fn provider_attempt(
         .header("content-type", "application/json");
     match profile.protocol {
         ProviderProtocol::Anthropic => {
+            let Some(secret) = secret else {
+                return Err(ProviderFailure {
+                    why: "Anthropic requests require a configured credential".into(),
+                    again: Again::Never,
+                });
+            };
             request = request
                 .header("anthropic-version", "2023-06-01")
                 .header("x-api-key", secret);
         }
-        ProviderProtocol::OpenAiCompatible => request = request.bearer_auth(secret),
+        ProviderProtocol::OpenAiCompatible => {
+            if let Some(secret) = secret {
+                request = request.bearer_auth(secret);
+            }
+        }
     }
     let response = request.json(body).send().map_err(|error| ProviderFailure {
         why: if error.is_timeout() {
@@ -459,6 +775,76 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
+
+    fn vision_image() -> VisionImage {
+        VisionImage {
+            media_type: "image/jpeg".into(),
+            data_base64: base64::engine::general_purpose::STANDARD.encode(b"preview"),
+            source_content_hash: "a".repeat(64),
+        }
+    }
+
+    #[test]
+    fn local_vision_input_is_closed_and_bounded() {
+        assert!(validate_vision_image(&vision_image()).is_ok());
+        let mut foreign = vision_image();
+        foreign.media_type = "image/svg+xml".into();
+        assert!(validate_vision_image(&foreign).is_err());
+        let mut corrupt = vision_image();
+        corrupt.data_base64 = "not base64".into();
+        assert!(validate_vision_image(&corrupt).is_err());
+        let mut bad_hash = vision_image();
+        bad_hash.source_content_hash = "x".repeat(64);
+        assert!(validate_vision_image(&bad_hash).is_err());
+    }
+
+    #[test]
+    fn local_vision_never_routes_to_a_lan_or_hosted_endpoint() {
+        assert!(loopback_http_endpoint("http://127.0.0.1:8123/v1"));
+        assert!(loopback_http_endpoint("http://[::1]:8123/v1"));
+        assert!(!loopback_http_endpoint("http://192.168.1.20:8123/v1"));
+        assert!(!loopback_http_endpoint("https://models.example.test/v1"));
+        assert!(!loopback_http_endpoint(
+            "http://localhost.evil.test:8123/v1"
+        ));
+    }
+
+    #[test]
+    fn local_vision_requires_an_immutable_model_revision() {
+        assert!(is_pinned_revision(&"a".repeat(40)));
+        assert!(is_pinned_revision(&"b".repeat(64)));
+        assert!(!is_pinned_revision("main"));
+        assert!(!is_pinned_revision(&"A".repeat(40)));
+    }
+
+    #[test]
+    fn local_vision_prompt_is_fixed_and_contains_no_identity_request() {
+        let body = local_vision_body("vision-model", &vision_image());
+        let encoded = body.to_string();
+        assert!(encoded.contains("device-local image indexing component"));
+        assert!(encoded.contains("Do not name people"));
+        assert!(!encoded.contains("ignore previous"));
+        assert_eq!(body["model"], "vision-model");
+    }
+
+    #[test]
+    fn local_face_input_is_bounded_and_prompt_never_requests_identity() {
+        let face = FaceImage {
+            photo_id: "photos.photo:one".into(),
+            media_type: "image/jpeg".into(),
+            data_base64: base64::engine::general_purpose::STANDARD.encode(b"preview"),
+            source_content_hash: "a".repeat(64),
+        };
+        assert!(validate_face_images(&[face.clone()]).is_ok());
+        let mut duplicate = face.clone();
+        duplicate.photo_id = face.photo_id.clone();
+        assert!(validate_face_images(&[face.clone(), duplicate]).is_err());
+        let body = local_face_body("face-model", &[face]);
+        let encoded = body.to_string();
+        assert!(encoded.contains("face detection and clustering"));
+        assert!(encoded.contains("Never output a person's name"));
+        assert!(!encoded.contains("identify the person"));
+    }
 
     struct Fake {
         left: Duration,

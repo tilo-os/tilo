@@ -4,7 +4,7 @@
 //!
 //! # Why Settings owns these
 //!
-//! Account inventory in qOS is presented in one place: this app's External
+//! Account inventory in Tilo is presented in one place: this app's External
 //! Accounts panel. Password/app-password accounts for Mail, `CalDAV`, `WebDAV`,
 //! and Nextcloud can be added, edited, tested, reauthenticated, and removed
 //! there. Provider-specific OAuth authorization remains in its owning app.
@@ -13,7 +13,7 @@
 //!
 //! Email and `CalDAV` accounts are persisted through the shared
 //! [`accounts::AccountStore`] — one canonical JSON document at
-//! `~/.config/qos/accounts/store.json` — the **same** store Mail and Calendar
+//! `~/.config/tilo/accounts/store.json` — the **same** store Mail and Calendar
 //! read. Settings owns the write lifecycle (add / edit / remove); those apps
 //! consume it. Passwords are sealed in the accompanying encrypted
 //! [`accounts::SecretVault`], never in the plaintext store.
@@ -148,7 +148,7 @@ pub fn recover_account_mutation() -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
-// Mail store — byte-compatible with Mail's `~/.config/qos/mail/accounts.json`.
+// Mail store — byte-compatible with Mail's `~/.config/tilo/mail/accounts.json`.
 // ---------------------------------------------------------------------------
 
 /// IMAP receive + SMTP send settings. Field-for-field the shape Mail's
@@ -270,11 +270,11 @@ pub struct MailStore {
 
 impl MailStore {
     /// The path Mail reads and Settings writes, relative to the config
-    /// root: `<config>/qos/mail/accounts.json`.
+    /// root: `<config>/tilo/mail/accounts.json`.
     pub const REL_PATH: &'static str = "mail/accounts.json";
 
     pub fn path() -> Option<PathBuf> {
-        config_root().map(|r| r.join("mail").join("accounts.json"))
+        settings_store::config_path(std::path::Path::new("mail/accounts.json"))
     }
 
     pub fn to_json(&self) -> String {
@@ -353,8 +353,8 @@ impl DavAccount {
 }
 
 /// A DAV account list. The *same* struct backs both the calendar store
-/// (`<config>/qos/calendar/accounts.json`, consumed by Calendar) and the
-/// files store (`<config>/qos/files/accounts.json`, consumed by the file
+/// (`<config>/tilo/calendar/accounts.json`, consumed by Calendar) and the
+/// files store (`<config>/tilo/files/accounts.json`, consumed by the file
 /// apps) — they differ only by path.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DavStore {
@@ -366,12 +366,12 @@ pub struct DavStore {
 impl DavStore {
     /// The `CalDAV` (calendar) store path.
     pub fn calendar_path() -> Option<PathBuf> {
-        config_root().map(|r| r.join("calendar").join("accounts.json"))
+        settings_store::config_path(std::path::Path::new("calendar/accounts.json"))
     }
 
     /// The `WebDAV` (files) store path.
     pub fn files_path() -> Option<PathBuf> {
-        config_root().map(|r| r.join("files").join("accounts.json"))
+        settings_store::config_path(std::path::Path::new("files/accounts.json"))
     }
 
     pub fn to_json(&self) -> String {
@@ -457,7 +457,7 @@ impl NextcloudAccount {
 }
 
 /// The Nextcloud account list, persisted at
-/// `<config>/qos/nextcloud/accounts.json`.
+/// `<config>/tilo/nextcloud/accounts.json`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NextcloudStore {
     #[serde(default = "default_version")]
@@ -467,7 +467,7 @@ pub struct NextcloudStore {
 
 impl NextcloudStore {
     pub fn path() -> Option<PathBuf> {
-        config_root().map(|r| r.join("nextcloud").join("accounts.json"))
+        settings_store::config_path(std::path::Path::new("nextcloud/accounts.json"))
     }
 
     pub fn to_json(&self) -> String {
@@ -574,7 +574,7 @@ impl AccountDirectory {
         if accounts::config_root().is_some()
             && let Err(error) = recover_account_mutation()
         {
-            tracing::warn!(target: "qos::settings", %error, "could not recover interrupted account mutation");
+            tracing::warn!(target: "tilo::settings", %error, "could not recover interrupted account mutation");
         }
         let mut shared = accounts::AccountStore::load();
         if let Some(root) = accounts::config_root() {
@@ -589,7 +589,7 @@ impl AccountDirectory {
                     match shared.save() {
                         Ok(()) => true,
                         Err(error) => {
-                            tracing::warn!(target: "qos::settings", %error, "could not persist imported legacy accounts");
+                            tracing::warn!(target: "tilo::settings", %error, "could not persist imported legacy accounts");
                             false
                         }
                     }
@@ -606,7 +606,7 @@ impl AccountDirectory {
                     // Without a durable marker the import safely repeats as
                     // upserts. Reporting this matters because a subsequently
                     // removed legacy account could otherwise reappear.
-                    tracing::warn!(target: "qos::settings", %error, "could not mark legacy account import complete");
+                    tracing::warn!(target: "tilo::settings", %error, "could not mark legacy account import complete");
                 }
             }
         }
@@ -860,7 +860,7 @@ pub fn import_legacy_accounts(
     shared.len() != before
 }
 
-/// The per-user qOS config root: `$XDG_CONFIG_HOME/qos` or `~/.config/qos`.
+/// The per-user Tilo config root: `$XDG_CONFIG_HOME/tilo` or `~/.config/tilo`.
 /// Shared by every account store and the region store so they all resolve
 /// the same directory — and, through [`settings_store`], the same directory
 /// the compositor and every other app resolve.

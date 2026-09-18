@@ -1,23 +1,24 @@
-# VM Testing Guide
+# VM testing guide
 
-This guide explains how to build and test the qOS OS using QEMU.
+This guide covers image-level checks in a Tilo QEMU VM. For headless
+compositor and application lanes, see [`headless-testing.md`](headless-testing.md).
 
 ## Verification System
 
-qOS uses a tiered testing system to ensure the FUSE filesystem and system applications are correctly integrated without bloating the production image.
+The test image adds a validation service to the production image so FUSE,
+shipped binaries, portal registration, and basic compositor startup can be
+checked together without changing the production image.
 
 ### 1. Automated Verification Build
 
-We provide a dedicated script that builds the OS and performs automated checks on the resulting image.
+The dedicated script builds the components, test image, and bootable disk.
 
 ```bash
 ./os/verify-test.sh
 ```
 
-**What this script does:**
-1.  **Builds Production Components**: Compiles the compositor, FUSE driver, and system apps.
-2.  **Builds Test Image**: Creates a specialized container image (`os/Containerfile.test`) that includes a validation script and a systemd test service.
-3.  **Generates Test Disk**: Produces a bootable QCOW2 image at `os/output-test/qcow2/disk.qcow2`.
+It compiles the compositor, filesystem driver, and system apps, builds
+`os/Containerfile.test`, and writes `os/output-test/qcow2/disk.qcow2`.
 
 ### 2. Running the Test VM
 
@@ -33,16 +34,16 @@ Once the test image is built, you can boot it in QEMU to see the results.
 
 ### 3. Checking Automated Test Results
 
-Upon booting, the `quick-fs-test.service` runs automatically. You can verify the results via the system journal:
+Upon booting, `fs-test.service` runs automatically. Verify the results with:
 
 ```bash
-journalctl -u quick-fs-test
+journalctl -u fs-test
 ```
 
-**The test confirms:**
--   `/var/workspace` is a valid FUSE mount point.
--   `hello.txt` exists and contains the expected collaborative metadata.
--   `terminal`, `file-explorer`, and `browser` are installed and executable in `/usr/bin/`.
+The test confirms that `/var/workspace` is a FUSE mount, the synthetic
+`hello.txt` content is available, core binaries are executable, the Tilo portal
+definition is registered, and the shell command surface runs. The browser is
+optional when the image was built with `TILO_WITH_BROWSER=0`.
 
 ---
 
@@ -50,7 +51,8 @@ journalctl -u quick-fs-test
 
 To ensure the window manager logic (2D clustering, non-overlapping constraints, sandbox permissions) is robust, the Wayland state is decoupled from the graphical UI layer:
 
-1. **Headless Mode:** The compositor (`shell`) can be instantiated in a headless mode without requiring a GPU or Iced winit window.
+1. **Headless Mode:** The compositor (`shell`) can be instantiated with
+   `--backend headless`, without a host display window.
 2. **Automated Client Integration Tests:** Using the `wayland-client` crate, test suites can connect to the headless compositor socket, spawn mock applications, and assert correct clustering behavior and portal permission prompts.
 3. **Running Headless Tests:**
    ```bash
@@ -68,12 +70,12 @@ If you want to test the production image manually:
 2.  **Launch**: Run `./os/test-vm.sh`.
 3.  **Login**: Use the default credentials:
     -   **User**: `quickuser`
-    -   **Password**: `quickdesktop`
+    -   **Password**: `tilo`
 
-### Useful VM Commands
+### Useful VM commands
 
--   **Check FUSE Mount**: `mountpoint /var/workspace`
--   **Inspect Cache**: `ls -lah /var/cache/quick-fs`
+-   **Check FUSE mount**: `mountpoint /var/workspace`
+-   **Inspect cache**: `ls -lah /var/cache/quick-fs`
 -   **Run Apps**:
     -   `terminal`
     -   `file-explorer`

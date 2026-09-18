@@ -1,6 +1,6 @@
 //! Protocol-neutral terminal image placements and a bounded Kitty APC scanner.
 //!
-//! Placements name bytes by the same BLAKE3 address used by qOS documents/files,
+//! Placements name bytes by the same BLAKE3 address used by Tilo documents/files,
 //! so collaborators exchange a tiny immutable descriptor and resolve the blob
 //! locally.  This module accepts a deliberately small, safe Kitty subset:
 //! complete direct `a=T,t=d` PNG, RGB and RGBA uploads.  File/shared-memory

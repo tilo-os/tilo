@@ -10,10 +10,10 @@
 //! The qdoc store asks the collaboration transport on a miss; this fetcher
 //! runs on `ImageStore` worker threads and returns only already-verified bytes.
 //!
-//! The one non-filesystem case is the `qos-demo://` scheme used only by the
+//! The one non-filesystem case is the `tilo-demo://` scheme used only by the
 //! ephemeral `--shots`/demo seed: it synthesises a real PNG in memory so the
-//! offline screenshot drives the exact same decode+cache+paint path a real
-//! FUSE image would, without shipping binary fixtures or touching the network.
+//! offline screenshot drives the exact same decode+cache+paint path as a real
+//! qdoc image, without shipping binary fixtures or touching the network.
 
 use std::io::Cursor;
 use std::sync::Arc;
@@ -22,9 +22,9 @@ use ui::Fetcher;
 
 /// URL scheme for the synthesised demo attachment thumbnails. Only the
 /// ephemeral demo seed emits these; live attachments use qdoc hashes.
-pub const DEMO_SCHEME: &str = "qos-demo://";
+pub const DEMO_SCHEME: &str = "tilo-demo://";
 /// Prefix used for qdoc content hashes when they are handed to `ImageStore`.
-pub const BLOB_SCHEME: &str = "qos-blob://";
+pub const BLOB_SCHEME: &str = "tilo-blob://";
 
 pub fn blob_key(hash: &str) -> String {
     if hash.starts_with(DEMO_SCHEME) {
@@ -35,9 +35,9 @@ pub fn blob_key(hash: &str) -> String {
 }
 
 /// A believable "call overlay mockup" attachment for the demo conversation.
-pub const DEMO_CALL_GRID: &str = "qos-demo://call-grid";
+pub const DEMO_CALL_GRID: &str = "tilo-demo://call-grid";
 /// A believable "shared screenshot" attachment for the demo `+` action.
-pub const DEMO_SHARED_SHOT: &str = "qos-demo://shared-shot";
+pub const DEMO_SHARED_SHOT: &str = "tilo-demo://shared-shot";
 
 /// The fetcher injected into the app's [`ui::ImageStore`]. Reads verified qdoc
 /// blob bytes or synthesises a PNG for the demo scheme. Runs on the store's
@@ -373,6 +373,6 @@ mod tests {
     #[test]
     fn missing_file_is_none_not_panic() {
         assert!(fetcher()("/var/workspace/does/not/exist.png").is_none());
-        assert!(fetcher()("qos-demo://unknown").is_none());
+        assert!(fetcher()("tilo-demo://unknown").is_none());
     }
 }

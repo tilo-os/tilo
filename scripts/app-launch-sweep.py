@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Launch installed qOS packages through the compositor's real launch
+"""Launch installed Tilo packages through the compositor's launch
 path and report which ones adopt a toplevel.
 
 Drives the whole chain, no mocks:
 
     headless compositor -> Super+K palette -> Applications provider row
-    -> shell::launcher::launch -> qos-launcher -> bwrap -> the app
+    -> shell::launcher::launch -> tilo-launcher -> bwrap -> the app
     -> wl_display_connect -> xdg_toplevel -> tab adoption
 
 Success is read off the compositor's own `state_dump` — a
 `TileContent::Foreign` entry in the live WorkspaceTree — not off the
 process table. Each app's stderr is captured from the compositor log, so
-a failure reports its real error rather than "it didn't work".
+a failure reports its error rather than "it didn't work".
 
 **One fresh compositor per app.** These are debug builds whose vello
 pipeline compile runs for tens of seconds; stacking dozens of live GPU
@@ -332,12 +332,12 @@ class Compositor:
         startup_timeout,
         empty_workspace=False,
     ):
-        self.sock = f"/tmp/qos-app-sweep-{os.getpid()}.sock"
-        # The compositor loads and writes ~/.config/qos/state.json, so an
-        # un-isolated sweep inherits whatever workspace the last real session
+        self.sock = f"/tmp/tilo-app-sweep-{os.getpid()}.sock"
+        # The compositor loads and writes ~/.config/tilo/state.json, so an
+        # An un-isolated sweep inherits whatever workspace the last session
         # left behind and photographs *that* app instead of the one it just
         # launched. Give every compositor its own config root.
-        self.config_home = tempfile.mkdtemp(prefix="qos-sweep-config-")
+        self.config_home = tempfile.mkdtemp(prefix="tilo-sweep-config-")
         self.empty_workspace = empty_workspace
         self.shell_bin = shell_bin
         self.launcher_bin = launcher_bin
@@ -360,15 +360,15 @@ class Compositor:
             # which then share the screen with whatever we launch — so a
             # capture is half someone else's app. Loading a tree instead
             # means the launched app is the only window on screen.
-            qos_dir = pathlib.Path(self.config_home) / "qos"
-            qos_dir.mkdir(parents=True, exist_ok=True)
+            tilo_dir = pathlib.Path(self.config_home) / "tilo"
+            tilo_dir.mkdir(parents=True, exist_ok=True)
             # Field shapes match `WorkspaceTree`'s serde exactly:
             # `shared_surfaces`, `active_strip` and `active_group` are
             # maps, not lists, and `room_authority` has no default. Get
             # one wrong and the compositor logs a read failure and boots
             # the demo tree instead, which is what a capture would then
             # show.
-            (qos_dir / "state.json").write_text(
+            (tilo_dir / "state.json").write_text(
                 json.dumps(
                     {
                         "workspaces": [
@@ -395,8 +395,8 @@ class Compositor:
             )
         env = {
             **os.environ,
-            "QOS_TEST_CONTROL": self.sock,
-            "QOS_LAUNCHER_BIN": str(self.launcher_bin),
+            "TILO_TEST_CONTROL": self.sock,
+            "TILO_LAUNCHER_BIN": str(self.launcher_bin),
             "RUST_LOG": "info",
             "XDG_CONFIG_HOME": self.config_home,
         }
@@ -557,9 +557,9 @@ def app_log_lines(logpath: pathlib.Path, package_id: str) -> list[str]:
 
 
 def was_launched(logpath: pathlib.Path, package_id: str) -> bool:
-    """Did the compositor actually fork a launch for this package?
+    """Did the compositor fork a launch for this package?
 
-    Distinguishes a real app failure from the palette never having
+    Distinguishes an app failure from the palette never having
     offered the row — two very different results that otherwise both
     read as "no tab appeared".
     """
@@ -601,7 +601,7 @@ def run_one(args, package_id: str, out: pathlib.Path, env_extra: dict) -> dict:
             # legitimately starts empty. Read it while the compositor is
             # still up - it dies with the `with` block.
             frames = comp.foreign_frames()
-    reap(f"qos-apps/{package_id}")
+    reap(f"tilo-apps/{package_id}")
 
     launched = was_launched(logpath, package_id)
     lines = app_log_lines(logpath, package_id)
@@ -714,13 +714,13 @@ def main() -> int:
     p.add_argument(
         "--data-dir",
         type=pathlib.Path,
-        default=pathlib.Path.home() / ".local/share/qos-apps",
+        default=pathlib.Path.home() / ".local/share/tilo-apps",
         help="installed-package root",
     )
     args = p.parse_args()
 
     args.shell = args.worktree / "target/debug/shell"
-    args.launcher = args.worktree / "target/debug/qos-launcher"
+    args.launcher = args.worktree / "target/debug/tilo-launcher"
     for b in (args.shell, args.launcher):
         if not b.exists():
             print(f"FAIL: {b} is not built", file=sys.stderr)

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Print the direct RPM specs consumed from qOS's frozen repository."""
+"""Print the direct RPM specs consumed from Tilo's frozen repository."""
 
 from __future__ import annotations
 
+import argparse
 import pathlib
+import platform
 import re
 import shlex
-import sys
 
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -14,7 +15,7 @@ SOURCES = (
     "os/Containerfile",
     "os/Containerfile.host",
     "os/dev/composefs/Containerfile",
-    "os/containers/qos-relay/Containerfile",
+    "os/containers/tilo-relay/Containerfile",
     "os/kernel/Containerfile",
 )
 
@@ -32,15 +33,18 @@ def logical_lines(text: str):
         yield pending
 
 
-def packages(path: pathlib.Path):
+def packages(path: pathlib.Path, arch: str | None = None):
     text = path.read_text()
     for marker in re.finditer(
-        r"^\s*#\s*qos-rpm-snapshot-package:\s*(\S+)\s*$", text, re.MULTILINE
+        r"^\s*#\s*tilo-rpm-snapshot-package(?:\[([^\]]+)\])?:\s*(\S+)\s*$", text, re.MULTILINE
     ):
-        spec = marker.group(1)
+        target, spec = marker.groups()
+        if target is not None and target not in ("x86_64", "aarch64"):
+            raise SystemExit(f"{path}: unsupported snapshot package architecture {target!r}")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+()=*-]*", spec):
             raise SystemExit(f"{path}: invalid snapshot-only package {spec!r}")
-        yield spec
+        if target is None or arch is None or target == arch:
+            yield spec
 
     for line in logical_lines(text):
         for command in line.split("&&"):
@@ -67,12 +71,19 @@ def packages(path: pathlib.Path):
 
 
 def main() -> int:
-    if sys.argv[1:] == ["--sources"]:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--sources", action="store_true")
+    parser.add_argument("--arch", choices=("x86_64", "aarch64"),
+                        help="target RPM architecture (default: native host)")
+    args = parser.parse_args()
+    if args.sources:
         print("\n".join(SOURCES))
         return 0
-    if sys.argv[1:]:
-        raise SystemExit("usage: derive-rpm-package-set.py [--sources]")
-    print("\n".join(sorted({spec for source in SOURCES for spec in packages(REPO / source)})))
+    native = platform.machine().lower()
+    arch = args.arch or {"amd64": "x86_64", "arm64": "aarch64"}.get(native, native)
+    if arch not in ("x86_64", "aarch64"):
+        parser.error(f"unsupported native architecture {native!r}; specify --arch")
+    print("\n".join(sorted({spec for source in SOURCES for spec in packages(REPO / source, arch)})))
     return 0
 
 

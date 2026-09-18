@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "document_kind": "qos_portable_host_app_qualification_inventory",
+  "document_kind": "tilo_portable_host_app_qualification_inventory",
   "source_audit": {
     "commit": "d19f1a0ae2b1d05ec382188fd975bd5762e10704",
     "date": "2026-09-12",
@@ -12,7 +12,7 @@
     "commit": "a1a0402f39530b8e409a5b3a12c00b158f0abb6c",
     "date": "2026-09-13",
     "scope": [
-      "tracked apps/*/qos-app.toml identities and roles",
+      "tracked apps/*/tilo-app.toml identities and roles",
       "manifest-to-map identity set equality",
       "manifest and launch-source link existence",
       "bounded named canonical-definition/service-lifecycle token search"
@@ -26,7 +26,7 @@
     "manifest_count": 47,
     "manifest_tree_fingerprint": {
       "algorithm": "sha256",
-      "method": "path-sorted git ls-tree records for apps/*/qos-app.toml",
+      "method": "path-sorted git ls-tree records for apps/*/tilo-app.toml",
       "value": "7627838e7dd384276f88375336957da714487873e01dcd32e37a83257679f6fb"
     },
     "identity_result": {
@@ -156,8 +156,8 @@
   },
   "records": [
     {
-      "app_id": "dev.qos.agent",
-      "manifest_path": "apps/agent/qos-app.toml",
+      "app_id": "dev.tilo.agent",
+      "manifest_path": "apps/agent/tilo-app.toml",
       "manifest_role": "service",
       "entrypoint_flavour": "cli",
       "launch_source": "apps/agent/src/main.rs",
@@ -178,8 +178,8 @@
       "source_audit_row_ordinal": 1
     },
     {
-      "app_id": "dev.qos.api-tester",
-      "manifest_path": "apps/api_tester/qos-app.toml",
+      "app_id": "dev.tilo.api-tester",
+      "manifest_path": "apps/api_tester/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/api_tester/src/main.rs",
@@ -201,8 +201,8 @@
       "source_audit_row_ordinal": 2
     },
     {
-      "app_id": "dev.qos.backups",
-      "manifest_path": "apps/backups/qos-app.toml",
+      "app_id": "dev.tilo.backups",
+      "manifest_path": "apps/backups/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/backups/src/main.rs",
@@ -223,8 +223,8 @@
       "source_audit_row_ordinal": 3
     },
     {
-      "app_id": "dev.qos.browser",
-      "manifest_path": "apps/browser/qos-app.toml",
+      "app_id": "dev.tilo.browser",
+      "manifest_path": "apps/browser/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/browser/src/main.rs",
@@ -247,8 +247,8 @@
       "source_audit_row_ordinal": 4
     },
     {
-      "app_id": "dev.qos.calculator",
-      "manifest_path": "apps/calculator/qos-app.toml",
+      "app_id": "dev.tilo.calculator",
+      "manifest_path": "apps/calculator/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/calculator/src/main.rs",
@@ -268,8 +268,8 @@
       "source_audit_row_ordinal": 5
     },
     {
-      "app_id": "dev.qos.calendar",
-      "manifest_path": "apps/calendar/qos-app.toml",
+      "app_id": "dev.tilo.calendar",
+      "manifest_path": "apps/calendar/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/calendar/src/main.rs",
@@ -292,8 +292,8 @@
       "source_audit_row_ordinal": 6
     },
     {
-      "app_id": "dev.qos.camera",
-      "manifest_path": "apps/camera/qos-app.toml",
+      "app_id": "dev.tilo.camera",
+      "manifest_path": "apps/camera/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/camera/src/main.rs",
@@ -327,8 +327,8 @@
       "source_audit_row_ordinal": 7
     },
     {
-      "app_id": "dev.qos.chat",
-      "manifest_path": "apps/chat/qos-app.toml",
+      "app_id": "dev.tilo.chat",
+      "manifest_path": "apps/chat/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/chat/src/main.rs",
@@ -364,8 +364,8 @@
       "source_audit_row_ordinal": 8
     },
     {
-      "app_id": "dev.qos.code-editor",
-      "manifest_path": "apps/code_editor/qos-app.toml",
+      "app_id": "dev.tilo.code-editor",
+      "manifest_path": "apps/code_editor/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/code_editor/src/main.rs",
@@ -387,8 +387,8 @@
       "source_audit_row_ordinal": 9
     },
     {
-      "app_id": "dev.qos.contacts",
-      "manifest_path": "apps/contacts/qos-app.toml",
+      "app_id": "dev.tilo.contacts",
+      "manifest_path": "apps/contacts/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/contacts/src/main.rs",
@@ -421,8 +421,8 @@
       "source_audit_row_ordinal": 10
     },
     {
-      "app_id": "dev.qos.containers",
-      "manifest_path": "apps/containers/qos-app.toml",
+      "app_id": "dev.tilo.containers",
+      "manifest_path": "apps/containers/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/containers/src/main.rs",
@@ -450,8 +450,8 @@
       "source_audit_row_ordinal": 11
     },
     {
-      "app_id": "dev.qos.db-client",
-      "manifest_path": "apps/db_client/qos-app.toml",
+      "app_id": "dev.tilo.db-client",
+      "manifest_path": "apps/db_client/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/db_client/src/main.rs",
@@ -474,8 +474,8 @@
       "source_audit_row_ordinal": 12
     },
     {
-      "app_id": "dev.qos.diffmerge",
-      "manifest_path": "apps/diffmerge/qos-app.toml",
+      "app_id": "dev.tilo.diffmerge",
+      "manifest_path": "apps/diffmerge/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/diffmerge/src/main.rs",
@@ -496,8 +496,8 @@
       "source_audit_row_ordinal": 13
     },
     {
-      "app_id": "dev.qos.disks",
-      "manifest_path": "apps/disks/qos-app.toml",
+      "app_id": "dev.tilo.disks",
+      "manifest_path": "apps/disks/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/disks/src/main.rs",
@@ -525,8 +525,8 @@
       "source_audit_row_ordinal": 14
     },
     {
-      "app_id": "dev.qos.ebook",
-      "manifest_path": "apps/ebook/qos-app.toml",
+      "app_id": "dev.tilo.ebook",
+      "manifest_path": "apps/ebook/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/ebook/src/main.rs",
@@ -547,8 +547,8 @@
       "source_audit_row_ordinal": 15
     },
     {
-      "app_id": "dev.qos.feeds",
-      "manifest_path": "apps/feeds/qos-app.toml",
+      "app_id": "dev.tilo.feeds",
+      "manifest_path": "apps/feeds/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/feeds/src/main.rs",
@@ -570,8 +570,8 @@
       "source_audit_row_ordinal": 16
     },
     {
-      "app_id": "dev.qos.file-explorer",
-      "manifest_path": "apps/file-explorer/qos-app.toml",
+      "app_id": "dev.tilo.file-explorer",
+      "manifest_path": "apps/file-explorer/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/file-explorer/src/main.rs",
@@ -594,8 +594,8 @@
       "source_audit_row_ordinal": 17
     },
     {
-      "app_id": "dev.qos.firewall",
-      "manifest_path": "apps/firewall/qos-app.toml",
+      "app_id": "dev.tilo.firewall",
+      "manifest_path": "apps/firewall/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/firewall/src/main.rs",
@@ -623,8 +623,8 @@
       "source_audit_row_ordinal": 18
     },
     {
-      "app_id": "dev.qos.git-client",
-      "manifest_path": "apps/git_client/qos-app.toml",
+      "app_id": "dev.tilo.git-client",
+      "manifest_path": "apps/git_client/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/git_client/src/main.rs",
@@ -648,8 +648,8 @@
       "source_audit_row_ordinal": 19
     },
     {
-      "app_id": "dev.qos.hex-editor",
-      "manifest_path": "apps/hex_editor/qos-app.toml",
+      "app_id": "dev.tilo.hex-editor",
+      "manifest_path": "apps/hex_editor/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/hex_editor/src/main.rs",
@@ -670,8 +670,8 @@
       "source_audit_row_ordinal": 20
     },
     {
-      "app_id": "dev.qos.imager",
-      "manifest_path": "apps/imager/qos-app.toml",
+      "app_id": "dev.tilo.imager",
+      "manifest_path": "apps/imager/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/imager/src/main.rs",
@@ -700,8 +700,8 @@
       "source_audit_row_ordinal": 21
     },
     {
-      "app_id": "dev.qos.logs",
-      "manifest_path": "apps/logs/qos-app.toml",
+      "app_id": "dev.tilo.logs",
+      "manifest_path": "apps/logs/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/logs/src/main.rs",
@@ -730,8 +730,8 @@
       "source_audit_row_ordinal": 22
     },
     {
-      "app_id": "dev.qos.mail",
-      "manifest_path": "apps/mail/qos-app.toml",
+      "app_id": "dev.tilo.mail",
+      "manifest_path": "apps/mail/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/mail/src/main.rs",
@@ -766,8 +766,8 @@
       "source_audit_row_ordinal": 23
     },
     {
-      "app_id": "dev.qos.maps",
-      "manifest_path": "apps/maps/qos-app.toml",
+      "app_id": "dev.tilo.maps",
+      "manifest_path": "apps/maps/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/maps/src/main.rs",
@@ -796,8 +796,8 @@
       "source_audit_row_ordinal": 24
     },
     {
-      "app_id": "dev.qos.monitor",
-      "manifest_path": "apps/monitor/qos-app.toml",
+      "app_id": "dev.tilo.monitor",
+      "manifest_path": "apps/monitor/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/monitor/src/main.rs",
@@ -824,8 +824,8 @@
       "source_audit_row_ordinal": 25
     },
     {
-      "app_id": "dev.qos.music",
-      "manifest_path": "apps/music/qos-app.toml",
+      "app_id": "dev.tilo.music",
+      "manifest_path": "apps/music/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/music/src/main.rs",
@@ -861,8 +861,8 @@
       "source_audit_row_ordinal": 26
     },
     {
-      "app_id": "dev.qos.notes",
-      "manifest_path": "apps/notes/qos-app.toml",
+      "app_id": "dev.tilo.notes",
+      "manifest_path": "apps/notes/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/notes/src/main.rs",
@@ -884,8 +884,8 @@
       "source_audit_row_ordinal": 27
     },
     {
-      "app_id": "dev.qos.osk",
-      "manifest_path": "apps/osk/qos-app.toml",
+      "app_id": "dev.tilo.osk",
+      "manifest_path": "apps/osk/tilo-app.toml",
       "manifest_role": "service",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/osk/src/main.rs",
@@ -912,8 +912,8 @@
       "source_audit_row_ordinal": 28
     },
     {
-      "app_id": "dev.qos.pdf-viewer",
-      "manifest_path": "apps/pdf_viewer/qos-app.toml",
+      "app_id": "dev.tilo.pdf-viewer",
+      "manifest_path": "apps/pdf_viewer/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/pdf_viewer/src/main.rs",
@@ -934,8 +934,8 @@
       "source_audit_row_ordinal": 29
     },
     {
-      "app_id": "dev.qos.photos",
-      "manifest_path": "apps/photos/qos-app.toml",
+      "app_id": "dev.tilo.photos",
+      "manifest_path": "apps/photos/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/photos/src/main.rs",
@@ -956,8 +956,8 @@
       "source_audit_row_ordinal": 30
     },
     {
-      "app_id": "dev.qos.remote",
-      "manifest_path": "apps/remote/qos-app.toml",
+      "app_id": "dev.tilo.remote",
+      "manifest_path": "apps/remote/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/remote/src/main.rs",
@@ -987,8 +987,8 @@
       "source_audit_row_ordinal": 31
     },
     {
-      "app_id": "dev.qos.settings",
-      "manifest_path": "apps/settings/qos-app.toml",
+      "app_id": "dev.tilo.settings",
+      "manifest_path": "apps/settings/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/settings/src/main.rs",
@@ -1018,8 +1018,8 @@
       "source_audit_row_ordinal": 32
     },
     {
-      "app_id": "dev.qos.sheets",
-      "manifest_path": "apps/sheets/qos-app.toml",
+      "app_id": "dev.tilo.sheets",
+      "manifest_path": "apps/sheets/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/sheets/src/main.rs",
@@ -1040,8 +1040,8 @@
       "source_audit_row_ordinal": 33
     },
     {
-      "app_id": "dev.qos.slides",
-      "manifest_path": "apps/slides/qos-app.toml",
+      "app_id": "dev.tilo.slides",
+      "manifest_path": "apps/slides/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/slides/src/main.rs",
@@ -1069,8 +1069,8 @@
       "source_audit_row_ordinal": 34
     },
     {
-      "app_id": "dev.qos.snippets",
-      "manifest_path": "apps/snippets/qos-app.toml",
+      "app_id": "dev.tilo.snippets",
+      "manifest_path": "apps/snippets/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/snippets/src/main.rs",
@@ -1098,8 +1098,8 @@
       "source_audit_row_ordinal": 35
     },
     {
-      "app_id": "dev.qos.store",
-      "manifest_path": "apps/store/qos-app.toml",
+      "app_id": "dev.tilo.store",
+      "manifest_path": "apps/store/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/store/src/main.rs",
@@ -1123,8 +1123,8 @@
       "source_audit_row_ordinal": 36
     },
     {
-      "app_id": "dev.qos.terminal",
-      "manifest_path": "apps/terminal/qos-app.toml",
+      "app_id": "dev.tilo.terminal",
+      "manifest_path": "apps/terminal/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/terminal/src/main.rs",
@@ -1153,8 +1153,8 @@
       "source_audit_row_ordinal": 37
     },
     {
-      "app_id": "dev.qos.themes",
-      "manifest_path": "apps/themes/qos-app.toml",
+      "app_id": "dev.tilo.themes",
+      "manifest_path": "apps/themes/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/themes/src/main.rs",
@@ -1181,8 +1181,8 @@
       "source_audit_row_ordinal": 38
     },
     {
-      "app_id": "dev.qos.totp",
-      "manifest_path": "apps/totp/qos-app.toml",
+      "app_id": "dev.tilo.totp",
+      "manifest_path": "apps/totp/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/totp/src/main.rs",
@@ -1216,8 +1216,8 @@
       "source_audit_row_ordinal": 39
     },
     {
-      "app_id": "dev.qos.tube",
-      "manifest_path": "apps/tube/qos-app.toml",
+      "app_id": "dev.tilo.tube",
+      "manifest_path": "apps/tube/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/tube/src/main.rs",
@@ -1240,8 +1240,8 @@
       "source_audit_row_ordinal": 40
     },
     {
-      "app_id": "dev.qos.typst-editor",
-      "manifest_path": "apps/typst_editor/qos-app.toml",
+      "app_id": "dev.tilo.typst-editor",
+      "manifest_path": "apps/typst_editor/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/typst_editor/src/main.rs",
@@ -1263,8 +1263,8 @@
       "source_audit_row_ordinal": 41
     },
     {
-      "app_id": "dev.qos.video-player",
-      "manifest_path": "apps/video-player/qos-app.toml",
+      "app_id": "dev.tilo.video-player",
+      "manifest_path": "apps/video-player/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/video-player/src/main.rs",
@@ -1286,8 +1286,8 @@
       "source_audit_row_ordinal": 42
     },
     {
-      "app_id": "dev.qos.video-editor",
-      "manifest_path": "apps/video_editor/qos-app.toml",
+      "app_id": "dev.tilo.video-editor",
+      "manifest_path": "apps/video_editor/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/video_editor/src/main.rs",
@@ -1309,8 +1309,8 @@
       "source_audit_row_ordinal": 43
     },
     {
-      "app_id": "dev.qos.vpn",
-      "manifest_path": "apps/vpn/qos-app.toml",
+      "app_id": "dev.tilo.vpn",
+      "manifest_path": "apps/vpn/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/vpn/src/main.rs",
@@ -1340,8 +1340,8 @@
       "source_audit_row_ordinal": 44
     },
     {
-      "app_id": "dev.qos.weather",
-      "manifest_path": "apps/weather/qos-app.toml",
+      "app_id": "dev.tilo.weather",
+      "manifest_path": "apps/weather/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/weather/src/main.rs",
@@ -1369,8 +1369,8 @@
       "source_audit_row_ordinal": 45
     },
     {
-      "app_id": "dev.qos.windows",
-      "manifest_path": "apps/windows/qos-app.toml",
+      "app_id": "dev.tilo.windows",
+      "manifest_path": "apps/windows/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/windows/src/main.rs",
@@ -1399,8 +1399,8 @@
       "source_audit_row_ordinal": 46
     },
     {
-      "app_id": "dev.qos.word-processor",
-      "manifest_path": "apps/word-processor/qos-app.toml",
+      "app_id": "dev.tilo.word-processor",
+      "manifest_path": "apps/word-processor/tilo-app.toml",
       "manifest_role": "app",
       "entrypoint_flavour": "gui",
       "launch_source": "apps/word-processor/src/main.rs",

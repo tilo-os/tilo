@@ -1,0 +1,52 @@
+[package]
+name = "pdf-viewer"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "pdf_viewer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pdf-viewer"
+path = "src/main.rs"
+
+[features]
+thin = ["dep:runtime-dylib"]
+
+[dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+automerge.workspace = true
+# The Tilo ACTION model: the reader's `actions` module exports its markup-store
+# operations as replayable actions the host's Ctrl+K palette dispatches.
+tilo-actions = { path = "../../crates/collab/actions" }
+qdoc = { path = "../../crates/doc/qdoc" }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+vello.workspace = true
+winit.workspace = true
+taffy.workspace = true
+anyhow.workspace = true
+# PDF page rasterisation via dynamically loaded pdfium, with pure-Rust text
+# extraction when the native library is unavailable.
+pdfium-render = "0.8.37"
+pdf-extract = "0.12.0"
+# Decode imported images (PNG/JPEG/…) to place them as new PDF pages. Pinned to
+# the same 0.25 line pdfium-render uses so `DynamicImage` unifies to one type.
+image = { workspace = true, features = ["png", "jpeg"] }
+tempfile.workspace = true
+# Host-native file open/save through the XDG Desktop Portal; calls run off the
+# UI thread and return through `ui::portal`.
+
+[dev-dependencies]
+# Serialise tests that touch the shared system clipboard.
+serial_test.workspace = true
+# Two distinct files for the multi-document test.
+
+[lints]
+workspace = true

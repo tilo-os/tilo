@@ -5,10 +5,10 @@ use uuid::Uuid;
 
 /// Resource kind for bytes addressed by their content hash.
 ///
-/// Producers return `qos.content:<hash>` in [`ActionOutput::resources`]; a
+/// Producers return `tilo.content:<hash>` in [`ActionOutput::resources`]; a
 /// content-collecting action may then consume the hash without asking a model
 /// to copy or invent it.
-pub const CONTENT_RESOURCE_KIND: &str = "qos.content";
+pub const CONTENT_RESOURCE_KIND: &str = "tilo.content";
 
 /// Build the canonical resource address for content-addressed bytes.
 ///
@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn content_resource_addresses_round_trip_without_guessing() {
         let address = content_resource("abc123").expect("a content hash has an address");
-        assert_eq!(address, "qos.content:abc123");
+        assert_eq!(address, "tilo.content:abc123");
         assert_eq!(content_hash(&address), Some("abc123"));
         assert_eq!(content_resource(""), None);
         assert_eq!(content_resource("two:parts"), None);

@@ -1,6 +1,6 @@
 //! The **shared guided-customization panel** — the one component that collects
-//! a qOS install profile (identity, region, options) for *both* imager flows:
-//! writing a pre-configured image to a stick, and installing qOS onto a disk.
+//! a Tilo install profile (identity, region, options) for *both* imager flows:
+//! writing a pre-configured image to a stick, and installing Tilo onto a disk.
 //!
 //! ## Why a self-contained component
 //!
@@ -38,7 +38,7 @@ use ui::tokens::Metrics;
 use ui::widget::{Button, ButtonFace, Dropdown, TextInput, Widget};
 
 use crate::actions::{IMAGER_ACTION_TYPE, ImagerAction};
-use crate::model::InstallProfile;
+use crate::model::{Filesystem, InstallProfile};
 use crate::rhythm::{GROUP, LABEL, RELATED, SECTION, SIBLING};
 
 // The panel's rhythm (HIG §7b) is the crate's (`crate::rhythm`): a caption
@@ -138,16 +138,18 @@ pub enum CzField {
     Locale,
     Timezone,
     Keyboard,
+    Filesystem,
 }
 
 impl CzField {
-    const ALL: [CzField; 6] = [
+    const ALL: [CzField; 7] = [
         CzField::Hostname,
         CzField::FullName,
         CzField::Username,
         CzField::Locale,
         CzField::Timezone,
         CzField::Keyboard,
+        CzField::Filesystem,
     ];
 
     pub(crate) fn label(self) -> &'static str {
@@ -158,6 +160,7 @@ impl CzField {
             Self::Locale => "Language and locale",
             Self::Timezone => "Time zone",
             Self::Keyboard => "Keyboard layout",
+            Self::Filesystem => "Filesystem",
         }
     }
 
@@ -169,6 +172,7 @@ impl CzField {
             Self::Locale => "locale",
             Self::Timezone => "timezone",
             Self::Keyboard => "keyboard",
+            Self::Filesystem => "filesystem",
         }
     }
 
@@ -188,6 +192,7 @@ struct CzGeom {
     timezone: Rect,
     region_label_y: f64,
     keyboard: Rect,
+    filesystem: Rect,
     export: Rect,
 }
 
@@ -200,6 +205,7 @@ impl CzGeom {
             CzField::Locale => self.locale,
             CzField::Timezone => self.timezone,
             CzField::Keyboard => self.keyboard,
+            CzField::Filesystem => self.filesystem,
         }
     }
 }
@@ -246,9 +252,11 @@ pub struct CustomizePanel {
     locale: TextInput,
     timezone: TextInput,
     keyboard: TextInput,
+    filesystem: TextInput,
     locale_choice: Dropdown,
     timezone_choice: Dropdown,
     keyboard_choice: Dropdown,
+    filesystem_choice: Dropdown,
     timezone_catalog: Vec<String>,
     focused: Option<CzField>,
     export_focused: bool,
@@ -272,6 +280,7 @@ impl CustomizePanel {
         let locale_state = LocalState::new("en_US.UTF-8".to_string());
         let timezone_state = LocalState::new("UTC".to_string());
         let keyboard_state = LocalState::new("English (US)".to_string());
+        let filesystem_state = LocalState::new(Filesystem::Btrfs.label().to_string());
         let timezone_catalog = timezones();
         Self {
             hostname: field(),
@@ -280,6 +289,7 @@ impl CustomizePanel {
             locale: field(),
             timezone: field(),
             keyboard: field(),
+            filesystem: field(),
             locale_choice: Dropdown::from_state(
                 LOCALES.iter().map(|value| (*value).to_string()).collect(),
                 &locale_state,
@@ -301,6 +311,16 @@ impl CustomizePanel {
             .with_id("imager.keyboard.choice")
             .with_accessible_name("Keyboard layout")
             .with_placeholder("Choose a keyboard layout"),
+            filesystem_choice: Dropdown::from_state(
+                Filesystem::all()
+                    .into_iter()
+                    .map(|value| value.label().to_string())
+                    .collect(),
+                &filesystem_state,
+            )
+            .with_id("imager.filesystem.choice")
+            .with_accessible_name("Filesystem")
+            .with_placeholder("Choose a filesystem"),
             timezone_catalog,
             focused: None,
             export_focused: false,
@@ -310,7 +330,10 @@ impl CustomizePanel {
     }
 
     fn is_choice(f: CzField) -> bool {
-        matches!(f, CzField::Locale | CzField::Timezone | CzField::Keyboard)
+        matches!(
+            f,
+            CzField::Locale | CzField::Timezone | CzField::Keyboard | CzField::Filesystem
+        )
     }
 
     fn choice(&mut self, f: CzField) -> Option<&mut Dropdown> {
@@ -318,6 +341,7 @@ impl CustomizePanel {
             CzField::Locale => Some(&mut self.locale_choice),
             CzField::Timezone => Some(&mut self.timezone_choice),
             CzField::Keyboard => Some(&mut self.keyboard_choice),
+            CzField::Filesystem => Some(&mut self.filesystem_choice),
             CzField::Hostname | CzField::FullName | CzField::Username => None,
         }
     }
@@ -327,6 +351,7 @@ impl CustomizePanel {
             CzField::Locale => Some(&self.locale_choice),
             CzField::Timezone => Some(&self.timezone_choice),
             CzField::Keyboard => Some(&self.keyboard_choice),
+            CzField::Filesystem => Some(&self.filesystem_choice),
             CzField::Hostname | CzField::FullName | CzField::Username => None,
         }
     }
@@ -334,6 +359,7 @@ impl CustomizePanel {
     fn choice_display_value(profile: &InstallProfile, f: CzField) -> String {
         match f {
             CzField::Keyboard => keyboard_label(&profile.keyboard).to_string(),
+            CzField::Filesystem => profile.filesystem.label().to_string(),
             _ => Self::profile_value(profile, f).to_string(),
         }
     }
@@ -341,6 +367,10 @@ impl CustomizePanel {
     fn choice_profile_value(f: CzField, displayed: &str) -> Option<String> {
         match f {
             CzField::Keyboard => keyboard_id(displayed).map(str::to_string),
+            CzField::Filesystem => Filesystem::all()
+                .into_iter()
+                .find(|filesystem| filesystem.label() == displayed)
+                .map(|filesystem| filesystem.key().to_string()),
             CzField::Locale => LOCALES.contains(&displayed).then(|| displayed.to_string()),
             CzField::Timezone => Some(displayed.to_string()),
             _ => None,
@@ -355,6 +385,9 @@ impl CustomizePanel {
             CzField::Locale => LOCALES.contains(&value),
             CzField::Timezone => self.timezone_catalog.iter().any(|zone| zone == value),
             CzField::Keyboard => keyboard_id(value).is_some(),
+            CzField::Filesystem => Filesystem::all()
+                .into_iter()
+                .any(|filesystem| filesystem.label() == value),
             _ => true,
         }
     }
@@ -377,6 +410,13 @@ impl CustomizePanel {
                         .map(|(_, id)| *id)
                 })
                 .map(str::to_string),
+            CzField::Filesystem => Filesystem::from_key(&value.to_ascii_lowercase())
+                .or_else(|| {
+                    Filesystem::all()
+                        .into_iter()
+                        .find(|filesystem| filesystem.label() == value)
+                })
+                .map(|filesystem| filesystem.key().to_string()),
             CzField::Hostname | CzField::FullName | CzField::Username => Some(value.to_string()),
         }
     }
@@ -389,6 +429,7 @@ impl CustomizePanel {
             CzField::Locale => &mut self.locale,
             CzField::Timezone => &mut self.timezone,
             CzField::Keyboard => &mut self.keyboard,
+            CzField::Filesystem => &mut self.filesystem,
         }
     }
 
@@ -400,6 +441,7 @@ impl CustomizePanel {
             CzField::Locale => &self.locale,
             CzField::Timezone => &self.timezone,
             CzField::Keyboard => &self.keyboard,
+            CzField::Filesystem => &self.filesystem,
         }
     }
 
@@ -411,6 +453,7 @@ impl CustomizePanel {
             CzField::Locale => &profile.locale,
             CzField::Timezone => &profile.timezone,
             CzField::Keyboard => &profile.keyboard,
+            CzField::Filesystem => profile.filesystem.key(),
         }
     }
 
@@ -424,6 +467,9 @@ impl CustomizePanel {
             CzField::Locale => ImagerAction::SetLocale { value },
             CzField::Timezone => ImagerAction::SetTimezone { value },
             CzField::Keyboard => ImagerAction::SetKeyboard { value },
+            CzField::Filesystem => ImagerAction::SetFilesystem {
+                filesystem: Filesystem::from_key(&value).unwrap_or_default(),
+            },
         }
     }
 
@@ -542,9 +588,27 @@ impl CustomizePanel {
         };
         let region_label_y = final_row_y + fh + GROUP;
         let kb_y = region_label_y + a.label_h + RELATED + caption;
-        let keyboard = Rect::new(x0, kb_y, x1, kb_y + fh);
-        let export_y = kb_y + fh + GROUP;
-        let export = Rect::new(x1 - a.export_w, export_y, x1, export_y + BUTTON_H);
+        let (keyboard, filesystem, option_bottom) = if compact {
+            let filesystem_y = kb_y + row_pitch;
+            (
+                Rect::new(x0, kb_y, x1, kb_y + fh),
+                Rect::new(x0, filesystem_y, x1, filesystem_y + fh),
+                filesystem_y + fh,
+            )
+        } else {
+            let fw = (content.width() - 16.0) / 2.0;
+            (
+                Rect::new(x0, kb_y, x0 + fw, kb_y + fh),
+                Rect::new(x0 + fw + 16.0, kb_y, x1, kb_y + fh),
+                kb_y + fh,
+            )
+        };
+        let export = Rect::new(
+            x1 - a.export_w,
+            option_bottom + GROUP,
+            x1,
+            option_bottom + GROUP + BUTTON_H,
+        );
         CzGeom {
             identity_label_y,
             hostname,
@@ -554,6 +618,7 @@ impl CustomizePanel {
             timezone,
             region_label_y,
             keyboard,
+            filesystem,
             export,
         }
     }
@@ -725,7 +790,12 @@ impl CustomizePanel {
         self.draw_export_button(scene, tr, theme, t, &g);
         // Dropdown lists are a top-layer pass so a long filtered time-zone
         // result is never painted underneath the following fields.
-        for field in [CzField::Locale, CzField::Timezone, CzField::Keyboard] {
+        for field in [
+            CzField::Locale,
+            CzField::Timezone,
+            CzField::Keyboard,
+            CzField::Filesystem,
+        ] {
             if let Some(choice) = self.choice(field) {
                 choice.draw_overlay(scene, t, tr, theme, presence);
             }
@@ -829,6 +899,16 @@ impl CustomizePanel {
             CzField::Keyboard,
             g.keyboard,
             "Keyboard",
+        );
+        self.draw_field(
+            scene,
+            tr,
+            theme,
+            t,
+            presence,
+            CzField::Filesystem,
+            g.filesystem,
+            "Filesystem",
         );
     }
 
@@ -1214,7 +1294,7 @@ impl CustomizePanel {
             doc,
             IMAGER_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Imager", "Imager", action),
+            tilo_actions::ActionContext::for_action("org.tilo.Imager", "Imager", action),
         );
     }
 
@@ -1238,7 +1318,7 @@ impl CustomizePanel {
         )
     }
 
-    /// Zero-based keyboard slot: six editable fields followed by Preview.
+    /// Zero-based keyboard slot: seven editable fields followed by Preview.
     pub(crate) fn keyboard_slot(&self) -> Option<usize> {
         self.focused
             .and_then(|field| {
@@ -1271,7 +1351,7 @@ impl CustomizePanel {
             .or_else(|| (slot == CzField::ALL.len()).then_some(geom.export))
     }
 
-    /// Semantic controls in the same order as keyboard traversal: six real
+    /// Semantic controls in the same order as keyboard traversal: seven real
     /// text editors followed by the profile preview action.
     pub(crate) fn accessibility(&self, content: Rect) -> Vec<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
@@ -1380,6 +1460,11 @@ mod tests {
             None
         );
         assert_eq!(panel.canonical_value(CzField::Locale, "not a locale"), None);
+        assert_eq!(
+            panel.canonical_value(CzField::Filesystem, "xfs"),
+            Some("xfs".into())
+        );
+        assert_eq!(panel.canonical_value(CzField::Filesystem, "FAT32"), None);
     }
 
     #[test]
@@ -1395,6 +1480,7 @@ mod tests {
         assert!(geometry.username.y1 < geometry.timezone.y0);
         assert!(geometry.timezone.y1 < geometry.locale.y0);
         assert!(geometry.locale.y1 < geometry.keyboard.y0);
+        assert!(geometry.keyboard.y1 < geometry.filesystem.y0);
     }
 
     /// Every caption keeps a `LABEL` step above its field, every field of a

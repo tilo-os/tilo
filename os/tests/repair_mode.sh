@@ -25,14 +25,14 @@ need_file() {
 }
 
 # --- the files exist at all ---------------------------------------------------
-need_file "$OS/usr/libexec/qos-deployment"                       "qos-deployment ships"
-need_file "$OS/usr/libexec/qos-repair"                           "the repair console ships"
-need_file "$OS/usr/libexec/qos-boot-health"                      "the boot health check ships"
-need_file "$OS/usr/lib/systemd/system-generators/qos-boot-mode-generator" "the boot-mode generator ships"
-need_file "$OS/usr/lib/systemd/system/qos-repair.target"         "qos-repair.target ships"
-need_file "$OS/usr/lib/systemd/system/qos-repair@.service"       "the repair console unit ships"
-need_file "$OS/usr/lib/systemd/system/qos-boot-entries.service"  "the boot-entry unit ships"
-need_file "$OS/usr/lib/systemd/system/qos-boot-health.service"   "the boot-health unit ships"
+need_file "$OS/usr/libexec/tilo-deployment"                       "tilo-deployment ships"
+need_file "$OS/usr/libexec/tilo-repair"                           "the repair console ships"
+need_file "$OS/usr/libexec/tilo-boot-health"                      "the boot health check ships"
+need_file "$OS/usr/lib/systemd/system-generators/tilo-boot-mode-generator" "the boot-mode generator ships"
+need_file "$OS/usr/lib/systemd/system/tilo-repair.target"         "tilo-repair.target ships"
+need_file "$OS/usr/lib/systemd/system/tilo-repair@.service"       "the repair console unit ships"
+need_file "$OS/usr/lib/systemd/system/tilo-boot-entries.service"  "the boot-entry unit ships"
+need_file "$OS/usr/lib/systemd/system/tilo-boot-health.service"   "the boot-health unit ships"
 need_file "$OS/usr/lib/bootc/kargs.d/04-mode.toml"               "the mode karg ships"
 need_file "$OS/dev/uki-cmdline.py"                               "the cmdline rewriter ships"
 [ "$fail" = 0 ] || exit 1
@@ -43,15 +43,15 @@ need_file "$OS/dev/uki-cmdline.py"                               "the cmdline re
 # the firmware loads as garbage — uki-cmdline.py refuses it, so the failure would
 # be "no repair entry, silently" on every machine. Assert it here, where it is one
 # line of arithmetic.
-normal="$(sed -n 's/^kargs = \["\(qos\.mode=[a-z]*\)"\]$/\1/p' "$OS/usr/lib/bootc/kargs.d/04-mode.toml" | head -1)"
+normal="$(sed -n 's/^kargs = \["\(tilo\.mode=[a-z]*\)"\]$/\1/p' "$OS/usr/lib/bootc/kargs.d/04-mode.toml" | head -1)"
 # The invocation names the tool through a variable now, so match on the verb and
 # the token rather than on the path. If this ever finds nothing the check FAILS
 # below rather than quietly asserting about an empty string.
-repair="$(sed -n 's/.*set \(qos\.mode=[a-z]*\).*/\1/p' "$OS/usr/libexec/qos-deployment" | head -1)"
+repair="$(sed -n 's/.*set \(tilo\.mode=[a-z]*\).*/\1/p' "$OS/usr/libexec/tilo-deployment" | head -1)"
 if [ -z "$normal" ]; then
   bad "could not read the normal-mode karg out of 04-mode.toml — the declaration moved"
 elif [ -z "$repair" ]; then
-  bad "could not find the qos-uki-cmdline set invocation in qos-deployment — the
+  bad "could not find the tilo-uki-cmdline set invocation in tilo-deployment — the
       derivation moved, and this check can no longer see what it asserts"
 elif [ "${#normal}" = "${#repair}" ]; then
   ok "'$normal' and '$repair' are both ${#normal} bytes, so the in-place rewrite fits"
@@ -63,13 +63,13 @@ else
       with no repair entry."
 fi
 
-# The generator has to be looking for the value qos-deployment writes.
-if [ -n "$repair" ] && grep -q "mode=repair\|\"repair\"\|) mode=\|repair)" "$OS/usr/lib/systemd/system-generators/qos-boot-mode-generator"; then
-  gen_val="$(sed -n 's/.*qos\.mode=\}\"$//p;s/^ *\(repair\)) ;;.*/\1/p' "$OS/usr/lib/systemd/system-generators/qos-boot-mode-generator" | head -1)"
-  if [ "${repair#qos.mode=}" = "${gen_val:-repair}" ]; then
-    ok "the generator matches on the same value qos-deployment writes (${repair#qos.mode=})"
+# The generator has to be looking for the value tilo-deployment writes.
+if [ -n "$repair" ] && grep -q "mode=repair\|\"repair\"\|) mode=\|repair)" "$OS/usr/lib/systemd/system-generators/tilo-boot-mode-generator"; then
+  gen_val="$(sed -n 's/.*tilo\.mode=\}\"$//p;s/^ *\(repair\)) ;;.*/\1/p' "$OS/usr/lib/systemd/system-generators/tilo-boot-mode-generator" | head -1)"
+  if [ "${repair#tilo.mode=}" = "${gen_val:-repair}" ]; then
+    ok "the generator matches on the same value tilo-deployment writes (${repair#tilo.mode=})"
   else
-    bad "qos-deployment writes '$repair' but the generator matches '$gen_val'"
+    bad "tilo-deployment writes '$repair' but the generator matches '$gen_val'"
   fi
 else
   bad "the generator does not appear to match on a repair value at all"
@@ -80,9 +80,9 @@ fi
 # takes the first as the default (established on a booted guest). So the repair
 # entry's sort key has to be greater than anything bootc emits — bootc uses
 # `bootc-<stateroot>-<n>`.
-sk="$(sed -n 's/^REPAIR_SORT_KEY="\(.*\)"$/\1/p' "$OS/usr/libexec/qos-deployment" | head -1)"
+sk="$(sed -n 's/^REPAIR_SORT_KEY="\(.*\)"$/\1/p' "$OS/usr/libexec/tilo-deployment" | head -1)"
 if [ -z "$sk" ]; then
-  bad "could not read REPAIR_SORT_KEY out of qos-deployment"
+  bad "could not read REPAIR_SORT_KEY out of tilo-deployment"
 elif [ "$sk" \> "bootc-zzzzzzzz-9" ]; then
   ok "the repair entry's sort key ($sk) sorts after every bootc entry, so a healthy
       deployment always wins the default"
@@ -91,61 +91,80 @@ else
       sd-boot would make repair mode the default on a perfectly good machine."
 fi
 
-if grep -q 'case "\$id" in bootc\*)' "$OS/usr/libexec/qos-deployment"; then
+if grep -q 'case "\$id" in bootc\*)' "$OS/usr/libexec/tilo-deployment"; then
   ok "only bootc's own entries get a boot counter"
 else
-  bad "qos-deployment no longer restricts boot counters to bootc entries. A counted
+  bad "tilo-deployment no longer restricts boot counters to bootc entries. A counted
       repair entry is a fallback that runs out, which is not one."
 fi
 
 # The repair image is a Type #2 entry: a bare .efi at the top of EFI/Linux, no
 # .conf. bootc parses every .conf in loader/entries as one of its own and fails
 # outright on a foreign one, taking `bootc status` and `bootc upgrade` with it.
-if grep -q 'REPAIR_EFI_NAME="qos-repair.efi"' "$OS/usr/libexec/qos-deployment" \
-   && grep -q 'dest_dir="\$esp/EFI/Linux"' "$OS/usr/libexec/qos-deployment"; then
+if grep -q 'REPAIR_EFI_NAME="tilo-repair.efi"' "$OS/usr/libexec/tilo-deployment" \
+   && grep -q 'dest_dir="\$esp/EFI/Linux"' "$OS/usr/libexec/tilo-deployment"; then
   ok "the repair image goes at the top of EFI/Linux, where sd-boot discovers it"
 else
   bad "the repair image is no longer installed as a Type #2 entry at the top of
       EFI/Linux. See docs/security/repair-mode.md — a .conf in loader/entries
       breaks bootc, and a .efi one directory deeper is never discovered."
 fi
-if grep -q 'cat > "\$conf"' "$OS/usr/libexec/qos-deployment"; then
-  bad "qos-deployment writes a loader entry again. bootc fails to parse a foreign
+if grep -q 'cat > "\$conf"' "$OS/usr/libexec/tilo-deployment"; then
+  bad "tilo-deployment writes a loader entry again. bootc fails to parse a foreign
       one: 'efi does not start with custom prefix'."
 else
   ok "and no loader entry is written, which is what keeps bootc able to read its own"
 fi
-if grep -q 'set-osrel' "$OS/usr/libexec/qos-deployment"; then
+if grep -q 'set-osrel' "$OS/usr/libexec/tilo-deployment"; then
   ok "the image is renamed in its own .osrel, which is where a Type #2 title comes from"
 else
   bad "nothing sets the repair image's PRETTY_NAME. A Type #2 entry takes its menu
       title from .osrel, so it would appear under the deployment's own name."
 fi
-if grep -q 'remove_stale_repair_entry' "$OS/usr/libexec/qos-deployment"; then
+if grep -q 'remove_stale_repair_entry' "$OS/usr/libexec/tilo-deployment"; then
   ok "and an entry left by the earlier shape is cleared away on upgrade"
 else
-  bad "nothing removes a qos-repair.conf left by an older version of this script.
+  bad "nothing removes a tilo-repair.conf left by an older version of this script.
       On a machine that has one, every later boot has a broken bootc."
+fi
+if grep -Fq '[ -f /var/lib/tilo/secureboot/db.key.cred ]' \
+      "$OS/usr/libexec/tilo-deployment" \
+   && grep -Fq 'systemctl start --wait tilo-secureboot-sign.service' \
+      "$OS/usr/libexec/tilo-deployment" \
+   && grep -Fq 'tilo-crypto verify-efi /var/lib/tilo/secureboot/db.crt "$dest"' \
+      "$OS/usr/libexec/tilo-deployment"; then
+  ok "TPM-sealed machines synchronously sign and verify a repair UKI before retaining it"
+else
+  bad "TPM-sealed machines can publish an unsigned repair UKI and rely on a later path hook"
+fi
+if grep -Fq 'exec 7<"$repair_lock_dir"' "$OS/usr/libexec/tilo-deployment" \
+   && grep -Fq 'exec 6<"$esp"' "$OS/usr/libexec/tilo-deployment" \
+   && grep -Fq 'exec 8<"$esp"' "$OS/usr/libexec/tilo-deployment" \
+   && grep -Fq 'flock -u 8' "$OS/usr/libexec/tilo-deployment" \
+   && grep -Fq 'exec 8<"$ESP"' "$OS/usr/libexec/tilo-secureboot"; then
+  ok "repair publication and Secure Boot signing serialize ESP replacement without deadlocking sealed-key activation"
+else
+  bad "repair publication and Secure Boot signing do not share a stable ESP-inode lock"
 fi
 
 # --- the health gate is wired the way systemd expects -------------------------
-h="$OS/usr/lib/systemd/system/qos-boot-health.service"
+h="$OS/usr/lib/systemd/system/tilo-boot-health.service"
 if grep -q '^Before=boot-complete.target' "$h" && grep -q '^RequiredBy=boot-complete.target' "$h"; then
   ok "the health check is ordered before boot-complete.target and required by it"
 else
-  bad "qos-boot-health.service is not Before= + RequiredBy= boot-complete.target.
+  bad "tilo-boot-health.service is not Before= + RequiredBy= boot-complete.target.
       systemd-bless-boot.service Requires that target; without both, a failed
       health check would still bless the boot and no rollback would ever happen."
 fi
-if grep -q 'ConditionKernelCommandLine=!qos.mode=repair' "$h"; then
+if grep -q 'ConditionKernelCommandLine=!tilo.mode=repair' "$h"; then
   ok "the health check does not run in repair mode"
 else
-  bad "qos-boot-health.service would run in repair mode, where no session is
+  bad "tilo-boot-health.service would run in repair mode, where no session is
       started — it would condemn the boot that is trying to fix the machine."
 fi
 
 # --- repair mode must not start the desktop -----------------------------------
-g="$OS/usr/lib/systemd/system-generators/qos-boot-mode-generator"
+g="$OS/usr/lib/systemd/system-generators/tilo-boot-mode-generator"
 for u in greetd.service fs.service fs-identity.path bootc-fetch-apply-updates.timer sshd.service; do
   if grep -q "$u" "$g"; then
     ok "repair mode masks $u"
@@ -163,7 +182,7 @@ else
 fi
 
 # --- the repair console gates on a real secret --------------------------------
-r="$OS/usr/libexec/qos-repair"
+r="$OS/usr/libexec/tilo-repair"
 if grep -q 'cryptsetup open --test-passphrase' "$r"; then
   ok "the repair console proves a LUKS passphrase rather than trusting an open disk"
 else
@@ -180,7 +199,7 @@ for verb in act_rollback act_update act_shell act_logs act_var_rw act_boot_once 
 done
 
 # --- the caveats are printed by every rollback path ---------------------------
-d="$OS/usr/libexec/qos-deployment"
+d="$OS/usr/libexec/tilo-deployment"
 if sed -n '/^cmd_rollback()/,/^}/p' "$d" | grep -q 'print_rollback_caveats'; then
   ok "rollback prints what it does and does not undo before changing anything"
 else
@@ -195,9 +214,17 @@ for phrase in '/var does NOT' 'packages do NOT'; do
   fi
 done
 
+if sed '/^[[:space:]]*#/d' "$d" | grep -Fq '/proc/cmdline'; then
+  bad "tilo-deployment reads /proc/cmdline even though boot-entry maintenance runs with ProcSubset=pid"
+elif grep -Fq 'cmdline="$($UKI_CMDLINE show "$esp/${uki_rel#/}"' "$d"; then
+  ok "running generation comes from the bootloader-selected signed UKI inside the service sandbox"
+else
+  bad "running generation is not bound to the bootloader-selected signed UKI"
+fi
+
 # --- shell syntax -------------------------------------------------------------
-for s in "$OS/usr/libexec/qos-deployment" "$OS/usr/libexec/qos-repair" \
-         "$OS/usr/libexec/qos-boot-health" "$g"; do
+for s in "$OS/usr/libexec/tilo-deployment" "$OS/usr/libexec/tilo-repair" \
+         "$OS/usr/libexec/tilo-boot-health" "$g"; do
   if bash -n "$s" 2>/dev/null; then ok "$(basename "$s") parses"
   else bad "$(basename "$s") is not valid bash"; bash -n "$s"; fi
 done

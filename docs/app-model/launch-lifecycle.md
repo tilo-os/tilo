@@ -1,6 +1,6 @@
 # Application launch lifecycle audit
 
-`ui::launch::LaunchSpec` owns the ordinary qOS window lifecycle: common CLI
+`ui::launch::LaunchSpec` owns the ordinary Tilo window lifecycle: common CLI
 validation, persistent state, headless driving, deterministic screenshots,
 action registration, and the live event loop. It is intentionally not a
 generic command dispatcher. Live roots may be argument-free or use explicitly
@@ -16,12 +16,12 @@ waker or construct one coordinated file-backed state/root pair.
 
 The following 37 applications use the shared lifecycle:
 
-`api_tester`, `backups`, `calendar`, `chat`, `code_editor`, `contacts`,
-`containers`, `db_client`, `diffmerge`, `disks`, `ebook`, `feeds`,
-`file-explorer`, `firewall`, `hex_editor`, `logs`, `mail`, `maps`, `music`,
+`api-tester`, `backups`, `calendar`, `chat`, `code-editor`, `contacts`,
+`containers`, `db-client`, `diffmerge`, `disks`, `ebook`, `feeds`,
+`file-explorer`, `firewall`, `hex-editor`, `logs`, `mail`, `maps`, `music`,
 `notes`, `photos`, `remote`, `settings`, `sheets`, `slides`, `snippets`,
-`store`, `terminal`, `themes`, `totp`, `tube`, `typst_editor`, `video-player`,
-`video_editor`, `vpn`, `weather`, and `word-processor`.
+`store`, `terminal`, `themes`, `totp`, `tube`, `typst-editor`, `video-player`,
+`video-editor`, `vpn`, `weather`, and `word-processor`.
 
 Their `main.rs` files now contain only app-specific root/action setup and, where
 needed, scenario-specific capture setup. Chat and Contacts use the shared
@@ -48,11 +48,11 @@ one of these concrete reasons:
 | `browser` | Installs a web-engine frame waker and optional render-thread compositor, and has live-network screenshot modes. |
 | `calculator` | Runs an input/frame benchmark mode before launch and forces a release-only debug setting. |
 | `camera` | Generates fixture files and maps value-taking capture options into a disk/camera source before threads start. |
-| `git_client` | Exposes a real, mutating stage-and-commit diagnostic and can emit wide and narrow shots together. |
+| `git-client` | Exposes a real, mutating stage-and-commit diagnostic and can emit wide and narrow shots together. |
 | `imager` | Emits a whole screenshot suite, probes hardware, and seeds the persistent document in demo mode. |
 | `monitor` | Runs interaction benchmarks and drives capture scenarios through multiple frames. |
 | `osk` | Installs the input-method bridge and its event-loop waker; it also has a no-bridge diagnostic mode. |
-| `pdf_viewer` | Opens a selected PDF into a per-record document and room index rather than the ordinary single store. |
+| `pdf-viewer` | Opens a selected PDF into a per-record document and room index rather than the ordinary single store. |
 
 These are extension points for the lower-level `ui::App` and
 `ui::headless::FrameHarness`, not missing migrations. If several apps later

@@ -29,6 +29,7 @@
 
 use ui::icons::Icon;
 use ui::tokens::{Spacing, SpacingStep};
+pub use ui::widget::BadgeTone as StatusTone;
 use ui::widget::{Badge, Column, Container, IconWidget, Row, Spacer, Text, Widget};
 
 /// Type alias for the boxed-widget currency the `ui` tree speaks.
@@ -132,7 +133,7 @@ pub fn page_heading(title: &str, subtitle: &str) -> El {
 }
 
 /// A titled "card": a heading line followed by a bordered, padded surface
-/// holding `body`. The qOS grouping primitive — every panel is a stack of
+/// holding `body`. The Tilo grouping primitive — every panel is a stack of
 /// these. Delegates to the shared [`ui::widget::Card`] so every card in the OS
 /// reads identically and tracks the theme (radius/border/fill all from
 /// `Theme`); the heading sits inside the surface, above the body.
@@ -284,6 +285,11 @@ pub fn status_pill(label: &str, tint: vello::peniko::Color) -> El {
     Box::new(Badge::pill(label, tint))
 }
 
+/// A status pill that resolves its colour from the active theme.
+pub fn semantic_status_pill(label: &str, tone: StatusTone) -> El {
+    Box::new(Badge::semantic_pill(label, tone))
+}
+
 /// Glyph size (logical px) of the [`hero`] identity icon.
 pub const HERO_ICON_SIZE: f32 = 34.0;
 
@@ -315,4 +321,9 @@ pub fn hero(icon: Icon, title: &str, subtitle: &str) -> El {
                 .with_child(Box::new(text_block)),
         ));
     Box::new(ui::widget::Card::new(Box::new(row)))
+}
+
+/// Horizontal spacing inside a control row.
+pub fn hgap(px: f32) -> El {
+    Box::new(Container::new().with_no_padding().with_size(px, 1.0))
 }

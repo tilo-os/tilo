@@ -10,11 +10,11 @@
 use std::path::{Path, PathBuf};
 
 /// Per-user config directory for the file explorer
-/// (`$XDG_CONFIG_HOME/qos-files`, i.e. `~/.config/qos-files`). `None` when no
+/// (`$XDG_CONFIG_HOME/tilo-files`, i.e. `~/.config/tilo-files`). `None` when no
 /// config dir can be resolved (headless/no-HOME environments) — callers then
 /// fall back to in-memory defaults and simply don't persist.
 pub fn config_dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("qos-files"))
+    dirs::config_dir().map(|d| d.join("tilo-files"))
 }
 
 /// Smallest / largest zoom step. Level `0` is the default (scale `1.0`); each

@@ -1,6 +1,6 @@
 //! The chat app's permission gate.
 //!
-//! Sharing a channel and embedding a blob both cross the qOS permission
+//! Sharing a channel and embedding a blob both cross the Tilo permission
 //! boundary: a peer only sees a workspace's channels and can only hydrate a
 //! content-addressed embed if the OS has granted it access. This module
 //! routes those decisions through the toolkit's [`ui::permissions`] model
@@ -59,7 +59,7 @@ impl ChatPermissions {
     /// can read the room can hydrate the room's verified shared bytes.
     pub fn can_embed(&self, blob: &str) -> bool {
         let valid_hash = blob.len() == 64 && blob.bytes().all(|byte| byte.is_ascii_hexdigit());
-        let valid_demo = matches!(blob, "qos-demo://call-grid" | "qos-demo://shared-shot");
+        let valid_demo = matches!(blob, "tilo-demo://call-grid" | "tilo-demo://shared-shot");
         (valid_hash || valid_demo) && self.ctx.check(&PermissionScope::workspace(Verb::Read))
     }
 

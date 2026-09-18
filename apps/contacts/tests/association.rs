@@ -1,6 +1,6 @@
-//! The Contacts app manifest (`qos-app.toml`) declares Contacts as the
+//! The Contacts app manifest (`tilo-app.toml`) declares Contacts as the
 //! handler for vCard files. These tests validate that declaration against the
-//! real qOS packaging schema — so the association is checked, not eyeballed.
+//! real Tilo packaging schema — so the association is checked, not eyeballed.
 //!
 //! Note on scope: `[providers]` is the manifest's "what file kinds this
 //! package opens" field. The declaration is correct and schema-valid today;
@@ -22,14 +22,14 @@ use pkg::validate::validate_manifest;
 use pkg::{Kind, Manifest};
 
 fn manifest() -> Manifest {
-    let src = include_str!("../qos-app.toml");
-    Manifest::from_toml_str(src).expect("contacts qos-app.toml parses as a manifest")
+    let src = include_str!("../tilo-app.toml");
+    Manifest::from_toml_str(src).expect("contacts tilo-app.toml parses as a manifest")
 }
 
 #[test]
-fn manifest_is_a_valid_qos_app() {
+fn manifest_is_a_valid_tilo_app() {
     let m = manifest();
-    assert_eq!(m.package.id, "dev.qos.contacts");
+    assert_eq!(m.package.id, "dev.tilo.contacts");
     assert_eq!(m.package.kind, Kind::App, "contacts ships as an app");
     // Passes the real schema validation (identity, entrypoint, runtime form…).
     validate_manifest(&m).expect("the contacts manifest is schema-valid");

@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "check_app_resource_action_contract.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "policy/check_app_resource_action_contract.py"
 SPEC = importlib.util.spec_from_file_location("check_app_resource_action_contract", SCRIPT)
 contract = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -18,7 +18,7 @@ class AppResourceActionContractTests(unittest.TestCase):
         self,
         source: str,
         *,
-        dependencies: str = 'ui={package="qos-app",path="../../crates/app/qos-app"}\n',
+        dependencies: str = 'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n',
         app_name: str = "sample",
     ) -> Path:
         temporary = tempfile.TemporaryDirectory()
@@ -36,7 +36,7 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_resource_action_app_passes(self):
         root = self.fixture(
-            "use qos_actions::ActionSpec;\n"
+            "use tilo_actions::ActionSpec;\n"
             "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
             " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
             " ActionSpec::operation(\"open\", \"Open\", OperationKind::View, \"app.open\", &()).unwrap())] }\n"
@@ -51,13 +51,13 @@ class AppResourceActionContractTests(unittest.TestCase):
         root = self.fixture("struct App;\n", dependencies="")
         violations, _ = contract.audit(root)
         reasons = "\n".join(item.reason for item in violations)
-        self.assertIn("qos-app", reasons)
+        self.assertIn("tilo-app", reasons)
         self.assertIn("Widget::resources", reasons)
         self.assertIn("ActionSpec", reasons)
 
     def test_app_search_provider_must_override_limited_and_paged_queries(self):
         root = self.fixture(
-            "use qos_actions::ActionSpec;\n"
+            "use tilo_actions::ActionSpec;\n"
             "fn resources(&self) {}\n"
             "impl SearchProvider for Corpus {\n"
             " fn name(&self) -> &str { \"Corpus\" }\n"
@@ -71,7 +71,7 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_app_search_provider_with_budgeted_override_passes_search_gate(self):
         root = self.fixture(
-            "use qos_actions::ActionSpec;\n"
+            "use tilo_actions::ActionSpec;\n"
             "fn resources(&self) {}\n"
             "impl SearchProvider for Corpus {\n"
             " fn name(&self) -> &str { \"Corpus\" }\n"
@@ -91,7 +91,7 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_limited_only_provider_still_fails_paging_gate(self):
         root = self.fixture(
-            "use qos_actions::ActionSpec;\n"
+            "use tilo_actions::ActionSpec;\n"
             "fn resources(&self) {}\n"
             "impl SearchProvider for Corpus {\n"
             " fn name(&self) -> &str { \"Corpus\" }\n"
@@ -105,7 +105,7 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_paged_provider_cannot_materialise_a_legacy_search_then_slice_it(self):
         root = self.fixture(
-            "use qos_actions::ActionSpec;\n"
+            "use tilo_actions::ActionSpec;\n"
             "fn resources(&self) {}\n"
             "impl SearchProvider for Corpus {\n"
             " fn name(&self) -> &str { \"Corpus\" }\n"
@@ -120,7 +120,7 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_limited_provider_cannot_search_everything_then_truncate(self):
         root = self.fixture(
-            "use qos_actions::ActionSpec;\n"
+            "use tilo_actions::ActionSpec;\n"
             "fn resources(&self) {}\n"
             "impl SearchProvider for Corpus {\n"
             " fn name(&self) -> &str { \"Corpus\" }\n"
@@ -135,7 +135,7 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_durable_provider_cannot_truncate_index_before_query(self):
         root = self.fixture(
-            "use qos_actions::ActionSpec;\n"
+            "use tilo_actions::ActionSpec;\n"
             "fn resources(&self) {}\n"
             "impl SearchProvider for Corpus {\n"
             " fn name(&self) -> &str { \"Corpus\" }\n"
@@ -150,7 +150,7 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_effect_action_without_handler_registry_fails(self):
         root = self.fixture(
-            "use qos_actions::ActionSpec;\n"
+            "use tilo_actions::ActionSpec;\n"
             "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
             " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
             " ActionSpec::operation(\"open\", \"Open\", OperationKind::View, \"app.open\", &()).unwrap())] }\n"
@@ -161,7 +161,7 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_legacy_room_entry_point_fails(self):
         root = self.fixture(
-            "use qos_actions::ActionSpec;\n"
+            "use tilo_actions::ActionSpec;\n"
             "fn resources(&self) {}\nfn apply_room_action(&mut self) {}\n"
         )
         violations, _ = contract.audit(root)
@@ -169,7 +169,7 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_self_attested_handler_registry_fails(self):
         root = self.fixture(
-            "use qos_actions::ActionSpec;\n"
+            "use tilo_actions::ActionSpec;\n"
             "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
             " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
             " ActionSpec::operation(\"open\", \"Open\", OperationKind::View, \"app.open\", &()).unwrap())] }\n"
@@ -181,7 +181,7 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_document_aware_canonical_handler_reaches_registered_helper(self):
         root = self.fixture(
-            "use qos_actions::ActionSpec;\n"
+            "use tilo_actions::ActionSpec;\n"
             "const APP_OPEN: &str = \"app.open\";\n"
             "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
             " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
@@ -228,8 +228,8 @@ class AppResourceActionContractTests(unittest.TestCase):
             "fn resources() {}\nstruct ActionDescriptor; struct BrokerActionSurface;\n"
             "enum CollabRequest { InvokePublishedAction, PublishedInvocationStatus }\n",
             dependencies=(
-                'ui={package="qos-app",path="../../crates/app/qos-app"}\n'
-                'ui_core={package="ui",path="../../ui"}\n'
+                'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
+                'ui_core={package="ui",path="../../crates/sdk/ui-core"}\n'
             ),
             app_name="agent",
         )
@@ -241,8 +241,8 @@ class AppResourceActionContractTests(unittest.TestCase):
             "fn resources() {}\nstruct ActionDescriptor; struct BrokerActionSurface;\n"
             "enum CollabRequest { InvokePublishedAction, PublishedInvocationStatus }\n",
             dependencies=(
-                'ui={package="qos-app",path="../../crates/app/qos-app"}\n'
-                'rendering={path="../../ui"}\n'
+                'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
+                'rendering={path="../../crates/sdk/ui-core"}\n'
             ),
             app_name="agent",
         )
@@ -260,7 +260,7 @@ class AppResourceActionContractTests(unittest.TestCase):
         manifest.write_text(
             manifest.read_text(encoding="utf-8")
             + "\n[target.'cfg(unix)'.dependencies]\n"
-            + 'ui={package="qos-app",path="../../crates/app/qos-app"}\n',
+            + 'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n',
             encoding="utf-8",
         )
         violations, _ = contract.audit(root)
@@ -269,7 +269,7 @@ class AppResourceActionContractTests(unittest.TestCase):
         manifest.write_text(
             manifest.read_text(encoding="utf-8")
             + "\n[target.'cfg(windows)'.dependencies]\n"
-            + 'ui_core={package="ui",path="../../ui"}\n',
+            + 'ui_core={package="ui",path="../../crates/sdk/ui-core"}\n',
             encoding="utf-8",
         )
         violations, _ = contract.audit(root)
@@ -297,7 +297,7 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_new_raw_callback_exceeds_zero_default_ratchet(self):
         root = self.fixture(
-            "use qos_actions::ActionSpec;\n"
+            "use tilo_actions::ActionSpec;\n"
             "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
             " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
             " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
@@ -308,15 +308,15 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_audited_callback_ceiling_is_reduce_only(self):
         root = self.fixture(
-            "use qos_actions::ActionSpec;\n"
+            "use tilo_actions::ActionSpec;\n"
             "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
             " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
             " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
             "fn view() { Button::new().on_click(|| mutate_domain()); }\n"
         )
-        tools = root / "tools"
-        tools.mkdir()
-        (tools / contract.BASELINE).write_text(
+        baseline = root / contract.BASELINE
+        baseline.parent.mkdir(parents=True)
+        baseline.write_text(
             '[ratchets.raw_on_click_closure]\n"apps/sample/src/lib.rs"=1\n',
             encoding="utf-8",
         )
@@ -334,14 +334,14 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_reducing_debt_requires_lowering_the_audited_ceiling(self):
         root = self.fixture(
-            "use qos_actions::ActionSpec;\n"
+            "use tilo_actions::ActionSpec;\n"
             "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
             " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
             " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
         )
-        tools = root / "tools"
-        tools.mkdir()
-        (tools / contract.BASELINE).write_text(
+        baseline = root / contract.BASELINE
+        baseline.parent.mkdir(parents=True)
+        baseline.write_text(
             '[ratchets.raw_on_click_closure]\n"apps/sample/src/lib.rs"=1\n',
             encoding="utf-8",
         )
@@ -350,7 +350,7 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_new_bespoke_automation_entry_point_fails(self):
         root = self.fixture(
-            "use qos_actions::ActionSpec;\n"
+            "use tilo_actions::ActionSpec;\n"
             "fn resources(&self) {}\n"
             "fn automation_invoke() {}\n"
         )
@@ -359,7 +359,7 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_private_command_palette_paths_fail(self):
         root = self.fixture(
-            "use qos_actions::ActionSpec;\n"
+            "use tilo_actions::ActionSpec;\n"
             "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
             " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
             " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
@@ -373,7 +373,7 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_test_only_action_registration_does_not_satisfy_live_contract(self):
         root = self.fixture(
-            "use qos_actions::{ActionRegistry, ActionSpec};\n"
+            "use tilo_actions::{ActionRegistry, ActionSpec};\n"
             "pub fn register(_: &mut ActionRegistry) {}\n"
             "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
             " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
@@ -387,7 +387,7 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_dead_main_file_registration_helper_does_not_satisfy_live_contract(self):
         root = self.fixture(
-            "use qos_actions::{ActionRegistry, ActionSpec};\n"
+            "use tilo_actions::{ActionRegistry, ActionSpec};\n"
             "pub fn register(_: &mut ActionRegistry) {}\n"
             "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
             " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
@@ -405,7 +405,7 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_production_action_registration_satisfies_live_contract(self):
         root = self.fixture(
-            "use qos_actions::{ActionRegistry, ActionSpec};\n"
+            "use tilo_actions::{ActionRegistry, ActionSpec};\n"
             "pub fn register(_: &mut ActionRegistry) {}\n"
             "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
             " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
@@ -420,9 +420,87 @@ class AppResourceActionContractTests(unittest.TestCase):
         violations, _ = contract.audit(root)
         self.assertEqual(violations, [])
 
+    def test_prepared_launch_installs_the_registered_registry(self):
+        source = (
+            "use tilo_actions::{ActionRegistry, ActionSpec};\n"
+            "pub fn register(_: &mut ActionRegistry) {}\n"
+            "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+            " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+            " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
+        )
+        launch = "fn main() { LaunchSpec::new(root).prepare_legacy_with_args(prepare); }\n"
+        inputs = (
+            "fn inputs(args: &Args) -> Result<LegacyLaunchInputs, Error> { {\n"
+            " let mut registry = ActionRegistry::new();\n"
+            " actions::register(&mut registry);\n"
+            " Ok(ui::launch::LegacyLaunchInputs::new(state, widget, autosave)\n"
+            " .with_records(records, room.doc).with_registry(registry),) } }\n"
+        )
+        wrapper = (
+            "fn prepare(args: &Args) -> Result<LegacyLaunchInputs, Error> {\n"
+            " inputs(args).map_err(|error| Error::Operation(error.to_string())) }\n"
+        )
+        cases = {
+            "forwarded": (launch + wrapper + inputs, True),
+            "direct": (launch + inputs.replace("fn inputs(", "fn prepare("), True),
+            "widget_owned_persistence": (
+                launch + wrapper + inputs.replace(
+                    ".with_records(records, room.doc).with_registry(registry)",
+                    ".with_registry(registry).with_widget_owned_persistence()",
+                ), True,
+            ),
+            "widget_owned_overwritten_registry": (
+                launch + wrapper + inputs.replace(
+                    ".with_registry(registry)",
+                    ".with_registry(registry).with_widget_owned_persistence().with_registry(other)",
+                ), False,
+            ),
+            "widget_owned_missing_registry": (
+                launch + wrapper + inputs.replace(
+                    ".with_registry(registry)", ".with_widget_owned_persistence()",
+                ), False,
+            ),
+            "disconnected": (
+                launch + wrapper + inputs.replace("with_registry(registry)", "with_registry(other)"),
+                False,
+            ),
+            "missing_installation": (
+                launch + wrapper + inputs.replace(".with_registry(registry)", ""), False,
+            ),
+            "shadowed_registry": (
+                launch + wrapper + inputs.replace(
+                    " Ok(", " let registry = ActionRegistry::new(); Ok("
+                ), False,
+            ),
+            "overwritten_registry": (
+                launch + wrapper + inputs.replace(
+                    ".with_registry(registry)", ".with_registry(registry).with_registry(other)"
+                ), False,
+            ),
+            "discarded_helper_result": (
+                launch + inputs + "fn prepare(args: &Args) -> Result<LegacyLaunchInputs, Error> {"
+                " inputs(args)?; Ok(LegacyLaunchInputs::new(state, widget, autosave)) }", False,
+            ),
+            "discarded_inputs": (
+                launch + wrapper + inputs.replace(
+                    "),) } }", "),); Ok(LegacyLaunchInputs::new(state, widget, autosave)) } }"
+                ), False,
+            ),
+            "dead_preparer": ("fn main() { launch(root); }" + wrapper + inputs, False),
+        }
+        for name, (main_source, accepted) in cases.items():
+            with self.subTest(name=name):
+                root = self.fixture(source)
+                (root / "apps/sample/src/main.rs").write_text(main_source, encoding="utf-8")
+                violations, _ = contract.audit(root)
+                if accepted:
+                    self.assertEqual(violations, [])
+                else:
+                    self.assertTrue(any("production app launch" in v.reason for v in violations))
+
     def test_new_opaque_search_activation_is_rejected(self):
         root = self.fixture(
-            "use qos_actions::ActionSpec;\n"
+            "use tilo_actions::ActionSpec;\n"
             "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
             " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
             " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] }\n"

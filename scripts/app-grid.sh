@@ -1,14 +1,7 @@
 #!/usr/bin/env bash
 # Render every app's offscreen `--shots` frame into one labelled contact grid.
-#
-# This is the whole-fleet overview: one PNG showing what all ~44 apps actually
-# look like at a given commit, which is far faster to scan for regressions
-# (blank window, broken layout, unreadable text) than opening them one by one.
-#
-# Distinct from `scripts/app-contact-sheet.py`, which composes shots taken
-# through the *compositor sweep* and reports which clients produced a frame.
-# This one drives each app binary's own `--shots` path directly, so it needs no
-# compositor and no display.
+# Drives app binaries directly; unlike `app-contact-sheet.py`, it needs no
+# compositor or display.
 #
 # Requires ImageMagick (`magick`, `montage`).
 #
@@ -68,17 +61,18 @@ trap 'rm -rf "$SHOTS"' EXIT
 # by people, so it is labelled the way the OS labels these apps, not with cargo
 # package names.
 declare -A NAME=(
-[api_tester]="API Tester" [backups]="Backups" [calculator]="Calculator" [calendar]="Calendar"
-[camera]="Camera" [chat]="Chat" [code_editor]="Code Editor" [contacts]="Contacts"
-[containers]="Containers" [db_client]="Database Client" [diffmerge]="Diff & Merge" [disks]="Disks"
-[ebook]="E-Book Reader" [feeds]="Feeds" [file-explorer]="Files" [firewall]="Firewall"
-[git_client]="Git" [hex_editor]="Hex Editor" [imager]="Disk Imager" [logs]="Logs"
-[mail]="Mail" [maps]="Maps" [monitor]="System Monitor" [music]="Music" [notes]="Notes"
-[osk]="On-Screen Keyboard" [pdf_viewer]="PDF Viewer" [remote]="Remote Desktop" [settings]="Settings"
-[sheets]="Sheets" [slides]="Slides" [snippets]="Snippets" [store]="App Store"
+[api-tester]="API Tester" [backups]="Backups" [calculator]="Calculator" [calendar]="Calendar"
+[camera]="Camera" [chat]="Chat" [clocks]="Clocks" [code-editor]="Code Editor" [contacts]="Contacts"
+[containers]="Containers" [db-client]="Database Client" [diffmerge]="Diff & Merge" [disks]="Disks"
+[disk-usage]="Disk Usage" [ebook]="E-Book Reader" [feeds]="Feeds" [file-explorer]="Files" [firewall]="Firewall"
+[git-client]="Git" [hex-editor]="Hex Editor" [imager]="Disk Imager" [logs]="Logs"
+[image-editor]="Image Editor" [mail]="Mail" [maps]="Maps" [monitor]="System Monitor" [music]="Music" [notes]="Notes"
+[osk]="On-Screen Keyboard" [passwords]="Passwords" [pdf-viewer]="PDF Viewer" [photos]="Photos"
+[print-centre]="Print Centre" [remote]="Remote Desktop" [scratchpad]="Scratchpad" [settings]="Settings"
+[sheets]="Sheets" [slides]="Slides" [snippets]="Snippets" [speed-test]="Speed Test" [store]="App Store"
 [terminal]="Terminal" [themes]="Themes" [totp]="TOTP" [tube]="Tube"
-[typst_editor]="Typst Editor" [video_editor]="Video Editor" [video-player]="Video Player"
-[vpn]="VPN" [weather]="Weather" [word-processor]="Word Processor")
+[typst-editor]="Typst Editor" [video-editor]="Video Editor" [video-player]="Video Player"
+[vpn]="VPN" [weather]="Weather" [windows]="Windows Apps" [word-processor]="Word Processor")
 
 # Apps with no window to shoot, and why. Listing them explicitly is what lets
 # the drift check below treat anything *else* that is missing as a mistake.
@@ -88,9 +82,8 @@ declare -A NO_WINDOW=(
 
 APPS=$(printf '%s\n' "${!NAME[@]}" | sort)
 
-# A hardcoded list silently stops covering the fleet the moment an app is
-# added — the same drift that once dropped 37 crates out of the build. Name
-# anything on disk that this grid would neither shoot nor deliberately skip.
+# A hardcoded list stops covering the fleet when an app is added. Name anything
+# on disk that this grid would neither shoot nor deliberately skip.
 if [ -d apps ]; then
   unlabelled=""
   for d in apps/*/; do
@@ -131,12 +124,12 @@ for a in $APPS; do
   # Offscreen: no Wayland socket, so the app takes its own headless path.
   # Keep the output: when an app fails to produce a frame its own complaint is
   # the only thing that explains why, and discarding it leaves a bare "noshot".
-  WAYLAND_DISPLAY= QOS_SHOTS_THEME="$THEME" timeout "$SHOT_TIMEOUT" "$bin" --shots "$raw" \
+  WAYLAND_DISPLAY= TILO_SHOTS_THEME="$THEME" timeout "$SHOT_TIMEOUT" "$bin" --shots "$raw" \
     > "$SHOTS/$a.log" 2>&1
   if [ ! -s "$raw" ]; then
     missing="$missing $a(noshot)"
-    # Surface the tail of whatever it said, so a real failure is diagnosable
-    # from this run rather than needing the app re-run by hand.
+    # Surface the tail of its output so the failure is diagnosable from this
+    # run without rerunning the app by hand.
     if [ -s "$SHOTS/$a.log" ]; then
       echo "  $a produced no frame; its last output was:" >&2
       sed 's/\x1b\[[0-9;]*m//g' "$SHOTS/$a.log" | tail -3 | sed 's/^/    /' >&2

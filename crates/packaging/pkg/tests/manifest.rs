@@ -29,7 +29,7 @@ fn manifest_roundtrip() {
 
     // Spot-check a few fields that are easy to drop in a custom
     // de/encode path.
-    assert_eq!(m.package.id, "dev.qos.editor");
+    assert_eq!(m.package.id, "dev.tilo.editor");
     assert_eq!(m.package.version, "1.4.2");
     assert_eq!(
         m.entrypoint
@@ -114,7 +114,7 @@ fn malformed_and_active_content_claims_are_rejected() {
 
 /// The install-time half of the filesystem policy.
 ///
-/// `validate_manifest` is what `qos-install install` and `qos-pkg pack`
+/// `validate_manifest` is what `tilo-install install` and `tilo-pkg pack`
 /// both call, so this is the check a package meets before it is ever
 /// launched. Every shape the retired `[sandbox.fs]` block made possible
 /// is here, including the two that a denylist would have missed: `~`,
@@ -128,8 +128,8 @@ fn a_manifest_that_names_a_filesystem_path_is_refused() {
         "/",
         "~/.ssh",
         "~/../../etc",
-        "~/.local/share/dev.qos.totp",
-        "$XDG_DATA_HOME/dev.qos.totp",
+        "~/.local/share/dev.tilo.totp",
+        "$XDG_DATA_HOME/dev.tilo.totp",
         "<scope=current>/../..",
     ] {
         let mut m = Manifest::from_toml_str(&render_with_dummy_key()).unwrap();
@@ -142,7 +142,7 @@ fn a_manifest_that_names_a_filesystem_path_is_refused() {
         );
         let text = err.to_string();
         assert!(
-            text.contains("dev.qos.editor") && text.contains(entry),
+            text.contains("dev.tilo.editor") && text.contains(entry),
             "the refusal must name the package and the entry: {text}"
         );
     }

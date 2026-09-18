@@ -5,7 +5,7 @@
 //! Scenarios are derived from the output filename so a single binary produces
 //! every required shot:
 //! - `settings.png` — the wide two-pane layout, opened on a rich panel
-//!   (External Accounts), so the category sidebar and a populated content
+//!   (Appearance), so the selected sidebar row and a populated content
 //!   pane are both visible.
 //! - `settings-narrow.png` — the narrow collapse default: the selected panel
 //!   full-screen with a back-arrow affordance (a collapse keeps the content,
@@ -42,7 +42,7 @@ pub const NARROW_SHOTS_VIEWPORT: (u32, u32) = (440, 820);
 /// The screenshot scenarios, derived from the output filename.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scenario {
-    /// Wide two-pane, opened on External Accounts.
+    /// Wide two-pane, opened on Appearance.
     Wide,
     /// Narrow single-pane collapse default — the content screen for Region &
     /// Formats, full-screen with the back arrow (never the category list).
@@ -76,10 +76,10 @@ impl Scenario {
     /// The app pre-configured for this scenario.
     pub fn app(self) -> SettingsApp {
         match self {
-            // Wide: docked sidebar with a NON-default category (External
-            // Accounts) active — the state the nav reaches after a click — so
-            // the still proves selection drives the content pane.
-            Scenario::Wide => SettingsApp::with_selected(Category::ExternalAccounts)
+            // Wide: docked sidebar with a rich, visible category active so the
+            // still proves selection drives the pane without placing the
+            // selected row below the initial sidebar viewport.
+            Scenario::Wide => SettingsApp::with_selected(Category::Appearance)
                 .with_width_hint(DEFAULT_SHOTS_VIEWPORT.0 as f32)
                 .with_deterministic_hardware_for_shot(),
             // Narrow: the collapse default — Region & Formats' content
@@ -93,7 +93,7 @@ impl Scenario {
 }
 
 /// Map a category slug to its [`Category`], for the per-panel capture
-/// driven by the `QOS_SHOTS_PANEL` env var.
+/// driven by the `TILO_SHOTS_PANEL` env var.
 fn category_from_slug(slug: &str) -> Option<Category> {
     Category::ALL.iter().copied().find(|c| c.slug() == slug)
 }
@@ -109,18 +109,21 @@ fn network_demo_pane() -> Box<dyn Widget> {
             ssid: "Home_Network".into(),
             signal: 4,
             secure: true,
+            security: os_actions::WifiSecurity::Wpa3,
             connected: true,
         },
         WifiNetworkInfo {
             ssid: "Cafe_Guest".into(),
             signal: 3,
             secure: false,
+            security: os_actions::WifiSecurity::Open,
             connected: false,
         },
         WifiNetworkInfo {
             ssid: "Office_5G".into(),
             signal: 2,
             secure: true,
+            security: os_actions::WifiSecurity::Wpa2,
             connected: false,
         },
     ];
@@ -221,7 +224,7 @@ fn audio_demo_pane() -> Box<dyn Widget> {
 
 /// Render the scenario selected by `out`'s filename into a PNG at `out`.
 ///
-/// When the `QOS_SHOTS_PANEL` env var is set to a category slug, the wide
+/// When the `TILO_SHOTS_PANEL` env var is set to a category slug, the wide
 /// two-pane layout is rendered with that category selected instead of the
 /// default scenario — this is how the verification harness captures every
 /// panel from one binary.
@@ -354,8 +357,8 @@ pub fn render_for_path_with_text_scale(
     }
 
     // Per-panel capture: a `…panel-<slug>.png` filename (or the
-    // `QOS_SHOTS_PANEL` env var) renders the wide layout on that category.
-    let panel_slug = std::env::var("QOS_SHOTS_PANEL").ok().or_else(|| {
+    // `TILO_SHOTS_PANEL` env var) renders the wide layout on that category.
+    let panel_slug = std::env::var("TILO_SHOTS_PANEL").ok().or_else(|| {
         let name = out.file_name().and_then(|s| s.to_str()).unwrap_or("");
         name.rsplit_once("panel-")
             .map(|(_, rest)| rest.trim_end_matches(".png").to_string())
@@ -440,7 +443,7 @@ fn responsive_app(viewport: (u32, u32), text_scale: f32) -> SettingsApp {
             .with_deterministic_hardware_for_shot()
             .with_narrow_content_shot()
     } else {
-        SettingsApp::with_selected(Category::ExternalAccounts)
+        SettingsApp::with_selected(Category::Appearance)
             .with_width_hint(viewport.0 as f32)
             .with_deterministic_hardware_for_shot()
     }
@@ -465,13 +468,18 @@ pub fn build_widget_scene_with_text_scale(
     text_scale: Option<f32>,
 ) -> Scene {
     let (w, h) = viewport;
-    // `QOS_SHOTS_THEME=<name>` renders under any named theme (e.g. `dracula`,
+    // `TILO_SHOTS_THEME=<name>` renders under any named theme (e.g. `dracula`,
     // `gruvbox`, `catppuccin-mocha`, `light`, `high-contrast`); defaults to dark.
-    let theme = std::env::var("QOS_SHOTS_THEME")
+    let theme = std::env::var("TILO_SHOTS_THEME")
         .ok()
         .and_then(|n| Theme::named(&n))
         .unwrap_or_else(Theme::dark)
-        .with_text_scale(text_scale.unwrap_or(1.0));
+        .with_text_scale(text_scale.unwrap_or(1.0))
+        .with_reduce_motion(matches!(
+            std::env::var("TILO_SHOTS_REDUCE_MOTION").ok().as_deref(),
+            Some("1" | "true" | "yes" | "on")
+        ));
+    widget.set_motion_reduced(theme.reduce_motion);
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
@@ -599,8 +607,8 @@ mod tests {
     }
 
     #[test]
-    fn wide_app_selects_external_accounts() {
-        assert_eq!(Scenario::Wide.app().selected(), Category::ExternalAccounts);
+    fn wide_app_selects_visible_appearance_row() {
+        assert_eq!(Scenario::Wide.app().selected(), Category::Appearance);
     }
 
     #[test]
@@ -611,6 +619,6 @@ mod tests {
 
         let desktop = responsive_app((1920, 1080), 1.0);
         assert!(!desktop.is_narrow());
-        assert_eq!(desktop.selected(), Category::ExternalAccounts);
+        assert_eq!(desktop.selected(), Category::Appearance);
     }
 }

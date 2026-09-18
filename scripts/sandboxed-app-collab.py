@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Two qOS sessions, one room, and an edit made inside a **sandbox**.
+"""Two Tilo sessions, one room, and an edit made inside a **sandbox**.
 
-`two-shell-app-collab.py` starts two real compositors and proves an edit
+`two-shell-app-collab.py` starts two compositors and checks that an edit
 crosses between them — but it launches its apps as ordinary child
 processes pointed at the legacy JSON socket. A real app is not launched
-that way. It is launched by `qos-launcher` into a bwrap sandbox, and it
+that way. It is launched by `tilo-launcher` into a bwrap sandbox, and it
 reaches the broker through one descriptor the launcher hands it. That is
 a different code path end to end, and it is the one the product runs.
 
-So this harness goes the other way round: same two compositors, same
-signed invite, same room — and then two *packaged* processes, launched
-by the real launcher into real sandboxes, one in each session. One
+This harness uses the other path: the same two compositors, signed invite
+and room, then two *packaged* processes launched by `tilo-launcher` into
+bwrap sandboxes, one in each session. One
 authors an Automerge document and publishes it; the other waits on its
 op stream and prints what it loaded. If the text the first one wrote
 comes out of the second one's log, an edit made in a sandbox on one
@@ -38,12 +38,12 @@ import time
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # A Unix socket address is capped at ~108 bytes and the compositor puts
-# its broker at <runtime>/qos/services/collab.sock. A runtime dir under
+# its broker at <runtime>/tilo/services/collab.sock. A runtime dir under
 # the repo overflows that, the broker fails to bind, and every app then
 # starts with collaboration silently off. Keep these short.
 RUNTIME_BASE = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
 
-PACKAGE_ID = "dev.qos.collab-probe"
+PACKAGE_ID = "dev.tilo.collab-probe"
 
 MANIFEST = """
 [package]
@@ -57,7 +57,7 @@ signature = ""
 
 [sandbox]
 namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
-seccomp    = "qos-default"
+seccomp    = "tilo-default"
 landlock   = "strict"
 
 # The app itself gets no network. Collaboration is the compositor's
@@ -74,7 +74,7 @@ mode = "off"
 collab = "required@1"
 
 [entrypoint]
-bin = "bin/qos-collab-probe"
+bin = "bin/tilo-collab-probe"
 
 [providers]
 mime = []
@@ -140,21 +140,21 @@ class Session:
 
     @property
     def collab_sock(self) -> str:
-        return os.path.join(self.runtime_dir, "qos", "services", "collab.sock")
+        return os.path.join(self.runtime_dir, "tilo", "services", "collab.sock")
 
     def base_env(self) -> dict:
         env = dict(os.environ)
         # Nothing inherited may make the two sessions share state, and
         # nothing may point a sandbox at a broker other than its own.
         for k in ("DISPLAY", "WAYLAND_DISPLAY", "QUICK_COLLAB_SOCK",
-                  "QUICK_COLLAB_CAPNP_SOCK", "QOS_SVC_COLLAB_FD"):
+                  "QUICK_COLLAB_CAPNP_SOCK", "TILO_SVC_COLLAB_FD"):
             env.pop(k, None)
         env.update(
             XDG_RUNTIME_DIR=self.runtime_dir,
             XDG_CONFIG_HOME=os.path.join(self.dir, "config"),
             XDG_DATA_HOME=os.path.join(self.dir, "data"),
             XDG_CACHE_HOME=os.path.join(self.dir, "cache"),
-            QOS_IDENTITY_ROOT=os.path.join(self.dir, "system-identity"),
+            TILO_IDENTITY_ROOT=os.path.join(self.dir, "system-identity"),
         )
         return env
 
@@ -164,15 +164,15 @@ class Session:
         os.makedirs(self.runtime_dir, mode=0o700, exist_ok=True)
         env = self.base_env()
         env.update(
-            QOS_USER_ID=self.user,
+            TILO_USER_ID=self.user,
             # The network and signing brokers must use the same certified
             # device key. Distinct roots still make these two local sessions
             # independent peers.
-            QOS_PEER_KEY_PATH=os.path.join(
+            TILO_PEER_KEY_PATH=os.path.join(
                 self.dir, "system-identity", "device", "keypair.bin"),
-            QOS_FS_ACL_PATH=os.path.join(self.dir, "config", "fs-capabilities.json"),
-            QOS_TEST_CONTROL=self.sock,
-            NIRIOS_HEADLESS_SIZE="1280x800",
+            TILO_FS_ACL_PATH=os.path.join(self.dir, "config", "fs-capabilities.json"),
+            TILO_TEST_CONTROL=self.sock,
+            TILO_HEADLESS_SIZE="1280x800",
             RUST_LOG=env.get("RUST_LOG", "info"),
         )
         provisioned = subprocess.run(
@@ -293,7 +293,7 @@ class Session:
     def launch_sandboxed(self, launcher: str, payload_root: str, manifest: str,
                          room: str, instruction: str, log_path: str
                          ) -> subprocess.Popen:
-        """Start the probe under `qos-launcher`, in a real sandbox.
+        """Start the probe under `tilo-launcher`, in a real sandbox.
 
         No `--no-services`: resolving the collab socket and handing its
         descriptor across the sandbox boundary is the thing under test.
@@ -317,7 +317,7 @@ def stage_payload(root: str, probe_bin: str) -> tuple[str, str]:
     """Lay the probe out as an unpacked package the launcher can run."""
     payload = os.path.join(root, "payload")
     os.makedirs(os.path.join(payload, "bin"), exist_ok=True)
-    shutil.copy2(probe_bin, os.path.join(payload, "bin", "qos-collab-probe"))
+    shutil.copy2(probe_bin, os.path.join(payload, "bin", "tilo-collab-probe"))
     manifest = os.path.join(root, "manifest.toml")
     with open(manifest, "w") as f:
         f.write(MANIFEST)
@@ -350,9 +350,9 @@ def main() -> int:
                     help="seconds the reader waits for the edit to arrive")
     ap.add_argument("--shell-bin", default=os.path.join(REPO, "target/debug/shell"))
     ap.add_argument("--probe-bin",
-                    default=os.path.join(REPO, "target/debug/qos-collab-probe"))
+                    default=os.path.join(REPO, "target/debug/tilo-collab-probe"))
     ap.add_argument("--launcher-bin",
-                    default=os.path.join(REPO, "target/debug/qos-launcher"))
+                    default=os.path.join(REPO, "target/debug/tilo-launcher"))
     args = ap.parse_args()
 
     for path, how in ((args.shell_bin, "cargo build -p shell"),
@@ -365,7 +365,7 @@ def main() -> int:
         print("bwrap is not on PATH; the sandbox cannot be built", file=sys.stderr)
         return 2
 
-    out = args.out or os.path.join("/tmp", f"qos-sandbox-collab-{os.getpid()}")
+    out = args.out or os.path.join("/tmp", f"tilo-sandbox-collab-{os.getpid()}")
     os.makedirs(out, exist_ok=True)
     print(f"artefacts: {out}")
 

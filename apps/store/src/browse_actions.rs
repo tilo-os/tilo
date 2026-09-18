@@ -5,15 +5,15 @@
 //! agents can drive exactly the same catalogue state without creating a
 //! collaborative document mutation or history entry.
 
-use qos_actions::{
+use serde::{Deserialize, Serialize};
+use tilo_actions::{
     ActionArgs, ActionBinding, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
     Resource,
 };
-use serde::{Deserialize, Serialize};
 
 pub const STORE_BROWSE_OPERATION_TYPE: &str = "store.browse";
 pub const BROWSE_RESOURCE_ID: &str = "store:filters";
-const SOURCE_FILTERS: [&str; 4] = ["All", "qOS", "Flatpak", "Installed"];
+const SOURCE_FILTERS: [&str; 4] = ["All", "Tilo", "Flatpak", "On device"];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BrowseOperation {
@@ -98,7 +98,7 @@ pub fn resource(categories: &[String]) -> Resource {
     .with_action(typed(
         "set-source",
         "Filter apps by source",
-        "All, qOS, Flatpak, or Installed",
+        "All, Tilo, Flatpak, or Installed",
         vec![
             ActionParam::required("source", ParamType::Text, "App source")
                 .with_choices(SOURCE_FILTERS),

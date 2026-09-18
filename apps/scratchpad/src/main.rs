@@ -1,10 +1,15 @@
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
+
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
-        &LaunchSpec::new_with_args("dev.qos.scratchpad", |_| {
+        &LaunchSpec::new_with_args("dev.tilo.scratchpad", |_| {
             Err(LaunchError::Operation(
                 "Scratchpad requires its paired saved state and root; use --shots or --responsive-matrix for capture".into(),
             ))
@@ -30,21 +35,17 @@ fn run_session_inner(args: &LaunchArgs) -> Result<()> {
         Some(path) => PathBuf::from(path),
         None => dirs::data_local_dir()
             .context("no local data directory")?
-            .join("qos-scratchpad"),
+            .join("scratchpad"),
     };
     let scope = ui::wake::WakeScope::new();
     let _entry = scope.enter();
     ui::i18n::I18nManager::init("en-US");
-    let (state, root) = qos_scratchpad::open(&directory)?;
+    let (state, root) = scratchpad::open(&directory)?;
     if let Some(out) = &args.shots {
         let mut driver =
             ui::headless::Driver::new(state, root, args.viewport.unwrap_or((800, 600)));
-        if let Some(scale) = args.text_scale {
-            let mut theme = ui::Theme::dark();
-            theme.text_scale = scale;
-            driver.set_theme(theme);
-        }
-        qos_scratchpad::register(driver.action_registry_mut());
+        driver.set_theme(ui::launch::shot_theme(args));
+        scratchpad::actions::register(driver.action_registry_mut());
         driver.render_png(out);
         println!("Rendered {}", out.display());
     } else {
@@ -53,7 +54,7 @@ fn run_session_inner(args: &LaunchArgs) -> Result<()> {
         if let Some(scale) = args.text_scale {
             app.set_text_scale(scale);
         }
-        qos_scratchpad::register(app.action_registry_mut());
+        scratchpad::actions::register(app.action_registry_mut());
         app.run();
     }
     Ok(())

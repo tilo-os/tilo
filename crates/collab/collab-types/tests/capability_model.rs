@@ -41,8 +41,8 @@ fn artifact_of(app: &str, id: ArtifactId) -> ResourceRef {
 
 #[test]
 fn an_app_with_no_capability_is_denied_everything() {
-    let app = Actor::app("org.qos.Ebook");
-    let doc = artifact_of("org.qos.Notes", ArtifactId::new());
+    let app = Actor::app("org.tilo.Ebook");
+    let doc = artifact_of("org.tilo.Notes", ArtifactId::new());
 
     for verb in [Verb::Read, Verb::Comment, Verb::Write, Verb::Admin] {
         assert_eq!(
@@ -56,9 +56,9 @@ fn an_app_with_no_capability_is_denied_everything() {
 
 #[test]
 fn an_app_granted_one_path_cannot_reach_a_sibling_path() {
-    let app = Actor::app("org.qos.Ebook");
+    let app = Actor::app("org.tilo.Ebook");
     let caps = vec![CapOverride::grant(
-        Subject::app("org.qos.Ebook"),
+        Subject::app("org.tilo.Ebook"),
         Scope::FsPath("/var/workspace/books".into()),
         Verb::Write,
     )];
@@ -92,9 +92,9 @@ fn an_app_granted_one_path_cannot_reach_a_sibling_path() {
 
 #[test]
 fn a_path_grant_does_not_leak_across_a_component_boundary() {
-    let app = Actor::app("org.qos.Ebook");
+    let app = Actor::app("org.tilo.Ebook");
     let caps = vec![CapOverride::grant(
-        Subject::app("org.qos.Ebook"),
+        Subject::app("org.tilo.Ebook"),
         Scope::FsPath("/var/workspace/docs".into()),
         Verb::Write,
     )];
@@ -260,7 +260,7 @@ fn role_base_applies_exactly_to_in_room_resources() {
 #[test]
 fn a_viewer_cannot_write_and_the_denial_is_attributable() {
     let viewer = Actor::person(Some(Role::Viewer), "bob");
-    let doc = artifact_of("org.qos.Notes", ArtifactId::new());
+    let doc = artifact_of("org.tilo.Notes", ArtifactId::new());
 
     assert_eq!(
         decide_capability(&viewer, &doc, Verb::Read, &[], None),
@@ -351,11 +351,11 @@ fn a_denied_role_cannot_be_rescued_by_any_capability() {
 
 #[test]
 fn an_expired_capability_stops_working() {
-    let app = Actor::app("org.qos.Ebook");
+    let app = Actor::app("org.tilo.Ebook");
     let path = ResourceRef::FsPath("/var/workspace/books/dune.epub".into());
     let caps = vec![
         CapOverride::grant(
-            Subject::app("org.qos.Ebook"),
+            Subject::app("org.tilo.Ebook"),
             Scope::FsPath("/var/workspace/books".into()),
             Verb::Write,
         )
@@ -406,14 +406,14 @@ fn an_app_scope_reaches_that_apps_artifacts_and_actions_only() {
     let bob = Actor::person(Some(Role::Viewer), "bob");
     let caps = vec![CapOverride::grant(
         Subject::person("bob"),
-        Scope::App("org.qos.Ebook".into()),
+        Scope::App("org.tilo.Ebook".into()),
         Verb::Write,
     )];
 
     assert_eq!(
         decide_capability(
             &bob,
-            &artifact_of("org.qos.Ebook", ArtifactId::new()),
+            &artifact_of("org.tilo.Ebook", ArtifactId::new()),
             Verb::Write,
             &caps,
             None
@@ -424,7 +424,7 @@ fn an_app_scope_reaches_that_apps_artifacts_and_actions_only() {
         decide_capability(
             &bob,
             &ResourceRef::Action {
-                app: "org.qos.Ebook".into(),
+                app: "org.tilo.Ebook".into(),
                 action: "annotate".into()
             },
             Verb::Write,
@@ -437,7 +437,7 @@ fn an_app_scope_reaches_that_apps_artifacts_and_actions_only() {
     assert_eq!(
         decide_capability(
             &bob,
-            &artifact_of("org.qos.Notes", ArtifactId::new()),
+            &artifact_of("org.tilo.Notes", ArtifactId::new()),
             Verb::Write,
             &caps,
             None
@@ -480,9 +480,9 @@ fn an_instance_share_does_not_reach_a_sibling_instance() {
 
 #[test]
 fn a_network_capability_is_not_a_blanket_one() {
-    let app = Actor::app("org.qos.Browser");
+    let app = Actor::app("org.tilo.Browser");
     let caps = vec![CapOverride::grant(
-        Subject::app("org.qos.Browser"),
+        Subject::app("org.tilo.Browser"),
         Scope::NetHost(".example.com".into()),
         Verb::Write,
     )];
@@ -520,18 +520,30 @@ fn a_network_capability_is_not_a_blanket_one() {
 #[test]
 fn a_capability_granted_to_one_app_does_not_serve_another() {
     let caps = vec![CapOverride::grant(
-        Subject::app("org.qos.Ebook"),
+        Subject::app("org.tilo.Ebook"),
         Scope::FsPath("/var/workspace/books".into()),
         Verb::Read,
     )];
     let path = ResourceRef::FsPath("/var/workspace/books/dune.epub".into());
 
     assert_eq!(
-        decide_capability(&Actor::app("org.qos.Ebook"), &path, Verb::Read, &caps, None),
+        decide_capability(
+            &Actor::app("org.tilo.Ebook"),
+            &path,
+            Verb::Read,
+            &caps,
+            None
+        ),
         CapDecision::Allow
     );
     assert_eq!(
-        decide_capability(&Actor::app("org.qos.Files"), &path, Verb::Read, &caps, None),
+        decide_capability(
+            &Actor::app("org.tilo.Files"),
+            &path,
+            Verb::Read,
+            &caps,
+            None
+        ),
         CapDecision::DeniedByRole,
         "the Files app was not the subject of that grant"
     );
@@ -565,7 +577,13 @@ fn a_role_wide_grant_never_covers_an_app_or_an_agent() {
         "a person holding the role is covered"
     );
     assert_eq!(
-        decide_capability(&Actor::app("org.qos.Ebook"), &doc, Verb::Admin, &caps, None),
+        decide_capability(
+            &Actor::app("org.tilo.Ebook"),
+            &doc,
+            Verb::Admin,
+            &caps,
+            None
+        ),
         CapDecision::DeniedByRole,
         "an app holds no role, so a role-wide grant is inert for it"
     );
@@ -721,7 +739,7 @@ fn a_role_wide_capability_is_never_a_person_share() {
     );
 
     let app_cap = CapOverride::grant(
-        Subject::app("org.qos.Ebook"),
+        Subject::app("org.tilo.Ebook"),
         Scope::FsPath("/var/workspace/books".into()),
         Verb::Read,
     );

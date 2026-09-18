@@ -4,19 +4,18 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Produce and verify qOS runtime bundles (content-addressed loader + libc set for sandboxed apps)."
+description = "Produce and verify Tilo runtime bundles (content-addressed loader + libc set for sandboxed apps)."
 
 # A "runtime bundle" is a directory containing the minimal set of host
-# files a dynamically-linked qOS app needs to `execve()` inside the
+# files a dynamically-linked Tilo app needs to `execve()` inside the
 # sandbox: the loader, libc, libgcc_s + friends, and (optionally)
 # /etc/ld.so.cache. Bundles are content-addressed via a BLAKE3 root
 # hash written into `bundle.toml` alongside the payload. The launcher
-# mounts a bundle at `/usr/lib/qos-runtime/<v>/` inside bwrap and sets
-# `LD_LIBRARY_PATH` accordingly, replacing the older `--minimal-libs`
-# stopgap.
+# mounts a bundle at `/usr/lib/tilo-runtime/<v>/` and sets
+# `LD_LIBRARY_PATH` accordingly.
 
 [[bin]]
-name = "qos-runtime-bundle"
+name = "tilo-runtime-bundle"
 path = "src/main.rs"
 
 [lib]

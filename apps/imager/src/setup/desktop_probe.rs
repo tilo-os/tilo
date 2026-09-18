@@ -343,17 +343,17 @@ fn parse_package_status(
 ) -> Result<InstalledPackage, String> {
     let absent = match manager {
         PackageManager::Dnf => {
-            code == 1 && stdout == "package qos-session is not installed\n" && stderr.is_empty()
+            code == 1 && stdout == "package tilo-session is not installed\n" && stderr.is_empty()
         }
         PackageManager::Apt => {
             code == 1
                 && stdout.is_empty()
-                && stderr == "dpkg-query: no packages found matching qos-session\n"
+                && stderr == "dpkg-query: no packages found matching tilo-session\n"
         }
         PackageManager::Pacman => {
             code == 1
                 && stdout.is_empty()
-                && stderr == "error: package 'qos-session' was not found\n"
+                && stderr == "error: package 'tilo-session' was not found\n"
         }
     };
     if absent {
@@ -387,7 +387,7 @@ fn parse_package_status(
             .ok_or("The Debian package is not fully installed.")?
             .into(),
         PackageManager::Pacman => line
-            .strip_prefix("qos-session ")
+            .strip_prefix("tilo-session ")
             .ok_or("Invalid pacman response.")?
             .into(),
     };
@@ -578,14 +578,14 @@ mod native {
                     "-q",
                     "--qf",
                     "%{EPOCHNUM}\t%{VERSION}\t%{RELEASE}\n",
-                    "qos-session",
+                    "tilo-session",
                 ],
             ),
             PackageManager::Apt => run(
                 "/usr/bin/dpkg-query",
-                &["-W", "-f=${db:Status-Status}\t${Version}\n", "qos-session"],
+                &["-W", "-f=${db:Status-Status}\t${Version}\n", "tilo-session"],
             ),
-            PackageManager::Pacman => run("/usr/bin/pacman", &["-Q", "qos-session"]),
+            PackageManager::Pacman => run("/usr/bin/pacman", &["-Q", "tilo-session"]),
         }?;
         parse_package_status(manager, result.code, &result.stdout, &result.stderr)
     }
@@ -784,7 +784,7 @@ mod native {
             }
             let path = entry.map_err(|_| "Cannot inspect a login session.")?.path();
             if path.extension().and_then(|s| s.to_str()) != Some("desktop")
-                || path.file_name().and_then(|s| s.to_str()) == Some("qos.desktop")
+                || path.file_name().and_then(|s| s.to_str()) == Some("tilo.desktop")
             {
                 continue;
             }
@@ -808,7 +808,7 @@ mod native {
                 && fields.get("NoDisplay") != Some(&"true")
                 && fields
                     .get("Exec")
-                    .is_some_and(|v| !v.is_empty() && !v.contains("qos-session"))
+                    .is_some_and(|v| !v.is_empty() && !v.contains("tilo-session"))
             {
                 sessions.push(
                     path.file_name()
@@ -954,7 +954,7 @@ mod tests {
             parse_package_status(
                 PackageManager::Dnf,
                 1,
-                "package qos-session is not installed\n",
+                "package tilo-session is not installed\n",
                 ""
             )
             .unwrap(),
@@ -971,13 +971,13 @@ mod tests {
                 PackageManager::Apt,
                 1,
                 "",
-                "dpkg-query: no packages found matching qos-session\n"
+                "dpkg-query: no packages found matching tilo-session\n"
             )
             .unwrap(),
             InstalledPackage::Absent
         );
         assert_eq!(
-            parse_package_status(PackageManager::Pacman, 0, "qos-session 1:1.0-2\n", "").unwrap(),
+            parse_package_status(PackageManager::Pacman, 0, "tilo-session 1:1.0-2\n", "").unwrap(),
             InstalledPackage::Installed {
                 version: "1:1.0-2".into()
             }
@@ -987,7 +987,7 @@ mod tests {
                 PackageManager::Pacman,
                 1,
                 "",
-                "error: package 'qos-session' was not found\n"
+                "error: package 'tilo-session' was not found\n"
             )
             .unwrap(),
             InstalledPackage::Absent
@@ -1042,8 +1042,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         assert!(native::wayland_sessions(temp.path()).is_err());
         std::fs::write(
-            temp.path().join("qos.desktop"),
-            "[Desktop Entry]\nType=Application\nName=qOS\nExec=qos-session\n",
+            temp.path().join("tilo.desktop"),
+            "[Desktop Entry]\nType=Application\nName=qOS\nExec=tilo-session\n",
         )
         .unwrap();
         assert!(native::wayland_sessions(temp.path()).is_err());

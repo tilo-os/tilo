@@ -10,9 +10,9 @@
 #include <unistd.h>
 
 int main(int argc, char **argv) {
-    const char *qemu = getenv("QOS_QEMU_BINARY");
+    const char *qemu = getenv("TILO_QEMU_BINARY");
     if (qemu == NULL || argc < 4) {
-        fputs("QOS_QEMU_BINARY or QEMU arguments missing\n", stderr);
+        fputs("TILO_QEMU_BINARY or QEMU arguments missing\n", stderr);
         return 127;
     }
 

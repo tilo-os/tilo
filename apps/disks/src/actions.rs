@@ -1,8 +1,8 @@
 //! Resource + action-model status for the Disks app.
 //!
-//! The qOS action-model recipe (`docs/action-model-recipe.md`) splits every
+//! The Tilo action-model recipe (`docs/action-model-recipe.md`) splits every
 //! interaction into exactly one of two buckets: a *document-mutating* operation
-//! becomes an [`Action`](qos_actions::Action) — a serializable value that
+//! becomes an [`Action`](tilo_actions::Action) — a serializable value that
 //! deterministically changes the shared Automerge document, so undo and
 //! multi-peer replay come for free — while presentation / view state stays plain
 //! app code. Applying that split to Disks leaves no *replicated document*
@@ -21,7 +21,7 @@
 //! it is handed **no** [`AutoCommit`] and can no more mutate the shared document
 //! than `mount(8)` can. By the recipe's rule none of this is an action.
 //!
-//! Modelling any of these as a replicated [`Action`](qos_actions::Action) would
+//! Modelling any of these as a replicated [`Action`](tilo_actions::Action) would
 //! be actively **wrong**: mounting a filesystem is an effect on *one* machine, so
 //! replaying a "mounted /dev/sda1" envelope on a collaborator would make their
 //! document claim a device is mounted that their machine never touched. The
@@ -264,7 +264,7 @@ mod tests {
         // The production execution path (`DisksApp`'s worker calls `ops::run`).
         // Benchmark opens `/dev/<leaf>` directly; a bogus leaf fails immediately
         // with no side effect and no subprocess.
-        let bench = ops::run(Op::Benchmark, "qos-nonexistent-block-device", None);
+        let bench = ops::run(Op::Benchmark, "tilo-nonexistent-block-device", None);
         assert!(
             bench.is_err(),
             "the external op ran against the device and reported a device-level result",
@@ -273,7 +273,7 @@ mod tests {
         // The CLI fallback chain is likewise a pure process effect — run it
         // against a tool that does not exist so nothing on the host is mutated.
         let chain = ops::run_command_chain(&[CommandSpec {
-            program: "qos-no-such-disk-tool".to_string(),
+            program: "tilo-no-such-disk-tool".to_string(),
             args: Vec::new(),
         }]);
         assert!(

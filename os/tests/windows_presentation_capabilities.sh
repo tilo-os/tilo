@@ -6,13 +6,13 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OS_ROOT="${OS_ROOT:-$(cd "$HERE/.." && pwd)}"
 REPO_ROOT="$(cd "$OS_ROOT/.." && pwd)"
 CONTAINERFILE="$OS_ROOT/Containerfile"
-INSTALL="$OS_ROOT/usr/share/qos/windows/guest/Install-qOSRemoteApp.ps1"
-REMOTE_APP="$REPO_ROOT/crates/system/windows-vm/src/remote_app.rs"
-LIBVIRT="$REPO_ROOT/crates/system/windows-vm/src/libvirt.rs"
-GRAPHICS="$REPO_ROOT/crates/system/windows-vm/src/graphics.rs"
-CONTROL="$REPO_ROOT/crates/system/windows-vm/src/bin/qos-windows-vm-control.rs"
-OWNER="$OS_ROOT/usr/libexec/qos-windows-owner"
-POLICY="$OS_ROOT/usr/share/polkit-1/actions/org.qos.windows.policy"
+INSTALL="$OS_ROOT/usr/share/tilo/windows/guest/Install-TiloRemoteApp.ps1"
+REMOTE_APP="$REPO_ROOT/crates/windows/windows-vm/src/remote_app.rs"
+LIBVIRT="$REPO_ROOT/crates/windows/windows-vm/src/libvirt.rs"
+GRAPHICS="$REPO_ROOT/crates/windows/windows-vm/src/graphics.rs"
+CONTROL="$REPO_ROOT/crates/windows/windows-vm/src/bin/tilo-windows-vm-control.rs"
+OWNER="$OS_ROOT/usr/libexec/tilo-windows-owner"
+POLICY="$OS_ROOT/usr/share/polkit-1/actions/org.tilo.windows.policy"
 
 fails=0
 fail() { printf 'FAIL  %s\n' "$*" >&2; fails=$((fails + 1)); }
@@ -36,7 +36,7 @@ has "$INSTALL" 'virtio-win-guest-tools.exe' 'guest setup uses Fedora virtio-win 
 has "$INSTALL" 'Get-FileHash -LiteralPath $guestTools -Algorithm SHA256' 'guest setup authenticates the packaged installer'
 has "$INSTALL" 'Get-AuthenticodeSignature -LiteralPath $guestTools' 'guest setup verifies the Windows publisher signature'
 has "$INSTALL" '[System.Management.Automation.SignatureStatus]::Valid' 'guest setup requires a trusted Authenticode chain'
-has "$OS_ROOT/usr/libexec/qos-windows-provision" 'virtio-win-guest-tools.sha256' 'host pins guest tools to its RPM payload'
+has "$OS_ROOT/usr/libexec/tilo-windows-provision" 'virtio-win-guest-tools.sha256' 'host pins guest tools to its RPM payload'
 has "$INSTALL" "Get-Service -Name 'vdservice'" 'guest setup verifies Windows SPICE vdagent'
 has "$INSTALL" 'SkipSpiceGuestTools' 'repair flow can explicitly skip guest integration'
 lacks "$INSTALL" 'Invoke-WebRequest' 'guest setup never downloads presentation tools'
@@ -57,6 +57,6 @@ has "$CONTROL" 'mediated_assignment(identifier)' 'attach revalidates the selecte
 has "$LIBVIRT" 'GraphicsRequiresShutoff' 'partition changes require a stopped singleton'
 has "$LIBVIRT" '"--config"' 'partition assignment is stable across guest restarts'
 has "$OWNER" 'graphics-attach {sriov-vf|mdev}' 'owner helper exposes only typed partition kinds'
-has "$POLICY" 'org.qos.windows.graphics-attach' 'partition attachment requires administrator authorization'
+has "$POLICY" 'org.tilo.windows.graphics-attach' 'partition attachment requires administrator authorization'
 
 exit "$fails"

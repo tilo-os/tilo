@@ -27,7 +27,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
-use crate::core::Core;
+use crate::core::{Core, OverviewEventCtx};
 
 /// The contentful city-list (master / overview) panel.
 pub struct OverviewPane {
@@ -145,16 +145,20 @@ impl Widget for OverviewPane {
         if *handled {
             return;
         }
-        if self.core.borrow_mut().handle_overview_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
+        if self
+            .core
+            .borrow_mut()
+            .handle_overview_event(OverviewEventCtx {
+                event,
+                scale_factor,
+                modifiers: *modifiers,
+                state,
+                path,
+                focus_target,
+                node_id,
+                taffy,
+            })
+        {
             *handled = true;
         }
     }
@@ -173,6 +177,39 @@ impl Widget for OverviewPane {
 
     fn accessibility(&self) -> Option<AccessNode> {
         Some(self.core.borrow().overview_accessibility(self.rect))
+    }
+
+    fn perform_action_at(
+        &mut self,
+        action: &Action,
+        key_path: &[u64],
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        let search_key = ui::a11y::hash_key(&"weather.city_search");
+        if let Some(index) = key_path.iter().position(|key| *key == search_key) {
+            return self.core.borrow_mut().perform_search_action(
+                action,
+                &key_path[index..],
+                state,
+                path,
+            );
+        }
+        if !matches!(action, Action::Activate) {
+            return false;
+        }
+        let Some(key) = key_path.last().copied() else {
+            return false;
+        };
+        let id = self
+            .core
+            .borrow()
+            .model
+            .locations
+            .iter()
+            .find(|location| ui::a11y::hash_key(&location.id) == key)
+            .map(|location| location.id);
+        id.is_some_and(|id| self.core.borrow_mut().open_location(id))
     }
 }
 
@@ -239,6 +276,10 @@ impl Widget for DetailPane {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn tooltip(&self) -> Option<&str> {
+        self.core.borrow().detail_tooltip()
     }
 
     fn accessibility(&self) -> Option<AccessNode> {

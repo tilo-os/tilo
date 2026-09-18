@@ -1,0 +1,25 @@
+# Release sets resolve `*` from tracked app manifests.
+
+[collections.default]
+include = ["*"]
+# Browser remains an OS-native WPE integration build.
+exclude = ["browser"]
+
+[collections.desktop]
+extends = ["default"]
+
+[collections.os]
+extends = ["default"]
+
+[collections.recovery]
+include = ["file-explorer", "settings", "terminal"]
+
+[features]
+music = ["audio", "live"]
+video-player = ["decode", "portal"]
+camera = ["live-capture"]
+tube = ["live", "media"]
+chat = ["live-media"]
+mail = ["live"]
+disks = ["live"]
+video-editor = ["decode", "gst"]

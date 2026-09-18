@@ -380,7 +380,7 @@ mod tests {
             logical_sector_size: 512,
             major_minor: "252:16".into(),
             wwn: String::new(),
-            serial: "qos-test-target".into(),
+            serial: "tilo-test-target".into(),
             removable: false,
             read_only: false,
             is_system: false,

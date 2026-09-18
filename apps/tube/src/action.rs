@@ -19,6 +19,9 @@ use serde::{Deserialize, Serialize};
 pub enum Action {
     Navigate(Route),
     OpenVideo(VideoId),
+    /// Clear this signed-in profile's synchronised watch-history collection.
+    /// This only affects the signed-in owner's local history store.
+    ClearHistory,
     OpenChannel(ChannelId),
     OpenPlaylist(PlaylistId),
     /// Toggle a type in the multi-select filter; first click narrows to just
@@ -68,6 +71,7 @@ impl Action {
             Self::Navigate(Route::Settings) => "Open settings",
             Self::Navigate(_) => "Open view",
             Self::OpenVideo(_) => "Open video",
+            Self::ClearHistory => "Clear watch history",
             Self::OpenChannel(_) => "Open creator",
             Self::OpenPlaylist(_) => "Open playlist",
             Self::ToggleSearchType(_) => "Toggle result type",

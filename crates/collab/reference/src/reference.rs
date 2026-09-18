@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use qos_actions::{Doc, ResourceId};
+use tilo_actions::{Doc, ResourceId};
 
 /// What [`Span`]'s offsets count.
 ///
@@ -126,7 +126,7 @@ impl ResourceRef {
         }
     }
 
-    /// Bridge to `qos-actions`: resolves against a live resource tree to find
+    /// Bridge to `tilo-actions`: resolves against a live resource tree to find
     /// the resource, and against a survey to find what can be done to it.
     pub fn resource_id(&self) -> ResourceId {
         ResourceId::new(self.id.clone())

@@ -1,13 +1,13 @@
 //! Install-time shim writer.
 //!
 //! The `[cli].commands` block from a manifest becomes one PATH
-//! shim per command under `~/.local/share/qos-apps/bin/<cmd>`.
-//! Each shim is a copy of the `qos-cli-shim` binary paired with
-//! a small TOML sidecar (`<cmd>.qos-shim`) holding the package
+//! shim per command under `~/.local/share/tilo-apps/bin/<cmd>`.
+//! Each shim is a copy of the `tilo-cli-shim` binary paired with
+//! a small TOML sidecar (`<cmd>.tilo-shim`) holding the package
 //! id + command name.
 //!
 //! Kept as its own module so the unit tests can drive it without
-//! spawning the full `qos-install install` flow.
+//! spawning the full `tilo-install install` flow.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,7 +16,7 @@ use serde::Serialize;
 
 /// Suffix appended to the shim binary's path to find its sidecar.
 /// Must match `cli-shim`'s `SIDECAR_SUFFIX`.
-pub const SIDECAR_SUFFIX: &str = ".qos-shim";
+pub const SIDECAR_SUFFIX: &str = ".tilo-shim";
 
 /// Wire form of the sidecar TOML. Same shape as `cli-shim`'s
 /// `Sidecar`. Duplicated intentionally so we don't have to depend
@@ -27,7 +27,7 @@ struct Sidecar<'a> {
     package_id: &'a str,
     command: &'a str,
     /// Only set in dev mode — points at the developer's
-    /// `target/debug/qos-launcher`.
+    /// `target/debug/tilo-launcher`.
     #[serde(skip_serializing_if = "Option::is_none")]
     launcher: Option<&'a Path>,
 }
@@ -43,7 +43,7 @@ pub struct ShimInstall<'a> {
     /// place under `bin/<cmd>`. The `install` main resolves this
     /// via [`locate_shim_source`].
     pub shim_source: &'a Path,
-    /// Target `bin/` dir under the user's qos-apps root.
+    /// Target `bin/` dir under the user's tilo-apps root.
     pub bin_dir: &'a Path,
     /// Optional launcher override — bakes a `launcher = "..."`
     /// field into each sidecar. Used by integration tests + dev
@@ -126,28 +126,28 @@ pub fn remove_shims(bin_dir: &Path, commands: &[String]) -> Result<(), ShimError
     Ok(())
 }
 
-/// Locate the `qos-cli-shim` binary at install time. Search:
-/// 1. `QOS_CLI_SHIM_PATH` env override (tests, dev-installs).
-/// 2. Sibling of this executable (`target/debug/qos-cli-shim`).
-/// 3. `/usr/libexec/qos-cli-shim` (production install).
-/// 4. `qos-cli-shim` — falls back to PATH resolution at copy time.
+/// Locate the `tilo-cli-shim` binary at install time. Search:
+/// 1. `TILO_CLI_SHIM_PATH` env override (tests, dev-installs).
+/// 2. Sibling of this executable (`target/debug/tilo-cli-shim`).
+/// 3. `/usr/libexec/tilo-cli-shim` (production install).
+/// 4. `tilo-cli-shim` — falls back to PATH resolution at copy time.
 pub fn locate_shim_source() -> PathBuf {
-    if let Some(over) = std::env::var_os("QOS_CLI_SHIM_PATH") {
+    if let Some(over) = std::env::var_os("TILO_CLI_SHIM_PATH") {
         return PathBuf::from(over);
     }
     if let Ok(exe) = std::env::current_exe()
         && let Some(parent) = exe.parent()
     {
-        let sib = parent.join("qos-cli-shim");
+        let sib = parent.join("tilo-cli-shim");
         if sib.exists() {
             return sib;
         }
     }
-    let system = PathBuf::from("/usr/libexec/qos-cli-shim");
+    let system = PathBuf::from("/usr/libexec/tilo-cli-shim");
     if system.exists() {
         return system;
     }
-    PathBuf::from("qos-cli-shim")
+    PathBuf::from("tilo-cli-shim")
 }
 
 fn validate_command_name(name: &str) -> Result<(), ShimError> {
@@ -220,7 +220,7 @@ mod tests {
     use super::*;
 
     fn dummy_shim(tmp: &Path) -> PathBuf {
-        let p = tmp.join("qos-cli-shim");
+        let p = tmp.join("tilo-cli-shim");
         fs::write(&p, b"#!/bin/sh\necho stub\n").unwrap();
         set_executable(&p).unwrap();
         p
@@ -233,7 +233,7 @@ mod tests {
         let bin_dir = tmp.path().join("bin");
         let commands = vec!["notes".to_string(), "notes-import".to_string()];
         let written = write_shims(&ShimInstall {
-            package_id: "dev.qos.notes-cli",
+            package_id: "dev.tilo.notes-cli",
             commands: &commands,
             shim_source: &shim,
             bin_dir: &bin_dir,
@@ -243,11 +243,11 @@ mod tests {
         assert_eq!(written.len(), 4);
         for cmd in &commands {
             let bin_path = bin_dir.join(cmd);
-            let side_path = bin_dir.join(format!("{cmd}.qos-shim"));
+            let side_path = bin_dir.join(format!("{cmd}.tilo-shim"));
             assert!(bin_path.exists(), "shim {cmd} should exist");
-            assert!(side_path.exists(), "sidecar {cmd}.qos-shim should exist");
+            assert!(side_path.exists(), "sidecar {cmd}.tilo-shim should exist");
             let sidecar_text = fs::read_to_string(&side_path).unwrap();
-            assert!(sidecar_text.contains("dev.qos.notes-cli"));
+            assert!(sidecar_text.contains("dev.tilo.notes-cli"));
             assert!(sidecar_text.contains(cmd));
         }
     }
@@ -258,21 +258,21 @@ mod tests {
         let shim = dummy_shim(tmp.path());
         let bin_dir = tmp.path().join("bin");
         let commands = vec!["notes".to_string()];
-        let launcher = PathBuf::from("/tmp/dev/qos-launcher");
+        let launcher = PathBuf::from("/tmp/dev/tilo-launcher");
         write_shims(&ShimInstall {
-            package_id: "dev.qos.notes-cli",
+            package_id: "dev.tilo.notes-cli",
             commands: &commands,
             shim_source: &shim,
             bin_dir: &bin_dir,
             launcher_override: Some(&launcher),
         })
         .unwrap();
-        let text = fs::read_to_string(bin_dir.join("notes.qos-shim")).unwrap();
+        let text = fs::read_to_string(bin_dir.join("notes.tilo-shim")).unwrap();
         assert!(
             text.contains("launcher"),
             "sidecar must carry launcher override; got: {text}"
         );
-        assert!(text.contains("/tmp/dev/qos-launcher"));
+        assert!(text.contains("/tmp/dev/tilo-launcher"));
     }
 
     #[test]
@@ -282,7 +282,7 @@ mod tests {
         let bin_dir = tmp.path().join("bin");
         let commands = vec!["notes".to_string()];
         write_shims(&ShimInstall {
-            package_id: "dev.qos.notes-cli",
+            package_id: "dev.tilo.notes-cli",
             commands: &commands,
             shim_source: &shim,
             bin_dir: &bin_dir,
@@ -292,7 +292,7 @@ mod tests {
         assert!(bin_dir.join("notes").exists());
         remove_shims(&bin_dir, &commands).unwrap();
         assert!(!bin_dir.join("notes").exists());
-        assert!(!bin_dir.join("notes.qos-shim").exists());
+        assert!(!bin_dir.join("notes.tilo-shim").exists());
     }
 
     #[test]
@@ -309,7 +309,7 @@ mod tests {
         for name in bad_names {
             let commands = vec![name.clone()];
             let e = write_shims(&ShimInstall {
-                package_id: "dev.qos.notes-cli",
+                package_id: "dev.tilo.notes-cli",
                 commands: &commands,
                 shim_source: &shim,
                 bin_dir: &bin_dir,
@@ -327,7 +327,7 @@ mod tests {
         let bin_dir = tmp.path().join("bin");
         let commands = vec!["notes".to_string()];
         write_shims(&ShimInstall {
-            package_id: "dev.qos.notes-cli",
+            package_id: "dev.tilo.notes-cli",
             commands: &commands,
             shim_source: &shim,
             bin_dir: &bin_dir,
@@ -336,16 +336,16 @@ mod tests {
         .unwrap();
         // Second install with a different launcher override — must
         // succeed and end with the second override baked in.
-        let l2 = PathBuf::from("/tmp/other/qos-launcher");
+        let l2 = PathBuf::from("/tmp/other/tilo-launcher");
         write_shims(&ShimInstall {
-            package_id: "dev.qos.notes-cli",
+            package_id: "dev.tilo.notes-cli",
             commands: &commands,
             shim_source: &shim,
             bin_dir: &bin_dir,
             launcher_override: Some(&l2),
         })
         .unwrap();
-        let text = fs::read_to_string(bin_dir.join("notes.qos-shim")).unwrap();
-        assert!(text.contains("/tmp/other/qos-launcher"));
+        let text = fs::read_to_string(bin_dir.join("notes.tilo-shim")).unwrap();
+        assert!(text.contains("/tmp/other/tilo-launcher"));
     }
 }

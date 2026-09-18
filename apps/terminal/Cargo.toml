@@ -7,7 +7,7 @@ license.workspace = true
 
 # The app uses the protocol types through ui's canonical re-export.
 [package.metadata.cargo-machete]
-ignored = ["qos-actions"]
+ignored = ["tilo-actions"]
 
 [lib]
 name = "terminal"
@@ -22,8 +22,8 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
-qos-actions = { path = "../../crates/collab/actions" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
@@ -46,6 +46,7 @@ base64.workspace = true
 qdoc = { path = "../../crates/doc/qdoc" }
 
 [dev-dependencies]
+tempfile.workspace = true
 # Serialises the tests that touch the shared system clipboard / primary
 # selection so they don't race each other under the default parallel runner
 # (selecting text sets the primary selection, which a middle-click paste test

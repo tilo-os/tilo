@@ -7,7 +7,7 @@
 //! peer user, etc.).
 //!
 //! The private half of the keypair is currently held in a single-device
-//! file under `~/.config/qos/identity/`; a future FROST 2-of-N
+//! file under `~/.config/tilo/identity/`; a future FROST 2-of-N
 //! threshold-sharing upgrade changes only how `sign_*` calls are routed,
 //! not this type.
 //!

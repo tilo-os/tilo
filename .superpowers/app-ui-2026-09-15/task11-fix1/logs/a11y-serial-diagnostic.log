@@ -1,5 +1,0 @@
-
-running 13 tests
-test composition_disclosure_hides_maintenance_and_returns_focus ... ok
-test composition_management_real_buttons_keep_canonical_mutations ... ok
-test composition_narrow_escape_paging_and_open_resize_are_reachable ... 

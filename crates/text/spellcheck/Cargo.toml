@@ -4,11 +4,10 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Self-contained English spelling engine for qOS: tokenize, check, and suggest corrections"
+description = "Self-contained English spelling engine for Tilo: tokenize, check, and suggest corrections"
 
-# Intentionally NO external dependencies: the tokenizer, dictionary loader, and
-# Damerau/Levenshtein suggester are all implemented in-crate so adding this crate
-# does not churn the (gitignored) workspace Cargo.lock.
+# No external dependencies: tokenization, dictionary loading, and suggestions
+# are implemented in-crate.
 [dependencies]
 
 [dev-dependencies]

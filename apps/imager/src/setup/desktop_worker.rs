@@ -221,8 +221,8 @@ mod tests {
     #[test]
     fn malformed_or_nonzero_protocol_never_reports_complete() {
         for script in [
-            "printf '%s\\n' '{\"phase\":\"Complete\",\"detail\":{\"version\":\"1\",\"session_entry\":\"/usr/share/wayland-sessions/qos.desktop\"}}'",
-            "printf '%s\\n' '{\"phase\":\"Preparing\"}' '{\"phase\":\"Installing\"}' '{\"phase\":\"Verifying\"}' '{\"phase\":\"Complete\",\"detail\":{\"version\":\"1\",\"session_entry\":\"/usr/share/wayland-sessions/qos.desktop\"}}'; exit 7",
+            "printf '%s\\n' '{\"phase\":\"Complete\",\"detail\":{\"version\":\"1\",\"session_entry\":\"/usr/share/wayland-sessions/tilo.desktop\"}}'",
+            "printf '%s\\n' '{\"phase\":\"Preparing\"}' '{\"phase\":\"Installing\"}' '{\"phase\":\"Verifying\"}' '{\"phase\":\"Complete\",\"detail\":{\"version\":\"1\",\"session_entry\":\"/usr/share/wayland-sessions/tilo.desktop\"}}'; exit 7",
             "printf '%s\\n' 'not json'",
         ] {
             let child = Command::new("/bin/sh")
@@ -251,7 +251,7 @@ mod tests {
     }
     #[test]
     fn protected_log_locator_does_not_change_completion_order() {
-        let child = Command::new("/bin/sh").args(["-c", "printf '%s\\n' '{\"phase\":\"Preparing\"}' '{\"phase\":\"Installing\"}' '{\"phase\":\"DiagnosticLog\",\"detail\":\"/var/tmp/qos-desktop-fixture/native.log\"}' '{\"phase\":\"Verifying\"}' '{\"phase\":\"Complete\",\"detail\":{\"version\":\"1\",\"session_entry\":\"/usr/share/wayland-sessions/qos.desktop\"}}'"]).stdout(Stdio::piped()).spawn().unwrap();
+        let child = Command::new("/bin/sh").args(["-c", "printf '%s\\n' '{\"phase\":\"Preparing\"}' '{\"phase\":\"Installing\"}' '{\"phase\":\"DiagnosticLog\",\"detail\":\"/var/tmp/qos-desktop-fixture/native.log\"}' '{\"phase\":\"Verifying\"}' '{\"phase\":\"Complete\",\"detail\":{\"version\":\"1\",\"session_entry\":\"/usr/share/wayland-sessions/tilo.desktop\"}}'"]).stdout(Stdio::piped()).spawn().unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         track_helper(child, &tx).unwrap();
         let events: Vec<_> = rx.try_iter().collect();

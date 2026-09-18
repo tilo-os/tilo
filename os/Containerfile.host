@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1.7
 # ============================================================================
-# qOS host-mode bootc image — headless always-on host / relay.
+# Tilo host-mode bootc image — headless always-on host / relay.
 # ----------------------------------------------------------------------------
 # Ships a minimal bootc image that boots straight into
-# `qos-relay.service` and `qos-fs-replica.service`. No compositor, no greetd, no session. Users
+# `tilo-relay.service` and `tilo-fs-replica.service`. No compositor, no greetd, no session. Users
 # reach it via their own workspaces once the enrollment token in
-# /etc/qos/enrollment-token.txt is consumed on first boot.
+# /etc/tilo/enrollment-token.txt is consumed on first boot.
 #
-#     podman build -f os/Containerfile.host -t localhost/qos-host:latest .
+#     podman build -f os/Containerfile.host -t localhost/tilo-host:latest .
 #
 # The disk-image step is the same as the desktop image:
 # `os/build-host.sh` writes a qcow2 the operator installs onto
@@ -31,7 +31,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         rust cargo sccache \
         gcc gcc-c++ make cmake perl perl-FindBin python3 git \
         clang clang-devel pkgconf-pkg-config \
-        openssl-devel sqlite-devel zlib-ng-compat-devel \
+        sqlite-devel zlib-ng-compat-devel \
     && dnf clean all
 
 WORKDIR /build
@@ -53,7 +53,7 @@ ENV CARGO_HOME=/build/.cargo-home \
     LC_ALL=C.UTF-8 \
     TZ=UTC
 
-# Host image ships qos-relay plus the authenticated filesystem replica as one
+# Host image ships tilo-relay plus the authenticated filesystem replica as one
 # composite always-on home peer.
 # Drop the browser member (Servo) before resolving.
 RUN --mount=type=cache,target=/build/.cargo-home \
@@ -61,12 +61,12 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/.sccache \
     sed -i '/"apps\/browser",/d' Cargo.toml \
     && cargo build --release \
-        -p qos-relay -p fs \
+        -p tilo-relay -p fs \
     && mkdir -p /out \
-    && cp target/release/qos-relay \
-          target/release/qos-relay-admin \
-          target/release/qos-enroll \
-          target/release/qos-home-peer-control \
+    && cp target/release/tilo-relay \
+          target/release/tilo-relay-admin \
+          target/release/tilo-enroll \
+          target/release/tilo-home-peer-control \
           target/release/fs \
           /out/
 
@@ -82,53 +82,55 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         fuse3 \
         ca-certificates \
         NetworkManager \
-        NetworkManager-openvpn \
-        ModemManager \
-        fwupd \
+    && rpm -q --qf '%{NAME}\n' openssl sbsigntools efitools mokutil pesign nss-tools gnutls-utils git git-core \
+        openvpn NetworkManager-openvpn openssh openssh-clients openssh-server \
+        ModemManager fwupd 2>/dev/null | xargs -r dnf remove -y \
     && dnf clean all
 
 # Copy binaries + systemd unit + tmpfiles snippet.
-COPY --from=builder /out/qos-relay /usr/bin/qos-relay
-COPY --from=builder /out/qos-relay-admin /usr/bin/qos-relay-admin
-COPY --from=builder /out/qos-enroll /usr/bin/qos-enroll
-COPY --from=builder /out/qos-home-peer-control /usr/libexec/qos-home-peer-control
+COPY --from=builder /out/tilo-relay /usr/bin/tilo-relay
+COPY --from=builder /out/tilo-relay-admin /usr/bin/tilo-relay-admin
+COPY --from=builder /out/tilo-enroll /usr/bin/tilo-enroll
+COPY --from=builder /out/tilo-home-peer-control /usr/libexec/tilo-home-peer-control
 COPY --from=builder /out/fs /usr/bin/fs
-RUN chmod 0755 /usr/bin/qos-relay /usr/bin/qos-relay-admin /usr/bin/qos-enroll /usr/bin/fs /usr/libexec/qos-home-peer-control
+RUN chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enroll /usr/bin/fs /usr/libexec/tilo-home-peer-control
 
-COPY os/usr/lib/systemd/system/qos-relay.service /usr/lib/systemd/system/qos-relay.service
-COPY os/usr/lib/systemd/system/qos-fs-replica.service /usr/lib/systemd/system/qos-fs-replica.service
-COPY os/usr/lib/systemd/system/qos-relay-firstboot.service /usr/lib/systemd/system/qos-relay-firstboot.service
-COPY os/usr/libexec/qos-relay-firstboot /usr/libexec/qos-relay-firstboot
-COPY os/usr/lib/tmpfiles.d/qos-host.conf /usr/lib/tmpfiles.d/qos-host.conf
+COPY os/usr/lib/systemd/system/tilo-relay.service /usr/lib/systemd/system/tilo-relay.service
+COPY os/usr/lib/systemd/system/tilo-fs-replica.service /usr/lib/systemd/system/tilo-fs-replica.service
+COPY os/usr/lib/systemd/system/tilo-relay-firstboot.service /usr/lib/systemd/system/tilo-relay-firstboot.service
+COPY os/usr/libexec/tilo-relay-firstboot /usr/libexec/tilo-relay-firstboot
+COPY os/usr/libexec/tilo-relay-state-migrate /usr/libexec/tilo-relay-state-migrate
+COPY os/usr/lib/systemd/system/tilo-relay-state-migrate.service /usr/lib/systemd/system/tilo-relay-state-migrate.service
+COPY os/usr/lib/tmpfiles.d/tilo-host.conf /usr/lib/tmpfiles.d/tilo-host.conf
 # The device-trust group owns the identity directory, so it has to exist
-# before tmpfiles-setup runs. No session user joins it on a host image —
-# there is no session — but the group is what the directory is created
-# with, and the identity layout is shared with the desktop image.
-COPY os/usr/lib/sysusers.d/qos-identity.conf /usr/lib/sysusers.d/qos-identity.conf
-RUN systemd-sysusers /usr/lib/sysusers.d/qos-identity.conf
-RUN chmod 0755 /usr/libexec/qos-relay-firstboot
+# before tmpfiles-setup runs. There is no session user on a host image; only
+# the static relay account joins this narrow device-identity boundary.
+COPY os/usr/lib/sysusers.d/tilo-identity.conf /usr/lib/sysusers.d/tilo-identity.conf
+COPY os/usr/lib/sysusers.d/tilo-relay.conf /usr/lib/sysusers.d/tilo-relay.conf
+RUN systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf /usr/lib/sysusers.d/tilo-relay.conf
+RUN chmod 0755 /usr/libexec/tilo-relay-firstboot /usr/libexec/tilo-relay-state-migrate
 
-# The first-boot script consumes /etc/qos/enrollment-token.txt (a
+# The first-boot script consumes /etc/tilo/enrollment-token.txt (a
 # base32-Crockford EnrollmentToken minted on the operator's primary
 # device by the imager app) and mints a device keypair + persists
 # a device cert once the LAN mdns discovery hands back the signed
-# cert. Baked into the ISO by `qos-installer` — the sample stub
+# cert. Baked into the ISO by `tilo-installer` — the sample stub
 # here is overwritten at install time.
-RUN mkdir -p /etc/qos \
+RUN mkdir -p /etc/tilo \
     && echo "# Replace with a base32-Crockford enrollment token minted by your primary device." \
-        > /etc/qos/enrollment-token.txt
+        > /etc/tilo/enrollment-token.txt
 
-# Default relay config; `qos-relay init` inside the first-boot
-# service writes a real one under `/etc/qos/relay.toml` once the
+# Default relay config; `tilo-relay init` inside the first-boot
+# service writes the configuration under `/etc/tilo/relay.toml` once the
 # enrollment completes.
-RUN mkdir -p /etc/qos \
-    && printf 'identity_root = "/var/lib/qos"\nstate_root = "/var/lib/qos-relay"\niroh_listen = "0.0.0.0:0"\ntrust_policy = { kind = "allow_matching_user" }\n' \
-        > /etc/qos/relay.toml
+RUN mkdir -p /etc/tilo \
+    && printf 'identity_root = "/var/lib/tilo"\nstate_root = "/var/lib/tilo-relay"\niroh_listen = "0.0.0.0:0"\ntrust_policy = { kind = "allow_matching_user" }\n' \
+        > /etc/tilo/relay.toml
 
 # Enable services.
-RUN systemctl enable qos-relay-firstboot.service \
-    && systemctl enable qos-relay.service \
-    && systemctl enable qos-fs-replica.service \
+RUN systemctl enable tilo-relay-firstboot.service \
+    && systemctl enable tilo-relay.service \
+    && systemctl enable tilo-fs-replica.service \
     && systemctl enable chronyd.service \
     && systemctl enable firewalld.service \
     && systemctl set-default multi-user.target
@@ -162,13 +164,13 @@ RUN for u in \
 
 # Signed-image trust roots — the same policy the desktop image
 # uses. Refuses to `bootc upgrade` unless the image is signed.
-COPY keys/cosign.pub /usr/share/qos/cosign.pub
+COPY keys/cosign.pub /usr/share/tilo/cosign.pub
 COPY os/etc/containers/policy.json /etc/containers/policy.json
 COPY os/etc/containers/registries.d/code.podesta.ai.yaml /etc/containers/registries.d/code.podesta.ai.yaml
 
 # Same bootloader swap as the desktop image: install systemd-boot,
 # drop the GRUB stack, tell bootc to plant systemd-boot on the ESP at
-# install time (see os/usr/lib/bootc/install/40-qos.toml for why).
+# install time (see os/usr/lib/bootc/install/40-tilo.toml for why).
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     systemd-boot-unsigned \
     && dnf remove -y --allowerasing \
@@ -176,7 +178,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         grub2-pc grub2-pc-modules grub2-efi-x64 grub2-efi-x64-modules \
         shim-x64 \
     && dnf clean all
-COPY os/usr/lib/bootc/install/40-qos.toml /usr/lib/bootc/install/40-qos.toml
+COPY os/usr/lib/bootc/install/40-tilo.toml /usr/lib/bootc/install/40-tilo.toml
 
 # firewalld default zone: the FedoraServer zone drops all inbound
 # except explicitly permitted. Iroh punches out; the relay does not

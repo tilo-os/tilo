@@ -6,7 +6,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "CRDT-native canonical document model and format-provider API for qOS"
+description = "CRDT-native canonical document model and format-provider API for Tilo"
 
 [dependencies]
 automerge.workspace = true
@@ -18,7 +18,6 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-libc.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

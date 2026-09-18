@@ -3,7 +3,7 @@
 # strict static contract in the ordinary Linux invariant shard.
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-script="$repo/tools/Run-ImagerEphemeralRunner.ps1"
+script="$repo/tools/ci/runners/imager-ephemeral-windows.ps1"
 
 if command -v pwsh >/dev/null 2>&1; then
   pwsh -NoLogo -NoProfile -NonInteractive -Command \
@@ -16,18 +16,21 @@ line_of() { grep -nF -- "$2" "$1" | head -n 1 | cut -d: -f1; }
 safe_line="$(line_of "$script" '$SafeMetadata = @($UuidItem.FullName, $TokenItem.FullName)')"
 try_line="$(line_of "$script" 'try {')"
 url_line="$(line_of "$script" 'if ($Server -notin @("https://code.podesta.ai", "https://code.podesta.ai/"))')"
-runner_line="$(line_of "$script" '$TrustedRunner = Assert-qOSTrustedRunner $Runner')"
+runner_line="$(line_of "$script" '$TrustedRunner = Assert-TiloTrustedRunner $Runner')"
 start_line="$(line_of "$script" '$Process = Start-Process')"
 finally_line="$(line_of "$script" '} finally {')"
 remove_line="$(line_of "$script" 'Remove-Item -LiteralPath $Path -Force')"
 finally_kill_line="$(grep -nF -- 'taskkill.exe" /PID $Process.Id /T /F' "$script" | tail -n 1 | cut -d: -f1)"
-has "$script" 'Assert-qOSPrivateMetadataFile $UuidFile' \
-  && has "$script" 'Assert-qOSPrivateMetadataFile $TokenFile' \
+has "$script" 'Assert-TiloPrivateMetadataFile $UuidFile' \
+  && has "$script" 'Assert-TiloPrivateMetadataFile $TokenFile' \
   && has "$script" '$SafeMetadata = @($UuidItem.FullName, $TokenItem.FullName)' \
   && has "$script" 'if ($Server -notin @("https://code.podesta.ai", "https://code.podesta.ai/"))' \
-  && has "$script" '$Label -cne "imager-windows-x86_64"' \
+  && has "$script" '$NativeLabel = Resolve-TiloWindowsRunnerLabel @((Get-CimInstance Win32_Processor).Architecture)' \
+  && has "$script" '$Label -cne $NativeLabel' \
+  && has "$script" '9 { return "imager-windows-x86_64" }' \
+  && has "$script" '12 { return "imager-windows-aarch64" }' \
   && has "$script" '"one-job", "--url"' \
-  && has "$script" '"--token-url", $TokenUrl, "--label", "imager-windows-x86_64:host", "--wait"' \
+  && has "$script" '"--token-url", $TokenUrl, "--label", "${NativeLabel}:host", "--wait"' \
   && has "$script" 'if (-not $Process.WaitForExit($MaxWait * 1000))' \
   && has "$script" 'taskkill.exe" /PID $Process.Id /T /F' \
   && has "$script" 'if (-not $Process.HasExited) { $Process.Kill() }' \
@@ -36,6 +39,8 @@ has "$script" 'Assert-qOSPrivateMetadataFile $UuidFile' \
   && has "$script" 'if (Test-Path -LiteralPath $Path) { $CleanupFailures += $Path }' \
   && has "$script" "'^[0-9a-fA-F]{40}$'" \
   && has "$script" '$ParentAcl.AreAccessRulesProtected' \
+  && has "$script" "'S-1-5-32-544'" \
+  && has "$script" '.GetAccessRules(' \
   && [ "$safe_line" -lt "$try_line" ] \
   && [ "$try_line" -lt "$url_line" ] \
   && [ "$url_line" -lt "$runner_line" ] \
@@ -44,6 +49,7 @@ has "$script" 'Assert-qOSPrivateMetadataFile $UuidFile' \
   && [ "$finally_line" -lt "$finally_kill_line" ] \
   && [ "$finally_kill_line" -lt "$remove_line" ] \
   && [ "$finally_line" -lt "$remove_line" ] \
+  && ! grep -Fq '(?i)(SYSTEM|Administrators' "$script" \
   && ! grep -Eq 'Invoke-Expression|iex[[:space:]]' "$script" \
   || { printf 'Windows ephemeral runner launcher lost its fail-closed contract\n' >&2; exit 1; }
 

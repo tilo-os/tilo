@@ -4,17 +4,14 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Paginated PDF export for qdoc DocSnapshot documents (qOS)"
+description = "Paginated PDF export for qdoc DocSnapshot documents (Tilo)"
 
 [dependencies]
 qdoc = { path = "../qdoc" }
-# Image decode for `image` blocks. Pinned to the version already in the
-# workspace lockfile (transitively via the UI render stack) so adding qdoc-pdf
-# does not churn the resolve. PDF export supports PNG/JPEG; enabling `image`'s
-# defaults would needlessly pull every codec into the shared qpkg Cargo graph.
+# Image decode for `image` blocks. PDF export supports PNG/JPEG; disabling
+# defaults avoids pulling every codec into the shared graph.
 image = { workspace = true, default-features = false, features = ["jpeg", "png"] }
-# Flate compression for image XObject pixel data (keeps PDFs reasonably small).
-# Already in the workspace lockfile.
+# Flate compression for image XObject pixel data.
 flate2.workspace = true
 
 [lints]

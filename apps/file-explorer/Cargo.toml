@@ -9,7 +9,7 @@ license.workspace = true
 
 # The app uses the protocol types through ui's canonical re-export.
 [package.metadata.cargo-machete]
-ignored = ["qos-actions"]
+ignored = ["tilo-actions"]
 
 [lib]
 name = "file_explorer"
@@ -24,8 +24,8 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
-qos-actions = { path = "../../crates/collab/actions" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+tilo-actions = { path = "../../crates/collab/actions" }
 accounts = { path = "../../crates/system/accounts" }
 reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
 roxmltree = "0.20"
@@ -34,17 +34,15 @@ zeroize.workspace = true
 # manager and the codecs agree on what opens in the word processor).
 qdoc = { path = "../../crates/doc/qdoc" }
 collab-types = { path = "../../crates/collab/collab-types" }
-qos-user-identity = { path = "../../crates/identity/qos-user-identity" }
+tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 ed25519-dalek.workspace = true
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 tokio = { workspace = true, features = ["rt", "net", "io-util"] }
 uuid.workspace = true
 sha2.workspace = true
-# The one shared thumbnail generator + cache. `pdf` on (real first-page PDF
-# previews; pure-Rust to build — pdfium loads dynamically at runtime, falling
-# back to a badge when absent). Video stays a badge here so the hermetic build
-# and `--shots` need no gstreamer stack.
-thumbnail = { path = "../../crates/thumbnail", features = ["pdf"] }
+# Shared thumbnail generator and cache. PDF previews use dynamically loaded
+# pdfium and fall back to a badge; video remains a badge in this crate.
+thumbnail = { path = "../../crates/media/thumbnail", features = ["pdf"] }
 trash = "5.2.6"
 open.workspace = true
 mime_guess = "2.0.5"
@@ -55,15 +53,14 @@ chrono = { workspace = true, default-features = true }
 icu_datetime = "2.3.0"
 icu_decimal = "2.3.0"
 icu_locale = "2.3.0"
-# Reads the qOS FUSE driver's `user.qos.sync` extended attribute so the file
+# Reads the Tilo FUSE driver's `user.tilo.sync` extended attribute so the file
 # manager can show each workspace file's sync/hydration state.
-xattr = "1.6.1"
 libc.workspace = true
-# Only used by the `--shots` demo seeds to synthesise real sample files
-# (gradient images, an EPUB with a cover) so a headless thumbnail frame renders
-# genuine previews rather than mocks.
+# Used by `--shots` demo seeds to create sample images and an EPUB cover.
 image = { workspace = true, features = ["png", "jpeg"] }
 zip.workspace = true
+tar.workspace = true
+flate2.workspace = true
 # `dirs-next` is deprecated; `dirs` 6 is the maintained drop-in. The
 # `home_dir`/`config_dir`/`cache_dir` API is identical.
 dirs.workspace = true
@@ -82,7 +79,12 @@ taffy.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-fs = { path = "../../fs" }
+
+[target.'cfg(unix)'.dependencies]
+xattr = "1.6.1"
+
+[target.'cfg(unix)'.dev-dependencies]
+fs = { path = "../../crates/system/fs" }
 fuser.workspace = true
 iroh.workspace = true
 

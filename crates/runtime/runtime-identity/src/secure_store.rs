@@ -7,7 +7,7 @@
 //! is deliberately named *broker file*: the launcher may read it, sandboxed
 //! applications never receive either its path or its bytes.
 //!
-//! `SecretProvider` is the hardware-backed seam.  A TPM/FIDO implementation
+//! `SecretProvider` is the hardware-backed seam. A TPM/FIDO implementation
 //! can implement it and pass it to the `_with_provider` APIs; this crate does
 //! not claim hardware protection merely because `/dev/tpm*` exists.
 
@@ -15,15 +15,17 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use zeroize::Zeroizing;
 
-const MAX_IDENTITY_SECRET_BYTES: u64 = 128 * 1024 + 16;
+// Secret Service transports the hex encoding through the bounded subprocess
+// helper, so the decoded value may consume at most half its input ceiling.
+const MAX_IDENTITY_SECRET_BYTES: u64 = (bounded_command::MAX_INPUT_BYTES / 2) as u64;
 
 use crate::{KeyProtection, SecretReference};
 
-const PURPOSE_ATTRIBUTE: &str = "qos-identity-signing-v1";
+const PURPOSE_ATTRIBUTE: &str = "tilo-identity-signing-v1";
 
 fn validate_software_locator(locator: &str) -> io::Result<()> {
     if locator.len() == 64 && locator.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -76,29 +78,31 @@ impl SecretProvider for SecretServiceProvider {
 
     fn store(&self, locator: &str, secret: &[u8]) -> io::Result<()> {
         validate_software_locator(locator)?;
+        if secret.is_empty() || secret.len() as u64 > MAX_IDENTITY_SECRET_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "identity secret has an invalid length",
+            ));
+        }
         // secret-tool's stdin is text. Hex is unambiguous, contains no NULs,
         // and is decoded into a zeroizing buffer on lookup.
         let encoded = Zeroizing::new(hex::encode(secret));
-        let mut child = Command::new("secret-tool")
-            .args([
+        let output = bounded_command::run(
+            "secret-tool",
+            &[
                 "store",
-                "--label=qOS identity signing key",
-                "qos-purpose",
+                "--label=Tilo identity signing key",
+                "tilo-purpose",
                 PURPOSE_ATTRIBUTE,
-                "qos-identity-key",
+                "tilo-identity-key",
                 locator,
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
-        child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| io::Error::other("secret-tool stdin unavailable"))?
-            .write_all(encoded.as_bytes())?;
-        let status = child.wait()?;
-        if status.success() {
+            ],
+            Some(encoded.as_bytes()),
+            1024,
+            Duration::from_secs(5),
+        )
+        .map_err(io::Error::other)?;
+        if output.status.success() {
             Ok(())
         } else {
             Err(io::Error::other(
@@ -108,55 +112,71 @@ impl SecretProvider for SecretServiceProvider {
     }
 
     fn load(&self, locator: &str) -> io::Result<Zeroizing<Vec<u8>>> {
-        validate_software_locator(locator)?;
-        let output = Command::new("secret-tool")
-            .args([
-                "lookup",
-                "qos-purpose",
-                PURPOSE_ATTRIBUTE,
-                "qos-identity-key",
-                locator,
-            ])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()?;
+        secret_service_load(locator, "secret-tool")
+    }
+
+    fn remove(&self, locator: &str) -> io::Result<()> {
+        secret_service_remove(locator, "secret-tool")
+    }
+}
+
+fn secret_service_remove(locator: &str, program: &str) -> io::Result<()> {
+    validate_software_locator(locator)?;
+    let mut removed = false;
+    for (purpose_key, purpose_value, identity_key) in SECRET_ATTRIBUTES {
+        let output = bounded_command::run(
+            program,
+            &["clear", purpose_key, purpose_value, identity_key, locator],
+            None,
+            1024,
+            Duration::from_secs(5),
+        )
+        .map_err(io::Error::other)?;
+        removed |= output.status.success();
+    }
+    if removed {
+        Ok(())
+    } else {
+        Err(io::Error::other(
+            "Secret Service refused or could not remove the identity key",
+        ))
+    }
+}
+
+// Attribute names are persistent storage ABI, independent of the display name.
+const SECRET_ATTRIBUTES: [(&str, &str, &str); 2] = [
+    ("tilo-purpose", PURPOSE_ATTRIBUTE, "tilo-identity-key"),
+    ("qos-purpose", "qos-identity-signing-v1", "qos-identity-key"),
+];
+
+fn secret_service_load(locator: &str, program: &str) -> io::Result<Zeroizing<Vec<u8>>> {
+    validate_software_locator(locator)?;
+    for (purpose_key, purpose_value, identity_key) in SECRET_ATTRIBUTES {
+        let output = bounded_command::run(
+            program,
+            &["lookup", purpose_key, purpose_value, identity_key, locator],
+            None,
+            usize::try_from(MAX_IDENTITY_SECRET_BYTES)
+                .unwrap_or(usize::MAX)
+                .saturating_mul(2)
+                .saturating_add(2),
+            Duration::from_secs(5),
+        )
+        .map_err(io::Error::other)?;
         if !output.status.success() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "identity key is unavailable from Secret Service",
-            ));
+            continue;
         }
+        // Corruption in the preferred entry must surface; never mask it by
+        // falling through to an older entry or generating a replacement key.
         let encoded =
             Zeroizing::new(String::from_utf8(output.stdout).map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidData, "invalid keyring value")
             })?);
         let decoded = hex::decode(encoded.trim())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid keyring value"))?;
-        Ok(Zeroizing::new(decoded))
+        return Ok(Zeroizing::new(decoded));
     }
-
-    fn remove(&self, locator: &str) -> io::Result<()> {
-        validate_software_locator(locator)?;
-        let status = Command::new("secret-tool")
-            .args([
-                "clear",
-                "qos-purpose",
-                PURPOSE_ATTRIBUTE,
-                "qos-identity-key",
-                locator,
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(io::Error::other(
-                "Secret Service refused or could not remove the identity key",
-            ))
-        }
-    }
+    Err(crate::secret_service_unavailable_error())
 }
 
 #[derive(Debug, Clone)]
@@ -326,4 +346,74 @@ pub(crate) fn preferred_provider(identity_dir: &Path) -> Box<dyn SecretProvider 
 
 pub(crate) fn fallback_provider(identity_dir: &Path) -> BrokerFileProvider {
     BrokerFileProvider::new(identity_dir)
+}
+
+#[cfg(test)]
+mod rename_compat_tests {
+    use super::*;
+
+    #[test]
+    fn secret_service_load_finds_legacy_attributes_without_creating_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let command = dir.path().join("secret-tool-fixture");
+        fs::write(
+            &command,
+            r#"#!/bin/sh
+[ "$1" = lookup ] || exit 99
+[ "$2" = qos-purpose ] || exit 1
+[ "$3" = qos-identity-signing-v1 ] || exit 99
+[ "$4" = qos-identity-key ] || exit 99
+printf '010203\n'
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&command, fs::Permissions::from_mode(0o700)).unwrap();
+        let secret = secret_service_load(&"ab".repeat(32), command.to_str().unwrap()).unwrap();
+        assert_eq!(secret.as_slice(), &[1, 2, 3]);
+    }
+}
+
+#[cfg(test)]
+mod removal_compat_tests {
+    use super::*;
+
+    #[test]
+    fn secret_service_removes_legacy_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let command = dir.path().join("secret-tool-fixture");
+        fs::write(
+            &command,
+            r#"#!/bin/sh
+[ "$1" = clear ] || exit 99
+[ "$2" = qos-purpose ] || exit 1
+[ "$3" = qos-identity-signing-v1 ] || exit 99
+[ "$4" = qos-identity-key ] || exit 99
+exit 0
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&command, fs::Permissions::from_mode(0o700)).unwrap();
+        secret_service_remove(&"ab".repeat(32), command.to_str().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn corrupt_current_secret_is_not_masked_by_legacy_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let command = dir.path().join("secret-tool-fixture");
+        fs::write(
+            &command,
+            r#"#!/bin/sh
+[ "$1" = lookup ] || exit 99
+if [ "$2" = tilo-purpose ]; then printf 'not-hex'; else printf '010203'; fi
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&command, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            secret_service_load(&"ab".repeat(32), command.to_str().unwrap())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
 }

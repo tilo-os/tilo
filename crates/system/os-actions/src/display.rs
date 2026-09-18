@@ -13,7 +13,7 @@
 //!
 //! Writing `/sys/class/backlight/<dev>/brightness` is what `brightnessctl` does anyway. The
 //! one thing it brings that a bare write doesn't is the udev rule granting the `video` group
-//! write access to that attribute — so qOS ships that rule itself
+//! write access to that attribute — so Tilo ships that rule itself
 //! (`os/usr/lib/udev/rules.d/`), smaller and under our control.
 //!
 //! `brightnessctl` is still tried as a fallback when the sysfs write is refused, since a dev

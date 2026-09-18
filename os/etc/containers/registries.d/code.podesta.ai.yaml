@@ -3,5 +3,5 @@
 # (which bootc uses to verify before `upgrade`) to look for it there, so the
 # sigstoreSigned policy in /etc/containers/policy.json can find + check it.
 docker:
-  code.podesta.ai/qos/qos:
+  code.podesta.ai/qos/tilo:
     use-sigstore-attachments: true
