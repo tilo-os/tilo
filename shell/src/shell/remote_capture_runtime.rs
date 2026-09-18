@@ -989,32 +989,6 @@ impl RemoteCaptureFabricRuntime {
         Err("unknown remote capture session".into())
     }
 
-    pub(crate) fn send_chunk(
-        &mut self,
-        chunk: RemoteCaptureChunk,
-        now: Instant,
-    ) -> Result<(DeviceId, PersonalFabricAction), String> {
-        let session = self
-            .source_sessions
-            .get_mut(&chunk.session_id)
-            .ok_or_else(|| "unknown remote capture source session".to_string())?;
-        if !self.registry.accept_chunk(
-            &session.source,
-            &session.target,
-            &session.request.app_id,
-            &session.request.workspace_id,
-            &chunk,
-            now,
-        ) {
-            return Err("remote capture chunk failed its exact session binding".into());
-        }
-        session.expires_at = now + REMOTE_CAPTURE_GRANT_TTL;
-        Ok((
-            session.target.clone(),
-            PersonalFabricAction::RemoteCaptureChunk { chunk },
-        ))
-    }
-
     pub(crate) fn teardown_peer(&mut self, peer: &DeviceId) {
         self.outbound
             .retain(|_, pending| &pending.source != peer && &pending.target != peer);
@@ -1246,9 +1220,18 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
     struct FakeSource {
         fail_start: bool,
+        chunks: Arc<Mutex<Vec<CapturedRemoteChunk>>>,
+    }
+
+    impl Default for FakeSource {
+        fn default() -> Self {
+            Self {
+                fail_start: false,
+                chunks: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
     }
 
     impl RemoteCaptureSource for FakeSource {
@@ -1273,7 +1256,7 @@ mod tests {
         }
 
         fn drain(&mut self) -> Vec<CapturedRemoteChunk> {
-            Vec::new()
+            std::mem::take(&mut *self.chunks.lock().unwrap())
         }
 
         fn drain_failures(&mut self) -> Vec<[u8; 16]> {
@@ -1346,25 +1329,42 @@ mod tests {
             _ => unreachable!(),
         };
 
-        let mut source_runtime = runtime();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let mut source_runtime = runtime_with(
+            FakeAdapter::default(),
+            FakeSource {
+                fail_start: false,
+                chunks: Arc::clone(&captured),
+            },
+        );
         assert!(source_runtime.handle_action(&envelope(&laptop, &phone, request_action), now));
         assert_eq!(source_runtime.consents().len(), 1);
         let (decision_target, decision) = source_runtime.decide(request_id, true, now).unwrap();
         assert_eq!(decision_target, laptop);
         target_runtime.handle_action(&envelope(&phone, &laptop, decision), now);
 
-        let (&session_id, source_session) = source_runtime.source_sessions.iter().next().unwrap();
-        let chunk = RemoteCaptureChunk {
+        let (&session_id, source_grant) = source_runtime
+            .source_sessions
+            .iter()
+            .next()
+            .map(|(session_id, session)| (session_id, session.grant))
+            .unwrap();
+        captured.lock().unwrap().push(CapturedRemoteChunk {
             session_id,
-            grant: source_session.grant,
-            sequence: 1,
             offset: 0,
             total_bytes: 4,
             page_index: None,
             end_of_unit: true,
             payload: vec![1, 2, 3, 4],
+        });
+        source_runtime.pump(now);
+        let (action_target, action) = source_runtime.drain_outgoing().pop().unwrap();
+        assert_eq!(action_target, laptop);
+        let PersonalFabricAction::RemoteCaptureChunk { chunk } = &action else {
+            panic!("source pump did not publish its captured chunk");
         };
-        let (_, action) = source_runtime.send_chunk(chunk.clone(), now).unwrap();
+        assert_eq!(chunk.grant, source_grant);
+        assert_eq!(chunk.sequence, 1);
         for _ in 0..100 {
             target_runtime.pump(now);
             if target_runtime.target_sessions.contains_key(&session_id) {
@@ -1417,14 +1417,13 @@ mod tests {
     fn unanswered_requests_expire_without_leaving_authority() {
         let phone = DeviceId::new("phone").unwrap();
         let laptop = DeviceId::new("laptop").unwrap();
-        let now = Instant::now();
         let mut runtime = runtime();
         runtime
             .request(app(), phone, laptop, "Camera".into(), profile())
             .unwrap();
         assert_eq!(runtime.outbound.len(), 1);
 
-        runtime.pump(now + REMOTE_CAPTURE_GRANT_TTL + std::time::Duration::from_millis(1));
+        runtime.pump(Instant::now() + REMOTE_CAPTURE_GRANT_TTL);
 
         assert!(runtime.outbound.is_empty());
         assert!(runtime.source_sessions.is_empty());
@@ -1452,7 +1451,13 @@ mod tests {
             } => request.request_id,
             _ => unreachable!(),
         };
-        let mut source = runtime_with(FakeAdapter::default(), FakeSource { fail_start: true });
+        let mut source = runtime_with(
+            FakeAdapter::default(),
+            FakeSource {
+                fail_start: true,
+                ..FakeSource::default()
+            },
+        );
         source.handle_action(&envelope(&laptop, &phone, request), now);
         let (_, decision) = source.decide(request_id, true, now).unwrap();
         assert!(matches!(
