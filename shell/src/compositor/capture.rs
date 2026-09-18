@@ -206,7 +206,10 @@ enum RecordingOutput {
 impl RecordingOutput {
     // The non-media build creates a fallible raw file while the media build
     // constructs its muxer lazily. Keep one call contract across both cfgs.
-    #[allow(clippy::unnecessary_wraps)]
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "the raw and muxed cfg variants share one fallible constructor contract"
+    )]
     fn new(
         path: &Path,
         width: u32,
@@ -443,7 +446,10 @@ impl CaptureExecutor {
     /// Drain picker intents and advance continuous recording/mirror work.
     // This is the ordered capture state-machine tick. Splitting it would hide
     // the sequencing constraints between mirrors, recording, and replay.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the ordered capture tick keeps mirror, recording, and replay transitions in one state-machine boundary"
+    )]
     pub fn execute_ready(
         &mut self,
         frame_builder: &mut FrameBuilder,
@@ -1807,15 +1813,24 @@ fn compose_stack(source: &Scene, regions: &[Rect]) -> Result<(Scene, u32, u32), 
 
 // Widget counts are bounded by the visible capture selection, far below the
 // integer range where conversion to layout-space f64 can lose meaningful data.
-#[allow(clippy::cast_precision_loss)]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "visible capture-region counts stay far below f64's exact-integer range"
+)]
+fn region_count_to_f64(count: usize) -> f64 {
+    count as f64
+}
+
 fn grid_geometry(regions: &[Rect]) -> (f64, f64, Vec<Rect>) {
     let count = regions.len();
-    let cols = (count as f64).sqrt().ceil().max(1.0) as usize;
+    let cols = region_count_to_f64(count).sqrt().ceil().max(1.0) as usize;
     let rows = count.div_ceil(cols);
     let cell_w = regions.iter().map(Rect::width).fold(1.0_f64, f64::max);
     let cell_h = regions.iter().map(Rect::height).fold(1.0_f64, f64::max);
-    let raw_w = cols as f64 * cell_w + cols.saturating_sub(1) as f64 * GRID_GAP;
-    let raw_h = rows as f64 * cell_h + rows.saturating_sub(1) as f64 * GRID_GAP;
+    let raw_w =
+        region_count_to_f64(cols) * cell_w + region_count_to_f64(cols.saturating_sub(1)) * GRID_GAP;
+    let raw_h =
+        region_count_to_f64(rows) * cell_h + region_count_to_f64(rows.saturating_sub(1)) * GRID_GAP;
     let placements = regions
         .iter()
         .enumerate()
@@ -1825,25 +1840,24 @@ fn grid_geometry(regions: &[Rect]) -> (f64, f64, Vec<Rect>) {
             let local_scale = (cell_w / region.width()).min(cell_h / region.height());
             let draw_w = region.width() * local_scale;
             let draw_h = region.height() * local_scale;
-            let x = col as f64 * (cell_w + GRID_GAP) + (cell_w - draw_w) / 2.0;
-            let y = row as f64 * (cell_h + GRID_GAP) + (cell_h - draw_h) / 2.0;
+            let x = region_count_to_f64(col) * (cell_w + GRID_GAP) + (cell_w - draw_w) / 2.0;
+            let y = region_count_to_f64(row) * (cell_h + GRID_GAP) + (cell_h - draw_h) / 2.0;
             Rect::new(x, y, x + draw_w, y + draw_h)
         })
         .collect();
     (raw_w, raw_h, placements)
 }
 
-#[allow(clippy::cast_precision_loss)]
 fn stack_geometry(regions: &[Rect]) -> (f64, f64, Vec<Rect>) {
     let card_w = regions.iter().map(Rect::width).fold(1.0_f64, f64::max);
     let card_h = regions.iter().map(Rect::height).fold(1.0_f64, f64::max);
-    let depth = regions.len().saturating_sub(1) as f64 * STACK_OFFSET;
+    let depth = region_count_to_f64(regions.len().saturating_sub(1)) * STACK_OFFSET;
     let placements = regions
         .iter()
         .enumerate()
         .map(|(index, region)| {
             let local_scale = (card_w / region.width()).min(card_h / region.height());
-            let offset = index as f64 * STACK_OFFSET;
+            let offset = region_count_to_f64(index) * STACK_OFFSET;
             Rect::new(
                 offset,
                 offset,
@@ -1925,12 +1939,14 @@ fn next_replay_path(sequence: u64, include_audio: bool) -> PathBuf {
     root.join(format!("Tilo Recent {stamp}-{sequence}.{extension}"))
 }
 
-// The fixed 4x4 preview sampler uses bounded dimensions and checked slice
-// access; direct grid arithmetic keeps the sampling geometry readable.
+// The fixed 6-by-4 preview grid takes four sub-samples per cell. Dimensions
+// are bounded and pixel access is checked; direct arithmetic keeps the
+// sampling geometry readable.
 #[allow(
     clippy::arithmetic_side_effects,
     clippy::indexing_slicing,
-    clippy::manual_checked_ops
+    clippy::manual_checked_ops,
+    reason = "fixed grid constants and checked pixel access bound every preview-sampling operation"
 )]
 fn capture_preview(rgba: &[u8], width: u32, height: u32) -> CapturePreview {
     const COLUMNS: usize = 6;
