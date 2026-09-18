@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Two-peer end-to-end harness for the collaborative filesystem (fs/).
+# Two-peer end-to-end harness for the collaborative filesystem (crates/system/fs/).
 #
 #   fs-collab-demo.sh up      # set up two synced mounts, leave them running
 #   fs-collab-demo.sh test    # run assertions against a fresh pair, then tear down

@@ -2,7 +2,8 @@
 
 The root `Cargo.toml` lists every workspace member, grouped by domain. Package
 names and binaries stay stable when directories move. `apps/README.md` describes
-the desktop applications; `shell/`, `ui/`, and `fs/` contain the core compositor,
+the desktop applications; `shell/` and `ui/` contain the core product surfaces,
+while `system/fs/` owns the filesystem service,
 toolkit, and filesystem.
 
 | Directory | Role |
