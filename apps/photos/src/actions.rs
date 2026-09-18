@@ -126,6 +126,20 @@ pub enum PhotosOperation {
     /// Scan the next bounded local library batch with the separately signed
     /// face model. Suggestions remain device-local until approved.
     AnalyzePeopleLibrary,
+    /// Open the library-wide local intelligence dashboard. This is a local
+    /// presentation route; progress and model availability never sync.
+    ViewLibraryAnalysis,
+    /// Analyze every locally available photograph that does not yet carry an
+    /// explicitly shared result. Pixels stay local; each bounded result is
+    /// committed through `SetImageAnalysis` with normal attributed history.
+    AnalyzeLibrary,
+    /// Pause scheduling new photographs. A worker already decoding one image
+    /// is allowed to finish, then the queue remains paused.
+    PauseLibraryAnalysis,
+    /// Continue a paused queue without rebuilding or silently widening it.
+    ResumeLibraryAnalysis,
+    /// Re-run only the photographs retained in the bounded failure report.
+    RetryLibraryAnalysisFailures,
     /// Show the durable favourites collection without changing any shared
     /// favourite marker. This is intentionally its own addressable resource,
     /// rather than a hidden in-app filter, so search, agents, history and a
@@ -241,6 +255,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
             | PhotosOperation::ViewTag { .. }
             | PhotosOperation::ViewObject { .. }
             | PhotosOperation::ViewPet { .. }
+            | PhotosOperation::ViewLibraryAnalysis
     ) {
         OperationKind::View
     } else {
@@ -260,6 +275,13 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         | PhotosOperation::ViewTag { .. }
         | PhotosOperation::ViewObject { .. }
         | PhotosOperation::ViewPet { .. } => vec!["device-local".into(), "presentation".into()],
+        PhotosOperation::ViewLibraryAnalysis => {
+            vec![
+                "device-local".into(),
+                "presentation".into(),
+                "local-analysis".into(),
+            ]
+        }
         PhotosOperation::Open { .. }
         | PhotosOperation::ImportDirectory { .. }
         | PhotosOperation::Save { .. }
@@ -273,7 +295,11 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         PhotosOperation::Copy | PhotosOperation::ShareReference { .. } => {
             vec!["device-local".into(), "clipboard".into()]
         }
-        PhotosOperation::AnalyzeText { .. } | PhotosOperation::AnalyzeImage { .. } => vec![
+        PhotosOperation::AnalyzeText { .. }
+        | PhotosOperation::AnalyzeImage { .. }
+        | PhotosOperation::AnalyzeLibrary
+        | PhotosOperation::ResumeLibraryAnalysis
+        | PhotosOperation::RetryLibraryAnalysisFailures => vec![
             "device-local".into(),
             "privacy-sensitive".into(),
             "local-analysis".into(),
@@ -298,6 +324,11 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
             "privacy-sensitive".into(),
             "explicit-consent".into(),
         ],
+        PhotosOperation::PauseLibraryAnalysis => vec![
+            "device-local".into(),
+            "local-analysis".into(),
+            "job-control".into(),
+        ],
     };
     let contract = if kind == OperationKind::View {
         ActionContract {
@@ -309,6 +340,9 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         PhotosOperation::AnalyzeText { .. }
             | PhotosOperation::AnalyzeImage { .. }
             | PhotosOperation::AnalyzePeopleLibrary
+            | PhotosOperation::AnalyzeLibrary
+            | PhotosOperation::ResumeLibraryAnalysis
+            | PhotosOperation::RetryLibraryAnalysisFailures
     ) {
         ActionContract {
             tags,
@@ -339,6 +373,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         | PhotosOperation::ViewTag { .. }
         | PhotosOperation::ViewObject { .. }
         | PhotosOperation::ViewPet { .. }
+        | PhotosOperation::ViewLibraryAnalysis
         | PhotosOperation::Open { .. }
         | PhotosOperation::Copy
         | PhotosOperation::ShareReference { .. } => spec.retry_policy(RetryPolicy::Idempotent),
@@ -348,7 +383,13 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         | PhotosOperation::ReindexDirectory { .. }
         | PhotosOperation::AnalyzeText { .. }
         | PhotosOperation::AnalyzeImage { .. }
-        | PhotosOperation::AnalyzePeopleLibrary => spec.retry_policy(RetryPolicy::AtMostOnce),
+        | PhotosOperation::AnalyzePeopleLibrary
+        | PhotosOperation::AnalyzeLibrary
+        | PhotosOperation::ResumeLibraryAnalysis
+        | PhotosOperation::RetryLibraryAnalysisFailures => {
+            spec.retry_policy(RetryPolicy::AtMostOnce)
+        }
+        PhotosOperation::PauseLibraryAnalysis => spec.retry_policy(RetryPolicy::Idempotent),
         PhotosOperation::ManagePeopleRecognition | PhotosOperation::EnablePeopleRecognition => {
             spec.retry_policy(RetryPolicy::Idempotent)
         }
@@ -1226,6 +1267,9 @@ impl ResourceProvider for PhotosResources {
         if id == "photos.people" {
             return Some(people_root_resource(&PhotosDoc::library(doc)));
         }
+        if id == "photos.library-analysis" {
+            return Some(library_analysis_resource());
+        }
         if let Some(photo) = PhotosDoc::photo(doc, id) {
             return Some(photo_resource(&photo));
         }
@@ -1381,7 +1425,56 @@ pub(crate) fn library_root_resource() -> Resource {
         .with_action(import_directory_spec(true))
         .with_action(create_album_spec())
         .with_action(set_favorites_spec());
+    root = root.with_child(library_analysis_resource());
     root
+}
+
+/// Canonical address for whole-library local intelligence. Runtime progress is
+/// intentionally absent: it is private device state, while these operations
+/// remain discoverable to accessibility, automation, search, and agents.
+pub(crate) fn library_analysis_resource() -> Resource {
+    let mut resource = Resource::new(
+        "photos.library-analysis",
+        "photos.library-analysis",
+        "Photo analysis",
+    );
+    for (id, label, description, op) in [
+        (
+            "open",
+            "Open photo analysis",
+            "Review local model availability, library coverage, progress, and failures",
+            PhotosOperation::ViewLibraryAnalysis,
+        ),
+        (
+            "analyze-library",
+            "Analyze unprocessed photographs",
+            "Use the verified local model on locally available photographs and share only bounded searchable results",
+            PhotosOperation::AnalyzeLibrary,
+        ),
+        (
+            "pause",
+            "Pause photo analysis",
+            "Stop scheduling photographs after the current local item finishes",
+            PhotosOperation::PauseLibraryAnalysis,
+        ),
+        (
+            "resume",
+            "Resume photo analysis",
+            "Continue the explicitly started queue on this device",
+            PhotosOperation::ResumeLibraryAnalysis,
+        ),
+        (
+            "retry-failures",
+            "Retry failed photographs",
+            "Retry only photographs listed in the bounded local failure report",
+            PhotosOperation::RetryLibraryAnalysisFailures,
+        ),
+    ] {
+        if let Some(spec) = operation(id, label, &op) {
+            resource = resource.with_action(spec.with_description(description));
+        }
+    }
+    resource
 }
 
 /// Compact, shared-metadata-only counts for timeline navigation.  The vectors
@@ -3941,6 +4034,60 @@ mod tests {
             PhotosResources
                 .resource(&doc, &"x".repeat(MAX_RESOURCE_ID_CHARS + 1))
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn library_analysis_is_a_first_class_cancellable_resource_surface() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let resource = PhotosResources
+            .resource(&doc, "photos.library-analysis")
+            .expect("library analysis resolves without materializing the gallery");
+        assert_eq!(resource.kind, "photos.library-analysis");
+        for id in [
+            "open",
+            "analyze-library",
+            "pause",
+            "resume",
+            "retry-failures",
+        ] {
+            assert!(
+                resource.actions.iter().any(|action| action.id == id),
+                "missing canonical {id} action"
+            );
+        }
+        for id in ["analyze-library", "resume", "retry-failures"] {
+            let action = resource
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap();
+            assert_eq!(
+                action.contract.execution,
+                ExecutionMode::Background { cancellable: true }
+            );
+            assert_eq!(action.contract.result, ResultSpec::Job);
+            assert!(
+                action
+                    .contract
+                    .tags
+                    .iter()
+                    .any(|tag| tag == "local-analysis")
+            );
+            assert!(
+                action
+                    .contract
+                    .tags
+                    .iter()
+                    .any(|tag| tag == "explicit-share")
+            );
+        }
+        let root = PhotosResources.resources(&doc).pop().expect("library root");
+        assert!(
+            root.children
+                .iter()
+                .any(|child| child.id.0 == "photos.library-analysis")
         );
     }
 }

@@ -38,7 +38,8 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
     Button, DateIndexIntent, DateIndexMarker, DateIndexMarkerKind, DateIndexedScrollbar,
-    EmptyState, ImageViewer, ScrollMetrics, SearchField, TextInput, TextInputKind, Widget,
+    EmptyState, ImageViewer, ProgressBar, ScrollMetrics, SearchField, TextInput, TextInputKind,
+    Widget,
 };
 use winit::keyboard::{Key, NamedKey};
 
@@ -535,6 +536,7 @@ enum LibraryDestination {
     Timeline,
     People,
     Places,
+    Analysis,
 }
 
 #[derive(Clone)]
@@ -547,6 +549,7 @@ enum PlacesHit {
     Timeline,
     People,
     Places,
+    Analysis,
     ToggleList,
     ZoomIn,
     ZoomOut,
@@ -597,6 +600,14 @@ struct PeopleControl {
     label: String,
     bounds: Rect,
     button: Button,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LibraryAnalysisHit {
+    Start,
+    Pause,
+    Resume,
+    RetryFailures,
 }
 
 /// One chooser page always fits: six chips in a desktop row or a 3×2 compact
@@ -894,6 +905,15 @@ pub struct PhotosApp {
     active_analysis: HashSet<tilo_actions::InvocationId>,
     cancelled_analysis: HashSet<tilo_actions::InvocationId>,
     active_people_scans: HashSet<tilo_actions::InvocationId>,
+    library_analysis: crate::library_analysis::LibraryAnalysisState,
+    library_analysis_capability: Option<tilo_vision::LocalVisionCapability>,
+    library_analysis_pending: Rc<Cell<Option<LibraryAnalysisHit>>>,
+    library_analysis_buttons: Vec<(LibraryAnalysisHit, Button)>,
+    library_analysis_progress: ProgressBar,
+    library_analysis_failure_hits: Vec<(String, Rect)>,
+    /// (shared analyzed, locally available unprocessed, awaiting local bytes)
+    /// over the complete library, never the current visual filter.
+    library_analysis_coverage: (usize, usize, usize),
     /// Private People-review state. It is intentionally neither a document
     /// field nor a resource: unconfirmed face proposals belong only on this
     /// device until an explicit review commits a compact label membership.
@@ -1136,8 +1156,305 @@ impl Default for PhotosApp {
 }
 
 impl PhotosApp {
+    fn discover_library_analysis_capability() -> Result<tilo_vision::LocalVisionCapability, String>
+    {
+        tilo_vision::discover_local_capability(&agent_provider_config::ProviderConfig::load())
+            .ok_or_else(|| {
+                "No verified local image-analysis model is ready. Install and start one in Settings."
+                    .to_owned()
+            })
+    }
+
+    fn begin_library_analysis(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        doc: &AutoCommit,
+        retry_failures: bool,
+    ) -> Result<(), String> {
+        if self.library_analysis.phase == crate::library_analysis::LibraryAnalysisPhase::Running {
+            return Err("Photo analysis is already running on this device".to_owned());
+        }
+        let capability = Self::discover_library_analysis_capability()?;
+        if retry_failures {
+            if !self.library_analysis.begin_retry(
+                invocation,
+                capability.model_label.clone(),
+                capability.revision.clone(),
+            ) {
+                return Err("There are no failed photographs to retry".to_owned());
+            }
+        } else {
+            let library = PhotosDoc::library(doc);
+            let mut unavailable = 0;
+            let targets = library
+                .photos
+                .into_iter()
+                .filter(|photo| photo.analysis.is_none())
+                .filter_map(|photo| {
+                    if crate::doc::bytes_of(&photo.image).is_some() {
+                        Some(photo.id)
+                    } else {
+                        unavailable += 1;
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            self.library_analysis.begin(
+                invocation,
+                targets,
+                unavailable,
+                capability.model_label.clone(),
+                capability.revision.clone(),
+            );
+        }
+        self.library_analysis_capability = Some(capability);
+        self.active_analysis.insert(invocation);
+        self.schedule_next_library_analysis(doc)?;
+        Ok(())
+    }
+
+    fn resume_library_analysis(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        doc: &AutoCommit,
+    ) -> Result<(), String> {
+        let capability = Self::discover_library_analysis_capability()?;
+        if self.library_analysis.model_revision.as_deref() != Some(capability.revision.as_str()) {
+            return Err(
+                "The local model changed while analysis was paused. Start a new scan so provenance stays consistent."
+                    .to_owned(),
+            );
+        }
+        if !self.library_analysis.resume(invocation) {
+            return Err("Photo analysis is not paused".to_owned());
+        }
+        self.library_analysis_capability = Some(capability);
+        self.active_analysis.insert(invocation);
+        self.schedule_next_library_analysis(doc)?;
+        Ok(())
+    }
+
+    fn pause_library_analysis(&mut self) -> bool {
+        let invocation = self.library_analysis.invocation;
+        let paused = self.library_analysis.pause();
+        if paused {
+            if let Some(invocation) = invocation {
+                self.active_analysis.remove(&invocation);
+            }
+            self.notice = Some(
+                "Photo analysis will pause after the photograph already being processed".to_owned(),
+            );
+        }
+        paused
+    }
+
+    fn activate_library_analysis(&mut self, hit: LibraryAnalysisHit, doc: &AutoCommit) -> bool {
+        let operation = match hit {
+            LibraryAnalysisHit::Start => crate::actions::PhotosOperation::AnalyzeLibrary,
+            LibraryAnalysisHit::Pause => crate::actions::PhotosOperation::PauseLibraryAnalysis,
+            LibraryAnalysisHit::Resume => crate::actions::PhotosOperation::ResumeLibraryAnalysis,
+            LibraryAnalysisHit::RetryFailures => {
+                crate::actions::PhotosOperation::RetryLibraryAnalysisFailures
+            }
+        };
+        let Ok(encoded) = tilo_actions::EncodedAction::encode_operation(
+            crate::actions::PHOTOS_OPERATION_TYPE,
+            &operation,
+        ) else {
+            self.notice = Some("Photo analysis action could not be prepared".to_owned());
+            return false;
+        };
+        let _ = &encoded;
+        #[cfg(test)]
+        {
+            self.last_library_action = Some(encoded);
+        }
+        let invocation = tilo_actions::InvocationId::new();
+        let result = match hit {
+            LibraryAnalysisHit::Start => self.begin_library_analysis(invocation, doc, false),
+            LibraryAnalysisHit::Pause => self
+                .pause_library_analysis()
+                .then_some(())
+                .ok_or_else(|| "Photo analysis is not running".to_owned()),
+            LibraryAnalysisHit::Resume => self.resume_library_analysis(invocation, doc),
+            LibraryAnalysisHit::RetryFailures => self.begin_library_analysis(invocation, doc, true),
+        };
+        if let Err(error) = result {
+            self.notice = Some(error);
+            return false;
+        }
+        true
+    }
+
+    fn schedule_next_library_analysis(&mut self, doc: &AutoCommit) -> Result<(), String> {
+        loop {
+            let Some(photo_id) = self
+                .library_analysis
+                .take_next(|id| PhotosDoc::photo(doc, id).map(|photo| photo.image.name))
+            else {
+                if self.library_analysis.finish_if_empty()
+                    && let Some(invocation) = self.library_analysis.invocation
+                {
+                    self.active_analysis.remove(&invocation);
+                    self.resource_result = Some(tilo_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: tilo_actions::ActionOutput {
+                            value: Some(serde_json::json!({
+                                "analyzed": self.library_analysis.succeeded,
+                                "failed": self.library_analysis.failed,
+                                "unavailable": self.library_analysis.unavailable,
+                            })),
+                            resources: vec!["photos.library-analysis".to_owned()],
+                        },
+                    });
+                    self.notice = Some(format!(
+                        "Photo analysis finished: {} analyzed, {} failed",
+                        self.library_analysis.succeeded, self.library_analysis.failed
+                    ));
+                }
+                return Ok(());
+            };
+            let Some(photo) = PhotosDoc::photo(doc, &photo_id) else {
+                let _ = self.library_analysis.record_failure(
+                    crate::library_analysis::LibraryAnalysisFailure {
+                        photo_id: photo_id.clone(),
+                        name: photo_id,
+                        message: "The photograph was removed before analysis started".to_owned(),
+                    },
+                );
+                continue;
+            };
+            let capability = self.library_analysis_capability.clone().ok_or_else(|| {
+                "The verified local image-analysis model is no longer available".to_owned()
+            })?;
+            let invocation = self
+                .library_analysis
+                .invocation
+                .ok_or_else(|| "Photo analysis lost its invocation identity".to_owned())?;
+            let sender = self
+                .analysis_tx
+                .as_ref()
+                .ok_or_else(|| "local image analysis is unavailable on this device".to_owned())?;
+            sender
+                .try_send(AnalysisJob {
+                    invocation,
+                    photo_id,
+                    content: photo.image.content.clone(),
+                    image: photo.image,
+                    kind: AnalysisJobKind::Vision { capability },
+                })
+                .map_err(|_| "local image analysis worker is busy; retry shortly".to_owned())?;
+            return Ok(());
+        }
+    }
+
+    fn drain_library_analysis_result(&mut self, completed: AnalysisResult, doc: &mut AutoCommit) {
+        let photo_name = self
+            .library_analysis
+            .current_name
+            .clone()
+            .unwrap_or_else(|| completed.photo_id.clone());
+        let stale = PhotosDoc::photo(doc, &completed.photo_id)
+            .as_ref()
+            .is_none_or(|photo| photo.image.content != completed.content);
+        let item_result = match completed.result {
+            AnalysisOutcome::Image(Ok(mut analysis)) if !stale => {
+                "shared".clone_into(&mut analysis.provenance.scope);
+                let action = crate::actions::PhotosAction::SetImageAnalysis {
+                    photo_id: completed.photo_id.clone(),
+                    analysis: Some(analysis),
+                };
+                self.actions
+                    .try_dispatch_with_context(
+                        doc,
+                        crate::actions::PHOTOS_ACTION_TYPE,
+                        &action,
+                        tilo_actions::ActionContext::for_action(
+                            "org.tilo.Photos",
+                            "Photos",
+                            &action,
+                        ),
+                    )
+                    .map_err(|error| error.to_string())
+            }
+            AnalysisOutcome::Image(Ok(_)) => {
+                Err("The photograph changed before local analysis finished".to_owned())
+            }
+            AnalysisOutcome::Image(Err(error)) => Err(error),
+            AnalysisOutcome::People(_) => {
+                Err("The image-analysis worker returned the wrong result kind".to_owned())
+            }
+        };
+        match item_result {
+            Ok(()) => {
+                let _ = self.library_analysis.record_success(&completed.photo_id);
+            }
+            Err(message) => {
+                let _ = self.library_analysis.record_failure(
+                    crate::library_analysis::LibraryAnalysisFailure {
+                        photo_id: completed.photo_id,
+                        name: photo_name,
+                        message,
+                    },
+                );
+            }
+        }
+        if let Some(invocation) = self.library_analysis.invocation {
+            if self.library_analysis.phase
+                == crate::library_analysis::LibraryAnalysisPhase::Complete
+            {
+                self.active_analysis.remove(&invocation);
+                self.resource_result = Some(tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput {
+                        value: Some(serde_json::json!({
+                            "analyzed": self.library_analysis.succeeded,
+                            "failed": self.library_analysis.failed,
+                            "unavailable": self.library_analysis.unavailable,
+                        })),
+                        resources: vec!["photos.library-analysis".to_owned()],
+                    },
+                });
+                self.notice = Some(format!(
+                    "Photo analysis finished: {} analyzed, {} failed",
+                    self.library_analysis.succeeded, self.library_analysis.failed
+                ));
+            } else {
+                self.resource_result = Some(tilo_actions::InvocationUpdate::Progress {
+                    invocation,
+                    sequence: u64::try_from(self.library_analysis.completed).unwrap_or(u64::MAX),
+                    phase: if self.library_analysis.phase
+                        == crate::library_analysis::LibraryAnalysisPhase::Paused
+                    {
+                        "paused".to_owned()
+                    } else {
+                        "analyzing".to_owned()
+                    },
+                    completed: Some(
+                        u64::try_from(self.library_analysis.completed).unwrap_or(u64::MAX),
+                    ),
+                    total: Some(u64::try_from(self.library_analysis.total).unwrap_or(u64::MAX)),
+                    message: Some(format!(
+                        "{} analyzed, {} failed",
+                        self.library_analysis.succeeded, self.library_analysis.failed
+                    )),
+                });
+            }
+        }
+        if self.library_analysis.phase == crate::library_analysis::LibraryAnalysisPhase::Running {
+            if let Err(error) = self.schedule_next_library_analysis(doc) {
+                self.library_analysis.pause();
+                self.notice = Some(format!("Photo analysis paused: {error}"));
+            }
+        }
+    }
+
     fn drain_analysis_results(&mut self, doc: &mut AutoCommit) {
         while let Ok(completed) = self.analysis_rx.try_recv() {
+            if self.library_analysis.invocation == Some(completed.invocation) {
+                self.drain_library_analysis_result(completed, doc);
+                continue;
+            }
             self.active_analysis.remove(&completed.invocation);
             self.active_people_scans.remove(&completed.invocation);
             if self.cancelled_analysis.remove(&completed.invocation) {
@@ -1265,11 +1582,14 @@ impl PhotosApp {
         let timeline_density_pending: Rc<Cell<Option<TimelineHit>>> = Rc::new(Cell::new(None));
         let collection_page_pending: Rc<Cell<Option<CollectionPageHit>>> = Rc::new(Cell::new(None));
         let people_pending = Rc::new(RefCell::new(None));
+        let library_analysis_pending: Rc<Cell<Option<LibraryAnalysisHit>>> =
+            Rc::new(Cell::new(None));
         let faces: Vec<Face> = TOOLBAR.iter().map(|t| t.3).collect();
         let mut buttons = Vec::new();
         for ((hit, key, icon, _), face) in TOOLBAR.iter().zip(faces.iter()) {
             buttons.push((*hit, build_button(*hit, key, *icon, *face, &pending)));
         }
+        let initial_analysis_capability = Self::discover_library_analysis_capability().ok();
         Self {
             actions: ui::ActionHost::new(),
             #[cfg(test)]
@@ -1304,6 +1624,13 @@ impl PhotosApp {
             active_analysis: HashSet::new(),
             cancelled_analysis: HashSet::new(),
             active_people_scans: HashSet::new(),
+            library_analysis: crate::library_analysis::LibraryAnalysisState::default(),
+            library_analysis_capability: initial_analysis_capability,
+            library_analysis_buttons: build_library_analysis_buttons(&library_analysis_pending),
+            library_analysis_progress: ProgressBar::new(0.0).with_label("Photo analysis"),
+            library_analysis_pending,
+            library_analysis_failure_hits: Vec::new(),
+            library_analysis_coverage: (0, 0, 0),
             people_controller: crate::people::PeopleController::new(),
             people_scan_progress: PeopleScanProgress::load(),
             people_mode: false,
@@ -2199,6 +2526,14 @@ impl PhotosApp {
         if self.people_controller.cluster(cluster_id).is_some() {
             self.select_people_item(PeopleSelection::Suggestion(cluster_id.to_owned()));
         }
+    }
+
+    /// Reveal the whole-library local-analysis dashboard for deterministic
+    /// visual acceptance. No scan is started and no result is fabricated.
+    pub fn show_library_analysis(&mut self) {
+        self.show_library();
+        self.library_destination = LibraryDestination::Analysis;
+        self.library_analysis_capability = Self::discover_library_analysis_capability().ok();
     }
 
     fn begin_selection(&mut self) {
@@ -3280,7 +3615,11 @@ impl PhotosApp {
             }
             crate::actions::PhotosOperation::AnalyzeText { .. }
             | crate::actions::PhotosOperation::AnalyzeImage { .. }
-            | crate::actions::PhotosOperation::AnalyzePeopleLibrary => {
+            | crate::actions::PhotosOperation::AnalyzePeopleLibrary
+            | crate::actions::PhotosOperation::AnalyzeLibrary
+            | crate::actions::PhotosOperation::PauseLibraryAnalysis
+            | crate::actions::PhotosOperation::ResumeLibraryAnalysis
+            | crate::actions::PhotosOperation::RetryLibraryAnalysisFailures => {
                 return Err("local image analysis requires document dispatch".to_owned());
             }
             crate::actions::PhotosOperation::Copy => {
@@ -3323,6 +3662,13 @@ impl PhotosApp {
                 self.library_destination = LibraryDestination::People;
                 self.notice = Some(
                     "People is local-first: install a signed face model, then review every suggestion before sharing labels".to_owned(),
+                );
+            }
+            crate::actions::PhotosOperation::ViewLibraryAnalysis => {
+                self.show_library_analysis();
+                self.notice = Some(
+                    "Local analysis makes descriptions, objects, pets, and text searchable"
+                        .to_owned(),
                 );
             }
             crate::actions::PhotosOperation::ManagePeopleRecognition => {
@@ -3729,7 +4075,78 @@ impl PhotosApp {
         };
         let canvas = if self.library_mode {
             let mut cards = Vec::new();
-            if self.library_destination == LibraryDestination::People || self.people_mode {
+            if self.library_destination == LibraryDestination::Analysis {
+                cards.extend(
+                    self.library_analysis_buttons
+                        .iter()
+                        .filter_map(|(hit, button)| {
+                            let bounds = button.get_rect();
+                            if bounds == Rect::ZERO {
+                                return None;
+                            }
+                            let (name, target) = match hit {
+                                LibraryAnalysisHit::Start => {
+                                    ("Analyze unprocessed photos", "photos:analysis:start")
+                                }
+                                LibraryAnalysisHit::Pause => {
+                                    ("Pause after this photo", "photos:analysis:pause")
+                                }
+                                LibraryAnalysisHit::Resume => {
+                                    ("Resume photo analysis", "photos:analysis:resume")
+                                }
+                                LibraryAnalysisHit::RetryFailures => {
+                                    ("Retry failed photos", "photos:analysis:retry")
+                                }
+                            };
+                            Some(
+                                AccessNode::new(Role::Button)
+                                    .with_name(name)
+                                    .with_bounds(bounds)
+                                    .with_state(AccessState {
+                                        focusable: button.is_focusable(),
+                                        focused: button.is_focused(),
+                                        disabled: !button.is_enabled(),
+                                        ..Default::default()
+                                    })
+                                    .with_action_target(target),
+                            )
+                        }),
+                );
+                cards.extend(
+                    self.library_analysis_failure_hits
+                        .iter()
+                        .map(|(id, bounds)| {
+                            let failure = self
+                                .library_analysis
+                                .failures()
+                                .find(|failure| failure.photo_id == *id);
+                            AccessNode::new(Role::Button)
+                                .with_name(failure.map_or_else(
+                                    || "Open failed photograph".to_owned(),
+                                    |failure| format!("Open {}", failure.name),
+                                ))
+                                .with_description(
+                                    failure.map_or("Local analysis failed", |failure| {
+                                        failure.message.as_str()
+                                    }),
+                                )
+                                .with_bounds(*bounds)
+                                .with_state(AccessState {
+                                    focusable: true,
+                                    ..Default::default()
+                                })
+                                .with_action_target(format!("photos:analysis:failure:{id}"))
+                                .with_hashed_key(format!("photos:analysis-failure:{id}"))
+                        }),
+                );
+                AccessNode::new(Role::Group)
+                    .with_name("Photo analysis")
+                    .with_description("Local descriptions, text, objects, and pets. Pixels stay on this device; approved compact results become searchable in the shared library.")
+                    .with_bounds(self.canvas_rect)
+                    .with_hashed_key("photos:library-analysis")
+                    .with_live(Politeness::Polite)
+                    .with_children(cards)
+            } else if self.library_destination == LibraryDestination::People || self.people_mode {
                 if self.people_selection.is_some() && !self.people_merge_mode {
                     cards.push(
                         AccessNode::new(Role::TextInput)
@@ -3774,6 +4191,9 @@ impl PhotosApp {
                         PlacesHit::Timeline => ("Timeline", "photos:places:timeline".to_owned()),
                         PlacesHit::People => ("People", "photos:places:people".to_owned()),
                         PlacesHit::Places => ("Places", "photos:places:places".to_owned()),
+                        PlacesHit::Analysis => {
+                            ("Photo analysis", "photos:library-analysis".to_owned())
+                        }
                         PlacesHit::ToggleList => (
                             if self.places_list_mode {
                                 "Show map"
@@ -4482,6 +4902,47 @@ impl PhotosApp {
                 _ => false,
             };
         }
+        if let Some(command) = target.strip_prefix("photos:analysis:") {
+            if let Some(photo_id) = command.strip_prefix("failure:") {
+                if matches!(action, AccessAction::Focus) {
+                    return self
+                        .library_analysis
+                        .failures()
+                        .any(|failure| failure.photo_id == photo_id);
+                }
+                if !matches!(action, AccessAction::Activate)
+                    || !self
+                        .library_analysis
+                        .failures()
+                        .any(|failure| failure.photo_id == photo_id)
+                {
+                    return false;
+                }
+                self.commit_library_action(
+                    doc,
+                    &crate::actions::PhotosAction::SelectPhoto {
+                        photo_id: photo_id.to_owned(),
+                    },
+                );
+                self.library_mode = false;
+                return true;
+            }
+            let hit = match command {
+                "start" => LibraryAnalysisHit::Start,
+                "pause" => LibraryAnalysisHit::Pause,
+                "resume" => LibraryAnalysisHit::Resume,
+                "retry" => LibraryAnalysisHit::RetryFailures,
+                _ => return false,
+            };
+            if matches!(action, AccessAction::Focus) {
+                for (candidate, button) in &mut self.library_analysis_buttons {
+                    button.set_focus(*candidate == hit);
+                }
+                return true;
+            }
+            return matches!(action, AccessAction::Activate)
+                && self.activate_library_analysis(hit, doc);
+        }
         if let Some(command) = target.strip_prefix("photos:selection:") {
             if !matches!(action, AccessAction::Activate | AccessAction::Focus) {
                 return false;
@@ -5125,6 +5586,28 @@ impl PhotosApp {
 
     /// The status line: the file, its edited size, and any notice.
     fn status_text(&self, doc: &AutoCommit) -> String {
+        if self.library_mode {
+            let mut s = match self.library_destination {
+                LibraryDestination::Timeline => format!("{} photographs", self.library_total),
+                LibraryDestination::People => {
+                    format!("People  ·  {} photographs", self.library_total)
+                }
+                LibraryDestination::Places => {
+                    format!("Places  ·  {} photographs", self.library_total)
+                }
+                LibraryDestination::Analysis => {
+                    let (searchable, ready, awaiting) = self.library_analysis_coverage;
+                    format!(
+                        "Photo analysis  ·  {searchable} searchable  ·  {ready} ready  ·  {awaiting} awaiting local bytes"
+                    )
+                }
+            };
+            for detail in self.notice.iter().chain(self.search_refresh_error.iter()) {
+                s.push_str("  ·  ");
+                s.push_str(detail);
+            }
+            return s;
+        }
         let Some(open) = PhotosDoc::image(doc) else {
             return self
                 .notice
@@ -6667,6 +7150,340 @@ impl PhotosApp {
         }
     }
 
+    /// Whole-library intelligence is an explicit, inspectable job rather than
+    /// a magic search switch. The screen says what runs, where pixels go, what
+    /// becomes collaborative, and which exact photographs need attention.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the dashboard keeps its responsive geometry, retained controls, and failure rows in one auditable paint pass"
+    )]
+    fn draw_library_analysis(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        use vello::peniko::Fill;
+
+        self.library_cards.clear();
+        self.library_details_cards.clear();
+        self.metadata_filter_cards.clear();
+        self.places_hits.clear();
+        self.library_analysis_failure_hits.clear();
+
+        let compact = self.canvas_rect.width() < 700.0 || theme.text_scale > 1.25;
+        let inset = if compact { 16.0 } else { 30.0 };
+        let content = Rect::new(
+            self.canvas_rect.x0 + inset,
+            self.canvas_rect.y0 + 16.0,
+            self.canvas_rect.x1 - inset,
+            self.canvas_rect.y1 - 16.0,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "Photo analysis",
+            if compact { 23.0 } else { 28.0 },
+            theme.text_primary,
+            transform * Affine::translate((content.x0, content.y0)),
+            Some(content.width() as f32),
+            TextWeight::Semibold,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "Search inside your photographs without sending pixels away.",
+            14.0,
+            theme.text_dim,
+            transform * Affine::translate((content.x0, content.y0 + 36.0)),
+            Some(content.width() as f32),
+            TextWeight::Regular,
+        );
+
+        let card_y = content.y0 + 68.0;
+        let card_h = if compact { 174.0 } else { 142.0 };
+        let status_card = RoundedRect::from_rect(
+            Rect::new(content.x0, card_y, content.x1, card_y + card_h),
+            12.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.window_card,
+            None,
+            &status_card,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &status_card,
+        );
+
+        let (model_title, model_detail) = self.library_analysis_capability.as_ref().map_or_else(
+            || {
+                (
+                    "Local model unavailable".to_owned(),
+                    "Install and start a verified local vision model in Settings.".to_owned(),
+                )
+            },
+            |capability| {
+                let revision = capability.revision.chars().take(10).collect::<String>();
+                (
+                    capability.model_label.clone(),
+                    format!("Verified local model · revision {revision}"),
+                )
+            },
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            &model_title,
+            17.0,
+            theme.text_primary,
+            transform * Affine::translate((content.x0 + 18.0, card_y + 16.0)),
+            Some((content.width() - 36.0) as f32),
+            TextWeight::Medium,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            &model_detail,
+            12.0,
+            theme.text_dim,
+            transform * Affine::translate((content.x0 + 18.0, card_y + 42.0)),
+            Some((content.width() - 36.0) as f32),
+            TextWeight::Regular,
+        );
+
+        let phase = self.library_analysis.phase;
+        let phase_label = match phase {
+            crate::library_analysis::LibraryAnalysisPhase::Idle => "Ready",
+            crate::library_analysis::LibraryAnalysisPhase::Running => "Analyzing locally",
+            crate::library_analysis::LibraryAnalysisPhase::Paused => "Paused",
+            crate::library_analysis::LibraryAnalysisPhase::Complete => "Finished",
+        };
+        let (analyzed, available, awaiting) = self.library_analysis_coverage;
+        let summary = if phase == crate::library_analysis::LibraryAnalysisPhase::Idle {
+            format!(
+                "{analyzed} searchable · {available} ready to analyze · {awaiting} awaiting local bytes"
+            )
+        } else {
+            format!(
+                "{} of {} finished · {} succeeded · {} failed",
+                self.library_analysis.completed,
+                self.library_analysis.total,
+                self.library_analysis.succeeded,
+                self.library_analysis.failed
+            )
+        };
+        text_renderer.draw_text_weighted(
+            scene,
+            phase_label,
+            13.0,
+            theme.text_primary,
+            transform * Affine::translate((content.x0 + 18.0, card_y + 72.0)),
+            Some(180.0),
+            TextWeight::Semibold,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            &summary,
+            12.0,
+            theme.text_dim,
+            transform * Affine::translate((content.x0 + 18.0, card_y + 94.0)),
+            Some((content.width() - 36.0) as f32),
+            TextWeight::Regular,
+        );
+        self.library_analysis_progress
+            .set_progress(self.library_analysis.progress() as f32);
+        let progress_y = card_y + if compact { 124.0 } else { 116.0 };
+        self.library_analysis_progress
+            .apply_layout_external(Rect::new(
+                content.x0 + 18.0,
+                progress_y,
+                content.x1 - 18.0,
+                progress_y + 8.0,
+            ));
+        self.library_analysis_progress
+            .draw(scene, transform, text_renderer, theme, presence);
+        if let Some(name) = self.library_analysis.current_name.as_deref() {
+            text_renderer.draw_text_weighted(
+                scene,
+                &format!("Now: {name}"),
+                11.0,
+                theme.text_dim,
+                transform * Affine::translate((content.x0 + 18.0, progress_y + 17.0)),
+                Some((content.width() - 36.0) as f32),
+                TextWeight::Regular,
+            );
+        }
+
+        let controls_y = card_y + card_h + 14.0;
+        let visible_hit = match phase {
+            crate::library_analysis::LibraryAnalysisPhase::Running => LibraryAnalysisHit::Pause,
+            crate::library_analysis::LibraryAnalysisPhase::Paused => LibraryAnalysisHit::Resume,
+            _ => LibraryAnalysisHit::Start,
+        };
+        let primary_w = if compact { content.width() } else { 250.0 };
+        for (hit, button) in &mut self.library_analysis_buttons {
+            let visible = *hit == visible_hit
+                || (*hit == LibraryAnalysisHit::RetryFailures
+                    && self.library_analysis.has_failures()
+                    && phase != crate::library_analysis::LibraryAnalysisPhase::Running);
+            button.set_enabled(match *hit {
+                LibraryAnalysisHit::Start => {
+                    self.library_analysis_capability.is_some() && available > 0
+                }
+                LibraryAnalysisHit::Pause => {
+                    phase == crate::library_analysis::LibraryAnalysisPhase::Running
+                }
+                LibraryAnalysisHit::Resume => {
+                    phase == crate::library_analysis::LibraryAnalysisPhase::Paused
+                }
+                LibraryAnalysisHit::RetryFailures => self.library_analysis.has_failures(),
+            });
+            let x = if *hit == LibraryAnalysisHit::RetryFailures {
+                content.x0 + primary_w + 10.0
+            } else {
+                content.x0
+            };
+            let width = if compact { content.width() } else { 250.0 };
+            let y = if compact && *hit == LibraryAnalysisHit::RetryFailures {
+                controls_y + 54.0
+            } else {
+                controls_y
+            };
+            if visible {
+                button.apply_layout_external(Rect::new(x, y, x + width, y + 44.0));
+                button.draw(scene, transform, text_renderer, theme, presence);
+            } else {
+                button.apply_layout_external(Rect::ZERO);
+            }
+        }
+
+        let info_y = controls_y
+            + if compact && self.library_analysis.has_failures() {
+                116.0
+            } else {
+                66.0
+            };
+        text_renderer.draw_text_weighted(
+            scene,
+            "What becomes searchable",
+            17.0,
+            theme.text_primary,
+            transform * Affine::translate((content.x0, info_y)),
+            Some(content.width() as f32),
+            TextWeight::Medium,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "Descriptions, visible text, objects, and pets. Original pixels stay on this device. The compact result and its model provenance are shared with this photo library so collaborators and system search see the same truth.",
+            13.0,
+            theme.text_dim,
+            transform * Affine::translate((content.x0, info_y + 28.0)),
+            Some(content.width() as f32),
+            TextWeight::Regular,
+        );
+        let capability_cards_y = info_y + if compact { 92.0 } else { 66.0 };
+        let capability_columns = if compact { 2 } else { 4 };
+        let capability_gap = 10.0;
+        let capability_w = (content.width() - capability_gap * (capability_columns - 1) as f64)
+            / capability_columns as f64;
+        for (index, (title, detail)) in [
+            ("Visible text", "Full-text OCR"),
+            ("Scenes", "Descriptions + objects"),
+            ("Pets", "Separate pet facets"),
+            ("People", "Private review in People"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let column = index % capability_columns;
+            let row = index / capability_columns;
+            let x = content.x0 + column as f64 * (capability_w + capability_gap);
+            let y = capability_cards_y + row as f64 * 70.0;
+            let card = RoundedRect::from_rect(Rect::new(x, y, x + capability_w, y + 60.0), 9.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.window_card,
+                None,
+                &card,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                title,
+                13.0,
+                theme.text_primary,
+                transform * Affine::translate((x + 12.0, y + 10.0)),
+                Some((capability_w - 24.0) as f32),
+                TextWeight::Medium,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                detail,
+                11.0,
+                theme.text_dim,
+                transform * Affine::translate((x + 12.0, y + 33.0)),
+                Some((capability_w - 24.0) as f32),
+                TextWeight::Regular,
+            );
+        }
+
+        let capability_rows = 4usize.div_ceil(capability_columns);
+        let failure_y = capability_cards_y + capability_rows as f64 * 70.0 + 12.0;
+        if self.library_analysis.has_failures() {
+            text_renderer.draw_text_weighted(
+                scene,
+                "Needs attention",
+                17.0,
+                theme.text_primary,
+                transform * Affine::translate((content.x0, failure_y)),
+                Some(content.width() as f32),
+                TextWeight::Medium,
+            );
+            for (index, failure) in self.library_analysis.failures().rev().take(4).enumerate() {
+                let y = failure_y + 30.0 + index as f64 * 46.0;
+                let row = Rect::new(content.x0, y, content.x1, y + 40.0);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.surfaces.raised,
+                    None,
+                    &row,
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.semantic.danger,
+                    None,
+                    &Rect::new(row.x0, row.y0, row.x0 + 3.0, row.y1),
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    &failure.name,
+                    13.0,
+                    theme.text_primary,
+                    transform * Affine::translate((row.x0 + 12.0, row.y0 + 6.0)),
+                    Some((row.width() * 0.38) as f32),
+                    TextWeight::Medium,
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    &failure.message,
+                    12.0,
+                    theme.text_dim,
+                    transform * Affine::translate((row.x0 + row.width() * 0.42, row.y0 + 7.0)),
+                    Some((row.width() * 0.55) as f32),
+                    TextWeight::Regular,
+                );
+                self.library_analysis_failure_hits
+                    .push((failure.photo_id.clone(), row));
+            }
+        }
+    }
+
     fn draw_library(
         &mut self,
         scene: &mut Scene,
@@ -6778,6 +7595,11 @@ impl PhotosApp {
                     self.library_destination == LibraryDestination::People,
                 ),
                 (PlacesHit::Places, "Places", false),
+                (
+                    PlacesHit::Analysis,
+                    "Analyze",
+                    self.library_destination == LibraryDestination::Analysis,
+                ),
             ] {
                 let tab = Rect::new(tab_x, masthead.y0 + 13.0, tab_x + 78.0, masthead.y0 + 47.0);
                 scene.fill(
@@ -7854,6 +8676,7 @@ impl PhotosApp {
             (PlacesHit::Timeline, "Timeline"),
             (PlacesHit::People, "People"),
             (PlacesHit::Places, "Places"),
+            (PlacesHit::Analysis, "Analyze"),
         ] {
             let active = matches!(hit, PlacesHit::Places);
             let rect = Rect::new(x, heading.y0 + 10.0, x + 78.0, heading.y0 + 46.0);
@@ -9851,6 +10674,51 @@ fn build_timeline_density_buttons(
     .collect()
 }
 
+fn build_library_analysis_buttons(
+    pending: &Rc<Cell<Option<LibraryAnalysisHit>>>,
+) -> Vec<(LibraryAnalysisHit, Button)> {
+    [
+        (
+            LibraryAnalysisHit::Start,
+            "photos-analysis-start",
+            "Analyze unprocessed photos",
+            Icon::Sparkles,
+        ),
+        (
+            LibraryAnalysisHit::Pause,
+            "photos-analysis-pause",
+            "Pause after this photo",
+            Icon::Pause,
+        ),
+        (
+            LibraryAnalysisHit::Resume,
+            "photos-analysis-resume",
+            "Resume analysis",
+            Icon::Play,
+        ),
+        (
+            LibraryAnalysisHit::RetryFailures,
+            "photos-analysis-retry",
+            "Retry failed photos",
+            Icon::Refresh,
+        ),
+    ]
+    .into_iter()
+    .map(|(hit, id, label, icon)| {
+        let slot = pending.clone();
+        (
+            hit,
+            Button::new(id, label, None)
+                .with_icon(icon)
+                .with_size(220.0, 44.0)
+                .tooltip(label)
+                .with_accessible_name(label)
+                .on_effect(move || slot.set(Some(hit))),
+        )
+    })
+    .collect()
+}
+
 /// Wrap an RGBA buffer as the image type the scene draws.
 fn to_peniko(img: &Rgba) -> ImageData {
     ImageData {
@@ -10106,6 +10974,13 @@ impl Widget for PhotosApp {
                         .to_owned(),
                 );
             }
+            crate::actions::PhotosOperation::ViewLibraryAnalysis => {
+                self.show_library_analysis();
+                self.notice = Some(
+                    "Local analysis makes descriptions, objects, pets, and text searchable"
+                        .to_owned(),
+                );
+            }
             crate::actions::PhotosOperation::ManagePeopleRecognition => {
                 self.notice = Some(
                     "Open Settings › Models to install and start a signed local face-recognition model"
@@ -10218,6 +11093,35 @@ impl Widget for PhotosApp {
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(None);
         };
+        match &operation {
+            crate::actions::PhotosOperation::AnalyzeLibrary => {
+                self.begin_library_analysis(invocation, doc, false)?;
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            crate::actions::PhotosOperation::ResumeLibraryAnalysis => {
+                self.resume_library_analysis(invocation, doc)?;
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            crate::actions::PhotosOperation::RetryLibraryAnalysisFailures => {
+                self.begin_library_analysis(invocation, doc, true)?;
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            crate::actions::PhotosOperation::PauseLibraryAnalysis => {
+                if !self.pause_library_analysis() {
+                    return Err("Photo analysis is not running".to_owned());
+                }
+                return Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput {
+                        value: Some(serde_json::json!({
+                            "completed": self.library_analysis.completed,
+                            "remaining": self.library_analysis.remaining(),
+                        })),
+                        resources: vec!["photos.library-analysis".to_owned()],
+                    },
+                )));
+            }
+            _ => {}
+        }
         if let crate::actions::PhotosOperation::AnalyzeText {
             resource_id,
             language,
@@ -10374,6 +11278,15 @@ impl Widget for PhotosApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Option<tilo_actions::InvocationUpdate> {
+        if cancellation_requested && self.library_analysis.is_running_invocation(invocation) {
+            self.pause_library_analysis();
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some(
+                    "photo analysis paused; the current local photograph may finish safely".into(),
+                ),
+            });
+        }
         if cancellation_requested && self.active_analysis.remove(&invocation) {
             self.cancelled_analysis.insert(invocation);
             if self.active_people_scans.remove(&invocation) {
@@ -10483,6 +11396,18 @@ impl Widget for PhotosApp {
         }
         self.status = self.status_text(doc);
         let library = PhotosDoc::library(doc);
+        self.library_analysis_coverage = library.photos.iter().fold(
+            (0usize, 0usize, 0usize),
+            |(analyzed, available, awaiting), photo| {
+                if photo.analysis.is_some() {
+                    (analyzed + 1, available, awaiting)
+                } else if crate::doc::bytes_of(&photo.image).is_some() {
+                    (analyzed, available + 1, awaiting)
+                } else {
+                    (analyzed, available, awaiting + 1)
+                }
+            },
+        );
         self.selection_all_favorite = !self.selected_photo_ids.is_empty()
             && self
                 .selected_photo_ids
@@ -10967,6 +11892,8 @@ impl Widget for PhotosApp {
                 }
             } else if self.library_destination == LibraryDestination::Places {
                 self.draw_places(scene, transform, text_renderer, theme, presence);
+            } else if self.library_destination == LibraryDestination::Analysis {
+                self.draw_library_analysis(scene, transform, text_renderer, theme, presence);
             } else {
                 self.draw_library(scene, transform, text_renderer, theme, presence);
             }
@@ -11125,6 +12052,51 @@ impl Widget for PhotosApp {
         ) {
             self.places_drag_origin = None;
         }
+        if self.library_mode && self.library_destination == LibraryDestination::Analysis {
+            for (_, button) in &mut self.library_analysis_buttons {
+                let mut sink = None;
+                button.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    doc,
+                    path,
+                    handled,
+                    &mut sink,
+                    node_id,
+                    taffy,
+                );
+                if sink.is_some() {
+                    *focus_target = sink;
+                }
+            }
+            if let Some(hit) = self.library_analysis_pending.take() {
+                self.activate_library_analysis(hit, doc);
+                *handled = true;
+                return;
+            }
+            if matches!(
+                event,
+                winit::event::WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Released,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+            ) && let Some((photo_id, _)) = self
+                .library_analysis_failure_hits
+                .iter()
+                .find(|(_, bounds)| bounds.contains(self.pointer))
+                .cloned()
+            {
+                self.commit_library_action(
+                    doc,
+                    &crate::actions::PhotosAction::SelectPhoto { photo_id },
+                );
+                self.library_mode = false;
+                *handled = true;
+                return;
+            }
+        }
         if self.library_mode
             && self.library_destination == LibraryDestination::Places
             && let winit::event::WindowEvent::MouseWheel { delta, .. } = event
@@ -11173,6 +12145,10 @@ impl Widget for PhotosApp {
                 PlacesHit::Places => {
                     self.people_mode = false;
                     self.library_destination = LibraryDestination::Places;
+                }
+                PlacesHit::Analysis => {
+                    self.people_mode = false;
+                    self.show_library_analysis();
                 }
                 PlacesHit::ToggleList => self.places_list_mode = !self.places_list_mode,
                 PlacesHit::ZoomIn => {
@@ -13595,5 +14571,132 @@ mod tests {
                 .iter()
                 .any(|resource| resource.id.0 == "photos.search-status")
         );
+    }
+
+    #[test]
+    fn visible_analysis_pause_uses_the_published_operation_envelope() {
+        let mut app = PhotosApp::new();
+        let doc = AutoCommit::new();
+        app.library_analysis.begin(
+            tilo_actions::InvocationId::new(),
+            ["photos.photo:one".to_owned()],
+            0,
+            "Verified model".to_owned(),
+            "r1".to_owned(),
+        );
+        assert!(app.activate_library_analysis(LibraryAnalysisHit::Pause, &doc));
+        assert_eq!(
+            app.library_analysis.phase,
+            crate::library_analysis::LibraryAnalysisPhase::Paused
+        );
+        let encoded = app
+            .last_library_action
+            .as_ref()
+            .expect("visible control records its canonical operation");
+        assert_eq!(
+            crate::actions::decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(crate::actions::PhotosOperation::PauseLibraryAnalysis)
+        );
+    }
+
+    #[test]
+    fn analysis_dashboard_reflows_to_phone_width_with_real_shared_controls() {
+        let mut app = PhotosApp::new();
+        app.show_library_analysis();
+        app.canvas_rect = Rect::new(0.0, 0.0, 390.0, 760.0);
+        app.library_analysis_coverage = (12, 34, 5);
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        app.draw_library_analysis(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        let start = app
+            .library_analysis_buttons
+            .iter()
+            .find(|(hit, _)| *hit == LibraryAnalysisHit::Start)
+            .map(|(_, button)| button.get_rect())
+            .expect("start control");
+        assert!(start.width() >= 350.0);
+        assert!(start.height() >= 44.0);
+        assert!(start.x0 >= app.canvas_rect.x0 && start.x1 <= app.canvas_rect.x1);
+        let tree = app.accessibility_tree();
+        assert!(
+            tree.children
+                .iter()
+                .any(|node| node.name.as_deref() == Some("Photo analysis"))
+        );
+    }
+
+    #[test]
+    fn library_analysis_commits_each_real_result_with_provenance_and_finishes() {
+        let mut app = PhotosApp::new();
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let content = "a".repeat(64);
+        let image = OpenImage::from_path("/photos/one.png", 20, 10).with_content(&content);
+        let photo = LibraryPhoto::from_image(image);
+        let id = photo.id.clone();
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos: vec![photo],
+                albums: Vec::new(),
+            },
+        );
+        let invocation = tilo_actions::InvocationId::new();
+        app.library_analysis.begin(
+            invocation,
+            [id.clone()],
+            0,
+            "Verified model".into(),
+            "b".repeat(64),
+        );
+        assert_eq!(
+            app.library_analysis
+                .take_next(|_| Some("one.png".into()))
+                .as_deref(),
+            Some(id.as_str())
+        );
+        app.active_analysis.insert(invocation);
+        app.drain_library_analysis_result(
+            AnalysisResult {
+                invocation,
+                photo_id: id.clone(),
+                content: Some(content.clone()),
+                result: AnalysisOutcome::Image(Ok(crate::model::ImageAnalysis {
+                    description: "A bicycle beside a lake".into(),
+                    objects: vec!["bicycle".into()],
+                    provenance: crate::model::AnalysisProvenance {
+                        source: "local-vision".into(),
+                        engine: "tilo-vision".into(),
+                        model_id: "vision-local".into(),
+                        model_revision: "b".repeat(64),
+                        content,
+                        scope: "local".into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })),
+            },
+            &mut doc,
+        );
+        let stored = PhotosDoc::photo(&doc, &id)
+            .and_then(|photo| photo.analysis)
+            .expect("result committed through the typed document action");
+        assert_eq!(stored.provenance.scope, "shared");
+        assert_eq!(stored.provenance.model_id, "vision-local");
+        assert_eq!(
+            app.library_analysis.phase,
+            crate::library_analysis::LibraryAnalysisPhase::Complete
+        );
+        assert!(matches!(
+            app.resource_result,
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+        ));
+        assert!(app.take_committed_action().is_some());
     }
 }
