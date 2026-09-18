@@ -136,3 +136,52 @@ mount test, source mounted read-only, and no persistent key mount. The
 container writes only newly generated fixture keys in its private writable
 layer and is removed afterward. Require all nine tests to pass; a prerequisite
 error is not a skipped or successful test.
+
+## Concrete authenticated transport
+
+Install `signing-spool-endpoint.py` alongside the remote `signer`, root-owned
+and non-writable. The endpoint loads that directory's public `bridge.json` and
+can only list/read request files or publish the matching public response. It
+does not sign or receive credentials. Use `transfer-signing-spool.py` locally
+with the **existing authenticated kubectl context**; existing exec-auth and
+endpoint-proxy setup remain unchanged. No kubeconfig copying or new service is
+performed by these helpers.
+
+Prepare an independently observed root-owned binding JSON with fields:
+`schema` (1), `namespace`, `pod`, `container`, `pod_uid`, `container_id` (exact
+Kubernetes status value including scheme), `image` (exact Pod spec reference),
+`image_id` (exact Kubernetes status value), `restart_count`, `pod_spec_sha256`,
+`context_sha256`, and `endpoint` (absolute installed endpoint path).
+`pod_spec_sha256` hashes canonical JSON of the entire observed Pod spec;
+`context_sha256` uses `signing_spool.context()` over the same operator-pinned
+context as the bridge/local policy. Do not refresh these pins automatically
+when a mismatch appears. Both the Pod and selected running container are
+checked before and after **every** transfer; deletion/replacement, restart,
+image or spec changes reject the result.
+
+```
+transfer-signing-spool.py list --context EXISTING_CONTEXT --binding /local/trusted/binding.json
+transfer-signing-spool.py fetch --context EXISTING_CONTEXT --binding /local/trusted/binding.json \
+  --request-id NONCE --directory /local/received/NEW_DIRECTORY
+# Independently authorize input, then invoke service-local-signing-request.py.
+transfer-signing-spool.py deliver --context EXISTING_CONTEXT --binding /local/trusted/binding.json \
+  --directory /local/outgoing/REQUEST
+```
+
+Fetch requires a new owner-only local directory beneath a trusted owner-only
+parent. It makes `request.json` available to the local signer only after exact
+input length/hash and post-transfer container identity pass. Delivery compares
+against the actual remote request, uploads exact public output first, checks
+identity again, then atomically publishes matching response metadata with
+no-overwrite semantics. A partial delivery does not authorize another signing
+operation. Inspect the existing request/output state to resolve interrupted
+transfers; never delete replay reservations or blindly retry key use.
+
+Only fixed filenames and argument-vector commands are used; no tar extraction,
+request-controlled shell command or archive path is involved. Streams have
+explicit byte bounds and deadlines. Kubernetes exec cannot atomically pin a
+Pod UID, so before/after checks detect replacement; the bytes being transferred
+are public signing inputs/results, and any mismatch prevents accepting the
+transfer receipt. Physical installation and signing authorization remain
+separate steps. Tests use a fake API runner plus the actual endpoint filesystem
+protocol, and real subprocess byte-limit/deadline tests; no cluster is contacted.
