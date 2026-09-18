@@ -7,10 +7,10 @@
 //!
 //! A minimal [`World`] implementation backs compilation. We need only one
 //! in-memory source file (`/main.typ`) plus the fonts embedded by
-//! `typst-assets`, so the implementation is deliberately tiny: no package
+//! `typst-assets` (plus the shared Windows emoji face). There is no package
 //! resolution, no filesystem, no clock.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use typst::diag::{FileError, FileResult, Severity, SourceDiagnostic};
 use typst::foundations::{Bytes, Datetime};
@@ -124,18 +124,40 @@ pub struct WorldParts {
 }
 
 impl WorldParts {
-    /// Parse every font embedded by `typst-assets` and build the standard
-    /// library + font book. Cheap to share afterwards (`Arc`).
+    /// Build the default library and font book once per process, then share
+    /// their immutable data across documents and compilation workers.
     pub fn new() -> Arc<Self> {
-        let fonts: Vec<Font> = typst_assets::fonts()
-            .flat_map(|data| Font::iter(Bytes::new(data)))
-            .collect();
-        let book = FontBook::from_fonts(fonts.iter());
-        Arc::new(Self {
-            library: LazyHash::new(Library::builder().build()),
-            book: LazyHash::new(book),
-            fonts,
-        })
+        static PARTS: OnceLock<Arc<WorldParts>> = OnceLock::new();
+        Arc::clone(PARTS.get_or_init(|| {
+            let fonts: Vec<Font> = typst_assets::fonts()
+                .flat_map(|data| Font::iter(Bytes::new(data)))
+                .collect();
+            #[cfg(target_os = "windows")]
+            let fonts = {
+                let mut fonts = fonts;
+                // The toolkit already validates and shares the installed font
+                // catalog. Reuse its emoji face instead of bundling a second
+                // copy or relying on machine-specific Windows font discovery.
+                let system = ui::text_render::configured_font_system();
+                let database = system.db();
+                if let Some(face) = database.faces().find(|face| {
+                    face.families
+                        .iter()
+                        .any(|(name, _)| name == "Noto Color Emoji")
+                }) && let Some(Some(font)) = database.with_face_data(face.id, |data, index| {
+                    Font::new(Bytes::new(data.to_vec()), index)
+                }) {
+                    fonts.push(font);
+                }
+                fonts
+            };
+            let book = FontBook::from_fonts(fonts.iter());
+            Arc::new(Self {
+                library: LazyHash::new(Library::builder().build()),
+                book: LazyHash::new(book),
+                fonts,
+            })
+        }))
     }
 }
 
@@ -435,6 +457,34 @@ fn pixmap_to_rgba(pixmap: &tiny_skia::Pixmap) -> PageImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_compilation_uses_real_emoji_glyphs() {
+        let parts = WorldParts::new();
+        let world = TypstWorld::new(parts, "= Native Grün 🌍");
+        let output = typst::compile::<PagedDocument>(&world)
+            .output
+            .expect("emoji document compiles");
+        let mut frames: Vec<_> = output.pages.iter().map(|page| &page.frame).collect();
+        let mut glyph_count = 0;
+        while let Some(frame) = frames.pop() {
+            for (_, item) in frame.items() {
+                match item {
+                    FrameItem::Group(group) => frames.push(&group.frame),
+                    FrameItem::Text(text) => {
+                        glyph_count += text.glyphs.len();
+                        assert!(
+                            text.glyphs.iter().all(|glyph| glyph.id != 0),
+                            "compiled text contains a missing glyph"
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(glyph_count > 0, "the production compiler emitted no text");
+    }
 
     /// A clean compile renders a page, records its point size, and extracts
     /// selectable glyph cells whose left-to-right x positions increase — the

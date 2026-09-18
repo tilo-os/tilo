@@ -1272,13 +1272,17 @@ impl TypstApp {
             rx -= 10.0;
         }
 
-        // Segmented Edit / Preview switch, centred in the remaining span.
-        let seg = self.draw_view_switch(scene, t, tr, theme, y);
+        // Reserve the right-hand controls before sizing the document switcher.
+        let seg = self.draw_view_switch(scene, t, tr, theme, y, rx);
 
         // Document switcher on the left, capped so it never reaches the switch.
-        let max_chip = (seg.x0 - (tb.x0 + 12.0) - 12.0).max(64.0);
+        let navigation_width = if self.documents.len() > 1 {
+            Self::pill_width(tr, "‹") + Self::pill_width(tr, "›") + 12.0
+        } else {
+            0.0
+        };
+        let max_chip = (seg.x0 - (tb.x0 + 12.0) - 12.0 - navigation_width).max(0.0);
         let _ = self.draw_doc_switcher(scene, t, tr, theme, tb.x0 + 12.0, y, max_chip, false);
-        let _ = rx;
     }
 
     /// Draw the `‹ [name] ›` document switcher starting at `x`. `max_chip` caps
@@ -1367,7 +1371,7 @@ impl TypstApp {
         x
     }
 
-    /// A two-segment Edit / Preview toggle, centred in the toolbar. Returns its
+    /// A two-segment Edit / Preview toggle ending at the available right edge. Returns its
     /// rect so callers can avoid overlapping it.
     fn draw_view_switch(
         &mut self,
@@ -1376,9 +1380,9 @@ impl TypstApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         y: f64,
+        right: f64,
     ) -> Rect {
         let c = &theme.tokens.colors;
-        let tb = self.toolbar_rect;
         let seg_edit = "Edit";
         let seg_prev = "Preview";
         let (ew, _) = tr.measure_weighted(seg_edit, PILL_FONT, None, TextWeight::Medium);
@@ -1386,7 +1390,7 @@ impl TypstApp {
         let ew = f64::from(ew) + 22.0;
         let pw = f64::from(pw) + 22.0;
         let total = ew + pw;
-        let x0 = (tb.x0 + tb.width() * 0.5 - total * 0.5).round();
+        let x0 = (right - total).round();
         let outer = Rect::new(x0, y, x0 + total, y + self.pill_height());
         scene.fill(
             Fill::NonZero,
@@ -1745,11 +1749,16 @@ impl TypstApp {
         // Reserve a leading control slot for the status dot.
         let dot_slot = 16.0;
         let (rw, rh) = ui::status_bubble::pill_size(&right_label, tr, text_size, dot_slot);
+        let right_bottom = if la > 0.0 && self.rect.x1 - margin - rw < lrect.x1 + 8.0 {
+            lrect.y0 - 8.0
+        } else {
+            self.rect.y1 - margin
+        };
         let rrect = Rect::new(
             self.rect.x1 - margin - rw,
-            self.rect.y1 - margin - rh,
+            right_bottom - rh,
             self.rect.x1 - margin,
-            self.rect.y1 - margin,
+            right_bottom,
         );
         let right_over =
             self.shots_status || right_zone.contains(self.mouse) || rrect.contains(self.mouse);
@@ -2781,6 +2790,26 @@ mod tests {
         app.editor.set_text("abc\nde\nf");
         app.editor.set_caret(5); // byte 5 → line 2, col 2 (just after 'd')
         assert_eq!(app.caret_line_col(), (2, 2));
+    }
+
+    #[test]
+    fn narrow_toolbar_controls_do_not_overlap() {
+        let (mut app, _) = fresh();
+        for width in [320.0, 360.0, 560.0] {
+            for errors in [0, 1] {
+                app.err_count = errors;
+                app.layout_in(Rect::new(0.0, 0.0, width, 760.0));
+                render_once(&mut app);
+                for (index, (_, left)) in app.toolbar_hits.iter().enumerate() {
+                    for (_, right) in app.toolbar_hits.iter().skip(index + 1) {
+                        assert!(
+                            left.intersect(*right).area() <= 0.0,
+                            "toolbar controls overlap at {width}px: {left:?} and {right:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// The responsive contract: layout is re-derived from the *current* width
