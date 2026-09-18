@@ -522,7 +522,8 @@ impl PdfApp {
             self.search_hits.clear();
         }
         self.draw_page_bubble(scene, base, tr, theme);
-        if self.shots_context_menu && self.context_menu.is_none()
+        if self.shots_context_menu
+            && self.context_menu.is_none()
             && let Some(annotation) = self.annotations.first()
         {
             let target = DeleteTarget::Annotation(annotation.id.clone());

@@ -27,10 +27,16 @@ case ":${TILO_THIN_BIN_CRATES:-}:" in
             mkdir -p "$TILO_THIN_LINK_MAP_DIR"
             link_map+=("-C" "link-arg=-Wl,-Map=$TILO_THIN_LINK_MAP_DIR/$crate_name.map")
         fi
-        exec "$compiler" "$@" -C prefer-dynamic -C opt-level=z \
+        # Release validation raises the parent profile's codegen-unit count to
+        # keep the shared runtime build fast. A thin app inherits that parent
+        # override unless it is reset here, which made Music's qpkg exceed the
+        # 5 MiB wire limit despite the declared thin-app profile using one
+        # unit. Keep parallel codegen for the large runtime, but optimize each
+        # independently shipped executable as one unit.
+        exec "$compiler" "$@" -C prefer-dynamic -C opt-level=z -C codegen-units=1 \
             -C llvm-args=--enable-merge-functions \
             -C llvm-args=--enable-machine-outliner=always \
-            -C link-arg=-Wl,--icf=all "${link_map[@]}"
+            "${link_map[@]}"
         ;;
 esac
 
