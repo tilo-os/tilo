@@ -54,8 +54,13 @@ env:
 
 jobs:
   builder:
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 5
+    container:
+      image: code.podesta.ai/qos/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
     outputs:
       image: ${{ steps.resolve.outputs.image }}
     steps:
