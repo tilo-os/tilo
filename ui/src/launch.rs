@@ -726,13 +726,17 @@ fn run_with_args_with_attachment(
             spec.live_root(&args)?
         };
         let theme = shot_theme(&args);
-        let code = if let Some(history) = spec.history_definition {
+        // The document comes through the spec's own opener — the one the
+        // live app and `--shots --scenario` use — so a fixture seeded from
+        // the arguments (`--scenario`, `--demo`) is what gets driven, and an
+        // app never has to seed inside `sync` to be dumpable.
+        let (state, autosave) = spec.open_state_with_args.map_or_else(|| (spec.open_state)(spec.app_id), |open| open(spec.app_id, &args));
+        let history = if let Some(history) = spec.history_definition {
             if !spec.history_app_global_storage { return Err(LaunchError::Operation("History requires explicit storage provenance for a custom opener".into())); }
-            let (state, autosave) = spec.open_state_with_args.map_or_else(|| (spec.open_state)(spec.app_id), |open| open(spec.app_id, &args));
-            let registration = crate::history_mode::HistoryRegistration::installed_app_state(history, Some(&autosave), uuid::Uuid::new_v4())
-                .map_err(|error| LaunchError::Operation(error.to_string()))?;
-            headless::run_opened(headless, root, spec.app_id, state, autosave, Some(registration), theme)
-        } else { headless::run_with_theme(headless, root, spec.app_id, theme) };
+            Some(crate::history_mode::HistoryRegistration::installed_app_state(history, Some(&autosave), uuid::Uuid::new_v4())
+                .map_err(|error| LaunchError::Operation(error.to_string()))?)
+        } else { None };
+        let code = headless::run_opened(headless, root, spec.app_id, state, autosave, history, theme);
         std::process::exit(code);
     }
 
