@@ -52,6 +52,8 @@ const MAX_MEDIA_HANDOFF_HISTORY: usize = 32;
 const BLUETOOTH_HANDOFF_WAIT: Duration = Duration::from_secs(75);
 const BLUETOOTH_HANDOFF_DISCOVERY: Duration = Duration::from_secs(6);
 const MAX_BLUETOOTH_HANDOFFS: usize = 32;
+const BLUETOOTH_HANDOFF_HISTORY_TTL: Duration = Duration::from_secs(5 * 60);
+const MAX_BLUETOOTH_HANDOFF_HISTORY: usize = 32;
 const DISPLAY_OFFER_RETRY: Duration = Duration::from_secs(2);
 const DISPLAY_KEEPALIVE: Duration = Duration::from_secs(5);
 const DISPLAY_SESSION_TIMEOUT: Duration = Duration::from_secs(15);
@@ -914,6 +916,40 @@ enum BluetoothHandoffPhase {
     AwaitingAcceptance,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BluetoothHandoffFailure {
+    InspectTarget,
+    TargetUnavailable,
+    DisconnectSource,
+    PairTarget,
+    ConnectTarget,
+    Send,
+    TimedOut,
+    Rollback,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BluetoothHandoffPhaseView {
+    PreparingTarget,
+    AwaitingApproval,
+    ReleasingSource,
+    PairingTarget,
+    ConnectingTarget,
+    AwaitingConfirmation,
+    Completed,
+    Failed(BluetoothHandoffFailure),
+    Cancelled,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BluetoothHandoffStatusView {
+    pub request_id: [u8; 16],
+    pub accessory_name: String,
+    pub peer_label: String,
+    pub outbound: bool,
+    pub phase: BluetoothHandoffPhaseView,
+}
+
 #[derive(Clone, Debug)]
 struct BluetoothHandoffTransaction {
     peer: crate::shell::personal_continuity::DeviceId,
@@ -923,6 +959,33 @@ struct BluetoothHandoffTransaction {
     phase: BluetoothHandoffPhase,
     authorization: Option<[u8; 16]>,
     started: Instant,
+}
+
+impl BluetoothHandoffTransaction {
+    fn view_phase(&self) -> BluetoothHandoffPhaseView {
+        match self.phase {
+            BluetoothHandoffPhase::AwaitingReady | BluetoothHandoffPhase::InspectingTarget => {
+                BluetoothHandoffPhaseView::PreparingTarget
+            }
+            BluetoothHandoffPhase::AwaitingLocalAuthorization
+            | BluetoothHandoffPhase::PairingReady => BluetoothHandoffPhaseView::AwaitingApproval,
+            BluetoothHandoffPhase::Ready
+            | BluetoothHandoffPhase::DisconnectingSource
+            | BluetoothHandoffPhase::AwaitingFinish => BluetoothHandoffPhaseView::ReleasingSource,
+            BluetoothHandoffPhase::PairingTarget => BluetoothHandoffPhaseView::PairingTarget,
+            BluetoothHandoffPhase::ConnectingTarget => BluetoothHandoffPhaseView::ConnectingTarget,
+            BluetoothHandoffPhase::AwaitingAcceptance => {
+                BluetoothHandoffPhaseView::AwaitingConfirmation
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct BluetoothHandoffOutcome {
+    transaction: BluetoothHandoffTransaction,
+    phase: BluetoothHandoffPhaseView,
+    updated: Instant,
 }
 
 impl BluetoothHandoffTransaction {
@@ -968,6 +1031,7 @@ struct BluetoothWorkerResult {
 
 struct BluetoothHandoffState {
     transactions: BTreeMap<[u8; 16], BluetoothHandoffTransaction>,
+    outcomes: BTreeMap<[u8; 16], BluetoothHandoffOutcome>,
     result_tx: mpsc::Sender<BluetoothWorkerResult>,
     result_rx: mpsc::Receiver<BluetoothWorkerResult>,
 }
@@ -977,6 +1041,7 @@ impl BluetoothHandoffState {
         let (result_tx, result_rx) = mpsc::channel();
         Self {
             transactions: BTreeMap::new(),
+            outcomes: BTreeMap::new(),
             result_tx,
             result_rx,
         }
@@ -1017,6 +1082,45 @@ impl BluetoothHandoffState {
             });
         });
     }
+
+    fn record_outcome(
+        &mut self,
+        request_id: [u8; 16],
+        transaction: BluetoothHandoffTransaction,
+        phase: BluetoothHandoffPhaseView,
+    ) {
+        self.outcomes
+            .retain(|_, outcome| outcome.updated.elapsed() < BLUETOOTH_HANDOFF_HISTORY_TTL);
+        while self.outcomes.len() >= MAX_BLUETOOTH_HANDOFF_HISTORY {
+            let Some(oldest) = self
+                .outcomes
+                .iter()
+                .min_by_key(|(_, outcome)| outcome.updated)
+                .map(|(request_id, _)| *request_id)
+            else {
+                break;
+            };
+            self.outcomes.remove(&oldest);
+        }
+        self.outcomes.insert(
+            request_id,
+            BluetoothHandoffOutcome {
+                transaction,
+                phase,
+                updated: Instant::now(),
+            },
+        );
+    }
+
+    fn finish(
+        &mut self,
+        request_id: [u8; 16],
+        phase: BluetoothHandoffPhaseView,
+    ) -> Option<BluetoothHandoffTransaction> {
+        let transaction = self.transactions.remove(&request_id)?;
+        self.record_outcome(request_id, transaction.clone(), phase);
+        Some(transaction)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1031,6 +1135,93 @@ enum BluetoothWorkerOperation {
 fn bluetooth_handoff_state() -> &'static Mutex<BluetoothHandoffState> {
     static STATE: OnceLock<Mutex<BluetoothHandoffState>> = OnceLock::new();
     STATE.get_or_init(|| Mutex::new(BluetoothHandoffState::new()))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BluetoothRollback {
+    None,
+    ReconnectSource,
+    DisconnectTarget,
+}
+
+fn cancellation_rollback(transaction: &BluetoothHandoffTransaction) -> BluetoothRollback {
+    if transaction.outbound && transaction.phase == BluetoothHandoffPhase::AwaitingFinish {
+        BluetoothRollback::ReconnectSource
+    } else if !transaction.outbound
+        && transaction.phase == BluetoothHandoffPhase::AwaitingAcceptance
+    {
+        BluetoothRollback::DisconnectTarget
+    } else {
+        BluetoothRollback::None
+    }
+}
+
+fn stale_worker_rollback(outcome: &BluetoothWorkerOutcome) -> BluetoothRollback {
+    match outcome {
+        BluetoothWorkerOutcome::SourceDisconnected(Ok(())) => BluetoothRollback::ReconnectSource,
+        BluetoothWorkerOutcome::TargetPaired(Ok(()))
+        | BluetoothWorkerOutcome::TargetConnected(Ok(())) => BluetoothRollback::DisconnectTarget,
+        _ => BluetoothRollback::None,
+    }
+}
+
+fn bluetooth_peer_online(
+    transaction: &BluetoothHandoffTransaction,
+    online: &BTreeSet<crate::shell::personal_continuity::DeviceId>,
+) -> bool {
+    online.contains(&transaction.peer)
+}
+
+fn run_bluetooth_rollback(
+    state: &BluetoothHandoffState,
+    request_id: [u8; 16],
+    address: String,
+    rollback: BluetoothRollback,
+) {
+    match rollback {
+        BluetoothRollback::None => {}
+        BluetoothRollback::ReconnectSource => state.start_worker(
+            request_id,
+            address,
+            BluetoothWorkerOperation::ReconnectSource,
+        ),
+        BluetoothRollback::DisconnectTarget => {
+            std::thread::spawn(move || {
+                let _ = os_actions::bt_disconnect(&address);
+            });
+        }
+    }
+}
+
+fn rollback_bluetooth_transaction(
+    state: &BluetoothHandoffState,
+    request_id: [u8; 16],
+    transaction: &BluetoothHandoffTransaction,
+) {
+    run_bluetooth_rollback(
+        state,
+        request_id,
+        transaction.address.clone(),
+        cancellation_rollback(transaction),
+    );
+    // A disconnect/pair/connect worker that completes after removal is stale.
+    // The completion path reconnects a released source or disconnects a newly
+    // connected target, so cancellation remains safe across worker races.
+}
+
+fn finish_bluetooth_transactions(
+    state: &mut BluetoothHandoffState,
+    request_ids: &[[u8; 16]],
+    phase: BluetoothHandoffPhaseView,
+) -> Vec<([u8; 16], BluetoothHandoffTransaction, BluetoothRollback)> {
+    request_ids
+        .iter()
+        .filter_map(|request_id| {
+            let transaction = state.finish(*request_id, phase)?;
+            let rollback = cancellation_rollback(&transaction);
+            Some((*request_id, transaction, rollback))
+        })
+        .collect()
 }
 
 /// Stable local facts supplied by the compositor without blocking discovery.
@@ -1133,8 +1324,11 @@ impl DeviceFabricRuntime {
     ) {
         let policy = ContinuityPolicySnapshot::load();
         self.enforce_policy(network, selection, policy);
+        // Always drain Bluetooth worker completions. Policy teardown removes
+        // transaction authority immediately, but an already-running BlueZ
+        // operation must still observe stale completion and roll hardware back.
+        pump_bluetooth_handoffs(network);
         if policy.permits(ContinuityCapability::Media) {
-            pump_bluetooth_handoffs(network);
             pump_media_handoff_statuses(network);
         }
         self.maintain_gamepad_forwarding(network, policy);
@@ -1303,10 +1497,7 @@ impl DeviceFabricRuntime {
             self.pending_incoming_media.clear();
             self.waiting_incoming_media.clear();
             tear_down_media_handoffs(network);
-            if let Ok(mut state) = bluetooth_handoff_state().lock() {
-                state.transactions.clear();
-                while state.result_rx.try_recv().is_ok() {}
-            }
+            tear_down_bluetooth_handoffs(network);
             if let Some(remote_capture) = self.remote_capture.as_ref()
                 && let Ok(mut remote_capture) = remote_capture.try_lock()
             {
@@ -1554,7 +1745,8 @@ impl DeviceFabricRuntime {
                 | PersonalFabricAction::BluetoothHandoffFinished { .. }
                 | PersonalFabricAction::BluetoothHandoffAccepted { .. }
                 | PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
-                | PersonalFabricAction::BluetoothHandoffPairingCommit { .. }) => {
+                | PersonalFabricAction::BluetoothHandoffPairingCommit { .. }
+                | PersonalFabricAction::BluetoothHandoffCancel { .. }) => {
                     handle_bluetooth_handoff_action(
                         network,
                         envelope.request_id,
@@ -2900,6 +3092,7 @@ fn handle_spatial_action(
         | PersonalFabricAction::BluetoothHandoffAccepted { .. }
         | PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
         | PersonalFabricAction::BluetoothHandoffPairingCommit { .. }
+        | PersonalFabricAction::BluetoothHandoffCancel { .. }
         | PersonalFabricAction::NearbyDrop { .. }
         | PersonalFabricAction::NearbyDropResult { .. }
         | PersonalFabricAction::NearbyTransferOffer { .. }
@@ -2994,7 +3187,10 @@ fn handle_bluetooth_handoff_action(
                 return;
             }
             if !ready {
-                state.transactions.remove(&request_id);
+                state.finish(
+                    request_id,
+                    BluetoothHandoffPhaseView::Failed(BluetoothHandoffFailure::TargetUnavailable),
+                );
                 tracing::warn!(
                     accessory = address,
                     "Bluetooth handoff target declined or could not verify this accessory"
@@ -3145,22 +3341,36 @@ fn handle_bluetooth_handoff_action(
                         source,
                         PersonalFabricAction::BluetoothHandoffAccepted {
                             request_id,
-                            address,
+                            address: address.clone(),
                         },
                     )
                     .is_ok();
                 if accepted
                     && let Ok(mut state) = bluetooth_handoff_state().lock()
-                    && let Some(transaction) = state.transactions.remove(&request_id)
+                    && let Some(transaction) =
+                        state.finish(request_id, BluetoothHandoffPhaseView::Completed)
                 {
                     tracing::info!(
                         accessory = transaction.name,
                         target = transaction.peer.as_str(),
                         "Bluetooth accessory handoff completed"
                     );
+                } else if !accepted && let Ok(mut state) = bluetooth_handoff_state().lock() {
+                    state.finish(
+                        request_id,
+                        BluetoothHandoffPhaseView::Failed(BluetoothHandoffFailure::Send),
+                    );
+                    state.start_worker(
+                        request_id,
+                        address,
+                        BluetoothWorkerOperation::ReconnectSource,
+                    );
                 }
             } else {
-                state.transactions.remove(&request_id);
+                state.finish(
+                    request_id,
+                    BluetoothHandoffPhaseView::Failed(BluetoothHandoffFailure::ConnectTarget),
+                );
                 state.start_worker(
                     request_id,
                     address,
@@ -3187,10 +3397,60 @@ fn handle_bluetooth_handoff_action(
                     )
                 });
             if valid {
-                state.transactions.remove(&request_id);
+                state.finish(request_id, BluetoothHandoffPhaseView::Completed);
+            }
+        }
+        PersonalFabricAction::BluetoothHandoffCancel {
+            request_id,
+            address,
+        } => {
+            let Ok(mut state) = bluetooth_handoff_state().lock() else {
+                return;
+            };
+            let valid = state
+                .transactions
+                .get(&request_id)
+                .is_some_and(|transaction| {
+                    transaction.peer == *source
+                        && transaction.address.eq_ignore_ascii_case(&address)
+                });
+            if !valid {
+                return;
+            }
+            if let Some(transaction) =
+                state.finish(request_id, BluetoothHandoffPhaseView::Cancelled)
+            {
+                rollback_bluetooth_transaction(&state, request_id, &transaction);
             }
         }
         _ => {}
+    }
+}
+
+fn tear_down_bluetooth_handoffs(network: &ShellNetwork) {
+    let transactions = bluetooth_handoff_state().lock().map_or_else(
+        |_| Vec::new(),
+        |mut state| {
+            let request_ids = state.transactions.keys().copied().collect::<Vec<_>>();
+            let transactions = finish_bluetooth_transactions(
+                &mut state,
+                &request_ids,
+                BluetoothHandoffPhaseView::Cancelled,
+            );
+            for (request_id, transaction, rollback) in &transactions {
+                run_bluetooth_rollback(&state, *request_id, transaction.address.clone(), *rollback);
+            }
+            transactions
+        },
+    );
+    for (request_id, transaction, _) in transactions {
+        let _ = network.send_personal_fabric_action(
+            &transaction.peer,
+            PersonalFabricAction::BluetoothHandoffCancel {
+                request_id,
+                address: transaction.address,
+            },
+        );
     }
 }
 
@@ -3203,6 +3463,43 @@ fn pump_bluetooth_handoffs(network: &ShellNetwork) {
         finish_bluetooth_worker(network, result);
     }
 
+    let fabric = network.device_fabric();
+    let online = fabric
+        .snapshots()
+        .values()
+        .filter(|snapshot| snapshot.presence.online)
+        .map(|snapshot| snapshot.owner.clone())
+        .collect::<BTreeSet<_>>();
+    let lost = bluetooth_handoff_state().lock().map_or_else(
+        |_| Vec::new(),
+        |mut state| {
+            let request_ids = state
+                .transactions
+                .iter()
+                .filter(|(_, transaction)| !bluetooth_peer_online(transaction, &online))
+                .map(|(request_id, _)| *request_id)
+                .collect::<Vec<_>>();
+            let lost = finish_bluetooth_transactions(
+                &mut state,
+                &request_ids,
+                BluetoothHandoffPhaseView::Failed(BluetoothHandoffFailure::TargetUnavailable),
+            );
+            for (request_id, transaction, rollback) in &lost {
+                run_bluetooth_rollback(&state, *request_id, transaction.address.clone(), *rollback);
+            }
+            lost
+        },
+    );
+    for (request_id, transaction, _) in lost {
+        let _ = network.send_personal_fabric_action(
+            &transaction.peer,
+            PersonalFabricAction::BluetoothHandoffCancel {
+                request_id,
+                address: transaction.address,
+            },
+        );
+    }
+
     let expired = bluetooth_handoff_state().lock().map_or_else(
         |_| Vec::new(),
         |mut state| {
@@ -3213,7 +3510,10 @@ fn pump_bluetooth_handoffs(network: &ShellNetwork) {
                 .map(|(request_id, transaction)| (*request_id, transaction.clone()))
                 .collect::<Vec<_>>();
             for (request_id, _) in &expired {
-                state.transactions.remove(request_id);
+                state.finish(
+                    *request_id,
+                    BluetoothHandoffPhaseView::Failed(BluetoothHandoffFailure::TimedOut),
+                );
             }
             expired
         },
@@ -3280,7 +3580,12 @@ fn finish_bluetooth_worker(network: &ShellNetwork, result: BluetoothWorkerResult
                     }
                     None => {
                         let transaction = transaction.clone();
-                        state.transactions.remove(&request_id);
+                        state.finish(
+                            request_id,
+                            BluetoothHandoffPhaseView::Failed(
+                                BluetoothHandoffFailure::InspectTarget,
+                            ),
+                        );
                         Some((transaction, false))
                     }
                 }
@@ -3299,14 +3604,25 @@ fn finish_bluetooth_worker(network: &ShellNetwork, result: BluetoothWorkerResult
                 && ready
                 && let Ok(mut state) = bluetooth_handoff_state().lock()
             {
-                state.transactions.remove(&request_id);
+                state.finish(
+                    request_id,
+                    BluetoothHandoffPhaseView::Failed(BluetoothHandoffFailure::Send),
+                );
             }
         }
         BluetoothWorkerOutcome::SourceDisconnected(disconnected) => {
+            let stale_rollback = stale_worker_rollback(
+                &BluetoothWorkerOutcome::SourceDisconnected(disconnected.clone()),
+            );
             if let Err(error) = disconnected {
                 tracing::warn!(%error, "could not release Bluetooth accessory for handoff");
                 if let Ok(mut state) = bluetooth_handoff_state().lock() {
-                    state.transactions.remove(&request_id);
+                    state.finish(
+                        request_id,
+                        BluetoothHandoffPhaseView::Failed(
+                            BluetoothHandoffFailure::DisconnectSource,
+                        ),
+                    );
                 }
                 return;
             }
@@ -3323,11 +3639,7 @@ fn finish_bluetooth_worker(network: &ShellNetwork, result: BluetoothWorkerResult
             });
             let Some(transaction) = transaction else {
                 if let Ok(state) = bluetooth_handoff_state().lock() {
-                    state.start_worker(
-                        request_id,
-                        address,
-                        BluetoothWorkerOperation::ReconnectSource,
-                    );
+                    run_bluetooth_rollback(&state, request_id, address, stale_rollback);
                 }
                 return;
             };
@@ -3347,7 +3659,10 @@ fn finish_bluetooth_worker(network: &ShellNetwork, result: BluetoothWorkerResult
                 .is_err()
                 && let Ok(mut state) = bluetooth_handoff_state().lock()
             {
-                state.transactions.remove(&request_id);
+                state.finish(
+                    request_id,
+                    BluetoothHandoffPhaseView::Failed(BluetoothHandoffFailure::Send),
+                );
                 state.start_worker(
                     request_id,
                     address,
@@ -3357,6 +3672,7 @@ fn finish_bluetooth_worker(network: &ShellNetwork, result: BluetoothWorkerResult
         }
         outcome @ (BluetoothWorkerOutcome::TargetPaired(_)
         | BluetoothWorkerOutcome::TargetConnected(_)) => {
+            let stale_rollback = stale_worker_rollback(&outcome);
             let (connected, expected_phase) = match outcome {
                 BluetoothWorkerOutcome::TargetPaired(result) => {
                     (result, BluetoothHandoffPhase::PairingTarget)
@@ -3387,14 +3703,17 @@ fn finish_bluetooth_worker(network: &ShellNetwork, result: BluetoothWorkerResult
                     transaction.phase = BluetoothHandoffPhase::AwaitingAcceptance;
                     Some(transaction.clone())
                 } else {
-                    state.transactions.remove(&request_id)
+                    let failure = if expected_phase == BluetoothHandoffPhase::PairingTarget {
+                        BluetoothHandoffFailure::PairTarget
+                    } else {
+                        BluetoothHandoffFailure::ConnectTarget
+                    };
+                    state.finish(request_id, BluetoothHandoffPhaseView::Failed(failure))
                 }
             });
             let Some(transaction) = transaction else {
-                if success {
-                    std::thread::spawn(move || {
-                        let _ = os_actions::bt_disconnect(&address);
-                    });
+                if let Ok(state) = bluetooth_handoff_state().lock() {
+                    run_bluetooth_rollback(&state, request_id, address, stale_rollback);
                 }
                 return;
             };
@@ -3408,7 +3727,10 @@ fn finish_bluetooth_worker(network: &ShellNetwork, result: BluetoothWorkerResult
             );
             if send.is_err() {
                 if let Ok(mut state) = bluetooth_handoff_state().lock() {
-                    state.transactions.remove(&request_id);
+                    state.finish(
+                        request_id,
+                        BluetoothHandoffPhaseView::Failed(BluetoothHandoffFailure::Send),
+                    );
                 }
                 if success {
                     std::thread::spawn(move || {
@@ -3420,6 +3742,13 @@ fn finish_bluetooth_worker(network: &ShellNetwork, result: BluetoothWorkerResult
         BluetoothWorkerOutcome::SourceReconnected(reconnected) => {
             if let Err(error) = reconnected {
                 tracing::error!(%error, "could not restore Bluetooth accessory after failed handoff");
+                if let Ok(mut state) = bluetooth_handoff_state().lock()
+                    && let Some(outcome) = state.outcomes.get_mut(&request_id)
+                {
+                    outcome.phase =
+                        BluetoothHandoffPhaseView::Failed(BluetoothHandoffFailure::Rollback);
+                    outcome.updated = Instant::now();
+                }
             }
         }
     }
@@ -3549,7 +3878,7 @@ pub fn authorize_bluetooth_handoff(
             }
             Some(authorization)
         } else {
-            state.transactions.remove(&request_id);
+            state.finish(request_id, BluetoothHandoffPhaseView::Cancelled);
             None
         };
         drop(state);
@@ -3571,11 +3900,91 @@ pub fn authorize_bluetooth_handoff(
     };
     if let Err(error) = network.send_personal_fabric_action(&transaction.peer, action) {
         if let Ok(mut state) = bluetooth_handoff_state().lock() {
-            state.transactions.remove(&request_id);
+            if approved {
+                state.finish(
+                    request_id,
+                    BluetoothHandoffPhaseView::Failed(BluetoothHandoffFailure::Send),
+                );
+            } else if let Some(outcome) = state.outcomes.get_mut(&request_id) {
+                outcome.phase = BluetoothHandoffPhaseView::Failed(BluetoothHandoffFailure::Send);
+                outcome.updated = Instant::now();
+            }
         }
         return Err(error);
     }
     Ok(())
+}
+
+/// Cancel one exact Bluetooth transaction and roll back whichever side has
+/// already changed hardware state.
+///
+/// # Errors
+///
+/// Returns an error for stale requests or when authenticated cancellation
+/// could not be delivered. Local rollback still runs on delivery failure.
+pub fn cancel_bluetooth_handoff(
+    network: &ShellNetwork,
+    request_id: [u8; 16],
+) -> Result<(), String> {
+    require_continuity(ContinuityCapability::Media)?;
+    let transaction = bluetooth_handoff_state()
+        .lock()
+        .map_err(|_| "Bluetooth handoff coordinator is unavailable".to_string())?
+        .transactions
+        .get(&request_id)
+        .cloned()
+        .ok_or_else(|| "that Bluetooth handoff is no longer active".to_string())?;
+    let delivery = network.send_personal_fabric_action(
+        &transaction.peer,
+        PersonalFabricAction::BluetoothHandoffCancel {
+            request_id,
+            address: transaction.address.clone(),
+        },
+    );
+    if let Ok(mut state) = bluetooth_handoff_state().lock()
+        && let Some(transaction) = state.finish(request_id, BluetoothHandoffPhaseView::Cancelled)
+    {
+        rollback_bluetooth_transaction(&state, request_id, &transaction);
+    }
+    delivery.map(|_| ())
+}
+
+/// Retry a recent outbound failure after rollback has made the accessory local
+/// and connected again.
+///
+/// # Errors
+///
+/// Returns an error for inbound/completed/stale outcomes or if source rollback
+/// has not yet restored the accessory.
+pub fn retry_bluetooth_handoff(
+    network: &ShellNetwork,
+    request_id: [u8; 16],
+) -> Result<[u8; 16], String> {
+    require_continuity(ContinuityCapability::Media)?;
+    let transaction = bluetooth_handoff_state()
+        .lock()
+        .map_err(|_| "Bluetooth handoff coordinator is unavailable".to_string())?
+        .outcomes
+        .get(&request_id)
+        .filter(|outcome| {
+            outcome.transaction.outbound
+                && matches!(
+                    outcome.phase,
+                    BluetoothHandoffPhaseView::Failed(_) | BluetoothHandoffPhaseView::Cancelled
+                )
+        })
+        .map(|outcome| outcome.transaction.clone())
+        .ok_or_else(|| "that Bluetooth handoff cannot be retried".to_string())?;
+    let new_request = request_bluetooth_handoff(
+        network,
+        &transaction.address,
+        &transaction.name,
+        &transaction.peer,
+    )?;
+    if let Ok(mut state) = bluetooth_handoff_state().lock() {
+        state.outcomes.remove(&request_id);
+    }
+    Ok(new_request)
 }
 
 /// Initiate a transactional move of one locally playing session. The source
@@ -4552,6 +4961,52 @@ fn bluetooth_authorization_views(
     authorizations
 }
 
+fn bluetooth_handoff_status_views(
+    fabric: &crate::shell::device_fabric::DeviceFabric,
+) -> Vec<BluetoothHandoffStatusView> {
+    let Ok(mut state) = bluetooth_handoff_state().lock() else {
+        return Vec::new();
+    };
+    state
+        .outcomes
+        .retain(|_, outcome| outcome.updated.elapsed() < BLUETOOTH_HANDOFF_HISTORY_TTL);
+    let label = |transaction: &BluetoothHandoffTransaction| {
+        fabric.snapshots().get(&transaction.peer).map_or_else(
+            || transaction.peer.as_str().to_string(),
+            |snapshot| snapshot.presence.label.clone(),
+        )
+    };
+    let mut statuses = state
+        .transactions
+        .iter()
+        .map(|(request_id, transaction)| BluetoothHandoffStatusView {
+            request_id: *request_id,
+            accessory_name: transaction.name.clone(),
+            peer_label: label(transaction),
+            outbound: transaction.outbound,
+            phase: transaction.view_phase(),
+        })
+        .chain(
+            state
+                .outcomes
+                .iter()
+                .map(|(request_id, outcome)| BluetoothHandoffStatusView {
+                    request_id: *request_id,
+                    accessory_name: outcome.transaction.name.clone(),
+                    peer_label: label(&outcome.transaction),
+                    outbound: outcome.transaction.outbound,
+                    phase: outcome.phase,
+                }),
+        )
+        .collect::<Vec<_>>();
+    statuses.sort_by(|left, right| {
+        left.accessory_name
+            .cmp(&right.accessory_name)
+            .then_with(|| left.request_id.cmp(&right.request_id))
+    });
+    statuses
+}
+
 fn gamepad_authorization_views(
     fabric: &crate::shell::device_fabric::DeviceFabric,
 ) -> Vec<crate::shell::overlay_host::GamepadAuthorizationView> {
@@ -4768,6 +5223,7 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
 
     DeviceFabricView {
         bluetooth_authorizations,
+        bluetooth_handoffs: bluetooth_handoff_status_views(&fabric),
         gamepad_authorizations,
         local_gamepads: Vec::new(),
         devices,
@@ -6569,6 +7025,131 @@ mod tests {
         assert!(authorized.accepts_pairing_authorization(&target, "aa:bb:cc:dd:ee:ff", [7; 16]));
         assert!(!authorized.accepts_pairing_authorization(&target, "AA:BB:CC:DD:EE:FF", [8; 16]));
         assert!(!authorized.accepts_pairing_authorization(&other, "AA:BB:CC:DD:EE:FF", [7; 16]));
+    }
+
+    #[test]
+    fn bluetooth_handoff_outcomes_are_typed_and_bounded() {
+        let peer = DeviceId::new("target").unwrap();
+        let failures = [
+            BluetoothHandoffFailure::InspectTarget,
+            BluetoothHandoffFailure::TargetUnavailable,
+            BluetoothHandoffFailure::DisconnectSource,
+            BluetoothHandoffFailure::PairTarget,
+            BluetoothHandoffFailure::ConnectTarget,
+            BluetoothHandoffFailure::Send,
+            BluetoothHandoffFailure::TimedOut,
+            BluetoothHandoffFailure::Rollback,
+        ];
+        let mut state = BluetoothHandoffState::new();
+        for index in 0..(MAX_BLUETOOTH_HANDOFF_HISTORY + failures.len()) {
+            let request_id = [u8::try_from(index + 1).unwrap(); 16];
+            let transaction = BluetoothHandoffTransaction {
+                peer: peer.clone(),
+                address: "AA:BB:CC:DD:EE:FF".into(),
+                name: format!("Headphones {index}"),
+                outbound: true,
+                phase: BluetoothHandoffPhase::AwaitingFinish,
+                authorization: None,
+                started: Instant::now(),
+            };
+            state.record_outcome(
+                request_id,
+                transaction,
+                BluetoothHandoffPhaseView::Failed(failures[index % failures.len()]),
+            );
+        }
+        assert_eq!(state.outcomes.len(), MAX_BLUETOOTH_HANDOFF_HISTORY);
+        assert!(state.outcomes.values().all(|outcome| matches!(
+            outcome.phase,
+            BluetoothHandoffPhaseView::Failed(
+                BluetoothHandoffFailure::InspectTarget
+                    | BluetoothHandoffFailure::TargetUnavailable
+                    | BluetoothHandoffFailure::DisconnectSource
+                    | BluetoothHandoffFailure::PairTarget
+                    | BluetoothHandoffFailure::ConnectTarget
+                    | BluetoothHandoffFailure::Send
+                    | BluetoothHandoffFailure::TimedOut
+                    | BluetoothHandoffFailure::Rollback
+            )
+        )));
+    }
+
+    #[test]
+    fn bluetooth_policy_teardown_plans_source_and_target_rollback() {
+        let peer = DeviceId::new("target").unwrap();
+        let transaction = |outbound, phase| BluetoothHandoffTransaction {
+            peer: peer.clone(),
+            address: "AA:BB:CC:DD:EE:FF".into(),
+            name: "Headphones".into(),
+            outbound,
+            phase,
+            authorization: None,
+            started: Instant::now(),
+        };
+        let mut state = BluetoothHandoffState::new();
+        state.transactions.insert(
+            [1; 16],
+            transaction(true, BluetoothHandoffPhase::AwaitingFinish),
+        );
+        state.transactions.insert(
+            [2; 16],
+            transaction(false, BluetoothHandoffPhase::AwaitingAcceptance),
+        );
+
+        let rollback = finish_bluetooth_transactions(
+            &mut state,
+            &[[1; 16], [2; 16]],
+            BluetoothHandoffPhaseView::Cancelled,
+        );
+        assert!(state.transactions.is_empty());
+        assert_eq!(state.outcomes.len(), 2);
+        assert_eq!(rollback[0].2, BluetoothRollback::ReconnectSource);
+        assert_eq!(rollback[1].2, BluetoothRollback::DisconnectTarget);
+    }
+
+    #[test]
+    fn bluetooth_cancel_race_rolls_back_stale_worker_success() {
+        assert_eq!(
+            stale_worker_rollback(&BluetoothWorkerOutcome::SourceDisconnected(Ok(()))),
+            BluetoothRollback::ReconnectSource
+        );
+        assert_eq!(
+            stale_worker_rollback(&BluetoothWorkerOutcome::TargetPaired(Ok(()))),
+            BluetoothRollback::DisconnectTarget
+        );
+        assert_eq!(
+            stale_worker_rollback(&BluetoothWorkerOutcome::TargetConnected(Ok(()))),
+            BluetoothRollback::DisconnectTarget
+        );
+        assert_eq!(
+            stale_worker_rollback(&BluetoothWorkerOutcome::TargetConnected(Err(
+                "failed".into()
+            ))),
+            BluetoothRollback::None
+        );
+    }
+
+    #[test]
+    fn bluetooth_peer_loss_is_bound_to_the_exact_authenticated_peer() {
+        let target = DeviceId::new("target").unwrap();
+        let other = DeviceId::new("other").unwrap();
+        let transaction = BluetoothHandoffTransaction {
+            peer: target.clone(),
+            address: "AA:BB:CC:DD:EE:FF".into(),
+            name: "Headphones".into(),
+            outbound: true,
+            phase: BluetoothHandoffPhase::AwaitingFinish,
+            authorization: None,
+            started: Instant::now(),
+        };
+        assert!(!bluetooth_peer_online(
+            &transaction,
+            &BTreeSet::from([other])
+        ));
+        assert!(bluetooth_peer_online(
+            &transaction,
+            &BTreeSet::from([target])
+        ));
     }
 
     #[test]
