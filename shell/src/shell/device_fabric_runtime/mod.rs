@@ -4,6 +4,8 @@
 //! hardware discovery on the render path. Remote clipboard entries become
 //! history, not the live Wayland selection, until explicitly activated.
 
+mod remote_capture;
+
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::io::Read as _;
 use std::os::unix::fs::OpenOptionsExt as _;
@@ -1363,13 +1365,11 @@ pub struct DeviceFabricRuntime {
     notification_bridge: NotificationBridge,
     realtime_adapter: Option<crate::shell::realtime_session::SharedRealtimeFabricAdapter>,
     realtime_online_peers: BTreeSet<crate::shell::personal_continuity::DeviceId>,
-    remote_capture: Option<crate::shell::remote_capture::runtime::SharedRemoteCaptureRuntime>,
-    remote_capture_online_peers: BTreeSet<crate::shell::personal_continuity::DeviceId>,
-    remote_capture_pending_actions: VecDeque<crate::shell::network::ReceivedPersonalFabricAction>,
+    remote_capture: remote_capture::RemoteCaptureIntegration,
     tethering: crate::shell::personal_tethering_runtime::PersonalTetheringRuntime,
     gamepad_broker: ProductionGamepadBroker,
     inbound_gamepads: BTreeMap<[u8; 16], InboundGamepadForwarding>,
-    local_gamepad_focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
+    local_app_focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
     policy: Option<ContinuityPolicySnapshot>,
 }
 
@@ -1390,9 +1390,7 @@ impl DeviceFabricRuntime {
             notification_bridge,
             realtime_adapter: None,
             realtime_online_peers: BTreeSet::new(),
-            remote_capture: None,
-            remote_capture_online_peers: BTreeSet::new(),
-            remote_capture_pending_actions: VecDeque::new(),
+            remote_capture: Default::default(),
             tethering: Default::default(),
             gamepad_broker: os_actions::ForwardedPeripheralBroker::new(
                 os_actions::LinuxVirtualGamepadFactory::new(
@@ -1400,7 +1398,7 @@ impl DeviceFabricRuntime {
                 ),
             ),
             inbound_gamepads: BTreeMap::new(),
-            local_gamepad_focus: None,
+            local_app_focus: None,
             policy: None,
         }
     }
@@ -1416,16 +1414,18 @@ impl DeviceFabricRuntime {
         &mut self,
         runtime: crate::shell::remote_capture::runtime::SharedRemoteCaptureRuntime,
     ) {
-        self.remote_capture = Some(runtime);
+        self.remote_capture.install(runtime);
     }
 
     /// Supply the compositor's current locally verified app focus. Remote
-    /// gamepad claims are never allowed to establish this authority.
-    pub fn set_local_gamepad_focus(
+    /// claims are never allowed to establish this authority.
+    pub fn set_local_app_focus(
         &mut self,
         focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
     ) {
-        self.local_gamepad_focus = focus;
+        self.remote_capture
+            .note_focus_change(self.local_app_focus.as_ref(), focus.as_ref());
+        self.local_app_focus = focus;
     }
 
     /// Sample local state and project authenticated remote state into the OS.
@@ -1454,11 +1454,11 @@ impl DeviceFabricRuntime {
             unix_ms(),
         );
         pump_device_health(network, policy);
-        self.pump_remote_capture_peers(network, policy);
+        self.remote_capture.pump(network, policy);
         crate::shell::remote_audio::pump(
             network,
             policy.permits(ContinuityCapability::Media),
-            self.local_gamepad_focus.as_ref(),
+            self.local_app_focus.as_ref(),
         );
         self.pump_realtime_continuity(network, policy);
         self.pump_notification_continuity(network, policy);
@@ -1613,13 +1613,7 @@ impl DeviceFabricRuntime {
             self.tear_down_incoming_media(network, MediaHandoffFailure::Cancelled);
             tear_down_media_handoffs(network);
             tear_down_bluetooth_handoffs(network);
-            if let Some(remote_capture) = self.remote_capture.as_ref()
-                && let Ok(mut remote_capture) = remote_capture.try_lock()
-            {
-                remote_capture.teardown_all();
-            }
-            self.remote_capture_online_peers.clear();
-            self.remote_capture_pending_actions.clear();
+            self.remote_capture.request_teardown_all();
         }
     }
 
@@ -1687,15 +1681,7 @@ impl DeviceFabricRuntime {
 
     fn handle_fabric_actions(&mut self, network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
         prune_spatial_leases(network);
-        if let Some(runtime) = self.remote_capture.as_ref()
-            && let Ok(mut runtime) = runtime.try_lock()
-        {
-            for received in self.remote_capture_pending_actions.drain(..) {
-                if network.personal_route_is_current(&received.route) {
-                    runtime.handle_action(&received.envelope, Instant::now());
-                }
-            }
-        }
+        self.remote_capture.drain_pending_actions(network);
         for received in network.take_personal_fabric_actions() {
             let crate::shell::network::ReceivedPersonalFabricAction { envelope, route } = received;
             if !network.personal_route_is_current(&route) {
@@ -1715,22 +1701,10 @@ impl DeviceFabricRuntime {
             if self.tethering.handle_action(network, &envelope, unix_ms()) {
                 continue;
             }
-            if matches!(
-                &envelope.action,
-                PersonalFabricAction::RemoteCaptureSignal { .. }
-                    | PersonalFabricAction::RemoteCaptureChunk { .. }
-            ) {
-                if let Some(runtime) = self.remote_capture.as_ref()
-                    && let Ok(mut runtime) = runtime.try_lock()
-                {
-                    runtime.handle_action(&envelope, Instant::now());
-                } else if self.remote_capture_pending_actions.len()
-                    < crate::shell::remote_capture::device::MAX_REMOTE_CAPTURE_SESSIONS * 4
-                {
-                    self.remote_capture_pending_actions.push_back(
-                        crate::shell::network::ReceivedPersonalFabricAction { envelope, route },
-                    );
-                }
+            if remote_capture::RemoteCaptureIntegration::handles(&envelope.action) {
+                self.remote_capture.handle_action(
+                    crate::shell::network::ReceivedPersonalFabricAction { envelope, route },
+                );
                 continue;
             }
             if self.handle_gamepad_action(network, &envelope) {
@@ -1893,48 +1867,6 @@ impl DeviceFabricRuntime {
         }
     }
 
-    fn pump_remote_capture_peers(
-        &mut self,
-        network: &ShellNetwork,
-        policy: ContinuityPolicySnapshot,
-    ) {
-        let Some(runtime) = self.remote_capture.as_ref() else {
-            return;
-        };
-        let Ok(mut runtime) = runtime.try_lock() else {
-            return;
-        };
-        if !policy.permits(ContinuityCapability::Media) {
-            runtime.teardown_all();
-            self.remote_capture_online_peers.clear();
-            return;
-        }
-        let online = network
-            .device_fabric()
-            .snapshots()
-            .values()
-            .filter(|snapshot| snapshot.presence.online)
-            .map(|snapshot| snapshot.owner.clone())
-            .collect::<BTreeSet<_>>();
-        for peer in self.remote_capture_online_peers.difference(&online) {
-            runtime.teardown_peer(peer);
-        }
-        self.remote_capture_online_peers = online;
-        runtime.pump(Instant::now());
-        let outgoing = runtime.drain_outgoing();
-        drop(runtime);
-        for (peer, action) in outgoing {
-            if network
-                .send_personal_fabric_action(&peer, action.clone())
-                .is_err()
-                && let Some(runtime) = self.remote_capture.as_ref()
-                && let Ok(mut runtime) = runtime.try_lock()
-            {
-                runtime.outgoing_failed(&peer, &action);
-            }
-        }
-    }
-
     fn handle_gamepad_action(
         &mut self,
         network: &ShellNetwork,
@@ -1982,7 +1914,7 @@ impl DeviceFabricRuntime {
                 sequence,
                 event,
             } => {
-                let local_focus = self.local_gamepad_focus.as_ref();
+                let local_focus = self.local_app_focus.as_ref();
                 let focus_valid = self
                     .inbound_gamepads
                     .get(forwarding_id)
@@ -2109,7 +2041,7 @@ impl DeviceFabricRuntime {
                 );
                 continue;
             }
-            if !pending.matches_local_focus(self.local_gamepad_focus.as_ref()) {
+            if !pending.matches_local_focus(self.local_app_focus.as_ref()) {
                 let _ = network.send_personal_fabric_action(
                     &pending.source,
                     PersonalFabricAction::GamepadForwardGrant {
@@ -2283,7 +2215,7 @@ impl DeviceFabricRuntime {
                     || !online.contains(&session.source)
                     || !identity_matches_local_focus(
                         &session.identity,
-                        self.local_gamepad_focus.as_ref(),
+                        self.local_app_focus.as_ref(),
                     )
                     || !self.gamepad_broker.has_lease(session.lease))
                 .then_some((*id, session.source.clone(), session.lease_nonce))

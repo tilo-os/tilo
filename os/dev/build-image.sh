@@ -116,7 +116,9 @@ fi
 
 # Reproducible builds: derive a deterministic SOURCE_DATE_EPOCH from the HEAD
 # commit time (same commit -> same value), pass it through to the build, and
-# clamp layer + image timestamps to it. With the base pinned by digest and the
+# normally clamp layer + image timestamps to it. Verified raw-only assembly may
+# explicitly use TILO_RAW_LAYER_EPOCH for OCI normalization; source inputs and
+# signing retain SOURCE_DATE_EPOCH. With the base pinned by digest and the
 # Rust resolve pinned (the tracked Cargo.lock), two builds of the same commit
 # yield the same image (modulo dnf package drift over time — see
 # docs/supply-chain.md). Override via $SOURCE_DATE_EPOCH.
@@ -405,6 +407,19 @@ build_image() {
   [ -z "$image_tag" ] || tag_args=(-t "$image_tag")
   [ "$#" -eq 0 ] || shift
   [ "$#" -eq 0 ] || shift
+  local layer_epoch="$SOURCE_DATE_EPOCH"
+  if [ -n "${TILO_RAW_LAYER_EPOCH:-}" ]; then
+    # Normalize only raw assembly layers; source inputs and signing keep their epoch.
+    [ "${TILO_RAW_ROOTFS_ONLY:-0}" = 1 ] &&
+      [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ] &&
+      [[ "${TILO_NATIVE_BUILDER_IMAGE_ID:-}" =~ ^sha256:[0-9a-f]{64}$ ]] &&
+      [[ "${TILO_WPE_ADOPTION_SHA256:-}" =~ ^[0-9a-f]{64}$ ]] &&
+      [ "$#" = 4 ] && [ "$1" = --target ] && [ "$2" = rootfs ] &&
+      [ "$3" = --iidfile ] || die "layer epoch requires verified raw-only native/WPE reuse"
+    [[ "$TILO_RAW_LAYER_EPOCH" =~ ^(0|[1-9][0-9]{0,11})$ ]] &&
+      (( TILO_RAW_LAYER_EPOCH <= 253402300799 )) || die "invalid raw layer epoch"
+    layer_epoch="$TILO_RAW_LAYER_EPOCH"
+  fi
   podman "${_tilo_podman_args[@]}" build -f "$TILO_OS_DIR/Containerfile" "${tag_args[@]}" \
     --build-context "github-assets=$TILO_REPO/os/external-assets/cache" \
     "${_tilo_build_args[@]}" \
@@ -427,7 +442,7 @@ build_image() {
     --build-arg "TILO_GENERATION=$TILO_GENERATION" \
     --build-arg "TILO_SEAL_GENERATION=$TILO_SEAL_GENERATION" \
     --build-arg "TILO_CFS_DIGEST=$seal_digest" \
-    --source-date-epoch "$SOURCE_DATE_EPOCH" --rewrite-timestamp \
+    --source-date-epoch "$layer_epoch" --rewrite-timestamp \
     "$@" \
     "$TILO_REPO"
 }
