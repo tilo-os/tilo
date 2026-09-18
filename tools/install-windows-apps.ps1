@@ -2,7 +2,7 @@
 # Cap'n Proto, LLVM's llvm-readobj and the pinned Rust/MSVC toolchain must be on PATH.
 [CmdletBinding()]
 param(
-    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'image-editor', 'photos', 'hex-editor', 'code-editor', 'api-tester', 'diffmerge', 'snippets', 'db-client', 'git-client', 'feeds', 'totp', 'passwords', 'typst-editor', 'mail', 'video-player')]
+    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'image-editor', 'photos', 'hex-editor', 'code-editor', 'api-tester', 'diffmerge', 'snippets', 'db-client', 'git-client', 'feeds', 'totp', 'passwords', 'typst-editor', 'mail', 'video-player', 'music')]
     [string[]]$Apps = @('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'image-editor', 'photos', 'hex-editor', 'code-editor', 'api-tester', 'diffmerge', 'snippets', 'db-client', 'git-client', 'feeds', 'totp'),
     [ValidateSet('dev', 'release')]
     [string]$Profile = 'release',
