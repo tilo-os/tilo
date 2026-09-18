@@ -234,6 +234,7 @@ pub const KEY_CONNECT_CANCEL: &str = "onboarding.connect.cancel";
 pub const KEY_UNDERSTOOD: &str = "onboarding.understood";
 pub const KEY_CREATE: &str = "onboarding.create";
 pub const KEY_BACKUP_BROWSE: &str = "onboarding.backup.browse";
+pub const KEY_BACKUP_ANOTHER: &str = "onboarding.backup.another";
 pub const KEY_BACKUP_CONTINUE: &str = "onboarding.backup.continue";
 pub const KEY_CONNECT_RETRY: &str = "onboarding.connect.retry";
 pub const KEY_BACKUP_SKIP_ACKNOWLEDGED: &str = "onboarding.backup.skip-acknowledged";
@@ -409,6 +410,10 @@ pub struct OnboardingView {
     backup_error: Option<String>,
     backup_saved: Option<PathBuf>,
     backup_was_verified: bool,
+    /// Once a backup is verified, keep its success explanation and the
+    /// Continue action in view. The passphrase form returns only when the
+    /// person explicitly asks to make another copy.
+    backup_copy_form_open: bool,
     /// An unprotected identity is a consequential, but supported, choice.
     /// Keep the explicit acknowledgement process-local: it only gates this
     /// one screen, while the durable journal records the resulting choice.
@@ -630,6 +635,7 @@ impl OnboardingView {
             backup_error: None,
             backup_saved: None,
             backup_was_verified: false,
+            backup_copy_form_open: false,
             backup_skip_acknowledged: false,
             identity_ready_page: false,
             portable_backup_only: false,
@@ -686,6 +692,7 @@ impl OnboardingView {
         self.backup_error = None;
         self.backup_saved = None;
         self.backup_was_verified = false;
+        self.backup_copy_form_open = false;
         self.backup_skip_acknowledged = false;
         self.identity_ready_page = false;
         self.portable_backup_only = true;
@@ -828,6 +835,7 @@ impl OnboardingView {
         self.backup_error = None;
         self.backup_saved = None;
         self.backup_was_verified = false;
+        self.backup_copy_form_open = false;
         self.identity_ready_page = false;
         self.portable_backup_only = false;
         self.tour_page = None;
@@ -938,8 +946,22 @@ impl OnboardingView {
         let footer_gap = spacing.s3;
         let backup_in_scroll = self.flow.screen() == Screen::Done && !self.identity_ready_page;
         let acknowledgement_footer = matches!(self.flow.screen(), Screen::NoRecovery);
+        let backup_form_visible =
+            backup_in_scroll && (!self.backup_was_verified || self.backup_copy_form_open);
+        let backup_acknowledgement_visible =
+            backup_in_scroll && !self.portable_backup_only && !self.backup_was_verified;
         let footer_height = if backup_in_scroll {
-            FOOTER_HEIGHT + ACKNOWLEDGEMENT_FOOTER_EXTRA_HEIGHT + BACKUP_FORM_HEIGHT
+            FOOTER_HEIGHT
+                + if backup_form_visible {
+                    BACKUP_FORM_HEIGHT
+                } else {
+                    0.0
+                }
+                + if backup_acknowledgement_visible {
+                    ACKNOWLEDGEMENT_FOOTER_EXTRA_HEIGHT
+                } else {
+                    0.0
+                }
         } else {
             FOOTER_HEIGHT
                 + if acknowledgement_footer {
@@ -990,11 +1012,12 @@ impl OnboardingView {
             .push(Box::new(progress))
             .push(Box::new(scroll));
         if backup_in_scroll {
-            Box::new(
+            let composition = if backup_form_visible {
+                composition.push(self.backup_form(theme))
+            } else {
                 composition
-                    .push(self.backup_form(theme))
-                    .push(self.backup_decision_footer(theme)),
-            )
+            };
+            Box::new(composition.push(self.backup_decision_footer(theme)))
         } else {
             Box::new(composition.push(self.identity_footer(theme)))
         }
@@ -1029,7 +1052,13 @@ impl OnboardingView {
             Some(KEY_BACKUP_BROWSE),
         )
         .fit_content(40.0)
-        .with_style(ui::widget::ButtonStyle::Primary);
+        .with_style(if self.backup_was_verified {
+            // Continue remains the clear completion action after a verified
+            // backup; making another copy is an optional follow-up task.
+            ui::widget::ButtonStyle::Neutral
+        } else {
+            ui::widget::ButtonStyle::Primary
+        });
         Box::new(
             Column::new()
                 .with_no_padding()
@@ -1171,23 +1200,45 @@ impl OnboardingView {
                     .with_enabled(self.backup_was_verified),
                 ),
             ]),
+            Screen::Done if self.backup_was_verified && self.backup_copy_form_open => {
+                footer_actions(vec![Box::new(
+                    Button::new(
+                        "onboarding.backup.continue.button",
+                        "Continue",
+                        Some(KEY_BACKUP_CONTINUE),
+                    )
+                    .fit_content(40.0)
+                    .with_style(ui::widget::ButtonStyle::Primary),
+                )])
+            }
+            Screen::Done if self.backup_was_verified => footer_actions(vec![
+                Box::new(
+                    Button::new(
+                        "onboarding.backup.another.button",
+                        "Save another copy",
+                        Some(KEY_BACKUP_ANOTHER),
+                    )
+                    .fit_content(40.0),
+                ),
+                Box::new(
+                    Button::new(
+                        "onboarding.backup.continue.button",
+                        "Continue",
+                        Some(KEY_BACKUP_CONTINUE),
+                    )
+                    .fit_content(40.0)
+                    .with_style(ui::widget::ButtonStyle::Primary),
+                ),
+            ]),
             Screen::Done => footer_actions(vec![Box::new(
                 Button::new(
                     "onboarding.backup.continue.button",
-                    if self.backup_was_verified {
-                        "Continue"
-                    } else {
-                        "Continue without backup"
-                    },
+                    "Continue without backup",
                     Some(KEY_BACKUP_CONTINUE),
                 )
                 .fit_content(40.0)
-                .with_style(if self.backup_was_verified {
-                    ui::widget::ButtonStyle::Primary
-                } else {
-                    ui::widget::ButtonStyle::Neutral
-                })
-                .with_enabled(self.backup_was_verified || self.backup_skip_acknowledged),
+                .with_style(ui::widget::ButtonStyle::Neutral)
+                .with_enabled(self.backup_skip_acknowledged),
             )]),
         }
     }
@@ -2095,6 +2146,7 @@ impl Widget for OnboardingView {
                             Ok(()) => {
                                 self.backup_saved = Some(path);
                                 self.backup_was_verified = true;
+                                self.backup_copy_form_open = false;
                                 let _ =
                                     self.persist_progress(PersistedStage::IdentityReadyBackedUp);
                                 self.backup_error = None;
@@ -2279,6 +2331,19 @@ impl Widget for OnboardingView {
                 ));
             }
             self.invalidation.structure();
+        }
+
+        if read_bool(state, root, KEY_BACKUP_ANOTHER) {
+            let _ = state.put(root, KEY_BACKUP_ANOTHER, ScalarValue::Boolean(false));
+            if self.flow.screen() == Screen::Done
+                && !self.identity_ready_page
+                && !self.portable_backup_only
+                && self.backup_was_verified
+            {
+                self.backup_copy_form_open = true;
+                self.backup_error = None;
+                self.invalidation.both();
+            }
         }
 
         if read_bool(state, root, KEY_BACKUP_BROWSE) {
@@ -4774,6 +4839,104 @@ mod tests {
                 "recovery stays primary and must not overlap skip at {width}x{height}: save={save:?}, skip={skip:?}"
             );
         }
+    }
+
+    #[test]
+    fn verified_backup_status_and_completion_are_visible_at_review_sizes() {
+        for (width, height) in [(1280.0, 800.0), (800.0, 600.0)] {
+            let (mut view, _) = view();
+            view.set_visual_state_for_snapshot(OnboardingVisualState::BackupVerified);
+            let theme = Theme::dark();
+            let mut text = ui::text_render::TextRenderer::new();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+            let measure_map = node_map.clone();
+            taffy
+                .compute_layout_with_measure(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(width),
+                        height: taffy::AvailableSpace::Definite(height),
+                    },
+                    |known, available, node_id, _, _| {
+                        measure_map
+                            .get(&node_id)
+                            .map_or(taffy::Size::ZERO, |&pointer| unsafe {
+                                (*pointer).measure(known, available, &mut text)
+                            })
+                    },
+                )
+                .expect("verified backup review-size layout");
+            view.apply_layout(&taffy, node, Point::ZERO);
+            let rect = |id: &str| {
+                node_map
+                    .values()
+                    .find_map(|&pointer| unsafe {
+                        ((*pointer).test_id() == Some(id)).then(|| (*pointer).get_rect())
+                    })
+                    .unwrap_or_else(|| panic!("verified backup page exposes {id}"))
+            };
+            let another = rect("onboarding.backup.another.button");
+            let continue_button = rect("onboarding.backup.continue.button");
+            for (id, control) in [("another", another), ("continue", continue_button)] {
+                assert!(
+                    control.area() > 0.0
+                        && control.x0 >= 0.0
+                        && control.x1 <= f64::from(width)
+                        && control.y0 >= 0.0
+                        && control.y1 <= f64::from(height),
+                    "verified backup {id} action must be visible at {width}x{height}: {control:?}"
+                );
+            }
+            assert!(
+                (another.center().y - continue_button.center().y).abs() <= 0.5
+                    && another.x1 <= continue_button.x0,
+                "optional copy action must precede the primary Continue action: another={another:?}, continue={continue_button:?}"
+            );
+            assert!(
+                !node_map.values().any(|&pointer| unsafe {
+                    matches!(
+                        (*pointer).test_id(),
+                        Some("onboarding.backup.passphrase")
+                            | Some("onboarding.backup.confirmation")
+                    )
+                }),
+                "verified backup should expose its confirmed state before asking for another passphrase"
+            );
+            let scroll_pointer = node_map
+                .values()
+                .copied()
+                .find(|&pointer| unsafe { (*pointer).name() == "Scrollable" })
+                .expect("verified backup scroll viewport");
+            let scroll = unsafe {
+                (*scroll_pointer)
+                    .as_any_mut()
+                    .and_then(|widget| widget.downcast_mut::<Scrollable>())
+                    .expect("Scrollable exposes geometry to the regression harness")
+            };
+            assert_eq!(
+                scroll.max_offset_y(),
+                0.0,
+                "verified backup explanation must be fully visible before scrolling at {width}x{height}"
+            );
+        }
+    }
+
+    #[test]
+    fn verified_backup_reveals_copy_form_only_after_the_optional_action() {
+        let (mut view, _) = view();
+        view.set_visual_state_for_snapshot(OnboardingVisualState::BackupVerified);
+        assert!(!view.backup_copy_form_open);
+
+        let mut document = AutoCommit::new();
+        press(&mut document, KEY_BACKUP_ANOTHER);
+        view.sync(&mut document, &automerge::ROOT);
+
+        assert!(
+            view.backup_copy_form_open,
+            "the optional copy action, rather than the verified state itself, reveals passphrase inputs"
+        );
     }
 
     #[test]
