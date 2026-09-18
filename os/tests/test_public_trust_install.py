@@ -220,7 +220,10 @@ class InstallTests(fixtures.PublicBundleTests):
     def test_image_trust_is_installed_before_dracut(self):
         containerfile = Path(__file__).resolve().parents[1] / 'Containerfile'
         source = containerfile.read_text()
-        self.assertLess(source.index('RUN python3 /run/tilo-trust-tools/install-public-trust.py'), source.index('    dracut --force'))
+        self.assertLess(
+            source.index('python3 /run/tilo-trust-tools/install-public-trust.py'),
+            source.index('    dracut --force'),
+        )
 
 if __name__ == '__main__':
     unittest.main()
