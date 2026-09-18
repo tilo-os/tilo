@@ -41,6 +41,10 @@ const ROW_TEXT_X: f64 = 12.0; // text/icon inset within a row
 const ICON_D: f64 = 18.0;
 const ICON_COL: f64 = 30.0; // icon box + gap when a row has an icon
 const EMPTY_H: f64 = 92.0;
+/// A lifted row (selection, hover) is inset this much top and bottom, so a
+/// selected row and its hovered neighbour keep one `s1` between them
+/// instead of fusing into one block (HIG §7 "nothing touches").
+const ROW_LIFT_INSET: f64 = crate::tokens::Spacing::BASE.s1 as f64 / 2.0;
 
 /// Composes two affine transforms. `Affine`'s `Mul` impl is pure `f64` matrix
 /// multiply-add with no overflow trap, so it cannot panic regardless of
@@ -343,12 +347,21 @@ impl SearchResultsView {
 
         // Selection = a filled row (per the command palette convention);
         // hover = a barely-there veneer, distinct from selection.
+        let lift = RoundedRect::from_rect(
+            row.rect.inflate(0.0, -ROW_LIFT_INSET),
+            f64::from(theme.tokens.radii.sm),
+        );
         if selected {
-            let hl = RoundedRect::from_rect(row.rect, f64::from(theme.tokens.radii.sm));
-            scene.fill(Fill::NonZero, transform, colors.accent[5], None, &hl);
+            scene.fill(Fill::NonZero, transform, colors.accent[5], None, &lift);
         } else if hovered {
-            let hl = RoundedRect::from_rect(row.rect, f64::from(theme.tokens.radii.sm));
-            scene.fill(Fill::NonZero, transform, colors.surface_white_5, None, &hl);
+            // One step off the panel it sits on, polarity chosen the way
+            // `hairline_on` chooses it — the white veneer this replaces was
+            // invisible over a light panel (HIG §9.5).
+            let hover = crate::tokens::colors::Colors::hairline_on(
+                crate::chrome::shell::panel_ground(theme),
+                crate::chrome::shell::HAIRLINE_ALPHA,
+            );
+            scene.fill(Fill::NonZero, transform, hover, None, &lift);
         }
 
         let mut text_x = row.rect.x0 + ROW_TEXT_X;
@@ -502,20 +515,25 @@ impl Widget for SearchResultsView {
         if self.rect.width() <= 0.0 {
             return;
         }
-        let card = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.lg));
+        // Panel role (HIG §9.1): a results overlay floats over content, so it
+        // takes the panel ground and the panel edge — the declared
+        // `border_standard` this replaces vanished on the dark preset's
+        // raised surface.
+        let radius = f64::from(theme.tokens.radii.lg);
+        let card = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.raised,
+            crate::chrome::shell::panel_ground(theme),
             None,
             &card,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.tokens.colors.border_standard,
+            crate::chrome::shell::panel_border(theme),
             None,
-            &card,
+            &crate::surface::edge_outline(self.rect, radius),
         );
 
         if self.flat.is_empty() {
@@ -644,6 +662,123 @@ impl Widget for SearchResultsView {
 mod tests {
     use super::*;
     use crate::search::SearchRegistry;
+
+    /// Relative luminance of the composited pixel at (`x`, `y`).
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "probe coordinates are non-negative pixel positions inside the test surface"
+    )]
+    fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
+        let (r, g, b, _) =
+            crate::offscreen::OffscreenRenderer::sample(rgba, w, x.floor() as u32, y.floor() as u32);
+        crate::a11y::relative_luminance(vello::peniko::Color::from_rgb8(r, g, b))
+    }
+
+    /// `$UX1X_F4_OUT/<theme>/<name>` when the 1× review asked for evidence.
+    fn ux1x_out(theme: &Theme, name: &str) -> Option<std::path::PathBuf> {
+        let dir = std::path::PathBuf::from(std::env::var_os("UX1X_F4_OUT")?)
+            .join(theme.name.to_lowercase());
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir.join(name))
+    }
+
+    /// The results panel keeps a **visible derived edge** at 1× on both
+    /// presets (HIG §9.1 Panel role, §9.5): before, it was a raised card under
+    /// `border_standard`, three shades from the dark preset's raised surface.
+    /// The hovered row's veneer was literal white at 5 %, invisible on light.
+    ///
+    /// Writes `$UX1X_F4_OUT/<theme>/search_results.png` plus the harness
+    /// inspection when that variable is set; asserts regardless.
+    #[test]
+    fn ux1x_panel_edge_and_hover_register_on_both_presets() {
+        use crate::offscreen::OffscreenRenderer;
+        const EDGE_MIN: f64 = 0.008;
+        // Ground of margin around the panel so its edge is against the app.
+        let margin = 16.0;
+        // Evidence first, for both presets, so a failing assertion on one
+        // preset still leaves the other's PNG and inspection on disk.
+        for theme in [Theme::dark(), Theme::light()] {
+            let theme = theme.with_reduce_motion(true);
+            let mut mounted = view_from("");
+            let last = mounted.len() - 1;
+            let (w, h) = (margin * 2.0 + 360.0, margin * 2.0 + mounted.desired_height());
+            if let Some(png) = ux1x_out(&theme, "search_results.png") {
+                mounted.set_cursor(0);
+                mounted.hover = Some(last);
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a small test viewport"
+                )]
+                let harness = crate::headless::FrameHarness::new_with_theme(
+                    crate::State::new(),
+                    Box::new(mounted),
+                    (w as u32, h as u32),
+                    theme.clone(),
+                );
+                harness.render_window_png(&png);
+                if let Ok(json) = harness.inspection_json() {
+                    std::fs::write(png.with_extension("inspection.json"), json)
+                        .expect("write inspection");
+                }
+            }
+        }
+        for theme in [Theme::dark(), Theme::light()] {
+            let theme = theme.with_reduce_motion(true);
+            let mut v = view_from("");
+            v.set_cursor(0);
+            let panel = Rect::new(margin, margin, margin + 360.0, margin + v.desired_height());
+            v.set_rect(panel);
+            // Hover the last row so the veneer is under test too.
+            let last = v.len() - 1;
+            v.hover = Some(last);
+            let (w, h) = (panel.x1 + margin, panel.y1 + margin);
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let mut scene = Scene::new();
+            v.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a small test surface"
+            )]
+            let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a small test surface"
+            )]
+            let lum = |x: f64, y: f64| lum_at(&rgba, w as u32, x, y);
+
+            // Panel edge against the panel ground just inside it, on the top
+            // padding row above the first header (nothing else paints there).
+            let y = panel.y0 + PAD / 2.0;
+            let edge = lum(panel.x0, y);
+            let ground = lum(panel.x0 + 3.0, y);
+            assert!(
+                (edge - ground).abs() >= EDGE_MIN,
+                "{}: panel edge {edge:.4} vs ground {ground:.4} did not register",
+                theme.name
+            );
+
+            // Hovered row against the bare panel ground beside its inset.
+            let row = v
+                .plan()
+                .rows
+                .into_iter()
+                .find(|r| r.flat == last)
+                .expect("the hovered row is laid out")
+                .rect;
+            let hover = lum(row.x1 - 3.0, row.center().y);
+            let beside = lum(panel.x1 - ROW_INSET / 2.0, row.center().y);
+            assert!(
+                (hover - beside).abs() >= EDGE_MIN,
+                "{}: hover veneer {hover:.4} vs ground {beside:.4} did not register",
+                theme.name
+            );
+        }
+    }
 
     fn view_from(query: &str) -> SearchResultsView {
         let mut reg = SearchRegistry::new();

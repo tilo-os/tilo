@@ -57,6 +57,29 @@ pub const SHEET_MAX_W: f64 = 720.0;
 pub const SHEET_MIN_W: f64 = 560.0;
 const PIN_GLYPH: &str = "\u{2605}"; // ★
 
+/// The sheet is a Panel (HIG §9.1): it floats over content on
+/// `chrome::shell::panel_ground` under `panel_border`. Everything inside it
+/// derives against that ground — `Colors::lift` (base → raised) is measured
+/// against the desktop and has no purchase on a panel — so its tiers are one
+/// ordered ramp of translucent steps, polarity chosen the way `hairline_on`
+/// chooses it (HIG §9.3 caveat); the sheet has one lifted tier, selection.
+const WASH_SELECTED: u8 = 56;
+
+/// Sibling space pills keep one `s2` (HIG §7b: siblings of equal weight in
+/// a compact strip); the 6 px they kept before was off the scale.
+const PILL_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
+
+/// One step of the sheet's own ramp: `alpha` of white or black, whichever
+/// moves `surface` further.
+fn wash(surface: Color, alpha: u8) -> Color {
+    crate::tokens::colors::Colors::hairline_on(surface, alpha)
+}
+
+/// The ground the sheet paints on and every row derives from.
+fn sheet_surface(theme: &Theme) -> Color {
+    crate::chrome::shell::panel_ground(theme)
+}
+
 /// A flat, source-agnostic record produced by the host chrome. The
 /// widget never mutates these; it sorts a vector of references into
 /// its own `visible` index list.
@@ -370,26 +393,23 @@ impl ChannelBrowser {
         theme: &Theme,
     ) {
         let row = self.input_row_rect();
-        let shape = RoundedRect::from_rect(row, f64::from(theme.tokens.radii.sm));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &shape,
-        );
-        let border_color = if self.is_focused {
-            theme.tokens.colors.border_focus
+        let radius = f64::from(theme.tokens.radii.sm);
+        let field = theme.tokens.colors.surfaces.base;
+        // TextInput policy (HIG §9.5): the field fill under an edge derived
+        // from it at rest; focus keeps the 2 px `border_focus` ring.
+        if self.is_focused {
+            let shape = RoundedRect::from_rect(row, radius);
+            scene.fill(vello::peniko::Fill::NonZero, transform, field, None, &shape);
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                theme.tokens.colors.border_focus,
+                None,
+                &shape,
+            );
         } else {
-            theme.tokens.colors.border_standard
-        };
-        scene.stroke(
-            &Stroke::new(if self.is_focused { 2.0 } else { 1.0 }),
-            transform,
-            border_color,
-            None,
-            &shape,
-        );
+            crate::surface::card(scene, transform, row, radius, field);
+        }
         let text_size = theme.tokens.typography.scale.sm;
         self.query_composition.draw(
             scene,
@@ -417,9 +437,14 @@ impl ChannelBrowser {
     ) {
         let strip = self.filter_strip_rect();
         let pill_text_size = renderer_type_size(text_renderer, (theme.tokens.typography.scale.sm - 1.0).max(10.0));
-        let active_fill = theme.tokens.colors.accent[5];
-        let idle_fill = theme.tokens.colors.surface_white_5;
-        let active_text = theme.tokens.colors.text_primary;
+        // Chip quiet (HIG §9.5): raised rest fill under an edge derived from
+        // it; selected: solid accent with ink chosen against it, no edge.
+        let (active_fill, _) = crate::surface::chip_colors(theme, true);
+        let (idle_fill, idle_edge) = crate::surface::chip_colors(theme, false);
+        let active_text = theme
+            .tokens
+            .colors
+            .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST);
         let idle_text = theme.tokens.colors.text_dim;
 
         // "All" + every distinct space name; rects are stashed so the
@@ -439,8 +464,8 @@ impl ChannelBrowser {
             let rect = Rect::new(*x, cy - pill_h / 2.0, *x + pill_w, cy + pill_h / 2.0);
             let body = if active { active_fill } else { idle_fill };
             let color = if active { active_text } else { idle_text };
-            let shape = RoundedRect::from_rect(rect, pill_h / 2.0);
-            scene.fill(vello::peniko::Fill::NonZero, transform, body, None, &shape);
+            let edge = if active { None } else { idle_edge };
+            crate::surface::pill(scene, transform, rect, body, edge, None);
             let (lw2, lh2) = text_renderer.measure(label, pill_text_size, None);
             text_renderer.draw_text(
                 scene,
@@ -455,7 +480,7 @@ impl ChannelBrowser {
                 None,
             );
             rects.push((label.to_string(), rect));
-            *x += pill_w + 6.0;
+            *x += pill_w + PILL_GAP;
         };
 
         paint_pill(
@@ -496,13 +521,25 @@ impl ChannelBrowser {
         now: SystemTime,
     ) {
         if is_selected {
-            let shape = RoundedRect::from_rect(row, f64::from(theme.tokens.radii.sm));
+            // The top step of the sheet's own ramp under an edge derived
+            // from the sheet: a lift that reads on a light panel as well as
+            // a dark one, where the white veneer it replaces did not.
+            let radius = f64::from(theme.tokens.radii.sm);
+            let sheet = sheet_surface(theme);
+            let shape = RoundedRect::from_rect(row, radius);
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.tokens.colors.surface_white_10,
+                wash(sheet, WASH_SELECTED),
                 None,
                 &shape,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                crate::surface::edge_on(sheet),
+                None,
+                &crate::surface::edge_outline(row, radius),
             );
             let border = Rect::new(row.x0, row.y0, row.x0 + 3.0, row.y1);
             scene.fill(
@@ -596,21 +633,9 @@ impl ChannelBrowser {
             x_cursor + chip_w,
             cy + chip_h / 2.0,
         );
-        let shape = RoundedRect::from_rect(chip, chip_h / 2.0);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surface_white_5,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_white_10,
-            None,
-            &shape,
-        );
+        // Chip quiet: raised fill under an edge derived from it.
+        let (chip_fill, chip_edge) = crate::surface::chip_colors(theme, false);
+        crate::surface::pill(scene, transform, chip, chip_fill, chip_edge, None);
         let (lw2, lh2) = text_renderer.measure(role, chip_text_size, None);
         text_renderer.draw_text(
             scene,
@@ -753,18 +778,22 @@ impl ChannelBrowser {
             None,
             &footer,
         );
-        let border = vello::kurbo::Line::new((footer.x0, footer.y0), (footer.x1, footer.y0));
-        scene.stroke(
-            &Stroke::new(1.0),
+        // The band's top rule derives against the sheet it sits in (HIG
+        // §9.5). The footer rect is already `PADDING` (one `s3`) inside the
+        // sheet, so the rule clears the corner radius without a second inset.
+        crate::surface::separator(
+            scene,
             transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &border,
+            footer.x0,
+            footer.x1,
+            footer.y0,
+            0.0,
+            sheet_surface(theme),
         );
 
         let chip_text_size = renderer_type_size(text_renderer, (theme.tokens.typography.scale.sm - 2.0).max(9.0));
-        let chip_body = theme.tokens.colors.surface_white_5;
-        let chip_border = theme.tokens.colors.border_white_10;
+        // Key caps are quiet chips: raised fill under an edge derived from it.
+        let (chip_body, chip_border) = crate::surface::chip_colors(theme, false);
         let dim = theme.tokens.colors.text_dim;
         let chip_h = (footer.height() - 14.0).max(14.0);
         let cy = f64::midpoint(footer.y0, footer.y1);
@@ -778,15 +807,14 @@ impl ChannelBrowser {
             let (kw, kh) = text_renderer.measure(key, chip_text_size, None);
             let chip_w = f64::from(kw) + 10.0;
             let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
-            let chip_shape = RoundedRect::from_rect(chip_rect, 4.0);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
+            crate::surface::pill(
+                scene,
                 transform,
+                chip_rect,
                 chip_body,
-                None,
-                &chip_shape,
+                chip_border,
+                Some(f64::from(theme.tokens.radii.sm)),
             );
-            scene.stroke(&Stroke::new(1.0), transform, chip_border, None, &chip_shape);
             text_renderer.draw_text(
                 scene,
                 key,
@@ -1114,20 +1142,25 @@ impl Widget for ChannelBrowser {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
+        // Panel role (HIG §9.1): the sheet floats over content, so it takes
+        // the panel ground and the panel edge — one material with the rest
+        // of the chrome — rather than a raised card whose declared border
+        // vanished on the dark preset.
+        let radius = f64::from(theme.tokens.radii.md);
+        let shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.raised,
+            sheet_surface(theme),
             None,
             &shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.tokens.colors.border_standard,
+            crate::chrome::shell::panel_border(theme),
             None,
-            &shape,
+            &crate::surface::edge_outline(self.rect, radius),
         );
 
         self.draw_search_input(scene, transform, text_renderer, theme);
@@ -1359,6 +1392,110 @@ mod tests {
             "role ink columns {first}..={last} leave the chip {x}..{}",
             x + ROLE_CHIP_W
         );
+    }
+
+    /// Relative luminance of the composited pixel at (`x`, `y`).
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "probe coordinates are non-negative pixel positions inside the test surface"
+    )]
+    fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
+        let (r, g, b, _) =
+            crate::offscreen::OffscreenRenderer::sample(rgba, w, x.floor() as u32, y.floor() as u32);
+        crate::a11y::relative_luminance(Color::from_rgb8(r, g, b))
+    }
+
+    /// The sheet (a Panel), its quiet pills, the search field and the
+    /// selected row keep a **visible derived edge** at 1× on both presets
+    /// (HIG §9.1, §9.5). Before, the sheet and field wore `border_standard`
+    /// (three shades from the dark raised surface), the pills and chips
+    /// literal white veneers, and the footer rule ran full-bleed.
+    /// The `channel_browser --shots` example writes the PNG + inspection.
+    #[test]
+    fn ux1x_sheet_pills_field_and_selection_register_on_both_presets() {
+        use crate::offscreen::OffscreenRenderer;
+        const EDGE_MIN: f64 = 0.008;
+        let margin = 16.0;
+        for theme in [Theme::dark(), Theme::light()] {
+            let theme = theme.with_reduce_motion(true);
+            let mut b = ChannelBrowser::with_entries(vec![
+                entry("engineering", "Company", 220.0, 5, 12, true, Some("Editor")),
+                entry("design", "Company", 220.0, 25, 0, false, Some("Editor")),
+                entry("journal", "Personal", 30.0, 60, 0, true, None),
+            ]);
+            b.set_now_for_test(
+                SystemTime::UNIX_EPOCH
+                    .checked_add(Duration::from_secs(10_000))
+                    .unwrap_or(SystemTime::UNIX_EPOCH),
+            );
+            let sheet = Rect::new(margin, margin, margin + 640.0, margin + 420.0);
+            b.rect = sheet;
+            b.rebuild();
+            let (w, h) = (sheet.x1 + margin, sheet.y1 + margin);
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            b.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a small test surface"
+            )]
+            let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a small test surface"
+            )]
+            let lum = |x: f64, y: f64| lum_at(&rgba, w as u32, x, y);
+
+            // Sheet edge against the panel ground, on the top padding row.
+            let y = sheet.y0 + PADDING / 2.0;
+            let edge = lum(sheet.x0, y);
+            let ground = lum(sheet.x0 + 3.0, y);
+            assert!(
+                (edge - ground).abs() >= EDGE_MIN,
+                "{}: sheet edge {edge:.4} vs ground {ground:.4} did not register",
+                theme.name
+            );
+
+            // Search field: its rest edge against the field fill.
+            let field = b.input_row_rect();
+            let fedge = lum(field.x0, field.center().y);
+            let ffill = lum(field.x0 + 3.0, field.center().y);
+            assert!(
+                (fedge - ffill).abs() >= EDGE_MIN,
+                "{}: field edge {fedge:.4} vs fill {ffill:.4} did not register",
+                theme.name
+            );
+
+            // Quiet pill (the second one; "All" is active): its left edge
+            // against its own fill.
+            let (_, pill) = b.pill_rects.get(1).cloned().expect("a space pill");
+            let pedge = lum(pill.x0, pill.center().y);
+            let pfill = lum(pill.x0 + 3.0, pill.center().y);
+            assert!(
+                (pedge - pfill).abs() >= EDGE_MIN,
+                "{}: pill edge {pedge:.4} vs fill {pfill:.4} did not register",
+                theme.name
+            );
+
+            // Selected row (cursor 0) against the sheet beside its inset.
+            let row = b.row_rect(0).expect("the first row is laid out");
+            let rfill = lum(row.x1 - 3.0, row.y0 + 4.0);
+            let beside = lum(sheet.x1 - PADDING / 2.0, row.y0 + 4.0);
+            assert!(
+                (rfill - beside).abs() >= EDGE_MIN,
+                "{}: selected row {rfill:.4} vs sheet {beside:.4} did not register",
+                theme.name
+            );
+        }
     }
 
     fn entry(

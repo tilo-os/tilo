@@ -747,15 +747,7 @@ impl Widget for ScreenshotMarkup {
             None,
             TextWeight::Regular,
         );
-        surface::soft_shadow(
-            scene,
-            transform,
-            canvas_frame,
-            c.neutral[0],
-            22.0,
-            10.0,
-            0.48,
-        );
+        surface::shadow(scene, transform, canvas_frame, 8.0, &theme.tokens.elevation.e3);
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
@@ -763,7 +755,7 @@ impl Widget for ScreenshotMarkup {
             transform,
             &RoundedRect::from_rect(canvas_frame, 8.0),
         );
-        self.image.paint_at(scene, transform, self.canvas);
+        self.image.paint_at_on(scene, transform, self.canvas, theme);
         for stroke in &self.strokes {
             self.draw_stroke(scene, transform, stroke);
         }
@@ -786,15 +778,7 @@ impl Widget for ScreenshotMarkup {
             transform,
             &self.rect,
         );
-        surface::soft_shadow(
-            scene,
-            transform,
-            self.toolbar,
-            c.neutral[0],
-            18.0,
-            8.0,
-            0.42,
-        );
+        surface::shadow(scene, transform, self.toolbar, 26.0, &theme.tokens.elevation.e3);
         scene.fill(
             Fill::NonZero,
             transform,
@@ -811,7 +795,7 @@ impl Widget for ScreenshotMarkup {
         );
         if self.tool_picker_open {
             let palette = self.tool_picker_rect();
-            surface::soft_shadow(scene, transform, palette, c.neutral[0], 16.0, 7.0, 0.44);
+            surface::shadow(scene, transform, palette, 22.0, &theme.tokens.elevation.e2);
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -828,7 +812,7 @@ impl Widget for ScreenshotMarkup {
             );
         }
         if let Some(palette) = self.color_picker_rect() {
-            surface::soft_shadow(scene, transform, palette, c.neutral[0], 16.0, 7.0, 0.44);
+            surface::shadow(scene, transform, palette, 22.0, &theme.tokens.elevation.e2);
             scene.fill(
                 Fill::NonZero,
                 transform,

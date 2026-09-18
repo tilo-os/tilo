@@ -455,18 +455,25 @@ pub fn elevation(scene: &mut Scene, transform: Affine, rect: Rect, token: &Shado
 
 /// The one contract for "is this small selectable chrome element active"
 /// — scope pills, filter chips, tab pills, toggle cards.
+///
+/// Quiet (HIG §9.5 "Chip quiet"): `surfaces.raised` under a rest edge
+/// derived from that fill by [`edge_on`], so the chip keeps a visible
+/// outline on a raised or overlay ground where the declared
+/// `border_standard` vanished. Selected: solid accent, no edge.
 pub fn chip_colors(theme: &Theme, selected: bool) -> (Color, Option<Color>) {
     let c = &theme.tokens.colors;
     if selected {
         (c.accent[5], None)
     } else {
-        (c.surfaces.raised, Some(c.border_standard))
+        (c.surfaces.raised, Some(edge_on(c.surfaces.raised)))
     }
 }
 
 /// Draw a pill / chip: a fully-rounded (or `radius`-rounded) filled rect
 /// with an optional 1px border. Pass `radius = None` for a fully-rounded
-/// capsule (`height/2`).
+/// capsule (`height/2`). The border is a crisp inset stroke on
+/// [`edge_outline`], like [`card`]: it covers the pill's outermost pixel
+/// row instead of straddling the edge as a half-covered, half-alpha smear.
 pub fn pill(
     scene: &mut Scene,
     transform: Affine,
@@ -482,7 +489,7 @@ pub fn pill(
     let shape = RoundedRect::new(rect.x0, rect.y0, rect.x1, rect.y1, r);
     scene.fill(Fill::NonZero, transform, fill, None, &shape);
     if let Some(bc) = border {
-        scene.stroke(&Stroke::new(1.0), transform, bc, None, &shape);
+        scene.stroke(&Stroke::new(1.0), transform, bc, None, &edge_outline(rect, r));
     }
 }
 
@@ -659,6 +666,24 @@ mod tests {
         let (fill_idle, border_idle) = chip_colors(&theme, false);
         assert_eq!(fill_idle, theme.tokens.colors.surfaces.raised);
         assert!(border_idle.is_some(), "idle chip has a border");
+    }
+
+    /// The quiet chip's edge is derived from its own fill, so it registers
+    /// on every preset — the declared `border_standard` it replaces measured
+    /// under the visibility floor on the dark preset's raised surface.
+    #[test]
+    fn chip_colors_quiet_edge_registers_on_every_preset() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let (fill, border) = chip_colors(&theme, false);
+            let edge = border.expect("quiet chip has an edge");
+            assert_eq!(edge, edge_on(fill), "{}: edge derives from the fill", theme.name);
+            assert!(
+                edge_delta(edge, fill) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                "{}: quiet chip edge moved only {:.4}",
+                theme.name,
+                edge_delta(edge, fill)
+            );
+        }
     }
 
     #[test]
