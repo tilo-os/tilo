@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import time
 import zipfile
 
 
@@ -41,18 +42,39 @@ for x in P('/proc').glob('[0-9]*'):
  except OSError:continue
  if a and a[0]==b'/opt/kata/runtime-rs/bin/containerd-shim-kata-v2' and sandbox.encode() in a:shims.append(x)
 assert len(shims)==1
+shared='/run/kata-containers/shared/sandboxes/'+sandbox+'/ro'
+sock='/run/kata/'+sandbox+'/root/virtiofsd.sock'
+export=(shims[0]/'root'/shared.lstrip('/')).stat()
+socket_path=shims[0]/'root'/sock.lstrip('/')
+assert stat.S_ISSOCK(socket_path.stat().st_mode)
+owner=int(P(str(socket_path)+'.pid').read_text().strip())
+servers=[]
+for x in P('/proc').glob('[0-9]*'):
+ try:a=(x/'cmdline').read_bytes().rstrip(b'\0').split(b'\0');a=[i.decode() for i in a]
+ except (OSError,UnicodeError):continue
+ if not a or a[0]!='/opt/kata/libexec/virtiofsd' or sock not in a:continue
+ root=(x/'root').stat()
+ if (root.st_dev,root.st_ino)!=(export.st_dev,export.st_ino):continue
+ links=[]
+ for fd in (x/'fd').iterdir():
+  try:links.append(os.readlink(fd))
+  except FileNotFoundError:continue
+ parent=int((x/'stat').read_text().split()[3])
+ servers.append({'pid':int(x.name),'argv':a,'root_identity':[root.st_dev,root.st_ino],'export_identity':[export.st_dev,export.st_ino],'socket_bound':(int(x.name)==owner or parent==owner) and sock+'.pid' in links,'socket_owner_pid':owner,'mountinfo':(x/'mountinfo').read_text()})
+assert servers and all(x['socket_bound'] for x in servers),'expected chrooted virtiofs server bound to shared root'
+assert all(x['mountinfo']==servers[0]['mountinfo'] for x in servers),'virtiofs parent/worker mount namespaces differ'
 def digest(path):
  h=hashlib.sha256()
  with open(path,'rb') as f:
   for chunk in iter(lambda:f.read(1024*1024),b''):h.update(chunk)
  return h.hexdigest()
 config=P('/opt/kata/share/defaults/kata-containers/runtime-rs/runtimes/qemu-runtime-rs/configuration-qemu-runtime-rs.toml')
-paths=[config,*sorted((config.parent/'config.d').glob('*.toml')),P('/opt/kata/containerd/config.d/kata-deploy.toml'),P('/etc/containerd/config.toml'),P('/opt/kata/bin/qemu-system-aarch64'),P('/opt/kata/runtime-rs/bin/containerd-shim-kata-v2')]
+paths=[config,*sorted((config.parent/'config.d').glob('*.toml')),P('/opt/kata/containerd/config.d/kata-deploy.toml'),P('/etc/containerd/config.toml'),P('/opt/kata/bin/qemu-system-aarch64'),P('/opt/kata/libexec/virtiofsd'),P('/opt/kata/runtime-rs/bin/containerd-shim-kata-v2')]
 hashes={str(x):digest(x) for x in paths}
 for flag in ('-kernel','-bios'):
  assert argv.count(flag)==1;path=argv[argv.index(flag)+1];hashes[path]=digest(path)
 image='/opt/kata/share/kata-containers/kata-ubuntu-noble.image';hashes[image]=digest(image)
-print(json.dumps({'container':c,'sandbox':s,'pid':int(d.name),'start':(d/'stat').read_text().split()[21],'argv':argv,'fds':fds,'mountinfo':(shims[0]/'mountinfo').read_text(),'hashes':hashes}))
+print(json.dumps({'container':c,'sandbox':s,'pid':int(d.name),'start':(d/'stat').read_text().split()[21],'argv':argv,'fds':fds,'mountinfo':(shims[0]/'mountinfo').read_text(),'virtiofs':servers[0],'hashes':hashes}))
 '''
 
 GUEST_RUN = r'''
@@ -79,7 +101,9 @@ def checked(argv, payload=None):
     return result.stdout
 
 
-def inspect_pod(pod, node, expected_uid):
+def inspect_pod(pod, node, expected_uid, guest_image):
+    if not re.fullmatch(r'[^\s@]+@sha256:[0-9a-f]{64}', guest_image):
+        raise ValueError('guest image must be independently pinned by digest')
     if pod['metadata']['uid'] != expected_uid or pod['metadata'].get('deletionTimestamp'):
         raise ValueError('pod identity changed or is terminating')
     s = pod['spec']
@@ -92,6 +116,8 @@ def inspect_pod(pod, node, expected_uid):
     if len(s['containers']) != 1:
         raise ValueError('dedicated single-container pod required')
     c = s['containers'][0]
+    if c['image'] != guest_image:
+        raise ValueError('pod image differs from pinned guest tools image')
     if c.get('volumeDevices') or c.get('envFrom') or any('valueFrom' in x for x in c.get('env', [])):
         raise ValueError('device or secret injection unsupported')
     if any('/' in key for kind in ('requests', 'limits') for key in c.get('resources', {}).get(kind, {})):
@@ -104,6 +130,8 @@ def inspect_pod(pod, node, expected_uid):
     status = pod['status'].get('containerStatuses', [])
     if pod['status']['phase'] != 'Running' or len(status) != 1 or not status[0].get('ready') or status[0].get('restartCount'):
         raise ValueError('guest is not continuously ready')
+    if status[0].get('imageID') != guest_image:
+        raise ValueError('running image differs from pinned guest tools image')
     identity = status[0]['containerID'].removeprefix('containerd://')
     if not re.fullmatch('[0-9a-f]{64}', identity):
         raise ValueError('invalid container identity')
@@ -114,6 +142,16 @@ def inspect_host(host, pod, pins):
     """Fail closed against observed devices, runtime and exact exported paths."""
     uid = pod['metadata']['uid']
     sid = host['sandbox']['ID']
+    server = host['virtiofs']
+    sock = '/run/kata/'+sid+'/root/virtiofsd.sock'
+    shared = '/run/kata-containers/shared/sandboxes/'+sid+'/ro'
+    if server['root_identity'] != server['export_identity'] or not server['socket_bound']:
+        raise ValueError('virtiofs server is not bound to the inspected export')
+    if server['argv'].count('--socket-path') != 1 or server['argv'][server['argv'].index('--socket-path')+1] != sock or server['argv'].count('--shared-dir') != 1 or server['argv'][server['argv'].index('--shared-dir')+1] != shared:
+        raise ValueError('virtiofs backend path mismatch')
+    chardevs = [host['argv'][i+1] for i,x in enumerate(host['argv']) if x == '-chardev']
+    if chardevs != ['socket,id=virtiofsd-chardev,path='+sock, 'socket,id=charconsole0,server=on,wait=off,path=/run/kata/'+sid+'/root/console.sock']:
+        raise ValueError('QEMU virtiofs backend mismatch')
     for obj in (host['sandbox'], host['container']):
         if obj['Labels'].get('io.kubernetes.pod.uid') != uid or obj['Runtime']['Name'] != 'io.containerd.kata-qemu-runtime-rs.v2':
             raise ValueError('runtime identity mismatch')
@@ -142,7 +180,7 @@ def inspect_host(host, pod, pins):
             raise ValueError('live QEMU has a host block device open')
         if fd['kind'] == 0o20000 and path not in allowed_devices:
             raise ValueError('unexpected host character device')
-        if fd['kind'] == 0o100000 and path != image and not re.fullmatch(r'/dev/shm/qemu_back_mem\.[A-Za-z0-9_.]+ \(deleted\)', path):
+        if fd['kind'] == 0o100000 and path != image and not re.fullmatch(r'/dev/shm/qemu_back_mem\.entire-guest-memory-share\.[A-Za-z0-9]+ \(deleted\)', path):
             raise ValueError('unexpected host file exposed to QEMU')
     root = '/var/lib/kubelet/pods/'+uid
     sandbox = '/var/lib/containerd/io.containerd.grpc.v1.cri/sandboxes/'+sid
@@ -162,6 +200,15 @@ def inspect_host(host, pod, pins):
     # Check actual virtiofs exports too, rather than relying on the OCI intent.
     exported = '/run/kata-containers/shared/sandboxes/'+sid+'/'
     mount_rows = [line.split() for line in host['mountinfo'].splitlines()]
+    server_rows = [line.split() for line in server['mountinfo'].splitlines()]
+    if not mount_rows or not server_rows or any(len(row)<10 or '-' not in row for row in mount_rows+server_rows):
+        raise ValueError('missing or malformed mount inventory')
+    if not any(row[4] == shared for row in mount_rows) or not any(row[4]=='/' and row[3].endswith('/'+sid+'/rw') for row in server_rows):
+        raise ValueError('wrong shared mount namespace')
+    required = {exported+'ro/passthrough/'+identity+'/rootfs' for identity in (sid,host['container']['ID'])}
+    if not required.issubset({row[4] for row in mount_rows}):
+        raise ValueError('missing live rootfs export')
+    observed_sources = set()
     for fields in mount_rows:
         destination = fields[4]
         if not destination.startswith(exported):
@@ -178,13 +225,25 @@ def inspect_host(host, pod, pins):
             continue
         if fields[3] not in allowed:
             raise ValueError('unexpected actual virtiofs export')
+        observed_sources.add(fields[3])
+    required_sources = {mount['source'] for mount in mounts if mount['type']=='bind'}
+    # Kata materializes memory emptyDirs and /dev/shm within the guest; they
+    # must not be confused with ordinary shared host-backed emptyDir exports.
+    guest_local = {'/run/containerd/io.containerd.grpc.v1.cri/sandboxes/'+sid+'/shm'}
+    guest_local.update(root+'/volumes/kubernetes.io~empty-dir/'+v['name'] for v in pod['spec']['volumes'] if v.get('emptyDir',{}).get('medium')=='Memory')
+    if not (required_sources-guest_local).issubset(observed_sources):
+        raise ValueError('missing expected live volume export')
+    host_exports = {row[4].removeprefix(shared):row[2:4] for row in mount_rows if row[4].startswith(shared+'/passthrough/')}
+    actual_exports = {row[4]:row[2:4] for row in server_rows if row[4].startswith('/passthrough/')}
+    if host_exports != actual_exports:
+        raise ValueError('virtiofs server export inventory differs from inspected namespace')
     return {'node_uid': '', 'pod_uid': uid, 'sandbox_id': sid,
             'container_id': host['container']['ID'], 'kernel_sha256': pins[argv[argv.index('-kernel')+1]]}
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    for name in ('context', 'namespace', 'pod', 'pod-uid', 'node', 'node-uid', 'host-agent'):
+    for name in ('context', 'namespace', 'pod', 'pod-uid', 'node', 'node-uid', 'host-agent', 'guest-image'):
         p.add_argument('--'+name, required=True)
     p.add_argument('--pins', type=Path, required=True, help='operator-reviewed exact host file SHA256 mapping')
     p.add_argument('--disk-args', type=Path, required=True, help='guest create args JSON; paths are inside guest')
@@ -193,9 +252,15 @@ def main():
     args = p.parse_args()
     k = ['kubectl', '--context', args.context]
     def get(kind, name, namespace=None):
-        return json.loads(checked(k+(['-n',namespace] if namespace else [])+['get',kind,name,'-o','json']))
+        for attempt in range(3):
+            try:
+                return json.loads(checked(k+(['-n',namespace] if namespace else [])+['get',kind,name,'-o','json','--request-timeout=15s']))
+            except ValueError:
+                if attempt == 2:
+                    raise
+                time.sleep(1)
     pod = get('pod', args.pod, args.namespace)
-    identity = inspect_pod(pod, args.node, args.pod_uid)
+    identity = inspect_pod(pod, args.node, args.pod_uid, args.guest_image)
     node = get('node', args.node)
     if node['metadata']['uid'] != args.node_uid:
         raise ValueError('node identity changed')
@@ -206,7 +271,7 @@ def main():
     observation = inspect_host(host, pod, json.loads(args.pins.read_text()))
     observation['node_uid'] = args.node_uid
     fresh = get('pod', args.pod, args.namespace)
-    if inspect_pod(fresh,args.node,args.pod_uid) != identity or fresh['spec'] != pod['spec']:
+    if inspect_pod(fresh,args.node,args.pod_uid,args.guest_image) != identity or fresh['spec'] != pod['spec']:
         raise ValueError('pod changed during inspection')
     args.evidence.write_text(json.dumps({'observation':observation,'host':host},indent=2))
     if args.inspect_only:
@@ -217,7 +282,11 @@ def main():
         for path in Path(__file__).parent.glob('*.py'):
             archive.write(path,path.name)
     payload = {'observation':observation,'args':disk_args,'helpers':base64.b64encode(bundle.getvalue()).decode()}
-    print(checked(k+['-n',args.namespace,'exec','-i',args.pod,'-c',pod['spec']['containers'][0]['name'],'--','python3','-c',GUEST_RUN],json.dumps(payload)),end='')
+    output = checked(k+['-n',args.namespace,'exec','-i',args.pod,'-c',pod['spec']['containers'][0]['name'],'--','python3','-c',GUEST_RUN],json.dumps(payload))
+    after = get('pod', args.pod, args.namespace)
+    if inspect_pod(after,args.node,args.pod_uid,args.guest_image) != identity or after['spec'] != pod['spec']:
+        raise ValueError('pod changed during disk creation; result not accepted')
+    print(output,end='')
 
 
 if __name__ == '__main__':
