@@ -1,6 +1,9 @@
 use std::{
+    ffi::CString,
     fs::{self, OpenOptions},
     io::{Read, Write},
+    os::fd::FromRawFd,
+    os::unix::ffi::OsStrExt,
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
 };
@@ -14,12 +17,52 @@ const EFI_GLOBAL_VARIABLE_GUID: &str = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
 const EFI_IMAGE_SECURITY_DATABASE_GUID: &str = "d719b2cb-3d3a-4596-a3bc-dad00e67656f";
 const SECURE_BOOT_ATTRIBUTES: u32 = 0x27;
 
+fn open_readonly_without_symlinks(path: &Path) -> std::io::Result<fs::File> {
+    const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+    const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+
+    #[repr(C)]
+    struct OpenHow {
+        flags: u64,
+        mode: u64,
+        resolve: u64,
+    }
+
+    let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path contains an embedded NUL byte",
+        )
+    })?;
+    let flags = u64::try_from(libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .map_err(|_| std::io::Error::other("open flags are outside the Linux u64 ABI"))?;
+    let how = OpenHow {
+        flags,
+        mode: 0,
+        resolve: RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
+    };
+    // SAFETY: path and open_how remain live for this syscall. A successful
+    // descriptor is uniquely transferred into File below.
+    let descriptor = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            &raw const how,
+            std::mem::size_of::<OpenHow>(),
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let descriptor = i32::try_from(descriptor)
+        .map_err(|_| std::io::Error::other("openat2 returned an invalid descriptor"))?;
+    // SAFETY: openat2 returned this owned descriptor and no other File owns it.
+    Ok(unsafe { fs::File::from_raw_fd(descriptor) })
+}
+
 fn read_bounded(path: &Path, limit: u64, kind: &str) -> Result<Vec<u8>, String> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    let file = options
-        .open(path)
+    let file = open_readonly_without_symlinks(path)
         .map_err(|error| format!("cannot open {kind} {}: {error}", path.display()))?;
     let metadata = file
         .metadata()
@@ -46,11 +89,7 @@ fn read_text_bounded(path: &Path, limit: u64, kind: &str) -> Result<String, Stri
 }
 
 fn read_private_key(path: &Path) -> Result<Zeroizing<String>, String> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    let file = options
-        .open(path)
+    let file = open_readonly_without_symlinks(path)
         .map_err(|error| format!("cannot open private key {}: {error}", path.display()))?;
     let metadata = file
         .metadata()
@@ -952,6 +991,11 @@ mod tests {
         let error = read_private_key(&key).expect_err("multiply-linked key must fail");
         assert!(error.contains("2 hard links"));
         fs::remove_file(hard_link).expect("remove private key hard link");
+
+        let linked_parent = temp.path().join("linked-parent");
+        symlink(temp.path(), &linked_parent).expect("parent-directory symlink");
+        assert!(read_private_key(&linked_parent.join("db.key")).is_err());
+        assert!(read_bounded(&linked_parent.join("db.key"), 1024, "input fixture").is_err());
 
         fs::set_permissions(&key, fs::Permissions::from_mode(0o640))
             .expect("loosen private key mode");
