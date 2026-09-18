@@ -1,0 +1,4 @@
+{
+  "http_status": 405,
+  "message": "not allowed to merge [reason: Does not have enough approvals]"
+}

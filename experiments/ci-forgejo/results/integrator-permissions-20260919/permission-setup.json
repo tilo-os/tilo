@@ -1,0 +1,29 @@
+{
+  "read_pilot": {
+    "http_status": 200,
+    "message": null,
+    "permissions": {
+      "admin": false,
+      "push": true,
+      "pull": true
+    }
+  },
+  "read_product": {
+    "http_status": 404,
+    "message": "The target couldn't be found.",
+    "permissions": null
+  },
+  "edit_protection": {
+    "http_status": 403,
+    "message": "user should be an owner or a collaborator with admin write of a repository",
+    "permissions": null
+  },
+  "author_direct_main": {
+    "http_status": 403,
+    "message": "user cannot commit to repo [user: xemmerling]"
+  },
+  "repository": "qos/ci-workflow-pilot-20260918-9245-repeat",
+  "pr": 5,
+  "base": "41d99b13834f1243937be2264b130de52baf15c4",
+  "head": "92714aab674c7c3da23aef64bf9b286e0dde05f5"
+}

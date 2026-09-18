@@ -96,6 +96,10 @@ Identity needs:
 Using `claude` as integrator is possible only with another reviewer identity for
 PRs authored by `claude`, and a separately operated reviewer for real independence.
 Both currently tested identities (`xemmerling` and `claude`) have owner-level
-access; renaming their roles does not supply least privilege. A dedicated account
-and ordinary-author permission test remain necessary. Never enable blocking
+access; renaming their roles does not supply least privilege. A subsequent
+[private-pilot test](results/integrator-permissions-20260919/README.md) provisioned
+restricted non-admin `qos-integrator` and proved exact-head merging, denied
+protection edits/product access, and main push/merge restrictions for the author.
+The service credential remains pilot-only. Ordinary-author credential separation
+and production qualification remain necessary. Never enable blocking
 protection first and leave existing agents without a usable landing path.

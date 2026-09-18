@@ -1,0 +1,15 @@
+{
+  "username": "qos-integrator",
+  "id": 81,
+  "is_admin": false,
+  "restricted": true,
+  "token_id": 145,
+  "token_scopes": [
+    "read:issue",
+    "write:repository"
+  ],
+  "repository": "qos/ci-workflow-pilot-20260918-9245-repeat",
+  "secret_namespace": "forgejo",
+  "secret_name": "qos-integrator-pilot",
+  "password_and_token_printed": false
+}
