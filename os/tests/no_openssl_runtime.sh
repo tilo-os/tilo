@@ -161,7 +161,7 @@ runtime_splash="$(sed -n '/# Splash rendering needs Pillow/,/# The install-confi
 crypto_packages='systemd-ukify|openssl|sbsigntools|efitools|mokutil|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh|openssh-clients|openssh-server'
 if inventory_cleanup "$runtime_splash" "^($crypto_packages)\$" \
     "xargs -r dnf --disablerepo='*' remove -y" "^(python3-pillow|$crypto_packages)\$"; then
-  ok 'final image purges runtime ukify, avoidable OpenSSL consumers, and legacy EFI CLIs inherited from its base'
+  ok 'early rootfs cleanup removes inherited crypto CLI packages before later feature dependencies'
 else
   bad 'final image does not purge inherited OpenSSL consumers/legacy EFI command-line tools'
 fi
@@ -194,9 +194,9 @@ fi
 if rg -n 'Command::new\("ssh"\)|^[[:space:]]*(exec[[:space:]]+)?ssh[[:space:]]' \
     "$repo/os/usr" "$repo/apps" "$repo/crates" "$repo/shell" \
     -g '*.rs' -g '*.sh' -g '!**/tests/**' >/dev/null; then
-  bad 'OpenSSH purge is unsafe because a shipped runtime still invokes its CLI'
+  bad 'Tilo-owned runtime source invokes OpenSSH outside the reviewed distro dependency exception'
 else
-  ok 'Rust Remote transport permits inherited OpenSSH packages to be purged'
+  ok 'Tilo-owned Remote transport does not invoke the distro OpenSSH CLI'
 fi
 
 runtime_network="$(sed -n '/# System utilities\./,/xdg-desktop-portal/p' "$repo/os/Containerfile")"
@@ -324,39 +324,10 @@ else
   bad 'residual OpenSSL ABI gate does not inspect the finished rootfs'
 fi
 
-cat >"$work/rpm" <<'EOF'
-#!/usr/bin/env bash
-[[ $1 == -qa && $2 == --qf ]] || exit 2
-printf '%b' "${TILO_TEST_RPM_ROWS:-}"
-EOF
-chmod 0755 "$work/rpm"
-if TILO_RPM_BIN="$work/rpm" \
-   TILO_TEST_RPM_ROWS=$'cryptsetup-libs\tlibcrypto.so.3()(64bit)\npython3-libs\tlibssl.so.3()(64bit)\n' \
-   bash "$runtime_package_gate" >/dev/null; then
-  ok 'reviewed residual OpenSSL ABI packages pass the finished-rootfs gate'
+if python3 "$repo/os/tests/test_runtime_crypto_packages.py" --gate "$runtime_package_gate"; then
+  ok 'finished-rootfs RPM policy enforces conditional desktop/VM exceptions and rejects unknown consumers'
 else
-  bad 'finished-rootfs gate rejects its reviewed residual OpenSSL ABI boundary'
-fi
-if TILO_RPM_BIN="$work/rpm" \
-   TILO_TEST_RPM_ROWS=$'attacker-tls\tlibssl.so.3()(64bit)\n' \
-   bash "$runtime_package_gate" >/dev/null 2>&1; then
-  bad 'finished-rootfs gate accepts an unreviewed libssl consumer'
-else
-  ok 'finished-rootfs gate rejects an unreviewed libssl consumer'
-fi
-if TILO_RPM_BIN="$work/rpm" \
-   TILO_TEST_RPM_ROWS=$'attacker-crypto\tlibcrypto.so.3()(64bit)\n' \
-   bash "$runtime_package_gate" >/dev/null 2>&1; then
-  bad 'finished-rootfs gate accepts an unreviewed libcrypto consumer'
-else
-  ok 'finished-rootfs gate rejects an unreviewed libcrypto consumer'
-fi
-if TILO_RPM_BIN="$work/rpm" \
-   TILO_TEST_RPM_ROWS=$'openssl\topenssl-libs = 3.0\n' \
-   bash "$runtime_package_gate" >/dev/null 2>&1; then
-  bad 'finished-rootfs gate accepts a forbidden package without a direct libssl requirement'
-else
-  ok 'finished-rootfs gate rejects forbidden packages reintroduced indirectly'
+  bad 'finished-rootfs RPM policy fixtures failed'
 fi
 
 exit "$fail"
