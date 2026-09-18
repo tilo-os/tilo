@@ -248,6 +248,34 @@ impl ProjectDoc {
         }
     }
 
+    /// Persist one advanced-graph input connection. Connections are addressed
+    /// by their target port, so edits to different inputs merge independently
+    /// and an ordinary linear edge stays implicit instead of duplicating the
+    /// baseline graph in the document.
+    pub fn set_connection(doc: &mut AutoCommit, edge: &Edge) -> bool {
+        Self::seed(doc);
+        let project = Self::read(doc);
+        if !project.graph.nodes.contains_key(&edge.from_node)
+            || !project.graph.nodes.contains_key(&edge.to_node)
+        {
+            return false;
+        }
+        let root = Self::root_map(doc);
+        let connections = Self::map(doc, &root, CONNECTIONS);
+        let order_object = Self::list(doc, &root, ORDER);
+        let order = Self::order_ids(doc, &order_object);
+        let baseline = Self::baseline_edges(&project, &order);
+        let key = edge_key(&edge.to_node, &edge.to_port);
+        if baseline.iter().any(|candidate| candidate == edge) {
+            let _ = doc.delete(&connections, key.as_str());
+        } else if let Ok(encoded) = serde_json::to_string(edge) {
+            put_if_changed(doc, &connections, key.as_str(), encoded.as_str());
+        } else {
+            return false;
+        }
+        true
+    }
+
     fn write_fresh(doc: &mut AutoCommit, project: &Project) {
         let root = Self::root_map(doc);
         let metadata = Self::map(doc, &root, METADATA);
