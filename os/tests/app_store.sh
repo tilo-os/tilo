@@ -122,10 +122,21 @@ for m in "${manifests[@]}"; do
 done
 [ "$thin_bad" = 1 ] || ok "all ${#manifests[@]} apps opt into one ABI-matched shared runtime"
 
-if grep -q 'MAX_QPKG_BYTES="${MAX_QPKG_BYTES:-10000000}"' "$PACK"; then
-  ok "pack-apps refuses qpkgs at or above 10 MB"
+if grep -q '^POLICY_MAX_QPKG_BYTES=5242880$' "$PACK" \
+   && grep -q 'MAX_QPKG_BYTES cannot exceed the 5 MiB application policy' "$PACK" \
+   && ! grep -q 'RECOVERY_MAX_QPKG_BYTES' "$PACK"; then
+  ok "pack-apps enforces the canonical 5 MiB ceiling without app exceptions"
 else
-  bad "pack-apps no longer enforces the strict 10 MB qpkg ceiling"
+  bad "pack-apps does not enforce the canonical 5 MiB qpkg ceiling uniformly"
+fi
+
+weakening_output=$(MAX_QPKG_BYTES=5242881 "$PACK" 2>&1)
+weakening_status=$?
+if [ "$weakening_status" -ne 0 ] \
+   && grep -q 'cannot exceed the 5 MiB application policy' <<<"$weakening_output"; then
+  ok "pack-apps refuses an environment override that weakens the size policy"
+else
+  bad "MAX_QPKG_BYTES can weaken the canonical application size policy"
 fi
 
 if grep -q -- '--include /out/libruntime_dylib.so' "$CONTAINERFILE" \

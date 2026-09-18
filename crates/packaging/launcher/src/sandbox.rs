@@ -61,26 +61,14 @@ pub const CANONICAL_LOADER_PATHS: &[&str] = &[
     "/lib/aarch64-linux-gnu/libutil.so.1",
 ];
 
-/// Plan for exposing D-Bus into the sandbox. Production uses only the filtered
-/// `xdg-dbus-proxy` form and leaves D-Bus unavailable if the proxy cannot
-/// start. `Direct` remains solely for legacy pure-planner compatibility tests;
-/// it is never selected by the production runner. `kind` is logging metadata.
+/// Plan for exposing a filtered D-Bus proxy into the sandbox. The production
+/// runner leaves D-Bus unavailable when that proxy cannot start; there is no
+/// raw-session-bus plan or fallback.
 #[derive(Debug, Clone)]
 pub struct DBusBindPlan {
     pub host_socket: PathBuf,
     /// In-sandbox path, read via `DBUS_SESSION_BUS_ADDRESS=unix:path=<sandbox_path>`.
     pub sandbox_path: PathBuf,
-    /// Which shape this plan carries — logging/tests only, doesn't change the argv.
-    pub kind: DBusBindKind,
-}
-
-/// Which flavour of D-Bus bind a [`DBusBindPlan`] describes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DBusBindKind {
-    /// Filtered via `xdg-dbus-proxy` — the preferred path.
-    Proxy,
-    /// Legacy raw session-bus bind shape; never a production fallback.
-    Direct,
 }
 
 /// Where a GUI app's Wayland socket appears inside the sandbox.
@@ -1179,6 +1167,7 @@ mod tests {
     /// The reads a launch gets are the system profile's; a manifest naming
     /// a path never reaches this builder.
     #[test]
+    #[serial_test::serial(process_env)]
     fn argv_reads_come_from_the_system_profile_not_the_manifest() {
         let m = mk_manifest("off");
         let argv = build_bwrap_argv(
@@ -1306,7 +1295,6 @@ mod tests {
         let plan = DBusBindPlan {
             host_socket: PathBuf::from("/run/user/1234/tilo/dbus-proxy/9999.sock"),
             sandbox_path: PathBuf::from("/run/user/1234/bus"),
-            kind: DBusBindKind::Proxy,
         };
         let argv = build_bwrap_argv(
             &m,
@@ -1331,36 +1319,6 @@ mod tests {
                 && w[1] == "DBUS_SESSION_BUS_ADDRESS"
                 && w[2] == "unix:path=/run/user/1234/bus"),
             "dbus setenv missing from argv: {argv:?}"
-        );
-    }
-
-    #[test]
-    fn argv_binds_dbus_directly_when_direct_plan_is_supplied() {
-        // Direct-bind fallback: proxy unavailable, so the raw bus is bound.
-        // Argv shape identical to the proxy path — only `kind` distinguishes.
-        let mut m = mk_manifest("off");
-        m.sandbox
-            .portals
-            .insert("notifications".to_string(), PortalPolicy::ViaHost);
-        let plan = DBusBindPlan {
-            host_socket: PathBuf::from("/run/user/1234/bus"),
-            sandbox_path: PathBuf::from("/run/user/1234/bus"),
-            kind: DBusBindKind::Direct,
-        };
-        let argv = build_bwrap_argv(
-            &m,
-            Path::new("/host/pkg"),
-            None,
-            &[],
-            Some(&plan),
-            None,
-            &CapabilityPlan::empty(),
-        );
-        assert!(
-            argv.windows(3).any(|w| w[0] == "--ro-bind"
-                && w[1] == "/run/user/1234/bus"
-                && w[2] == "/run/user/1234/bus"),
-            "direct bus ro-bind missing from argv: {argv:?}"
         );
     }
 
