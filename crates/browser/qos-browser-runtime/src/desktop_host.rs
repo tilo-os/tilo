@@ -730,7 +730,12 @@ mod tests {
                 .and_then(|node| semantic(node, label))
                 .or_else(|| node.children.iter().find_map(|node| access(node, label)))
         }
-        for pointer in [true, false] {
+        for (pointer, beforeinput, pointer_move) in [
+            (true, false, false),
+            (false, false, false),
+            (true, true, true),
+            (true, false, true),
+        ] {
             let (mut root, handle, _storage) = fixture();
             let mut topology = handle.tree.borrow().clone();
             let groups = &mut topology.workspaces[0].strips[0].window_groups;
@@ -795,7 +800,32 @@ mod tests {
                     .to_rect();
                 // The real partially visible composer, without any previous
                 // Writer gesture or semantic activation warming its flags.
-                frame.click_at((rect.x0 + 740.0) / 2.0, rect.center().y);
+                if pointer_move {
+                    // Real pointer streams can move while pressed without
+                    // selecting any text, especially in an empty composer.
+                    use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+                    let moved = WindowEvent::CursorMoved {
+                        device_id: DeviceId::dummy(),
+                        position: winit::dpi::PhysicalPosition::new(
+                            (rect.x0 + 740.0) / 2.0,
+                            rect.center().y,
+                        ),
+                    };
+                    frame.send_host_event(&moved);
+                    frame.send_host_event(&WindowEvent::MouseInput {
+                        device_id: DeviceId::dummy(),
+                        state: ElementState::Pressed,
+                        button: MouseButton::Left,
+                    });
+                    frame.send_host_event(&moved);
+                    frame.send_host_event(&WindowEvent::MouseInput {
+                        device_id: DeviceId::dummy(),
+                        state: ElementState::Released,
+                        button: MouseButton::Left,
+                    });
+                } else {
+                    frame.click_at((rect.x0 + 740.0) / 2.0, rect.center().y);
+                }
             } else {
                 frame
                     .perform_semantic_named(&owner, Some(&target), &ui::a11y::Action::Focus)
@@ -810,8 +840,20 @@ mod tests {
                 frame.frame_output().ime.is_some(),
                 "cold Chat must expose its actual IME owner"
             );
-            // First ordinary canvas key, before the hidden DOM editor enables IME.
-            frame.key("N");
+            // Exercise both ordinary keys and the hidden editor's beforeinput
+            // route, which delivers committed text through IME.
+            if beforeinput {
+                use winit::event::{Ime, Modifiers, WindowEvent};
+                frame.send_host_event(&WindowEvent::Focused(true));
+                frame.send_host_event(&WindowEvent::Ime(Ime::Enabled));
+                // Printable hidden-editor keys publish modifier snapshots,
+                // but the text itself is delivered only by beforeinput/IME.
+                frame.send_host_event(&WindowEvent::ModifiersChanged(Modifiers::default()));
+                frame.send_host_event(&WindowEvent::Ime(Ime::Commit("N".into())));
+                frame.send_host_event(&WindowEvent::ModifiersChanged(Modifiers::default()));
+            } else {
+                frame.key("N");
+            }
             assert_eq!(
                 access(&frame.inspection().root, "Message composer")
                     .unwrap()
@@ -819,6 +861,32 @@ mod tests {
                     .as_deref(),
                 Some("N")
             );
+            let selection = access(&frame.inspection().root, "Message composer")
+                .unwrap()
+                .text_selection
+                .unwrap();
+            assert_eq!(
+                (selection.anchor, selection.focus),
+                (1, 1),
+                "first insertion must leave a collapsed caret"
+            );
+            if pointer_move {
+                if beforeinput {
+                    frame.send_host_event(&winit::event::WindowEvent::Ime(
+                        winit::event::Ime::Commit("x".into()),
+                    ));
+                } else {
+                    frame.key("x");
+                }
+                assert_eq!(
+                    access(&frame.inspection().root, "Message composer")
+                        .unwrap()
+                        .value
+                        .as_deref(),
+                    Some("Nx")
+                );
+                frame.key("Backspace");
+            }
             frame.type_text("avigation two-peer check");
             for event in [
                 winit::event::WindowEvent::Focused(true),

@@ -2893,6 +2893,9 @@ impl TextInput {
             self.caret_affinity = TextAffinity::Before;
             insert_char_at = char_idx;
         }
+        // A drag can leave an anchor equal to the old caret. Insertion must
+        // collapse that anchor too, or the newly inserted text becomes selected.
+        self.selection_anchor = None;
         // Latest-wins per position, so a peer typing into another's text splits their run correctly.
         if let (Some(obj_id), Some(author)) = (obj_id, &self.local_author) {
             let nchars = s.chars().count();
@@ -6993,6 +6996,24 @@ mod tests {
         assert_eq!(ti.value(), "B2:D4");
         assert_eq!(ti.cursor_pos(), "B2:D4".len());
         assert_eq!(ti.take_dirty().as_deref(), Some("B2:D4"));
+    }
+
+    #[test]
+    fn insertion_collapses_an_empty_drag_selection() {
+        for (text, caret, expected) in [("", 0, "Nx"), ("ab", 1, "aNxb")] {
+            let mut ti = TextInput::new(Vec::new());
+            ti.set_text(text);
+            // A real same-position drag may retain an anchor at its caret.
+            ti.cursor_pos = caret;
+            ti.selection_anchor = Some(caret);
+            let mut doc = AutoCommit::new();
+            ti.insert_str("N", &mut doc, None);
+            assert_eq!(ti.selection_range_public(), None);
+            assert_eq!(ti.cursor_pos(), caret + 1);
+            ti.insert_str("x", &mut doc, None);
+            assert_eq!(ti.value(), expected);
+            assert_eq!(ti.selection_range_public(), None);
+        }
     }
 
     /// The path Ctrl+V uses when pasting over selected text.
