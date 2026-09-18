@@ -92,6 +92,10 @@ has "$workflow" 'needs: signing-preflight' \
   'expensive native snapshot builds wait for signing-authority preflight'
 has "$workflow" 'python3 os/dev/promote-native-index.py' \
   'snapshot promotion verifies signed native children'
+has "$workflow" 'driver = "vfs"' \
+  'snapshot promotion isolates Podman storage from the runner overlay'
+has "$workflow" 'rm -f -- "${AWS_WEB_IDENTITY_TOKEN_FILE:-}"' \
+  'snapshot promotion preserves web-identity token cleanup when extending its exit trap'
 has "$workflow" 'git diff --quiet "$GITHUB_SHA" FETCH_HEAD -- "${snapshot_inputs[@]}"' \
   'snapshot pin updates reject build-input changes while allowing unrelated commits'
 has "$workflow" 'git checkout --detach FETCH_HEAD' \
