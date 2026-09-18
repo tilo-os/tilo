@@ -4,7 +4,7 @@
 ARG BASE_REF
 FROM ${BASE_REF}
 RUN dnf install -y git cmake ninja-build pkgconf-pkg-config ccache clang lld \
-      llvm llvm-devel clang-devel openssl-devel python3-clang python3-setuptools \
+      llvm llvm-devel clang-devel python3-clang python3-setuptools \
       alsa-lib-devel libdrm-devel libglvnd-devel libX11-devel libXrandr-devel \
       libXrender-devel libxcb-devel wayland-devel libxshmfence-devel \
       squashfs-tools squashfuse erofs-fuse erofs-utils \

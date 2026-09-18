@@ -33,6 +33,7 @@ development_signer_setup="$repo/os/dev/setup-development-signer.py"
 development_compiler="$repo/os/dev/compile-development-os.py"
 development_trust="$repo/os/dev/development-trust.py"
 development_compile_container="$repo/os/Containerfile.development-compile"
+fex_buildroot_container="$repo/os/Containerfile.fex-buildroot"
 development_boot_fixture="$repo/os/tests/test_development_boot.py"
 development_signer_fixture="$repo/os/tests/development_signer.py"
 tls_registry_fixture="$repo/os/tests/tls_registry_fixture.py"
@@ -74,6 +75,12 @@ elif grep -Eq 'dnf .*install.*(openssl|sbsigntools)' "$development_compile_conta
   bad 'retained development compiler still installs OpenSSL or sbsigntools'
 else
   ok 'retained development trust tooling uses only Rust-native crypto'
+fi
+if grep -Eq 'dnf .*install.*openssl-devel|^[[:space:]]+.*openssl-devel' \
+    "$fex_buildroot_container"; then
+  bad 'FEX cross-build tooling still installs OpenSSL development files'
+else
+  ok 'FEX cross-build tooling does not carry OpenSSL development files'
 fi
 if rg -n -i '\b(openssl|sbsign|sbverify)\b' \
     "$development_boot_fixture" "$development_signer_fixture" \
