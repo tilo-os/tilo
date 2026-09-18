@@ -22,9 +22,11 @@ class InstallerTargetModeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             esp = root / 'esp'
-            uki = esp / 'EFI/Linux/bootc/bootc_composefs-fixture.efi'
+            uki = esp / ('EFI/Linux/bootc/bootc_composefs-' + 'a' * 128 + '.efi')
             uki.parent.mkdir(parents=True)
             uki.write_bytes(b'live installer')
+            old = uki.with_name('bootc_composefs-' + 'b' * 128 + '.efi')
+            old.write_bytes(b'old installed generation')
             bundle = root / 'source/tilo-target'
             (bundle / 'predictions').mkdir(parents=True)
             (bundle / 'tilo-target.efi').write_bytes(b'signed target bytes')
@@ -33,20 +35,23 @@ class InstallerTargetModeTests(unittest.TestCase):
             # Replace only the external command-line parser with a fixture;
             # execute production copy/promotion/path logic on ordinary files.
             body = body.replace('/usr/libexec/tilo-uki-cmdline', 'fixture_cmdline')
+            body = body.replace('/usr/libexec/tilo-verified-boot-install-preflight', 'fixture_preflight')
             script = '''set -euo pipefail
 LOCAL_IMG=fixture
 die() { echo "$*" >&2; exit 1; }
-fixture_cmdline() { echo 'root=tilo-auto tilo.mode=normal'; }
+fixture_preflight() { return 0; }
+fixture_cmdline() { printf 'root=tilo-auto tilo.mode=normal composefs=%s\\n' "$FIXTURE_DIGEST"; }
 podman() {
   while [ "$1" != -v ]; do shift; done
   destination="${2%:/target-esp}"
   cp -R "$FIXTURE_SOURCE/tilo-target" "$destination/"
 }
 promote_target_uki() {\n''' + body + '\n}\npromote_target_uki "$FIXTURE_ESP"\n'
-            env = dict(os.environ, FIXTURE_SOURCE=str(root / 'source'), FIXTURE_ESP=str(esp))
+            env = dict(os.environ, FIXTURE_SOURCE=str(root / 'source'), FIXTURE_ESP=str(esp), FIXTURE_DIGEST='a' * 128)
             result = subprocess.run(['bash', '-c', script], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(uki.read_bytes(), b'signed target bytes')
+            self.assertEqual(old.read_bytes(), b'old installed generation')
             self.assertEqual((esp / 'EFI/tilo/pcr-predictions/generation-42.json').read_text(), 'prediction')
             second = subprocess.run(['bash', '-c', script], env=env, capture_output=True, text=True)
             self.assertNotEqual(second.returncode, 0)
