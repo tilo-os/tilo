@@ -30,6 +30,14 @@ Btrfs+systemd+composefs layout only. Different actual layout/entry defaults fail
 closed and must be reconciled with real bootc output before acceptance; do not
 weaken checks merely to obtain a successful receipt.
 
+This verifies a normal installed target disk, **not the installer/live medium**.
+The medium's selected live UKI carries `tilo.install`, while its separate
+`/boot/tilo-target/tilo-target.efi` is the normal installation target. This helper
+intentionally requires the selected installed UKI to match that independently
+verified normal target. Media acceptance needs distinct authenticated live-UKI
+and target-UKI receipts and separate live boot tests; do not point this helper
+at the live UKI or relax its command-line/target matching checks.
+
 `installed_bytes_verified` and `installable` remain false. The receipt reports
 the checks actually performed, retains material-audit coverage/limitations,
 and explicitly leaves independent source OCI-layer private-material evidence
