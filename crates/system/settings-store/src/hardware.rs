@@ -1095,7 +1095,10 @@ impl Default for ShortcutConfig {
             (ShortcutAction::WorkspaceOverview, super_chord("tab")),
             (ShortcutAction::Lock, super_chord("l")),
             (ShortcutAction::QuickSettings, super_chord("q")),
-            (ShortcutAction::ShortcutHelp, super_chord("/")),
+            // A physical question-mark press reports the shifted slash key
+            // plus Shift. Keep the stored/default chord identical to that
+            // live event rather than accepting the unshifted slash instead.
+            (ShortcutAction::ShortcutHelp, super_shift_chord("/")),
             // Spatial arrows are the always-visible desktop model. Alt+Tab
             // remains an immutable conventional ring alias in the shell.
             (ShortcutAction::FocusPreviousWindow, super_chord("left")),
