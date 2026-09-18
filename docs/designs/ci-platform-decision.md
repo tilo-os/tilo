@@ -1,6 +1,7 @@
 # CI platform decision: Forgejo Actions and build reuse
 
-Date: 2026-09-18. Status: recommended direction with a required qualification gate.
+Updated: 2026-09-19. Status: provisional executor retained; emergency relief
+deployed, with build-graph and production integration qualification still required.
 Applies to the [continuous build roadmap](continuous-build-release-platform.md) and [alpha integration plan](alpha-ci-integration.md).
 
 ## Decision
@@ -24,7 +25,8 @@ Live integration evidence now supplements the schema inspection:
 required-status rejection, wrong-head rejection, a successful exact-head merge
 and rejection of a sequential competing stale candidate. This supports continuing
 with native primitives first. It does not qualify concurrent/native auto-merge,
-independent review, status issuers, ordinary-user permissions or runner scheduling.
+trusted status issuers or runner scheduling; later review and permission probes
+provide narrower evidence below.
 
 Subsequent live probes found that queued auto-merge follows a changed head when
 its new required status succeeds, and that candidate workflow code can publish
@@ -34,6 +36,22 @@ integration worker for exact-head evidence verification and immediate landing;
 keep Forgejo as the CI executor while scheduler qualification continues. This
 finding does not itself justify replacing the CI platform or creating a custom
 build scheduler. See the same pilot report for the positive observations and limits.
+
+The [restricted-integrator proof](../../experiments/ci-forgejo/results/integrator-permissions-20260919/README.md)
+now demonstrates non-admin exact-head merging with enforced approval and merge
+allowlists in a private fixture repository. Protection edits and product access
+were denied. Author and reviewer remain administrators; synthetic status input
+is not trusted CI evidence. Routine automatic integration is still unimplemented,
+and product protections were not changed by this experiment.
+
+Emergency relief is a separate deployed increment: the coordinating task reports
+product `0975d89a8` and infrastructure `ffbd` live. The
+[emergency runbook](../ci-emergency-relief.md) on main records operational details.
+Every main revision retains check/lint; only eligible superseded heavy runs are
+coalesced. Reserved quality capacity, a lean image and reduced automatic heavy
+fan-out improve the executor without deciding the long-term build graph. This
+deployment is not load/recovery qualification or delivery of continuous packaging.
+Keep measuring actual queue and execution time before selecting a replacement.
 
 Follow-up: [isolated experiment results](ci-build-graph-experiments.md) demonstrate
 affected selection on this workspace and fine-grained caching on a small Linux

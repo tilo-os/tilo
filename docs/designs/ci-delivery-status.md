@@ -1,10 +1,30 @@
 # CI/dev workflow delivery status
 
 Goal: deliver the full CI/dev and continuous packaging workflow described in the
-companion designs. Branch-local implementations below are not deployed policy.
-Main and the ongoing hardware bring-up remain untouched.
+companion designs. Updated 2026-09-19: emergency relief is deployed with user
+authorization. Broader experiments and the production roadmap remain incomplete.
 
-## Implemented on the experiment branch
+## Deployed relief versus experiments
+
+The coordinating emergency task reports product checkpoint `0975d89a8` and
+infrastructure checkpoint `ffbd` deployed. Product contents were inspected in the
+emergency checkout; infrastructure deployment is the operator's reported snapshot.
+Neither checkpoint establishes green main CI. The [emergency runbook](../ci-emergency-relief.md)
+on main records deployment details, recovery and per-run validation; that file
+may not yet exist in older experiment checkouts.
+
+Relief stops broad per-push OS/distribution build fan-out, retains explicit and
+scheduled heavy paths, disables retained macOS lanes, and coalesces only eligible
+superseded heavy work. Every main commit retains check/lint work with per-SHA
+groups. A reserved quality lane and qualified lean image support short feedback.
+Focused contract commands, runtime handoff repair and narrow documentation
+applicability are also integrated. Hardware bring-up requests remain outside the
+heavy-run cleanup policy. Continuous dependency-aware packaging remains unfinished.
+
+Routine automatic merging is still unimplemented. Task-branch/PR instructions and
+private protection experiments do not create a deployed integration service.
+
+## Implementation and experiment history
 
 - Dependency/cache experiments and the architecture/production roadmap, including
   direct integration versus automatic PR integration tradeoffs.
@@ -30,13 +50,13 @@ Main and the ongoing hardware bring-up remain untouched.
   PRs run preflight contracts, with distribution builds on main/explicit runs.
 - Removed continuous OS publication and the desktop-to-OS release dispatch.
   OS tags and explicit manual main publication remain. RPM completion can still
-  request a non-publishing integration candidate. These are branch-local changes,
-  not a claim about the live instance's deployed policy.
+  request a non-publishing integration candidate. Later deployed relief supersedes this initial branch-local
+  trigger policy; see the runbook above.
 - Private isolated Forgejo merge probes now demonstrate missing-status and
   expected-head rejection, exact-head fast-forward landing and refusal of a
   sequential competing stale candidate. See `experiments/ci-forgejo/README.md`
   for raw evidence and the initial inconclusive run. Product repository settings
-  remain unchanged; independent review and permission isolation are not proven.
+  were unchanged by those probes; later permission evidence follows below.
 - A live queued-auto-merge probe followed a changed head once that new head was
   green. A candidate-controlled Actions job also minted the required status using
   its built-in token. Native context names are insufficient as trusted readiness;
@@ -53,6 +73,13 @@ Main and the ongoing hardware bring-up remain untouched.
   read-only `experiments/ci-forgejo/audit-run.py` rejects that execution evidence;
   its seven tests cover missing/mismatched/non-success records. This is not yet a
   trusted readiness gate: workflow/script provenance and runner trust remain.
+
+- The [restricted integrator pilot](../../experiments/ci-forgejo/results/integrator-permissions-20260919/README.md)
+  proved non-admin `qos-integrator` could merge the approved exact fixture head,
+  could not edit protection or access the product repository, and could not merge
+  without approval. Direct author push and author merge were rejected. The green
+  status was synthetic; author/reviewer retained administrative policy-edit power.
+  Product grants, trusted CI provenance and the automatic worker remain unqualified.
 
 ## Validation of this implementation
 
@@ -77,8 +104,9 @@ Main and the ongoing hardware bring-up remain untouched.
   upstream synchronization using the pinned Rust 1.97.1 (5m 22s). The earlier
   pre-sync attempt was interrupted for disk pressure; the successful later run
   supersedes it. Disk capacity and cache retention remain practical constraints.
-- No live Forgejo execution, native cross-platform build, VM boot, hardware
-  qualification or deployment is claimed by these local results.
+- Local checks alone establish no native cross-platform build, VM boot or hardware
+  qualification. Live pilot and deployment evidence above establish only their
+  explicitly described scopes.
 
 ## Still required for the full goal
 
@@ -89,16 +117,18 @@ tests pass with the fix. Cargo metadata now uses `--locked`.
 An actual metadata probe on the current 141-package workspace selected 4 packages
 for `apps/calculator/src/main.rs` (2 native matrix jobs), 68 for `ui/src/lib.rs`
 (4 jobs), and 3 contract packages for `docs/architecture.md` (2 jobs). These are
-selection counts, not build-time measurements. Docs-only Rust work remains a
-feedback-cost opportunity; changing that policy requires explicit empty-selection
-and required-gate behavior rather than silently skipping checks.
+selection counts, not build-time measurements. Later policy omits Rust for design prose and four audited developer/CI documents.
+Live Forgejo testing found empty matrices could block the aggregate; the deployed
+sentinel row is skipped without allocating a runner and preserves an explicit
+aggregate result. Security/selection remain mandatory; full requests override it.
 
 The imager workflow now explicitly disables the retained macOS build and cask
 test jobs. Linux/Windows publication no longer waits for macOS assets; Linux
 Homebrew publication leaves the retained cask publisher disabled through
 `TILO_IMAGER_MACOS_ENABLED=0`. Existing published casks are not advanced or deleted.
 The real release artifact gate passes with both enabled architectures and still
-rejects missing/corrupt enabled artifacts. These changes are local, not deployed.
+rejects missing/corrupt enabled artifacts. macOS deferral is included in deployed relief; this local
+artifact test remains narrower than native acceptance.
 Website promotion rejects rendered macOS download links until the separate
 website supports the enabled matrix; its repository lookup returned HTTP 404,
 so that consumer remains unqualified. No website state was changed.
@@ -106,7 +136,7 @@ so that consumer remains unqualified. No website state was changed.
 | Requirement | Evidence still needed |
 | --- | --- |
 | Cheap normal branch/PR path | Qualify the implemented trigger split on Forgejo; implement trusted affected-policy classification and relevant required proof before automatic merging |
-| Automatic routine integration and independent review | Build on the sequential live pilot: prove simultaneous/native automatic merges, exact-head independent review, trusted check identity, ordinary-user permissions and recovery before product protection/cutover |
+| Automatic routine integration and independent review | Implement trusted worker; qualify CI provenance, simultaneous merges, ordinary author/reviewer permissions and recovery; restricted integrator enforcement is proven only in the private pilot |
 | First useful retained baseline | Discover/admit actual bootable image and unsigned inputs; preserve digests, trust, source/helper identities and separate VM/board evidence |
 | Targeted real installer/desktop testing | Supported commands consume that baseline, restore disposable state and produce actual test results without unrelated compilation/assembly |
 | End-to-end feedback measurements | Trace real planning, queue, compilation, layer snapshots, transfers, finalization/signing, worker setup and tests; current contract timings are only a small part |
@@ -119,5 +149,6 @@ so that consumer remains unqualified. No website state was changed.
 | Production readiness | Independent reproducibility, signed evidence, update/recovery/hardware qualification, staged promotion, retention and key lifecycle from the roadmap |
 
 Do not mark the goal complete from the experiments, contract tests or a green
-branch alone. Deployment remains subject to the user's no-main constraint until
-the user authorizes that integration step.
+branch alone. Emergency CI deployment was subsequently authorized and performed;
+this does not establish readiness or authorization for unrelated product
+protection, release promotion or wholesale build-system migration.
