@@ -64,7 +64,7 @@ architecture, and the Cap'n Proto compiler (`capnp.exe` on `PATH`). The native
 ARM64 toolkit, Calculator, Notes, Calendar, Contacts, Sheets, Slides, Weather and
 Scratchpad, Files, Word Processor, Terminal, PDF Viewer, Books, Clocks, Image Editor,
 Photos, Hex Editor, Code Editor, API Tester, Diff and Merge, Snippets, Database
-Client and Git Client have been built and run on Windows.
+Client, Git Client and Feeds have been built and run on Windows.
 Other apps are still being ported; a workspace-wide build currently includes
 Linux services and is not a Windows
 application build command.
