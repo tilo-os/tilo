@@ -259,6 +259,7 @@ mod device_fabric_ui_tests {
                     has_video: true,
                     targets: vec![remote.clone()],
                 }],
+                media_handoffs: Vec::new(),
                 local_outputs: vec![LocalMediaOutputView {
                     node_id: 41,
                     label: "Bluetooth headphones".into(),
@@ -318,6 +319,40 @@ mod device_fabric_ui_tests {
         assert!(actions.contains(&DeviceFabricUiAction::GrantControl {
             controller: DeviceId::new("certified-laptop").unwrap(),
         }));
+    }
+
+    #[test]
+    fn failed_media_handoff_row_retries_the_exact_request() {
+        let (mut view, remote) = fixture();
+        view.media_handoffs = vec![
+            crate::shell::device_fabric_runtime::MediaHandoffStatusView {
+                request_id: [7; 16],
+                session_id: "dev.tilo.video:7".into(),
+                title: "Shared film".into(),
+                target: remote,
+                target_label: "Travel laptop".into(),
+                phase: crate::shell::device_fabric_runtime::MediaHandoffPhase::Failed(
+                    crate::shell::device_fabric::MediaHandoffFailure::OpenFailed,
+                ),
+            },
+        ];
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&actions);
+        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        host.set_device_fabric_bridge(Rc::new(move |action| {
+            recorded.borrow_mut().push(action);
+            Ok(view.clone())
+        }));
+
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(0).center());
+        assert!(
+            actions
+                .borrow()
+                .contains(&DeviceFabricUiAction::RetryMediaHandoff {
+                    request_id: [7; 16],
+                })
+        );
     }
 
     #[test]
@@ -1102,6 +1137,7 @@ pub struct DeviceFabricView {
     pub local_gamepads: Vec<crate::shell::physical_gamepad::LocalPhysicalGamepadView>,
     pub devices: Vec<FabricDeviceView>,
     pub local_media: Vec<FabricMediaView>,
+    pub media_handoffs: Vec<crate::shell::device_fabric_runtime::MediaHandoffStatusView>,
     pub local_outputs: Vec<LocalMediaOutputView>,
     pub transfers: Vec<FabricTransferView>,
     pub remote_audio: crate::shell::remote_audio::RemoteAudioView,
@@ -1118,6 +1154,12 @@ pub enum DeviceFabricUiAction {
     HandoffMedia {
         session_id: String,
         target: crate::shell::personal_continuity::DeviceId,
+    },
+    CancelMediaHandoff {
+        request_id: [u8; 16],
+    },
+    RetryMediaHandoff {
+        request_id: [u8; 16],
     },
     RouteLocalAudio {
         node_id: u32,
@@ -1236,6 +1278,7 @@ enum DeviceFabricPaneRow {
     BluetoothAuthorization(BluetoothHandoffAuthorizationView),
     GamepadAuthorization(GamepadAuthorizationView),
     LocalGamepad(crate::shell::physical_gamepad::LocalPhysicalGamepadView),
+    MediaHandoff(crate::shell::device_fabric_runtime::MediaHandoffStatusView),
     Media(FabricMediaView),
     LocalOutput(LocalMediaOutputView),
     Tethering(crate::shell::personal_tethering_runtime::TetheringStatusView),
@@ -1350,6 +1393,12 @@ fn device_fabric_pane_rows(
                 .map(DeviceFabricPaneRow::LocalGamepad),
         )
         .chain(
+            view.media_handoffs
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::MediaHandoff),
+        )
+        .chain(
             view.local_media
                 .iter()
                 .cloned()
@@ -1383,6 +1432,20 @@ fn remote_capture_kind_label(
         crate::shell::remote_capture_device::RemoteCaptureKind::Camera => "camera",
         crate::shell::remote_capture_device::RemoteCaptureKind::Microphone => "microphone",
         crate::shell::remote_capture_device::RemoteCaptureKind::DocumentScanner => "scanner",
+    }
+}
+
+fn media_handoff_failure_label(
+    failure: crate::shell::device_fabric::MediaHandoffFailure,
+) -> &'static str {
+    use crate::shell::device_fabric::MediaHandoffFailure;
+    match failure {
+        MediaHandoffFailure::DestinationUnavailable => "destination unavailable",
+        MediaHandoffFailure::UnsupportedOutput => "destination cannot play this media",
+        MediaHandoffFailure::InvalidWorkspace => "workspace is unavailable there",
+        MediaHandoffFailure::OpenFailed => "destination could not open it",
+        MediaHandoffFailure::TimedOut => "destination did not respond",
+        MediaHandoffFailure::Cancelled => "cancelled",
     }
 }
 
@@ -11836,6 +11899,25 @@ impl ShellOverlayHost {
                     return;
                 }
             }
+            DeviceFabricPaneRow::MediaHandoff(status) => match status.phase {
+                crate::shell::device_fabric_runtime::MediaHandoffPhase::Pending => Some((
+                    DeviceFabricUiAction::CancelMediaHandoff {
+                        request_id: status.request_id,
+                    },
+                    format!(
+                        "Cancelled moving {} to {}",
+                        status.title, status.target_label
+                    ),
+                )),
+                crate::shell::device_fabric_runtime::MediaHandoffPhase::Failed(_)
+                | crate::shell::device_fabric_runtime::MediaHandoffPhase::Cancelled => Some((
+                    DeviceFabricUiAction::RetryMediaHandoff {
+                        request_id: status.request_id,
+                    },
+                    format!("Retrying {} on {}", status.title, status.target_label),
+                )),
+                crate::shell::device_fabric_runtime::MediaHandoffPhase::Completed => None,
+            },
             DeviceFabricPaneRow::Media(media) => {
                 self.qs_selected_media = Some(media.session_id);
                 self.qs_selected_realtime = None;
@@ -14826,6 +14908,20 @@ impl Widget for ShellOverlayHost {
                                             } else {
                                                 "Choose this local controller, then choose a certified destination"
                                                     .into()
+                                            },
+                                            Vec::new(),
+                                        ),
+                                        DeviceFabricPaneRow::MediaHandoff(status) => (
+                                            format!("{} on {}", status.title, status.target_label),
+                                            match status.phase {
+                                                crate::shell::device_fabric_runtime::MediaHandoffPhase::Pending =>
+                                                    "Waiting for the destination to open; activate to cancel".into(),
+                                                crate::shell::device_fabric_runtime::MediaHandoffPhase::Completed =>
+                                                    "Opened on the destination".into(),
+                                                crate::shell::device_fabric_runtime::MediaHandoffPhase::Failed(failure) =>
+                                                    format!("Handoff failed: {}; activate to retry", media_handoff_failure_label(failure)),
+                                                crate::shell::device_fabric_runtime::MediaHandoffPhase::Cancelled =>
+                                                    "Handoff cancelled; activate to retry".into(),
                                             },
                                             Vec::new(),
                                         ),
@@ -19728,6 +19824,32 @@ impl ShellOverlayHost {
                     ui::icons::Icon::Mouse,
                     self.qs_selected_gamepad == Some(gamepad.token) || gamepad.forwarding.is_some(),
                     true,
+                ),
+                DeviceFabricPaneRow::MediaHandoff(status) => (
+                    format!("{} on {}", status.title, status.target_label),
+                    match status.phase {
+                        crate::shell::device_fabric_runtime::MediaHandoffPhase::Pending =>
+                            "Waiting for destination · select to cancel".into(),
+                        crate::shell::device_fabric_runtime::MediaHandoffPhase::Completed =>
+                            "Opened on destination".into(),
+                        crate::shell::device_fabric_runtime::MediaHandoffPhase::Failed(failure) =>
+                            format!("Could not move media ({}) · select to retry", media_handoff_failure_label(failure)),
+                        crate::shell::device_fabric_runtime::MediaHandoffPhase::Cancelled =>
+                            "Cancelled · select to retry".into(),
+                    },
+                    if view
+                        .local_media
+                        .iter()
+                        .find(|media| media.session_id == status.session_id)
+                        .is_some_and(|media| media.has_video)
+                    {
+                        ui::icons::Icon::Film
+                    } else {
+                        ui::icons::Icon::Music
+                    },
+                    false,
+                    status.phase
+                        != crate::shell::device_fabric_runtime::MediaHandoffPhase::Completed,
                 ),
                 DeviceFabricPaneRow::Media(media) => (
                     media.title.clone(),
