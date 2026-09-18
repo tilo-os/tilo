@@ -269,22 +269,32 @@ if grep -qw user_shstk /proc/cpuinfo 2>/dev/null; then
 else
   note "CPU/kernel report no user shadow-stack support (pre-Tiger Lake / pre-Zen 5); the ELF marking is inert here"
 fi
-# Secure Boot. Read the EFI variable directly; Tilo removes shim and mokutil, and
+# Secure Boot. Read firmware state directly; Tilo removes shim and mokutil, and
 # its health result must not depend on a legacy command-line parser reappearing.
-sb_var() {
-  local f
-  f="$(ls /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c 2>/dev/null | head -1)"
-  [ -n "$f" ] || return 1
-  od -An -tu1 -j4 -N1 "$f" 2>/dev/null | tr -d ' \n'
+# Both indicators are five-byte efivarfs records: 0x6 boot-service/runtime
+# attributes followed by one boolean byte. Rejecting lookalike files keeps a
+# malformed mount or test fixture from impersonating firmware state.
+security_efivars="${TILO_SECURITY_EFIVARS:-/sys/firmware/efi/efivars}"
+efi_boolean() {
+  local f="$security_efivars/$1-8be4df61-93ca-11d2-aa0d-00e098032b8c" attrs value
+  if [ ! -e "$f" ]; then printf 'missing\n'; return; fi
+  if [ ! -f "$f" ] || [ -L "$f" ] || [ "$(stat -c %s "$f" 2>/dev/null)" != 5 ]; then
+    printf 'invalid\n'; return
+  fi
+  attrs="$(od -An -tx1 -N4 "$f" 2>/dev/null | tr -d ' \n')"
+  value="$(od -An -tu1 -j4 -N1 "$f" 2>/dev/null | tr -d ' \n')"
+  if [ "$attrs" != 06000000 ]; then printf 'invalid\n'; return; fi
+  case "$value" in 0|1) printf '%s\n' "$value" ;; *) printf 'invalid\n' ;; esac
 }
-if v="$(sb_var)"; then
-  [ "$v" = "1" ] && sb="SecureBoot enabled" || sb="SecureBoot disabled"
-else
-  sb="no Secure Boot variables (not UEFI, or no SB support)"
-fi
-case "$sb" in
-  *enabled*) ok "Secure Boot: $sb" ;;
-  *) note "Secure Boot: $sb — native Tilo will not create a TPM short-PIN slot until verified boot and kernel lockdown are active (see /usr/share/doc/tilo/boot-chain.md)" ;;
+sb="$(efi_boolean SecureBoot)"
+setup="$(efi_boolean SetupMode)"
+case "$sb:$setup" in
+  1:0) ok "Secure Boot enabled with firmware outside Setup Mode" ;;
+  missing:missing)
+    note "Secure Boot: no firmware variables (not UEFI, or no SB support) — native Tilo will not create a TPM short-PIN slot until verified boot and kernel lockdown are active (see /usr/share/doc/tilo/boot-chain.md)" ;;
+  0:0) note "Secure Boot disabled; enrolled platform keys are not enforcing this boot" ;;
+  0:1) note "Secure Boot disabled while firmware remains in Setup Mode" ;;
+  *) warn "Secure Boot firmware state is malformed or contradictory: SecureBoot=$sb SetupMode=$setup" ;;
 esac
 
 # Owner-enrolled Secure Boot: are the keys there, and will the next deployment's
