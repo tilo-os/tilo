@@ -1897,6 +1897,7 @@ mod tests {
 
     #[cfg(all(feature = "audio", feature = "live"))]
     #[test]
+    #[serial_test::serial(audio_backend)]
     fn staged_file_pump_uses_native_uri_and_renders_audio() {
         use gstreamer::prelude::*;
         use std::sync::Arc;
