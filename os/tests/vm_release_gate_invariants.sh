@@ -41,7 +41,7 @@ if x86_platform="$(platform_probe amd64)" \
   && grep -Fq 'qemu=qemu-system-aarch64' <<<"$arm_platform" \
   && grep -Fq 'machine=-machine virt,gic-version=max' <<<"$arm_platform" \
   && grep -Fq 'display=-device virtio-gpu-pci,' <<<"$arm_platform" \
-  && grep -Fq 'input=-device qemu-xhci -device usb-tablet' <<<"$arm_platform"; then
+  && grep -Fxq 'input=-device qemu-xhci -device usb-tablet -device usb-kbd' <<<"$arm_platform"; then
   ok 'VM platform selection maps x86 and ARM to native QEMU machines and devices'
 else
   bad 'VM platform selection can mix a release medium with another architecture'
@@ -110,8 +110,8 @@ if grep -Fq -- '--software-tpm) software_tpm=1' "$installer_cycle" \
   && grep -Fq 'TILO_SECBOOT_KEYS=/path/to/pre-enrolled-vars' "$installer_cycle" \
   && grep -Fq 'Microsoft-only store do not trust the owner-signed UKI' "$installer_cycle" \
   && grep -Fq 'TILO_INSTALLER_CYCLE_PIN:-804927' "$installer_cycle" \
-  && grep -Fq '"$vm" boot-installer --gl --tpm' "$installer_cycle" \
-  && grep -Fq '"$vm" boot-target --gl --tpm' "$installer_cycle" \
+  && grep -Fq '"$vm" boot-installer "$display_arg" --tpm' "$installer_cycle" \
+  && grep -Fq '"$vm" boot-target "$display_arg" --tpm' "$installer_cycle" \
   && grep -Fq 'did not pass verified-boot preflight' "$installer_cycle"; then
   ok 'software-TPM graphical cycle is opt-in and fails closed without verified boot'
 else
