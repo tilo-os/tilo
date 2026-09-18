@@ -20,7 +20,7 @@ use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::Color;
 use winit::event::WindowEvent;
 
@@ -261,16 +261,13 @@ impl PreviewPane {
         // 1. Desktop background (surface base).
         draw::fill_rect(scene, t, self.rect, th.bg_app);
 
-        // The "app window" card occupies the pane minus a margin.
-        draw::fill_rrect(scene, t, layout.card, layout.radius + 4.0, th.bg_primary);
-        draw::stroke_rrect(
-            scene,
-            t,
-            layout.card,
-            layout.radius + 4.0,
-            th.border_standard,
-            1.0,
-        );
+        // The "app window" card occupies the pane minus a margin. Its edge is
+        // derived from the previewed theme's own raised surface
+        // (`ui::surface::card`): this pane is the theme designer's proof that
+        // a border registers under the palette they are building, so a
+        // declared `border_standard` — invisible three shades from a dark
+        // `raised` — would prove the wrong thing.
+        ui::surface::card(scene, t, layout.card, layout.radius + 4.0, th.bg_primary);
 
         // 2. Title bar.
         self.draw_title_bar(scene, t, tr, layout.card, layout.radius, layout.title_bar_h);
@@ -420,20 +417,12 @@ impl PreviewPane {
     /// [`Self::draw_charts_section`]). Free of `self` — it draws only from
     /// its own fixed specimen data and the passed-in theme/geometry.
     fn draw_bar_chart(scene: &mut Scene, t: Affine, rect: Rect, th: &Theme) {
-        draw::fill_rrect(
+        ui::surface::card(
             scene,
             t,
             rect,
             th.radius_standard.clamp(0.0, 12.0),
             th.bg_app,
-        );
-        draw::stroke_rrect(
-            scene,
-            t,
-            rect,
-            th.radius_standard.clamp(0.0, 12.0),
-            th.border_standard,
-            1.0,
         );
         let pad = 12.0;
         let inner = Rect::new(rect.x0 + pad, rect.y0 + pad, rect.x1 - pad, rect.y1 - pad);
@@ -441,13 +430,13 @@ impl PreviewPane {
         let n = data.len();
         let gap = 6.0;
         let bw = (inner.width() - gap * (n as f64 - 1.0)) / n as f64;
-        // baseline grid
+        // baseline grid — the same derived hairline as the panel's edge
         draw::line(
             scene,
             t,
             Point::new(inner.x0, inner.y1),
             Point::new(inner.x1, inner.y1),
-            Self::alpha(th.border_standard, 0.8),
+            ui::surface::edge_on(th.bg_app),
             1.0,
         );
         for (i, v) in data.iter().enumerate() {
@@ -468,20 +457,12 @@ impl PreviewPane {
     /// [`Self::draw_charts_section`]). Free of `self`, for the same reason
     /// as [`Self::draw_bar_chart`].
     fn draw_sparkline(scene: &mut Scene, t: Affine, rect: Rect, th: &Theme) {
-        draw::fill_rrect(
+        ui::surface::card(
             scene,
             t,
             rect,
             th.radius_standard.clamp(0.0, 12.0),
             th.bg_app,
-        );
-        draw::stroke_rrect(
-            scene,
-            t,
-            rect,
-            th.radius_standard.clamp(0.0, 12.0),
-            th.border_standard,
-            1.0,
         );
         let pad = 12.0;
         let inner = Rect::new(rect.x0 + pad, rect.y0 + pad, rect.x1 - pad, rect.y1 - pad);
@@ -523,26 +504,23 @@ impl PreviewPane {
         let th = &self.theme;
         let sem = &th.tokens.colors.semantic;
         let title_bar = Rect::new(card.x0, card.y0, card.x1, card.y0 + tb_h);
-        draw::fill_rrect(
-            scene,
-            t,
-            title_bar,
-            radius + 4.0,
-            Self::lighten(th.bg_primary, 0.04),
-        );
+        let bar_fill = Self::lighten(th.bg_primary, 0.04);
+        draw::fill_rrect(scene, t, title_bar, radius + 4.0, bar_fill);
         // square off the bottom of the title bar so only the top corners round
         draw::fill_rect(
             scene,
             t,
             Rect::new(card.x0, card.y0 + tb_h - 10.0, card.x1, card.y0 + tb_h),
-            Self::lighten(th.bg_primary, 0.04),
+            bar_fill,
         );
+        // The bar's bottom rule is a hairline derived from the bar's own fill,
+        // so it separates bar from body on a dark preset as well as a light one.
         draw::line(
             scene,
             t,
             Point::new(card.x0, card.y0 + tb_h),
             Point::new(card.x1, card.y0 + tb_h),
-            th.border_standard,
+            ui::surface::edge_on(bar_fill),
             1.0,
         );
         // window dots
@@ -651,8 +629,8 @@ impl PreviewPane {
                     );
                 }
                 1 => {
-                    draw::fill_rrect(scene, t, r, layout.radius, th.bg_app);
-                    draw::stroke_rrect(scene, t, r, layout.radius, th.border_standard, 1.0);
+                    // Neutral button: rest face with its derived edge.
+                    ui::surface::card(scene, t, r, layout.radius, th.bg_app);
                     draw::text_center(
                         tr,
                         scene,
@@ -683,14 +661,33 @@ impl PreviewPane {
                     );
                 }
                 _ => {
-                    draw::fill_rrect(scene, t, r, layout.radius, Self::alpha(th.bg_app, 0.6));
+                    // Disabled: the Neutral rest face *and* its edge under the
+                    // toolkit's disabled alpha (HIG §9.5: disabled is the rest
+                    // face under `DISABLED_ALPHA`), so rest and disabled are
+                    // two looks; the edge fades with the face by design.
+                    let disabled = ui::widget::DISABLED_ALPHA;
+                    draw::fill_rrect(
+                        scene,
+                        t,
+                        r,
+                        layout.radius,
+                        Self::alpha(th.bg_app, disabled),
+                    );
+                    draw::stroke_rrect(
+                        scene,
+                        t,
+                        r.inset(-0.5),
+                        (layout.radius - 0.5).max(0.0),
+                        Self::alpha(ui::surface::edge_on(th.bg_app), disabled),
+                        1.0,
+                    );
                     draw::text_center(
                         tr,
                         scene,
                         t,
                         lab,
                         12.5,
-                        Self::alpha(th.text_dim, 0.6),
+                        Self::alpha(th.text_dim, disabled),
                         r.x0,
                         r.x1,
                         r.y0,
@@ -726,7 +723,18 @@ impl PreviewPane {
         // glyphs drawn at the text scale, so every 1× measure in this row
         // follows `layout.scaled`.
         let s = |v: f64| layout.scaled(v);
-        // Toggle (on)
+        // Toggle (on). One knob colour for both toggle states (HIG §9.5):
+        // ink that clears the accent *and* the off track, so the specimen
+        // shows what a real toggle would, not a literal white disc. The same
+        // ink serves the slider thumb below — it clears the same two grounds
+        // (the accent-filled half and the lifted unfilled half).
+        let colors = &th.tokens.colors;
+        let off_track = colors.lift(1.0);
+        let control_ink = colors.ink_on_any(
+            &[off_track, th.accent_primary],
+            th.text_primary,
+            ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+        );
         let tg = Rect::new(cx, y, cx + s(44.0), y + s(24.0));
         draw::fill_rrect(scene, t, tg, s(12.0), th.accent_primary);
         draw::circle(
@@ -734,7 +742,7 @@ impl PreviewPane {
             t,
             Point::new(tg.x1 - s(12.0), tg.center().y),
             s(9.0),
-            Color::WHITE,
+            control_ink,
         );
         draw::text(tr, scene, t, "On", 12.0, th.text_dim, tg.x1 + s(8.0), y + s(5.0));
         // Checkbox (checked)
@@ -774,13 +782,11 @@ impl PreviewPane {
         let track_y = y + row_h / 2.0 - 1.0;
         let fill_frac = 0.62;
         let knob_x = sl_x0 + (sl_x1 - sl_x0) * fill_frac;
-        draw::fill_rrect(
-            scene,
-            t,
-            Rect::new(sl_x0, track_y - 3.0, sl_x1, track_y + 3.0),
-            3.0,
-            th.border_standard,
-        );
+        // Unfilled track: the lifted surface with its derived edge (a
+        // `border_standard` fill was a bar the same three shades as the
+        // ground on dark presets); filled half: the accent.
+        let track = Rect::new(sl_x0, track_y - 3.0, sl_x1, track_y + 3.0);
+        ui::surface::card(scene, t, track, 3.0, off_track);
         draw::fill_rrect(
             scene,
             t,
@@ -788,14 +794,16 @@ impl PreviewPane {
             3.0,
             th.accent_primary,
         );
-        draw::circle(scene, t, Point::new(knob_x, track_y), 8.0, Color::WHITE);
+        // Thumb: the control ink (it clears both halves of the track), with
+        // its own derived edge — never a literal white disc.
+        draw::circle(scene, t, Point::new(knob_x, track_y), 8.0, control_ink);
         draw::stroke_circle(
             scene,
             t,
             Point::new(knob_x, track_y),
-            8.0,
-            th.accent_primary,
-            2.0,
+            7.5,
+            ui::surface::edge_on(control_ink),
+            1.0,
         );
     }
 
@@ -825,19 +833,36 @@ impl PreviewPane {
         let ry0 = list_rect.y0 + i as f64 * rowh;
         let rr = Rect::new(list_rect.x0, ry0, list_rect.x1, ry0 + rowh);
         if i == 1 {
-            draw::fill_rrect(
-                scene,
-                t,
-                rr,
-                radius * 0.6,
-                Self::alpha(th.accent_primary, 0.16),
-            );
-            draw::fill_rect(
-                scene,
-                t,
-                Rect::new(rr.x0, rr.y0 + 6.0, rr.x0 + 3.0, rr.y1 - 6.0),
-                th.accent_primary,
-            );
+            // The chosen row is a lift, not an accent wash (HIG §9.3): the
+            // specimen demonstrates the selection language the OS uses, so a
+            // theme designer sees how *their* palette lifts a row. The tier
+            // is measured against the previewed theme's own surfaces.
+            let tier = ui::chrome::selection_tier(th, ui::chrome::SelectionState::active(true));
+            let row_radius = radius * 0.6;
+            // One `s1` of air keeps the lifted row off the list's own edge and
+            // off the rules above and below it (nothing touches).
+            let sel = rr.inset(-f64::from(ui::tokens::Spacing::BASE.s1));
+            draw::fill_rrect(scene, t, sel, row_radius, tier.fill);
+            if let Some(border) = tier.border {
+                // The toolkit's crisp 1 px outline, half a pixel inside.
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    t,
+                    border,
+                    None,
+                    &ui::surface::edge_outline(sel, row_radius),
+                );
+            }
+            if let Some(glow) = tier.inner_glow {
+                draw::stroke_rrect(
+                    scene,
+                    t,
+                    sel.inset(-1.5),
+                    (row_radius - 1.5).max(0.0),
+                    glow,
+                    1.0,
+                );
+            }
         }
         // The row's glyphs are drawn at the renderer's text scale, and the
         // row height arrives already scaled, so every 1× offset inside the
@@ -854,7 +879,7 @@ impl PreviewPane {
             t,
             &initial,
             12.0,
-            model::color(model::on_color([col.r(), col.g(), col.b()])),
+            th.on_surface(col).ink,
             ac.x - avatar_r,
             ac.x + avatar_r,
             ac.y - avatar_r,
@@ -898,7 +923,9 @@ impl PreviewPane {
                 t,
                 &badge.to_string(),
                 10.0,
-                Color::WHITE,
+                // Ink measured against the badge fill by the previewed
+                // theme's own contrast policy, not a literal white.
+                th.on_surface(sem.danger).ink,
                 br.x0,
                 br.x1,
                 br.y0,
@@ -907,12 +934,14 @@ impl PreviewPane {
             );
         }
         if i + 1 < total {
+            // Row rule: derived against the list's fill, inset from the
+            // panel's corner radius on both ends (HIG §9.5, never full-bleed).
             draw::line(
                 scene,
                 t,
                 Point::new(rr.x0 + 44.0 * s, rr.y1),
                 Point::new(rr.x1 - 10.0, rr.y1),
-                Self::alpha(th.border_standard, 0.6),
+                ui::surface::edge_on(th.bg_app),
                 1.0,
             );
         }
@@ -942,8 +971,7 @@ impl PreviewPane {
             ("Grace Hopper", "Away", sem.warning, 12),
         ];
         let list_rect = Rect::new(cx, y, cx + cw, y + rowh * people.len() as f64);
-        draw::fill_rrect(scene, t, list_rect, radius, th.bg_app);
-        draw::stroke_rrect(scene, t, list_rect, radius, th.border_standard, 1.0);
+        ui::surface::card(scene, t, list_rect, radius, th.bg_app);
         for (i, (name, sub, col, badge)) in people.iter().enumerate() {
             Self::draw_list_row(
                 scene,
@@ -1078,5 +1106,102 @@ mod tests {
             FontChoice::Serif,
             "serif font re-shapes the specimen"
         );
+    }
+
+    /// The specimen is the theme designer's proof that borders register under
+    /// the palette being built (HIG §7: an app's own edge is derived). Render
+    /// the real `draw_specimen` for a dark preset, a light preset and the demo
+    /// custom theme, then read pixels off the frame: the window card's
+    /// outermost column against the card fill beside it, and the list panel's
+    /// outermost column against the panel fill beside it. Both must move
+    /// relative luminance by at least the toolkit's hairline floor — the
+    /// declared `border_standard` this replaced failed that on every dark
+    /// preset. Frames land under `target/ux1x/a3/themes/after/<theme>/` as
+    /// the visual evidence.
+    #[test]
+    fn specimen_paints_visible_derived_edges_on_dark_and_light_palettes() {
+        use ui::a11y::relative_luminance;
+        use ui::offscreen::OffscreenRenderer;
+        use ui::tokens::colors::HAIRLINE_MIN_DELTA;
+
+        let catalog = model::default_catalog();
+        let pick = |id: &str| {
+            catalog
+                .iter()
+                .find(|s| s.id == id)
+                .unwrap_or_else(|| panic!("catalogue ships {id}"))
+                .clone()
+        };
+        // A dark preset, the pure-black preset (the hardest ground for a
+        // hairline), a light preset and the demo custom theme.
+        let specs = [
+            ("dark", pick("qos-dark")),
+            ("dark", pick("oled")),
+            ("light", pick("beige")),
+            ("dark", model::seed_custom()),
+        ];
+        let (w, h) = (640_u32, 860_u32);
+        let pane = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
+        for (folder, spec) in specs {
+            let mut p = PreviewPane::new();
+            p.set_spec(&spec);
+            let th = spec.to_theme();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            p.draw_snapshot(&mut scene, Affine::IDENTITY, &mut tr, pane);
+            // Geometry from the same layout the painter used.
+            let layout = SpecimenLayout::new(&th, pane, 1.0);
+            let card = layout.card;
+            let list_top = layout.list_y + layout.label_h;
+            let list_x0 = layout.cx;
+
+            let mut renderer = OffscreenRenderer::new(w, h);
+            let rgba = renderer.render_rgba(&scene);
+            let lum = |x: f64, y: f64| -> f64 {
+                let i = ((y as usize) * (w as usize) + (x as usize)) * 4;
+                relative_luminance(Color::new([
+                    f32::from(rgba[i]) / 255.0,
+                    f32::from(rgba[i + 1]) / 255.0,
+                    f32::from(rgba[i + 2]) / 255.0,
+                    1.0,
+                ]))
+            };
+            // Window card: its left edge column, halfway down, against the
+            // card fill six pixels in (the content is padded ≥ 14 px).
+            let y = card.center().y;
+            let card_edge = lum(card.x0, y);
+            let card_fill = lum(card.x0 + 6.0, y);
+            assert!(
+                (card_edge - card_fill).abs() >= HAIRLINE_MIN_DELTA,
+                "{}: the specimen card edge must register against its fill \
+                 (edge {card_edge:.4} vs fill {card_fill:.4})",
+                spec.name
+            );
+            // List panel: its left edge column on the first row's centre line
+            // (the avatar starts 10 px in, so six pixels in is panel fill).
+            let ly = list_top + layout.list_row_h * 0.5;
+            let list_edge = lum(list_x0, ly);
+            let list_fill = lum(list_x0 + 6.0, ly);
+            assert!(
+                (list_edge - list_fill).abs() >= HAIRLINE_MIN_DELTA,
+                "{}: the specimen list edge must register against its fill \
+                 (edge {list_edge:.4} vs fill {list_fill:.4})",
+                spec.name
+            );
+
+            let slug: String = spec
+                .id
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                .collect();
+            let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/ux1x/a3/themes/after")
+                .join(folder)
+                .join(format!("specimen-{slug}.png"));
+            if let Some(parent) = out.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            renderer.render_png(&scene, th.bg_app, &out);
+        }
     }
 }
