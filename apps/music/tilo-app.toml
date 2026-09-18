@@ -1,9 +1,9 @@
 # Music — Tilo application manifest.
 #
-# The live half (features `live`, `lyrics`, `p2p`)
-# resolves audio streams off googlevideo's rotating CDN names and
-# syncs over iroh QUIC, neither of which is allowlistable —
-# `mode = "host"`. MPRIS goes over the session bus.
+# The live audio/lyrics features resolve content from rotating third-party CDN
+# names, which cannot be statically allowlisted — `mode = "host"`. Shared
+# library state travels through the platform collaboration channel; MPRIS uses
+# the session bus.
 #
 # Beyond the system read profile it needs, as consented capabilities:
 # read on the library the user points it at (`~/Music`), the audio
