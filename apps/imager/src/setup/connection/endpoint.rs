@@ -620,6 +620,8 @@ fn validate_snapshot(root: &Arc<Pin>, snapshot: &Snapshot) -> Result<(), Endpoin
     }
 }
 struct Scan<'a> {
+    #[cfg(target_os = "linux")]
+    owned: Option<&'a super::transaction::native::NativeOwnedNames>,
     cancelled: &'a AtomicBool,
     entries: BTreeMap<RelativePath, EntryState>,
     issues: Vec<ScopeIssue>,
@@ -672,6 +674,17 @@ impl Scan<'_> {
             let name = entry.file_name();
             let child_path = path.join(&name);
             let key = relative(&child_path)?;
+            #[cfg(target_os = "linux")]
+            if depth == 0 {
+                if let Some(owned) = self.owned {
+                    match owned.excludes(&NativeDirectory(Arc::clone(dir)), &name) {
+                        Ok(true) => continue,
+                        Ok(false) => {}
+                        Err(error) => self.issue(Some(key.clone()), error),
+                    }
+                }
+            }
+
             let result = (|| {
                 dir.validate()?;
                 let meta = stat(&dir.file, Path::new(&name))?;
@@ -746,6 +759,10 @@ impl Scan<'_> {
             let remaining = usize::try_from(MAX_HASH_BYTES.saturating_sub(self.bytes))
                 .unwrap_or(usize::MAX)
                 .min(buffer.len());
+            #[cfg(target_os = "linux")]
+            if let Some(owned) = self.owned {
+                owned.charge(remaining as u64)?;
+            }
             let count = file.read(
                 buffer
                     .get_mut(..remaining)
@@ -787,6 +804,28 @@ impl Scan<'_> {
 /// Observe bounded native entries without executing or hydrating anything.
 /// Incomplete enumeration, cancellation and access failure are never deletion.
 pub fn observe(endpoint: &PinnedEndpoint, cancelled: &AtomicBool) -> ObservedTree {
+    observe_inner(
+        endpoint,
+        cancelled,
+        #[cfg(target_os = "linux")]
+        None,
+    )
+}
+/// Exact registered namespaces only; failed or substituted ownership stays
+/// visible and makes this Connected observation incomplete.
+#[cfg(target_os = "linux")]
+pub(super) fn observe_connected(
+    endpoint: &PinnedEndpoint,
+    owned: &super::transaction::native::NativeOwnedNames,
+    cancelled: &AtomicBool,
+) -> ObservedTree {
+    observe_inner(endpoint, cancelled, Some(owned))
+}
+fn observe_inner(
+    endpoint: &PinnedEndpoint,
+    cancelled: &AtomicBool,
+    #[cfg(target_os = "linux")] owned: Option<&super::transaction::native::NativeOwnedNames>,
+) -> ObservedTree {
     let model = Endpoint {
         identity: endpoint.identity(),
         encoding: encoding(),
@@ -800,6 +839,8 @@ pub fn observe(endpoint: &PinnedEndpoint, cancelled: &AtomicBool) -> ObservedTre
         };
     }
     let mut scan = Scan {
+        #[cfg(target_os = "linux")]
+        owned,
         cancelled,
         entries: BTreeMap::new(),
         issues: Vec::new(),
@@ -807,6 +848,12 @@ pub fn observe(endpoint: &PinnedEndpoint, cancelled: &AtomicBool) -> ObservedTre
         visited: 0,
         snapshots: Vec::new(),
     };
+    #[cfg(target_os = "linux")]
+    if let Some(owned) = owned {
+        if let Err(error) = owned.validate_all(&NativeDirectory(Arc::clone(&endpoint.root))) {
+            scan.issue(None, error);
+        }
+    }
     if let Err(error) = scan.directory(&endpoint.root, Path::new(""), 0) {
         scan.issue(None, error);
     }
@@ -827,6 +874,12 @@ pub fn observe(endpoint: &PinnedEndpoint, cancelled: &AtomicBool) -> ObservedTre
             entries: BTreeMap::new(),
             observation: Observation::Unavailable(error.reason()),
         };
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(owned) = owned {
+        if let Err(error) = owned.validate_all(&NativeDirectory(Arc::clone(&endpoint.root))) {
+            scan.issue(None, error);
+        }
     }
     let observation = if scan.issues.is_empty() {
         Observation::Complete
