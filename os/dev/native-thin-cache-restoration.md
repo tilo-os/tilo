@@ -1,19 +1,19 @@
 # Native8166 thin-cache recovery seam — preparation only
 
-This design is specific to application source
+This implementation is specific to application source
 `4583a44c4056c67cfd1ebc4f1e02c7fa4aff3ffc` and producer helper
-`9d7a6b259c9b75b6c5031472bfed05b6461c1893`. No executable importer, approval,
-workflow dispatch or completed native payload is supplied by this document.
+`9d7a6b259c9b75b6c5031472bfed05b6461c1893`. The importer and optional workflow/controller path require independent admission.
+No approval, dispatch or completed native payload is supplied by this document.
 
-## Evidence still required
+## Recorded evidence and limits
 
 The current capture script records a bounded, non-paused, incomplete inventory of
 regular files from `/build/target/thin-app`. It excludes observed active compiler
 units, writers and temporaries, and retains PAX nanosecond mtimes and file hashes.
 It explicitly states `source_mtime_restoration_not_proven=true`.
 
-Before implementing timestamp restoration, obtain independently pinned manifests
-from the actual nested build root, not the outer tools process:
+The verified source metadata records workspace and actual inner tool identities.
+The independently reviewed admission must bind these inputs:
 
 1. Workspace source files used by Cargo/build scripts: canonical relative path,
    byte SHA256, type, mode and exact nanosecond mtime. Include Cargo.toml/lock,
@@ -29,7 +29,9 @@ from the actual nested build root, not the outer tools process:
 
 The source inventory must be stable and complete enough to justify each timestamp
 reset. Matching Git revision alone does not prove generated/dependency inputs.
-Missing metadata is an explicit preflight failure, not a silent clean rebuild.
+Missing tracked-source/toolchain identity is a preflight failure. Registry dependency
+timestamps were not captured and remain untouched. Cargo evaluates those units
+normally; no timestamp fabrication or assumed freshness is performed.
 
 ## Small implementation boundary
 
@@ -79,3 +81,24 @@ source-byte mismatch causing zero timestamp updates, compiler mismatch refusal a
 nonempty destination refusal. A small fixture should retain one valid Cargo unit
 and force an invalid/missing unit to rebuild; this comes after metadata admission,
 not during this preparation task. No full compilation is needed to test extraction.
+
+## Workflow inputs and staged context
+
+Optional `thin_cache_approval` is small exact JSON, independently bound by
+`thin_cache_approval_sha256`. It names cache and source-metadata immutable OCI
+references/config digests. Metadata carrier repository is
+`tilo-development-thin-cache-metadata-aarch64`, path
+`/checkpoint/source-metadata.json`. Cache paths are
+`/checkpoint/thin-cache.tar` and `/checkpoint/cache-metadata.json`.
+
+Admission purpose: `tilo-incomplete-thin-cache-admission`. Required fields:
+`source_revision`, `producer_helper_revision`, `checkpoint_reference`,
+`checkpoint_config_digest`, `source_metadata_reference`,
+`source_metadata_config_digest`, `metadata_sha256`, `source_metadata_sha256`,
+`archive_sha256`, `restore_helper_sha256`, `incomplete_cache_reviewed=true`,
+and `cargo_revalidation_required=true`. Hash committed Linux helper bytes.
+The staging controller copies the reviewed helper from its checkout, never from
+the checkpoint image. Exact inner RPM inventory and four tool executable hashes
+and versions are checked inside the new builder. Actual restored evidence is
+retained and bound into the reconstructed-native receipt after the original build
+succeeds. The 9000-second internal build limit remains unchanged.

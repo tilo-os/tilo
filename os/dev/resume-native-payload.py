@@ -86,6 +86,7 @@ def main():
     p.add_argument('--run-id', required=True)
     p.add_argument('--attempt', required=True)
     p.add_argument('--timeout-seconds', type=int, default=9000)
+    p.add_argument('--thin-cache-approval', nargs=2, metavar=('APPROVAL', 'SHA256'))
     args = p.parse_args()
     resume.require(1 <= len(args.checkpoint) <= 4 and 60 <= args.timeout_seconds <= 9000, 'bounded reconstruction required')
     resume.require(args.run_id.isdecimal() and args.attempt.isdecimal(), 'numeric reconstruction run required')
@@ -148,7 +149,12 @@ def main():
             resume.validate_reconstructed_partial(native, checkpoint['receipt'], checkpoint['receipt_sha256'],
                 approval, source, legacy, legacy_union, partial, union)
         original = (source / 'os/Containerfile').read_text()
-        derived, missing = resume.derive_recipe(original, union, native.REQUIRED)
+        thin_context, thin_provenance = None, None
+        if args.thin_cache_approval:
+            import thin_cache_stage
+            thin_context, thin_provenance = thin_cache_stage.stage(native, *args.thin_cache_approval, work)
+        derived, missing = resume.derive_recipe(original, union, native.REQUIRED,
+            thin_cache_approval_sha256=args.thin_cache_approval[1] if args.thin_cache_approval else None)
         recipe = work / 'Containerfile.resumed'
         recipe.write_text(derived)
         seed_recipe = work / 'Containerfile.seed'
@@ -174,19 +180,34 @@ def main():
         if approval_sha is not None:
             reconstruction['reconstructed_partial_admission_sha256'] = approval_sha
             reconstruction['reconstructed_partial_admission'] = approval
-        reconstruction_sha = t.sha(t.canonical(reconstruction))
+        if thin_provenance is not None:
+            reconstruction['thin_cache'] = thin_provenance
         (args.evidence / 'reconstruction.json').write_bytes(t.canonical(reconstruction))
         (args.evidence / 'Containerfile.resumed').write_text(derived)
         iid = work / 'complete.iid'
         env.update(TILO_NATIVE_BUILDER_ONLY='1', TILO_NATIVE_BUILDER_IIDFILE=str(iid), TILO_DISTROBOX='')
+        if thin_context is not None:
+            env['TILO_BUILD_ARGS'] += ' --build-context ' + shlex.quote('tilo-thin-cache=' + str(thin_context))
         build_bounded(script, env, args.timeout_seconds)
         identity = iid.read_text().strip()
         t.inspect_local(identity, 'aarch64', identity)
         with t.mounted(identity) as root:
+            if thin_provenance is not None:
+                runtime_raw = t.read_bounded(root / 'build/thin-cache-restoration.json', 65536)
+                runtime = t.strict_json(runtime_raw)
+                resume.require(runtime['purpose'] == 'tilo-incomplete-thin-cache-restored' and
+                               runtime['approval_sha256'] == args.thin_cache_approval[1] and
+                               runtime['cargo_revalidation_required'] is True and runtime['complete'] is False,
+                               'actual thin cache restoration evidence differs')
+                reconstruction['thin_cache']['runtime_evidence'] = runtime
+                reconstruction['thin_cache']['runtime_evidence_sha256'] = t.sha(runtime_raw)
+                (args.evidence / 'thin-cache-restoration.json').write_bytes(runtime_raw)
             inventory = native.inventory(root, inputs)
             for name, record in union.items():
                 location = 'out/optional/browser' if name == 'browser' else 'out/' + name
                 resume.require(all(inventory[location][key] == value for key,value in record.items()), 'retained executable was replaced')
+        reconstruction_sha = t.sha(t.canonical(reconstruction))
+        (args.evidence / 'reconstruction.json').write_bytes(t.canonical(reconstruction))
         metadata = t.canonical({'schema': 1, 'purpose': resume.PURPOSE, 'inputs': inputs,
                                 'inventory': inventory, 'reconstruction': reconstruction})
         resume.require(len(metadata) <= 16 * 1024 * 1024, 'complete metadata exceeds bound')
