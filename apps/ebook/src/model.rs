@@ -908,7 +908,7 @@ pub fn default_schemes() -> Vec<ColorScheme> {
 /// CRDT so collaborators see a consistent layout when reading together.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
-    /// Body font size multiplier; 1.0 == 19px base. Clamped to [0.8, 1.8].
+    /// Body font size multiplier; 1.0 == 19px base. Clamped to [0.8, 2.0].
     pub font_scale: f32,
     /// Line-height multiplier on top of the font's own 1.25. [0.95, 1.6].
     pub line_spacing: f32,
@@ -946,7 +946,7 @@ impl Default for Settings {
 
 impl Settings {
     pub const FONT_MIN: f32 = 0.8;
-    pub const FONT_MAX: f32 = 1.8;
+    pub const FONT_MAX: f32 = 2.0;
     pub const SPACING_MIN: f32 = 0.95;
     pub const SPACING_MAX: f32 = 1.6;
 
