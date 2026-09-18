@@ -411,6 +411,158 @@ impl TubeApp {
         self.structure_dirty = true;
     }
 
+    /// Persist personal state pulled from an explicitly approved device.
+    ///
+    /// The transport contains only a compact, bounded metadata package. This
+    /// method validates every imported identifier and dispatches the exact
+    /// typed actions visible controls use. Imports therefore have durable
+    /// Automerge semantics and a normal activity/undo trail instead of a
+    /// transient mutation that reconciliation can discard.
+    #[cfg(feature = "grayjay-sync")]
+    fn import_device_sync_state(
+        &mut self,
+        remote: crate::sync::SyncState,
+        state: &mut AutoCommit,
+    ) -> bool {
+        const MAX_SYNC_ENTITIES: usize = 100;
+        const MAX_SYNC_ID_BYTES: usize = 256;
+
+        let mut changed = false;
+        let context = |action: &crate::actions::TubeAction| {
+            tilo_actions::ActionContext::for_action(
+                "org.tilo.Tube",
+                "Tube device sync import",
+                action,
+            )
+        };
+        let mut dispatch = |app: &mut Self, action: crate::actions::TubeAction| match app
+            .actions
+            .try_dispatch_with_context(
+                state,
+                crate::actions::TUBE_ACTION_TYPE,
+                &action,
+                context(&action),
+            ) {
+            Ok(()) => changed = true,
+            Err(error) => tracing::warn!(%error, "refused a pulled Tube device-sync action"),
+        };
+
+        for subscription in remote.subscriptions.into_iter().take(MAX_SYNC_ENTITIES) {
+            let Some(subscription) = crate::sync::normalized_subscription_url(&subscription) else {
+                continue;
+            };
+            if subscription.len() > MAX_SYNC_ID_BYTES {
+                continue;
+            }
+            let already_subscribed = self
+                .model
+                .subscriptions
+                .iter()
+                .any(|id| id == &subscription)
+                || self.model.channels.iter().any(|channel| {
+                    (subscription == channel.handle.as_str()
+                        || subscription
+                            .strip_prefix("https://youtube.com/")
+                            .is_some_and(|handle| handle == channel.handle.trim_start_matches('/')))
+                        && self.model.is_subscribed(&channel.id)
+                });
+            if !already_subscribed {
+                dispatch(
+                    self,
+                    crate::actions::TubeAction::SetSubscription {
+                        channel_id: subscription.to_string(),
+                        subscribed: true,
+                    },
+                );
+            }
+        }
+
+        let watched_at_ms = history_now_ms();
+        let mut imported_history = HashSet::new();
+        for (offset, video_id) in remote
+            .watch_history
+            .into_iter()
+            .take(MAX_SYNC_ENTITIES)
+            .enumerate()
+        {
+            let video_id = video_id.trim();
+            if video_id.is_empty()
+                || video_id.len() > MAX_SYNC_ID_BYTES
+                || video_id.chars().any(char::is_control)
+                || self.model.history.iter().any(|id| id == video_id)
+                || !imported_history.insert(video_id.to_string())
+            {
+                continue;
+            }
+            let authored_at_ms = watched_at_ms.saturating_sub(u64::try_from(offset).unwrap_or(0));
+            dispatch(
+                self,
+                crate::actions::TubeAction::SetHistoryEntry {
+                    owner_id: self.model.history_owner.clone(),
+                    video_id: video_id.to_string(),
+                    watched_at_ms: authored_at_ms,
+                    present: true,
+                    mutation_id: format!(
+                        "{}:device-sync:{video_id}:{authored_at_ms}",
+                        self.model.history_owner
+                    ),
+                },
+            );
+        }
+
+        if let Some(settings) = remote.settings {
+            for (setting, enabled) in [
+                (SettingFlag::SponsorBlock, settings.sponsorblock_enabled),
+                (SettingFlag::DeArrow, settings.dearrow_enabled),
+                (SettingFlag::DeArrowTitles, settings.dearrow_titles),
+                (SettingFlag::DeArrowThumbnails, settings.dearrow_thumbnails),
+                (SettingFlag::ReturnDislike, settings.return_dislike_enabled),
+                (SettingFlag::Autoplay, settings.autoplay),
+                (SettingFlag::ShowComments, settings.show_comments),
+            ] {
+                let current = match setting {
+                    SettingFlag::SponsorBlock => self.model.settings.sponsorblock_enabled,
+                    SettingFlag::DeArrow => self.model.settings.dearrow_enabled,
+                    SettingFlag::DeArrowTitles => self.model.settings.dearrow_titles,
+                    SettingFlag::DeArrowThumbnails => self.model.settings.dearrow_thumbnails,
+                    SettingFlag::ReturnDislike => self.model.settings.return_dislike_enabled,
+                    SettingFlag::Autoplay => self.model.settings.autoplay,
+                    SettingFlag::ShowComments => self.model.settings.show_comments,
+                };
+                if current != enabled {
+                    dispatch(
+                        self,
+                        crate::actions::TubeAction::SetSetting { setting, enabled },
+                    );
+                }
+            }
+            if QUALITIES.contains(&settings.preferred_quality.as_str())
+                && self.model.settings.preferred_quality != settings.preferred_quality
+            {
+                dispatch(
+                    self,
+                    crate::actions::TubeAction::SetPreferredQuality {
+                        quality: settings.preferred_quality,
+                    },
+                );
+            }
+            for category in crate::model::Category::ALL {
+                if let Some(mode) = settings.categories.get(category.api_key())
+                    && self.model.settings.categories.get(category.api_key()) != Some(mode)
+                {
+                    dispatch(
+                        self,
+                        crate::actions::TubeAction::SetSponsorCategory {
+                            category,
+                            mode: *mode,
+                        },
+                    );
+                }
+            }
+        }
+        changed
+    }
+
     /// Queue a visible device control through its currently published resource
     /// action.  The resulting invocation contains no authority: the app host
     /// resolves the address against a fresh resource tree and enforces the
@@ -2193,14 +2345,26 @@ impl Widget for TubeApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         #[cfg(feature = "grayjay-sync")]
         {
+            // Reconcile existing canonical state before comparing imports. A
+            // device pull must never be written only to the render cache and
+            // then immediately clobbered by this projection.
+            if self.reconcile_collaborative_actions(state) {
+                self.structure_dirty = true;
+            }
             if !self.device_sync_seeded {
                 self.device_sync_seeded = true;
                 let _ = self
                     .device_sync
                     .sync_now(crate::sync::lifecycle_state(&self.model));
             }
-            if self.device_sync.pump(&mut self.model) {
+            let (view_changed, pulled) = self.device_sync.pump();
+            if view_changed {
                 self.structure_dirty = true;
+            }
+            for remote in pulled {
+                if self.import_device_sync_state(remote, state) {
+                    self.structure_dirty = true;
+                }
             }
         }
         if self.reconcile_collaborative_actions(state) {
@@ -2925,6 +3089,52 @@ mod tests {
             app.model.is_subscribed("ch_synth"),
             "agent/replay actions must update the rendered subscription state"
         );
+    }
+
+    #[cfg(feature = "grayjay-sync")]
+    #[test]
+    fn pulled_device_state_is_imported_through_canonical_actions() {
+        let (mut app, mut doc) = fresh();
+        app.model.subscriptions.clear();
+        app.model.history.clear();
+        let settings = app.model.settings.clone();
+        let expected_autoplay = !settings.autoplay;
+        let remote = crate::sync::SyncState {
+            // This creator is intentionally not in the local catalogue: the
+            // durable URL must still make the return trip to a freshly paired
+            // desktop instead of being discarded as an unknown row.
+            subscriptions: vec!["https://youtube.com/@new-to-this-device".into()],
+            watch_history: vec!["video-not-fetched-yet".into()],
+            settings: Some(crate::model::Settings {
+                autoplay: expected_autoplay,
+                ..settings
+            }),
+        };
+
+        assert!(app.import_device_sync_state(remote, &mut doc));
+        assert!(
+            app.reconcile_collaborative_actions(&doc),
+            "the action document—not a transient model write—projects the import"
+        );
+        assert!(
+            app.model
+                .subscriptions
+                .contains(&"https://youtube.com/@new-to-this-device".to_string())
+        );
+        assert!(
+            app.model
+                .history
+                .contains(&"video-not-fetched-yet".to_string())
+        );
+        assert_eq!(app.model.settings.autoplay, expected_autoplay);
+
+        let exported = crate::sync::lifecycle_state(&app.model);
+        assert!(
+            exported
+                .subscriptions
+                .contains(&"https://youtube.com/@new-to-this-device".to_string())
+        );
+        assert!(app.actions.last_dispatched().is_some());
     }
 
     #[test]
