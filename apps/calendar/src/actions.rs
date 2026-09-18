@@ -141,6 +141,13 @@ pub enum CalendarOperation {
     ShowWeek,
     ShowDay,
     ShowAgenda,
+    /// Device-private visibility policy for one configured remote collection.
+    /// This deliberately lives outside the shared event CRDT: hiding a work
+    /// calendar is a per-person display choice, never a collaborative edit.
+    SetCalendarVisible {
+        id: String,
+        visible: bool,
+    },
     Sync,
     ExportIcs,
     /// Import the newest `.ics` file from the transfer directory. The effect
@@ -180,7 +187,10 @@ fn calendar_operation(
         | CalendarOperation::ShowMonth
         | CalendarOperation::ShowWeek
         | CalendarOperation::ShowDay
-        | CalendarOperation::ShowAgenda => spec.retry_policy(RetryPolicy::Idempotent),
+        | CalendarOperation::ShowAgenda
+        | CalendarOperation::SetCalendarVisible { .. } => {
+            spec.retry_policy(RetryPolicy::Idempotent)
+        }
         CalendarOperation::Sync => spec
             .retry_policy(RetryPolicy::Idempotent)
             .execution(tilo_actions::ExecutionMode::Background { cancellable: false }),
@@ -219,6 +229,19 @@ pub(crate) fn calendar_collection_resource(calendar: &CalendarCollectionResource
         calendar.label.clone(),
     )
     .with_action(open)
+    .with_action(calendar_operation(
+        "set-visibility",
+        if calendar.visible {
+            "Hide calendar"
+        } else {
+            "Show calendar"
+        },
+        OperationKind::Effect,
+        &CalendarOperation::SetCalendarVisible {
+            id: calendar.id.clone(),
+            visible: !calendar.visible,
+        },
+    ))
 }
 
 /// Minimal, exact event resource used by the retained global-search provider.
