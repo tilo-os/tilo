@@ -11260,6 +11260,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "qos-action-broker"
+version = "0.1.0"
+dependencies = [
+ "atomic-file",
+ "automerge",
+ "blake3",
+ "capnp",
+ "capnp-rpc",
+ "channel-crypto",
+ "collab-types",
+ "ed25519-dalek 2.2.0",
+ "futures",
+ "hex",
+ "iroh",
+ "libc",
+ "parking_lot",
+ "postcard",
+ "qos-actions",
+ "qos-desktop",
+ "qos-peer-state",
+ "qos-relay",
+ "qos-session-peer",
+ "qos-user-identity",
+ "rand_core 0.6.4",
+ "runtime-collab",
+ "runtime-identity",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "ui",
+ "uuid",
+ "word-processor",
+]
+
+[[package]]
 name = "qos-actions"
 version = "0.1.0"
 dependencies = [
@@ -13686,6 +13724,7 @@ dependencies = [
  "postcard",
  "qcms",
  "qdoc",
+ "qos-action-broker",
  "qos-actions",
  "qos-bluez",
  "qos-callstream",

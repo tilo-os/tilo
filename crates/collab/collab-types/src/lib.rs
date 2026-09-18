@@ -155,3 +155,5 @@ pub use space::{Space, SpaceId};
 pub use validator::{
     ChannelState, ValidationError, validate_admitted_inbound_op, validate_inbound_op,
 };
+
+pub mod local_transport;

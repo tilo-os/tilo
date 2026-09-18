@@ -24,6 +24,7 @@ pub mod peer_actions;
 pub mod catalogue;
 pub mod chrome_state;
 pub mod collab_broker;
+pub(crate) mod broker_services;
 pub mod collab_broker_capnp;
 pub mod collab_core;
 pub mod collab_mls_authority;

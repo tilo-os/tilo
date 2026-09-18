@@ -74,15 +74,7 @@ pub const APP_HOST_SERVICE: &str = "app-host";
 const STORE_APP_ID: &str = "dev.qos.store";
 pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
 const COMPAT_PROTOCOL_VERSION: u16 = 1;
-/// Length-prefixed launcher handoff consumed before Cap'n Proto starts on a
-/// collaboration descriptor. The broker binds it to `SO_PEERCRED` and a
-/// compositor-created one-shot launch record.
-pub const COLLAB_LAUNCH_PROTOCOL_VERSION: u16 = 1;
-/// Prefix that separates a launcher-authenticated connection from a raw
-/// Cap'n Proto diagnostic client. It is deliberately not an authority: the
-/// broker still verifies the peer process against the compositor's one-shot
-/// record before it accepts the following frame.
-pub const COLLAB_LAUNCH_MAGIC: [u8; 4] = *b"QCL1";
+pub use collab_types::local_transport::{COLLAB_LAUNCH_MAGIC, COLLAB_LAUNCH_PROTOCOL_VERSION};
 
 /// One resolved service handoff: the launcher's own end of the
 /// connection, plus the in-sandbox fd number the app should find it at.

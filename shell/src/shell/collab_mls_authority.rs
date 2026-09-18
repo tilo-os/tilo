@@ -1388,3 +1388,15 @@ mod tests {
 
 #[allow(unused_imports)]
 use crate::shell::state::WorkspaceExt as _;
+
+impl qos_action_broker::collab_core::SnapshotReceiptVault for SecretServiceMlsVault {
+    fn mint_snapshot_receipt(
+        &self,
+        channel: ChannelId,
+        envelope: &collab_types::SignedOp,
+    ) -> Result<(), String> {
+        SecretServiceMlsVault::mint_snapshot_receipt(self, channel, envelope)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+}

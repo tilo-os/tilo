@@ -4,7 +4,7 @@ use super::*;
 use qos_relay::peer_actions::{ActionMessage, Confirmation};
 
 impl CapnpBrokerState {
-    pub(crate) fn peer_action_queue(&self) -> crate::shell::peer_actions::PeerActionQueue {
+    pub(crate) fn peer_action_queue(&self) -> crate::peer_actions::PeerActionQueue {
         self.peer_action_queue.clone()
     }
 
@@ -30,25 +30,13 @@ impl CapnpBrokerState {
                 return Err("device not enrolled".into());
             }
         } else {
-            let profile = crate::identity_registry::selected_identity_profile(&room)
-                .map_err(|_| "identity lookup failed")?
-                .ok_or("workspace identity unavailable")?;
-            let fleet = crate::device_fleet::DeviceFleetStore::from_env()
-                .and_then(|store| store.load(&profile.id))
-                .map_err(|_| "device authority unavailable")?;
-            if cert.user_public_key != profile.user_public_key
-                || fleet.is_revoked(&cert.device_public_key)
-            {
-                return Err("device revoked".into());
-            }
-            // The relay proves device-key possession. A currently certified
-            // device under an admitted root need not belong to a fixed pool.
+            return Err("current certificate authority unavailable".into());
         }
         let tree = self
             .membership
             .as_ref()
             .ok_or("membership unavailable")?
-            .read();
+            .snapshot()?;
         let admitted = admit_verified_join(
             &tree,
             &CrdtRoute::cluster(&room),

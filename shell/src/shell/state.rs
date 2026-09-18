@@ -693,84 +693,7 @@ pub enum Capability {
     },
 }
 
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| i64::try_from(duration.as_secs()).ok())
-        .unwrap_or_default()
-}
-
-fn bounded_receipt_text(value: &str, max: usize) -> String {
-    value
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(max)
-        .collect::<String>()
-        .trim()
-        .to_string()
-}
-
-fn redact_receipt_context(context: &mut qos_actions::ActionContext) {
-    context.action_label = bounded_receipt_text(&context.action_label, 200);
-    if let Some(app) = &mut context.app {
-        app.id = bounded_receipt_text(&app.id, 160);
-        app.label = bounded_receipt_text(&app.label, 160);
-    }
-    if let Some(resource) = &mut context.resource {
-        resource.id = bounded_receipt_text(&resource.id, 512);
-        resource.kind = bounded_receipt_text(&resource.kind, 160);
-        resource.label = bounded_receipt_text(&resource.label, 200);
-    }
-    context.purpose = context
-        .purpose
-        .as_deref()
-        .map(|value| bounded_receipt_text(value, 512))
-        .filter(|value| !value.is_empty());
-    if let Some(group) = &mut context.group {
-        group.id = bounded_receipt_text(&group.id, 160);
-        group.label = bounded_receipt_text(&group.label, 200);
-        group.kind = bounded_receipt_text(&group.kind, 160);
-    }
-    context.facets.truncate(32);
-    for facet in &mut context.facets {
-        facet.key = bounded_receipt_text(&facet.key, 96);
-        facet.value = bounded_receipt_text(&facet.value, 160);
-    }
-}
-
-/// Construct the same bounded public receipt for native and standalone owners.
-/// No invocation arguments, output, streamed items or private failure text enter it.
-pub fn redacted_effect_receipt(
-    invocation: qos_actions::InvocationId,
-    actor: &str,
-    mut context: qos_actions::ActionContext,
-    status: qos_actions::EffectReceiptStatus,
-) -> WorkspaceEffectReceipt {
-    let completed_at = unix_now();
-    let original_action = bounded_receipt_text(&context.action_label, 160);
-    context.action_label = if original_action.is_empty() {
-        status.label().to_string()
-    } else {
-        format!("{} · {original_action}", status.label())
-    };
-    context
-        .facets
-        .push(qos_actions::ActionFacet::new("qos.receipt", "effect"));
-    context.facets.push(qos_actions::ActionFacet::new(
-        "qos.invocation",
-        invocation.0.to_string(),
-    ));
-    redact_receipt_context(&mut context);
-    let receipt = WorkspaceEffectReceipt {
-        invocation,
-        actor: bounded_receipt_text(actor, 160),
-        context,
-        status,
-        completed_at,
-    };
-    receipt
-}
+pub use qos_action_broker::policy::redacted_effect_receipt;
 
 /// What a role is called on screen. One mapping shared by every surface
 /// that shows a role, so it can't be spelled two different ways.
@@ -1160,46 +1083,20 @@ impl WorkspaceExt for Workspace {
     /// Decide whether `actor` may apply `verb` to `resource` in this
     /// room. Fail-closed: denies unless something explicitly permits.
     fn decide(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> CapDecision {
-        decide_capability(actor, resource, verb, &self.capabilities, Some(now_unix()))
+        qos_action_broker::policy::WorkspacePolicy::decide(self, actor, resource, verb)
     }
 
     /// [`Self::decide`] reduced to a bool, for call sites that only
     /// gate an action rather than explaining a denial.
     fn allows(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> bool {
-        self.decide(actor, resource, verb) == CapDecision::Allow
+        qos_action_broker::policy::WorkspacePolicy::allows(self, actor, resource, verb)
     }
 
     /// Record a capability, minting an id if the caller didn't supply
     /// one. Authority to *make* the grant is checked by the caller
     /// ([`Self::grant_as`]), not here.
-    fn grant_capability(&mut self, mut cap: CapOverride) -> String {
-        if cap.id.is_empty() {
-            cap.id = format!("cap-{}", next_id());
-        }
-        // Merges rather than stacks a re-grant of the same (subject,
-        // scope, effect, verb), keeping the longer-lived expiry — a
-        // grant is monotonic; reducing authority is revoke's job.
-        if let Some(slot) = self.capabilities.iter_mut().find(|c| {
-            c.subject == cap.subject
-                && c.scope == cap.scope
-                && c.effect == cap.effect
-                && c.verb == cap.verb
-        }) {
-            slot.expiry = Expiry::longest(slot.expiry, cap.expiry);
-            if !cap.id.is_empty() {
-                slot.id = cap.id;
-            }
-            if cap.granted_by.is_some() {
-                slot.granted_by = cap.granted_by;
-            }
-            return slot.id.clone();
-        }
-        if cap.id.is_empty() {
-            cap.id = format!("cap-{}", next_id());
-        }
-        let id = cap.id.clone();
-        self.capabilities.push(cap);
-        id
+    fn grant_capability(&mut self, cap: CapOverride) -> String {
+        qos_action_broker::policy::WorkspacePolicy::grant_capability(self, cap)
     }
 
     /// Grant a capability **on behalf of** `grantor`, enforcing that
@@ -1217,9 +1114,7 @@ impl WorkspaceExt for Workspace {
     /// Drop the capability with this id. Returns whether anything was
     /// removed.
     fn revoke_capability(&mut self, id: &str) -> bool {
-        let before = self.capabilities.len();
-        self.capabilities.retain(|c| c.id != id);
-        self.capabilities.len() != before
+        qos_action_broker::policy::WorkspacePolicy::revoke_capability(self, id)
     }
 
     /// Revoke on behalf of `revoker`, enforcing the same authority as
@@ -1249,37 +1144,14 @@ impl WorkspaceExt for Workspace {
     /// room)? An ownerless workspace has no administrators, not
     /// everyone-is-an-administrator.
     fn may_administer(&self, user: &UserId) -> bool {
-        if self.owner.as_deref() == Some(user.as_str()) {
-            return true;
-        }
-        self.allows(
-            &self.actor_for_person(user),
-            &ResourceRef::Workspace,
-            Verb::Admin,
-        )
+        qos_action_broker::policy::WorkspacePolicy::may_administer(self, user)
     }
 
     /// Install `user` as owner, and record the membership capability
     /// that makes them `Admin` — `owner` survives an empty capability
     /// list, and the capability is what replicates and what `decide` reads.
     fn set_owner(&mut self, user: impl Into<UserId>) {
-        let user = user.into();
-        let owner_capability_id = format!("owner-{}", self.id.raw());
-        // The owner capability has a stable id because the replicated map is
-        // keyed by capability id.  Remove its previous in-memory value before
-        // changing the subject: `grant_capability` deliberately merges only
-        // identical subjects, and would otherwise leave the former owner with
-        // a second local Admin grant until the next document rebuild.
-        self.revoke_capability(&owner_capability_id);
-        self.owner = Some(user.clone());
-        self.grant_capability(
-            CapOverride::membership(
-                Subject::Principal(Principal::Person(user)),
-                self.room.to_string(),
-                Verb::Admin,
-            )
-            .with_id(owner_capability_id),
-        );
+        qos_action_broker::policy::WorkspacePolicy::set_owner(self, user)
     }
 
     /// Give up administration because this workspace joined a room it
@@ -1304,137 +1176,52 @@ impl WorkspaceExt for Workspace {
     /// on their membership capability, so "in the room" and "allowed
     /// to do something" can't drift apart. `None` means not a member.
     fn role_of(&self, user: &UserId) -> Option<CapRole> {
-        qos_peer_state::room::role_of(self.owner.as_deref(), &self.capabilities, user, now_unix())
+        qos_action_broker::policy::WorkspacePolicy::role_of(self, user)
     }
 
     /// Build the [`Actor`] for a person acting in this room.
     fn actor_for_person(&self, user: &UserId) -> Actor {
-        Actor::person(self.role_of(user), user.clone()).in_room(self.room.to_string())
+        qos_action_broker::policy::WorkspacePolicy::actor_for_person(self, user)
     }
 
     /// Build the [`Actor`] for an app running in this room. Carries the
     /// room as principal but **no role** — an app has no base authority,
     /// only what's granted to it by name.
     fn actor_for_app(&self, app_id: &str) -> Actor {
-        Actor::app(app_id).in_room(self.room.to_string())
+        qos_action_broker::policy::WorkspacePolicy::actor_for_app(self, app_id)
     }
 
     /// Build the [`Actor`] for an agent acting for the user. Same
     /// authority shape as an app: scoped, revocable, no role.
     fn actor_for_agent(&self, agent_id: &str) -> Actor {
-        Actor::agent(agent_id).in_room(self.room.to_string())
+        qos_action_broker::policy::WorkspacePolicy::actor_for_agent(self, agent_id)
     }
 
     /// The room roster: the people who are *members*. Built from
     /// room-scoped capabilities only — someone with a capability on one
     /// file and nothing else is **not** here. See [`Self::shares_of`].
     fn roster(&self) -> Vec<(UserId, CapRole)> {
-        let now = Some(now_unix());
-        let mut seen: Vec<UserId> = Vec::new();
-        for c in &self.capabilities {
-            if !c.is_live_at(now) || c.effect != Effect::Grant {
-                continue;
-            }
-            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
-            if !covers_room {
-                continue;
-            }
-            if let Subject::Principal(Principal::Person(p)) = &c.subject
-                && !seen.contains(p)
-            {
-                seen.push(p.clone());
-            }
-        }
-        if let Some(owner) = &self.owner
-            && !seen.contains(owner)
-        {
-            seen.insert(0, owner.clone());
-        }
-        seen.into_iter()
-            .filter_map(|u| self.role_of(&u).map(|r| (u, r)))
-            .collect()
+        qos_action_broker::policy::WorkspacePolicy::roster(self)
     }
 
     /// The role an *agent* holds — same derivation as [`Self::role_of`]
     /// minus the owner short-circuit, since an agent is never the owner.
     fn role_of_agent(&self, agent: &str) -> Option<CapRole> {
-        let now = Some(now_unix());
-        let mut best: Option<Verb> = None;
-        let mut blocked = false;
-        for c in &self.capabilities {
-            let subject_matches = matches!(
-                &c.subject,
-                Subject::Principal(Principal::Agent(a)) if a == agent
-            );
-            if !subject_matches || !c.is_live_at(now) {
-                continue;
-            }
-            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
-            if !covers_room {
-                continue;
-            }
-            match c.effect {
-                Effect::Grant => {
-                    best = Some(match best {
-                        Some(prev) if prev.implies(c.verb) => prev,
-                        _ => c.verb,
-                    });
-                }
-                Effect::Restrict if !c.verb.implies(Verb::Read) => blocked = true,
-                Effect::Restrict => {}
-            }
-        }
-        if blocked {
-            return Some(CapRole::Denied);
-        }
-        best.map(|v| match v {
-            Verb::Admin => CapRole::Owner,
-            Verb::Write => CapRole::Editor,
-            Verb::Comment => CapRole::Commenter,
-            Verb::Read | Verb::Invite => CapRole::Viewer,
-        })
+        qos_action_broker::policy::WorkspacePolicy::role_of_agent(self, agent)
     }
 
     /// The agents that hold membership in this room — a *second* list
     /// from [`Self::roster`], since an agent is not a person and
     /// rendering them undifferentiated would misrepresent who's present.
     fn agent_members(&self) -> Vec<(String, CapRole)> {
-        let now = Some(now_unix());
-        let mut seen: Vec<String> = Vec::new();
-        for c in &self.capabilities {
-            if !c.is_live_at(now) || c.effect != Effect::Grant {
-                continue;
-            }
-            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
-            if !covers_room {
-                continue;
-            }
-            if let Subject::Principal(Principal::Agent(a)) = &c.subject
-                && !seen.contains(a)
-            {
-                seen.push(a.clone());
-            }
-        }
-        seen.into_iter()
-            .filter_map(|a| self.role_of_agent(&a).map(|r| (a, r)))
-            .collect()
+        qos_action_broker::policy::WorkspacePolicy::agent_members(self)
     }
 
     /// The share list for one resource. Room-scoped capabilities are
     /// excluded (those belong in [`Self::roster`]) so the UI can never
     /// present "shared one file with Bob" as "Bob is a collaborator".
     fn shares_of(&self, resource: &ResourceRef) -> Vec<&CapOverride> {
-        let now = Some(now_unix());
-        self.capabilities
-            .iter()
-            .filter(|c| {
-                c.is_live_at(now)
-                    && c.effect == Effect::Grant
-                    && c.subject_is_person()
-                    && !c.is_room_membership()
-                    && c.scope.matches_resource(resource)
-            })
-            .collect()
+        qos_action_broker::policy::WorkspacePolicy::shares_of(self, resource)
     }
 }
 trait WorkspaceOwnershipExt {
