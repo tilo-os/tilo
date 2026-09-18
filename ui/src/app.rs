@@ -8560,6 +8560,16 @@ impl AppHandler {
         reason = "the frame handshake shares render state, timing locals, and early exits"
     )]
     fn handle_redraw_requested(&mut self, event_loop: &ActiveEventLoop, window: &Arc<Window>) {
+        // Capture only the initial frame attempts, not steady-state redraws.
+        // An early return leaves its final marker absent rather than inventing
+        // a completed stage. A later successful submission ends capture.
+        let first_primary_frame = self.primary_frames_sent == 0;
+        let mark_first_frame = |name| {
+            if first_primary_frame {
+                tilo_startup_metrics::mark(name);
+            }
+        };
+        mark_first_frame("first-frame-redraw-start");
         let _entry = self.app.enter_wake_scope();
         if self.render.is_none() {
             tilo_startup_metrics::mark("first-redraw-init-render-start");
@@ -8674,7 +8684,9 @@ impl AppHandler {
         // Records first: if the root widget opened a different
         // record, sync against that record's document, not the
         // outgoing one's.
+        mark_first_frame("first-frame-record-start");
         let record_changed = app.record_tick();
+        mark_first_frame("first-frame-record-done");
         floating_content_changed |= record_changed;
         full_redraw_required |= record_changed;
 
@@ -8682,6 +8694,7 @@ impl AppHandler {
         // Drain model notifications and advance update-driven widgets before
         // synchronization. A worker's `Wake` event reaches this pass without
         // requiring the app to own a proxy or poll inside its model.
+        mark_first_frame("first-frame-update-start");
         if app.root_widget.update(&mut app.state.doc, &app.state.root) {
             floating_content_changed = true;
             full_redraw_required = true;
@@ -8689,6 +8702,8 @@ impl AppHandler {
             app.needs_sync = true;
             app.layout_dirty = true;
         }
+        mark_first_frame("first-frame-update-done");
+        mark_first_frame("first-frame-sync-start");
         if app.needs_sync {
             floating_content_changed = true;
             full_redraw_required = true;
@@ -8696,15 +8711,19 @@ impl AppHandler {
             app.invalidate_widget_resource_cache();
             app.needs_sync = false;
         }
+        mark_first_frame("first-frame-sync-done");
         if let Some(p) = app.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Sync, __prof_frame_start);
         }
 
+        mark_first_frame("first-frame-live-regions-start");
         app.scan_live_regions();
+        mark_first_frame("first-frame-live-regions-done");
 
         // E.g. a tab split inserting a new WindowGroup: rebuild the
         // taffy tree from scratch so new widgets get node ids the
         // layout pass below can see.
+        mark_first_frame("first-frame-build-layout-start");
         app.structure_dirty |= app.root_widget.take_structure_dirty();
         // Captured BEFORE `rebuild_structure` clears it — a fresh
         // taffy tree always needs a full solve regardless of the
@@ -8719,6 +8738,8 @@ impl AppHandler {
             p.record_since(crate::profiling::Pass::BuildLayout, __prof_build);
         }
 
+        mark_first_frame("first-frame-build-layout-done");
+
         let perf = perf_enabled();
         let t_frame_start = if perf {
             Some(std::time::Instant::now())
@@ -8729,6 +8750,7 @@ impl AppHandler {
             tracing::error!("root_node unset during a redraw; skipping frame");
             return;
         };
+        mark_first_frame("first-frame-layout-start");
         let Some((t_relayout_branch, t_compute_us, t_apply_us)) = run_layout_pass(
             app,
             root_node,
@@ -8740,6 +8762,7 @@ impl AppHandler {
         ) else {
             return;
         };
+        mark_first_frame("first-frame-layout-done");
         full_redraw_required |= structure_rebuilt || t_relayout_branch;
         // Read before `draw_frame_content` drains widget dirty flags via
         // `mark_drawn`. Clean compositor/exposure redraws do not invalidate
@@ -8932,6 +8955,7 @@ impl AppHandler {
             event_loop.exit();
             return;
         }
+        mark_first_frame("first-frame-submitted");
         self.primary_frames_sent = self.primary_frames_sent.saturating_add(1);
         let submitted = self.primary_frames_sent;
         for required in self.floating_source_clear_frames.values_mut() {
@@ -9772,7 +9796,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             event_loop.exit();
             return;
         }
+        tilo_startup_metrics::mark("primary-window-show-start");
         window.set_visible(true);
+        tilo_startup_metrics::mark("primary-window-show-done");
 
         self.app.layout_dirty = true;
         // On Wayland GPU init is deferred to first `RedrawRequested`: the
@@ -9780,8 +9806,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // wiring — on mutter that intermittently left the toplevel
         // unfocused with dead input on first launch.
         window.request_redraw();
+        tilo_startup_metrics::mark("primary-window-redraw-requested");
         crate::dnd::set_drag_window(&window);
         self.window = Some(window);
+        tilo_startup_metrics::mark("primary-window-resumed-done");
     }
 
     /// BEFORE the `Window` arc is dropped — the worker's
