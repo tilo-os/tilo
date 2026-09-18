@@ -90,6 +90,15 @@ pub fn open_group_address(name: &str) -> ActionAddress {
     ActionAddress::new(group_resource_id(name), "open")
 }
 
+/// Stable virtual resource for the collaboratively stored favourite flag.
+/// The filter itself is presentation state, while the membership it reveals
+/// belongs to every contact's replicated document record.
+pub const FAVORITES_RESOURCE_ID: &str = "contacts.favorites";
+
+pub fn open_favorites_address() -> ActionAddress {
+    ActionAddress::new(FAVORITES_RESOURCE_ID, "open")
+}
+
 /// The one typed external operation for exporting exactly one contact.  Both
 /// the resource catalogue and the contextual UI encode this value before it
 /// reaches the shared operation handler.
@@ -108,6 +117,7 @@ pub enum ContactsOperation {
     OpenGroup {
         name: String,
     },
+    OpenFavorites,
     ImportVcard {
         path: Option<String>,
     },
@@ -196,6 +206,7 @@ fn contact_operation(
     match operation {
         ContactsOperation::Open { .. }
         | ContactsOperation::OpenGroup { .. }
+        | ContactsOperation::OpenFavorites
         | ContactsOperation::KeepImportConflict { .. } => {
             Some(spec.retry_policy(RetryPolicy::Idempotent))
         }
@@ -1268,11 +1279,22 @@ pub fn group_resource(name: &str) -> Resource {
     group
 }
 
+pub fn favorites_resource() -> Resource {
+    let operation = ContactsOperation::OpenFavorites;
+    let mut resource = Resource::new(FAVORITES_RESOURCE_ID, "contacts.favorites", "Favorites");
+    if let Some(open) = contact_operation("open", "Open favorites", OperationKind::View, &operation)
+    {
+        resource = resource.with_action(open);
+    }
+    resource
+}
+
 /// Build the contextual resource page the palette renders. Discovery stays
 /// bounded even for a very large shared book; direct resource lookup and the
 /// search provider retain complete reachability.
 pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut root = book_resource(ctx);
+    root = root.with_child(favorites_resource());
     // Defend the catalogue boundary here as well as in `ContactsApp`: other
     // hosts can construct this context directly, and resource discovery must
     // stay bounded regardless of which adapter supplied it.
@@ -1293,6 +1315,9 @@ pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Re
 pub fn resolve_resource(ctx: &ContactsResourceCtx, id: &str) -> Option<Resource> {
     if id == "contacts.book" {
         return Some(book_resource(ctx));
+    }
+    if id == FAVORITES_RESOURCE_ID {
+        return Some(favorites_resource());
     }
     if let Some(raw_name) = id.strip_prefix("contacts.group:") {
         if let Some(name) = ctx
