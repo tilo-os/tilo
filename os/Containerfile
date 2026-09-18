@@ -285,7 +285,7 @@ FROM ${BASE_REF} AS builder
 #   * glib2-devel + libsoup3-devel supply .pc files. `wpe-webkit-2.0.pc`
 #     declares `Requires: glib-2.0 libsoup-3.0 wpe-1.0 wpe-platform-2.0`, and
 #     pkg-config fails the whole lookup when any link in that chain is missing
-#     — which ui/build.rs reports as the unhelpful "wpe-webkit-2.0 was not
+#     — which crates/sdk/ui-core/build.rs reports as the unhelpful "wpe-webkit-2.0 was not
 #     found".
 #   * The rest supply plain shared objects. libWPEWebKit-2.0.so records them in
 #     DT_NEEDED, so linking `browser` against it makes ld open each one to

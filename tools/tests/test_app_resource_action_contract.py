@@ -229,7 +229,7 @@ class AppResourceActionContractTests(unittest.TestCase):
             "enum CollabRequest { InvokePublishedAction, PublishedInvocationStatus }\n",
             dependencies=(
                 'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
-                'ui_core={package="ui",path="../../ui"}\n'
+                'ui_core={package="ui",path="../../crates/sdk/ui-core"}\n'
             ),
             app_name="agent",
         )
@@ -242,7 +242,7 @@ class AppResourceActionContractTests(unittest.TestCase):
             "enum CollabRequest { InvokePublishedAction, PublishedInvocationStatus }\n",
             dependencies=(
                 'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
-                'rendering={path="../../ui"}\n'
+                'rendering={path="../../crates/sdk/ui-core"}\n'
             ),
             app_name="agent",
         )
@@ -269,7 +269,7 @@ class AppResourceActionContractTests(unittest.TestCase):
         manifest.write_text(
             manifest.read_text(encoding="utf-8")
             + "\n[target.'cfg(windows)'.dependencies]\n"
-            + 'ui_core={package="ui",path="../../ui"}\n',
+            + 'ui_core={package="ui",path="../../crates/sdk/ui-core"}\n',
             encoding="utf-8",
         )
         violations, _ = contract.audit(root)

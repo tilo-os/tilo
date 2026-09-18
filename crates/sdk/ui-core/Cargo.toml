@@ -51,10 +51,10 @@ portal = ["dep:ashpd", "dep:windows", "dep:mime_guess"]
 notifications = ["dep:windows", "windows/UI_Notifications", "windows/Data_Xml_Dom", "windows/Win32_System_WinRT", "windows/Win32_UI_Shell_PropertiesSystem", "windows/Win32_System_Com_StructuredStorage", "windows/Win32_System_Variant"]
 
 [dependencies]
-private-fs = { path = "../crates/system/private-fs" }
-tilo-ui-graph = { path = "../crates/dev/ui-graph" }
-atomic-file = { path = "../crates/system/atomic-file" }
-settings-store = { path = "../crates/system/settings-store" }
+private-fs = { path = "../../system/private-fs" }
+tilo-ui-graph = { path = "../../dev/ui-graph" }
+atomic-file = { path = "../../system/atomic-file" }
+settings-store = { path = "../../system/settings-store" }
 # Parses the portal's returned file URIs. Non-optional:
 # `portal::to_local_path` is the file-access rule — a URI naming a remote
 # host must not resolve to a local path — and must be testable in every
@@ -64,19 +64,19 @@ url.workspace = true
 # x-www-form-urlencoded dialect that also reads `+` as a space.
 percent-encoding = "2"
 form_urlencoded = "1"
-tilo-startup-metrics = { path = "../crates/system/tilo-startup-metrics" }
+tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 # Filter-list compiler for the WebView's built-in ad blocking (feature
 # `webview-adblock`). The `content-blocking` feature provides the
 # EasyList→WebKit-content-blocker conversion; blocking then runs inside
 # WebKit's network process, not in Rust.
 adblock = { version = "0.12", optional = true, features = ["content-blocking"] }
-runtime-collab = { path = "../crates/runtime/runtime-collab" }
+runtime-collab = { path = "../../runtime/runtime-collab" }
 capnp.workspace = true
 capnp-rpc.workspace = true
-runtime-portal = { path = "../crates/runtime/runtime-portal" }
-app-state = { path = "../crates/system/app-state" }
+runtime-portal = { path = "../../runtime/runtime-portal" }
+app-state = { path = "../../system/app-state" }
 automerge.workspace = true
-spellcheck = { path = "../crates/text/spellcheck" }
+spellcheck = { path = "../../text/spellcheck" }
 syntect = { version = "5.3", default-features = false, features = ["default-syntaxes", "parsing", "regex-fancy"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -100,7 +100,7 @@ wgpu.workspace = true
 winit.workspace = true
 dirs.workspace = true
 fluent.workspace = true
-tilo-headless-schema = { path = "../crates/dev/headless-schema" }
+tilo-headless-schema = { path = "../../dev/headless-schema" }
 unic-langid.workspace = true
 unicode-segmentation = "1.12"
 # UAX #14 opportunities shared by editor geometry and clamped-label wrapping.
@@ -129,7 +129,7 @@ openh264.workspace = true
 # and pulls frames from it; `media`'s default (no `decode`) build carries no
 # gstreamer dependency, so `ui`'s hermetic build / `--shots` / CI stay green.
 # An app that wants real decode enables `media/decode` in its own manifest.
-media = { path = "../crates/media/core" }
+media = { path = "../../media/core" }
 # System clipboard access for TextInput's Ctrl+C / Ctrl+V / Ctrl+X.
 # Wayland uses `wl_data_device`; X11 uses the selection protocol —
 # `arboard` wraps both. The "wayland-data-control" feature lets us
@@ -146,19 +146,19 @@ open = { workspace = true, features = ["shellexecute-on-windows"] }
 # by the signed wire envelopes carried by
 # `CollabRequest::SignedSyncIncremental` /
 # `CollabEvent::SignedCRDTIncremental`.
-collab-types = { path = "../crates/collab/collab-types" }
-channel-crypto = { path = "../crates/collab/channel-crypto" }
+collab-types = { path = "../../collab/collab-types" }
+channel-crypto = { path = "../../collab/channel-crypto" }
 # The canonical document model. `history_source` reads a live document's
 # change graph through `qdoc::history` (`versions` / `materialize_at`) and
 # turns it into the `HistoryEntry` rows the timeline + scrubber render, and
 # uses `qdoc`'s structural snapshot diff to write each row's summary. Pure
 # model code — no renderer, no I/O — so this stays a cheap dep.
-qdoc = { path = "../crates/doc/qdoc" }
+qdoc = { path = "../../doc/qdoc" }
 # The Tilo ACTION model: serializable, replayable CRDT-mutation actions + the
 # nested Resource tree apps publish. `command_palette` + `action_palette` +
 # the `App` resource-collection hook build on it to make Ctrl+K scope to the
 # focused app instance's open resources and dispatch their exported actions.
-tilo-actions = { path = "../crates/collab/actions" }
+tilo-actions = { path = "../../collab/actions" }
 # Direct dep on the Ed25519 implementation `tilo-collab-types` uses so
 # the toolkit can name `SigningKey` in `collaboration::SigningIdentity`
 # without reaching into the tilo-collab-types private module path. Pinned
@@ -167,7 +167,7 @@ ed25519-dalek = { workspace = true, features = ["rand_core"] }
 # FROST threshold identity engine used by the identity-flow widgets. The
 # screens in `widget::identity_flow` drive `ThresholdIdentity::bootstrap_single_device`,
 # `begin_enrolment`, `adopt_dkg_outcome`, and `export_recovery_share`.
-threshold-identity = { path = "../crates/collab/threshold-identity" }
+threshold-identity = { path = "../../collab/threshold-identity" }
 # `widget::qr` encodes both the
 # pairing-channel JSON payload (screen 3) and the `tilo://invite/...`
 # URL (screen 5). `qrcode` is a small (no transitive deps), pure-Rust
@@ -209,15 +209,15 @@ rand_core = { workspace = true, features = ["getrandom"] }
 # `accesskit_unix` feature on Linux, publishes it over AT-SPI2 so standard ATs
 # (Orca, braille) read every `ui` app. `accesskit_winit` 0.34 targets
 # winit 0.30.x — the same pin as the `winit` dep above. See
-# `ui/src/accesskit_bridge.rs` (tree builder + role/action mapping) and the
-# adapter wiring in `ui/src/app.rs`.
+# `crates/sdk/ui-core/src/accesskit_bridge.rs` (tree builder + role/action mapping) and the
+# adapter wiring in `crates/sdk/ui-core/src/app.rs`.
 accesskit = "0.25.0"
 accesskit_winit = "0.34.0"
 # Accessibility: the built-in screen reader (`ui::screen_reader`) speaks
 # focus / value / live-region narration through the offline Tilo TTS engine.
 # `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
 # stack is installed), so depending on this is safe in headless builds.
-tts = { path = "../crates/system/tts" }
+tts = { path = "../../system/tts" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # `smithay-clipboard` speaks Wayland protocols and does not compile on native
@@ -236,7 +236,7 @@ zbus = { workspace = true, optional = true, features = ["p2p"], default-features
 ashpd = { workspace = true, optional = true }
 # Launcher-provided identity capabilities use inherited Unix socket file
 # descriptors. Native Windows apps run without that optional Tilo service.
-runtime-identity = { path = "../crates/runtime/runtime-identity" }
+runtime-identity = { path = "../../runtime/runtime-identity" }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", optional = true, features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }

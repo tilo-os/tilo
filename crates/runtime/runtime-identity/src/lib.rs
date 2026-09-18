@@ -6,7 +6,7 @@
 //! remains a compatibility path for non-sandboxed development only.
 //!
 //! The on-disk file is the JSON emitted by the identity-flow's
-//! `IdentityRecord::to_json_bytes` (see `ui/src/widget/identity_flow`). This
+//! `IdentityRecord::to_json_bytes` (see `crates/sdk/ui-core/src/widget/identity_flow`). This
 //! crate keeps a minimal local copy of the schema (`ondisk::IdentityRecord`)
 //! rather than depending on `ui`, which is heavy and depends on this SDK
 //! layer transitively — a dep the other way would form a cycle. Both sides

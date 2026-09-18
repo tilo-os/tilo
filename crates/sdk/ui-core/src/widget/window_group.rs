@@ -1562,7 +1562,7 @@ impl Widget for WindowGroup {
         }
 
         // No outline rings around `self.rect` for drag/search/maximize:
-        // per `ui/HIG.md` §9.4 the accent means *live*, not *chosen*.
+        // per `crates/sdk/ui-core/HIG.md` §9.4 the accent means *live*, not *chosen*.
         if self.maximized {
             self.draw_maximized_chrome(scene, transform, tr, theme);
         } else {

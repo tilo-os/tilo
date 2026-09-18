@@ -45,18 +45,18 @@ def audit(root: Path = ROOT) -> list[str]:
                 "use ui::launch::run or App::run so it reaches AT-SPI"
             )
 
-    cargo = (root / "ui/Cargo.toml").read_text(encoding="utf-8")
+    cargo = (root / "crates/sdk/ui-core/Cargo.toml").read_text(encoding="utf-8")
     if 'accesskit_winit = "0.34.0"' not in cargo:
-        errors.append("ui/Cargo.toml: AccessKit winit adapter/version is not the reviewed AT-SPI provider")
+        errors.append("crates/sdk/ui-core/Cargo.toml: AccessKit winit adapter/version is not the reviewed AT-SPI provider")
 
-    app = (root / "ui/src/app.rs").read_text(encoding="utf-8")
+    app = (root / "crates/sdk/ui-core/src/app.rs").read_text(encoding="utf-8")
     for needle, purpose in (
         ("accesskit_winit::Adapter::with_event_loop_proxy", "adapter registration before showing windows"),
         ("self.app.dispatch_a11y_action(req.target_node, &action)", "AT action routing"),
         ("self.a11y_adapter = None;", "provider teardown before window teardown"),
     ):
         if needle not in app:
-            errors.append(f"ui/src/app.rs: missing shared AT-SPI {purpose}")
+            errors.append(f"crates/sdk/ui-core/src/app.rs: missing shared AT-SPI {purpose}")
 
     # The native conversion preserves the Linux tree and applies the Windows
     # protected-value boundary. Require its returned shared tree to reach the
@@ -67,16 +67,16 @@ def audit(root: Path = ROOT) -> list[str]:
         r"app_ref\.build_a11y_tree_update\(scale\),?\s*\)\s*\}\)"
     )
     if not re.search(tree_update, app):
-        errors.append("ui/src/app.rs: missing shared AT-SPI tree updates")
+        errors.append("crates/sdk/ui-core/src/app.rs: missing shared AT-SPI tree updates")
 
-    bridge = (root / "ui/src/accesskit_bridge.rs").read_text(encoding="utf-8")
+    bridge = (root / "crates/sdk/ui-core/src/accesskit_bridge.rs").read_text(encoding="utf-8")
     for needle, purpose in (
         ("ak.set_live(match politeness", "live-region export"),
         ("ak.set_live_atomic()", "atomic live-region updates"),
         ("if !access.state.protected", "protected-value boundary"),
     ):
         if needle not in bridge:
-            errors.append(f"ui/src/accesskit_bridge.rs: missing AT-SPI {purpose}")
+            errors.append(f"crates/sdk/ui-core/src/accesskit_bridge.rs: missing AT-SPI {purpose}")
 
     native = (root / "shell/src/compositor/accessibility.rs").read_text(encoding="utf-8")
     for needle, purpose in (
