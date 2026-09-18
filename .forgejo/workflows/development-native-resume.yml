@@ -31,6 +31,14 @@ on:
         description: SHA256 of exact WPE receipt UTF-8 bytes
         required: true
         type: string
+      thin_cache_approval:
+        description: Optional independently reviewed small admission JSON binding cache and metadata OCI artifacts
+        required: false
+        type: string
+      thin_cache_approval_sha256:
+        description: SHA256 of exact thin-cache approval UTF-8 bytes
+        required: false
+        type: string
 
 concurrency:
   group: development-native-reconstruction-arm64
@@ -80,6 +88,8 @@ jobs:
           CHECKPOINT_DELTA_SHA256: ${{ inputs.checkpoint_delta_sha256 }}
           WPE_ADOPTION: ${{ inputs.wpe_adoption }}
           WPE_ADOPTION_SHA256: ${{ inputs.wpe_adoption_sha256 }}
+          THIN_CACHE_APPROVAL: ${{ inputs.thin_cache_approval }}
+          THIN_CACHE_APPROVAL_SHA256: ${{ inputs.thin_cache_approval_sha256 }}
         run: |
           python3 controller/os/dev/launch-native-resume.py \
             --source "$PWD/source" --helpers "$PWD/controller" \

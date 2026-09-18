@@ -80,11 +80,19 @@ def prepare_receipts(environment):
     require(environment['WPE_ADOPTION_SHA256'] == 'df41194aae2531d2cd9cd815cbce8009dd9dc254551b64154137228578ef32e2',
             'original WPE adoption bytes required')
     require(receipts['CHECKPOINT_INITIAL'] != receipts['CHECKPOINT_DELTA'], 'two distinct checkpoints required')
+    if environment.get('THIN_CACHE_APPROVAL') or environment.get('THIN_CACHE_APPROVAL_SHA256'):
+        raw = environment.get('THIN_CACHE_APPROVAL', '').encode()
+        require(0 < len(raw) <= 65536 and re.fullmatch('[0-9a-f]{64}', environment.get('THIN_CACHE_APPROVAL_SHA256', ''))
+                and hashlib.sha256(raw).hexdigest() == environment['THIN_CACHE_APPROVAL_SHA256'], 'thin cache approval hash differs')
+        value = json.loads(raw, object_pairs_hook=unique)
+        require(value.get('purpose') == 'tilo-incomplete-thin-cache-admission' and value.get('source_revision') == SOURCE,
+                'thin cache approval identity differs')
+        receipts['THIN_CACHE_APPROVAL'] = raw
     return receipts
 
 
 def driver_argv(helper_revision, hashes):
-    return ['/usr/bin/python3', '/work/controller/os/dev/compile-development-os.py',
+    result = ['/usr/bin/python3', '/work/controller/os/dev/compile-development-os.py',
             '--source-dir', '/work/repo', '--controller-revision', helper_revision,
             '--mode', 'native-payload', '--architecture', 'aarch64',
             '--revision', SOURCE, '--branch', 'refs/heads/codex/arm64-tilo-integration',
@@ -93,6 +101,9 @@ def driver_argv(helper_revision, hashes):
             '--wpe-adoption-sha256', hashes['WPE_ADOPTION_SHA256'],
             '--resume-checkpoint', '/work/checkpoint-initial.json', hashes['CHECKPOINT_INITIAL_SHA256'],
             '--resume-checkpoint', '/work/checkpoint-delta.json', hashes['CHECKPOINT_DELTA_SHA256']]
+    if hashes.get('THIN_CACHE_APPROVAL_SHA256'):
+        result += ['--resume-thin-cache-approval', '/work/thin-cache-approval.json', hashes['THIN_CACHE_APPROVAL_SHA256']]
+    return result
 
 
 def resource_snapshot(container):
@@ -206,6 +217,10 @@ def main():
                 path = temporary / filename
                 path.write_bytes(receipts[key])
                 run('docker', 'cp', str(path), container + ':/work/' + filename)
+            if 'THIN_CACHE_APPROVAL' in receipts:
+                path = temporary / 'thin-cache-approval.json'
+                path.write_bytes(receipts['THIN_CACHE_APPROVAL'])
+                run('docker', 'cp', str(path), container + ':/work/thin-cache-approval.json')
             run('docker', 'cp', str(secrets) + '/.', container + ':/run/tilo-cache-secrets')
             config = Path(os.environ.get('DOCKER_CONFIG', str(Path.home() / '.docker'))) / 'config.json'
             auth = temporary / 'registry-auth.json'
