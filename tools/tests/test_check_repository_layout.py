@@ -52,6 +52,34 @@ class RepositoryLayoutTests(unittest.TestCase):
             ["tracked file is inside generated `target` directory: docs/target/README.md"],
         )
 
+    def test_retired_source_roots_are_rejected_with_their_replacements(self) -> None:
+        self.assertEqual(
+            checker.retired_source_root_violations(
+                [
+                    "crates/system/windows-vm/src/lib.rs",
+                    "docs/architecture/overview.md",
+                    "fs/src/lib.rs",
+                    "plan/security.md",
+                ]
+            ),
+            [
+                "tracked file uses retired source root `crates/system/windows-vm/`; move it under `crates/windows/windows-vm/`: crates/system/windows-vm/src/lib.rs",
+                "tracked file uses retired source root `fs/`; move it under `crates/system/fs/`: fs/src/lib.rs",
+                "tracked file uses retired source root `plan/`; move it under `docs/architecture/`: plan/security.md",
+            ],
+        )
+
+    def test_repository_layout_combines_generated_and_retired_root_checks(self) -> None:
+        self.assertEqual(
+            checker.repository_layout_violations(
+                ["fs/src/lib.rs", "tools/__pycache__/check.cpython-314.pyc"]
+            ),
+            [
+                "tracked file is inside generated `__pycache__` directory: tools/__pycache__/check.cpython-314.pyc",
+                "tracked file uses retired source root `fs/`; move it under `crates/system/fs/`: fs/src/lib.rs",
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
