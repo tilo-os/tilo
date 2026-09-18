@@ -38,17 +38,8 @@ def tls_registry():
         server = root / 'server'
         server.mkdir(mode=0o700)
         ca = root / 'ca.crt'
-        run('openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
-            '-subj', '/CN=Tilo Disposable Registry CA/', '-addext', 'basicConstraints=critical,CA:TRUE',
-            '-addext', 'keyUsage=critical,keyCertSign,cRLSign', '-keyout', str(root / 'ca.key'), '-out', str(ca))
-        run('openssl', 'req', '-new', '-newkey', 'rsa:2048', '-nodes',
-            '-subj', '/CN=Tilo Loopback Registry/', '-keyout', str(server / 'key.pem'), '-out', str(root / 'server.csr'))
-        extensions = root / 'extensions'
-        extensions.write_text('subjectAltName=IP:127.0.0.1\nbasicConstraints=critical,CA:FALSE\n'
-                              'keyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n')
-        run('openssl', 'x509', '-req', '-in', str(root / 'server.csr'), '-CA', str(ca),
-            '-CAkey', str(root / 'ca.key'), '-CAcreateserial', '-days', '1',
-            '-extfile', str(extensions), '-out', str(server / 'cert.pem'))
+        run('/usr/local/bin/tilo-crypto', 'generate-tls-fixture', '127.0.0.1',
+            str(ca), str(server / 'key.pem'), str(server / 'cert.pem'))
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0))
             port = listener.getsockname()[1]
