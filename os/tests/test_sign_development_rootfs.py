@@ -40,6 +40,13 @@ class RootfsIdentityTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs['env'],
                          {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'HOME': '/root'})
 
+    def test_failed_command_reports_bounded_stderr(self):
+        stderr = ('discarded-prefix-' + 'x' * 4096).encode()
+        with patch.object(producer.subprocess, 'run', return_value=subprocess.CompletedProcess(
+                [], 125, b'', stderr)), self.assertRaisesRegex(
+                    ValueError, r'^podman failed \(exit 125\): x{4096}$'):
+            producer.command(['podman', 'image', 'inspect', IMAGE])
+
     def image(self):
         return {'Id': IMAGE, 'Os': 'linux', 'Architecture': 'arm64',
                 'Labels': {'org.opencontainers.image.revision': REVISION}}
