@@ -225,6 +225,23 @@ impl PeopleController {
         }
     }
 
+    /// Discover the dedicated signed loopback face capability. Generic vision
+    /// models are deliberately ignored; no model means a truthful unavailable
+    /// state rather than synthetic people suggestions.
+    pub fn discover_face_capability(&mut self, config: &agent_provider_config::ProviderConfig) {
+        if !self.privacy.recognition_enabled {
+            self.capability = FaceCapability::DisabledByOwner;
+            return;
+        }
+        self.capability = tilo_vision::discover_local_face_capability(config).map_or(
+            FaceCapability::NoVerifiedFaceModel,
+            |capability| FaceCapability::Ready {
+                model_id: capability.model_id,
+                revision: capability.revision,
+            },
+        );
+    }
+
     /// Admit a signed local face capability after the runtime independently
     /// validates it. Empty identities are refused, avoiding an accidental
     /// upgrade from generic local vision/OCR.
