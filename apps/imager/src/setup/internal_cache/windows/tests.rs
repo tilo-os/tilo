@@ -629,6 +629,463 @@ mod native {
             }
         }
     }
+    // These independent SDK observations deliberately do not call production
+    // security(), trusted(), descriptor(), current_user(), or allowed_ace().
+    // They inspect owner/group/DACL (not privileged SACL state).
+    mod security_observation {
+        use std::{
+            ffi::c_void,
+            fs::{File, OpenOptions},
+            mem::size_of,
+            os::windows::{
+                fs::OpenOptionsExt,
+                io::{AsRawHandle, FromRawHandle, OwnedHandle},
+            },
+            path::Path,
+            ptr,
+        };
+        use windows_sys::Win32::{
+            Foundation::LocalFree,
+            Security::{Authorization::*, *},
+            Storage::FileSystem::*,
+            System::Threading::{GetCurrentProcess, OpenProcessToken},
+        };
+        struct Local(*mut c_void);
+        impl Drop for Local {
+            fn drop(&mut self) {
+                if !self.0.is_null() {
+                    unsafe {
+                        LocalFree(self.0);
+                    }
+                }
+            }
+        }
+        fn success(value: i32) {
+            assert_ne!(value, 0, "{}", std::io::Error::last_os_error());
+        }
+        // SID comes from a live OS-owned descriptor/ACE or the bounded token
+        // allocation. Check its fixed header and complete subauthority extent.
+        unsafe fn sid_text(sid: PSID, start: usize, end: usize) -> String {
+            let p = sid as usize;
+            assert!(p >= start && p.checked_add(8).is_some_and(|n| n <= end));
+            let count = unsafe { *sid.cast::<u8>().add(1) } as usize;
+            assert!(count <= 15 && p.checked_add(8 + 4 * count).is_some_and(|n| n <= end));
+            success(unsafe { IsValidSid(sid) });
+            let mut output = ptr::null_mut();
+            success(unsafe { ConvertSidToStringSidW(sid, &mut output) });
+            let _allocation = Local(output.cast());
+            let mut n = 0;
+            while n < 256 && unsafe { *output.add(n) } != 0 {
+                n += 1;
+            }
+            assert!(n < 256);
+            String::from_utf16(unsafe { std::slice::from_raw_parts(output, n) }).unwrap()
+        }
+        pub(super) fn user() -> String {
+            let mut raw = ptr::null_mut();
+            success(unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw) });
+            assert!(!raw.is_null());
+            let token = unsafe { OwnedHandle::from_raw_handle(raw) };
+            let mut size = 0;
+            unsafe {
+                GetTokenInformation(
+                    token.as_raw_handle(),
+                    TokenUser,
+                    ptr::null_mut(),
+                    0,
+                    &mut size,
+                );
+            }
+            assert!((size_of::<TOKEN_USER>()..=65536).contains(&(size as usize)));
+            let capacity = size;
+            let mut buffer = vec![0usize; (size as usize).div_ceil(size_of::<usize>())];
+            success(unsafe {
+                GetTokenInformation(
+                    token.as_raw_handle(),
+                    TokenUser,
+                    buffer.as_mut_ptr().cast(),
+                    capacity,
+                    &mut size,
+                )
+            });
+            assert!(size <= capacity && size as usize >= size_of::<TOKEN_USER>());
+            let start = buffer.as_ptr() as usize;
+            unsafe {
+                sid_text(
+                    (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid,
+                    start,
+                    start + size as usize,
+                )
+            }
+        }
+        #[derive(Debug, PartialEq, Eq)]
+        pub(super) struct Ace {
+            pub kind: u8,
+            pub flags: u8,
+            pub mask: u32,
+            pub sid: String,
+        }
+        #[derive(Debug, PartialEq, Eq)]
+        pub(super) struct Facts {
+            pub identity: (u64, [u8; 16]),
+            pub owner: String,
+            pub protected: bool,
+            pub aces: Vec<Ace>,
+            pub descriptor: String,
+        }
+        fn open(path: &Path, access: u32) -> File {
+            OpenOptions::new()
+                .access_mode(access)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(path)
+                .unwrap()
+        }
+        pub(super) fn inspect(path: &Path) -> Facts {
+            let file = open(path, READ_CONTROL | FILE_READ_ATTRIBUTES);
+            let mut id = FILE_ID_INFO::default();
+            success(unsafe {
+                GetFileInformationByHandleEx(
+                    file.as_raw_handle(),
+                    FileIdInfo,
+                    (&raw mut id).cast(),
+                    size_of::<FILE_ID_INFO>() as u32,
+                )
+            });
+            let mut owner = ptr::null_mut();
+            let mut dacl: *mut ACL = ptr::null_mut();
+            let mut sd = ptr::null_mut();
+            let flags =
+                OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+            assert_eq!(
+                unsafe {
+                    GetSecurityInfo(
+                        file.as_raw_handle(),
+                        SE_FILE_OBJECT,
+                        flags,
+                        &mut owner,
+                        ptr::null_mut(),
+                        &mut dacl,
+                        ptr::null_mut(),
+                        &mut sd,
+                    )
+                },
+                0
+            );
+            let _allocation = Local(sd);
+            assert!(
+                !sd.is_null() && !dacl.is_null(),
+                "fixture requires a non-null DACL"
+            );
+            success(unsafe { IsValidSecurityDescriptor(sd) });
+            let len = unsafe { GetSecurityDescriptorLength(sd) } as usize;
+            assert!((20..=65536).contains(&len));
+            let start = sd as usize;
+            let end = start.checked_add(len).unwrap();
+            let owner = unsafe { sid_text(owner, start, end) };
+            let dp = dacl as usize;
+            assert!(dp >= start && dp.checked_add(size_of::<ACL>()).is_some_and(|n| n <= end));
+            let size = unsafe { (*dacl).AclSize } as usize;
+            assert!(size >= size_of::<ACL>() && dp.checked_add(size).is_some_and(|n| n <= end));
+            success(unsafe { IsValidAcl(dacl) });
+            assert!(unsafe { (*dacl).AceCount } <= 128);
+            let mut control = 0;
+            let mut revision = 0;
+            success(unsafe { GetSecurityDescriptorControl(sd, &mut control, &mut revision) });
+            let mut aces = Vec::new();
+            for i in 0..unsafe { (*dacl).AceCount } {
+                let mut ace: *mut c_void = ptr::null_mut();
+                success(unsafe { GetAce(dacl, i as u32, &mut ace) });
+                let ap = ace as usize;
+                assert!(ap >= dp && ap.checked_add(8).is_some_and(|n| n <= dp + size));
+                let header = unsafe { &*ace.cast::<ACE_HEADER>() };
+                let ace_end = ap.checked_add(header.AceSize as usize).unwrap();
+                assert!(header.AceSize >= 16 && ace_end <= dp + size);
+                assert!(
+                    matches!(header.AceType, 0 | 1),
+                    "fixture uses ordinary allow/deny ACEs"
+                );
+                let sid = unsafe { sid_text(ace.cast::<u8>().add(8).cast(), ap + 8, ace_end) };
+                aces.push(Ace {
+                    kind: header.AceType,
+                    flags: header.AceFlags,
+                    mask: unsafe { (*ace.cast::<ACCESS_ALLOWED_ACE>()).Mask },
+                    sid,
+                });
+            }
+            let mut text = ptr::null_mut();
+            let mut units = 0;
+            success(unsafe {
+                ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                    sd, 1, flags, &mut text, &mut units,
+                )
+            });
+            let _text = Local(text.cast());
+            assert!(!text.is_null() && (1..=65536).contains(&units));
+            let raw = unsafe { std::slice::from_raw_parts(text, units as usize) };
+            assert_eq!(raw.last(), Some(&0));
+            Facts {
+                identity: (id.VolumeSerialNumber, id.FileId.Identifier),
+                owner,
+                protected: control & SE_DACL_PROTECTED != 0,
+                aces,
+                descriptor: String::from_utf16(&raw[..raw.len() - 1]).unwrap(),
+            }
+        }
+        pub(super) fn parent_acl(path: &Path, extra: &str) {
+            // Test-only setup on the test-owned parent, BEFORE creating the
+            // inheritance control or production descendants. Never changes owner.
+            let file = open(path, WRITE_DAC | READ_CONTROL);
+            let user = user();
+            let text: Vec<u16> =
+                format!("D:P(A;OICI;FA;;;{user})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA){extra}\0")
+                    .encode_utf16()
+                    .collect();
+            let mut sd = ptr::null_mut();
+            success(unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    text.as_ptr(),
+                    1,
+                    &mut sd,
+                    ptr::null_mut(),
+                )
+            });
+            let _allocation = Local(sd);
+            let mut dacl = ptr::null_mut();
+            let mut present = 0;
+            let mut defaulted = 0;
+            success(unsafe {
+                GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted)
+            });
+            assert_ne!(present, 0);
+            assert!(!dacl.is_null());
+            assert_eq!(
+                unsafe {
+                    SetSecurityInfo(
+                        file.as_raw_handle(),
+                        SE_FILE_OBJECT,
+                        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                        ptr::null_mut(),
+                        ptr::null_mut(),
+                        dacl,
+                        ptr::null_mut(),
+                    )
+                },
+                0
+            );
+        }
+        pub(super) fn trusted_only(facts: &Facts, user: &str) {
+            // Literal independent expected principals/rights; no production predicate.
+            assert_eq!(facts.aces.len(), 3);
+            for sid in [user, "S-1-5-18", "S-1-5-32-544"] {
+                let matches: Vec<_> = facts.aces.iter().filter(|a| a.sid == sid).collect();
+                assert_eq!(matches.len(), 1, "{facts:?}");
+                let ace = matches[0];
+                assert_eq!(ace.kind, 0);
+                assert_eq!(ace.mask, FILE_ALL_ACCESS);
+                assert_eq!(u32::from(ace.flags) & INHERIT_ONLY_ACE, 0);
+            }
+        }
+        pub(super) fn private(path: &Path, user: &str) {
+            let facts = inspect(path);
+            assert_eq!(facts.owner, user, "{path:?}");
+            assert!(facts.protected, "{path:?}");
+            trusted_only(&facts, user);
+        }
+    }
+    // Descriptor, full native identity, object type, names and file bytes all
+    // survive a refusal. Ignore access timestamps, which inspection can update.
+    fn security_tree(
+        path: &std::path::Path,
+    ) -> Vec<(
+        std::path::PathBuf,
+        security_observation::Facts,
+        bool,
+        Vec<u8>,
+    )> {
+        fn walk(
+            base: &std::path::Path,
+            path: &std::path::Path,
+            out: &mut Vec<(
+                std::path::PathBuf,
+                security_observation::Facts,
+                bool,
+                Vec<u8>,
+            )>,
+        ) {
+            assert!(out.len() < 32);
+            let metadata = fs::symlink_metadata(path).unwrap();
+            assert!(!metadata.file_type().is_symlink());
+            assert!(metadata.is_dir() || metadata.is_file());
+            let bytes = if metadata.is_file() {
+                assert!(metadata.len() <= 4096);
+                fs::read(path).unwrap()
+            } else {
+                Vec::new()
+            };
+            out.push((
+                path.strip_prefix(base).unwrap().to_owned(),
+                security_observation::inspect(path),
+                metadata.is_dir(),
+                bytes,
+            ));
+            if metadata.is_dir() {
+                let mut children: Vec<_> = fs::read_dir(path)
+                    .unwrap()
+                    .map(|e| e.unwrap().path())
+                    .collect();
+                assert!(children.len() <= 16);
+                children.sort();
+                for child in children {
+                    walk(base, &child, out);
+                }
+            }
+        }
+        let mut result = Vec::new();
+        walk(path, path, &mut result);
+        result
+    }
+    fn inspect_private_descendants(
+        cache: &std::path::Path,
+        s: &SelectedManifest,
+        parts: &[Partial<'_>; 2],
+        user: &str,
+    ) {
+        let manifest = root(cache, s);
+        for path in [
+            cache.join("qos-internal-install"),
+            manifest.clone(),
+            manifest.join("payload"),
+            manifest.join("journal-0"),
+            manifest.join("journal-1"),
+            manifest.join("ownership.lock"),
+        ] {
+            security_observation::private(&path, user);
+        }
+        for (i, part) in parts.iter().enumerate() {
+            security_observation::private(
+                &manifest
+                    .join("payload")
+                    .join(part.provider.ownership().leaf),
+                user,
+            );
+            security_observation::private(
+                &manifest.join(format!("journal-{i}/record-0000000001")),
+                user,
+            );
+        }
+    }
+    #[test]
+    fn protected_creation_excludes_effective_inheritance_from_preconfigured_parent() {
+        use windows_sys::Win32::{
+            Security::{CONTAINER_INHERIT_ACE, INHERIT_ONLY_ACE, OBJECT_INHERIT_ACE},
+            Storage::FileSystem::FILE_ALL_ACCESS,
+        };
+        let dir = directory();
+        let s = selected();
+        let user = security_observation::user();
+        security_observation::parent_acl(dir.path(), "(A;OICIIO;FA;;;WD)");
+        let before = security_observation::inspect(dir.path());
+        assert_eq!(before.owner, user);
+        assert!(before.aces.iter().any(|a| a.sid == "S-1-1-0"
+            && a.kind == 0
+            && a.mask == FILE_ALL_ACCESS
+            && u32::from(a.flags)
+                & (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | INHERIT_ONLY_ACE)
+                == OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | INHERIT_ONLY_ACE));
+        // An ordinary child positively demonstrates that this parent really
+        // transmits an effective Everyone grant; it is outside the cache namespace.
+        let ordinary = dir.path().join("inheritance-control");
+        fs::create_dir(&ordinary).unwrap();
+        fs::write(ordinary.join("sentinel"), b"inherited").unwrap();
+        for path in [&ordinary, &ordinary.join("sentinel")] {
+            let inherited = security_observation::inspect(path);
+            assert!(!inherited.protected);
+            assert!(inherited.aces.iter().any(|a| a.kind == 0
+                && a.sid == "S-1-1-0"
+                && a.mask == FILE_ALL_ACCESS
+                && u32::from(a.flags) & INHERIT_ONLY_ACE == 0));
+        }
+        let parts = parts(dir.path(), &s); // Must reach real exclusive private creation.
+        inspect_private_descendants(dir.path(), &s, &parts, &user);
+        assert_eq!(security_observation::inspect(dir.path()), before);
+    }
+    #[test]
+    fn effective_ancestry_replacement_grant_refuses_without_descriptor_or_object_changes() {
+        let dir = directory();
+        let s = selected();
+        fs::write(dir.path().join("sentinel"), b"unchanged").unwrap();
+        security_observation::parent_acl(dir.path(), "(A;;0x40;;;WD)");
+        let facts = security_observation::inspect(dir.path());
+        assert_eq!(facts.owner, security_observation::user());
+        assert!(
+            facts
+                .aces
+                .iter()
+                .any(|a| a.kind == 0 && a.sid == "S-1-1-0" && a.mask == 0x40 && a.flags == 0)
+        );
+        let before = security_tree(dir.path());
+        let error = match fixture_acquire(dir.path(), &s) {
+            Err(e) => e,
+            Ok(_) => panic!("replacement authority accepted"),
+        };
+        assert!(error.contains("Unsafe cache ACL rights"), "{error}");
+        assert_eq!(security_tree(dir.path()), before);
+        assert!(!dir.path().join("qos-internal-install").exists());
+    }
+    #[test]
+    #[ignore = "UNRUN: externally provision a dedicated SYSTEM-owned local ancestry with protected current-user/SYSTEM/Administrators full-access DACL; no account or privilege changes in fixture"]
+    fn externally_provisioned_system_owned_ancestry_is_accepted() {
+        let path = std::path::PathBuf::from(
+            std::env::var_os("QOS_WINDOWS_SYSTEM_ANCESTOR")
+                .expect("externally provisioned SYSTEM-owned ancestry"),
+        );
+        let user = security_observation::user();
+        let before = security_observation::inspect(&path);
+        assert_ne!(user, "S-1-5-18", "run as an ordinary current user");
+        assert_eq!(before.owner, "S-1-5-18");
+        assert!(before.protected);
+        security_observation::trusted_only(&before, &user);
+        let dir = tempfile::tempdir_in(&path).unwrap();
+        let s = selected();
+        let parts = parts(dir.path(), &s);
+        inspect_private_descendants(dir.path(), &s, &parts, &user);
+        assert_eq!(security_observation::inspect(&path), before);
+    }
+    #[test]
+    #[ignore = "UNRUN: externally provision a dedicated foreign-owner local ancestry, trusted-only full-access DACL and sole sentinel file; provide expected foreign SID; never change owner/accounts/privileges in fixture"]
+    fn externally_provisioned_untrusted_owner_refuses_without_repair() {
+        let path = std::path::PathBuf::from(
+            std::env::var_os("QOS_WINDOWS_FOREIGN_OWNER_ANCESTOR")
+                .expect("externally provisioned foreign-owner ancestry"),
+        );
+        let expected = std::env::var("QOS_WINDOWS_FOREIGN_OWNER_SID")
+            .expect("expected externally provisioned owner SID");
+        let user = security_observation::user();
+        let facts = security_observation::inspect(&path);
+        assert_eq!(facts.owner, expected);
+        assert!(
+            ![
+                user.as_str(),
+                "S-1-5-18",
+                "S-1-5-32-544",
+                "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
+            ]
+            .contains(&expected.as_str())
+        );
+        assert!(facts.protected);
+        security_observation::trusted_only(&facts, &user);
+        assert_eq!(fs::read_dir(&path).unwrap().count(), 1);
+        assert_eq!(fs::read(path.join("sentinel")).unwrap(), b"owner-fixture");
+        let before = security_tree(&path);
+        let s = selected();
+        let error = match fixture_acquire(&path, &s) {
+            Err(e) => e,
+            Ok(_) => panic!("foreign owner accepted"),
+        };
+        assert!(error.contains("Cache owner refusal"), "{error}");
+        assert_eq!(security_tree(&path), before);
+    }
     #[test]
     fn existing_permissive_or_unprotected_acl_refuses_without_repair() {
         for protected in [false, true] {
@@ -641,8 +1098,22 @@ mod native {
             drop(b);
             let path = root(dir.path(), &s).join("payload");
             super::super::native::fixture_acl(&path, protected).unwrap();
-            assert!(fixture_acquire(dir.path(), &s).is_err());
-            assert!(fixture_acquire(dir.path(), &s).is_err());
+            let before = security_tree(&root(dir.path(), &s));
+            for _ in 0..2 {
+                let error = match fixture_acquire(dir.path(), &s) {
+                    Err(e) => e,
+                    Ok(_) => panic!("unsafe existing private ACL accepted"),
+                };
+                assert!(
+                    error.contains(if protected {
+                        "Private ACL contains foreign principal"
+                    } else {
+                        "Private DACL not protected"
+                    }),
+                    "{error}"
+                );
+                assert_eq!(security_tree(&root(dir.path(), &s)), before);
+            }
             assert_eq!(fs::read_dir(path).unwrap().count(), 2);
         }
     }
