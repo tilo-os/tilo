@@ -986,11 +986,14 @@ impl TopBarChrome {
             &self.rect,
         );
 
+        // Bar role (HIG §9.1/§9.5): the one bottom hairline is derived
+        // against the overlay ground it sits on, never a declared border
+        // that vanishes three shades off the surface on the dark preset.
         let border_rect = Rect::new(self.rect.x0, self.rect.y1 - 1.0, self.rect.x1, self.rect.y1);
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.border_standard,
+            ui::chrome::chrome_hairline(theme),
             None,
             &border_rect,
         );
@@ -1118,12 +1121,13 @@ impl TopBarChrome {
         );
         x += control + f64::from(tokens.spacing.s2);
 
-        // Vertical divider
+        // Vertical divider: a separator on the Bar is the Bar's hairline
+        // (HIG §9.5), so it reads on every preset the way the bottom edge does.
         let divider = Rect::new(x, center_y - 8.0, x + 1.0, center_y + 8.0);
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.border_standard,
+            ui::chrome::chrome_hairline(theme),
             None,
             &divider,
         );
@@ -1150,7 +1154,9 @@ impl TopBarChrome {
             if self.can_switch_up() {
                 colors.text_dim
             } else {
-                colors.border_standard
+                // Disabled ink is the rest ink under the toolkit's disabled
+                // alpha (HIG §9.5), not a border token borrowed as a colour.
+                colors.text_dim.with_alpha_factor(ui::widget::DISABLED_ALPHA)
             },
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
@@ -1176,7 +1182,7 @@ impl TopBarChrome {
             if self.can_switch_down() {
                 colors.text_dim
             } else {
-                colors.border_standard
+                colors.text_dim.with_alpha_factor(ui::widget::DISABLED_ALPHA)
             },
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
@@ -1388,10 +1394,12 @@ impl TopBarChrome {
             } else {
                 Self::DOT_INACTIVE_RADIUS
             };
+            // An inactive page dot is dim ink from the semantic tier, never
+            // a ramp slot (HIG §9.2).
             let color = if active {
                 colors.accent[5]
             } else {
-                colors.neutral[7]
+                colors.text_dim
             };
             // One pitch wide and the full control height: a 32×32 target
             // (HIG §9.6) that never shares a pixel with its neighbour.

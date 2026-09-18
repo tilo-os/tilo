@@ -5,16 +5,17 @@
 //! bounds and maps `Back`/`Changed` into navigation and chrome invalidation.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::Fill;
+use vello::kurbo::{Affine, Point, Rect};
 
-use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Toggle, ToggleFace};
 
 use crate::shell::qs_actions::{QsActions, log_qs_result};
-use crate::shell::quick_settings_drill_in::{DrillInList, DrillInOutcome};
+use crate::shell::quick_settings_drill_in::{
+    CONTROL_INSET, DrillInList, DrillInOutcome, GLYPH, RELATED_GAP, TOGGLE_H, TOGGLE_W,
+    centred_text_top, leading_glyph, paint_control, trailing_toggle, type_size,
+};
 
 #[allow(
     clippy::cast_possible_truncation,
@@ -94,69 +95,60 @@ impl QuickSettingsVpnPane {
             // A discovery row is not a selected tab. Wi-Fi and Bluetooth
             // stay quiet and reserve blue for an actual live state; VPN is
             // a control row, so its enabled state belongs to the trailing
-            // switch while the text reads "Connected". Keeping the surface
-            // neutral avoids saying the same thing three different ways.
-            let fill = if hovered {
-                colors.neutral[3].with_alpha_factor(0.72)
-            } else {
-                colors.neutral[2].with_alpha_factor(0.42)
-            };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                fill,
-                None,
-                &RoundedRect::from_rect(*row, 12.0),
-            );
+            // switch while the text reads "Connected". The surface is the
+            // shared Control role (HIG §9.1/§9.5): a quiet lift with a
+            // derived edge, never a ramp-slot wash.
+            paint_control(scene, transform, theme, *row, hovered, false);
+            let glyph = leading_glyph(*row, CONTROL_INSET, GLYPH);
             ui::icons::draw_icon(
                 scene,
                 transform,
-                Rect::new(row.x0 + 12.0, row.y0 + 16.0, row.x0 + 32.0, row.y0 + 36.0),
+                glyph,
                 ui::icons::Icon::Shield,
                 colors.text_dim,
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
-            let toggle = Rect::new(
-                row.x1 - 56.0,
-                row.center().y - 12.0,
-                row.x1 - 12.0,
-                row.center().y + 12.0,
-            );
+            let toggle = trailing_toggle(*row, CONTROL_INSET, TOGGLE_W, TOGGLE_H);
             Toggle::paint(
                 scene,
                 transform,
                 theme,
                 &ToggleFace::new(toggle, profile.active).hovered(hovered),
             );
-            let text_width = (toggle.x0 - 12.0 - (row.x0 + 44.0)).max(1.0);
-            let name = text.elide_to_width(
-                &profile.name,
-                theme.tokens.typography.scale.sm,
-                f64_to_f32_lossy(text_width),
-            );
+            let name_size = type_size(text, theme.tokens.typography.scale.sm);
+            let status_size = type_size(text, theme.tokens.typography.scale.xs);
+            let text_x = glyph.x1 + CONTROL_INSET;
+            let text_width = (toggle.x0 - RELATED_GAP - text_x).max(1.0);
+            let name = text.elide_to_width(&profile.name, name_size, f64_to_f32_lossy(text_width));
+            let status = if profile.active {
+                "Connected"
+            } else {
+                "Disconnected"
+            };
+            // Name and status are one measured block on the row's centre
+            // line (HIG §7), not two lines pinned from the row's top.
+            let (_, name_h) = text.measure_weighted(&name, name_size, None, TextWeight::Medium);
+            let (_, status_h) = text.measure(status, status_size, None);
+            let block_top = centred_text_top(*row, f64::from(name_h) + f64::from(status_h));
             text.draw_text_weighted(
                 scene,
                 &name,
-                theme.tokens.typography.scale.sm,
+                name_size,
                 colors.text_primary,
-                transform.pre_translate((row.x0 + 44.0, row.y0 + 9.0).into()),
+                transform.pre_translate((text_x, block_top).into()),
                 None,
                 TextWeight::Medium,
             );
             text.draw_text(
                 scene,
-                if profile.active {
-                    "Connected"
-                } else {
-                    "Disconnected"
-                },
-                theme.tokens.typography.scale.xs,
+                status,
+                status_size,
                 if profile.active {
                     colors.accent[5]
                 } else {
                     colors.text_dim
                 },
-                transform.pre_translate((row.x0 + 44.0, row.y0 + 29.0).into()),
+                transform.pre_translate((text_x, block_top + f64::from(name_h)).into()),
                 Some(f64_to_f32_lossy(text_width)),
             );
         }
