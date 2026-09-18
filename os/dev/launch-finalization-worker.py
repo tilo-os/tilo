@@ -79,6 +79,33 @@ def cleanup_owned(container, volumes):
     return failures
 
 
+def require_published_exports(exports, request):
+    """Green requires coherent public publication evidence, not only exit zero."""
+    result = exports.get('result.json')
+    published = exports.get('08-published.json')
+    if not isinstance(result, dict) or not isinstance(published, dict):
+        raise ValueError('required publication receipts were not exported')
+    canonical = json.dumps(request, sort_keys=True, separators=(',', ':')).encode()
+    binding = hashlib.sha256(canonical).hexdigest()
+    for receipt in (result, published):
+        if receipt.get('schema') != 1 or receipt.get('request_sha256') != binding:
+            raise ValueError('publication receipt belongs to another request')
+    digest = published.get('manifest_digest', '')
+    config = published.get('config_digest', '')
+    if (not re.fullmatch(r'sha256:[0-9a-f]{64}', digest)
+            or not re.fullmatch(r'sha256:[0-9a-f]{64}', config)
+            or published.get('stage') != 'published'
+            or published.get('published_reference') != request['publish_repository'] + '@' + digest
+            or published.get('image_id') != config
+            or published.get('target_update_ref') != request['new_target']):
+        raise ValueError('publication receipt lacks matching immutable identities')
+    for key in ('image_id', 'published_reference', 'manifest_digest', 'config_digest'):
+        if result.get(key) != published.get(key):
+            raise ValueError('final result differs from published image')
+    if result.get('publication_required') is not False:
+        raise ValueError('final result still requires publication')
+
+
 def run(*args, **kwargs):
     return subprocess.run(args, check=True, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, **kwargs).stdout.decode().strip()
@@ -212,6 +239,7 @@ def main():
         raise ValueError('tools identity mismatch')
     volumes = []
     container = None
+    exports = {}
     try:
         # Refuse collisions: cleanup only resources this invocation created.
         for suffix in ('work', 'storage', 'scratch', 'evidence'):
@@ -273,11 +301,17 @@ def main():
                     try:
                         value = bounded_receipt(container, file)
                         (args.evidence / file).write_text(json.dumps(value) + '\n')
+                        exports[file] = value
                     except (OSError, ValueError, TimeoutError, tarfile.TarError, subprocess.SubprocessError):
                         pass
         finally:
             failures = cleanup_owned(container, volumes)
             (args.evidence / 'cleanup.json').write_text(json.dumps({'unremoved_owned_resources': failures}) + '\n')
+    # Reached only after a successful worker exit, and after unconditional cleanup.
+    # Missing/bad exports must never turn a lost result into a green CI job.
+    require_published_exports(exports, json.loads(data, object_pairs_hook=unique))
+    if failures:
+        raise RuntimeError('owned worker cleanup incomplete')
 
 
 if __name__ == '__main__':
