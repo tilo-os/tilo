@@ -190,6 +190,7 @@ struct LocalModelPackage {
     download_bytes: u64,
     installed_bytes: u64,
     vision: bool,
+    face_recognition: bool,
 }
 #[derive(Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
