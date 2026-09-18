@@ -34,9 +34,11 @@ def regular(path):
 
 def wine_identity(identity, pin):
     if (len(identity) != 6 or not all(isinstance(value, str) for value in identity)
-            or not re.fullmatch(r'wine(?:-[A-Za-z0-9+_-]+)?', identity[0])
+            or not (re.fullmatch(r'wine(?:-[A-Za-z0-9+_-]+)?', identity[0])
+                    or identity[0] == 'ntsync-autoload')
             or identity[1:3] != [pin['version'], pin['build_release']]
-            or identity[3] not in ('i686', 'x86_64', 'noarch')):
+            or identity[3] not in ('i686', 'x86_64', 'noarch')
+            or identity[4] != f"wine-{pin['version']}-{pin['build_release']}.src.rpm"):
         raise ValueError('expected pinned traditional Wine package identity')
 
 
