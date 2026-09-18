@@ -109,6 +109,10 @@ impl ExportDialog {
         &self.selection
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "responsive export geometry keeps its virtualized rows and footer hit targets synchronized"
+    )]
     pub(crate) fn geometry(&self, window: Rect, store: &ContactStore, sort: SortKey) -> Geometry {
         let ids = store.filtered_sorted("", None, sort);
         // At 200% the original single-line header/footer cannot contain their
