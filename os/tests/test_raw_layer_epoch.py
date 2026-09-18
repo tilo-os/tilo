@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import subprocess
+import textwrap
 import unittest
 from unittest.mock import patch
 from test_assembly_registry_cache import AssemblyCache, d
@@ -20,6 +21,28 @@ class RawLayerEpoch(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'adopted-WPE'):
                 d.main(args)
             select.assert_not_called()
+
+    def test_workflow_anchor_validation_and_optional_argv(self):
+        workflow = (Path(__file__).resolve().parents[2]/'.forgejo/workflows/development-compile.yml').read_text()
+        self.assertEqual(workflow.count('ASSEMBLY_LAYER_EPOCH_ANCHOR: ${{ inputs.assembly_layer_epoch_anchor }}'), 2)
+        self.assertIn('"${layer_epoch_args[@]}"', workflow)
+        guard = textwrap.dedent('          anchor = ' + workflow.split('          anchor = ', 1)[1].split("          s = importlib.util.spec_from_file_location('compile'", 1)[0])
+        valid = {'ASSEMBLY_LAYER_EPOCH_ANCHOR':'b'*40, 'COMPILE_MODE':'full-build',
+                 'RECONSTRUCTED_NATIVE_RECEIPT':'{}', 'WPE_ADOPTION_RECEIPT':'{}'}
+        import re
+        exec(guard, {'e':valid, 're':re})
+        for field,value in [('COMPILE_MODE','cache-only'), ('COMPILE_MODE','native-payload'),
+                            ('RECONSTRUCTED_NATIVE_RECEIPT',''), ('WPE_ADOPTION_RECEIPT',''),
+                            ('ASSEMBLY_LAYER_EPOCH_ANCHOR','main')]:
+            with self.subTest(field=field,value=value), self.assertRaises(ValueError):
+                exec(guard, {'e':dict(valid, **{field:value}), 're':re})
+        exec(guard, {'e':dict(valid, ASSEMBLY_LAYER_EPOCH_ANCHOR='', COMPILE_MODE='cache-only'), 're':re})
+        shell = textwrap.dedent('          layer_epoch_args=()' + workflow.split('          layer_epoch_args=()',1)[1].split('          if [ -n "$NATIVE_SOURCE_COMPATIBILITY" ]',1)[0])
+        for anchor,expected in [('', b''), ('b'*40, b'--assembly-layer-epoch-anchor\0'+b'b'*40+b'\0')]:
+            result = subprocess.run(['bash','-c',shell+'\nfor arg in "${layer_epoch_args[@]}"; do printf "%s\\0" "$arg"; done'],
+                env=dict(os.environ, ASSEMBLY_LAYER_EPOCH_ANCHOR=anchor), capture_output=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(result.stdout,expected)
 
     def test_anchor_records_both_epochs_without_changing_source(self):
         env = self.env()
