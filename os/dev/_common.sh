@@ -465,7 +465,8 @@ display_qemu_args() {
 
 input_qemu_args() {
   if [ "$TILO_VM_ARCH" = aarch64 ]; then
-    printf -- '-device qemu-xhci -device usb-tablet'
+    # ARM virt has no implicit PC keyboard; monitor sendkey needs a guest device.
+    printf -- '-device qemu-xhci -device usb-tablet -device usb-kbd'
   else
     printf -- '-usb -device usb-tablet'
   fi
