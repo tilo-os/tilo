@@ -238,6 +238,7 @@ mod device_fabric_ui_tests {
         (
             DeviceFabricView {
                 bluetooth_authorizations: Vec::new(),
+                bluetooth_handoffs: Vec::new(),
                 gamepad_authorizations: Vec::new(),
                 local_gamepads: Vec::new(),
                 devices: vec![FabricDeviceView {
@@ -345,13 +346,90 @@ mod device_fabric_ui_tests {
             Ok(view.clone())
         }));
 
-        host.handle_qs_device_fabric_click(host.qs_device_row_rect(0).center());
+        let (allow, _) = ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
+        host.handle_qs_device_fabric_click(allow.center());
         assert!(
             actions
                 .borrow()
                 .contains(&DeviceFabricUiAction::RetryMediaHandoff {
                     request_id: [7; 16],
                 })
+        );
+    }
+
+    #[test]
+    fn device_pane_can_decline_new_bluetooth_pairing() {
+        let (mut view, _) = fixture();
+        view.bluetooth_authorizations = vec![BluetoothHandoffAuthorizationView {
+            request_id: [10; 16],
+            accessory_name: "Keyboard".into(),
+            source_label: "Laptop".into(),
+        }];
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&actions);
+        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        host.set_device_fabric_bridge(Rc::new(move |action| {
+            recorded.borrow_mut().push(action);
+            Ok(view.clone())
+        }));
+
+        let (_, decline) =
+            ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
+        host.handle_qs_device_fabric_click(decline.center());
+        assert!(
+            actions
+                .borrow()
+                .contains(&DeviceFabricUiAction::AuthorizeBluetoothHandoff {
+                    request_id: [10; 16],
+                    approved: false,
+                })
+        );
+    }
+
+    #[test]
+    fn bluetooth_handoff_rows_cancel_active_and_retry_failed_requests() {
+        let (mut view, _) = fixture();
+        view.bluetooth_handoffs = vec![
+            crate::shell::device_fabric_runtime::BluetoothHandoffStatusView {
+                request_id: [11; 16],
+                accessory_name: "Headphones".into(),
+                peer_label: "Laptop".into(),
+                outbound: true,
+                phase:
+                    crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::ConnectingTarget,
+            },
+            crate::shell::device_fabric_runtime::BluetoothHandoffStatusView {
+                request_id: [12; 16],
+                accessory_name: "Headphones".into(),
+                peer_label: "Laptop".into(),
+                outbound: true,
+                phase: crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Failed(
+                    crate::shell::device_fabric_runtime::BluetoothHandoffFailure::ConnectTarget,
+                ),
+            },
+        ];
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&actions);
+        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        host.set_device_fabric_bridge(Rc::new(move |action| {
+            recorded.borrow_mut().push(action);
+            Ok(view.clone())
+        }));
+
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(0).center());
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
+        let actions = actions.borrow();
+        assert!(
+            actions.contains(&DeviceFabricUiAction::CancelBluetoothHandoff {
+                request_id: [11; 16],
+            })
+        );
+        assert!(
+            actions.contains(&DeviceFabricUiAction::RetryBluetoothHandoff {
+                request_id: [12; 16],
+            })
         );
     }
 
@@ -419,7 +497,8 @@ mod device_fabric_ui_tests {
         }));
 
         assert!(actions.borrow().is_empty());
-        host.handle_qs_device_fabric_click(host.qs_device_row_rect(0).center());
+        let (allow, _) = ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
+        host.handle_qs_device_fabric_click(allow.center());
         assert!(
             actions
                 .borrow()
@@ -1133,6 +1212,7 @@ pub struct GamepadAuthorizationView {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeviceFabricView {
     pub bluetooth_authorizations: Vec<BluetoothHandoffAuthorizationView>,
+    pub bluetooth_handoffs: Vec<crate::shell::device_fabric_runtime::BluetoothHandoffStatusView>,
     pub gamepad_authorizations: Vec<GamepadAuthorizationView>,
     pub local_gamepads: Vec<crate::shell::physical_gamepad::LocalPhysicalGamepadView>,
     pub devices: Vec<FabricDeviceView>,
@@ -1172,6 +1252,12 @@ pub enum DeviceFabricUiAction {
     AuthorizeBluetoothHandoff {
         request_id: [u8; 16],
         approved: bool,
+    },
+    CancelBluetoothHandoff {
+        request_id: [u8; 16],
+    },
+    RetryBluetoothHandoff {
+        request_id: [u8; 16],
     },
     AuthorizeGamepadForwarding {
         forwarding_id: [u8; 16],
@@ -1276,6 +1362,7 @@ enum DeviceFabricPaneRow {
     RealtimeConsent(crate::shell::collab_broker_capnp::RealtimeConsentUiView),
     RealtimeSource(crate::shell::collab_broker_capnp::RealtimeSourceUiView),
     BluetoothAuthorization(BluetoothHandoffAuthorizationView),
+    BluetoothHandoff(crate::shell::device_fabric_runtime::BluetoothHandoffStatusView),
     GamepadAuthorization(GamepadAuthorizationView),
     LocalGamepad(crate::shell::physical_gamepad::LocalPhysicalGamepadView),
     MediaHandoff(crate::shell::device_fabric_runtime::MediaHandoffStatusView),
@@ -1381,6 +1468,12 @@ fn device_fabric_pane_rows(
                 .map(DeviceFabricPaneRow::BluetoothAuthorization),
         )
         .chain(
+            view.bluetooth_handoffs
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::BluetoothHandoff),
+        )
+        .chain(
             view.gamepad_authorizations
                 .iter()
                 .cloned()
@@ -1446,6 +1539,22 @@ fn media_handoff_failure_label(
         MediaHandoffFailure::OpenFailed => "destination could not open it",
         MediaHandoffFailure::TimedOut => "destination did not respond",
         MediaHandoffFailure::Cancelled => "cancelled",
+    }
+}
+
+fn bluetooth_handoff_failure_label(
+    failure: crate::shell::device_fabric_runtime::BluetoothHandoffFailure,
+) -> &'static str {
+    use crate::shell::device_fabric_runtime::BluetoothHandoffFailure;
+    match failure {
+        BluetoothHandoffFailure::InspectTarget => "target inspection failed",
+        BluetoothHandoffFailure::TargetUnavailable => "target unavailable or declined",
+        BluetoothHandoffFailure::DisconnectSource => "source could not release accessory",
+        BluetoothHandoffFailure::PairTarget => "target pairing failed",
+        BluetoothHandoffFailure::ConnectTarget => "target connection failed",
+        BluetoothHandoffFailure::Send => "certified route was interrupted",
+        BluetoothHandoffFailure::TimedOut => "transaction timed out",
+        BluetoothHandoffFailure::Rollback => "source rollback failed",
     }
 }
 
@@ -11849,16 +11958,56 @@ impl ShellOverlayHost {
                 }
                 return;
             }
-            DeviceFabricPaneRow::BluetoothAuthorization(authorization) => Some((
-                DeviceFabricUiAction::AuthorizeBluetoothHandoff {
-                    request_id: authorization.request_id,
-                    approved: true,
-                },
-                format!(
-                    "Approved pairing {} for this handoff",
-                    authorization.accessory_name
-                ),
-            )),
+            DeviceFabricPaneRow::BluetoothAuthorization(authorization) => {
+                let (allow, decline) =
+                    Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
+                let approved = if allow.contains(point) {
+                    true
+                } else if decline.contains(point) {
+                    false
+                } else {
+                    return;
+                };
+                Some((
+                    DeviceFabricUiAction::AuthorizeBluetoothHandoff {
+                        request_id: authorization.request_id,
+                        approved,
+                    },
+                    if approved {
+                        format!(
+                            "Approved pairing {} for this handoff",
+                            authorization.accessory_name
+                        )
+                    } else {
+                        format!("Declined pairing {}", authorization.accessory_name)
+                    },
+                ))
+            }
+            DeviceFabricPaneRow::BluetoothHandoff(status) => {
+                use crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView;
+                match status.phase {
+                    BluetoothHandoffPhaseView::Completed => None,
+                    BluetoothHandoffPhaseView::Failed(_) | BluetoothHandoffPhaseView::Cancelled
+                        if status.outbound =>
+                    {
+                        Some((
+                            DeviceFabricUiAction::RetryBluetoothHandoff {
+                                request_id: status.request_id,
+                            },
+                            format!("Retrying handoff of {}", status.accessory_name),
+                        ))
+                    }
+                    BluetoothHandoffPhaseView::Failed(_) | BluetoothHandoffPhaseView::Cancelled => {
+                        None
+                    }
+                    _ => Some((
+                        DeviceFabricUiAction::CancelBluetoothHandoff {
+                            request_id: status.request_id,
+                        },
+                        format!("Cancelling handoff of {}", status.accessory_name),
+                    )),
+                }
+            }
             DeviceFabricPaneRow::GamepadAuthorization(authorization) => {
                 let (allow, decline) =
                     Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
@@ -14887,6 +15036,39 @@ impl Widget for ShellOverlayHost {
                                                 "Approve one handoff requested by {}",
                                                 authorization.source_label
                                             ),
+                                            vec![
+                                                AccessNode::new(Role::Button)
+                                                    .with_name("Allow pairing for this handoff once"),
+                                                AccessNode::new(Role::Button)
+                                                    .with_name("Decline this Bluetooth handoff"),
+                                            ],
+                                        ),
+                                        DeviceFabricPaneRow::BluetoothHandoff(status) => (
+                                            format!("{} with {}", status.accessory_name, status.peer_label),
+                                            match status.phase {
+                                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::PreparingTarget =>
+                                                    "Authenticating and inspecting the target; activate to cancel".into(),
+                                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::AwaitingApproval =>
+                                                    "Waiting for approval on the target; activate to cancel".into(),
+                                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::ReleasingSource =>
+                                                    "Releasing the accessory on this device; activate to cancel".into(),
+                                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::PairingTarget =>
+                                                    "Pairing on the target; activate to cancel".into(),
+                                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::ConnectingTarget =>
+                                                    "Connecting on the target; activate to cancel".into(),
+                                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::AwaitingConfirmation =>
+                                                    "Connected; waiting for authenticated confirmation; activate to cancel".into(),
+                                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Completed =>
+                                                    "Handoff completed".into(),
+                                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Failed(failure) if status.outbound =>
+                                                    format!("Handoff failed: {}; activate to retry", bluetooth_handoff_failure_label(failure)),
+                                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Failed(failure) =>
+                                                    format!("Handoff failed: {}", bluetooth_handoff_failure_label(failure)),
+                                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Cancelled if status.outbound =>
+                                                    "Handoff cancelled; activate to retry".into(),
+                                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Cancelled =>
+                                                    "Handoff cancelled".into(),
+                                            },
                                             Vec::new(),
                                         ),
                                         DeviceFabricPaneRow::GamepadAuthorization(
@@ -19797,6 +19979,43 @@ impl ShellOverlayHost {
                     ui::icons::Icon::Bluetooth,
                     false,
                     true,
+                ),
+                DeviceFabricPaneRow::BluetoothHandoff(status) => (
+                    status.accessory_name.clone(),
+                    match status.phase {
+                        crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::PreparingTarget =>
+                            format!("Checking {} · select to cancel", status.peer_label),
+                        crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::AwaitingApproval =>
+                            format!("Waiting for approval on {} · select to cancel", status.peer_label),
+                        crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::ReleasingSource =>
+                            "Releasing here · select to cancel".into(),
+                        crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::PairingTarget =>
+                            format!("Pairing on {} · select to cancel", status.peer_label),
+                        crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::ConnectingTarget =>
+                            format!("Connecting on {} · select to cancel", status.peer_label),
+                        crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::AwaitingConfirmation =>
+                            "Connected · confirming authenticated handoff".into(),
+                        crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Completed =>
+                            format!("Now connected to {}", status.peer_label),
+                        crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Failed(failure) if status.outbound =>
+                            format!("{} · select to retry", bluetooth_handoff_failure_label(failure)),
+                        crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Failed(failure) =>
+                            bluetooth_handoff_failure_label(failure).into(),
+                        crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Cancelled if status.outbound =>
+                            "Cancelled · select to retry".into(),
+                        crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Cancelled =>
+                            "Cancelled".into(),
+                    },
+                    ui::icons::Icon::Bluetooth,
+                    false,
+                    status.phase
+                        != crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Completed
+                        && (status.outbound
+                            || !matches!(
+                                status.phase,
+                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Failed(_)
+                                    | crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Cancelled
+                            )),
                 ),
                 DeviceFabricPaneRow::GamepadAuthorization(authorization) => (
                     format!("Use {}", authorization.controller_label),
