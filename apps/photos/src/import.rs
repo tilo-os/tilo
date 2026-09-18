@@ -114,6 +114,9 @@ pub fn index_directory<F>(
 where
     F: FnMut(ImportProgress),
 {
+    if !root.is_absolute() {
+        return Err("Select an authorised absolute folder path".to_owned());
+    }
     let root_meta =
         fs::symlink_metadata(root).map_err(|_| "The selected folder is unavailable".to_owned())?;
     if !root_meta.file_type().is_dir() || root_meta.file_type().is_symlink() {
@@ -142,7 +145,17 @@ where
                 report.cancelled = true;
                 break;
             }
-            let Ok(entry) = entry else { continue };
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    report.failures.push(ImportFailure {
+                        source: directory.clone(),
+                        message: "Could not read one item in this folder".to_owned(),
+                        retryable: true,
+                    });
+                    continue;
+                }
+            };
             let path = entry.path();
             let Ok(meta) = fs::symlink_metadata(&path) else {
                 report.failures.push(ImportFailure {
@@ -155,11 +168,22 @@ where
             // Refusing links closes traversal loops and avoids silently
             // importing an unrelated tree through a selected directory.
             if meta.file_type().is_symlink() {
+                report.failures.push(ImportFailure {
+                    source: path,
+                    message: "Symbolic links are not followed during photo import".to_owned(),
+                    retryable: false,
+                });
                 continue;
             }
             if meta.is_dir() {
                 if depth < options.limits.max_depth {
                     stack.push((path, depth + 1));
+                } else {
+                    report.failures.push(ImportFailure {
+                        source: path,
+                        message: "This folder is deeper than the safe import limit".to_owned(),
+                        retryable: false,
+                    });
                 }
                 continue;
             }
@@ -425,10 +449,72 @@ mod tests {
     }
 
     #[test]
+    fn relative_and_symlink_roots_are_refused() {
+        let cancelled = AtomicBool::new(false);
+        assert_eq!(
+            index_directory(
+                Path::new("relative/photos"),
+                ImportOptions::default(),
+                &cancelled,
+                |_| {},
+            )
+            .unwrap_err(),
+            "Select an authorised absolute folder path"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let parent = tempfile::tempdir().unwrap();
+            let real = parent.path().join("real");
+            fs::create_dir(&real).unwrap();
+            let linked = parent.path().join("linked");
+            symlink(&real, &linked).unwrap();
+            assert_eq!(
+                index_directory(&linked, ImportOptions::default(), &cancelled, |_| {},)
+                    .unwrap_err(),
+                "Select a real folder, not a symbolic link"
+            );
+        }
+    }
+
+    #[test]
     fn exif_reader_has_no_synthetic_fallback_for_a_plain_png() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("plain.png");
         png(&path);
         assert!(read_exif(&path).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn partial_failures_are_retained_without_aborting_valid_photos() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let good = directory.path().join("good.png");
+        png(&good);
+        fs::write(directory.path().join("broken.png"), b"not a photograph").unwrap();
+        symlink(&good, directory.path().join("linked.png")).unwrap();
+        let report = index_directory(
+            directory.path(),
+            ImportOptions::default(),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+
+        assert_eq!(report.photos.len(), 1);
+        assert_eq!(report.photos[0].source.file_name().unwrap(), "good.png");
+        assert!(report.failures.iter().any(|failure| {
+            failure.source.ends_with("broken.png")
+                && failure.message.contains("cannot be decoded")
+                && failure.retryable
+        }));
+        assert!(report.failures.iter().any(|failure| {
+            failure.source.ends_with("linked.png")
+                && failure.message.contains("Symbolic links")
+                && !failure.retryable
+        }));
     }
 }
