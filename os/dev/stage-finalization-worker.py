@@ -184,6 +184,7 @@ def release(receipt, work=Path('/work')):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('operation', choices=('stage', 'receive', 'release'))
+    parser.add_argument('--broker', action='store_true', help='use existing authenticated broker API route')
     for name in ('context', 'binding', 'request', 'signing-context', 'receipt', 'original-public', 'new-public'):
         parser.add_argument('--' + name)
     args = parser.parse_args()
@@ -203,7 +204,13 @@ def main():
                 files[f'{directory}/{name}'] = spool.snapshot(spool.signer.trusted(Path(original) / name), 65536)
         packet = {'schema': 1, 'request_sha256': spool.digest(request_raw), 'context': context,
                   'files': {name: base64.b64encode(data).decode() for name, data in files.items()}}
-        client = transport.Transport(args.context, binding)
+        if args.broker:
+            from broker_signing_runner import BrokerRunner, CONTEXT
+            if args.context != CONTEXT:
+                raise ValueError('broker route requires its exact named context')
+            client = transport.Transport(args.context, binding, runner=BrokerRunner(binding))
+        else:
+            client = transport.Transport(args.context, binding)
         result = stage(client, packet, request_raw)
     print(json.dumps(result, sort_keys=True))
 

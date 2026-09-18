@@ -1,0 +1,190 @@
+"""Existing authenticated EKS broker route for the signing Transport runner API.
+
+Only fixed transport/staging commands are admitted. Tokens stay in transient
+stdin, never argv, files or diagnostics. Public payloads use bounded file/stream
+I/O rather than JSON/base64 buffering. No new credentials or service is created.
+"""
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import re
+import tempfile
+import threading
+import time
+import signing_spool as spool
+
+SPEC = importlib.util.spec_from_file_location('broker_transport', Path(__file__).with_name('transfer-signing-spool.py'))
+transport = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(transport)
+CONTEXT = 'broker-authenticated-api'
+MAX_STREAM = spool.MAX_INPUT + 65536
+INSPECT = '{"Id":{{json .Id}},"Image":{{json .Image}},"State":{{json .State}},"RestartCount":{{json .RestartCount}}}'
+
+# Runs in the existing broker. No command is derived from remote output.
+BRIDGE = r'''
+import json,sys,time
+from kubernetes import client,config
+from kubernetes.stream import stream
+line=sys.stdin.buffer.readline(262145)
+if len(line)>262144 or not line.endswith(b'\n'): raise ValueError('header bound')
+p=json.loads(line)
+deadline=time.monotonic()+p['timeout']
+cfg=client.Configuration()
+config.load_kube_config('/etc/sandbox-broker/clusters/eks.yaml',client_configuration=cfg)
+cfg.refresh_api_key_hook=None
+cfg.api_key['authorization']='Bearer '+p['token']
+a=client.ApiClient(cfg);v=client.CoreV1Api(a)
+pod=v.read_namespaced_pod(p['pod'],p['namespace'],_request_timeout=min(15,p['timeout']))
+if pod.metadata.uid!=p['uid']: raise ValueError('pinned pod changed')
+if p['operation']=='get':
+ data=json.dumps(a.sanitize_for_serialization(pod)).encode()
+ if len(data)>p['limit']: raise ValueError('output bound')
+ sys.stdout.buffer.write(data)
+else:
+ command=p['command']
+ if p['input_bytes']:
+  # Exact-length input becomes a seekable file, giving the child real EOF.
+  # Raw public data never becomes Python source; argv is JSON-decoded.
+  wrapper="import json,subprocess,sys,tempfile; n=int(sys.argv[1]); f=tempfile.TemporaryFile(); "
+  wrapper+="exec('while n:\\n b=sys.stdin.buffer.read(min(n,65536))\\n if not b: raise ValueError(\"short input\")\\n f.write(b); n-=len(b)'); "
+  wrapper+="f.seek(0); sys.exit(subprocess.call(json.loads(sys.argv[2]),stdin=f,stderr=subprocess.DEVNULL))"
+  prefix=[]
+  if command[:3]==['docker','exec','-i']:
+   prefix,command=command[:4],command[4:]
+  command=prefix+['/usr/bin/python3','-c',wrapper,str(p['input_bytes']),json.dumps(command)]
+ w=stream(v.connect_get_namespaced_pod_exec,p['pod'],p['namespace'],container=p['container'],
+          command=command,stderr=True,stdin=bool(p['input_bytes']),stdout=True,tty=False,
+          _preload_content=False,binary=True,_request_timeout=min(15,p['timeout']))
+ count=errors=0;remaining=p['input_bytes'];status=b''
+ try:
+  while w.is_open():
+   if time.monotonic()>=deadline: raise ValueError('exec deadline')
+   if remaining:
+    data=sys.stdin.buffer.read(min(65536,remaining))
+    if not data: raise ValueError('short input')
+    w.write_stdin(data);remaining-=len(data)
+   w.update(timeout=0 if remaining else min(1,max(0.01,deadline-time.monotonic())))
+   while w.peek_stdout():
+    data=w.read_stdout();count+=len(data)
+    if count>p['limit']: raise ValueError('output bound')
+    sys.stdout.buffer.write(data);sys.stdout.buffer.flush()
+   while w.peek_stderr():
+    errors+=len(w.read_stderr())
+    if errors>65536: raise ValueError('error output bound')
+   if w.peek_channel(3): status+=w.read_channel(3)
+   if len(status)>65536: raise ValueError('status bound')
+  if remaining or not status or json.loads(status).get('status')!='Success':
+   raise ValueError('remote operation failed')
+ finally: w.close()
+'''
+
+
+class BrokerRunner:
+    def __init__(self, binding, *, local_user='benn1x', process=transport.bounded_process):
+        self.binding = transport.validate_binding(binding)
+        if not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', local_user):
+            raise ValueError('invalid existing operator user')
+        self.user = local_user
+        self.process = process
+
+    def operation(self, argv):
+        b = self.binding
+        prefix = ['kubectl', '--context=' + CONTEXT, '--namespace=' + b['namespace']]
+        if argv == prefix + ['get', 'pod', b['pod'], '-o', 'json', '--request-timeout=15s']:
+            return 'get', None
+        head = prefix + ['exec', '-i', b['pod'], '-c', b['container'], '--']
+        if argv[:len(head)] != head:
+            raise ValueError('unexpected authenticated transport command')
+        command = argv[len(head):]
+        if 'docker' in b:
+            if command == ['docker', 'inspect', '--type=container', '--format', INSPECT, b['docker']['id']]:
+                return 'exec', command
+            nested = ['docker', 'exec', '-i', b['docker']['id']]
+            if command[:len(nested)] != nested:
+                raise ValueError('nested worker selection differs')
+            tail = command[len(nested):]
+            if tail in ([ '/usr/bin/python3', '/work/helpers/os/dev/stage-finalization-worker.py', op]
+                        for op in ('receive', 'release')):
+                return 'exec', command
+        else:
+            tail = command
+        if tail[:2] != ['/usr/bin/python3', b['endpoint']] or len(tail) < 3:
+            raise ValueError('unexpected remote endpoint')
+        op, rest = tail[2], tail[3:]
+        if op == 'list' and not rest:
+            return 'exec', command
+        if op not in ('request', 'input', 'put-output', 'publish-response') or len(rest) < 2:
+            raise ValueError('unexpected signing endpoint operation')
+        if rest[0] != '--request-id' or not re.fullmatch(r'[0-9a-f]{32}', rest[1]):
+            raise ValueError('invalid fixed request selector')
+        if op in ('request', 'input') and len(rest) == 2:
+            return 'exec', command
+        if op in ('put-output', 'publish-response') and len(rest) == 4 and rest[2] == '--response':
+            if len(rest[3]) > spool.MAX_JSON or not isinstance(json.loads(rest[3], object_pairs_hook=spool.unique), dict):
+                raise ValueError('invalid bounded response metadata')
+            return 'exec', command
+        raise ValueError('unexpected endpoint arguments')
+
+    def __call__(self, argv, sink, limit, *, source=None, timeout=120):
+        operation, command = self.operation(argv)
+        if type(limit) is not int or not 0 < limit <= MAX_STREAM or not 0 < timeout <= 1800:
+            raise ValueError('invalid broker operation bounds')
+        deadline = time.monotonic() + timeout
+        # Anonymous scratch holds only public bytes. The token header travels
+        # through a pipe and is never written to a filesystem object.
+        with tempfile.TemporaryFile() as public:
+            count = 0
+            if source is not None:
+                while True:
+                    data = source.read(min(65536, MAX_STREAM + 1 - count))
+                    if not data: break
+                    count += len(data)
+                    if count > MAX_STREAM or time.monotonic() >= deadline:
+                        raise ValueError('broker input exceeds admission')
+                    public.write(data)
+            token_output = io.BytesIO()
+            self.process(['runuser', '-u', self.user, '--', 'aws', 'eks', 'get-token', '--profile',
+                'tilo-eks-operator', '--region', 'eu-central-1', '--cluster-name', 'podesta-agent-burst'],
+                token_output, 65536, timeout=min(30, max(0.01, deadline-time.monotonic())))
+            token = json.loads(token_output.getvalue())['status']['token']
+            if not isinstance(token, str) or not token.startswith('k8s-aws-v1.') or len(token) > 32768:
+                raise ValueError('existing operator token unavailable')
+            remaining = deadline-time.monotonic()
+            if remaining <= 0: raise ValueError('broker operation deadline')
+            header = {'token': token, 'operation': operation, 'command': command,
+                'pod': self.binding['pod'], 'namespace': self.binding['namespace'],
+                'uid': self.binding['pod_uid'], 'container': self.binding['container'],
+                'input_bytes': count, 'limit': limit, 'timeout': remaining}
+            header_raw = spool.canonical(header) + b'\n'
+            if len(header_raw) > 262144:
+                raise ValueError('broker header exceeds admission')
+            public.seek(0)
+            reader, writer = os.pipe()
+            failures = []
+            def feed():
+                try:
+                    with os.fdopen(writer, 'wb') as stream:
+                        stream.write(header_raw)
+                        while True:
+                            chunk = public.read(65536)
+                            if not chunk: break
+                            stream.write(chunk)
+                except (OSError, ValueError):
+                    failures.append(True)
+            thread = threading.Thread(target=feed, daemon=True)
+            thread.start()
+            try:
+                with os.fdopen(reader, 'rb') as payload:
+                    result = self.process(['runuser', '-u', self.user, '--', 'kubectl', '--context=admin@tupo-production', '-n', 'sandbox-broker',
+                        'exec', '-i', 'deployment/sandbox-broker', '--', 'python', '-c', BRIDGE],
+                        sink, limit, source=payload, timeout=max(0.01, deadline-time.monotonic()))
+                thread.join(timeout=1)
+                if thread.is_alive() or failures:
+                    raise ValueError('broker input stream failed')
+                return result
+            finally:
+                # Closing the read end releases a blocked feeder after command
+                # failure; bounded_process also kills its owned process group.
+                thread.join(timeout=1)
