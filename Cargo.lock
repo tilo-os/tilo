@@ -11355,7 +11355,6 @@ name = "qdoc-epub"
 version = "0.1.0"
 dependencies = [
  "qdoc",
- "qdoc-html",
  "zip 4.6.1",
 ]
 
