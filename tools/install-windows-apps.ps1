@@ -1,13 +1,14 @@
 # Build native applications and install them for the current Windows user.
-# Cap'n Proto and the pinned Rust/MSVC toolchain must be available on PATH.
+# Cap'n Proto, LLVM's llvm-readobj and the pinned Rust/MSVC toolchain must be on PATH.
 [CmdletBinding()]
 param(
-    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'image-editor', 'photos', 'hex-editor', 'code-editor', 'api-tester', 'diffmerge', 'snippets', 'db-client', 'git-client', 'feeds', 'totp', 'passwords', 'typst-editor', 'mail')]
+    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'image-editor', 'photos', 'hex-editor', 'code-editor', 'api-tester', 'diffmerge', 'snippets', 'db-client', 'git-client', 'feeds', 'totp', 'passwords', 'typst-editor', 'mail', 'video-player')]
     [string[]]$Apps = @('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'image-editor', 'photos', 'hex-editor', 'code-editor', 'api-tester', 'diffmerge', 'snippets', 'db-client', 'git-client', 'feeds', 'totp'),
     [ValidateSet('dev', 'release')]
     [string]$Profile = 'release',
     [ValidateRange(1, 256)]
-    [int]$Jobs = 2
+    [int]$Jobs = 2,
+    [string]$GStreamerPrefix
 )
 
 $ErrorActionPreference = 'Stop'
@@ -87,6 +88,9 @@ $shortcutShell = New-Object -ComObject WScript.Shell
 if ('pdf-viewer' -in $applications -or 'file-explorer' -in $applications) {
     & (Join-Path $PSScriptRoot 'install-windows-pdfium.ps1')
 }
+# Detect actual native media imports, so every app shares the same runtime
+# without maintaining per-app environment variables or launcher wrappers.
+& (Join-Path $PSScriptRoot 'install-windows-gstreamer.ps1') -SourcePrefix $GStreamerPrefix -Destination $installDirectory -ApplicationExecutables @($executables.Values)
 foreach ($application in $applications) {
     $destination = Join-Path $installDirectory "$application.exe"
     Copy-Item -LiteralPath $executables[$application] -Destination $destination -Force
