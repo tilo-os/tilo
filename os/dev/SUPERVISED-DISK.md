@@ -32,6 +32,7 @@ python3 os/dev/create-supervised-kata-disk.py \
   --context OPERATOR_CONTEXT --namespace kata-system --pod DISPOSABLE_POD \
   --pod-uid CURRENT_POD_UID --node NODE --node-uid CURRENT_NODE_UID \
   --host-agent CURRENT_KATA_DEPLOY_POD --pins reviewed-host-pins.json \
+  --guest-image REGISTRY/TOOLS@sha256:INDEPENDENTLY_VERIFIED_DIGEST \
   --disk-args verified-disk-inputs.json --evidence live-disk-environment.json \
   --inspect-only
 ```
@@ -44,6 +45,10 @@ output, generation, size_bytes, offline_key_signature and disposable_guest.
 Paths refer to the guest; source must be an immutable digest reference. A new
 exclusive regular file is the only installer target. The controller streams
 the local Python helpers instead of trusting guest-supplied helper code.
+The required guest image pin must match both the admitted pod image and its
+running image digest. The controller binds the actual virtiofs server's shared
+root, socket owner and complete export inventory, rejects missing observations,
+and checks pod/container identity again after execution before reporting success.
 
 Root/native architecture/user-namespace/remote-container/EFI/TPM checks and all
 source, signature, boot-prediction and cleanup checks remain enforced. Success
