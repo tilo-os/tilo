@@ -12,33 +12,36 @@ use std::time::Instant;
 use bytemuck::TransparentWrapper;
 use parking_lot::Mutex;
 use windows::{
-    core::Interface as _,
     Win32::{
         Foundation,
         Graphics::{Direct3D12, Dxgi},
         System::Threading,
     },
+    core::Interface as _,
 };
 
-use super::{conv, descriptor, D3D12Lib};
+use super::{D3D12Lib, conv, descriptor};
 use crate::{
+    AccelerationStructureEntries, TlasInstance,
     auxil::{
         self,
         dxgi::{name::ObjectExt as _, result::HResult as _},
     },
     dx12::{
+        DCompLib, DynamicStorageBufferOffsets, Event, ShaderCacheKey, ShaderCacheValue,
         borrow_optional_interface_temporarily, pipeline_desc::RenderPipelineStateStreamDesc,
-        shader_compilation, suballocation, DCompLib, DynamicStorageBufferOffsets, Event,
-        ShaderCacheKey, ShaderCacheValue,
+        shader_compilation, suballocation,
     },
-    AccelerationStructureEntries, TlasInstance,
 };
 
 // this has to match Naga's HLSL backend, and also needs to be null-terminated
 const NAGA_LOCATION_SEMANTIC: &[u8] = c"LOC".to_bytes();
 
 impl super::Device {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+    )]
     pub(super) fn new(
         adapter: auxil::dxgi::factory::DxgiAdapter,
         raw: Direct3D12::ID3D12Device,
@@ -404,7 +407,7 @@ impl super::Device {
             super::ShaderModuleSource::DxilPassthrough(passthrough) => {
                 return Ok(super::CompiledShader::Precompiled(
                     passthrough.shader.clone(),
-                ))
+                ));
             }
         };
 
@@ -1383,7 +1386,10 @@ impl crate::Device for super::Device {
             // it so if we add more later, the value behaves correctly.
 
             // This is an allow as it doesn't trigger on 1.90, hal's MSRV.
-            #[allow(unused_assignments)]
+            #[allow(
+                unused_assignments,
+                reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+            )]
             {
                 bind_cbv.register += 1;
             }

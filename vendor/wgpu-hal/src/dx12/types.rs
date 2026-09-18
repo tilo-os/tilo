@@ -1,5 +1,11 @@
-#![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
+#![allow(
+    non_camel_case_types,
+    reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+)]
+#![allow(
+    non_snake_case,
+    reason = "Preserve upstream wgpu-hal lint policy while maintaining the isolated DX12 shader-cache patch"
+)]
 
 use windows::Win32::Graphics::Dxgi;
 
