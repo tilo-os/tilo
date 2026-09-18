@@ -1,5 +1,13 @@
 photos-open = Open
 photos-library = Library
+photos-timeline = Timeline
+photos-open-timeline = Open timeline
+photos-open-timeline-month = Open month in timeline
+photos-open-timeline-day = Open day in timeline
+photos-timeline-description = Browse the shared library in chronological order.
+photos-timeline-month-description = Jump to this recorded capture month in the timeline.
+photos-timeline-day-description = Jump to this recorded capture day in the timeline.
+photos-photographs = photographs
 photos-library-empty-title = Your library is empty
 photos-library-empty-body = Import a photograph to start a shared library.
 photos-open-title = Open a photograph
