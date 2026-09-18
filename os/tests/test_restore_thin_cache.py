@@ -9,6 +9,8 @@ import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
+from contextlib import contextmanager
 
 ROOT = Path(__file__).resolve().parents[2]
 def load(name, file):
@@ -16,6 +18,9 @@ def load(name, file):
     module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); return module
 m = load('restore_thin', 'restore-thin-cache.py')
 resume = load('native_resume', 'native_resume.py')
+stage = load('thin_stage', 'thin_cache_stage.py')
+launcher = load('thin_launcher', 'launch-native-resume.py')
+compiler = load('thin_compile_controller', 'compile-development-os.py')
 
 
 class Cache(unittest.TestCase):
@@ -105,6 +110,48 @@ class Cache(unittest.TestCase):
         self.assertEqual(normal.count('/build/os/scripts/build-thin-apps.sh'),1)
         self.assertIn('from=tilo-thin-cache,target=/tilo-thin-cache,ro',derived)
         with self.assertRaises(ValueError):resume.derive_recipe(original,{'browser'},['tilo'],thin_cache_approval_sha256='bad')
+
+    def test_registry_stage_verifies_public_bytes_and_preserves_approval(self):
+        with tempfile.TemporaryDirectory() as d:
+            base=Path(d);context,root,digest,stamp=self.fixture(base)
+            approval=json.loads((context/'approval.json').read_bytes())
+            approval.update(checkpoint_config_digest='sha256:'+'b'*64,
+                source_metadata_reference='code.sandbox.example/qos/tilo-development-thin-cache-metadata-aarch64@sha256:'+'c'*64,
+                source_metadata_config_digest='sha256:'+'d'*64)
+            (context/'approval.json').write_text(json.dumps(approval));raw=(context/'approval.json').read_bytes()
+            image=base/'image';image.mkdir();(image/'checkpoint').symlink_to(context,target_is_directory=True)
+            # A real mounted image contains a regular directory, not a symlink.
+            (image/'checkpoint').unlink();import shutil;shutil.copytree(context,image/'checkpoint')
+            @contextmanager
+            def mounted(identity):yield image
+            identities={approval['checkpoint_reference']:approval['checkpoint_config_digest'],
+                        approval['source_metadata_reference']:approval['source_metadata_config_digest']}
+            tools=SimpleNamespace(read_bounded=lambda p,n:p.read_bytes(),sha=lambda b:hashlib.sha256(b).hexdigest(),
+                strict_json=json.loads,registry_identity=lambda ref,arch:identities[ref],command=lambda *a:None,
+                inspect_local=lambda ref,arch,config:ref,mounted=mounted)
+            work=base/'work';work.mkdir()
+            result,provenance=stage.stage(SimpleNamespace(tools=tools),context/'approval.json',hashlib.sha256(raw).hexdigest(),work)
+            self.assertEqual((result/'approval.json').read_bytes(),raw)
+            self.assertEqual(m.sha(result/'thin-cache.tar'),approval['archive_sha256'])
+            self.assertFalse(provenance['complete'])
+            (image/'checkpoint/thin-cache.tar').write_bytes(b'tampered')
+            work2=base/'work2';work2.mkdir()
+            with self.assertRaisesRegex(ValueError,'public file'):stage.stage(SimpleNamespace(tools=tools),context/'approval.json',hashlib.sha256(raw).hexdigest(),work2)
+
+    def test_launcher_and_controller_forward_exact_optional_approval(self):
+        hashes={'WPE_ADOPTION_SHA256':'a'*64,'CHECKPOINT_INITIAL_SHA256':'b'*64,'CHECKPOINT_DELTA_SHA256':'c'*64}
+        normal=launcher.driver_argv('d'*40,hashes)
+        hashes['THIN_CACHE_APPROVAL_SHA256']='e'*64
+        extended=launcher.driver_argv('d'*40,hashes)
+        self.assertEqual(extended[:-3],normal)
+        self.assertEqual(extended[-3:],['--resume-thin-cache-approval','/work/thin-cache-approval.json','e'*64])
+        with tempfile.TemporaryDirectory() as d:
+            args=SimpleNamespace(resume_checkpoint=[('checkpoint.json','b'*64)],
+                resume_thin_cache_approval=['/work/thin-cache-approval.json','e'*64])
+            commands=[]
+            with patch.object(compiler,'PRIVATE',Path(d)),patch.object(compiler,'run',lambda *a,**kw:commands.append(a)),patch.dict(os.environ,{'GITHUB_RUN_ID':'1','GITHUB_RUN_ATTEMPT':'1'}):
+                compiler.resume_selected_native(args,{'fixture':True},{'fixture':'environment'})
+            self.assertEqual(list(commands[0][-3:]),['--thin-cache-approval','/work/thin-cache-approval.json','e'*64])
 
 
 if __name__=='__main__':unittest.main()
