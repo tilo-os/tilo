@@ -455,7 +455,7 @@ mod tests {
     impl IdentityEnvGuard {
         fn pointing_at(identity_path: &std::path::Path, config_home: &std::path::Path) -> Self {
             let vars = [
-                (runtime_identity::IDENTITY_ENV_VAR, identity_path),
+                ("TILO_USER_IDENTITY", identity_path),
                 ("XDG_CONFIG_HOME", config_home),
             ];
             let saved = vars
@@ -497,6 +497,7 @@ mod tests {
     /// so the fixture checks that the reader accepts the writer's output.
     #[test]
     #[serial_test::serial(tilo_user_identity)]
+    #[cfg(unix)]
     fn local_identity_is_read_from_the_firstboot_json_shape() {
         let (bytes, public_key) = firstboot_identity_bytes("ada", [0, 255, 0]);
 
@@ -534,6 +535,7 @@ mod tests {
     /// blank row.
     #[test]
     #[serial_test::serial(tilo_user_identity)]
+    #[cfg(unix)]
     fn a_freshly_provisioned_identity_renders_as_unknown_rather_than_blank() {
         let (bytes, public_key) = firstboot_identity_bytes("", [128, 128, 128]);
 

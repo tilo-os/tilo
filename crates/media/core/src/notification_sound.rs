@@ -43,12 +43,19 @@ pub fn sound_backend() -> SoundBackend {
 
 #[cfg(unix)]
 fn command_exists(name: &str) -> bool {
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     std::env::var_os("PATH").is_some_and(|paths| {
         std::env::split_paths(&paths).any(|dir| {
             let path = dir.join(name);
+            #[cfg(windows)]
+            let path = path.with_extension("exe");
             std::fs::metadata(path).is_ok_and(|metadata| {
-                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+                #[cfg(unix)]
+                let executable = metadata.permissions().mode() & 0o111 != 0;
+                #[cfg(not(unix))]
+                let executable = true;
+                metadata.is_file() && executable
             })
         })
     })

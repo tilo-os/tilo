@@ -11,6 +11,7 @@ exclude = [
     "vendor/vello_shaders",
     "vendor/genawaiter-proc-macro",
     "vendor/winit",
+    "vendor/wgpu-hal",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
 # it requires unwind support, unlike the default release profile.
@@ -175,6 +176,7 @@ members = [
     "crates/system/app-state",
     "crates/system/atomic-file",
     "crates/system/bounded-command",
+    "crates/system/private-fs",
     "crates/system/desktop-entry",
     "crates/system/desktop-policy",
     "crates/system/os-actions",
@@ -465,6 +467,8 @@ debug-assertions = true
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
+# Pinned DX12 compiled-shader import/export; see vendor/wgpu-hal/TILO-PATCH.md.
+wgpu-hal = { path = "vendor/wgpu-hal" }
 genawaiter-proc-macro = { path = "vendor/genawaiter-proc-macro" }
 rustls-native-certs = { path = "crates/system/tilo-native-certs" }
 winit = { path = "vendor/winit" }

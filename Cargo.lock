@@ -135,12 +135,13 @@ dependencies = [
  "chacha20poly1305",
  "dirs 6.0.0",
  "getrandom 0.2.17",
- "libc",
+ "private-fs",
  "serde",
  "serde_json",
  "tracing",
  "url",
  "uuid",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 
@@ -609,7 +610,9 @@ dependencies = [
  "atomic-file",
  "automerge",
  "cli",
+ "dirs 6.0.0",
  "libc",
+ "same-file",
  "serial_test",
  "tempfile",
  "thiserror 2.0.18",
@@ -2227,13 +2230,16 @@ dependencies = [
 name = "clocks"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "automerge",
  "chrono",
  "chrono-tz",
+ "private-fs",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tempfile",
  "tilo-actions",
  "tilo-app",
  "uuid",
@@ -3595,6 +3601,12 @@ dependencies = [
  "libc",
  "linux-raw-sys 0.6.5",
 ]
+
+[[package]]
+name = "dunce"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "ebook"
@@ -5030,17 +5042,26 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "automerge",
+ "bounded-command",
  "chrono",
+ "futures-util",
  "git2",
+ "rcgen 0.14.7",
+ "reqwest 0.12.28",
  "runtime-dylib",
+ "russh",
+ "rustls",
  "serde",
  "serde_json",
  "taffy",
  "tempfile",
  "tilo-actions",
  "tilo-app",
+ "tokio",
+ "url",
  "vello",
  "winit",
+ "zeroize",
 ]
 
 [[package]]
@@ -5053,6 +5074,7 @@ dependencies = [
  "libc",
  "libgit2-sys",
  "log",
+ "url",
 ]
 
 [[package]]
@@ -9684,6 +9706,7 @@ version = "5.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2fbaa89d2ddc8473c78a3adf69eea8cffa28c483b8e02a971ef31527cd0fc92c"
 dependencies = [
+ "dunce",
  "is-wsl",
  "libc",
  "pathdiff",
@@ -11088,6 +11111,15 @@ dependencies = [
  "tilo-ocr",
  "vello",
  "winit",
+]
+
+[[package]]
+name = "private-fs"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -13290,6 +13322,7 @@ name = "sheets"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atomic-file",
  "automerge",
  "calamine",
  "dirs 6.0.0",
@@ -14968,6 +15001,7 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "libc",
  "postcard",
+ "private-fs",
  "rand 0.8.8",
  "serde",
  "serde_bytes",
@@ -15391,6 +15425,7 @@ dependencies = [
  "getrandom 0.2.17",
  "hmac 0.12.1",
  "image",
+ "private-fs",
  "qrcode",
  "rqrr",
  "runtime-dylib",
@@ -15404,6 +15439,7 @@ dependencies = [
  "tracing",
  "uuid",
  "vello",
+ "windows-sys 0.61.2",
  "winit",
  "zeroize",
 ]
@@ -16044,6 +16080,7 @@ dependencies = [
  "atomic-file",
  "automerge",
  "base32",
+ "blake3",
  "capnp",
  "capnp-rpc",
  "chacha20poly1305",
@@ -16062,6 +16099,7 @@ dependencies = [
  "image",
  "libc",
  "media",
+ "mime_guess",
  "open",
  "openh264",
  "percent-encoding",
@@ -16069,6 +16107,7 @@ dependencies = [
  "png 0.18.1",
  "pollster",
  "postcard",
+ "private-fs",
  "qdoc",
  "qrcode",
  "rand_core 0.6.4",
@@ -16111,6 +16150,8 @@ dependencies = [
  "vello",
  "vello_encoding",
  "wgpu",
+ "windows 0.62.2",
+ "windows-sys 0.61.2",
  "winit",
  "zbus 4.4.0",
  "zeroize",
@@ -17468,8 +17509,6 @@ dependencies = [
 [[package]]
 name = "wgpu-hal"
 version = "29.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31f8e1a9e7a8512f276f7c62e018c7fa8d60954303fed2e5750114332049193f"
 dependencies = [
  "android_system_properties",
  "arrayvec",

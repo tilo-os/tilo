@@ -325,7 +325,10 @@ fn expand_tilde(input: &str, home: Option<&Path>) -> PathBuf {
         if input == "~" {
             return home.to_path_buf();
         }
-        if let Some(rest) = input.strip_prefix("~/") {
+        if let Some(rest) = input
+            .strip_prefix('~')
+            .and_then(|rest| rest.strip_prefix(std::path::is_separator))
+        {
             return home.join(rest);
         }
     }
@@ -337,8 +340,8 @@ fn expand_tilde(input: &str, home: Option<&Path>) -> PathBuf {
 /// next keystroke drills into it.
 fn to_display(path: &Path, home: Option<&Path>, is_dir: bool) -> String {
     let mut s = format_path(path, home);
-    if is_dir && !s.ends_with('/') {
-        s.push('/');
+    if is_dir && !s.ends_with(std::path::is_separator) {
+        s.push(std::path::MAIN_SEPARATOR);
     }
     s
 }
@@ -352,9 +355,11 @@ fn split_for_completion(input: &str, home: Option<&Path>) -> (PathBuf, String) {
     if input.is_empty() || input == "~" {
         return (expand_tilde(input, home), String::new());
     }
-    match input.rfind('/') {
+    match input.rfind(std::path::is_separator) {
         Some(slash) => {
-            let dir_part = input.get(..slash).unwrap_or_default();
+            // Retain the separator: `C:\` names the drive root, while `C:`
+            // names that drive's current working directory.
+            let dir_part = input.get(..=slash).unwrap_or_default();
             let prefix = input.get(slash + 1..).unwrap_or_default().to_string();
             let dir = if dir_part.is_empty() {
                 PathBuf::from("/")
@@ -423,7 +428,7 @@ mod tests {
         std::fs::write(dir.path().join(".hidden"), b"x").unwrap();
 
         // "<dir>/Do" matches the two "Do…" directories + the "Do…" file.
-        let input = format!("{}/Do", dir.path().display());
+        let input = dir.path().join("Do").display().to_string();
         let sugg = path_completions(&input, None);
         let labels: Vec<&str> = sugg.iter().map(|s| s.label.as_str()).collect();
         assert!(labels.contains(&"Documents"), "labels: {labels:?}");
@@ -440,7 +445,31 @@ mod tests {
         // A dir suggestion's inserted value carries a trailing slash so the next
         // keystroke drills into it.
         let docs = sugg.iter().find(|s| s.label == "Documents").unwrap();
-        assert!(docs.value.ends_with("/Documents/"), "value: {}", docs.value);
+        assert_eq!(
+            docs.value,
+            format!(
+                "{}{}",
+                dir.path().join("Documents").display(),
+                std::path::MAIN_SEPARATOR
+            )
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn drive_root_and_unc_completion_preserve_the_absolute_prefix() {
+        assert_eq!(
+            expand_tilde(r"~\Documents", Some(Path::new(r"C:\Users\reader"))),
+            PathBuf::from(r"C:\Users\reader\Documents")
+        );
+        assert_eq!(
+            split_for_completion(r"C:\Do", None),
+            (PathBuf::from(r"C:\"), "Do".into())
+        );
+        assert_eq!(
+            split_for_completion(r"\\server\share\Do", None),
+            (PathBuf::from(r"\\server\share\"), "Do".into())
+        );
     }
 
     #[test]

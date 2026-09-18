@@ -550,7 +550,7 @@ mod tests {
             "column is the character index of the match"
         );
         assert_eq!(main_hit.len, 6);
-        assert_eq!(main_hit.rel, "src/main.rs");
+        assert_eq!(Path::new(&main_hit.rel), Path::new("src/main.rs"));
         assert_eq!(
             main_hit.preview, "let needle = 1;",
             "the preview drops indentation but keeps the code"

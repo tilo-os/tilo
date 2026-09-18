@@ -191,6 +191,7 @@ pub fn spawn_render_thread(
             // present, invisible to offscreen benches. Off by default.
             let present_dbg = std::env::var("QUICK_UI_PRESENT").is_ok();
             let mut frame_ix: u64 = 0;
+            let mut first_present_recorded = false;
             let geometric_capacity = damage_geometric_capacity_enabled();
             let mut damage_cache = DamageCache {
                 geometric_capacity,
@@ -257,6 +258,11 @@ pub fn spawn_render_thread(
                 // length at typical refresh rates, nowhere near `u64::MAX`.
                 frame_ix = frame_ix.saturating_add(1);
                 target_valid = outcome == FrameOutcome::Presented;
+                if target_valid && !first_present_recorded {
+                    first_present_recorded = true;
+                    tilo_startup_metrics::mark("first-frame-presented");
+                    tilo_startup_metrics::dump();
+                }
 
                 // `Scene::reset` clears the encoding without freeing the
                 // backing vecs, so main avoids a reallocation on reuse.

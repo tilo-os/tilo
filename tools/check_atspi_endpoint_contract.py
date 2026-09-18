@@ -12,6 +12,7 @@ bypass the shared endpoint.
 
 from __future__ import annotations
 
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -51,12 +52,22 @@ def audit(root: Path = ROOT) -> list[str]:
     app = (root / "ui/src/app.rs").read_text(encoding="utf-8")
     for needle, purpose in (
         ("accesskit_winit::Adapter::with_event_loop_proxy", "adapter registration before showing windows"),
-        ("adapter.update_if_active(|| app_ref.build_a11y_tree_update(scale))", "tree updates"),
         ("self.app.dispatch_a11y_action(req.target_node, &action)", "AT action routing"),
         ("self.a11y_adapter = None;", "provider teardown before window teardown"),
     ):
         if needle not in app:
             errors.append(f"ui/src/app.rs: missing shared AT-SPI {purpose}")
+
+    # The native conversion preserves the Linux tree and applies the Windows
+    # protected-value boundary. Require its returned shared tree to reach the
+    # adapter, accepting both rustfmt layouts (including a trailing comma).
+    tree_update = (
+        r"adapter\.update_if_active\(\|\|\s*\{\s*"
+        r"crate::accesskit_bridge::native_tree_update\(\s*"
+        r"app_ref\.build_a11y_tree_update\(scale\),?\s*\)\s*\}\)"
+    )
+    if not re.search(tree_update, app):
+        errors.append("ui/src/app.rs: missing shared AT-SPI tree updates")
 
     bridge = (root / "ui/src/accesskit_bridge.rs").read_text(encoding="utf-8")
     for needle, purpose in (
