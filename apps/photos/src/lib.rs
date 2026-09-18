@@ -61,6 +61,7 @@
 )]
 
 pub mod actions;
+pub mod analysis;
 pub mod app;
 pub mod doc;
 pub mod model;

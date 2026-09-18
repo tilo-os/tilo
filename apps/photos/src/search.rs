@@ -20,8 +20,9 @@ use ui::search::{
 
 use crate::actions::{
     PhotoResourceSeed, album_resource_from_fields, folder_resource, folder_resource_id,
-    library_root_resource, metadata_label_counts, person_resource, person_resource_id,
-    photo_resource_from_seed, tag_resource, tag_resource_id,
+    library_root_resource, metadata_label_counts, object_resource, object_resource_id,
+    person_resource, person_resource_id, pet_resource, pet_resource_id, photo_resource_from_seed,
+    tag_resource, tag_resource_id,
 };
 use crate::doc::PhotosDoc;
 
@@ -68,6 +69,14 @@ enum MaterializationSeed {
         label: String,
         count: usize,
     },
+    Object {
+        label: String,
+        count: usize,
+    },
+    Pet {
+        label: String,
+        count: usize,
+    },
 }
 
 impl MaterializationSeed {
@@ -83,6 +92,8 @@ impl MaterializationSeed {
             Self::Folder { label, count } => folder_resource(&label, count),
             Self::Person { label, count } => person_resource(&label, count),
             Self::Tag { label, count } => tag_resource(&label, count),
+            Self::Object { label, count } => object_resource(&label, count),
+            Self::Pet { label, count } => pet_resource(&label, count),
         }
     }
 }
@@ -216,7 +227,7 @@ impl PhotosSearchProvider {
             // Omit repeated kind/action boilerplate: it creates huge shared
             // postings in a large library without helping find a photograph.
             let searchable = format!(
-                "{}\0{} x {} pixels\0clockwise\0{}\0{}\0{}\0{}\0{}",
+                "{}\0{} x {} pixels\0clockwise\0{}\0{}\0{}\0{}\0{}\0{}",
                 photo.image.name,
                 photo.image.width,
                 photo.image.height,
@@ -229,6 +240,10 @@ impl PhotosSearchProvider {
                 photo.people.join(" "),
                 photo.tags.join(" "),
                 photo.captured_at.as_deref().unwrap_or_default(),
+                photo
+                    .analysis
+                    .as_ref()
+                    .map_or_else(String::new, crate::model::ImageAnalysis::searchable_text),
             );
             insert(
                 photo.id.clone(),
@@ -261,7 +276,7 @@ impl PhotosSearchProvider {
                 },
             );
         }
-        let (folders, people, tags) = metadata_label_counts(library);
+        let (folders, people, tags, objects, pets) = metadata_label_counts(library);
         for (folder, count) in folders {
             let id = folder_resource_id(&folder);
             let result = SearchResult::for_action(
@@ -311,6 +326,38 @@ impl PhotosSearchProvider {
                 format!("{tag}\0photos.tag\0tag\0{count} photographs\0open"),
                 result,
                 MaterializationSeed::Tag { label: tag, count },
+            );
+        }
+        for (object, count) in objects {
+            let id = object_resource_id(&object);
+            let result = SearchResult::for_action(
+                PHOTO_SEARCH_KIND,
+                &object,
+                ActionAddress::new(&id, "open"),
+            )
+            .with_subtitle(format!("Object · {count} photographs"))
+            .with_icon(Icon::Image);
+            insert(
+                id.clone(),
+                format!("{object}\0photos.object\0object\0{count} photographs\0open"),
+                result,
+                MaterializationSeed::Object {
+                    label: object,
+                    count,
+                },
+            );
+        }
+        for (pet, count) in pets {
+            let id = pet_resource_id(&pet);
+            let result =
+                SearchResult::for_action(PHOTO_SEARCH_KIND, &pet, ActionAddress::new(&id, "open"))
+                    .with_subtitle(format!("Pet · {count} photographs"))
+                    .with_icon(Icon::Image);
+            insert(
+                id.clone(),
+                format!("{pet}\0photos.pet\0pet\0{count} photographs\0open"),
+                result,
+                MaterializationSeed::Pet { label: pet, count },
             );
         }
         let seeds = entries
@@ -628,6 +675,48 @@ mod tests {
                     .iter()
                     .any(|action| action.id == address.action)
             );
+        }
+    }
+
+    #[test]
+    fn intelligence_text_and_collections_have_canonical_search_hits() {
+        let mut doc = open_doc("receipt.png");
+        let mut library = PhotosDoc::library(&doc);
+        let photo = library.photos.first_mut().unwrap();
+        let content = photo.image.content.clone().unwrap_or_default();
+        photo.analysis = Some(crate::model::ImageAnalysis {
+            ocr_text: "invoice 42 north harbour".into(),
+            description: "A dog beside a bicycle".into(),
+            objects: vec!["bicycle".into()],
+            pets: vec!["dog".into()],
+            people: vec!["Sam".into()],
+            provenance: crate::model::AnalysisProvenance {
+                source: "local-ocr".into(),
+                engine: "tilo-ocr".into(),
+                language: "eng".into(),
+                content,
+                scope: "shared".into(),
+            },
+        });
+        PhotosDoc::set_library(&mut doc, &library);
+
+        let provider = PhotosSearchProvider::new(&doc).unwrap();
+        for (query, resource) in [
+            ("invoice 42", library.photos[0].id.clone()),
+            ("bicycle", crate::actions::object_resource_id("bicycle")),
+            ("dog", crate::actions::pet_resource_id("dog")),
+        ] {
+            let address = provider
+                .search(query)
+                .into_iter()
+                .find_map(|hit| {
+                    hit.action_address()
+                        .filter(|address| address.resource == resource)
+                })
+                .unwrap_or_else(|| {
+                    panic!("missing canonical intelligence search result for {query}")
+                });
+            assert!(provider.resolve_action_resource(&address).is_some());
         }
     }
 
