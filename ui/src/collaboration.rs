@@ -33,7 +33,8 @@ use collab_types::SignedOp;
 pub use runtime_collab::{
     NearbyDestinationHandle, NearbyTargetHandle, NearbyTransferCommand, NearbyTransferDestination,
     NearbyTransferDirection, NearbyTransferHandle, NearbyTransferPhase, NearbyTransferReply,
-    NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget,
+    NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget, PortableWifiSecurity,
+    WifiContinuityCommand, WifiContinuityReply,
 };
 
 use crate::presence::PresenceKey;
@@ -64,6 +65,44 @@ const SDK_EVENT_QUEUE: usize = 256;
 /// invocation argument may be large.
 const SDK_COMMAND_QUEUE_BYTES: usize = 4 * 1024 * 1024;
 const SDK_EVENT_QUEUE_BYTES: usize = 4 * 1024 * 1024;
+const WIFI_CONTINUITY_TIMEOUT: Duration = Duration::from_secs(3);
+
+static WIFI_CONTINUITY_BRIDGE: std::sync::OnceLock<
+    std::sync::Mutex<Option<tokio_mpsc::WeakSender<QueuedSdkCommand>>>,
+> = std::sync::OnceLock::new();
+
+/// Invoke the shell's launcher-authenticated, sealed Wi-Fi continuity path.
+/// Callers should run this off the frame thread; the bounded timeout turns a
+/// lost broker into an ordinary unavailable result.
+pub fn wifi_continuity_command(
+    command: runtime_collab::WifiContinuityCommand,
+) -> Result<runtime_collab::WifiContinuityReply, String> {
+    let sender = WIFI_CONTINUITY_BRIDGE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .map_err(|_| "Wi-Fi continuity bridge is unavailable".to_string())?
+        .as_ref()
+        .and_then(tokio_mpsc::WeakSender::upgrade)
+        .ok_or_else(|| {
+            "Wi-Fi continuity requires the certified collaboration service".to_string()
+        })?;
+    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+    let state = BridgeState::new();
+    if !enqueue_sdk_command(
+        &sender,
+        SdkCommand::WifiContinuity {
+            app_id: "dev.tilo.settings".into(),
+            command,
+            reply: reply_tx,
+        },
+        &state,
+    ) {
+        return Err("Wi-Fi continuity command queue is unavailable".into());
+    }
+    reply_rx
+        .recv_timeout(WIFI_CONTINUITY_TIMEOUT)
+        .map_err(|_| "Wi-Fi continuity service did not respond".to_string())?
+}
 
 /// Inert, app-owned resume projection sent only to the local shell.
 ///
@@ -745,6 +784,11 @@ enum SdkCommand {
         app_id: String,
         requests: mpsc::SyncSender<ActionDirectoryRequest>,
     },
+    WifiContinuity {
+        app_id: String,
+        command: runtime_collab::WifiContinuityCommand,
+        reply: mpsc::SyncSender<Result<runtime_collab::WifiContinuityReply, String>>,
+    },
 }
 
 impl SdkCommand {
@@ -1025,6 +1069,14 @@ fn command_bytes(command: &SdkCommand) -> Option<usize> {
         SdkCommand::InstallEncryption { .. } => Some(SDK_COMMAND_QUEUE_BYTES),
         SdkCommand::PublishActionDirectory { app_id, .. } => {
             std::mem::size_of::<SdkCommand>().checked_add(app_id.capacity())
+        }
+        SdkCommand::WifiContinuity {
+            app_id, command, ..
+        } => {
+            let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
+            meter.string_capacity(app_id);
+            serialized_bytes(command, &mut meter);
+            meter.finish()
         }
     }
 }
@@ -2040,15 +2092,23 @@ impl CollaborationManager {
         };
 
         match status {
-            InitStatus::Ready => Ok(SdkChannel {
-                outbound_tx,
-                inbound_rx,
-                state,
-                action_directory_rx,
-                action_directory_tx,
-                action_directory_published: false,
-                _thread: Some(handle),
-            }),
+            InitStatus::Ready => {
+                if let Ok(mut bridge) = WIFI_CONTINUITY_BRIDGE
+                    .get_or_init(|| std::sync::Mutex::new(None))
+                    .lock()
+                {
+                    *bridge = Some(outbound_tx.downgrade());
+                }
+                Ok(SdkChannel {
+                    outbound_tx,
+                    inbound_rx,
+                    state,
+                    action_directory_rx,
+                    action_directory_tx,
+                    action_directory_published: false,
+                    _thread: Some(handle),
+                })
+            }
             InitStatus::Failed(e) => {
                 // Let the (empty-body) thread exit cleanly.
                 let _ = handle.join();
@@ -2704,6 +2764,24 @@ async fn drive_shovel(
                 {
                     tracing::warn!(%error, "collab: publishing pull resource/action directory failed");
                 }
+            }
+            SdkCommand::WifiContinuity {
+                app_id,
+                command,
+                reply,
+            } => {
+                let result = if let Some(key) = primary.as_ref()
+                    && let Some(route) = routes.get_mut(key)
+                {
+                    route
+                        .channel
+                        .wifi_continuity_command(&app_id, &command)
+                        .await
+                        .map_err(|error| error.to_string())
+                } else {
+                    Err("primary collaboration route is unavailable".into())
+                };
+                let _ = reply.send(result);
             }
         }
     }
