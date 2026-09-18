@@ -637,6 +637,113 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_interrupted_migration_removes_verified_plaintext_on_reopen() {
+        let dir = temp_dir();
+        private_fs::directory(&dir).unwrap();
+        let legacy_key = [42; KEY_LEN];
+        private_fs::create_atomic(&dir.join("vault.key"), &legacy_key).unwrap();
+        let mut vault = Vault::new();
+        vault.upsert(demo_accounts().remove(0));
+        assert!(save_at_with_custody(&dir, &vault, KeyCustody::LocalFile));
+        assert_eq!(
+            load_at_checked(&dir, key_custody()).unwrap().ordered(),
+            vault.ordered()
+        );
+        assert!(!dir.join("vault.key").exists());
+
+        // Reconstruct the exact durable state after DPAPI publication but before
+        // plaintext removal. The protected key and ciphertext remain unchanged.
+        let ciphertext = std::fs::read(dir.join("vault.enc")).unwrap();
+        let protected_key = std::fs::read(dir.join("vault.key.dpapi")).unwrap();
+        private_fs::create_atomic(&dir.join("vault.key"), &legacy_key).unwrap();
+        assert_eq!(
+            load_at_checked(&dir, key_custody()).unwrap().ordered(),
+            vault.ordered()
+        );
+        assert!(
+            !dir.join("vault.key").exists(),
+            "reopen must finish interrupted key migration"
+        );
+        assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), ciphertext);
+        assert_eq!(
+            std::fs::read(dir.join("vault.key.dpapi")).unwrap(),
+            protected_key
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_interrupted_migration_preserves_conflicting_legacy_material() {
+        for legacy in [vec![7; KEY_LEN], b"malformed key".to_vec()] {
+            let dir = temp_dir();
+            assert!(save_at_with_custody(&dir, &Vault::new(), key_custody()));
+            let encrypted = std::fs::read(dir.join("vault.enc")).unwrap();
+            let protected = std::fs::read(dir.join("vault.key.dpapi")).unwrap();
+            private_fs::create_atomic(&dir.join("vault.key"), &legacy).unwrap();
+            assert!(load_at_checked(&dir, key_custody()).is_err());
+            assert!(!save_at_with_custody(&dir, &Vault::new(), key_custody()));
+            assert_eq!(std::fs::read(dir.join("vault.key")).unwrap(), legacy);
+            assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), encrypted);
+            assert_eq!(
+                std::fs::read(dir.join("vault.key.dpapi")).unwrap(),
+                protected
+            );
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_interrupted_migration_preserves_keys_if_ciphertext_is_corrupt() {
+        let dir = temp_dir();
+        let key = windows::load_or_create_key(&dir).unwrap();
+        private_fs::create_atomic(&dir.join("vault.key"), key.as_slice()).unwrap();
+        private_fs::create_atomic(&dir.join("vault.enc"), b"damaged vault").unwrap();
+        assert!(load_at_checked(&dir, key_custody()).is_err());
+        assert_eq!(
+            std::fs::read(dir.join("vault.key")).unwrap(),
+            key.as_slice()
+        );
+        assert_eq!(
+            std::fs::read(dir.join("vault.enc")).unwrap(),
+            b"damaged vault"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_interrupted_migration_retries_after_plaintext_removal_denied() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = temp_dir();
+        assert!(save_at_with_custody(&dir, &Vault::new(), key_custody()));
+        let key = windows::load_or_create_key(&dir).unwrap();
+        private_fs::create_atomic(&dir.join("vault.key"), key.as_slice()).unwrap();
+        let protected = std::fs::read(dir.join("vault.key.dpapi")).unwrap();
+        let encrypted = std::fs::read(dir.join("vault.enc")).unwrap();
+        // Allow reads but deny deletion while this owned handle is alive.
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(dir.join("vault.key"))
+            .unwrap();
+        assert!(load_at_checked(&dir, key_custody()).is_err());
+        assert!(dir.join("vault.key").exists());
+        drop(held);
+        assert!(load_at_checked(&dir, key_custody()).is_ok());
+        assert!(!dir.join("vault.key").exists());
+        assert_eq!(
+            std::fs::read(dir.join("vault.key.dpapi")).unwrap(),
+            protected
+        );
+        assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), encrypted);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn vault_file_round_trips_through_json() {
         let mut v = Vault::new();
