@@ -242,6 +242,16 @@ fn is_focus_search_chord(ctrl: bool, key: &Key) -> bool {
     matches!(key, Key::Character(s) if matches!(s.as_str(), "k" | "K" | "/"))
 }
 
+/// Standard keyboard routes to a selected contact's action menu.  The Menu
+/// key is the dedicated route; Shift+F10 is its long-standing equivalent on
+/// compact laptops and screen-reader keyboards.  Keeping this as a predicate
+/// makes the user-configurable keyboard layer's translated logical key the
+/// one source of truth, instead of checking a hardware scancode.
+fn is_context_menu_chord(shift: bool, key: &Key) -> bool {
+    matches!(key, Key::Named(NamedKey::ContextMenu))
+        || (shift && matches!(key, Key::Named(NamedKey::F10)))
+}
+
 /// Placeholder hint shown in an empty, unfocused form field. The `ui`
 /// `TextInput` in this toolkit build has no `with_placeholder` builder, so —
 /// matching the convention used by the search box, dropdown, and command
@@ -2006,6 +2016,46 @@ impl ContactsApp {
         self.detail_scroll = 0.0;
         self.dirty = true;
         self.relayout = true;
+    }
+
+    /// Open the selected contact's existing contextual actions from the
+    /// keyboard.  The visual menu remains a transient view concern, but every
+    /// item delegates to the canonical action / operation route in
+    /// [`Self::execute_context_action`].  On the narrow pushed detail we
+    /// anchor at the visible Edit control rather than an off-screen list row.
+    fn open_selected_context_menu(&mut self) -> bool {
+        let Some(id) = self.selected.filter(|id| self.store.get(*id).is_some()) else {
+            return false;
+        };
+
+        let anchor = if !self.narrow || self.push.pane() == Pane::List {
+            let ids = self.visible_ids();
+            let Some(index) = ids.iter().position(|candidate| *candidate == id) else {
+                return false;
+            };
+            self.scroll_list_index_into_view(index, ids.len());
+            // The selected row may have just been scrolled into the
+            // virtualised window; refresh its bounded geometry before using
+            // it as the popup anchor.
+            self.layout();
+            self.list_rows
+                .iter()
+                .find(|(row_id, _)| *row_id == id)
+                .map(|(_, row)| {
+                    let center = Point::new(row.x0 + 40.0, row.center().y);
+                    Rect::new(center.x, center.y, center.x, center.y)
+                })
+        } else {
+            let center = self.hit.edit.center();
+            Some(Rect::new(center.x, center.y, center.x, center.y))
+        };
+
+        let Some(anchor) = anchor else {
+            return false;
+        };
+        self.open_popup(Popup::ContextMenu { target: id, anchor });
+        self.dirty = true;
+        true
     }
 
     /// Keep keyboard selection discoverable.  The list's physical rows are
@@ -7498,17 +7548,74 @@ impl Widget for ContactsApp {
     }
 
     /// Contacts paints a compact toolbar itself, so expose its labels through
-    /// the shared host tooltip path rather than leaving the arrow/plus glyphs
-    /// unexplained at small widths.  The same words are used as semantic names
-    /// in [`Self::accessibility`].
+    /// the shared host tooltip path rather than leaving compact glyphs and
+    /// dense contact controls unexplained.  The same operations are exposed
+    /// by [`Self::accessibility`], while shortcuts here remain discoverable to
+    /// pointer users too.
     fn tooltip(&self) -> Option<&str> {
         let point = self.last_mouse;
+        if let Some(Popup::ContextMenu { target, anchor }) = self.popup {
+            let (_panel, rows) = self.popup_menu_geometry(anchor, CONTEXT_ACTIONS.len(), 200.0);
+            if let Some((index, _)) = rows.iter().enumerate().find(|(_, row)| row.contains(point))
+                && let Some(action) = CONTEXT_ACTIONS.get(index)
+            {
+                return self
+                    .store
+                    .get(target)
+                    .map(|contact| action.label(contact.favorite));
+            }
+        }
+        if self.mode == Mode::Edit {
+            if self.hit.save.contains(point) {
+                return Some("Save changes — Ctrl+S");
+            }
+            if self.hit.cancel.contains(point) {
+                return Some("Cancel editing — Esc");
+            }
+            if self.hit.fav_toggle.contains(point) {
+                return Some("Toggle favorite");
+            }
+            if self.hit.add_phone.contains(point) {
+                return Some("Add phone number");
+            }
+            if self.hit.add_email.contains(point) {
+                return Some("Add email address");
+            }
+            if self.hit.add_address.contains(point) {
+                return Some("Add postal address");
+            }
+            if self.hit.cal_btn.contains(point) {
+                return Some("Choose birthday from calendar");
+            }
+            if self
+                .hit
+                .type_chips
+                .iter()
+                .any(|(_, rect)| rect.contains(point))
+            {
+                return Some("Change field type");
+            }
+            if self
+                .hit
+                .remove_btns
+                .iter()
+                .any(|(_, rect)| rect.contains(point))
+            {
+                return Some("Remove this field");
+            }
+        }
         if self.hit.import.contains(point) {
             Some("Import contacts")
         } else if !self.store.is_empty() && self.hit.export.contains(point) {
             Some("Export contacts")
         } else if !self.store.is_empty() && self.hit.new.contains(point) {
             Some("Create contact")
+        } else if self.hit.search.contains(point) {
+            Some("Search contacts — Ctrl+K or /")
+        } else if self.hit.sort.contains(point) {
+            Some("Choose contact sort order")
+        } else if self.hit.group.contains(point) {
+            Some("Filter contacts by group")
         } else if self.narrow && self.hit.back.contains(point) {
             Some("Back to contacts")
         } else if self.hit.fav.contains(point) {
@@ -7517,6 +7624,20 @@ impl Widget for ContactsApp {
             Some("Edit contact")
         } else if self.hit.delete.contains(point) {
             Some("Delete contact")
+        } else if self.empty_action_rect.contains(point) {
+            match self.empty_list_action {
+                EmptyListAction::Create => Some("Create contact"),
+                EmptyListAction::ClearFilters => Some("Clear search and group filter"),
+                EmptyListAction::None => None,
+            }
+        } else if self.list_rows.iter().any(|(_, row)| row.contains(point)) {
+            Some("Open contact — Menu or Shift+F10 for actions")
+        } else if self
+            .detail_field_hits
+            .iter()
+            .any(|(_, rect)| rect.contains(point))
+        {
+            Some("Double-click to edit this field")
         } else {
             None
         }
@@ -9099,7 +9220,7 @@ impl ContactsApp {
         if self.mode != Mode::View || self.popup.is_some() {
             return;
         }
-        self.handle_key_list_shortcuts(ke, handled);
+        self.handle_key_list_shortcuts(ke, modifiers.state(), handled);
     }
 
     /// The Escape-key state transition: closes whichever dialog/popup/edit is
@@ -9367,11 +9488,21 @@ impl ContactsApp {
         }
     }
 
-    /// Global list shortcuts: arrow-key selection, Delete/Backspace opens the
-    /// delete-confirm dialog, `n` starts a new contact, `e` edits the
-    /// selection, `/` focuses search. Only reached in view mode with no
+    /// Global list shortcuts: arrows select, Enter opens, Menu / Shift+F10
+    /// opens the selected contact's actions, Delete/Backspace opens the
+    /// confirmation dialog, `n` starts a new contact, `e` edits the
+    /// selection, and `/` focuses search. Only reached in view mode with no
     /// popup open (see the call site's guard).
-    fn handle_key_list_shortcuts(&mut self, ke: &KeyEvent, handled: &mut bool) {
+    fn handle_key_list_shortcuts(
+        &mut self,
+        ke: &KeyEvent,
+        modifiers: winit::keyboard::ModifiersState,
+        handled: &mut bool,
+    ) {
+        if is_context_menu_chord(modifiers.shift_key(), &ke.logical_key) {
+            *handled = self.open_selected_context_menu();
+            return;
+        }
         match &ke.logical_key {
             Key::Named(NamedKey::Tab) if self.empty_list_action != EmptyListAction::None => {
                 self.search.set_focus(false);
@@ -9392,6 +9523,12 @@ impl ContactsApp {
             Key::Named(NamedKey::ArrowUp) => {
                 self.move_selection(-1);
                 *handled = true;
+            }
+            Key::Named(NamedKey::Enter) => {
+                if let Some(id) = self.selected {
+                    self.request_select(id);
+                    *handled = true;
+                }
             }
             Key::Named(NamedKey::Delete | NamedKey::Backspace) => {
                 if let Some(id) = self.selected {
