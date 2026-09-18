@@ -182,8 +182,44 @@ impl ActionHost {
             owners,
             views,
         };
-        this.reconcile(owner)?;
-        Ok(this)
+        let result = this.reconcile(owner);
+        this.finish_start(owner, result)
+    }
+    fn finish_start(mut self, owner: &SessionOwner, result: Result<()>) -> Result<Self> {
+        if let Err(error) = result {
+            let cleanup = self.close(owner);
+            return Err(match cleanup {
+                Ok(()) => error,
+                Err(recovery) => anyhow::anyhow!("{error}; {recovery}"),
+            });
+        }
+        Ok(self)
+    }
+    fn setup_error(&mut self, error: ui::launch::LaunchError) -> anyhow::Error {
+        let message = error.to_string();
+        self.retain_setup(error);
+        anyhow::anyhow!(message)
+    }
+    fn retain_setup(&mut self, error: ui::launch::LaunchError) {
+        if let ui::launch::LaunchError::ComponentSetup {
+            source,
+            record,
+            records,
+            reports,
+        } = error
+        {
+            self.recovery.extend(reports);
+            self.recovery.push(ui::application::ComponentCloseReport {
+                recovery: None,
+                view_error: None,
+                view_retry: None,
+                record_error: None,
+                record_retry: Some(records),
+                record_retry_target: Some(record.id),
+                teardown_error: None,
+            });
+            self.retain_setup(*source);
+        }
     }
     fn reconcile(&mut self, owner: &SessionOwner) -> Result<()> {
         let cert = &owner.identity.native_cert;
@@ -301,9 +337,6 @@ impl ActionHost {
                 &target,
             )
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            let component = definition
-                .instantiate(context, target, restore)
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
             let route = CrdtRoute::record(&row.app_id, room.to_string(), &row.record_id);
             let spec = if row.record_id.is_empty() {
                 RouteSpec::app(&row.app_id, room)
@@ -326,6 +359,9 @@ impl ActionHost {
                 ),
             )
             .map_err(|e| anyhow::anyhow!("worker join: {e:?}"))?;
+            let component = definition
+                .instantiate(context, target, restore)
+                .map_err(|e| self.setup_error(e))?;
             let app = ui::App::from_component_with_collaboration(
                 component,
                 ui::application::ComponentRunnerInputs {
@@ -334,7 +370,7 @@ impl ActionHost {
                 },
                 manager,
             )
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            .map_err(|e| self.setup_error(e))?;
             self.workers.push(Worker {
                 app_id: row.app_id,
                 record_id: row.record_id,
@@ -366,6 +402,15 @@ impl ActionHost {
         }
         self.acknowledge_committed(owner)?;
         Ok(())
+    }
+    #[cfg(feature = "test-support")]
+    pub fn qualification_heads(&mut self, room: &str) -> serde_json::Value {
+        serde_json::Value::Array(self.workers.iter().map(|worker| {
+            let records = self.owners.open(&worker.app_id, room).unwrap();
+            let id = if worker.record_id.is_empty() { RecordId::package_primary() } else { RecordId::parse(&worker.record_id).unwrap() };
+            let heads = records.read(&id, |doc| doc.clone().get_heads().iter().map(ToString::to_string).collect::<Vec<_>>()).unwrap();
+            serde_json::json!({"app": worker.app_id, "record": worker.record_id, "heads": heads})
+        }).collect())
     }
     pub fn ready(&self) -> bool {
         self.signing.health().is_ok()
@@ -453,12 +498,38 @@ impl ActionHost {
                 .extend(worker.app.take_component_close_reports());
         }
         let result: Result<(), String> = (|| {
-            self.acknowledge_committed(owner)?;
+            // First request every original owner's pending bytes; one failure
+            // must not prevent another report from transferring its custody.
             for report in &mut self.recovery {
-                report.retry_record()?;
-                report.retry_view().map_err(|e| e.to_string())?;
+                let _ = report.retry_record();
+                let _ = report.retry_view();
             }
-            Ok(())
+            self.acknowledge_committed(owner)?;
+            let mut errors = Vec::new();
+            for report in &mut self.recovery {
+                let _ = report.retry_record();
+                let _ = report.retry_view();
+                errors.extend(
+                    [
+                        &report.record_error,
+                        &report.view_error,
+                        &report.teardown_error,
+                    ]
+                    .into_iter()
+                    .filter_map(|error| error.clone()),
+                );
+                if report.record_retry.is_some()
+                    || report.record_retry_target.is_some()
+                    || report.view_retry.is_some()
+                {
+                    errors.push("unresolved component retry custody".into());
+                }
+            }
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(errors.join("; "))
+            }
         })();
         if let Err(reason) = result {
             let path = owner.root().join("actions/recovery.json");
@@ -507,6 +578,126 @@ fn ensure_private(path: &std::path::Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn runtime() -> (tempfile::TempDir, SessionOwner, ActionHost) {
+        let root = tempfile::tempdir().unwrap();
+        let owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
+        let authority = Authority(Arc::new(Mutex::new(Some(owner.peer().clone()))));
+        let (handle, commits) = crate::owner_commit::OwnerCommitMailbox::bounded(8);
+        let (signing, signatures) = HostSigning::new(handle);
+        // These tests exercise close custody without pumping asynchronous actions.
+        let (sender, network) = tokio::sync::mpsc::channel(64);
+        let runtime = ActionHost::start(&owner, authority, signing, sender).unwrap();
+        drop((commits, signatures, network));
+        (root, owner, runtime)
+    }
+    fn saved_report(runtime: &mut ActionHost) -> ui::application::ComponentCloseReport {
+        runtime.workers[0].app.close_components();
+        runtime.workers[0]
+            .app
+            .take_component_close_reports()
+            .into_iter()
+            .find(|report| report.recovery.is_some())
+            .unwrap()
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn capture_without_retry_and_teardown_failures_preserve_reports() {
+        for capture in [true, false] {
+            let (_root, owner, mut runtime) = runtime();
+            let mut report = saved_report(&mut runtime);
+            let saved = serde_json::to_value(&report.recovery).unwrap();
+            report.record_error = None;
+            report.record_retry = None;
+            report.view_error = capture.then(|| "capture failed with fallback".into());
+            report.view_retry = None;
+            report.teardown_error = (!capture).then(|| "teardown failed".into());
+            runtime.recovery.push(report);
+            let failure = runtime
+                .close(&owner)
+                .expect_err("unresolved lifecycle error was discarded");
+            assert!(failure.contains("custody preserved"), "{failure}");
+            let artifact: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(owner.root().join("actions/recovery.json")).unwrap(),
+            )
+            .unwrap();
+            assert!(
+                artifact["reports"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|report| report["view"] == saved
+                        && if capture {
+                            report["view_error"] == "capture failed with fallback"
+                        } else {
+                            report["teardown_error"] == "teardown failed"
+                        })
+            );
+        }
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn structured_setup_failure_preserves_partial_host_and_exact_custody() {
+        use ui::automerge::transaction::Transactable;
+        let (_root, owner, mut runtime) = runtime();
+        let records = runtime
+            .owners
+            .open("dev.qos.word-processor", owner.peer().room())
+            .unwrap();
+        let record = RecordId::for_tab(1);
+        records
+            .with(&record, |doc| {
+                doc.put(ui::automerge::ROOT, "setup-dirty", "exact bytes")
+                    .unwrap();
+                doc.commit();
+            })
+            .unwrap();
+        let dirty = records.read(&record, |doc| doc.clone().save()).unwrap();
+        let mut report = saved_report(&mut runtime);
+        let saved = serde_json::to_value(&report.recovery).unwrap();
+        report.view_error = Some("setup capture failed".into());
+        report.view_retry = None;
+        let error = runtime.setup_error(ui::launch::LaunchError::ComponentSetup {
+            source: Box::new(ui::launch::LaunchError::Operation("mount failed".into())),
+            record: RecordCheckout::new(record, word_processor::definition().record_kind.clone()),
+            records,
+            reports: vec![report],
+        });
+        assert!(
+            !runtime.recovery.is_empty(),
+            "structured setup custody was discarded"
+        );
+        assert!(runtime.finish_start(&owner, Err(error)).is_err());
+        let artifact: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(owner.root().join("actions/recovery.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            artifact["reports"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|report| report["view"] == saved
+                    && report["view_error"] == "setup capture failed")
+        );
+        assert!(
+            artifact["pending"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["bytes"] == serde_json::json!(dirty)
+                    && entry["actor"]
+                        == serde_json::json!(owner.identity.native_cert.device_public_key))
+        );
+        let authority = Authority(Arc::new(Mutex::new(Some(owner.peer().clone()))));
+        let (handle, _commits) = crate::owner_commit::OwnerCommitMailbox::bounded(8);
+        let (signing, _signatures) = HostSigning::new(handle);
+        let (sender, _network) = tokio::sync::mpsc::channel(64);
+        assert!(
+            ActionHost::start(&owner, authority, signing, sender)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("unresolved application recovery")
+        );
+    }
     #[tokio::test(flavor = "current_thread")]
     async fn actual_worker_lost_authority_after_precommit_preserves_uncertain_effect() {
         let root = tempfile::tempdir().unwrap();

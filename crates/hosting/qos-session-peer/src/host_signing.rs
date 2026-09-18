@@ -162,6 +162,10 @@ impl OwnerCommitService for HostSigning {
     }
 }
 impl PendingSignature {
+    #[cfg(feature = "test-support")]
+    pub fn matches_route(&self, app: &str, record: &str) -> bool {
+        self.route.app_id == app && self.route.record.as_deref().unwrap_or("") == record
+    }
     /// Caller holds committed-authority visibility, refreshes policy and
     /// publishes outgoing state before invoking the returned completion.
     pub fn apply(self, owner: &mut SessionOwner) -> (impl FnOnce() + use<>, Result<(), String>) {

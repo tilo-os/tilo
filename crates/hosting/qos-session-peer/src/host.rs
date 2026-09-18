@@ -14,6 +14,47 @@ use std::sync::Arc;
 use std::{net::Ipv4Addr, path::Path, time::Duration};
 use tokio::{io::AsyncBufReadExt, net::TcpListener};
 
+// Nondefault, local-process qualification only; never a wire capability.
+#[cfg(feature = "test-support")]
+#[derive(Default)]
+struct QualificationHold {
+    route: Option<(String, String)>,
+    completion: Option<Box<dyn FnOnce()>>,
+    deadline: Option<std::time::Instant>,
+    expired: bool,
+}
+#[cfg(feature = "test-support")]
+impl QualificationHold {
+    fn release(&mut self) {
+        if let Some(complete) = self.completion.take() {
+            complete();
+        }
+        self.deadline = None;
+    }
+    fn command(&mut self, line: &str) -> bool {
+        if line == "qualification release" {
+            self.release();
+            return true;
+        }
+        if let Some(route) = line.strip_prefix("qualification hold ") {
+            if let Some((app, record)) = route.split_once(' ') {
+                if self.route.is_none() && self.completion.is_none() {
+                    self.route = Some((app.into(), record.into()));
+                    self.expired = false;
+                }
+            }
+            return true;
+        }
+        false
+    }
+}
+#[cfg(feature = "test-support")]
+impl Drop for QualificationHold {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 pub struct NativeSubscription {
     session: Arc<RelayCoeditSession>,
     actions: Option<AttachedActions>,
@@ -334,6 +375,8 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
     let mut reconnect: Option<Reconnect> = None;
     let mut delay = Duration::ZERO;
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    #[cfg(feature = "test-support")]
+    let mut qualification = QualificationHold::default();
     let mut stdin_open = true;
     let metadata = json!({"version":2,"enrollment_version":2,"challenge_path":"/enrollment/challenge","complete_path":"/enrollment/complete","pid":std::process::id(),"platform":std::env::consts::OS,"fixture_origin":format!("http://{}",listener.local_addr()?),"status_path":"/status","packet_relay":host.packet_url,"relay_address":host.address,"room":owner.peer().room(),"workspace_id":qos_relay::room_workspace_id(owner.peer().room())?.to_string(),"state_root":owner.root(),"records":owner.peer().rows()});
     atomic_file::write_with_mode(ready_path, &serde_json::to_vec_pretty(&metadata)?, 0o600)?;
@@ -350,6 +393,11 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
             _ = pump.tick() => {
+                #[cfg(feature = "test-support")]
+                if qualification.deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                    qualification.expired = true; qualification.release();
+                }
+
                 if let Some(runtime) = actions.as_mut() {
                     if let Err(problem) = runtime.pump(&owner) { action_error.get_or_insert(problem); }
                     if action_error.is_none() && runtime.ready() {
@@ -364,7 +412,9 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                     if session.as_ref().is_some_and(|s| s.actions.is_some()) { if let Some(old) = session.take() { old.close().await; } }
                 }
             }
-            pending = commits.recv() => if let Some(pending) = pending {
+            // Replacement keeps bounded durable work pending until its exact
+            // retained session can publish before any completion is exposed.
+            pending = commits.recv(), if session.as_ref().is_some_and(|current| current.is_ready()) => if let Some(pending) = pending {
                 let mut current = authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))?;
                 let result = pending.apply(&mut owner);
                 *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
@@ -374,7 +424,9 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 if let Err(problem) = published { action_error = Some(signing.fail(problem.to_string())); }
                 *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
             },
-            pending = signatures.recv() => if let Some(pending) = pending {
+            pending = signatures.recv(), if session.as_ref().is_some_and(|current| current.is_ready()) => if let Some(pending) = pending {
+                #[cfg(feature = "test-support")]
+                let hold = qualification.route.as_ref().is_some_and(|(app, record)| pending.matches_route(app, record));
                 let mut current = authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))?;
                 let (complete, result) = pending.apply(&mut owner);
                 *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
@@ -383,6 +435,13 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 if let Err(problem) = result { action_error = Some(problem); }
                 if let Err(problem) = published { action_error = Some(signing.fail(problem.to_string())); }
                 *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
+                #[cfg(feature = "test-support")]
+                if hold {
+                    qualification.route = None;
+                    qualification.completion = Some(Box::new(complete));
+                    qualification.deadline = Some(std::time::Instant::now() + Duration::from_secs(4));
+                } else { complete(); }
+                #[cfg(not(feature = "test-support"))]
                 complete();
             },
             message = network.recv() => if let Some(message) = message {
@@ -478,6 +537,11 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 let (socket,_)=result?; let mut status=public_status(&owner,session.as_ref().is_some_and(|current|current.is_ready()),&error);
                 status["actions"] = json!(if action_error.is_some() { "unavailable" } else if actions.as_ref().is_some_and(|runtime| runtime.ready()) && session.as_ref().is_some_and(|s| s.actions.is_some()) { "ready" } else { "starting" });
                 status["action_error"] = json!(action_error);
+                #[cfg(feature = "test-support")]
+                {
+                    status["qualification"] = json!({"armed": qualification.route.is_some(), "held": qualification.completion.is_some(), "expired": qualification.expired,
+                        "workers": actions.as_mut().map(|runtime| runtime.qualification_heads(owner.peer().room()))});
+                }
                 status["native_subscription_generation"] = json!(subscription_generation);
                 let authorization=authorization.clone();let commands=enrollment_commands.clone();
                 tokio::spawn(async move { let _=crate::enrollment_http::serve(socket,authorization,commands,status).await; });
@@ -485,6 +549,8 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
             line = stdin.next_line(), if stdin_open => {
                 match line? {
                     None => stdin_open=false,
+                    #[cfg(feature = "test-support")]
+                    Some(line) if qualification.command(&line) => {},
                     Some(line) if line == "shutdown" => break,
                     Some(line) if line == "reconnect" => { if let Some(old)=session.take(){old.close().await;} delay=Duration::ZERO; },
                     Some(line) if line == "status" => println!("{}",public_status(&owner,session.as_ref().is_some_and(|current|current.is_ready()),&error)),

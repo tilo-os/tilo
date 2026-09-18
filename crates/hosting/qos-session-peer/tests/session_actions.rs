@@ -295,6 +295,20 @@ async fn normal_host_serves_real_checked_application_catalogue() {
         revision: None,
     };
     assert_eq!(table_cells(&remote), 0);
+    #[cfg(feature = "test-support")]
+    active_replacement(
+        &mut host,
+        origin,
+        &client,
+        &mut remote,
+        room,
+        &cert,
+        &native,
+        broker_host,
+        invocation,
+        operation.clone(),
+    )
+    .await;
     invoke_and_observe(
         &client,
         &mut remote,
@@ -311,6 +325,19 @@ async fn normal_host_serves_real_checked_application_catalogue() {
         4,
         "actual checked Writer insert-table must create exactly 2x2 cells"
     );
+    owner_and_room_isolation(
+        origin,
+        &cap,
+        &metadata,
+        &client,
+        room,
+        &cert,
+        &native,
+        &host_cert,
+        broker_host,
+        invocation,
+    )
+    .await;
     let heads = remote
         .rows()
         .into_iter()
@@ -693,4 +720,345 @@ async fn invoke_and_observe(
             }
         }
     }).await.expect("actual Writer operation never committed, replicated and completed");
+}
+
+#[cfg(feature = "test-support")]
+async fn active_replacement(
+    host: &mut Host,
+    origin: &str,
+    client: &qos_relay::RelayClient,
+    remote: &mut qos_peer_state::StatePeer,
+    room: uuid::Uuid,
+    cert: &qos_user_identity::DeviceCert,
+    native: &qos_user_identity::DeviceCert,
+    broker_host: uuid::Uuid,
+    invocation: qos_actions::InvocationId,
+    operation: qos_relay::peer_actions::ActionMessage,
+) {
+    use qos_relay::{
+        peer_actions::{ActionMessage, DirectedAction},
+        transport::Envelope,
+        transport_v2::EnvelopeV2,
+    };
+    use std::io::Write;
+    use ui::automerge::transaction::Transactable;
+    writeln!(
+        host.0.stdin.as_mut().unwrap(),
+        "qualification hold dev.qos.word-processor tab:0000000000000001"
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let status = request(origin, "/status", None, None).await.1;
+        if status["qualification"]["armed"] == true {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "qualification hold was not armed: {status}"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let request_id = uuid::Uuid::new_v4();
+    client
+        .send_action(EnvelopeV2::Directed(DirectedAction {
+            room,
+            request_id,
+            source: cert.device_public_key,
+            target: native.device_public_key,
+            message: operation,
+        }))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut accepted = false;
+    let generation = loop {
+        let status = request(origin, "/status", None, None).await.1;
+        if status["qualification"]["held"] == true && accepted {
+            break status["native_subscription_generation"].as_u64().unwrap();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "actual action never held after admission: {status}; accepted={accepted}"
+        );
+        tokio::select! {
+            state = client.recv() => apply_state(remote, state.unwrap()),
+            event = client.recv_action() => if let EnvelopeV2::Delivered { action, source_user } = event.unwrap() {
+                if action.request_id == request_id {
+                    assert_eq!(source_user, native.user_public_key); assert_eq!(action.source, native.device_public_key); assert_eq!(action.target, cert.device_public_key); assert_eq!(action.room, room);
+                    if let ActionMessage::Observation { host, invocation: id, update: Some(update), uncertain, .. } = action.message {
+                        assert_eq!(host, broker_host); assert_eq!(id, invocation); assert!(!uncertain); assert!(!update.is_terminal(), "held action completed prematurely: {update:?}"); accepted = true;
+                    } else { panic!("held action was not admitted"); }
+                }
+            },
+            _ = tokio::time::sleep(Duration::from_millis(5)) => {},
+        }
+    };
+    // Publish a real signed incremental Notes mutation on this same session
+    // while the actual Writer operation is waiting for its committed response.
+    let row = remote
+        .rows()
+        .into_iter()
+        .find(|row| row.app_id == "dev.qos.notes")
+        .unwrap();
+    let mut doc =
+        ui::automerge::AutoCommit::load(&remote.document(&row.app_id, &row.record_id).unwrap())
+            .unwrap();
+    doc.set_actor(ui::automerge::ActorId::from(
+        cert.device_public_key.to_vec(),
+    ));
+    let _ = doc.save_incremental();
+    doc.put(
+        ui::automerge::ROOT,
+        "active-action-state-proof",
+        "received during Writer action",
+    )
+    .unwrap();
+    doc.commit();
+    let head = doc.get_heads()[0].to_string();
+    let signed = remote
+        .signed_mutation(
+            &row.app_id,
+            &row.record_id,
+            collab_types::DocumentMutation::Incremental(doc.save_incremental()),
+            &SigningKey::from_bytes(&[92; 32]),
+            web_time::SystemTime::now(),
+        )
+        .unwrap();
+    client
+        .send(Envelope::Delta {
+            workspace_id: qos_relay::room_workspace_id(&room.to_string()).unwrap(),
+            author_device_public_key: cert.device_public_key,
+            authored_at_ns: qos_relay::clock::now_ns(),
+            delta: qos_relay::coedit::CoeditPayload::RetainedDelta {
+                channel: *blake3::hash(
+                    format!("{room}/{}/{}", row.app_id, row.record_id).as_bytes(),
+                )
+                .as_bytes(),
+                body: postcard::to_stdvec(&signed).unwrap(),
+            }
+            .encode()
+            .unwrap(),
+            signature: [0; 64],
+        })
+        .unwrap();
+    // Endpoint::online takes about 3s on this isolated relay. Keep the
+    // observation below the 4s hold and unchanged 5s signer deadline.
+    let deadline = Instant::now() + Duration::from_millis(3800);
+    loop {
+        let status = request(origin, "/status", None, None).await.1;
+        assert_eq!(
+            status["qualification"]["held"], true,
+            "response was not held while delivering state: {status}"
+        );
+        assert_eq!(status["qualification"]["expired"], false);
+        if status["qualification"]["workers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|worker| {
+                worker["app"] == row.app_id
+                    && worker["record"] == row.record_id
+                    && worker["heads"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&serde_json::json!(head))
+            })
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "incoming state did not reach checked Notes worker: {status}"
+        );
+        tokio::select! {
+            state = client.recv() => apply_state(remote, state.unwrap()),
+            event = client.recv_action() => if let EnvelopeV2::Delivered { action, source_user } = event.unwrap() {
+                if action.request_id == request_id {
+                    assert_eq!(source_user, native.user_public_key); assert_eq!(action.source, native.device_public_key); assert_eq!(action.target, cert.device_public_key); assert_eq!(action.room, room);
+                    assert!(matches!(action.message, ActionMessage::Observation { update: Some(ref update), uncertain: false, .. } if !update.is_terminal()), "held old-generation invocation completed or lost custody: {:?}", action.message);
+                }
+            },
+            _ = tokio::time::sleep(Duration::from_millis(5)) => {},
+        }
+    }
+    writeln!(host.0.stdin.as_mut().unwrap(), "reconnect").unwrap();
+    loop {
+        let status = request(origin, "/status", None, None).await.1;
+        assert_eq!(
+            status["qualification"]["held"], true,
+            "old completion escaped replacement boundary: {status}"
+        );
+        assert_eq!(status["qualification"]["expired"], false);
+        if status["actions"] == "ready"
+            && status["native_subscription_generation"].as_u64().unwrap() > generation
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "active replacement did not become ready: {status}"
+        );
+        tokio::select! {
+            state = client.recv() => apply_state(remote, state.unwrap()),
+            event = client.recv_action() => if let EnvelopeV2::Delivered { action, source_user } = event.unwrap() {
+                if action.request_id == request_id {
+                    assert_eq!(source_user, native.user_public_key); assert_eq!(action.source, native.device_public_key); assert_eq!(action.target, cert.device_public_key); assert_eq!(action.room, room);
+                    assert!(matches!(action.message, ActionMessage::Observation { update: Some(ref update), uncertain: false, .. } if !update.is_terminal()), "held old-generation invocation completed or lost custody: {:?}", action.message);
+                }
+            },
+            _ = tokio::time::sleep(Duration::from_millis(5)) => {},
+        }
+    }
+    writeln!(host.0.stdin.as_mut().unwrap(), "qualification release").unwrap();
+    // The caller now resumes the full original identity on the replacement.
+    // Any stale old-session completion must neither detach it nor rerun effect.
+}
+
+async fn owner_and_room_isolation(
+    origin: &str,
+    capability: &str,
+    metadata: &serde_json::Value,
+    first: &qos_relay::RelayClient,
+    room: uuid::Uuid,
+    first_cert: &qos_user_identity::DeviceCert,
+    native: &qos_user_identity::DeviceCert,
+    host_cert: &qos_user_identity::DeviceCert,
+    broker_host: uuid::Uuid,
+    invocation: qos_actions::InvocationId,
+) {
+    use qos_relay::{
+        RelayClient,
+        peer_actions::{ActionMessage, DirectedAction, UnavailableReason},
+        transport::Envelope,
+        transport_v2::EnvelopeV2,
+    };
+    let key = SigningKey::from_bytes(&[94; 32]);
+    let complete = proof(origin, capability, &key, 94).await;
+    let (code, bootstrap) = request(
+        origin,
+        "/enrollment/complete",
+        Some(serde_json::to_string(&complete).unwrap()),
+        Some(capability),
+    )
+    .await;
+    assert_eq!(code, 200);
+    let cert: qos_user_identity::DeviceCert =
+        serde_json::from_value(bootstrap["certificate"].clone()).unwrap();
+    // Same human principal, distinct Certified{root,device} invocation owner.
+    assert_eq!(cert.user_public_key, first_cert.user_public_key);
+    assert_ne!(cert.device_public_key, first_cert.device_public_key);
+    let packet: iroh_base::RelayUrl = metadata["packet_relay"].as_str().unwrap().parse().unwrap();
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::from(packet)))
+        .bind()
+        .await
+        .unwrap();
+    endpoint.online().await;
+    let second = RelayClient::connect_v2_to_enrolled_home_peer(
+        endpoint,
+        serde_json::from_value(metadata["relay_address"].clone()).unwrap(),
+        cert.user_public_key,
+        host_cert.device_public_key,
+        cert.clone(),
+        key,
+        qos_user_identity::RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    second
+        .send(Envelope::Subscribe {
+            workspace_id: qos_relay::room_workspace_id(&room.to_string()).unwrap(),
+        })
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !matches!(second.recv().await.unwrap(), Envelope::Ready { .. }) {}
+    })
+    .await
+    .unwrap();
+    second
+        .send_action(EnvelopeV2::EnableActions { room })
+        .unwrap();
+    second
+        .send_action(EnvelopeV2::EnableBrokerClient { room })
+        .unwrap();
+    for foreign_or_absent in [invocation, qos_actions::InvocationId::new()] {
+        let query = uuid::Uuid::new_v4();
+        second
+            .send_action(EnvelopeV2::Directed(DirectedAction {
+                room,
+                request_id: query,
+                source: cert.device_public_key,
+                target: native.device_public_key,
+                message: ActionMessage::Status {
+                    invocation: foreign_or_absent,
+                },
+            }))
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let EnvelopeV2::Delivered {
+                    action,
+                    source_user,
+                } = second.recv_action().await.unwrap()
+                {
+                    if action.request_id == query {
+                        assert_eq!(source_user, native.user_public_key);
+                        assert_eq!(action.source, native.device_public_key);
+                        assert_eq!(action.target, cert.device_public_key);
+                        assert_eq!(action.room, room);
+                        // Unknown status reveals only the public host and caller's
+                        // own requested ID, identically for absent and foreign IDs.
+                        assert_eq!(
+                            action.message,
+                            ActionMessage::Observation {
+                                host: broker_host,
+                                invocation: foreign_or_absent,
+                                update: None,
+                                uncertain: false,
+                                cancellation_requested: false,
+                            },
+                            "another device learned original invocation state"
+                        );
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+    }
+    let wrong_room = uuid::Uuid::new_v4();
+    let query = uuid::Uuid::new_v4();
+    first
+        .send_action(EnvelopeV2::Directed(DirectedAction {
+            room: wrong_room,
+            request_id: query,
+            source: first_cert.device_public_key,
+            target: native.device_public_key,
+            message: ActionMessage::Status { invocation },
+        }))
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match first.recv_action().await.unwrap() {
+                EnvelopeV2::Unavailable {
+                    room: got,
+                    request_id,
+                    reason,
+                    ..
+                } if request_id == query => {
+                    assert_eq!(got, wrong_room);
+                    assert_eq!(reason, UnavailableReason::NotAuthorised);
+                    break;
+                }
+                EnvelopeV2::Delivered { action, .. } if action.request_id == query => {
+                    panic!("wrong room disclosed private result: {:?}", action.message)
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap();
+    second.close().await;
 }
