@@ -85,10 +85,10 @@ test('health generations increase as decimal integers and storage recovery is co
 test('generation-only runtime reports do not publish a new peer snapshot',async()=>{
  const f=fixture(),peer=await f.connect(),notifications=[];peer.subscribe(snapshot=>notifications.push(snapshot));
  const ready=structuredClone(peer.getSnapshot());ready.health.transport.authenticated=true;f.status(ready);await drain();notifications.length=0;
- const mount=await peer.mountDesktop({});await drain();notifications.length=0;const before=structuredClone(peer.getSnapshot());
+ const mount=await peer.mountDesktop({});await drain();notifications.length=0;const before=peer.getSnapshot(),beforeValue=structuredClone(before);
  f.setCommitStatus(()=>{const current=structuredClone(peer.getSnapshot());current.health.generation=String(BigInt(current.health.generation)+1n);return current;});
  mount.present(1);await drain();
- assert.equal(notifications.length,0);assert.deepEqual(peer.getSnapshot(),before);
+ assert.equal(notifications.length,0);assert.strictEqual(peer.getSnapshot(),before);assert.deepEqual(peer.getSnapshot(),beforeValue);
  await peer.dispose();
 });
 
