@@ -82,6 +82,16 @@ Main and the ongoing hardware bring-up remain untouched.
 
 ## Still required for the full goal
 
+The imager workflow now explicitly disables the retained macOS build and cask
+test jobs. Linux/Windows publication no longer waits for macOS assets; Linux
+Homebrew publication leaves the retained cask publisher disabled through
+`TILO_IMAGER_MACOS_ENABLED=0`. Existing published casks are not advanced or deleted.
+The real release artifact gate passes with both enabled architectures and still
+rejects missing/corrupt enabled artifacts. These changes are local, not deployed.
+Website promotion rejects rendered macOS download links until the separate
+website supports the enabled matrix; its repository lookup returned HTTP 404,
+so that consumer remains unqualified. No website state was changed.
+
 | Requirement | Evidence still needed |
 | --- | --- |
 | Cheap normal branch/PR path | Qualify the implemented trigger split on Forgejo; implement trusted affected-policy classification and relevant required proof before automatic merging |

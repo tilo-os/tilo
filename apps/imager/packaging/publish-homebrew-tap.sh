@@ -28,8 +28,13 @@ digest() {
 
 linux_x64="$(digest tilo-imager-linux-x86_64.tar.gz)"
 linux_arm="$(digest tilo-imager-linux-aarch64.tar.gz)"
-mac_x64="$(digest tilo-imager-macos-x86_64.dmg)"
-mac_arm="$(digest tilo-imager-macos-aarch64.dmg)"
+macos_enabled="${TILO_IMAGER_MACOS_ENABLED:-0}"
+case "$macos_enabled" in 0|1) ;; *) printf 'TILO_IMAGER_MACOS_ENABLED must be 0 or 1\n' >&2; exit 2 ;; esac
+mac_x64= mac_arm=
+if [ "$macos_enabled" = 1 ]; then
+  mac_x64="$(digest tilo-imager-macos-x86_64.dmg)"
+  mac_arm="$(digest tilo-imager-macos-aarch64.dmg)"
+fi
 
 api="${GITHUB_SERVER_URL}/api/v1"
 auth="Authorization: token ${HOMEBREW_TAP_TOKEN}"
@@ -105,27 +110,36 @@ render() {
     "$input" > "$output"
 }
 render apps/imager/packaging/homebrew/tilo-imager.rb.in "$work/tap/Formula/tilo-imager.rb"
-render apps/imager/packaging/homebrew/tilo-imager-cask.rb.in "$work/tap/Casks/tilo-imager.rb"
+if [ "$macos_enabled" = 1 ]; then
+  render apps/imager/packaging/homebrew/tilo-imager-cask.rb.in "$work/tap/Casks/tilo-imager.rb"
+fi
 
 if grep -REn '@[A-Z0-9_]+@' "$work/tap/Formula" "$work/tap/Casks"; then
   printf 'unresolved Homebrew template placeholder\n' >&2
   exit 1
 fi
 ruby -c "$work/tap/Formula/tilo-imager.rb"
-ruby -c "$work/tap/Casks/tilo-imager.rb"
+if [ "$macos_enabled" = 1 ]; then
+  ruby -c "$work/tap/Casks/tilo-imager.rb"
+fi
 # Modern Homebrew audits names, not arbitrary paths. Tap the unpushed local
 # commit under a disposable name so the exact files about to be pushed are
 # audited without depending on stale remote state.
 HOMEBREW_NO_AUTO_UPDATE=1 brew tap tilo/release-audit "$work/tap"
 audit_tapped=1
 HOMEBREW_NO_AUTO_UPDATE=1 brew audit --strict --formula tilo/release-audit/tilo-imager
-HOMEBREW_NO_AUTO_UPDATE=1 brew audit --strict --cask tilo/release-audit/tilo-imager
+if [ "$macos_enabled" = 1 ]; then
+  HOMEBREW_NO_AUTO_UPDATE=1 brew audit --strict --cask tilo/release-audit/tilo-imager
+fi
 HOMEBREW_NO_AUTO_UPDATE=1 brew untap tilo/release-audit >/dev/null
 audit_tapped=0
 
 if [ ! -f "$work/tap/README.md" ]; then
-  printf '# Tilo Homebrew tap\n\n```sh\nbrew tap tilo/tilo %s/tilo/homebrew-tilo.git\nbrew install tilo-imager\n# macOS GUI:\nbrew install --cask tilo-imager\n```\n' \
+  printf '# Tilo Homebrew tap\n\n```sh\nbrew tap tilo/tilo %s/tilo/homebrew-tilo.git\nbrew install tilo-imager\n```\n' \
     "$GITHUB_SERVER_URL" > "$work/tap/README.md"
+  if [ "$macos_enabled" = 1 ]; then
+    printf '\nmacOS GUI:\n```sh\nbrew install --cask tilo-imager\n```\n' >> "$work/tap/README.md"
+  fi
 fi
 git -C "$work/tap" config user.name "Tilo release automation"
 git -C "$work/tap" config user.email "release-bot@tilo.dev"

@@ -227,12 +227,16 @@ grep -Fq 'AppImage.asc' "$workflow" \
 
 for artifact in \
   tilo-imager-windows-x86_64.zip \
-  tilo-imager-macos-x86_64.zip \
-  tilo-imager-macos-aarch64.zip; do
+  tilo-imager-windows-aarch64.zip; do
   grep -Fq "            $artifact" "$workflow" \
     && ok "$artifact is an explicit publication prerequisite" \
     || bad "$artifact is linked by the website but absent from the publication gate"
 done
+if python3 -m unittest discover -s "$repo/tools/tests" -p test_imager_enabled_platforms.py; then
+  ok 'enabled Linux/Windows releases retain strict artifacts and disabled macOS workflows'
+else
+  bad 'enabled platform matrix or deferred macOS preservation failed'
+fi
 grep -Fq 'sha256sum --check --strict "$(basename "$path").sha256"' "$workflow" \
   && ok 'every required release sidecar is validated before publication' \
   || bad 'release digest sidecars are checked for existence but not content'
