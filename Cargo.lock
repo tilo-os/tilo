@@ -11076,6 +11076,7 @@ dependencies = [
  "os-actions",
  "qdoc-pdf",
  "runtime-dylib",
+ "serde_json",
  "taffy",
  "tempfile",
  "thumbnail",
