@@ -73,7 +73,9 @@ def validate_partial(native, receipt, expected, builder, destination, union):
         metadata = t.read_bounded(root / 'partial-checkpoint.json', 1024 * 1024)
         require(t.sha(metadata) == receipt['metadata_sha256'], 'partial metadata hash differs')
         value = t.strict_json(metadata)
-        require(value['purpose'] == PARTIAL and value['source_revision'] == SOURCE and value['architecture'] == 'aarch64'
+        require(value['schema'] == 1 and value['purpose'] == PARTIAL
+                and all(value[k] is False for k in ('installable', 'complete_native_builder', 'build_success'))
+                and value['source_revision'] == SOURCE and value['architecture'] == 'aarch64'
                 and value['run_id'] == 20866 and value['run_number'] == 7489
                 and value['inventory'] == receipt['inventory'], 'partial metadata identity differs')
         inputs = value['inputs']
