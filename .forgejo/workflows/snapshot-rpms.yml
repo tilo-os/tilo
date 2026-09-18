@@ -53,6 +53,7 @@ jobs:
       - name: Require non-exportable snapshot signing authority
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: |
           set -euo pipefail
           case "$COSIGN_KEY_REF" in
@@ -171,6 +172,7 @@ jobs:
       - name: Sign and describe the native repository
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
           CHILD_ARCH: ${{ matrix.arch }}
           CHILD_DIGEST: ${{ steps.rpms.outputs.digest }}
         run: |
@@ -232,6 +234,7 @@ jobs:
       - name: Verify and promote the complete native index
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: |
           set -euo pipefail
           case "$COSIGN_KEY_REF" in
@@ -253,6 +256,7 @@ jobs:
       - name: Attest and verify the native snapshot index
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: |
           set -euo pipefail
           ref="$(cat rpms-index.txt)"
