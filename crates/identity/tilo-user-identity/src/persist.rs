@@ -31,6 +31,8 @@
 use std::ffi::CString;
 use std::fs;
 use std::io::{self, Read, Write};
+#[cfg(target_os = "linux")]
+use std::os::fd::FromRawFd as _;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
@@ -58,6 +60,63 @@ fn protect_secret_process() -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn open_secret_file(path: &Path) -> io::Result<fs::File> {
+    const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+    const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+
+    #[repr(C)]
+    struct OpenHow {
+        flags: u64,
+        mode: u64,
+        resolve: u64,
+    }
+
+    let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "secret-key path contains an embedded NUL byte",
+        )
+    })?;
+    let flags = u64::try_from(libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .map_err(|_| io::Error::other("open flags are outside the Linux u64 ABI"))?;
+    let how = OpenHow {
+        flags,
+        mode: 0,
+        resolve: RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
+    };
+    // SAFETY: path and open_how remain live for this syscall. A successful
+    // descriptor is uniquely transferred into File below.
+    let descriptor = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            &raw const how,
+            std::mem::size_of::<OpenHow>(),
+        )
+    };
+    if descriptor < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let descriptor = i32::try_from(descriptor)
+        .map_err(|_| io::Error::other("openat2 returned an invalid descriptor"))?;
+    // SAFETY: openat2 returned this owned descriptor and no other File owns it.
+    Ok(unsafe { fs::File::from_raw_fd(descriptor) })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_secret_file(path: &Path) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    options.open(path)
 }
 
 /// Sequence for same-directory temporary device-key claim files. Final
@@ -285,17 +344,10 @@ fn signing_key_from_file(
     owner_policy: SecretOwner,
 ) -> Result<SigningKey, PersistError> {
     protect_secret_process()?;
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        // Inspect and read the same opened inode. A separate metadata(path)
-        // followed by read(path) lets an attacker exchange a checked private
-        // file for a symlink between the two operations.
-        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    let file = options.open(path)?;
+    // Inspect and read the same opened inode while rejecting symlinks in every
+    // component. A leaf-only O_NOFOLLOW check still permits an exchanged
+    // parent directory to redirect an otherwise trusted key path.
+    let file = open_secret_file(path)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(PersistError::Io(io::Error::new(
@@ -801,6 +853,13 @@ mod tests {
         match read_signing_key(&link).unwrap_err() {
             PersistError::Io(error) => assert_eq!(error.raw_os_error(), Some(libc::ELOOP)),
             other => panic!("expected symlink refusal, got {other:?}"),
+        }
+
+        let linked_parent = tmp.path().join("linked-parent");
+        symlink(tmp.path(), &linked_parent).unwrap();
+        match read_signing_key(&linked_parent.join("real.key")).unwrap_err() {
+            PersistError::Io(error) => assert_eq!(error.raw_os_error(), Some(libc::ELOOP)),
+            other => panic!("expected parent-symlink refusal, got {other:?}"),
         }
     }
 
