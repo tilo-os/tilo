@@ -540,6 +540,8 @@ cmd_sign() {
       || { rm -f "$signed_output"; die "signature did not verify after signing: $a"; }
     tilo-crypto durable-rename "$signed_output" "$a" \
       || die "signed artefact could not be installed durably: $a"
+    signed_with_db "$a" \
+      || die "installed artefact did not verify after durable publication: $a"
     log "signed $a"
     n=$((n+1))
   done <<< "$(artefacts)"
