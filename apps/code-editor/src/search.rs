@@ -111,11 +111,8 @@ pub enum Msg {
     Hits(Vec<Hit>),
     /// The walk finished (or hit [`MAX_HITS`]).
     Done {
-        /// How many files the walk covered. The worker reports it and the walk
-        /// test asserts on it; the panel's summary counts distinct files in the
-        /// rows it actually holds instead, so nothing on the draw path reads
-        /// this.
-        #[allow(dead_code)]
+        /// How many files the walk covered, shown in the search summary and
+        /// asserted by the worker tests.
         files: usize,
         truncated: bool,
     },
