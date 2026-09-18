@@ -21,7 +21,7 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
 bounded-command = { path = "../../crates/system/bounded-command" }
-ui = { package = "tilo-app", path = "../../crates/app/tilo-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
 # Tilo resource and action model for replayable account mutations.
 tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true

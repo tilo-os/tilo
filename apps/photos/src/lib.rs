@@ -163,6 +163,7 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "error",
     "opened",
     "library",
+    "albums",
     "people",
     "people-detail",
     "places",
@@ -350,6 +351,7 @@ pub fn seed_scenario(
         // hierarchy legible in the gallery instead of simulating a library
         // with repeated placeholder art.
         "library"
+        | "albums"
         | "people"
         | "people-detail"
         | "places"
@@ -434,6 +436,30 @@ pub fn seed_scenario(
                 name: "Travel".into(),
                 photo_ids: travel.clone(),
             });
+            if scenario == "albums" {
+                library.albums.extend([
+                    crate::model::Album {
+                        id: "photos.album:summer-weekends".into(),
+                        name: "Summer weekends".into(),
+                        photo_ids: travel.iter().skip(1).take(6).cloned().collect(),
+                    },
+                    crate::model::Album {
+                        id: "photos.album:family-favourites".into(),
+                        name: "Family favourites".into(),
+                        photo_ids: travel.iter().step_by(2).take(5).cloned().collect(),
+                    },
+                    crate::model::Album {
+                        id: "photos.album:ideas".into(),
+                        name: "Ideas for next time".into(),
+                        photo_ids: travel.iter().rev().take(3).cloned().collect(),
+                    },
+                    crate::model::Album {
+                        id: "photos.album:new-home".into(),
+                        name: "New home".into(),
+                        photo_ids: Vec::new(),
+                    },
+                ]);
+            }
             if scenario == "selection-many-albums" {
                 for number in 1..=17 {
                     library.albums.push(crate::model::Album {
@@ -444,7 +470,9 @@ pub fn seed_scenario(
                 }
             }
             PhotosDoc::set_library(doc, &library);
-            if matches!(scenario, "selection" | "selection-many-albums") {
+            if scenario == "albums" {
+                app.show_albums_for_shot();
+            } else if matches!(scenario, "selection" | "selection-many-albums") {
                 app.show_selection_for_shot(doc);
                 if scenario == "selection-many-albums" {
                     app.show_selection_destination_chooser_for_shot(doc);
