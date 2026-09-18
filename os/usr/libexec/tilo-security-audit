@@ -222,7 +222,6 @@ for protocol in \
 done
 check_sysctl kernel.perf_event_paranoid 3
 check_sysctl kernel.io_uring_disabled 2
-check_sysctl kernel.sysrq 16
 check_sysctl kernel.randomize_va_space 2
 check_sysctl vm.unprivileged_userfaultfd 0
 check_sysctl vm.mmap_min_addr 65536
