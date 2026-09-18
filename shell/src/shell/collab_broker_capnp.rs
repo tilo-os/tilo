@@ -1588,6 +1588,64 @@ fn revoke_realtime_capture_authorizations(
     }
 }
 
+fn teardown_imported_realtime_consent(realtime: &mut RealtimeBridge, session: &str) {
+    let Some((id, app, source, peer, leases)) = realtime
+        .sessions
+        .get(session)
+        .filter(|binding| binding.imported)
+        .map(|binding| {
+            (
+                binding.id,
+                binding.app.clone(),
+                binding.source.clone(),
+                binding.owner_peer,
+                binding.capture_leases.clone(),
+            )
+        })
+    else {
+        realtime.consent_capabilities_issued.remove(session);
+        return;
+    };
+    let target = realtime
+        .broker
+        .lock()
+        .ok()
+        .and_then(|broker| broker.session(id))
+        .and_then(|view| view.target);
+    if let Some(target) = target {
+        release_realtime_capture_session(&realtime.capture, &app, session, &target);
+        let now = std::time::Instant::now();
+        let rolled_back = realtime
+            .fabric
+            .fail_imported(id.fabric_id(), &source, &target, now);
+        if rolled_back.is_ok() {
+            // `fail_imported` authenticates the exact imported source/target
+            // binding and authors Cancel, but deliberately rolls the broker
+            // shadow back to SourceLive. This target has no authority to keep
+            // that remote-source shadow alive after local policy revocation,
+            // so end only the same verified app/session/source binding.
+            if let Ok(mut broker) = realtime.broker.lock() {
+                let _ = broker.apply_media_action(
+                    &app,
+                    id,
+                    &source,
+                    crate::shell::realtime_session::RealtimeMediaAction::Leave,
+                    now,
+                );
+            }
+        }
+    }
+    release_realtime_capture_leases(&realtime.capture, &leases);
+    realtime.consent_capabilities_issued.remove(session);
+    let _ = realtime.notify(
+        peer,
+        &ui::realtime_continuity::RealtimeEvent::Ended {
+            session: session.to_string(),
+        },
+    );
+    realtime.sessions.remove(session);
+}
+
 #[cfg(test)]
 struct RealtimeConsentMintHook {
     minted: std::sync::mpsc::SyncSender<()>,
@@ -1834,6 +1892,9 @@ impl RealtimeFabricAppBridge {
         policy_enabled: impl Fn() -> bool,
     ) -> Result<(), String> {
         if !policy_enabled() {
+            if let Ok(mut realtime) = self.state.realtime.lock() {
+                teardown_imported_realtime_consent(&mut realtime, session);
+            }
             return Err("realtime session continuity is disabled".into());
         }
         let (id, app, source, target, peer, required, capture) = {
@@ -1979,11 +2040,16 @@ impl RealtimeFabricAppBridge {
         let current_required = realtime.required_capture_kinds(id);
         let still_reserved = realtime.consent_capabilities_issued.contains(session);
         let policy_enabled = policy_enabled();
+        if !policy_enabled {
+            teardown_imported_realtime_consent(&mut realtime, session);
+            drop(realtime);
+            revoke_realtime_capture_authorizations(&capture, &authorizations);
+            return Err("realtime session continuity was disabled during consent".into());
+        }
         if !live_binding
             || !live_session
             || current_required.as_ref() != Some(&required)
             || !still_reserved
-            || !policy_enabled
         {
             realtime.consent_capabilities_issued.remove(session);
             drop(realtime);
@@ -9974,6 +10040,122 @@ mod tests {
             0,
             "stale consent must revoke every minted capability"
         );
+    }
+
+    #[test]
+    fn realtime_policy_disable_tears_down_exact_pending_consent() {
+        use crate::shell::realtime_session::{
+            BrokerRealtimeFabricAdapter, RealtimeFabricAdapter, RealtimeFabricSignal,
+            RealtimeMediaFacet, RealtimeMediaSet, RealtimeResumeIntent, RealtimeSessionBroker,
+            SemanticRoomLocator, VerifiedAppRegistration,
+        };
+
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _) = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            None,
+            None,
+        );
+        let target_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
+        let target_fabric = Arc::new(BrokerRealtimeFabricAdapter::with_app_verifier(
+            Arc::clone(&target_broker),
+            |_| true,
+        ));
+        let (subscriber, mut events) = mpsc::unbounded_channel();
+        let app =
+            VerifiedAppRegistration::new_verified("dev.qos.calls", "work").expect("verified app");
+        {
+            let mut realtime = state.realtime.lock().expect("target bridge");
+            realtime.broker = Arc::clone(&target_broker);
+            realtime.fabric = Arc::clone(&target_fabric);
+            realtime.subscribers.insert(
+                9,
+                RealtimeSubscriber {
+                    app: app.clone(),
+                    tx: subscriber,
+                },
+            );
+        }
+
+        let now = std::time::Instant::now();
+        let source =
+            crate::shell::personal_continuity::DeviceId::new("laptop").expect("source device");
+        let target =
+            crate::shell::personal_continuity::DeviceId::new("tablet").expect("target device");
+        let source_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
+        let source_fabric = Arc::new(BrokerRealtimeFabricAdapter::with_app_verifier(
+            Arc::clone(&source_broker),
+            |_| true,
+        ));
+        let intent = RealtimeResumeIntent {
+            room: SemanticRoomLocator::new("meet", "standup").expect("semantic room"),
+            semantic_position: None,
+            media: RealtimeMediaSet::new([RealtimeMediaFacet::Microphone]).expect("media set"),
+            controls: Default::default(),
+        };
+        let id = source_broker
+            .lock()
+            .expect("source broker")
+            .register(&app, source.clone(), intent, now)
+            .expect("register source");
+        source_broker
+            .lock()
+            .expect("source broker")
+            .propose_target(&app, id, &source, target.clone(), now)
+            .expect("propose target");
+        source_fabric
+            .offer_to(id, &target, 20_000)
+            .expect("queue offer");
+        let egress = source_fabric.drain_egress().pop().expect("offer egress");
+        let RealtimeFabricSignal::Offer(offer) = egress.signal else {
+            panic!("expected offer");
+        };
+        let fabric_id = offer.session_id;
+        assert!(target_fabric.receive_authenticated(
+            &source,
+            &target,
+            RealtimeFabricSignal::Offer(offer),
+            now,
+            10_000,
+        ));
+        state.pump_realtime_fabric_app_events();
+        let offered: ui::realtime_continuity::RealtimeEvent =
+            serde_json::from_slice(&events.try_recv().expect("target app offer"))
+                .expect("offer event");
+        let ui::realtime_continuity::RealtimeEvent::Offer { session, .. } = offered else {
+            panic!("expected app offer");
+        };
+
+        assert!(
+            RealtimeFabricAppBridge::from_state(Arc::clone(&state))
+                .resolve_consent_with_policy(&session, true, || false)
+                .is_err()
+        );
+        let ended: ui::realtime_continuity::RealtimeEvent =
+            serde_json::from_slice(&events.try_recv().expect("target app teardown"))
+                .expect("ended event");
+        assert_eq!(
+            ended,
+            ui::realtime_continuity::RealtimeEvent::Ended {
+                session: session.clone(),
+            }
+        );
+        let realtime = state.realtime.lock().expect("target bridge");
+        assert!(!realtime.sessions.contains_key(&session));
+        assert!(!realtime.consent_capabilities_issued.contains(&session));
+        drop(realtime);
+        assert!(
+            target_broker
+                .lock()
+                .expect("target broker")
+                .session(fabric_id.into_broker_id())
+                .is_none()
+        );
+        let cancel = target_fabric.drain_egress().pop().expect("cancel egress");
+        assert_eq!(cancel.target, source);
+        assert_eq!(cancel.signal, RealtimeFabricSignal::Cancel(fabric_id));
     }
 
     #[test]
