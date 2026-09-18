@@ -332,6 +332,56 @@ impl BoundaryEvidence {
         Ok(())
     }
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(in crate::setup::connection) enum DirectoryBoundaryFact {
+    Untouched,
+    Staged {
+        attempt: u32,
+    },
+    Published {
+        attempt: u32,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "present"
+        )]
+        outcome: Option<Vec<u8>>,
+    },
+}
+impl DirectoryBoundaryFact {
+    pub(in crate::setup::connection) fn kind(&self) -> u8 {
+        match self {
+            Self::Untouched => 0,
+            Self::Staged { .. } => 1,
+            Self::Published { .. } => 3,
+        }
+    }
+    pub(super) fn validate(&self) -> Result<(), StoreError> {
+        match self {
+            Self::Staged { attempt } | Self::Published { attempt, .. }
+                if !(1..=8).contains(attempt) =>
+            {
+                return Err(StoreError::Corrupt);
+            }
+            Self::Published {
+                outcome: Some(bytes),
+                ..
+            } => {
+                if !matches!(
+                    super::super::transaction::native::descriptor::directory::decode(bytes)
+                        .map_err(|_| StoreError::Corrupt)?
+                        .body,
+                    super::super::transaction::native::descriptor::directory::Body::Outcome(_)
+                ) {
+                    return Err(StoreError::Corrupt);
+                }
+            }
+            _ => (),
+        }
+        Ok(())
+    }
+}
 /// Historical explicit selection, distinct from the observed reconciliation decision.
 /// Only the dedicated producer may turn a freshly verified selection into admission.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -427,6 +477,18 @@ pub(super) struct SelectedAppliedFact {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Operation {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub native_kind: Option<NativeOperationKind>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub native_directory_boundary: Option<DirectoryBoundaryFact>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_applied: Option<SelectedAppliedFact>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -480,6 +542,7 @@ impl Operation {
             _ => return Err(StoreError::RecoveryRequired),
         };
         Ok(Self {
+            native_kind: None,
             selected_applied: None,
             native_capture_displaced: Vec::new(),
             native_capture: None,
@@ -487,6 +550,7 @@ impl Operation {
             native_budget: None,
             initial_review: None,
             native_identity: None,
+            native_directory_boundary: None,
             native_boundary: None,
             native_boundary_evidence: None,
             connection: intent.connection.0,
@@ -532,6 +596,9 @@ impl Operation {
         Ok(())
     }
     fn validate_native_identity(&self) -> Result<(), StoreError> {
+        if self.native_kind == Some(NativeOperationKind::DirectoryV1) {
+            return self.validate_directory_identity();
+        }
         use super::super::transaction::native::descriptor as d;
         let Some(bytes) = &self.native_identity else {
             return Ok(());
@@ -639,11 +706,25 @@ impl Operation {
         if self.native_boundary.is_some() && (self.stage != 7 || self.native_budget.is_none()) {
             return Err(StoreError::Corrupt);
         }
-        match (self.native_boundary, &self.native_boundary_evidence) {
-            (None, None) => {}
-            (Some(0), None) if self.native_identity.is_some() && self.recovery.is_empty() => {}
-            (Some(1..=3), Some(evidence)) => evidence.validate()?,
-            _ => return Err(StoreError::Corrupt),
+        if self.native_kind == Some(NativeOperationKind::DirectoryV1) {
+            if self.native_boundary_evidence.is_some() {
+                return Err(StoreError::Corrupt);
+            }
+            match (&self.native_directory_boundary, self.native_boundary) {
+                (None, None) => (),
+                (Some(fact), Some(kind)) if fact.kind() == kind => fact.validate()?,
+                _ => return Err(StoreError::Corrupt),
+            }
+        } else {
+            if self.native_directory_boundary.is_some() {
+                return Err(StoreError::Corrupt);
+            }
+            match (self.native_boundary, &self.native_boundary_evidence) {
+                (None, None) => {}
+                (Some(0), None) if self.native_identity.is_some() && self.recovery.is_empty() => {}
+                (Some(1..=3), Some(evidence)) => evidence.validate()?,
+                _ => return Err(StoreError::Corrupt),
+            }
         }
         if let Some(budget) = &self.native_budget {
             budget.validate()?;
@@ -710,6 +791,9 @@ impl Operation {
                     }
                 }) =>
             {
+                ReceiptStage::PreparedNoDisplacement
+            }
+            6 if self.native_kind == Some(NativeOperationKind::DirectoryV1) => {
                 ReceiptStage::PreparedNoDisplacement
             }
             6 if self.action.is_none()
@@ -798,10 +882,27 @@ fn conflict_from(code: u8) -> Result<Conflict, StoreError> {
 pub(super) fn next(value: u64) -> Result<u64, StoreError> {
     value.checked_add(1).ok_or(StoreError::LimitExceeded)
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::setup::connection) struct DirectoryAncestorPatchV1 {
+    pub version: u8,
+    pub admission: [u8; 32],
+    pub prefixes: u64,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(in crate::setup::connection) enum NativeOperationKind {
+    DirectoryV1,
+}
 /// Exact registered native name and immutable descriptor clues, never authority.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct NativeRegistration {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub native_kind: Option<NativeOperationKind>,
     pub connection: [u8; 16],
     pub serial: u64,
     pub attempt: u32,
@@ -831,6 +932,9 @@ impl NativeRegistration {
             || self.admission == 0
         {
             return Err(StoreError::Corrupt);
+        }
+        if self.native_kind == Some(NativeOperationKind::DirectoryV1) {
+            return self.validate_directory();
         }
         if let Some(bytes) = &self.intent {
             use super::super::transaction::native::descriptor::{self, Body};
@@ -877,6 +981,89 @@ impl NativeRegistration {
             }
         } else if self.stage.is_some() || self.outcome.is_some() || self.outcome_displaced.is_some()
         {
+            return Err(StoreError::Corrupt);
+        }
+        Ok(())
+    }
+}
+impl Operation {
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "Join descriptor operation correlation to the canonical operation serial."
+    )]
+    fn validate_directory_identity(&self) -> Result<(), StoreError> {
+        use super::super::transaction::native::descriptor::directory::Admission;
+        let fact = Admission::decode(self.native_identity.as_deref().ok_or(StoreError::Corrupt)?)
+            .map_err(|_| StoreError::Corrupt)?;
+        let endpoint = |v: &storage::Identity| {
+            let mut bytes = [0; 64];
+            bytes[..32].copy_from_slice(&v.volume);
+            bytes[32..].copy_from_slice(&v.root);
+            bytes
+        };
+        if self.native_budget.is_none()
+            || self.action.is_some()
+            || self.initial_review.is_some()
+            || self.selected_applied.is_some()
+            || self.native_capture.is_some()
+            || !self.native_capture_displaced.is_empty()
+            || !self.recovery.is_empty()
+            || fact.connection != self.connection
+            || fact.operation != self.serial
+            || fact.revision != self.expected
+            || Some(fact.baseline) != self.baseline
+            || fact.decision != self.decision
+            || fact.path != self.path.to_relative()?
+            || fact.endpoints
+                != [
+                    endpoint(&self.source_binding),
+                    endpoint(&self.destination_binding),
+                ]
+            || fact.states[0].as_ref().map(|_| State::Directory) != self.source
+            || fact.states[1].as_ref().map(|_| State::Directory) != self.destination
+        {
+            return Err(StoreError::Corrupt);
+        }
+        Ok(())
+    }
+}
+impl NativeRegistration {
+    fn validate_directory(&self) -> Result<(), StoreError> {
+        use super::super::transaction::native::descriptor::directory::{self, Body};
+        if self.outcome_displaced.is_some() {
+            return Err(StoreError::Corrupt);
+        }
+        let Some(bytes) = &self.intent else {
+            return if self.stage.is_none() && self.outcome.is_none() {
+                Ok(())
+            } else {
+                Err(StoreError::Corrupt)
+            };
+        };
+        let intent = directory::decode(bytes).map_err(|_| StoreError::Corrupt)?;
+        let Body::Intent(body) = &intent.body else {
+            return Err(StoreError::Corrupt);
+        };
+        if intent.header.connection != self.connection
+            || intent.header.operation != self.serial
+            || intent.header.attempt != u64::from(self.attempt)
+            || intent.header.nonce != self.nonce
+            || intent.header.admission != self.admission
+            || intent.header.baseline != self.baseline
+            || intent.header.fence != self.fence
+            || self.side != 1 - body.direction
+        {
+            return Err(StoreError::Corrupt);
+        }
+        if let Some(bytes) = &self.stage {
+            let stage = directory::decode(bytes).map_err(|_| StoreError::Corrupt)?;
+            stage.joined(&intent).map_err(|_| StoreError::Corrupt)?;
+            if let Some(bytes) = &self.outcome {
+                directory::decode(bytes)
+                    .and_then(|outcome| outcome.joined_outcome(&intent, &stage))
+                    .map_err(|_| StoreError::Corrupt)?;
+            }
+        } else if self.outcome.is_some() {
             return Err(StoreError::Corrupt);
         }
         Ok(())
@@ -1116,6 +1303,14 @@ pub(super) enum Change {
         source: BoundaryEvidence,
         fact: Option<NativeRecoveryFact>,
     },
+    DirectoryBoundary {
+        connection: [u8; 16],
+        serial: u64,
+        expected: u64,
+        operation_expected: u64,
+        fence: u64,
+        fact: DirectoryBoundaryFact,
+    },
     NativeBoundary {
         connection: [u8; 16],
         serial: u64,
@@ -1215,6 +1410,12 @@ pub(super) enum Change {
         destination: storage::Identity,
     },
     BaselineCommit {
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "present"
+        )]
+        directory_ancestors: Option<DirectoryAncestorPatchV1>,
         #[serde(
             default,
             skip_serializing_if = "Option::is_none",

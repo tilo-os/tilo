@@ -24,6 +24,7 @@ pub(super) enum Role {
     Root,
     Namespace,
     Target,
+    Directory,
 }
 #[derive(Clone, Debug)]
 pub(super) struct Expected {
@@ -31,7 +32,15 @@ pub(super) struct Expected {
     pub name: Vec<u8>,
     pub mask: u32,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DirectoryPhase {
+    Unpublished,
+    Publishing,
+    Published,
+}
 pub(super) struct Transcript {
+    directory_phase: Option<DirectoryPhase>,
+    directory_live: bool,
     bindings: Vec<(i32, Role)>,
     namespace: Vec<u8>,
     target: Vec<u8>,
@@ -49,11 +58,50 @@ fn component(name: &[u8]) -> bool {
     !name.is_empty() && name.len() <= 255 && !name.contains(&0) && !name.contains(&b'/')
 }
 impl Transcript {
+    pub fn directory(
+        bindings: &[(i32, Role)],
+        namespace: &[u8],
+        target: &[u8],
+        expected: &[Expected],
+        phase: DirectoryPhase,
+    ) -> Result<Self> {
+        require(
+            phase == DirectoryPhase::Unpublished
+                || bindings.iter().any(|(_, role)| *role == Role::Directory),
+        )?;
+        if phase == DirectoryPhase::Publishing {
+            require(
+                expected.len() == 3
+                    && expected.iter().any(|e| {
+                        e.role == Role::Namespace
+                            && e.name == b"stage"
+                            && e.mask == MOVED_FROM | ISDIR
+                    })
+                    && expected.iter().any(|e| {
+                        e.role == Role::Target && e.name == target && e.mask == MOVED_TO | ISDIR
+                    })
+                    && expected.iter().any(|e| {
+                        e.role == Role::Directory && e.name.is_empty() && e.mask == MOVE_SELF
+                    }),
+            )?;
+        }
+        Self::new_inner(bindings, namespace, target, expected, Some(phase))
+    }
     pub fn new(
         bindings: &[(i32, Role)],
         namespace: &[u8],
         target: &[u8],
         expected: &[Expected],
+    ) -> Result<Self> {
+        require(bindings.iter().all(|(_, role)| *role != Role::Directory))?;
+        Self::new_inner(bindings, namespace, target, expected, None)
+    }
+    fn new_inner(
+        bindings: &[(i32, Role)],
+        namespace: &[u8],
+        target: &[u8],
+        expected: &[Expected],
+        directory_phase: Option<DirectoryPhase>,
     ) -> Result<Self> {
         require(
             bindings.len() <= 4 && expected.len() <= 3 && component(namespace) && component(target),
@@ -70,10 +118,19 @@ impl Transcript {
         }
         for value in expected {
             require(
-                bindings.iter().any(|(_, role)| *role == value.role) && component(&value.name),
+                bindings.iter().any(|(_, role)| *role == value.role)
+                    && if value.role == Role::Directory {
+                        directory_phase == Some(DirectoryPhase::Publishing)
+                            && value.name.is_empty()
+                            && value.mask == MOVE_SELF
+                    } else {
+                        component(&value.name)
+                    },
             )?;
         }
         Ok(Self {
+            directory_phase,
+            directory_live: directory_phase == Some(DirectoryPhase::Published),
             bindings: bindings.to_vec(),
             namespace: namespace.to_vec(),
             target: target.to_vec(),
@@ -155,41 +212,64 @@ impl Transcript {
             } else {
                 cookie == 0
             })?;
-            let roles: Vec<_> = self
-                .bindings
-                .iter()
-                .filter(|(watch, _)| *watch == wd)
-                .map(|(_, role)| *role)
-                .collect();
-            require(!roles.is_empty())?;
-            for role in roles {
-                let relevant = name.is_empty()
-                    || role == Role::Namespace
-                    || (role == Role::Root && name == self.namespace)
-                    || (role == Role::Target && name == self.target);
-                if !relevant {
-                    continue;
-                }
-                let index = self
-                    .expected
-                    .iter()
-                    .position(|expected| {
-                        expected.role == role && expected.name == name && expected.mask == mask
-                    })
-                    .ok_or(Lost)?;
-                require(!self.seen.get(index).copied().ok_or(Lost)?)?;
-                *self.seen.get_mut(index).ok_or(Lost)? = true;
-                if matches!(kind, MOVED_FROM | MOVED_TO) {
-                    require(self.cookie.is_none_or(|before| before == cookie))?;
-                    self.cookie = Some(cookie);
-                }
-            }
+            self.observe_roles(wd, mask, cookie, name)?;
             bytes = bytes.get(16 + length..).ok_or(Lost)?;
         }
         Ok(())
     }
+    fn observe_roles(&mut self, wd: i32, mask: u32, cookie: u32, name: &[u8]) -> Result<()> {
+        let kind = mask & !ISDIR;
+        let roles: Vec<_> = self
+            .bindings
+            .iter()
+            .filter(|(watch, _)| *watch == wd)
+            .map(|(_, role)| *role)
+            .collect();
+        require(!roles.is_empty())?;
+        for role in roles {
+            if role == Role::Directory && !name.is_empty() {
+                require(self.directory_live)?;
+                // Still evaluate this same event against every aliased role.
+                continue;
+            }
+            let relevant = name.is_empty()
+                || role == Role::Namespace
+                || (role == Role::Root && name == self.namespace)
+                || (role == Role::Target && name == self.target);
+            if !relevant {
+                continue;
+            }
+            let index = self
+                .expected
+                .iter()
+                .position(|expected| {
+                    expected.role == role && expected.name == name && expected.mask == mask
+                })
+                .ok_or(Lost)?;
+            require(!self.seen.get(index).copied().ok_or(Lost)?)?;
+            *self.seen.get_mut(index).ok_or(Lost)? = true;
+            if role == Role::Directory {
+                require(
+                    self.directory_phase == Some(DirectoryPhase::Publishing)
+                        && !self.directory_live
+                        && kind == MOVE_SELF,
+                )?;
+                self.directory_live = true;
+            }
+            if matches!(kind, MOVED_FROM | MOVED_TO) {
+                require(self.cookie.is_none_or(|before| before == cookie))?;
+                self.cookie = Some(cookie);
+            }
+        }
+        Ok(())
+    }
     pub fn finish(self) -> Result<()> {
-        require(!self.failed && self.seen.iter().all(|seen| *seen))
+        require(
+            !self.failed
+                && self.seen.iter().all(|seen| *seen)
+                && (self.directory_phase != Some(DirectoryPhase::Publishing)
+                    || self.directory_live),
+        )
     }
 }
 pub(super) struct Inventory {
@@ -277,12 +357,23 @@ impl Inventory {
 
 #[derive(Default)]
 pub(super) struct Passes {
+    directory: bool,
     used: u8,
     failed: bool,
 }
 impl Passes {
+    pub fn directory() -> Self {
+        Self {
+            directory: true,
+            ..Self::default()
+        }
+    }
+    #[cfg(test)]
+    pub fn used(&self) -> u8 {
+        self.used
+    }
     pub fn enter(&mut self) -> Result<()> {
-        if self.failed || self.used >= 38 {
+        if self.failed || self.used >= if self.directory { 32 } else { 38 } {
             self.failed = true;
             return Err(Lost);
         }
@@ -354,6 +445,96 @@ mod tests {
         bytes[18] = 255; // d_type is not authority either
         bytes[19..19 + name.len()].copy_from_slice(name);
         bytes
+    }
+    #[test]
+    fn directory_witness_requires_exact_move_self_and_allows_only_later_children() {
+        let bindings = [
+            (1, Role::Root),
+            (2, Role::Namespace),
+            (3, Role::Target),
+            (4, Role::Directory),
+        ];
+        let expected = [
+            Expected {
+                role: Role::Namespace,
+                name: b"stage".to_vec(),
+                mask: MOVED_FROM | ISDIR,
+            },
+            Expected {
+                role: Role::Target,
+                name: b"dir".to_vec(),
+                mask: MOVED_TO | ISDIR,
+            },
+            Expected {
+                role: Role::Directory,
+                name: vec![],
+                mask: MOVE_SELF,
+            },
+        ];
+        let make = || {
+            Transcript::directory(
+                &bindings,
+                b"private",
+                b"dir",
+                &expected,
+                DirectoryPhase::Publishing,
+            )
+        };
+        let mut proof = make().expect(
+            "Directory publication must accept its explicit nameless MOVE_SELF expectation",
+        );
+        proof
+            .feed(&event(2, MOVED_FROM | ISDIR, 9, b"stage"))
+            .unwrap();
+        proof.feed(&event(3, MOVED_TO | ISDIR, 9, b"dir")).unwrap();
+        proof.feed(&event(4, MOVE_SELF, 0, b"")).unwrap();
+        proof.feed(&event(4, CREATE, 0, b"future-child")).unwrap();
+        proof.finish().unwrap();
+        for phase in [DirectoryPhase::Unpublished, DirectoryPhase::Publishing] {
+            let mut proof = if phase == DirectoryPhase::Publishing {
+                make().unwrap()
+            } else {
+                Transcript::directory(&bindings, b"private", b"dir", &[], phase).unwrap()
+            };
+            assert!(proof.feed(&event(4, CREATE, 0, b"early-child")).is_err());
+        }
+        for bad in [
+            event(4, ATTRIB, 0, b""),
+            event(4, MOVE_SELF, 0, b""),
+            event(4, DELETE_SELF, 0, b""),
+        ] {
+            let mut proof = Transcript::directory(
+                &bindings,
+                b"private",
+                b"dir",
+                &[],
+                DirectoryPhase::Published,
+            )
+            .unwrap();
+            assert!(proof.feed(&bad).is_err());
+        }
+        let mut later = Transcript::directory(
+            &bindings,
+            b"private",
+            b"dir",
+            &[],
+            DirectoryPhase::Published,
+        )
+        .unwrap();
+        later.feed(&event(4, CREATE | ISDIR, 0, b"child")).unwrap();
+        later.feed(&event(4, ATTRIB, 0, b"child")).unwrap();
+        later.finish().unwrap();
+        // A child event cannot escape a second role on the same authenticated watch.
+        let aliases = [
+            (1, Role::Root),
+            (2, Role::Namespace),
+            (4, Role::Target),
+            (4, Role::Directory),
+        ];
+        let mut alias =
+            Transcript::directory(&aliases, b"private", b"dir", &[], DirectoryPhase::Published)
+                .unwrap();
+        assert!(alias.feed(&event(4, CREATE | ISDIR, 0, b"dir")).is_err());
     }
     #[test]
     fn witness_full_pass_exhaustion_is_sticky_without_payload_chunk_charges() {

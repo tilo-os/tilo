@@ -1,5 +1,7 @@
 //! Private durable Connected metadata. Persisted records never grant endpoint access.
+mod directory;
 mod format;
+pub(super) use format::NativeOperationKind;
 mod recovery;
 mod storage;
 #[cfg(test)]
@@ -193,8 +195,8 @@ pub(super) struct DisconnectFence {
 }
 
 use super::super::migration_journal_log as framing;
-pub(super) use format::ExistingAncestorPatchV1;
 use format::{Change, Connection, Event, Row};
+pub(super) use format::{DirectoryAncestorPatchV1, DirectoryBoundaryFact, ExistingAncestorPatchV1};
 use std::{
     collections::BTreeMap,
     fs::File,
@@ -218,6 +220,7 @@ fn native_correlation() -> Result<[u8; 16], StoreError> {
 }
 /// Inspection and paid reads only. This cannot be used for step admission.
 pub(super) struct RecoveryContext {
+    native_kind: Option<format::NativeOperationKind>,
     native_identity: Option<Vec<u8>>,
     action: ExecutionAction,
     gate: Arc<super::transaction::AdmissionGate>,
@@ -234,6 +237,9 @@ pub(super) struct RecoveryContext {
     baseline: Option<u64>,
 }
 impl RecoveryContext {
+    pub(super) fn native_kind(&self) -> Option<format::NativeOperationKind> {
+        self.native_kind
+    }
     pub(super) fn native_identity(&self) -> Option<&[u8]> {
         self.native_identity.as_deref()
     }
@@ -334,6 +340,7 @@ impl ReviewedSelection {
 }
 /// Opaque current-store authority. No serialized row can recreate it.
 pub(super) struct LiveOperation {
+    native_kind: Option<format::NativeOperationKind>,
     native_identity: Option<Vec<u8>>,
     planned_baseline_count: Option<u32>,
     action: ExecutionAction,
@@ -351,6 +358,13 @@ pub(super) struct LiveOperation {
     reads: Arc<super::transaction::native::OperationReads>,
 }
 impl LiveOperation {
+    #[cfg(target_os = "linux")]
+    pub(super) fn native_session(&self) -> [u8; 16] {
+        self.correlation
+    }
+    pub(super) fn native_kind(&self) -> Option<format::NativeOperationKind> {
+        self.native_kind
+    }
     pub(super) fn native_identity(&self) -> Option<&[u8]> {
         self.native_identity.as_deref()
     }
@@ -1029,7 +1043,7 @@ impl ConnectionStore {
         reviewed: Option<super::transaction::ReviewedInitial>,
         identity: Option<Vec<u8>>,
     ) -> Result<LiveOperation, StoreError> {
-        self.begin_native_operation(intent, session, reviewed, identity, None)
+        self.begin_native_operation(intent, session, reviewed, identity, None, None)
     }
     #[expect(
         clippy::needless_pass_by_value,
@@ -1042,13 +1056,25 @@ impl ConnectionStore {
         reviewed: Option<super::transaction::ReviewedInitial>,
         identity: Option<Vec<u8>>,
         action: Option<format::SelectedAction>,
+        native_kind: Option<NativeOperationKind>,
     ) -> Result<LiveOperation, StoreError> {
-        let planned_baseline_count = if identity.is_some()
+        if native_kind.is_some() && (reviewed.is_some() || action.is_some() || identity.is_none()) {
+            return Err(StoreError::RecoveryRequired);
+        }
+        let planned_baseline_count = if native_kind == Some(NativeOperationKind::DirectoryV1) {
+            Some(
+                self.preflight_directory_baseline(
+                    &intent,
+                    &self.load_baseline(intent.connection)?,
+                )?,
+            )
+        } else if identity.is_some()
             && action.is_none()
             && matches!(
                 intent.decision,
                 Decision::VerifyEqual | Decision::Propagate { .. }
-            ) {
+            )
+        {
             Some(self.preflight_regular_baseline(&intent, &self.load_baseline(intent.connection)?)?)
         } else {
             None
@@ -1066,6 +1092,7 @@ impl ConnectionStore {
         let mut operation = format::Operation::new(intent.clone(), serial, &connection)?;
         operation.native_budget = Some(format::NativeBudget::initial());
         operation.native_identity = identity;
+        operation.native_kind = native_kind;
         operation.action = action;
         let action = operation.decode()?.action;
         if let Some(preview) = review {
@@ -1080,9 +1107,13 @@ impl ConnectionStore {
             connection: intent.connection,
             serial,
         };
+        if native_kind == Some(NativeOperationKind::DirectoryV1) {
+            self.preflight_directory_intent(&operation)?;
+        }
         self.append(Change::Intent { operation })?;
         let revision = format::next(before.revision)?;
         Ok(LiveOperation {
+            native_kind,
             native_identity,
             planned_baseline_count,
             action,
@@ -1447,7 +1478,7 @@ impl ConnectionStore {
         let (intent, action) = self.consume_reviewed_selection(reviewed)?;
         let serial = format::next(self.connection(intent.connection)?.serial)?;
         let identity = admission.consume(self, &intent, serial)?;
-        self.begin_native_operation(intent, session, None, Some(identity), Some(action))
+        self.begin_native_operation(intent, session, None, Some(identity), Some(action), None)
     }
     #[cfg(test)]
     fn begin_native_selected_for_test(
@@ -1458,7 +1489,7 @@ impl ConnectionStore {
         self.guard()?;
         session.require_idle()?;
         let (intent, action) = self.consume_reviewed_selection(reviewed)?;
-        self.begin_native_operation(intent, session, None, None, Some(action))
+        self.begin_native_operation(intent, session, None, None, Some(action), None)
     }
     fn native_read_state(
         &mut self,
@@ -1634,6 +1665,7 @@ impl ConnectionStore {
         let receipt = operation.decode()?;
         let intent = receipt.intent;
         Ok(RecoveryContext {
+            native_kind: operation.native_kind,
             native_identity: operation.native_identity.clone(),
             action: receipt.action,
             gate: recovery_gate,
@@ -1670,6 +1702,8 @@ impl ConnectionStore {
         if connection.revision != context.revision
             || connection.fence != context.fence
             || operation.revision != context.operation_revision
+            || operation.native_kind != context.native_kind
+            || operation.native_identity != context.native_identity
             || operation.native_budget.is_none()
         {
             return Err(StoreError::StaleRevision);
@@ -1771,6 +1805,7 @@ impl ConnectionStore {
         }
         let before = connection.decode()?;
         let live = LiveOperation {
+            native_kind: operation.native_kind,
             native_identity: operation.native_identity.clone(),
             planned_baseline_count: None,
             action: receipt.action,
@@ -1868,6 +1903,7 @@ impl ConnectionStore {
         }
         evidence.validate(self, context)?;
         let mut live = LiveOperation {
+            native_kind: context.native_kind,
             native_identity: context.native_identity.clone(),
             planned_baseline_count: None,
             action: context.action.clone(),
@@ -1990,6 +2026,7 @@ impl ConnectionStore {
         }
         evidence.validate_recovery(context)?;
         let live = LiveOperation {
+            native_kind: context.native_kind,
             native_identity: context.native_identity.clone(),
             planned_baseline_count: None,
             action: ExecutionAction::Captured,
@@ -2038,6 +2075,7 @@ impl ConnectionStore {
         self.check_recovery_context(context)?;
         session.require_idle()?;
         let live = LiveOperation {
+            native_kind: context.native_kind,
             native_identity: context.native_identity.clone(),
             planned_baseline_count: None,
             action: context.action.clone(),
@@ -2084,6 +2122,7 @@ impl ConnectionStore {
         }
         evidence.validate(context)?;
         let mut live = LiveOperation {
+            native_kind: context.native_kind,
             native_identity: context.native_identity.clone(),
             planned_baseline_count: None,
             action: context.action.clone(),
@@ -2155,6 +2194,9 @@ impl ConnectionStore {
             || operation.action.is_some() != selected
             || (selected && (connection.lifecycle != 1 || operation.native_capture.is_some()))
         {
+            return Err(StoreError::RecoveryRequired);
+        }
+        if operation.native_kind.is_some() {
             return Err(StoreError::RecoveryRequired);
         }
         operation.decode()?;
@@ -2336,6 +2378,8 @@ impl ConnectionStore {
         }
         let operation = self.operation(live.id)?;
         if operation.revision != live.revision
+            || operation.native_kind != live.native_kind
+            || operation.native_identity != live.native_identity
             || operation.expected.checked_add(1) != Some(live.admission)
             || operation.decode()?.action != live.action
             || operation.decode()?.intent != live.intent
@@ -2666,6 +2710,7 @@ impl ConnectionStore {
             return Err(StoreError::LimitExceeded);
         }
         let registration = format::NativeRegistration {
+            native_kind: self.operation(live.id)?.native_kind,
             connection: live.id.connection.0,
             serial: live.id.serial,
             attempt: attempts + 1,
@@ -2725,6 +2770,12 @@ impl ConnectionStore {
         complete_selected: bool,
         recovery_checks: &mut RecoveryChecks<'_>,
     ) -> Result<Vec<Row>, StoreError> {
+        if registration.native_kind == Some(format::NativeOperationKind::DirectoryV1) {
+            if complete_selected {
+                return Err(StoreError::Corrupt);
+            }
+            return self.reduce_directory_outcome(registration, expected, verified, reconstructed);
+        }
         use super::transaction::native::descriptor as d;
         registration.validate()?;
         let connection = self.connection(ConnectionId(registration.connection))?;
@@ -3129,6 +3180,9 @@ impl ConnectionStore {
             connection: ConnectionId(registration.connection),
             serial: registration.serial,
         })?;
+        if registration.native_kind != operation.native_kind {
+            return Err(StoreError::Corrupt);
+        }
         let selected = operation.action.as_ref();
         if let Some(format::SelectedAction::Restore {
             target, replace, ..
@@ -3167,83 +3221,92 @@ impl ConnectionStore {
             if previous != *registration {
                 return Err(StoreError::Corrupt);
             }
-            use super::transaction::native::descriptor::{self, Body, State};
-            let decoded =
-                descriptor::decode(registration.intent.as_ref().ok_or(StoreError::Corrupt)?)
-                    .map_err(|_| StoreError::Corrupt)?;
-            let Body::Intent(intent) = &decoded.body else {
-                return Err(StoreError::Corrupt);
-            };
-            let identity = |v: &storage::Identity| {
-                let mut bytes = [0; 64];
-                bytes[..32].copy_from_slice(&v.volume);
-                bytes[32..].copy_from_slice(&v.root);
-                bytes
-            };
-            let state = |v: &State| -> Result<Option<format::State>, StoreError> {
-                match v {
-                    State::Absent => Ok(None),
-                    State::Regular { content, .. } => Ok(Some(format::State::File {
-                        sha256: content.digest,
-                        bytes: content.length,
-                        executable: content.executable,
-                    })),
-                    _ => Err(StoreError::Corrupt),
+            if operation.native_kind == Some(format::NativeOperationKind::DirectoryV1) {
+                let (intent, _) = Self::directory_registration_join(&operation, registration)?;
+                if intent.header.progress != expected {
+                    return Err(StoreError::Corrupt);
                 }
-            };
-            if decoded.header.progress != expected
-                || intent.endpoints
-                    != [
-                        identity(&connection.source.identity),
-                        identity(&connection.destination.identity),
-                    ]
-                || intent.path != operation.path.to_relative()?
-                || intent.decision != operation.decision
-                || state(&intent.expected[0])? != operation.source
-                || state(&intent.expected[1])? != operation.destination
-                || (selected.is_none()
-                    && matches!(operation.decision, 1 | 2)
-                    && registration.stage.is_none())
-                || (selected.is_none()
-                    && matches!(operation.decision, 3 | 4)
-                    && registration.stage.is_some())
-            {
-                return Err(StoreError::Corrupt);
-            }
-            if let Some(action) = selected {
-                let tombstone = matches!(intent.selection, descriptor::Selection::Tombstone { .. });
-                if intent.selection != self.selected_descriptor(&operation, action)?
-                    || intent.direction != 1 - registration.side
-                    || registration.stage.is_some() == tombstone
+                operation.stage = 6;
+            } else {
+                use super::transaction::native::descriptor::{self, Body, State};
+                let decoded =
+                    descriptor::decode(registration.intent.as_ref().ok_or(StoreError::Corrupt)?)
+                        .map_err(|_| StoreError::Corrupt)?;
+                let Body::Intent(intent) = &decoded.body else {
+                    return Err(StoreError::Corrupt);
+                };
+                let identity = |v: &storage::Identity| {
+                    let mut bytes = [0; 64];
+                    bytes[..32].copy_from_slice(&v.volume);
+                    bytes[32..].copy_from_slice(&v.root);
+                    bytes
+                };
+                let state = |v: &State| -> Result<Option<format::State>, StoreError> {
+                    match v {
+                        State::Absent => Ok(None),
+                        State::Regular { content, .. } => Ok(Some(format::State::File {
+                            sha256: content.digest,
+                            bytes: content.length,
+                            executable: content.executable,
+                        })),
+                        _ => Err(StoreError::Corrupt),
+                    }
+                };
+                if decoded.header.progress != expected
+                    || intent.endpoints
+                        != [
+                            identity(&connection.source.identity),
+                            identity(&connection.destination.identity),
+                        ]
+                    || intent.path != operation.path.to_relative()?
+                    || intent.decision != operation.decision
+                    || state(&intent.expected[0])? != operation.source
+                    || state(&intent.expected[1])? != operation.destination
+                    || (selected.is_none()
+                        && matches!(operation.decision, 1 | 2)
+                        && registration.stage.is_none())
+                    || (selected.is_none()
+                        && matches!(operation.decision, 3 | 4)
+                        && registration.stage.is_some())
                 {
                     return Err(StoreError::Corrupt);
                 }
-            } else if intent.selection != descriptor::Selection::None {
-                return Err(StoreError::Corrupt);
-            }
-            if selected.is_some()
-                && intent.expected.get(usize::from(registration.side)) == Some(&State::Absent)
-            {
-                if !operation.recovery.is_empty() {
+                if let Some(action) = selected {
+                    let tombstone =
+                        matches!(intent.selection, descriptor::Selection::Tombstone { .. });
+                    if intent.selection != self.selected_descriptor(&operation, action)?
+                        || intent.direction != 1 - registration.side
+                        || registration.stage.is_some() == tombstone
+                    {
+                        return Err(StoreError::Corrupt);
+                    }
+                } else if intent.selection != descriptor::Selection::None {
                     return Err(StoreError::Corrupt);
                 }
-                operation.stage = 6;
-            }
-            if selected.is_none()
-                && matches!(
-                    (
-                        operation.decision,
-                        &operation.source,
-                        &operation.destination
-                    ),
-                    (1, Some(format::State::File { .. }), None)
-                        | (2, None, Some(format::State::File { .. }))
-                )
-            {
-                if !operation.recovery.is_empty() {
-                    return Err(StoreError::Corrupt);
+                if selected.is_some()
+                    && intent.expected.get(usize::from(registration.side)) == Some(&State::Absent)
+                {
+                    if !operation.recovery.is_empty() {
+                        return Err(StoreError::Corrupt);
+                    }
+                    operation.stage = 6;
                 }
-                operation.stage = 6;
+                if selected.is_none()
+                    && matches!(
+                        (
+                            operation.decision,
+                            &operation.source,
+                            &operation.destination
+                        ),
+                        (1, Some(format::State::File { .. }), None)
+                            | (2, None, Some(format::State::File { .. }))
+                    )
+                {
+                    if !operation.recovery.is_empty() {
+                        return Err(StoreError::Corrupt);
+                    }
+                    operation.stage = 6;
+                }
             }
         } else {
             if registration.intent.is_some()
@@ -3396,6 +3459,23 @@ impl ConnectionStore {
             Change::SelectedCaptureDrain { .. } | Change::NativeCaptureDrain { .. } => {
                 self.reduce_captured_drain(&event.change, recovery_checks)
             }
+            Change::DirectoryBoundary {
+                connection,
+                serial,
+                expected,
+                operation_expected,
+                fence,
+                fact,
+            } => self.reduce_directory_boundary(
+                OperationId {
+                    connection: ConnectionId(*connection),
+                    serial: *serial,
+                },
+                *expected,
+                *operation_expected,
+                *fence,
+                fact,
+            ),
             Change::NativeBoundary {
                 connection,
                 serial,
@@ -3560,6 +3640,7 @@ impl ConnectionStore {
                 recovery_checks,
             ),
             Change::BaselineCommit {
+                directory_ancestors,
                 existing_ancestors,
                 connection,
                 expected,
@@ -3577,6 +3658,7 @@ impl ConnectionStore {
                 destination,
                 *initial_review,
                 existing_ancestors.as_ref(),
+                directory_ancestors.as_ref(),
                 recovery_checks,
             ),
             Change::Create { record } => self.reduce_create(record),
@@ -3667,9 +3749,19 @@ impl ConnectionStore {
         }
         let mut connection = self.connection(ConnectionId(operation.connection))?;
         if let Some(bytes) = &operation.native_identity {
-            let fact = super::transaction::native::descriptor::Admission::decode(bytes)
-                .map_err(|_| StoreError::Corrupt)?;
-            if fact.fence != connection.fence {
+            let fence = match operation.native_kind {
+                Some(format::NativeOperationKind::DirectoryV1) => {
+                    super::transaction::native::descriptor::directory::Admission::decode(bytes)
+                        .map_err(|_| StoreError::Corrupt)?
+                        .fence
+                }
+                None => {
+                    super::transaction::native::descriptor::Admission::decode(bytes)
+                        .map_err(|_| StoreError::Corrupt)?
+                        .fence
+                }
+            };
+            if fence != connection.fence {
                 return Err(StoreError::StaleRevision);
             }
         }
@@ -4468,6 +4560,12 @@ enum BaselineAppendCheck<'a, 'proof> {
         comparison: &'a mut super::transaction::native::VerifiedComparison<'proof>,
         cancel: &'a AtomicBool,
     },
+    #[cfg(target_os = "linux")]
+    Directory {
+        live: &'a LiveOperation,
+        comparison: &'a mut super::transaction::native::VerifiedDirectoryComparison<'proof>,
+        cancel: &'a AtomicBool,
+    },
     #[cfg(test)]
     Host(&'a tests::BaselineAppendProbe),
 }
@@ -4477,6 +4575,16 @@ impl BaselineAppendCheck<'_, '_> {
     }
     #[cfg(all(test, target_os = "linux"))]
     fn before_write_for_test(&mut self) {
+        if let Self::Directory { comparison, .. } = self {
+            BEFORE_NATIVE_BASELINE_WRITE.with(|slot| {
+                if let Some(hook) = slot.borrow_mut().take() {
+                    (hook.action)();
+                    if hook.revoke {
+                        comparison.revoke_for_test();
+                    }
+                }
+            });
+        }
         if let Self::Native { comparison, .. } = self {
             BEFORE_NATIVE_BASELINE_WRITE.with(|slot| {
                 if let Some(hook) = slot.borrow_mut().take() {
@@ -4507,9 +4615,28 @@ impl BaselineAppendCheck<'_, '_> {
                 comparison,
                 cancel,
             } => {
-                if !matches!(change, Change::BaselineCommit { connection, expected, existing_ancestors, .. }
+                if live.native_kind.is_some()
+                    || !matches!(change, Change::BaselineCommit { connection, expected, existing_ancestors, directory_ancestors:None, .. }
                     if *connection == live.id.connection.0 && *expected == live.revision
                         && existing_ancestors.as_ref() == comparison.existing_ancestors())
+                {
+                    return Err(StoreError::StaleRevision);
+                }
+                store.check_native(live)?;
+                comparison.validate(store, live, cancel)
+            }
+            #[cfg(target_os = "linux")]
+            Self::Directory {
+                live,
+                comparison,
+                cancel,
+            } => {
+                if live.native_kind != Some(NativeOperationKind::DirectoryV1)
+                    || !matches!(change, Change::BaselineCommit {connection,expected,directory_ancestors,existing_ancestors:None,source,destination,initial_review:false,..}
+                        if *connection == live.id.connection.0 && *expected == live.revision
+                            && directory_ancestors.as_ref() == comparison.receipt()
+                            && *source == storage::Identity::from(live.endpoints[0])
+                            && *destination == storage::Identity::from(live.endpoints[1]))
                 {
                     return Err(StoreError::StaleRevision);
                 }
@@ -4807,6 +4934,7 @@ impl ConnectionStore {
         comparison.validate(self, live, cancel)?;
         self.append_checked_with_baseline(
             Change::BaselineCommit {
+                directory_ancestors: None,
                 existing_ancestors: candidate.existing_ancestors,
                 connection: connection.id,
                 expected: live.revision,
@@ -5007,6 +5135,9 @@ pub(super) struct NativeNamespaceRecord {
 }
 #[cfg(target_os = "linux")]
 impl NativeNamespaceRecord {
+    pub(super) fn native_kind(&self) -> Option<NativeOperationKind> {
+        self.registration.native_kind
+    }
     pub(super) fn operation(&self) -> OperationId {
         OperationId {
             connection: ConnectionId(self.registration.connection),
@@ -5213,6 +5344,7 @@ impl ConnectionStore {
         }
         evidence.validate_recovery(self, context)?;
         let live = LiveOperation {
+            native_kind: context.native_kind,
             native_identity: context.native_identity.clone(),
             planned_baseline_count: None,
             action: context.action.clone(),
@@ -5369,6 +5501,7 @@ impl ConnectionStore {
         }
         evidence.validate_recovery(self, context)?;
         let live = LiveOperation {
+            native_kind: context.native_kind,
             native_identity: context.native_identity.clone(),
             planned_baseline_count: None,
             action: context.action.clone(),
@@ -5472,6 +5605,7 @@ impl ConnectionStore {
         }
         proof.validate(self, context)?;
         let live = LiveOperation {
+            native_kind: context.native_kind,
             native_identity: context.native_identity.clone(),
             planned_baseline_count: None,
             action: context.action.clone(),
@@ -5750,6 +5884,13 @@ impl ConnectionStore {
     }
     /// Metadata-only pre-Intent feasibility. This is a requirement, never proof.
     pub(super) fn preflight_regular_baseline(
+        &self,
+        intent: &OperationIntent,
+        baseline: &VerifiedBaseline,
+    ) -> Result<u32, StoreError> {
+        self.preflight_baseline(intent, baseline)
+    }
+    fn preflight_baseline(
         &self,
         intent: &OperationIntent,
         baseline: &VerifiedBaseline,
