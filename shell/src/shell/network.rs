@@ -6125,10 +6125,10 @@ mod tests {
         .expect("target device");
         net.personal_continuity_user = Some(user);
         net.personal_continuity_device = Some(local);
-        net.registered_home_peer_ids
+        net.registered_home_device_ids
             .lock()
             .expect("recipients")
-            .insert(target_endpoint);
+            .insert(*target_endpoint.as_bytes());
         let dir = tempfile::tempdir().expect("media source");
         let path = dir.path().join("song.flac");
         std::fs::write(&path, b"audio bytes").expect("source bytes");
