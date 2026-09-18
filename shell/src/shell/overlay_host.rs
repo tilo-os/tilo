@@ -7679,9 +7679,28 @@ impl ShellOverlayHost {
         self.last_scrolled_active_group.insert(strip_id, group_id);
     }
 
-    /// Toggle a kind in the chip filter. Multiple kinds may be active
-    /// simultaneously; the empty state means "everything shows".
+    /// Toggle a kind in the chip filter. Multiple content kinds may be
+    /// active simultaneously; the empty state means "everything shows".
+    ///
+    /// Applications and Host Apps are the exception: they are alternative
+    /// launch sources, not additive content facets. In particular a picker
+    /// opened for a new window starts with both sources available. Clicking
+    /// the Host Apps chip must narrow to host rows, rather than merely
+    /// toggling that source out and leaving the Tilo-app rows behind.
     fn toggle_kind_filter(&mut self, kind: crate::shell::search::ResourceKind) {
+        use crate::shell::search::ResourceKind;
+
+        if matches!(
+            kind,
+            ResourceKind::Application | ResourceKind::HostApplication
+        ) {
+            if self.active_kind_filter.as_slice() == std::slice::from_ref(&kind) {
+                self.active_kind_filter.clear();
+            } else {
+                self.active_kind_filter = vec![kind];
+            }
+            return;
+        }
         if let Some(pos) = self.active_kind_filter.iter().position(|k| k == &kind) {
             self.active_kind_filter.remove(pos);
         } else {
@@ -14142,6 +14161,9 @@ fn shortcut_action_label(action: settings_store::hardware::ShortcutAction) -> &'
 /// pairs. Configurable global actions use their live chord so the guide never
 /// promises a default the user has rebound; the remaining entries correspond
 /// directly to unconditional branches in the production shell dispatcher.
+/// The guide itself is intentionally omitted: the title and opening copy
+/// already explain how to reopen this surface, so repeating F1 in the action
+/// wall adds noise rather than a new affordance.
 fn shortcut_reference_rows(
     shortcuts: &settings_store::hardware::ShortcutConfig,
 ) -> Vec<(&'static str, String)> {
@@ -14166,10 +14188,6 @@ fn shortcut_reference_rows(
         ("Overview", chord(ShortcutAction::WorkspaceOverview)),
         ("Lock", chord(ShortcutAction::Lock)),
         ("Quick Settings", chord(ShortcutAction::QuickSettings)),
-        (
-            "Shortcut guide",
-            format!("F1  /  {}", chord(ShortcutAction::ShortcutHelp)),
-        ),
         ("Workspace wheel", "Super+S".into()),
         ("Wireless display", "Super+P".into()),
         ("Capture screenshot", "Super+Shift+S".into()),
@@ -14183,6 +14201,14 @@ fn shortcut_reference_rows(
 /// longest production chord on compact outputs; the wider card earns a fourth.
 fn shortcut_reference_columns(body_width: f64) -> usize {
     if body_width >= 840.0 { 4 } else { 3 }
+}
+
+fn shortcut_reference_step(columns: usize) -> f64 {
+    if columns >= 4 { 44.0 } else { 37.0 }
+}
+
+fn shortcut_reference_card_height(columns: usize) -> f64 {
+    if columns >= 4 { 40.0 } else { 36.0 }
 }
 
 fn shortcut_reference_cell_rect(
@@ -17739,7 +17765,7 @@ impl ShellOverlayHost {
                 let essentials_y = body.y0 + 22.0 + 3.0 * navigation_step + 6.0;
                 text_renderer.draw_text_weighted(
                     scene,
-                    "OPEN, FIND & RECOVER",
+                    "ESSENTIAL ACTIONS",
                     theme.tokens.typography.scale.xs,
                     colors.text_dim,
                     transform.pre_translate((body.x0, essentials_y).into()),
@@ -17749,45 +17775,65 @@ impl ShellOverlayHost {
                 let references = shortcut_reference_rows(shortcuts);
                 let visible_references = references.as_slice();
                 let reference_columns = shortcut_reference_columns(body.width());
-                let reference_step = if reference_columns == 3 {
-                    if compact { 31.0 } else { 35.0 }
-                } else if compact {
-                    37.0
-                } else {
-                    41.0
-                };
-                let reference_offset = 18.0;
+                let reference_step = shortcut_reference_step(reference_columns);
+                let reference_card_height = shortcut_reference_card_height(reference_columns);
+                let reference_offset = 16.0;
+                let reference_rows = visible_references.len().div_ceil(reference_columns);
+                let reference_top = essentials_y + reference_offset;
+                let reference_surface = Rect::new(
+                    body.x0,
+                    reference_top - 2.0,
+                    body.x1,
+                    reference_top + usize_to_f64_lossy(reference_rows) * reference_step - 1.0,
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.neutral[1],
+                    None,
+                    &RoundedRect::from_rect(reference_surface, 12.0),
+                );
                 for (index, (label, chord)) in visible_references.iter().enumerate() {
                     let cell = shortcut_reference_cell_rect(
                         body,
                         index,
                         reference_columns,
-                        essentials_y + reference_offset,
+                        reference_top,
                         reference_step,
                     );
-                    let x = cell.x0;
-                    let y = cell.y0;
-                    text_renderer.draw_text(
-                        scene,
-                        label,
-                        theme.tokens.typography.scale.sm,
-                        colors.text_primary,
-                        transform.pre_translate((x, y).into()),
-                        Some(f64_to_f32_lossy(cell.width())),
-                    );
-                    let chord_size = theme.tokens.typography.scale.sm;
-                    let (chord_width, chord_height) =
-                        text_renderer.measure(chord, chord_size, None);
-                    let pill = Rect::new(
-                        x,
-                        y + 19.0,
-                        (x + f64::from(chord_width) + 22.0).min(cell.x1),
-                        y + 19.0 + f64::from(chord_height) + 10.0,
-                    );
+                    let card =
+                        Rect::new(cell.x0, cell.y0, cell.x1, cell.y0 + reference_card_height);
                     scene.fill(
                         Fill::NonZero,
                         transform,
                         colors.neutral[2],
+                        None,
+                        &RoundedRect::from_rect(card, 8.0),
+                    );
+                    let x = card.x0 + 9.0;
+                    let y = card.y0 + 4.0;
+                    let chord_size = theme.tokens.typography.scale.xs;
+                    let (chord_width, chord_height) =
+                        text_renderer.measure(chord, chord_size, None);
+                    let pill_height = f64::from(chord_height) + 6.0;
+                    let pill = Rect::new(
+                        x,
+                        card.y0 + reference_card_height - pill_height - 3.0,
+                        (x + f64::from(chord_width) + 16.0).min(card.x1 - 9.0),
+                        card.y0 + reference_card_height - 3.0,
+                    );
+                    text_renderer.draw_text(
+                        scene,
+                        label,
+                        chord_size,
+                        colors.text_primary,
+                        transform.pre_translate((x, y).into()),
+                        Some(f64_to_f32_lossy(card.width() - 18.0)),
+                    );
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        colors.neutral[3],
                         None,
                         &RoundedRect::from_rect(pill, 5.0),
                     );
@@ -17796,12 +17842,11 @@ impl ShellOverlayHost {
                         chord,
                         chord_size,
                         colors.text_primary,
-                        transform.pre_translate((pill.x0 + 7.0, pill.y0 + 5.0).into()),
-                        Some(f64_to_f32_lossy((pill.width() - 14.0).max(0.0))),
+                        transform.pre_translate((pill.x0 + 6.0, pill.y0 + 3.0).into()),
+                        Some(f64_to_f32_lossy((pill.width() - 12.0).max(0.0))),
                         TextWeight::Semibold,
                     );
                 }
-                let reference_rows = visible_references.len().div_ceil(reference_columns);
                 let pointer_y = essentials_y
                     + reference_offset
                     + usize_to_f64_lossy(reference_rows) * reference_step
@@ -23303,7 +23348,6 @@ mod palette_dispatch_tests {
             "Overview:Super+Tab",
             "Lock:Super+L",
             "Quick Settings:Super+Q",
-            "Shortcut guide:F1  /  Super+/",
             "Workspace wheel:Super+S",
             "Wireless display:Super+P",
             "Capture screenshot:Super+Shift+S",
@@ -23332,20 +23376,40 @@ mod palette_dispatch_tests {
     }
 
     #[test]
+    fn shortcut_reference_does_not_repeat_the_open_guide_action() {
+        let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
+        assert_eq!(rows.len(), 18);
+        assert!(rows.iter().all(|(label, _)| *label != "Shortcut guide"));
+    }
+
+    #[test]
+    fn shortcut_reference_cards_keep_a_consistent_responsive_rhythm() {
+        assert_eq!(shortcut_reference_columns(688.0), 3);
+        assert_eq!(shortcut_reference_columns(912.0), 4);
+        assert!(shortcut_reference_card_height(3) < shortcut_reference_step(3));
+        assert!(shortcut_reference_card_height(4) < shortcut_reference_step(4));
+        assert_eq!(shortcut_reference_step(3), 37.0);
+        assert_eq!(shortcut_reference_step(4), 44.0);
+    }
+
+    #[test]
     fn compact_shortcut_reference_keeps_the_complete_action_set_visible() {
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
         let body_height = 422.0;
         let essentials_y = 22.0 + 3.0 * 48.0 + 6.0;
-        let reference_offset = 18.0;
-        let reference_step = 31.0;
+        let reference_offset = 16.0;
+        let reference_step = shortcut_reference_step(3);
+        let reference_card_height = shortcut_reference_card_height(3);
         let final_row = rows.len().div_ceil(3).saturating_sub(1);
-        let final_pill_bottom =
-            essentials_y + reference_offset + usize_to_f64_lossy(final_row) * reference_step + 35.0;
+        let final_pill_bottom = essentials_y
+            + reference_offset
+            + usize_to_f64_lossy(final_row) * reference_step
+            + reference_card_height;
 
         assert_eq!(
             rows.len(),
-            19,
-            "the guide must retain every documented desktop action"
+            18,
+            "the guide must retain every documented desktop action without repeating itself"
         );
         assert!(
             final_pill_bottom <= body_height,
@@ -23365,16 +23429,16 @@ mod palette_dispatch_tests {
     fn compact_shortcut_recovery_actions_fit_their_cells() {
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
         let mut renderer = TextRenderer::new();
-        let chord_size = Theme::dark().tokens.typography.scale.sm;
+        let chord_size = Theme::dark().tokens.typography.scale.xs;
         // An 800-wide viewport yields a 736-wide panel and 688-wide body. The
         // compact guide uses three comfortably spaced columns.
         let columns = shortcut_reference_columns(688.0);
         assert_eq!(columns, 3);
-        let available_text_width = (688.0 - 14.0 * 2.0) / 3.0 - 14.0;
+        let available_text_width = (688.0 - 14.0 * 2.0) / 3.0 - 18.0;
         for (_, chord) in rows {
             let (width, _) = renderer.measure(&chord, chord_size, None);
             assert!(
-                f64::from(width) <= available_text_width,
+                f64::from(width) + 16.0 <= available_text_width,
                 "{chord:?} must not clip inside the compact guide's key pill"
             );
         }
@@ -23504,7 +23568,7 @@ mod palette_dispatch_tests {
         assert!(description.contains("workspaces with"));
         assert!(description.contains("move groups with"));
         assert!(description.contains("Screenshot: Print Screen"));
-        assert!(description.contains("Shortcut guide: F1  /  Super+/"));
+        assert!(!description.contains("Shortcut guide:"));
     }
 
     #[test]
@@ -24785,6 +24849,61 @@ mod overlay_event_absorb_tests {
         }
     }
 
+    /// A synchronous two-source app provider for chip-routing tests. The
+    /// production registry invokes it through the same `wanted` kinds that
+    /// reach the real Applications and Host Applications providers.
+    struct AppSourceFilterFixtureProvider;
+
+    impl crate::shell::search::SearchProvider for AppSourceFilterFixtureProvider {
+        fn id(&self) -> &'static str {
+            "app-source-filter-fixture"
+        }
+
+        fn name(&self) -> &'static str {
+            "App source fixture"
+        }
+
+        fn resource_kinds(&self) -> &[crate::shell::search::ResourceKind] {
+            const KINDS: [crate::shell::search::ResourceKind; 2] = [
+                crate::shell::search::ResourceKind::Application,
+                crate::shell::search::ResourceKind::HostApplication,
+            ];
+            &KINDS
+        }
+
+        fn query(
+            &self,
+            context: crate::shell::search::SearchContext<'_>,
+        ) -> Vec<crate::shell::search::SearchResult> {
+            use crate::shell::search::{ResourceKind, SearchResult};
+
+            let mut rows = Vec::new();
+            if context.wanted.contains(&ResourceKind::Application) {
+                rows.push(SearchResult::nullary(
+                    ResourceKind::Application,
+                    self.id(),
+                    "fixture-tilo-app",
+                    "Open Tilo fixture",
+                    None,
+                    100,
+                    |_, _, _| {},
+                ));
+            }
+            if context.wanted.contains(&ResourceKind::HostApplication) {
+                rows.push(SearchResult::nullary(
+                    ResourceKind::HostApplication,
+                    self.id(),
+                    "fixture-host-app",
+                    "Open Host fixture",
+                    Some("System · unconfined host app".into()),
+                    100,
+                    |_, _, _| {},
+                ));
+            }
+            rows
+        }
+    }
+
     fn build_harness() -> AbsorbHarness {
         build_harness_sized(1600.0, 900.0)
     }
@@ -25477,6 +25596,55 @@ mod overlay_event_absorb_tests {
         );
     }
 
+    /// A new-window picker deliberately begins with both launch sources so
+    /// either kind of program can be opened. Selecting Host Apps from that
+    /// state must replace the source selection, not toggle host rows off and
+    /// leave Applications lit (the live picker regression this covers).
+    #[test]
+    fn host_apps_chip_exclusively_filters_a_new_window_picker() {
+        use crate::shell::search::ResourceKind;
+
+        let mut h = build_harness();
+        h.host
+            .search_registry
+            .register(Rc::new(AppSourceFilterFixtureProvider));
+        h.host.active_kind_filter = app_kind_filter();
+        h.host.set_palette_visible(true);
+        h.host.force_palette_settled();
+
+        let host_chip = h
+            .host
+            .search_registry
+            .registered_kinds()
+            .iter()
+            .position(|kind| *kind == ResourceKind::HostApplication)
+            .expect("Host Apps chip is registered");
+        paint_then_click(&mut h, |host| host.search_chip_rects[host_chip].center());
+
+        assert_eq!(
+            h.host.active_kind_filter,
+            vec![ResourceKind::HostApplication]
+        );
+        assert!(
+            h.host.search_results.iter().any(|row| {
+                row.provider_id == "app-source-filter-fixture" && row.id == "fixture-host-app"
+            }),
+            "the selected Host Apps source must reach the production palette query"
+        );
+        assert!(
+            h.host
+                .search_results
+                .iter()
+                .all(|row| row.kind == ResourceKind::HostApplication),
+            "Host Apps must not leave Tilo application rows visible: {:?}",
+            h.host
+                .search_results
+                .iter()
+                .map(|row| (&row.title, &row.kind))
+                .collect::<Vec<_>>()
+        );
+    }
+
     /// Same for the scope switch, which shares the band.
     #[test]
     fn clicking_a_scope_segment_switches_scope_without_dismissing() {
@@ -26036,7 +26204,10 @@ mod overlay_event_absorb_tests {
         let body_bottom = panel.y1 - 22.0;
         let body_top = panel.y0 + 88.0;
         let essentials_y = body_top + 22.0 + 3.0 * 48.0 + 6.0;
-        let compact_final_pill_bottom = essentials_y + 18.0 + 6.0 * 31.0 + 35.0;
+        let compact_final_pill_bottom = essentials_y
+            + 16.0
+            + 6.0 * shortcut_reference_step(3)
+            + shortcut_reference_card_height(3);
         assert!(
             compact_final_pill_bottom <= body_bottom,
             "compact help's final recovery shortcut must fit without clipping: pill={compact_final_pill_bottom}, body={body_bottom}"
