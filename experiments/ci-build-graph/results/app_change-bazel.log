@@ -1,0 +1,6 @@
+INFO: Invocation ID: 8631b088-e09e-40ca-af07-4be86cb268ae
+INFO: Analyzed 2 targets (0 packages loaded, 0 targets configured).
+INFO: Found 2 targets...
+INFO: Elapsed time: 1.648s, Critical Path: 0.78s
+INFO: 3 processes: 1 action cache hit, 1 internal, 2 linux-sandbox.
+INFO: Build completed successfully, 3 total actions

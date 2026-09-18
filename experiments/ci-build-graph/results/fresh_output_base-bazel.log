@@ -1,0 +1,7 @@
+Starting local Bazel server (9.2.0) and connecting to it...
+INFO: Invocation ID: 8349a8ff-f42a-42a0-9587-8ba189bd0c66
+INFO: Analyzed 2 targets (103 packages loaded, 1256 targets configured).
+INFO: Found 2 targets...
+INFO: Elapsed time: 5.551s, Critical Path: 0.20s
+INFO: 177 processes: 9 disk cache hit, 168 internal.
+INFO: Build completed successfully, 177 total actions

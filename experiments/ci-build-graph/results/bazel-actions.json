@@ -1,0 +1,256 @@
+{
+  "app_change-actions.json": [
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "//:calc",
+      "runner": "linux-sandbox",
+      "cacheHit": false,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "//:app_a",
+      "runner": "linux-sandbox",
+      "cacheHit": false,
+      "status": "",
+      "exitCode": 0
+    }
+  ],
+  "cold-actions.json": [
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "@@rules_rust++i+rules_rust_tinyjson//:tinyjson",
+      "runner": "linux-sandbox",
+      "cacheHit": false,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "@@rules_rust+//util/process_wrapper:process_wrapper",
+      "runner": "linux-sandbox",
+      "cacheHit": false,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "//:atomic_file",
+      "runner": "linux-sandbox",
+      "cacheHit": false,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "//:calc",
+      "runner": "linux-sandbox",
+      "cacheHit": false,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "//:app_a",
+      "runner": "linux-sandbox",
+      "cacheHit": false,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Genrule",
+      "targetLabel": "//:app_a_package",
+      "runner": "linux-sandbox",
+      "cacheHit": false,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "//:order",
+      "runner": "linux-sandbox",
+      "cacheHit": false,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "//:app_b",
+      "runner": "linux-sandbox",
+      "cacheHit": false,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Genrule",
+      "targetLabel": "//:app_b_package",
+      "runner": "linux-sandbox",
+      "cacheHit": false,
+      "status": "",
+      "exitCode": 0
+    }
+  ],
+  "compiler_flag_change-actions.json": [
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "//:atomic_file",
+      "runner": "linux-sandbox",
+      "cacheHit": false,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "//:calc",
+      "runner": "linux-sandbox",
+      "cacheHit": false,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "//:app_a",
+      "runner": "linux-sandbox",
+      "cacheHit": false,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "//:order",
+      "runner": "linux-sandbox",
+      "cacheHit": false,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "//:app_b",
+      "runner": "linux-sandbox",
+      "cacheHit": false,
+      "status": "",
+      "exitCode": 0
+    }
+  ],
+  "docs_change-actions.json": [],
+  "fresh_output_base-actions.json": [
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "@@rules_rust++i+rules_rust_tinyjson//:tinyjson",
+      "runner": "disk cache hit",
+      "cacheHit": true,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "@@rules_rust+//util/process_wrapper:process_wrapper",
+      "runner": "disk cache hit",
+      "cacheHit": true,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "//:atomic_file",
+      "runner": "disk cache hit",
+      "cacheHit": true,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "//:calc",
+      "runner": "disk cache hit",
+      "cacheHit": true,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "//:app_a",
+      "runner": "disk cache hit",
+      "cacheHit": true,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Genrule",
+      "targetLabel": "//:app_a_package",
+      "runner": "disk cache hit",
+      "cacheHit": true,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "//:order",
+      "runner": "disk cache hit",
+      "cacheHit": true,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "//:app_b",
+      "runner": "disk cache hit",
+      "cacheHit": true,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Genrule",
+      "targetLabel": "//:app_b_package",
+      "runner": "disk cache hit",
+      "cacheHit": true,
+      "status": "",
+      "exitCode": 0
+    }
+  ],
+  "package_change-actions.json": [
+    {
+      "mnemonic": "Genrule",
+      "targetLabel": "//:app_a_package",
+      "runner": "linux-sandbox",
+      "cacheHit": false,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Genrule",
+      "targetLabel": "//:app_b_package",
+      "runner": "linux-sandbox",
+      "cacheHit": false,
+      "status": "",
+      "exitCode": 0
+    }
+  ],
+  "shared_change-actions.json": [
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "//:atomic_file",
+      "runner": "linux-sandbox",
+      "cacheHit": false,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "//:app_a",
+      "runner": "linux-sandbox",
+      "cacheHit": false,
+      "status": "",
+      "exitCode": 0
+    },
+    {
+      "mnemonic": "Rustc",
+      "targetLabel": "//:app_b",
+      "runner": "linux-sandbox",
+      "cacheHit": false,
+      "status": "",
+      "exitCode": 0
+    }
+  ],
+  "warm-actions.json": []
+}

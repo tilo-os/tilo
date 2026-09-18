@@ -1,0 +1,6 @@
+       Fresh atomic_file v0.1.0 (/home/benn1x/qos-ci-experiment-9245/run6/slice/atomic_file)
+       Fresh calc v0.1.0 (/home/benn1x/qos-ci-experiment-9245/run6/slice/calc)
+       Fresh order v0.1.0 (/home/benn1x/qos-ci-experiment-9245/run6/slice/order)
+       Fresh app_b v0.1.0 (/home/benn1x/qos-ci-experiment-9245/run6/slice/app_b)
+       Fresh app_a v0.1.0 (/home/benn1x/qos-ci-experiment-9245/run6/slice/app_a)
+    Finished `release` profile [optimized] target(s) in 0.05s

@@ -1,0 +1,379 @@
+{
+  "revision": "032ea136f5d6a7cbd2ddcf87e5dd7ab80fbd971a",
+  "scope": "Linux ARM64 sliced production modules; synthetic application topology, not GUI apps",
+  "planner": {
+    "calculator": {
+      "apps": [
+        "calculator"
+      ],
+      "app_count": 1,
+      "checks": 4,
+      "full": false
+    },
+    "toolkit": {
+      "apps": [
+        "agent",
+        "api-tester",
+        "backups",
+        "calculator",
+        "calendar",
+        "camera",
+        "chat",
+        "clocks",
+        "code-editor",
+        "contacts",
+        "containers",
+        "db-client",
+        "diffmerge",
+        "disk-usage",
+        "disks",
+        "ebook",
+        "feeds",
+        "file-explorer",
+        "firewall",
+        "git-client",
+        "hex-editor",
+        "image-editor",
+        "imager",
+        "logs",
+        "mail",
+        "maps",
+        "monitor",
+        "music",
+        "notes",
+        "osk",
+        "passwords",
+        "pdf-viewer",
+        "photos",
+        "print-centre",
+        "remote",
+        "scratchpad",
+        "settings",
+        "sheets",
+        "slides",
+        "snippets",
+        "speed-test",
+        "store",
+        "terminal",
+        "themes",
+        "totp",
+        "tube",
+        "typst-editor",
+        "video-editor",
+        "video-player",
+        "vpn",
+        "weather",
+        "windows",
+        "word-processor"
+      ],
+      "app_count": 53,
+      "checks": 68,
+      "full": false
+    },
+    "lockfile": {
+      "apps": [
+        "agent",
+        "api-tester",
+        "backups",
+        "calculator",
+        "calendar",
+        "camera",
+        "chat",
+        "clocks",
+        "code-editor",
+        "contacts",
+        "containers",
+        "db-client",
+        "diffmerge",
+        "disk-usage",
+        "disks",
+        "ebook",
+        "feeds",
+        "file-explorer",
+        "firewall",
+        "git-client",
+        "hex-editor",
+        "image-editor",
+        "imager",
+        "logs",
+        "mail",
+        "maps",
+        "monitor",
+        "music",
+        "notes",
+        "osk",
+        "passwords",
+        "pdf-viewer",
+        "photos",
+        "print-centre",
+        "remote",
+        "scratchpad",
+        "settings",
+        "sheets",
+        "slides",
+        "snippets",
+        "speed-test",
+        "store",
+        "terminal",
+        "themes",
+        "totp",
+        "tube",
+        "typst-editor",
+        "video-editor",
+        "video-player",
+        "vpn",
+        "weather",
+        "windows",
+        "word-processor"
+      ],
+      "app_count": 53,
+      "checks": 140,
+      "full": true
+    },
+    "packaging": {
+      "apps": [
+        "agent",
+        "api-tester",
+        "backups",
+        "calculator",
+        "calendar",
+        "camera",
+        "chat",
+        "clocks",
+        "code-editor",
+        "contacts",
+        "containers",
+        "db-client",
+        "diffmerge",
+        "disk-usage",
+        "disks",
+        "ebook",
+        "feeds",
+        "file-explorer",
+        "firewall",
+        "git-client",
+        "hex-editor",
+        "image-editor",
+        "imager",
+        "logs",
+        "mail",
+        "maps",
+        "monitor",
+        "music",
+        "notes",
+        "osk",
+        "passwords",
+        "pdf-viewer",
+        "photos",
+        "print-centre",
+        "remote",
+        "scratchpad",
+        "settings",
+        "sheets",
+        "slides",
+        "snippets",
+        "speed-test",
+        "store",
+        "terminal",
+        "themes",
+        "totp",
+        "tube",
+        "typst-editor",
+        "video-editor",
+        "video-player",
+        "vpn",
+        "weather",
+        "windows",
+        "word-processor"
+      ],
+      "app_count": 53,
+      "checks": 3,
+      "full": false
+    },
+    "docs": {
+      "apps": [],
+      "app_count": 0,
+      "checks": 3,
+      "full": false
+    },
+    "browser": {
+      "apps": [
+        "agent"
+      ],
+      "app_count": 1,
+      "checks": 7,
+      "full": false
+    },
+    "atomic_file": {
+      "apps": [
+        "agent",
+        "api-tester",
+        "backups",
+        "calculator",
+        "calendar",
+        "camera",
+        "chat",
+        "clocks",
+        "code-editor",
+        "contacts",
+        "containers",
+        "db-client",
+        "diffmerge",
+        "disk-usage",
+        "disks",
+        "ebook",
+        "feeds",
+        "file-explorer",
+        "firewall",
+        "git-client",
+        "hex-editor",
+        "image-editor",
+        "imager",
+        "logs",
+        "mail",
+        "maps",
+        "monitor",
+        "music",
+        "notes",
+        "osk",
+        "passwords",
+        "pdf-viewer",
+        "photos",
+        "print-centre",
+        "remote",
+        "scratchpad",
+        "settings",
+        "sheets",
+        "slides",
+        "snippets",
+        "speed-test",
+        "store",
+        "terminal",
+        "themes",
+        "totp",
+        "tube",
+        "typst-editor",
+        "video-editor",
+        "video-player",
+        "vpn",
+        "weather",
+        "windows",
+        "word-processor"
+      ],
+      "app_count": 53,
+      "checks": 94,
+      "full": false
+    }
+  },
+  "builds": {
+    "cold": {
+      "bazel": {
+        "seconds": 45.424,
+        "exit": 0,
+        "log": "cold-bazel.log"
+      },
+      "cargo": {
+        "seconds": 0.944,
+        "exit": 0,
+        "log": "cold-cargo.log"
+      }
+    },
+    "warm": {
+      "bazel": {
+        "seconds": 0.683,
+        "exit": 0,
+        "log": "warm-bazel.log"
+      },
+      "cargo": {
+        "seconds": 0.087,
+        "exit": 0,
+        "log": "warm-cargo.log"
+      }
+    },
+    "app_change": {
+      "bazel": {
+        "seconds": 1.708,
+        "exit": 0,
+        "log": "app_change-bazel.log"
+      },
+      "cargo": {
+        "seconds": 0.674,
+        "exit": 0,
+        "log": "app_change-cargo.log"
+      }
+    },
+    "shared_change": {
+      "bazel": {
+        "seconds": 0.584,
+        "exit": 0,
+        "log": "shared_change-bazel.log"
+      },
+      "cargo": {
+        "seconds": 0.404,
+        "exit": 0,
+        "log": "shared_change-cargo.log"
+      }
+    },
+    "package_change": {
+      "bazel": {
+        "seconds": 0.309,
+        "exit": 0,
+        "log": "package_change-bazel.log"
+      },
+      "cargo": {
+        "seconds": 0.019,
+        "exit": 0,
+        "log": "package_change-cargo.log"
+      }
+    },
+    "docs_change": {
+      "bazel": {
+        "seconds": 0.192,
+        "exit": 0,
+        "log": "docs_change-bazel.log"
+      },
+      "cargo": {
+        "seconds": 0.02,
+        "exit": 0,
+        "log": "docs_change-cargo.log"
+      }
+    },
+    "fresh_output_base": {
+      "bazel": {
+        "seconds": 5.692,
+        "exit": 0,
+        "log": "fresh_output_base-bazel.log"
+      }
+    },
+    "compiler_flag_change": {
+      "bazel": {
+        "seconds": 1.444,
+        "exit": 0,
+        "log": "compiler_flag_change-bazel.log"
+      }
+    }
+  },
+  "sources": {
+    "apps/calculator/src/engine.rs": "8d5d511aa6b9095873332acc2d77fbb74386c34e110e3d7f64b960399656fa94",
+    "crates/doc/qdoc/src/order.rs": "95956c1583f1f8858521a5fb2009c652f121b9c63c002ccbb79505f1b83ec88d",
+    "crates/system/atomic-file/src/lib.rs": "8a747ffcb9b372da737354ffc1367f87e125d492ec4cd05f367950503d7152f2"
+  },
+  "workspace_packages": 140,
+  "catalog_apps": 54,
+  "bazel_isolation": {
+    "ignore_all_rc_files": true,
+    "remote_cache": "",
+    "remote_executor": "",
+    "experimental_remote_downloader": ""
+  },
+  "calculator_tests_bazel": {
+    "seconds": 1.372,
+    "exit": 0,
+    "log": "tests-bazel.log"
+  },
+  "calculator_tests_cargo": {
+    "seconds": 0.424,
+    "exit": 0,
+    "log": "tests-cargo.log"
+  }
+}

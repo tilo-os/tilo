@@ -1,0 +1,188 @@
+{
+  "worker-a": {
+    "seconds": 1.625,
+    "exit": 0,
+    "log": "worker-a-build.log",
+    "stats": {
+      "stats": {
+        "compile_requests": 10,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 7,
+        "requests_executed": 3,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_misses": {
+          "counts": {
+            "Rust": 3
+          },
+          "adv_counts": {
+            "rust": 3
+          }
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 3,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 4034900
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compilations": 3,
+        "compiler_write_duration": {
+          "secs": 1,
+          "nanos": 190266892
+        },
+        "compile_fails": 0,
+        "not_cached": {
+          "-": 1,
+          "missing input": 4,
+          "crate-type": 2
+        },
+        "dist_compiles": {},
+        "dist_errors": 0
+      },
+      "cache_location": "Local disk: \"/home/benn1x/qos-ci-experiment-9245/sccache-run3/cache\"",
+      "cache_size": 102155,
+      "max_cache_size": 134217728,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.12.0"
+    }
+  },
+  "worker-b": {
+    "seconds": 1.639,
+    "exit": 0,
+    "log": "worker-b-build.log",
+    "stats": {
+      "stats": {
+        "compile_requests": 10,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 7,
+        "requests_executed": 3,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_misses": {
+          "counts": {
+            "Rust": 3
+          },
+          "adv_counts": {
+            "rust": 3
+          }
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 3,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 2383200
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compilations": 3,
+        "compiler_write_duration": {
+          "secs": 0,
+          "nanos": 823017594
+        },
+        "compile_fails": 0,
+        "not_cached": {
+          "missing input": 4,
+          "crate-type": 2,
+          "-": 1
+        },
+        "dist_compiles": {},
+        "dist_errors": 0
+      },
+      "cache_location": "Local disk: \"/home/benn1x/qos-ci-experiment-9245/sccache-run3/cache\"",
+      "cache_size": 204329,
+      "max_cache_size": 134217728,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.12.0"
+    }
+  },
+  "worker-a-repeat": {
+    "seconds": 1.283,
+    "exit": 0,
+    "log": "worker-a-repeat-build.log",
+    "stats": {
+      "stats": {
+        "compile_requests": 10,
+        "requests_unsupported_compiler": 0,
+        "requests_not_compile": 0,
+        "requests_not_cacheable": 7,
+        "requests_executed": 3,
+        "cache_errors": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_hits": {
+          "counts": {
+            "Rust": 3
+          },
+          "adv_counts": {
+            "rust": 3
+          }
+        },
+        "cache_misses": {
+          "counts": {},
+          "adv_counts": {}
+        },
+        "cache_timeouts": 0,
+        "cache_read_errors": 0,
+        "non_cacheable_compilations": 0,
+        "forced_recaches": 0,
+        "cache_write_errors": 0,
+        "cache_writes": 0,
+        "cache_write_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "cache_read_hit_duration": {
+          "secs": 0,
+          "nanos": 945200
+        },
+        "compilations": 0,
+        "compiler_write_duration": {
+          "secs": 0,
+          "nanos": 0
+        },
+        "compile_fails": 0,
+        "not_cached": {
+          "missing input": 4,
+          "crate-type": 2,
+          "-": 1
+        },
+        "dist_compiles": {},
+        "dist_errors": 0
+      },
+      "cache_location": "Local disk: \"/home/benn1x/qos-ci-experiment-9245/sccache-run3/cache\"",
+      "cache_size": 204329,
+      "max_cache_size": 134217728,
+      "use_preprocessor_cache_mode": true,
+      "version": "0.12.0"
+    }
+  }
+}

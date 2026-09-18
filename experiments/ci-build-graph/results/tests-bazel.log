@@ -1,0 +1,13 @@
+INFO: Invocation ID: 82b3b860-1047-43a1-92fb-0cd28b1facd7
+WARNING: Build option --@@rules_rust+//rust/settings:extra_rustc_flags has changed, discarding analysis cache (this can be expensive, see https://bazel.build/advanced/performance/iteration-speed).
+INFO: Analyzed target //:calculator_tests (3 packages loaded, 1113 targets configured).
+INFO: Found 1 test target...
+Target //:calculator_tests up-to-date:
+  bazel-bin/calculator_tests
+INFO: Elapsed time: 1.354s, Critical Path: 0.78s
+INFO: 7 processes: 169 action cache hit, 5 internal, 3 linux-sandbox.
+INFO: Build completed successfully, 7 total actions
+//:calculator_tests                                                      PASSED in 0.0s
+
+Executed 1 out of 1 test: 1 test passes.
+There were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.

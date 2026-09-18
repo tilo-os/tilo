@@ -1,0 +1,285 @@
+{
+  "kind": "hypothetical model, not measured CI",
+  "parameters": {
+    "arrivals": 40,
+    "interval": 2,
+    "duration": 12
+  },
+  "policies": {
+    "fifo": {
+      "builds_completed": 40,
+      "busy_minutes": 480,
+      "discarded_active_minutes": 0,
+      "peak_pending": 33,
+      "latest_revision_ready_at": 480,
+      "latest_revision_age": 402,
+      "completions": [
+        {
+          "revision": 0,
+          "finished": 12,
+          "age": 12
+        },
+        {
+          "revision": 1,
+          "finished": 24,
+          "age": 22
+        },
+        {
+          "revision": 2,
+          "finished": 36,
+          "age": 32
+        },
+        {
+          "revision": 3,
+          "finished": 48,
+          "age": 42
+        },
+        {
+          "revision": 4,
+          "finished": 60,
+          "age": 52
+        },
+        {
+          "revision": 5,
+          "finished": 72,
+          "age": 62
+        },
+        {
+          "revision": 6,
+          "finished": 84,
+          "age": 72
+        },
+        {
+          "revision": 7,
+          "finished": 96,
+          "age": 82
+        },
+        {
+          "revision": 8,
+          "finished": 108,
+          "age": 92
+        },
+        {
+          "revision": 9,
+          "finished": 120,
+          "age": 102
+        },
+        {
+          "revision": 10,
+          "finished": 132,
+          "age": 112
+        },
+        {
+          "revision": 11,
+          "finished": 144,
+          "age": 122
+        },
+        {
+          "revision": 12,
+          "finished": 156,
+          "age": 132
+        },
+        {
+          "revision": 13,
+          "finished": 168,
+          "age": 142
+        },
+        {
+          "revision": 14,
+          "finished": 180,
+          "age": 152
+        },
+        {
+          "revision": 15,
+          "finished": 192,
+          "age": 162
+        },
+        {
+          "revision": 16,
+          "finished": 204,
+          "age": 172
+        },
+        {
+          "revision": 17,
+          "finished": 216,
+          "age": 182
+        },
+        {
+          "revision": 18,
+          "finished": 228,
+          "age": 192
+        },
+        {
+          "revision": 19,
+          "finished": 240,
+          "age": 202
+        },
+        {
+          "revision": 20,
+          "finished": 252,
+          "age": 212
+        },
+        {
+          "revision": 21,
+          "finished": 264,
+          "age": 222
+        },
+        {
+          "revision": 22,
+          "finished": 276,
+          "age": 232
+        },
+        {
+          "revision": 23,
+          "finished": 288,
+          "age": 242
+        },
+        {
+          "revision": 24,
+          "finished": 300,
+          "age": 252
+        },
+        {
+          "revision": 25,
+          "finished": 312,
+          "age": 262
+        },
+        {
+          "revision": 26,
+          "finished": 324,
+          "age": 272
+        },
+        {
+          "revision": 27,
+          "finished": 336,
+          "age": 282
+        },
+        {
+          "revision": 28,
+          "finished": 348,
+          "age": 292
+        },
+        {
+          "revision": 29,
+          "finished": 360,
+          "age": 302
+        },
+        {
+          "revision": 30,
+          "finished": 372,
+          "age": 312
+        },
+        {
+          "revision": 31,
+          "finished": 384,
+          "age": 322
+        },
+        {
+          "revision": 32,
+          "finished": 396,
+          "age": 332
+        },
+        {
+          "revision": 33,
+          "finished": 408,
+          "age": 342
+        },
+        {
+          "revision": 34,
+          "finished": 420,
+          "age": 352
+        },
+        {
+          "revision": 35,
+          "finished": 432,
+          "age": 362
+        },
+        {
+          "revision": 36,
+          "finished": 444,
+          "age": 372
+        },
+        {
+          "revision": 37,
+          "finished": 456,
+          "age": 382
+        },
+        {
+          "revision": 38,
+          "finished": 468,
+          "age": 392
+        },
+        {
+          "revision": 39,
+          "finished": 480,
+          "age": 402
+        }
+      ]
+    },
+    "cancel-active": {
+      "builds_completed": 1,
+      "busy_minutes": 90,
+      "discarded_active_minutes": 78,
+      "peak_pending": 0,
+      "latest_revision_ready_at": 90,
+      "latest_revision_age": 12,
+      "completions": [
+        {
+          "revision": 39,
+          "finished": 90,
+          "age": 12
+        }
+      ]
+    },
+    "latest-pending": {
+      "builds_completed": 8,
+      "busy_minutes": 96,
+      "discarded_active_minutes": 0,
+      "peak_pending": 1,
+      "latest_revision_ready_at": 96,
+      "latest_revision_age": 18,
+      "completions": [
+        {
+          "revision": 0,
+          "finished": 12,
+          "age": 12
+        },
+        {
+          "revision": 5,
+          "finished": 24,
+          "age": 14
+        },
+        {
+          "revision": 11,
+          "finished": 36,
+          "age": 14
+        },
+        {
+          "revision": 17,
+          "finished": 48,
+          "age": 14
+        },
+        {
+          "revision": 23,
+          "finished": 60,
+          "age": 14
+        },
+        {
+          "revision": 29,
+          "finished": 72,
+          "age": 14
+        },
+        {
+          "revision": 35,
+          "finished": 84,
+          "age": 14
+        },
+        {
+          "revision": 39,
+          "finished": 96,
+          "age": 18
+        }
+      ]
+    }
+  }
+}

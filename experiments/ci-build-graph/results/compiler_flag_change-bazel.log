@@ -1,0 +1,7 @@
+INFO: Invocation ID: 701a83dd-e405-4576-afd7-0a01377ea3d5
+WARNING: Build option --@@rules_rust+//rust/settings:extra_rustc_flags has changed, discarding analysis cache (this can be expensive, see https://bazel.build/advanced/performance/iteration-speed).
+INFO: Analyzed 2 targets (0 packages loaded, 1096 targets configured).
+INFO: Found 2 targets...
+INFO: Elapsed time: 1.418s, Critical Path: 0.73s
+INFO: 6 processes: 171 action cache hit, 1 internal, 5 linux-sandbox.
+INFO: Build completed successfully, 6 total actions

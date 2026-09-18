@@ -1,0 +1,15 @@
+exec ${PAGER:-/usr/bin/less} "$0" || exit 1
+Executing tests from //:calculator_tests
+-----------------------------------------------------------------------------
+
+running 8 tests
+test tests::arithmetic_precedence ... ok
+test tests::compiled_sampling ... ok
+test tests::degrees_vs_radians ... ok
+test tests::factorial_and_percent ... ok
+test tests::formatting ... ok
+test tests::errors_are_reported ... ok
+test tests::functions_and_constants ... ok
+test tests::implicit_multiplication ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

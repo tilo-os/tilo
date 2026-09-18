@@ -1,0 +1,21 @@
+   Compiling calc v0.1.0 (/home/benn1x/qos-ci-experiment-9245/run6/slice/calc)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.38s
+     Running unittests src/lib.rs (target/debug/deps/calc-3cdffa961018f51e)
+
+running 8 tests
+test tests::arithmetic_precedence ... ok
+test tests::compiled_sampling ... ok
+test tests::degrees_vs_radians ... ok
+test tests::errors_are_reported ... ok
+test tests::factorial_and_percent ... ok
+test tests::formatting ... ok
+test tests::functions_and_constants ... ok
+test tests::implicit_multiplication ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests calc
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
