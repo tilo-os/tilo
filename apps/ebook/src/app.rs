@@ -998,6 +998,10 @@ pub struct BooksApp {
     /// A `--shots` scenario with a dense annotation history. Kept as a
     /// one-frame seed so live readers never receive fabricated annotations.
     shot_long_annotations: bool,
+    /// A visual-a11y proof can intentionally suppress seeded/persisted
+    /// annotation decoration, leaving a normal readable page at its target
+    /// text scale. This never affects the shared document or live reader.
+    shot_clean_reader: bool,
     /// Last resolved layout mode per rail, so a breakpoint crossing settles
     /// the flap instantly instead of animating on launch/resize.
     settled_toc: Option<SplitLayout>,
@@ -1199,6 +1203,7 @@ impl BooksApp {
             shot_compose: false,
             shot_comments: false,
             shot_long_annotations: false,
+            shot_clean_reader: false,
             settled_toc: None,
             settled_notes: None,
             layout: None,
@@ -1597,6 +1602,7 @@ impl BooksApp {
                 self.demo = false;
                 self.sel = None;
                 self.selected_block = None;
+                self.shot_clean_reader = true;
                 self.shot_settings = Some(Settings {
                     font_scale: Settings::FONT_MAX,
                     ..Settings::default()
@@ -4809,6 +4815,13 @@ impl Widget for BooksApp {
             self.page = p.page;
         }
         self.refresh_from_doc(doc);
+        if self.shot_clean_reader {
+            // A captured accessible-type proof should demonstrate reflow, not
+            // a snapshot-specific annotation band. The source document is
+            // untouched; this only changes the one-frame presentation cache.
+            self.annotations.clear();
+            self.all_annotations = Arc::new(Vec::new());
+        }
         self.persist_progress(doc);
         let mut live_actions = vec![<Self as tilo_actions::ResourceProvider>::resource(
             self,
@@ -14907,10 +14920,12 @@ mod interaction_tests {
 
     #[test]
     fn large_text_shot_is_a_normal_two_hundred_percent_narrow_reader() {
+        use ui::offscreen::OffscreenRenderer;
+
         let mut app = BooksApp::with_library(Vec::new());
         let mut doc = AutoCommit::new();
         app.seed_shot_scenario("large-text");
-        frame(&mut app, &mut doc, 480.0, 900.0);
+        let scene = render_scene(&mut app, &mut doc, 480.0, 900.0);
 
         assert_eq!(app.settings.font_scale, 2.0);
         assert!(app.sel.is_none(), "the visual proof starts unselected");
@@ -14918,13 +14933,30 @@ mod interaction_tests {
             app.annotations.is_empty(),
             "the visual proof is not obscured by seeded demo highlights"
         );
+        assert!(
+            app.hi_bands.is_empty(),
+            "no annotation band is painted beneath the 200% proof text"
+        );
         let geom = app.reader_page_geometry(app.rect, app.settings.mode);
         let right = geom.full_content_x + f64::from(geom.full_content_w);
         assert!(
+            right <= app.rect.x1 - 24.0,
+            "the narrow page reserves a visible right inset"
+        );
+        assert!(
             app.sel_runs
                 .iter()
-                .all(|run| run.x0 >= geom.full_content_x - 0.5 && run.x1 <= right + 0.5),
+                .all(|run| run.x0 >= geom.full_content_x - 0.5
+                    && run.x1 <= right + 0.5
+                    && run.x1 <= app.rect.x1 - 24.0),
             "every 200% text run remains within the narrow content box"
+        );
+        let mut renderer = OffscreenRenderer::new(480, 900);
+        let pixels = renderer.render_rgba(&scene);
+        let paper = OffscreenRenderer::sample(&pixels, 480, 16, 500);
+        assert!(
+            paper.0 > paper.2 && paper.1 > paper.2,
+            "the painted reader surface is neutral warm paper, not a blue selection band: {paper:?}"
         );
     }
 
