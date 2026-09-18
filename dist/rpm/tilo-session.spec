@@ -218,9 +218,11 @@ install -Dpm 0755 apps/bin/tilo-model-gateway %{buildroot}%{_bindir}/tilo-model-
 install -Dpm 0755 apps/libexec/tilo-cli-shim %{buildroot}%{_libexecdir}/tilo-cli-shim
 install -Dpm 0755 apps/libexec/tilo-app-host %{buildroot}%{_libexecdir}/tilo-app-host
 install -Dpm 0755 apps/libexec/tilo-ush %{buildroot}%{_libexecdir}/tilo-ush
-for unit in tilo-app-host tilo-model-storage tilo-models tilo-model-gateway tilo-ush; do
+for unit in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
     install -Dpm 0644 apps/systemd-user/$unit.service \
         %{buildroot}%{_userunitdir}/$unit.service
+    install -Dpm 0644 apps/systemd-user/$unit.socket \
+        %{buildroot}%{_userunitdir}/$unit.socket
 done
 install -Dpm 0644 apps/user-tmpfiles/tilo-model-manager.conf \
                   %{buildroot}%{_prefix}/lib/user-tmpfiles.d/tilo-model-manager.conf
@@ -260,7 +262,7 @@ grep -q '^default=tilo$' %{buildroot}%{_datadir}/xdg-desktop-portal/tilo-portals
 grep -q '^DesktopNames=tilo$' %{buildroot}%{_datadir}/wayland-sessions/tilo.desktop
 grep -q '^Requires=graphical-session-pre.target graphical-session.target$' \
     %{buildroot}%{_userunitdir}/tilo-graphical-session.target
-grep -q '^Wants=tilo-app-host.service tilo-models.service tilo-model-gateway.service tilo-ush.service$' \
+grep -q '^Wants=tilo-ush.service$' \
     %{buildroot}%{_userunitdir}/tilo-graphical-session.target
 # The compositor owns the portal bus name in-process. A separate activation
 # service would race it with a backend attached to an empty workspace.
@@ -278,8 +280,10 @@ test -f %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07/bundle.toml
 test "$(stat -c %%a %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07/bundle.toml)" = 644
 grep -q '/usr/lib/tilo-apps/bin' %{buildroot}%{_sysconfdir}/profile.d/tilo-apps.sh
 test -s %{buildroot}%{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
-for unit in tilo-app-host tilo-model-storage tilo-models tilo-model-gateway tilo-ush; do
+for unit in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
     test -f %{buildroot}%{_userunitdir}/$unit.service
+    test -f %{buildroot}%{_userunitdir}/$unit.socket
+    grep -q "^Service=$unit.service$" %{buildroot}%{_userunitdir}/$unit.socket
 done
 
 %files
@@ -305,10 +309,13 @@ done
 %{_libexecdir}/tilo-app-host
 %{_libexecdir}/tilo-ush
 %{_userunitdir}/tilo-app-host.service
-%{_userunitdir}/tilo-model-storage.service
+%{_userunitdir}/tilo-app-host.socket
 %{_userunitdir}/tilo-models.service
+%{_userunitdir}/tilo-models.socket
 %{_userunitdir}/tilo-model-gateway.service
+%{_userunitdir}/tilo-model-gateway.socket
 %{_userunitdir}/tilo-ush.service
+%{_userunitdir}/tilo-ush.socket
 %{_prefix}/lib/user-tmpfiles.d/tilo-model-manager.conf
 %config %{_sysconfdir}/profile.d/tilo-apps.sh
 %config(noreplace) %{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt

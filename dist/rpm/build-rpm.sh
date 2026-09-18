@@ -103,14 +103,16 @@ install -pm 0755 "$rel/tilo-app-host" "$app_stage/libexec/tilo-app-host"
 install -pm 0755 "$rel/tilo-ush" "$app_stage/libexec/tilo-ush"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-app-host.service" \
     "$app_stage/systemd-user/tilo-app-host.service"
-install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-model-storage.service" \
-    "$app_stage/systemd-user/tilo-model-storage.service"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-models.service" \
     "$app_stage/systemd-user/tilo-models.service"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-model-gateway.service" \
     "$app_stage/systemd-user/tilo-model-gateway.service"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-ush.service" \
     "$app_stage/systemd-user/tilo-ush.service"
+for socket in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
+    install -pm 0644 "$repo_root/os/usr/lib/systemd/user/$socket.socket" \
+        "$app_stage/systemd-user/$socket.socket"
+done
 install -pm 0644 "$repo_root/os/usr/lib/user-tmpfiles.d/tilo-model-manager.conf" \
     "$app_stage/user-tmpfiles/tilo-model-manager.conf"
 mkdir -p "$app_stage/profile.d"
