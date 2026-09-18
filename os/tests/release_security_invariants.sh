@@ -66,6 +66,14 @@ grep -Fq 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' "$workflow" \
   && ok 'release signing requires a non-exportable KMS/HSM key' \
   || bad 'release signing still accepts an exportable private key secret'
 
+if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$workflow" \
+   && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$workflow" \
+   && grep -Fq 'needs: [plan, signing-preflight]' "$workflow"; then
+  ok 'OS construction starts only after release KMS identity preflight'
+else
+  bad 'OS release construction can start before its signing authority is identity-bound'
+fi
+
 if grep -Eq -- '--tlog-upload=false|--insecure-ignore-tlog' "$workflow"; then
   bad 'OS release disables transparency-log publication or verification'
 else
