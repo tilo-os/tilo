@@ -7,7 +7,7 @@ Rust library names and imports use underscores (`code_editor`).
 Every app here is a native Tilo application built on the public
 [`tilo-app`](../crates/sdk/tilo-app) SDK (normally renamed to `ui` in Cargo).
 `tilo-app` re-exports the complete retained-widget, layout, canvas,
-custom-painting, native-view and GPU API. The internal [`ui-core`](../ui) package
+custom-painting, native-view and GPU API. The internal [`ui-core`](../crates/sdk/ui-core) package
 is a dependency of the shell and SDK; apps use `tilo-app`.
 
 Apps are retained-mode and CRDT-native: durable state lives in a shared

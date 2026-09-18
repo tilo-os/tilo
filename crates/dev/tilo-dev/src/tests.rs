@@ -2445,10 +2445,7 @@ fn standalone_wizard_accepts_the_discovered_toolkit_default() {
     );
     assert!(transcript.contains(&format!("Toolkit:     {}", discovered.display())));
     let manifest = std::fs::read_to_string(destination.join("Cargo.toml")).unwrap();
-    let sdk = discovered
-        .parent()
-        .expect("toolkit checkout root")
-        .join("crates/sdk/tilo-app");
+    let sdk = sdk_path_for_ui(&discovered);
     let relative = relative_path(&destination, &sdk);
     assert!(
         manifest.contains(&format!("path = {:?}", relative.display().to_string())),
@@ -2474,7 +2471,7 @@ fn standalone_noninteractive_creation_discovers_the_toolkit() {
 #[test]
 fn toolkit_discovery_follows_the_tilo_dev_executable_ancestry() {
     let temp = tempfile::tempdir().expect("temp dir");
-    let ui = temp.path().join("ui");
+    let ui = temp.path().join("crates/sdk/ui-core");
     std::fs::create_dir_all(&ui).unwrap();
     std::fs::write(ui.join("Cargo.toml"), "[workspace]\n").unwrap();
 
@@ -2506,8 +2503,12 @@ fn new_app_preflights_workspace_registration_before_creating_files() {
     let temp = tempfile::tempdir().expect("temp dir");
     let root = temp.path();
     std::fs::create_dir(root.join("apps")).unwrap();
-    std::fs::create_dir(root.join("ui")).unwrap();
-    std::fs::write(root.join("ui/Cargo.toml"), "[package]\nname = \"ui\"\n").unwrap();
+    std::fs::create_dir_all(root.join("crates/sdk/ui-core")).unwrap();
+    std::fs::write(
+        root.join("crates/sdk/ui-core/Cargo.toml"),
+        "[package]\nname = \"ui\"\n",
+    )
+    .unwrap();
     std::fs::write(root.join("Cargo.toml"), "[workspace]\nresolver = \"3\"\n").unwrap();
     let destination = root.join("apps/reading-list");
     let error = create_app_from(root, request(destination.clone())).unwrap_err();
@@ -2532,8 +2533,12 @@ fn new_app_publishes_complete_tree_and_workspace_member_together() {
         std::fs::Permissions::from_mode(0o750),
     )
     .unwrap();
-    std::fs::create_dir(root.join("ui")).unwrap();
-    std::fs::write(root.join("ui/Cargo.toml"), "[package]\nname = \"ui\"\n").unwrap();
+    std::fs::create_dir_all(root.join("crates/sdk/ui-core")).unwrap();
+    std::fs::write(
+        root.join("crates/sdk/ui-core/Cargo.toml"),
+        "[package]\nname = \"ui\"\n",
+    )
+    .unwrap();
     std::fs::write(
             root.join("Cargo.toml"),
             "[package.metadata.fixture]\nmembers = [\n    \"do-not-touch\",\n]\n\n[workspace]\nresolver = \"3\"\ndefault-members = [\n    \"core\",\n]\nmembers = [\n]\n",
@@ -2961,8 +2966,11 @@ fn rejects_ambiguous_or_unsafe_names() {
 #[test]
 fn computes_workspace_relative_ui_path() {
     assert_eq!(
-        relative_path(Path::new("/repo/apps/demo"), Path::new("/repo/ui")),
-        PathBuf::from("../../ui")
+        relative_path(
+            Path::new("/repo/apps/demo"),
+            Path::new("/repo/crates/sdk/ui-core")
+        ),
+        PathBuf::from("../../crates/sdk/ui-core")
     );
 }
 
@@ -2973,7 +2981,7 @@ fn data_template_renders_cells_and_uses_stable_row_ids() {
         crate_name: "log_browser".into(),
         title: "Log Browser".into(),
         app_id: "dev.tilo.log.browser".into(),
-        ui_path: PathBuf::from("../../ui"),
+        ui_path: PathBuf::from("../../crates/sdk/ui-core"),
         workspace_member: true,
         template: Template::Data,
     };
@@ -3048,7 +3056,7 @@ fn every_template_uses_the_toolkit_resource_action_host() {
             crate_name: "generated_app".into(),
             title: "Generated App".into(),
             app_id: "dev.tilo.generated.app".into(),
-            ui_path: PathBuf::from("../../ui"),
+            ui_path: PathBuf::from("../../crates/sdk/ui-core"),
             workspace_member: true,
             template,
         };
@@ -3075,7 +3083,7 @@ fn qr_template_composes_ime_input_state_visual_output_and_accessibility() {
         crate_name: "qr_code".into(),
         title: "QR Code".into(),
         app_id: "dev.tilo.qr.code".into(),
-        ui_path: PathBuf::from("../../ui"),
+        ui_path: PathBuf::from("../../crates/sdk/ui-core"),
         workspace_member: true,
         template: Template::Qr,
     };
@@ -3101,7 +3109,7 @@ fn workspace_template_composes_navigation_and_isolated_durable_detail_views() {
         crate_name: "project_workspace".into(),
         title: "Project Workspace".into(),
         app_id: "dev.tilo.project.workspace".into(),
-        ui_path: PathBuf::from("../../ui"),
+        ui_path: PathBuf::from("../../crates/sdk/ui-core"),
         workspace_member: true,
         template: Template::Workspace,
     };
@@ -3126,7 +3134,7 @@ fn graph_template_generates_a_valid_editable_screen() {
         crate_name: "project_maker".into(),
         title: "Project Maker".into(),
         app_id: "dev.tilo.project.maker".into(),
-        ui_path: PathBuf::from("../../ui"),
+        ui_path: PathBuf::from("../../crates/sdk/ui-core"),
         workspace_member: true,
         template: Template::Graph,
     };
@@ -3173,7 +3181,7 @@ fn list_template_starts_sparse_variable_and_interactive() {
         crate_name: "activity_feed".into(),
         title: "Activity Feed".into(),
         app_id: "dev.tilo.activity.feed".into(),
-        ui_path: PathBuf::from("../../ui"),
+        ui_path: PathBuf::from("../../crates/sdk/ui-core"),
         workspace_member: true,
         template: Template::List,
     };
@@ -3203,7 +3211,7 @@ fn tree_template_uses_stable_ids_and_professional_tree_defaults() {
         crate_name: "project_browser".into(),
         title: "Project Browser".into(),
         app_id: "dev.tilo.project.browser".into(),
-        ui_path: PathBuf::from("../../ui"),
+        ui_path: PathBuf::from("../../crates/sdk/ui-core"),
         workspace_member: true,
         template: Template::Tree,
     };
@@ -3231,7 +3239,7 @@ fn async_template_uses_typed_wakeup_and_keyed_result_views() {
         crate_name: "repo_scan".into(),
         title: "Repo Scan".into(),
         app_id: "dev.tilo.repo.scan".into(),
-        ui_path: PathBuf::from("../../ui"),
+        ui_path: PathBuf::from("../../crates/sdk/ui-core"),
         workspace_member: true,
         template: Template::Async,
     };
@@ -3263,7 +3271,7 @@ fn document_template_uses_direct_durable_bindings_and_undo_contract() {
         crate_name: "notes".into(),
         title: "Notes".into(),
         app_id: "dev.tilo.notes".into(),
-        ui_path: PathBuf::from("../../ui"),
+        ui_path: PathBuf::from("../../crates/sdk/ui-core"),
         workspace_member: true,
         template: Template::Document,
     };
@@ -3284,7 +3292,7 @@ fn generated_readme_commands_work_inside_workspace_or_standalone() {
             crate_name: "notes".into(),
             title: "Notes".into(),
             app_id: "dev.tilo.notes".into(),
-            ui_path: PathBuf::from("../../ui"),
+            ui_path: PathBuf::from("../../crates/sdk/ui-core"),
             workspace_member,
             template: Template::Starter,
         };
@@ -3333,7 +3341,7 @@ fn every_template_generates_valid_rust_and_actions() {
             crate_name: "demo".into(),
             title: "Demo".into(),
             app_id: "dev.tilo.demo".into(),
-            ui_path: PathBuf::from("../../ui"),
+            ui_path: PathBuf::from("../../crates/sdk/ui-core"),
             workspace_member: true,
             template,
         };
@@ -3709,7 +3717,7 @@ fn dev_loop_watches_app_and_local_ui_source() {
     assert_eq!(
         roots[2],
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../ui")
+            .join("../../sdk/ui-core")
             .canonicalize()
             .unwrap()
     );

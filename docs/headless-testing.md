@@ -188,7 +188,7 @@ Every widget in the tree exposes a name through either:
 
 `list_targets` returns every widget with a non-zero rect. The bare name (`Parent/Child`) is registered when there's exactly one sibling of that name; an indexed form (`Parent/Child[N]`) always works.
 
-To make a widget more addressable, override `Widget::test_id()` in `ui` to return `Some("my_stable_name")`. See `command_palette_input` in `ui/src/widget/command_palette.rs` for the pattern.
+To make a widget more addressable, override `Widget::test_id()` in `ui` to return `Some("my_stable_name")`. See `command_palette_input` in `crates/sdk/ui-core/src/widget/command_palette.rs` for the pattern.
 
 ## Layer 3: `--backend headless` — display-free live binary
 
@@ -318,7 +318,7 @@ written by the normal exit path, so a `SIGKILL`ed compositor loses them.
 | Render thread | `shell/src/compositor/present.rs` |
 | Load-generator client | `shell/src/bin/tilo-loadclient.rs` |
 | Scenario catalogue | `shell/src/bin/shots/scenario.rs::catalogue()` |
-| Offscreen renderer | `ui/src/offscreen.rs` |
+| Offscreen renderer | `crates/sdk/ui-core/src/offscreen.rs` |
 | `TILO_TEST_CONTROL` protocol | `shell/src/compositor/test_control.rs` |
 | Widget registry walk | `shell/src/compositor/frame.rs::walk_widget` |
 | Backend trait | `shell/src/compositor/backend/mod.rs` |

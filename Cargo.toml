@@ -21,14 +21,14 @@ default-members = [
     "crates/doc/qdoc",
     "crates/system/fs",
     "shell",
-    "ui",
+    "crates/sdk/ui-core",
     "crates/packaging/pkg",
     "crates/runtime/runtime",
 ]
 members = [
     # Core product surfaces
     "shell",
-    "ui",
+    "crates/sdk/ui-core",
 
     # Applications
     "apps/agent",
@@ -138,15 +138,17 @@ members = [
     "crates/packaging/app-host",
     "crates/packaging/app-registry",
     "crates/packaging/cli-shim",
-    "crates/packaging/hello",
     "crates/packaging/install",
     "crates/packaging/launcher",
-    "crates/packaging/notes-cli",
     "crates/packaging/pkg",
     "crates/packaging/pkg-cli",
     "crates/packaging/registry-server",
     "crates/packaging/registry-types",
     "crates/packaging/runtime-bundle",
+
+    # Examples
+    "examples/packaging/hello",
+    "examples/packaging/notes-cli",
 
     # Runtime
     "crates/runtime/cli",
@@ -267,7 +269,7 @@ must_use_candidate = "allow"
 # ---------------------------------------------------------------------------
 # UI toolkit stack
 #
-# Prefer the re-exports in `ui/src/lib.rs`. Direct dependencies must use
+# Prefer the re-exports in `crates/sdk/ui-core/src/lib.rs`. Direct dependencies must use
 # compatible versions to share types such as `vello::Scene`.
 # ---------------------------------------------------------------------------
 vello = "0.9"

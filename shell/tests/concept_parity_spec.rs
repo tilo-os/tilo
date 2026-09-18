@@ -1180,7 +1180,7 @@ fn maximized_chrome_hides_when_cursor_below_y_80() {
          WindowFrame.tsx:108-123). Observed identical fill counts:
          no_cursor={fills_no_cursor}, below={fills_below}. Audit rows \
          `concept-coverage.md:20` and `:377-381`: ours always draws the \
-         maximized chrome. Fix in `ui/src/widget/window_group.rs:659+` \
+         maximized chrome. Fix in `crates/sdk/ui-core/src/widget/window_group.rs:659+` \
          by gating the maximized chrome on `last_cursor_y <= 80.0` (with \
          a fade-in/out for polish)."
     );
