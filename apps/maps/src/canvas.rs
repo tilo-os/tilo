@@ -767,14 +767,7 @@ pub fn draw_markers(
             // would be sliced at the drawer/panel edge into an unreadable
             // fragment. The pin still shows; the drawer already names the place.
             if rect.x0 >= clip.x0 && rect.x1 <= clip.x1 {
-                draw::card(
-                    scene,
-                    t,
-                    rect,
-                    6.0,
-                    theme.tokens.colors.surfaces.raised,
-                    theme.tokens.colors.border_standard,
-                );
+                draw::card(scene, t, rect, 6.0, theme.tokens.colors.surfaces.raised);
                 draw::text_w(
                     scene,
                     tr,
