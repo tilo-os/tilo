@@ -331,6 +331,11 @@ jobs:
     needs: [select, security, affected]
     runs-on: runner-quality
     timeout-minutes: 5
+    container:
+      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
     steps:
       - name: Require applicable checks and explain intentional non-applicability
         id: aggregate
@@ -367,6 +372,11 @@ jobs:
     needs: [select, security, checks]
     runs-on: runner-quality
     timeout-minutes: 10
+    container:
+      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
     env:
       SELECT_RESULT: ${{ needs.select.result }}
       SECURITY_RESULT: ${{ needs.security.result }}

@@ -31,6 +31,16 @@ def section(text, key, indent=0):
 
 
 class QueueReliefTests(unittest.TestCase):
+    def test_final_gates_use_qualified_lightweight_image(self):
+        quality = section(workflow("lint"), "quality", 2)
+        expected = section(quality, "container", 4)
+        self.assertRegex(expected, r"image: code\.podesta\.ai/qos/ci-fast@sha256:[0-9a-f]{64}")
+        for name in ("checks", "report-check-result"):
+            with self.subTest(job=name):
+                job = section(workflow("check"), name, 2)
+                self.assertEqual(section(job, "container", 4), expected)
+                self.assertIn("runs-on: runner-quality", job)
+
     def test_every_main_commit_keeps_checks_without_serializing_revisions(self):
         for name in ("check", "lint"):
             with self.subTest(workflow=name):
