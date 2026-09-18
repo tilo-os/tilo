@@ -19,12 +19,13 @@ use ui::search::{
 };
 
 use crate::actions::{
-    PhotoResourceSeed, album_resource_from_fields, folder_resource, folder_resource_id,
-    library_root_resource, metadata_label_counts, object_resource, object_resource_id,
-    person_resource, person_resource_id, pet_resource, pet_resource_id, photo_resource_from_seed,
-    place_counts, place_resource, place_resource_id, places_resource_from_count, tag_resource,
-    tag_resource_id, timeline_boundaries, timeline_day_resource, timeline_day_resource_id,
-    timeline_month_resource, timeline_month_resource_id, timeline_resource_from_search,
+    PhotoResourceSeed, album_resource_from_fields, albums_resource_from_count, folder_resource,
+    folder_resource_id, library_root_resource, metadata_label_counts, object_resource,
+    object_resource_id, person_resource, person_resource_id, pet_resource, pet_resource_id,
+    photo_resource_from_seed, place_counts, place_resource, place_resource_id,
+    places_resource_from_count, tag_resource, tag_resource_id, timeline_boundaries,
+    timeline_day_resource, timeline_day_resource_id, timeline_month_resource,
+    timeline_month_resource_id, timeline_resource_from_search,
 };
 use crate::doc::PhotosDoc;
 
@@ -67,6 +68,9 @@ enum MaterializationSeed {
     },
     Places {
         located_count: usize,
+    },
+    Albums {
+        count: usize,
     },
     Photo(Box<PhotoResourceSeed>),
     Album {
@@ -111,6 +115,7 @@ impl MaterializationSeed {
             Self::TimelineMonth { month, count } => timeline_month_resource(&month, count),
             Self::TimelineDay { day, count } => timeline_day_resource(&day, count),
             Self::Places { located_count } => places_resource_from_count(located_count),
+            Self::Albums { count } => albums_resource_from_count(count),
             Self::Photo(photo) => photo_resource_from_seed(&photo),
             Self::Album {
                 id,
@@ -314,6 +319,28 @@ impl PhotosSearchProvider {
             format!("Places\0photos.places\0map\0location\0{located_count} photographs\0open"),
             places,
             MaterializationSeed::Places { located_count },
+        );
+        let albums = SearchResult::for_action(
+            PHOTO_SEARCH_KIND,
+            "Albums",
+            ActionAddress::new("photos.albums", "open"),
+        )
+        .with_subtitle(if library.albums.len() == 1 {
+            "1 shared album".to_owned()
+        } else {
+            format!("{} shared albums", library.albums.len())
+        })
+        .with_icon(Icon::Image);
+        insert(
+            "photos.albums".to_owned(),
+            format!(
+                "Albums\0photos.albums\0collection\0{} shared albums\0open\0browse",
+                library.albums.len()
+            ),
+            albums,
+            MaterializationSeed::Albums {
+                count: library.albums.len(),
+            },
         );
         for photo in &library.photos {
             let result = SearchResult::for_action(
@@ -759,6 +786,42 @@ mod tests {
     }
 
     #[test]
+    fn albums_collection_is_searchable_and_materializes_its_canonical_action() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let library = crate::model::PhotoLibrary {
+            photos: Vec::new(),
+            albums: vec![crate::model::Album {
+                id: "photos.album:journey".into(),
+                name: "Journey".into(),
+                photo_ids: Vec::new(),
+            }],
+        };
+        PhotosDoc::set_library(&mut doc, &library);
+
+        let provider = PhotosSearchProvider::new(&doc).unwrap();
+        let address = provider
+            .search("shared albums")
+            .into_iter()
+            .find_map(|hit| {
+                hit.action_address()
+                    .filter(|address| address.resource == "photos.albums")
+            })
+            .expect("album browsing is a global-search destination");
+        assert_eq!(address.action, "open");
+        let resource = provider
+            .resolve_action_resource(&address)
+            .expect("the compact search seed materializes the album collection");
+        assert_eq!(resource.kind, crate::actions::ALBUMS_KIND);
+        assert!(
+            resource
+                .children
+                .iter()
+                .any(|child| { child.id.0 == "photos.albums#count" && child.label == "1 album" })
+        );
+    }
+
+    #[test]
     fn metadata_search_hits_resolve_to_their_canonical_resources() {
         let mut doc = open_doc("harbour.png");
         let mut library = PhotosDoc::library(&doc);
@@ -966,7 +1029,7 @@ mod tests {
             ));
         }
         let provider = PhotosSearchProvider::from_library(&doc, &library).unwrap();
-        let expected_records = library.photos.len() + 3; // library + People + analysis roots
+        let expected_records = library.photos.len() + 4; // library + timeline + places + albums
         assert_eq!(provider.stats().records, expected_records);
         let page = provider.search_page("needle-beyond-100k-夏", None, 2, 1);
         assert_eq!(page.results.len(), 1);

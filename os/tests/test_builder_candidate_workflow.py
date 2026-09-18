@@ -117,16 +117,23 @@ class BuilderCandidates(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0)
                     self.assertFalse(output.exists())
 
-    def test_both_architectures_and_consumers_keep_acceptance_gates(self):
+    def test_both_architectures_and_builder_consumers_keep_acceptance_gates(self):
         self.assertIn('needs: [build, images, cache-cold, cache-warm]', BUILD)
         self.assertIn('runner: runner-arm64', BUILD)
         self.assertIn('name: builder-index-${{ github.sha }}', BUILD)
-        self.assertEqual(CHECK.count('image: ${{ needs.builder.outputs.image }}'), 3)
         self.assertIn('  select:\n    needs: builder', CHECK)
         self.assertIn('  security:\n    needs: builder', CHECK)
+        select_job = CHECK.split('  select:\n', 1)[1].split('\n  security:\n', 1)[0]
+        self.assertIn('image: code.podesta.ai/qos/ci-fast@sha256:', select_job)
+        self.assertNotIn('needs.builder.outputs.image', select_job)
+        security_job = CHECK.split('  security:\n', 1)[1].split('\n  affected:\n', 1)[0]
+        self.assertIn('image: ${{ needs.builder.outputs.image }}', security_job)
         affected_job = CHECK.split('  affected:\n', 1)[1].split('\n  checks:\n', 1)[0]
         self.assertIn('    needs: [builder, select]', affected_job)
+        self.assertIn('image: ${{ needs.builder.outputs.image }}', affected_job)
         builder_job = CHECK.split('  builder:\n', 1)[1].split('  select:\n', 1)[0]
+        self.assertIn('image: code.podesta.ai/qos/ci-control@sha256:', builder_job)
+        self.assertNotIn('needs.builder.outputs.image', builder_job)
         self.assertIn('DOCKER_BUILDKIT: "1"', builder_job)
         self.assertIn('run: bash os/tests/named_public_trust_context.sh docker', builder_job)
 

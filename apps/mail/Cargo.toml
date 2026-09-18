@@ -17,7 +17,7 @@ path = "src/main.rs"
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Attachment export goes through the host FileChooser portal.  Mail must never
 # infer a writable Downloads path or grant itself broad filesystem authority.
-ui = { package = "tilo-app", path = "../../crates/app/tilo-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
 # The Tilo resource + action model: Mail's collaborative-doc mutations (flags,
 # labels, local folders, drafts) are exported as replayable actions and a Ctrl+K
 # resource tree. See `src/actions.rs`.

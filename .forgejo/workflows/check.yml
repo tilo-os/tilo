@@ -54,8 +54,13 @@ env:
 
 jobs:
   builder:
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 5
+    container:
+      image: code.podesta.ai/qos/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
     outputs:
       image: ${{ steps.resolve.outputs.image }}
     steps:
@@ -86,10 +91,10 @@ jobs:
 
   select:
     needs: builder
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 15
     container:
-      image: ${{ needs.builder.outputs.image }}
+      image: code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
