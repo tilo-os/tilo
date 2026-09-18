@@ -185,3 +185,20 @@ are public signing inputs/results, and any mismatch prevents accepting the
 transfer receipt. Physical installation and signing authorization remain
 separate steps. Tests use a fake API runner plus the actual endpoint filesystem
 protocol, and real subprocess byte-limit/deadline tests; no cluster is contacted.
+
+### Nested tools container on an existing CI runner
+
+When the public tools run inside the runner's Docker daemon, pin the Kubernetes
+DinD container using the same fields above and add a `docker` object containing
+`id` (full 64-character container ID), `image_id` (full `sha256:` config ID),
+`started_at` (exact Docker State.StartedAt), and `restart_count`. Obtain these
+from the created running worker; never use a mutable container name or short ID.
+The endpoint path then refers to the installed helper inside that exact tools
+container. Each transfer checks both runtime identities before and afterward,
+and uses `docker exec` with the pinned full ID. Docker inspection requests only
+identity and state fields, excluding environment and registry authentication.
+
+This supports image finalization on the existing overlay-storage CI runners.
+It does not authorize installation-disk creation there or prove a live transfer;
+the nested-container tests exercise the fixed command path and replacement,
+restart and paused-state rejection using the fixture API runner.
