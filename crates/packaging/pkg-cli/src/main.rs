@@ -506,8 +506,24 @@ fn cmd_publish(
 
 // .qpkg I/O
 
+struct PendingQpkg(PathBuf);
+
+impl Drop for PendingQpkg {
+    fn drop(&mut self) {
+        if !self.0.as_os_str().is_empty() {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+}
+
 fn write_qpkg(path: &Path, id: PackageId, store: &MemoryBlobStore) -> Result<()> {
-    let file = File::create(path).with_context(|| format!("create {}", path.display()))?;
+    let temp = path.with_extension(format!("qpkg.tmp.{}", std::process::id()));
+    let file = File::options()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
+        .with_context(|| format!("create temporary package {}", temp.display()))?;
+    let mut pending = PendingQpkg(temp.clone());
     let mut tar = tar::Builder::new(file);
 
     let header = QpkgHeader {
@@ -531,6 +547,11 @@ fn write_qpkg(path: &Path, id: PackageId, store: &MemoryBlobStore) -> Result<()>
         .get(&signed_decoded.manifest_hash)
         .map_err(|e| anyhow!("store: {e}"))?
         .ok_or_else(|| anyhow!("manifest blob missing"))?;
+    let package_kind = std::str::from_utf8(&manifest)
+        .context("manifest is not UTF-8")
+        .and_then(|source| Manifest::from_toml_str(source).context("decode package manifest"))?
+        .package
+        .kind;
     tar_append_bytes(&mut tar, "manifest.toml", &manifest)?;
     let collection = store
         .get(&signed_decoded.payload_root_hash)
@@ -551,7 +572,29 @@ fn write_qpkg(path: &Path, id: PackageId, store: &MemoryBlobStore) -> Result<()>
         let name = format!("blobs/{h}");
         tar_append_bytes(&mut tar, &name, b)?;
     }
-    tar.finish().context("finalise tar")?;
+    if let Err(error) = tar.finish().context("finalise tar") {
+        drop(tar);
+        let _ = std::fs::remove_file(&temp);
+        return Err(error);
+    }
+    drop(tar);
+    let archive_size = std::fs::metadata(&temp)
+        .with_context(|| format!("stat temporary package {}", temp.display()))?
+        .len();
+    if !pkg::qpkg_size_allowed(package_kind, archive_size) {
+        let _ = std::fs::remove_file(&temp);
+        bail!(
+            "application qpkg is {archive_size} bytes; limit is {} bytes",
+            pkg::MAX_APP_QPKG_BYTES
+        );
+    }
+    if let Err(error) =
+        std::fs::rename(&temp, path).with_context(|| format!("install package {}", path.display()))
+    {
+        let _ = std::fs::remove_file(&temp);
+        return Err(error);
+    }
+    pending.0.clear();
     Ok(())
 }
 

@@ -26,9 +26,6 @@ landlock = "strict"
 [sandbox.net]
 mode = "off"
 
-[sandbox.services]
-tools = "required@1"
-
 [entrypoint]
 bin = "bin/print-centre"
 type = "gui"

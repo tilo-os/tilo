@@ -528,6 +528,56 @@ fn update_refuses_a_qpkg_for_a_different_package() {
     );
 }
 
+/// A local qpkg does not have a registry owner's signed publisher
+/// authorization. Matching the package id is therefore insufficient: an
+/// unrelated key must not silently take over the installed app's update slot.
+#[test]
+fn local_update_requires_explicit_authority_for_a_publisher_change() {
+    let env = Env::new();
+    let v1 = env.qpkg("1.0.0", b"one", None);
+    assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
+
+    let (replacement_key, replacement_pub_hex) = fresh_key();
+    let build = env.home.path().join("replacement-publisher");
+    let payload = build.join("payload");
+    write_payload(&payload, b"new publisher");
+    let manifest =
+        Manifest::from_toml_str(&manifest_src("2.0.0", &replacement_pub_hex, None)).unwrap();
+    let replacement = build.join("replacement.qpkg");
+    build_qpkg(&replacement, &manifest, &replacement_key, &payload);
+
+    let (ok, out, err) = env.cmd(&[
+        "update",
+        "dev.tilo.lifecycle",
+        "--from",
+        replacement.to_str().unwrap(),
+    ]);
+    assert!(!ok, "publisher takeover must be refused: {out}{err}");
+    assert!(err.contains("changed publisher"), "{err}");
+    assert!(err.contains("--require-publisher"), "{err}");
+    assert_eq!(
+        std::fs::read(env.payload_root().join("bin/app")).unwrap(),
+        b"one",
+        "a refused publisher change must preserve the installed payload"
+    );
+    assert!(env.registry_toml().contains(&env.pub_hex));
+
+    let (ok, out, err) = env.cmd(&[
+        "update",
+        "dev.tilo.lifecycle",
+        "--from",
+        replacement.to_str().unwrap(),
+        "--require-publisher",
+        &replacement_pub_hex,
+    ]);
+    assert!(ok, "explicit publisher rotation failed: {out}{err}");
+    assert_eq!(
+        std::fs::read(env.payload_root().join("bin/app")).unwrap(),
+        b"new publisher"
+    );
+    assert!(env.registry_toml().contains(&replacement_pub_hex));
+}
+
 /// `info` is the alias people reach for; it must show the things the
 /// other commands act on — the dependency, the evidence, the data.
 #[test]

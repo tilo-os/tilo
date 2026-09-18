@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use crate::capabilities::{CapabilityPlan, load_capability_file, now_unix};
 use crate::dbus_proxy::{self, DBusProxyGuard};
 use crate::manifest::{MinimalManifest, PortalPolicy, read_manifest};
-use crate::sandbox::{DBusBindKind, DBusBindPlan, build_bwrap_argv};
+use crate::sandbox::{DBusBindPlan, build_bwrap_argv};
 use crate::seccomp::compile_baseline;
 use crate::services::{
     EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext, resolve_identity_bind,
@@ -2571,7 +2571,6 @@ fn resolve_dbus_bind(
                 let plan = DBusBindPlan {
                     host_socket: guard.socket_path().to_path_buf(),
                     sandbox_path: dbus_proxy::sandbox_bus_path(uid),
-                    kind: DBusBindKind::Proxy,
                 };
                 tracing::info!(
                     proxy_binary = %binary.display(),
@@ -2594,6 +2593,46 @@ fn resolve_dbus_bind(
         );
     }
     (None, None)
+}
+
+#[cfg(test)]
+mod dbus_resolution_tests {
+    use super::*;
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_missing_filter_proxy_never_falls_back_to_the_raw_session_bus() {
+        let old_proxy = std::env::var_os(crate::dbus_proxy::PROXY_BIN_ENV);
+        let old_bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS");
+        // SAFETY: this test is in the process_env serial group.
+        unsafe {
+            std::env::set_var(
+                crate::dbus_proxy::PROXY_BIN_ENV,
+                "/definitely/missing/xdg-dbus-proxy",
+            );
+            std::env::set_var("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1234/bus");
+        }
+        let portals = std::collections::BTreeMap::from([(
+            "notifications".to_string(),
+            PortalPolicy::ViaHost,
+        )]);
+
+        let (plan, guard) = resolve_dbus_bind(&portals);
+
+        // SAFETY: restore the serialised process environment before asserting.
+        unsafe {
+            match old_proxy {
+                Some(value) => std::env::set_var(crate::dbus_proxy::PROXY_BIN_ENV, value),
+                None => std::env::remove_var(crate::dbus_proxy::PROXY_BIN_ENV),
+            }
+            match old_bus {
+                Some(value) => std::env::set_var("DBUS_SESSION_BUS_ADDRESS", value),
+                None => std::env::remove_var("DBUS_SESSION_BUS_ADDRESS"),
+            }
+        }
+        assert!(plan.is_none(), "a raw D-Bus bind must never be planned");
+        assert!(guard.is_none(), "no proxy process should have started");
+    }
 }
 
 /// Current process UID via libc, avoiding a `users`/`nix` dependency.
