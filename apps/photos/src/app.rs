@@ -3857,6 +3857,11 @@ impl PhotosApp {
         theme: &Theme,
     ) {
         use vello::peniko::Fill;
+        // This distinct collection must not leave stale library-card hit
+        // targets alive behind it when a person opens People from a timeline.
+        self.library_cards.clear();
+        self.library_details_cards.clear();
+        self.metadata_filter_cards.clear();
         let bounds = self.canvas_rect;
         let inset = f64::from(PAD) + 18.0;
         let content = Rect::new(
