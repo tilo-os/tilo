@@ -57,9 +57,13 @@ def extract_events(log):
             if event not in found and pattern.match(message):
                 if event in ("pull_requested", "container_create", "container_run"):
                     matched_image = re.search(r"\bimage=(\S+)", message).group(1)
-                    if event == "pull_requested":
+                    if container_image is None:
                         container_image = matched_image
-                    elif container_image is None or matched_image != container_image:
+                    elif matched_image != container_image:
+                        continue
+                    # A later action pull is not startup, even when it uses the
+                    # same image as a job whose initial create needed no pull.
+                    if event == "pull_requested" and "container_create" in found:
                         continue
                 if stamp(timestamp) is not None:
                     found[event] = timestamp
@@ -79,6 +83,7 @@ def report(evidence):
                 "id": job["id"], "events": events,
                 "queue_seconds": elapsed(job.get("created_at"), job.get("started_at")),
                 "run_created_to_runner_received_seconds": elapsed(created, events.get("runner_received")),
+                "runner_to_create_seconds": elapsed(events.get("runner_received"), events.get("container_create")),
                 "pull_to_create_seconds": elapsed(events.get("pull_requested"), events.get("container_create")),
                 "create_to_run_seconds": elapsed(events.get("container_create"), events.get("container_run")),
                 "runner_to_finish_seconds": elapsed(events.get("runner_received"), events.get("job_finished")),
@@ -124,7 +129,7 @@ def human_summary(result):
     for run in result["runs"]:
         lines.append(f"Run {run['id']}: queue {fmt(run['queue_seconds'])}; wall {fmt(run['wall_seconds'])}")
         for job in run["jobs"]:
-            lines.append(f"  Job {job['id']}: job queue {fmt(job['queue_seconds'])}; pull→create {fmt(job['pull_to_create_seconds'])}")
+            lines.append(f"  Job {job['id']}: job queue {fmt(job['queue_seconds'])}; received→create {fmt(job['runner_to_create_seconds'])}; pull→create {fmt(job['pull_to_create_seconds'])}")
     return "\n".join(lines)
 
 

@@ -151,7 +151,7 @@ The control socket is the out-of-process path for covering the seat layer, frame
 tilo/                            # workspace root
 ├── docs/                                # architecture, testing, security, and specifications
 │   └── architecture/                    # this directory — product and system design
-├── ui/                                  # UI toolkit
+├── crates/sdk/ui-core/                  # Internal UI toolkit behind tilo-app
 ├── shell/                               # compositor + shell
 │   └── src/
 │       ├── compositor/                  # smithay state, backends, frame, tab-binding, test_control

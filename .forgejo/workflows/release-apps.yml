@@ -9,7 +9,7 @@ on:
     paths:
       - "apps/**"
       - "crates/**"
-      - "ui/**"
+      - "crates/sdk/ui-core/**"
       - ".cargo/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -18,6 +18,7 @@ on:
       - "dist/apps/**"
       - "os/scripts/build-thin-apps.sh"
       - "tools/app_release.py"
+      - "tools/resolve_ci_builder.py"
       - "tools/assemble_app_collection.py"
       - "dist/apps/assemble-collection.sh"
       - ".forgejo/workflows/release-apps.yml"
@@ -28,7 +29,7 @@ on:
     paths:
       - "apps/**"
       - "crates/**"
-      - "ui/**"
+      - "crates/sdk/ui-core/**"
       - ".cargo/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -37,6 +38,7 @@ on:
       - "dist/apps/**"
       - "os/scripts/build-thin-apps.sh"
       - "tools/app_release.py"
+      - "tools/resolve_ci_builder.py"
       - "tools/assemble_app_collection.py"
       - "dist/apps/assemble-collection.sh"
       - ".forgejo/workflows/release-apps.yml"
@@ -68,9 +70,15 @@ concurrency:
 
 jobs:
   plan:
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 15
+    container:
+      image: code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
     outputs:
+      builder_image: ${{ steps.builder.outputs.image }}
       apps: ${{ steps.plan.outputs.apps }}
       packages: ${{ steps.plan.outputs.packages }}
       features: ${{ steps.plan.outputs.features }}
@@ -83,6 +91,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+      - name: Resolve one immutable builder for every architecture
+        id: builder
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: python3 tools/resolve_ci_builder.py
       - name: Select only the affected apps or requested collection
         id: plan
         shell: bash
@@ -173,7 +186,7 @@ jobs:
     # Keep those system headers in the versioned CI builder image instead of
     # resolving distro packages independently in every release job.
     container:
-      image: code.podesta.ai/qos/tilo-builder:latest
+      image: ${{ needs.plan.outputs.builder_image }}
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}

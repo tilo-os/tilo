@@ -73,6 +73,7 @@ rquickjs = { workspace = true, optional = true, features = ["bindgen"] }
 bounded-command = { path = "../../crates/system/bounded-command" }
 
 [dev-dependencies]
+serial_test.workspace = true
 tempfile.workspace = true
 
 [lints]

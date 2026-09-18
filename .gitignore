@@ -40,7 +40,7 @@ keys/*.password
 keys/*.private.pem
 keys/**/*.key
 keys/**/*.private.pem
-# runtime CRDT session artifacts (e.g. ui/examples write session.crdt)
+# runtime CRDT session artifacts (e.g. ui-core examples write session.crdt)
 *.crdt
 rustypipe_cache.json
 .claude/test-scratch/
