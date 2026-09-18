@@ -63,6 +63,8 @@ pub(crate) struct Geometry {
     pub(crate) rows: Vec<(ContactId, Rect, Rect)>,
     pub(crate) row_start: usize,
     pub(crate) row_count: usize,
+    visible_first: usize,
+    visible_last: usize,
     pub(crate) export_v3: Rect,
     pub(crate) export_v4: Rect,
     pub(crate) cancel: Rect,
@@ -113,7 +115,7 @@ impl ExportDialog {
         // labels. Use a stacked layout rather than painting enlarged text into
         // controls sized for 100%.
         let compact = self.text_scale >= 1.75 || window.width() < 440.0;
-        let header_h = if compact { 154.0 } else { EXPORT_HEADER_H };
+        let header_h = if compact { 176.0 } else { EXPORT_HEADER_H };
         let footer_h = if compact { 120.0 } else { EXPORT_FOOTER_H };
         let row_h = if compact { 56.0 } else { EXPORT_ROW_H };
         let width = 460.0_f64.min((window.width() - 32.0).max(280.0));
@@ -134,7 +136,7 @@ impl ExportDialog {
         let (select_all, select_none) = if compact {
             let gap = 8.0;
             let button_w = (panel.width() - 32.0 - gap) / 2.0;
-            let y = panel.y0 + 102.0;
+            let y = panel.y0 + 124.0;
             (
                 Rect::new(panel.x0 + 16.0, y, panel.x0 + 16.0 + button_w, y + 36.0),
                 Rect::new(
@@ -165,6 +167,7 @@ impl ExportDialog {
             .saturating_add(visible)
             .saturating_add(EXPORT_OVERSCAN_ROWS)
             .min(ids.len());
+        let visible_last = first_visible.saturating_add(visible).min(ids.len());
         let rows = ids
             .iter()
             .enumerate()
@@ -221,6 +224,8 @@ impl ExportDialog {
             rows,
             row_start,
             row_count: ids.len(),
+            visible_first: first_visible,
+            visible_last,
             export_v3,
             export_v4,
             cancel,
@@ -290,6 +295,30 @@ impl ExportDialog {
                 )),
             None,
         );
+        if geometry.compact {
+            text.draw_text(
+                scene,
+                "Choose vCard format",
+                12.0,
+                colors.text_dim,
+                transform * Affine::translate((geometry.panel.x0 + 18.0, geometry.panel.y0 + 88.0)),
+                None,
+            );
+            text.draw_text(
+                scene,
+                &format!(
+                    "{}–{} of {}",
+                    geometry.visible_first.saturating_add(1),
+                    geometry.visible_last,
+                    geometry.row_count
+                ),
+                12.0,
+                colors.text_dim,
+                transform
+                    * Affine::translate((geometry.panel.x1 - 106.0, geometry.panel.y0 + 62.0)),
+                None,
+            );
+        }
         chip(
             scene,
             transform,
@@ -423,7 +452,7 @@ impl ExportDialog {
             text,
             theme,
             geometry.export_v3,
-            "Export 3.0",
+            "vCard 3.0",
             false,
             geometry.export_v3.contains(pointer),
             false,
@@ -434,7 +463,7 @@ impl ExportDialog {
             text,
             theme,
             geometry.export_v4,
-            "Export 4.0",
+            "vCard 4.0",
             true,
             geometry.export_v4.contains(pointer),
             false,
