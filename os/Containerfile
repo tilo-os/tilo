@@ -67,6 +67,10 @@ COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem /
 
 FROM ${RPMS_REF} AS rpms
 
+# Public trust parsing is a build-only operation. The pinned base supplies the
+# OpenSSL CLI while its ABI libraries remain part of the runtime package policy.
+FROM ${BASE_REF} AS public-trust-tools
+
 # ---- Custom kernel repo ----------------------------------------------------
 # Same "OCI image with /repo" shape as the frozen RPM repo (see
 # os/Containerfile.rpms), but its content is a rebuilt Fedora kernel with
@@ -1997,7 +2001,8 @@ COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem /run/tilo-official-trust/
 COPY os/dev/development-trust.py os/dev/install-public-trust.py os/dev/hardware_profile.py /run/tilo-trust-tools/
 COPY os/etc/containers/policy.json /etc/containers/policy.json
 COPY os/etc/containers/registries.d/code.podesta.ai.yaml /etc/containers/registries.d/code.podesta.ai.yaml
-RUN python3 /run/tilo-trust-tools/install-public-trust.py \
+RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/run/tilo-build-tools/openssl,ro \
+    PATH="/run/tilo-build-tools:$PATH" python3 /run/tilo-trust-tools/install-public-trust.py \
       --source /run/tilo-public-trust --official /run/tilo-official-trust \
       --destination /usr/share/tilo --mode "$TILO_PUBLIC_TRUST_MODE" \
       --manifest-sha256 "$TILO_PUBLIC_TRUST_MANIFEST_SHA256" \
