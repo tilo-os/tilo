@@ -100,9 +100,21 @@ enum LaunchKind {
 /// a string path, preserving the same capability boundary as file choosing.
 #[derive(Debug, Clone)]
 pub struct LaunchRequest {
-    #[cfg_attr(not(feature = "portal"), allow(dead_code))]
+    #[cfg_attr(
+        not(feature = "portal"),
+        allow(
+            dead_code,
+            reason = "the featureless fallback keeps request construction available but cannot consume portal-only path state"
+        )
+    )]
     path: PathBuf,
-    #[cfg_attr(not(feature = "portal"), allow(dead_code))]
+    #[cfg_attr(
+        not(feature = "portal"),
+        allow(
+            dead_code,
+            reason = "the featureless fallback keeps request construction available but cannot consume portal-only launch mode"
+        )
+    )]
     kind: LaunchKind,
     thread_name: String,
 }
@@ -260,7 +272,13 @@ enum PickKind {
 #[derive(Debug, Clone)]
 pub struct PickRequest {
     title: String,
-    #[cfg_attr(not(feature = "portal"), allow(dead_code))]
+    #[cfg_attr(
+        not(feature = "portal"),
+        allow(
+            dead_code,
+            reason = "the featureless fallback keeps chooser construction available but cannot send the portal-only accept label"
+        )
+    )]
     // read by the ashpd request in `run`, gated behind the `portal` feature
     accept_label: String,
     thread_name: String,
