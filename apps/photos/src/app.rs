@@ -221,6 +221,11 @@ struct MetadataFilterCard {
     folder: Option<String>,
     person: Option<String>,
     tag: Option<String>,
+    /// A favourite view is a first-class, shared collection but selecting it
+    /// remains local presentation state. Keep it in the same card model as
+    /// the metadata filters so pointer, keyboard, and assistive technology
+    /// all address the exact visible chip.
+    favorites: bool,
     bounds: Rect,
 }
 
@@ -479,6 +484,10 @@ pub struct PhotosApp {
     /// assistive technology should receive in one update.
     library_items: Vec<LibraryItem>,
     library_total: usize,
+    /// Count for the always-addressable Favorites virtual collection. This is
+    /// a scalar projection of the shared library, so paint never walks the
+    /// document and the chip stays bounded even for a very large collection.
+    library_favorite_count: usize,
     library_offset: usize,
     library_albums: Vec<(String, String, usize)>,
     active_album: Option<String>,
@@ -490,6 +499,10 @@ pub struct PhotosApp {
     /// Tag filtering is local navigation derived from a durable tag resource.
     /// It never mutates a collaborator's metadata just by opening a view.
     active_tag: Option<String>,
+    /// The stable Favorites resource is a view over shared favourite markers,
+    /// never a private second list. Opening it is local; toggling a star is a
+    /// typed shared document action.
+    active_favorites: bool,
     /// Bounded labels used for discoverable visual filtering. Search and the
     /// resource tree still resolve every stable id outside this shelf.
     library_folders: Vec<(String, usize)>,
@@ -624,12 +637,14 @@ impl PhotosApp {
             force_search_refresh_error: false,
             library_items: Vec::new(),
             library_total: 0,
+            library_favorite_count: 0,
             library_offset: 0,
             library_albums: Vec::new(),
             active_album: None,
             active_folder: None,
             active_person: None,
             active_tag: None,
+            active_favorites: false,
             library_folders: Vec::new(),
             library_people: Vec::new(),
             library_tags: Vec::new(),
@@ -852,6 +867,7 @@ impl PhotosApp {
         self.active_folder = None;
         self.active_person = None;
         self.active_tag = None;
+        self.active_favorites = false;
         self.library_remove_confirm = None;
     }
 
@@ -1591,6 +1607,7 @@ impl PhotosApp {
                 self.metadata_editor = false;
             }
             crate::actions::PhotosOperation::ViewLibrary => self.show_library(),
+            crate::actions::PhotosOperation::ViewFavorites => self.view_favorites(doc)?,
             crate::actions::PhotosOperation::ViewAlbum { .. }
             | crate::actions::PhotosOperation::ViewFolder { .. }
             | crate::actions::PhotosOperation::ViewPerson { .. }
@@ -1614,6 +1631,7 @@ impl PhotosApp {
         self.active_folder = None;
         self.active_person = None;
         self.active_tag = None;
+        self.active_favorites = false;
         self.library_offset = 0;
         self.album_editor = false;
         self.album_delete_confirm = false;
@@ -1655,10 +1673,35 @@ impl PhotosApp {
         self.active_folder = folder;
         self.active_person = person;
         self.active_tag = tag;
+        self.active_favorites = false;
         self.library_offset = 0;
         self.album_editor = false;
         self.album_delete_confirm = false;
         self.notice = Some("Showing shared photo metadata view".to_owned());
+        Ok(())
+    }
+
+    /// Navigate to the stable favorites resource after verifying that it is
+    /// still non-empty. A stale global-search result must fail rather than
+    /// silently changing the user's view to an unrelated all-photos shelf.
+    fn view_favorites(&mut self, doc: &AutoCommit) -> Result<(), String> {
+        if !PhotosDoc::library(doc)
+            .photos
+            .iter()
+            .any(|photo| photo.favorite)
+        {
+            return Err("there are no favorite photographs in the library".to_owned());
+        }
+        self.library_mode = true;
+        self.active_album = None;
+        self.active_folder = None;
+        self.active_person = None;
+        self.active_tag = None;
+        self.active_favorites = true;
+        self.library_offset = 0;
+        self.album_editor = false;
+        self.album_delete_confirm = false;
+        self.notice = Some("Showing favorite photographs".to_owned());
         Ok(())
     }
 
@@ -2009,11 +2052,15 @@ impl PhotosApp {
                     .with_action_target(target)
             }));
             cards.extend(self.metadata_filter_cards.iter().map(|card| {
-                let label = match (&card.folder, &card.person, &card.tag) {
-                    (Some(folder), None, None) => format!("Folder: {folder}"),
-                    (None, Some(person), None) => format!("People: {person}"),
-                    (None, None, Some(tag)) => format!("Tag: {tag}"),
-                    _ => "All metadata".to_owned(),
+                let label = if card.favorites {
+                    "Favorites".to_owned()
+                } else {
+                    match (&card.folder, &card.person, &card.tag) {
+                        (Some(folder), None, None) => format!("Folder: {folder}"),
+                        (None, Some(person), None) => format!("People: {person}"),
+                        (None, None, Some(tag)) => format!("Tag: {tag}"),
+                        _ => "All metadata".to_owned(),
+                    }
                 };
                 AccessNode::new(Role::ToggleButton)
                     .with_name(label)
@@ -2024,18 +2071,23 @@ impl PhotosApp {
                             card.folder.as_ref() == self.active_folder.as_ref()
                                 && card.person.as_ref() == self.active_person.as_ref()
                                 && card.tag.as_ref() == self.active_tag.as_ref()
+                                && card.favorites == self.active_favorites
                                 && self.active_album.is_none(),
                         ),
                         ..Default::default()
                     })
-                    .with_action_target(format!(
-                        "photos:library-metadata:{}",
-                        metadata_filter_id(
-                            card.folder.as_deref(),
-                            card.person.as_deref(),
-                            card.tag.as_deref()
+                    .with_action_target(if card.favorites {
+                        "photos:library-favorites".to_owned()
+                    } else {
+                        format!(
+                            "photos:library-metadata:{}",
+                            metadata_filter_id(
+                                card.folder.as_deref(),
+                                card.person.as_deref(),
+                                card.tag.as_deref()
+                            )
                         )
-                    ))
+                    })
             }));
             for (forward, enabled, bounds) in &self.library_page_hits {
                 cards.push(
@@ -2313,6 +2365,7 @@ impl PhotosApp {
             self.active_folder = None;
             self.active_person = None;
             self.active_tag = None;
+            self.active_favorites = false;
             self.library_offset = 0;
             return true;
         }
@@ -2322,6 +2375,15 @@ impl PhotosApp {
             }
             if matches!(action, AccessAction::Activate) {
                 self.begin_metadata_editor(doc, id);
+            }
+            return true;
+        }
+        if target == "photos:library-favorites" {
+            if !matches!(action, AccessAction::Activate | AccessAction::Focus) {
+                return false;
+            }
+            if matches!(action, AccessAction::Activate) {
+                let _ = self.view_favorites(doc);
             }
             return true;
         }
@@ -2345,6 +2407,7 @@ impl PhotosApp {
             self.active_folder.clone_from(&card.folder);
             self.active_person.clone_from(&card.person);
             self.active_tag.clone_from(&card.tag);
+            self.active_favorites = card.favorites;
             self.library_offset = 0;
             return true;
         }
@@ -3062,6 +3125,7 @@ impl PhotosApp {
             None,
             None,
             None,
+            false,
             if compact_filters {
                 "All".to_owned()
             } else {
@@ -3073,7 +3137,7 @@ impl PhotosApp {
             // the album row and management row already consume the other
             // horizontal lanes.
             if let Some((tag, _count)) = self.library_tags.first() {
-                filters.push((None, None, Some(tag.clone()), tag.clone()));
+                filters.push((None, None, Some(tag.clone()), false, tag.clone()));
             }
         } else if compact_filters {
             // A phone has one shelf row. Show one folder *and* one explicit
@@ -3084,6 +3148,7 @@ impl PhotosApp {
                     Some(folder.clone()),
                     None,
                     None,
+                    false,
                     format!("{} ({count})", compact_label(folder, 8)),
                 ));
             }
@@ -3092,6 +3157,7 @@ impl PhotosApp {
                     None,
                     Some(person.clone()),
                     None,
+                    false,
                     format!("{} ({count})", compact_label(person, 8)),
                 ));
             }
@@ -3101,6 +3167,7 @@ impl PhotosApp {
                     Some(folder.clone()),
                     None,
                     None,
+                    false,
                     format!("Folder: {folder} ({count})"),
                 )
             }));
@@ -3109,6 +3176,7 @@ impl PhotosApp {
                     None,
                     Some(person.clone()),
                     None,
+                    false,
                     format!("People: {person} ({count})"),
                 )
             }));
@@ -3117,11 +3185,24 @@ impl PhotosApp {
                     None,
                     None,
                     Some(tag.clone()),
+                    false,
                     format!("Tag: {tag} ({count})"),
                 )
             }));
         }
-        for (folder, person, tag, label) in filters {
+        if self.library_favorite_count > 0 {
+            filters.insert(
+                1,
+                (
+                    None,
+                    None,
+                    None,
+                    true,
+                    format!("Favorites ({})", self.library_favorite_count),
+                ),
+            );
+        }
+        for (folder, person, tag, favorites, label) in filters {
             let width = if large_text {
                 (label.chars().count() as f64 * 13.0 + 22.0).clamp(64.0, 200.0)
             } else {
@@ -3138,6 +3219,7 @@ impl PhotosApp {
             let selected = folder.as_ref() == self.active_folder.as_ref()
                 && person.as_ref() == self.active_person.as_ref()
                 && tag.as_ref() == self.active_tag.as_ref()
+                && self.active_favorites == favorites
                 && self.active_album.is_none();
             scene.fill(
                 Fill::NonZero,
@@ -3174,6 +3256,7 @@ impl PhotosApp {
                 folder,
                 person,
                 tag,
+                favorites,
                 bounds: chip,
             });
             filter_x += width + 8.0;
@@ -4856,6 +4939,7 @@ impl Widget for PhotosApp {
                 self.metadata_editor = false;
             }
             crate::actions::PhotosOperation::ViewLibrary => self.show_library(),
+            crate::actions::PhotosOperation::ViewFavorites => self.view_favorites(doc)?,
             crate::actions::PhotosOperation::ViewAlbum { album_id } => {
                 self.view_album(doc, &album_id)?;
             }
@@ -5055,6 +5139,7 @@ impl Widget for PhotosApp {
         });
         let matches_filter = |photo: &LibraryPhoto| {
             membership.is_none_or(|ids| ids.contains(&photo.id))
+                && (!self.active_favorites || photo.favorite)
                 && self
                     .active_folder
                     .as_ref()
@@ -5073,6 +5158,7 @@ impl Widget for PhotosApp {
             .iter()
             .filter(|photo| matches_filter(photo))
             .count();
+        self.library_favorite_count = library.photos.iter().filter(|photo| photo.favorite).count();
         self.library_offset = self
             .library_offset
             .min(self.library_total.saturating_sub(1));
@@ -5550,6 +5636,7 @@ impl Widget for PhotosApp {
             self.active_folder = None;
             self.active_person = None;
             self.active_tag = None;
+            self.active_favorites = false;
             self.library_offset = 0;
             *handled = true;
             return;
@@ -5569,12 +5656,17 @@ impl Widget for PhotosApp {
                 .find(|card| card.bounds.contains(self.pointer))
                 .cloned()
         {
-            self.active_album = None;
-            self.active_folder = card.folder;
-            self.active_person = card.person;
-            self.active_tag = card.tag;
-            self.library_offset = 0;
-            self.notice = None;
+            if card.favorites {
+                let _ = self.view_favorites(doc);
+            } else {
+                self.active_album = None;
+                self.active_folder = card.folder;
+                self.active_person = card.person;
+                self.active_tag = card.tag;
+                self.active_favorites = false;
+                self.library_offset = 0;
+                self.notice = None;
+            }
             *handled = true;
             return;
         }
@@ -6022,6 +6114,60 @@ mod tests {
             .is_err()
         );
         assert_eq!(PhotosDoc::library(&doc), before);
+    }
+
+    #[test]
+    fn opening_favorites_uses_a_local_view_and_refuses_an_empty_stale_collection() {
+        let mut app = PhotosApp::new();
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let mut favorite =
+            LibraryPhoto::from_image(OpenImage::from_path("/photos/favorite.png", 20, 10));
+        favorite.favorite = true;
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos: vec![favorite],
+                albums: Vec::new(),
+            },
+        );
+        let before = PhotosDoc::library(&doc);
+        let payload = tilo_actions::EncodedAction::encode_operation(
+            PHOTOS_OPERATION_TYPE,
+            &PhotosOperation::ViewFavorites,
+        )
+        .expect("favorite view operation encodes");
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                tilo_actions::OperationKind::View,
+                PHOTOS_OPERATION_TYPE,
+                &payload.payload,
+                &doc,
+                &ROOT,
+            )
+            .expect("favorite collection is present")
+        );
+        assert!(app.library_mode);
+        assert!(app.active_favorites);
+        assert_eq!(
+            PhotosDoc::library(&doc),
+            before,
+            "opening a view is not a write"
+        );
+
+        PhotosDoc::set_library(&mut doc, &crate::model::PhotoLibrary::default());
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                tilo_actions::OperationKind::View,
+                PHOTOS_OPERATION_TYPE,
+                &payload.payload,
+                &doc,
+                &ROOT,
+            )
+            .is_err()
+        );
     }
 
     #[test]
