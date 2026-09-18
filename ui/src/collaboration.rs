@@ -74,6 +74,11 @@ static WIFI_CONTINUITY_BRIDGE: std::sync::OnceLock<
 /// Invoke the shell's launcher-authenticated, sealed Wi-Fi continuity path.
 /// Callers should run this off the frame thread; the bounded timeout turns a
 /// lost broker into an ordinary unavailable result.
+///
+/// # Errors
+///
+/// Returns an unavailable message when the collaboration bridge is absent,
+/// its bounded queue rejects the command, or the broker does not reply in time.
 pub fn wifi_continuity_command(
     command: runtime_collab::WifiContinuityCommand,
 ) -> Result<runtime_collab::WifiContinuityReply, String> {
