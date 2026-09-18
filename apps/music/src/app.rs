@@ -4775,7 +4775,10 @@ fn fill_rrect(scene: &mut Scene, t: Affine, r: Rect, radius: f64, color: Color) 
 // The params are independent geometry/style values a caller picks per call
 // (position, size, color, weight, wrap width); a struct would just relocate
 // them across 90+ call sites in `app/render.rs` without reducing complexity.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "text rendering forwards independent geometry and style values across existing call sites"
+)]
 fn draw_text(
     tr: &mut TextRenderer,
     scene: &mut Scene,
@@ -7543,7 +7546,10 @@ mod tests {
     // 'test(full_track_streams_whole_file_or_reports_the_source_truncation)'`
     // when changing the stream resolver; that is when it has something to say.
     #[ignore = "streams a real track over the network; opt in with --run-ignored"]
-    #[allow(clippy::too_many_lines)] // One end-to-end proof with two source outcomes.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one end-to-end proof covers complete playback and explicit source truncation"
+    )]
     fn full_track_streams_whole_file_or_reports_the_source_truncation() {
         use std::time::Duration;
         if !audio_server_present() || !decode_plugins_present() {
