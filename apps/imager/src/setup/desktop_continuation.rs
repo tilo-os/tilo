@@ -217,7 +217,7 @@ impl Continuation {
     ) -> Result<(), String> {
         if !identity_complete {
             return Err(
-                "Finish identity setup in the qOS login screen before reviewing imports.".into(),
+                "Finish identity setup in the Tilo login screen before reviewing imports.".into(),
             );
         }
         let f = self
@@ -360,7 +360,7 @@ impl Continuation {
         identity_complete: bool,
     ) -> Result<(), String> {
         if !identity_complete {
-            return Err("Waiting for trusted qOS identity setup to finish.".into());
+            return Err("Waiting for trusted Tilo identity setup to finish.".into());
         }
         let f = self
             .folders
@@ -453,9 +453,9 @@ pub(super) fn persist_review(choices: &[FolderChoice]) -> Result<(), String> {
 pub(super) fn trusted_identity_complete() -> Result<(), String> {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
-        .ok_or("No qOS session runtime directory")?;
+        .ok_or("No Tilo session runtime directory")?;
     let display = std::env::var_os("WAYLAND_DISPLAY")
-        .ok_or("Open Add folders inside qOS after identity setup")?;
+        .ok_or("Open Add folders inside Tilo after identity setup")?;
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     let parent = executable
         .parent()
@@ -499,7 +499,7 @@ fn authenticated_session_ready(
     });
     let socket = runtime.join(format!("qos-import-{key}-{}.sock", wayland.ino()));
     let mut stream = connect_readiness(&socket)
-        .map_err(|_| "Waiting for trusted qOS identity setup to finish".to_string())?;
+        .map_err(|_| "Waiting for trusted Tilo identity setup to finish".to_string())?;
     stream
         .set_read_timeout(Some(std::time::Duration::from_millis(250)))
         .map_err(|e| e.to_string())?;
@@ -508,9 +508,9 @@ fn authenticated_session_ready(
     let mut response = [0_u8; 20];
     stream
         .read_exact(&mut response)
-        .map_err(|_| "qOS identity setup is still pending".to_string())?;
+        .map_err(|_| "Tilo identity setup is still pending".to_string())?;
     if &response != b"qos-import-ready-v1\n" {
-        return Err("qOS identity setup is still pending".into());
+        return Err("Tilo identity setup is still pending".into());
     }
     let current = std::fs::symlink_metadata(runtime.join(display)).map_err(|e| e.to_string())?;
     if !current.file_type().is_socket()
@@ -518,7 +518,7 @@ fn authenticated_session_ready(
         || current.dev() != wayland.dev()
         || current.uid() != uid
     {
-        return Err("The qOS session changed; reopen Add folders.".into());
+        return Err("The Tilo session changed; reopen Add folders.".into());
     }
     pin.validate().map_err(|e| e.to_string())?;
     Ok(())
@@ -547,7 +547,7 @@ fn authenticate_session_peer(
     } != 0
         || len as usize != std::mem::size_of::<libc::ucred>()
     {
-        return Err("Cannot authenticate qOS session".into());
+        return Err("Cannot authenticate Tilo session".into());
     }
     // SAFETY: successful getsockopt initialized ucred.
     let peer = unsafe { peer.assume_init() };
@@ -584,7 +584,7 @@ fn authenticate_session_peer(
         || expected.ino() != actual.ino()
         || expected.dev() != actual.dev()
     {
-        return Err("Readiness peer is not the installed trusted qOS shell".into());
+        return Err("Readiness peer is not the installed trusted Tilo shell".into());
     }
     trusted_parent.validate().map_err(|e| e.to_string())?;
     Ok(())
@@ -638,7 +638,7 @@ fn connect_readiness(path: &Path) -> std::io::Result<std::os::unix::net::UnixStr
 
 #[cfg(not(target_os = "linux"))]
 pub(super) fn trusted_identity_complete() -> Result<(), String> {
-    Err("Continue the saved Desktop imports after logging into qOS on Linux.".into())
+    Err("Continue the saved Desktop imports after logging into Tilo on Linux.".into())
 }
 
 #[cfg(test)]
@@ -691,7 +691,7 @@ mod tests {
         let error = authenticated_session_ready(root, std::ffi::OsStr::new("wayland-1"), trusted)
             .unwrap_err();
         assert!(
-            error.contains("not the installed trusted qOS shell"),
+            error.contains("not the installed trusted Tilo shell"),
             "{error}"
         );
         assert!(

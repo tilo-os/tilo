@@ -191,7 +191,7 @@ pub fn desktop_readiness(host: &DesktopHost, releases: &[DesktopRelease]) -> Des
         Err(reason) => blockers.push(format!("Login session support could not be established: {reason}")),
     }
     if let Err(reason) = &host.installed_package {
-        blockers.push(format!("Existing qOS package status is unknown: {reason}"));
+        blockers.push(format!("Existing Tilo package status is unknown: {reason}"));
     }
     if let Err(reason) = &host.package_manager {
         blockers.push(format!("Native package manager is unavailable: {reason}"));
@@ -201,7 +201,7 @@ pub fn desktop_readiness(host: &DesktopHost, releases: &[DesktopRelease]) -> Des
         (selected, &host.installed_package)
         && version != &release.version
     {
-        blockers.push(format!("qOS package {version} is installed; selected release {} requires a reviewed upgrade/downgrade adapter.", release.version));
+        blockers.push(format!("Tilo package {version} is installed; selected release {} requires a reviewed upgrade/downgrade adapter.", release.version));
     }
     if !blockers.is_empty() {
         return DesktopReadiness::Blocked(blockers);
