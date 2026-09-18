@@ -9,6 +9,7 @@ function Get-TiloWindowsAppName {
         'code-editor' { 'Code Editor' }
         'api-tester' { 'API Tester' }
         'diffmerge' { 'Diff and Merge' }
+        'db-client' { 'Database Client' }
         'pdf-viewer' { 'PDF Viewer' }
         'ebook' { 'Books' }
         default { (Get-Culture).TextInfo.ToTitleCase($Application) }
