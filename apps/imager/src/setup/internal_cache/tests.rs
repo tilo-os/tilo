@@ -1249,6 +1249,26 @@ fn failed_receipt_callback_and_cancelled_reprepare_do_not_leave_success() {
     assert!(!provider.complete);
 }
 
+// Scoped host fixture hook at the actual final preparation receipt, after
+// Session's real record normalization, tail trimming and cursor restoration.
+#[cfg(unix)]
+type PreparationHook = Box<dyn FnMut(usize) -> Result<(), String>>;
+#[cfg(unix)]
+thread_local! {
+    static PREPARATION_HOOK: RefCell<Option<PreparationHook>> = const { RefCell::new(None) };
+}
+#[cfg(unix)]
+pub(in crate::setup) fn with_preparation_hook(hook: PreparationHook, run: impl FnOnce()) {
+    struct Reset(Option<PreparationHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            PREPARATION_HOOK.with(|h| *h.borrow_mut() = self.0.take());
+        }
+    }
+    let _reset = Reset(PREPARATION_HOOK.with(|h| h.replace(Some(hook))));
+    run();
+}
+
 /// Real-file common-protocol fixture. Freshness is minted only by create_new;
 /// this models provider policy, not Linux security, locking or publication.
 #[cfg(unix)]
@@ -1320,6 +1340,12 @@ impl Provider for &mut FreshDisk<'_> {
         {
             return Err("no preparation authority".into());
         }
+        PREPARATION_HOOK.with(|h| {
+            if let Some(hook) = h.borrow_mut().as_mut() {
+                hook(self.index)?;
+            }
+            Ok::<_, String>(())
+        })?;
         self.prepared = true;
         Ok(())
     }

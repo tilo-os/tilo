@@ -473,14 +473,24 @@ fn run_selected<'s>(
         .map(|p| Session::new(selected, 1, request.token.operation, p))
         .transpose()?;
     let pa = match (&mut sa, ax) {
-        (Some(s), Some(file)) => Some(s.prepare(selected, file, &flags.cancel)?),
+        (Some(s), Some(file)) => Some(
+            s.prepare(selected, file, &flags.cancel)
+                // Preparation may normalize journals or trim/sync a tail before
+                // failing. A string error cannot prove that nothing changed.
+                .inspect_err(|_| status.uncertain = true)?,
+        ),
         _ => None,
     };
     if let Some(p) = &pa {
         status.committed[0] = p.committed();
     }
     let pb = match (&mut sb, bx) {
-        (Some(s), Some(file)) => Some(s.prepare(selected, file, &flags.cancel)?),
+        (Some(s), Some(file)) => Some(
+            s.prepare(selected, file, &flags.cancel)
+                // Preparation may normalize journals or trim/sync a tail before
+                // failing. A string error cannot prove that nothing changed.
+                .inspect_err(|_| status.uncertain = true)?,
+        ),
         _ => None,
     };
     if let Some(p) = &pb {
@@ -552,6 +562,9 @@ fn run_selected<'s>(
                 result
             });
             if let Err(error) = consumed {
+                // Verification, cursor restoration and native guards can fail
+                // alongside cancellation. Conservatively retain that uncertainty.
+                status.uncertain = true;
                 if let Some(callback_error) = &mut status.error {
                     if *callback_error != error {
                         callback_error.push_str(&format!("; held-reader boundary: {error}"));
