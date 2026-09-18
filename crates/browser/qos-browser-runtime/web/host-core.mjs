@@ -31,7 +31,6 @@ export function wheelPixels(x,y,mode,width,height) {
 }
 const applicationCommands=new Set(['a','b','f','i','u','y','z']);
 const clipboardCommands=new Set(['c','v','x']);
-const historyCommands=new Set(['y','z']);
 export function keyboardRoute(event,composing,mac) {
   if(composing||event.isComposing)return 'composition';
   const key=String(event.key??'');
@@ -49,23 +48,41 @@ export function modifierSnapshot(event) {
   return [Boolean(event.ctrlKey),Boolean(event.altKey),Boolean(event.shiftKey),Boolean(event.metaKey)];
 }
 export function semanticKeyboardRoute(event,composing,mac) {
-  const route=keyboardRoute(event,composing,mac);
-  return route==='forward'&&historyCommands.has(String(event.key??'').toLowerCase())?'forward':'native';
+  if(keyboardRoute(event,composing,mac)!=='forward')return 'native';
+  const key=String(event.key??'').toLowerCase();
+  if(mac)return key==='z'&&event.metaKey&&!event.ctrlKey&&!event.altKey?'forward':'native';
+  if(!event.ctrlKey||event.metaKey||event.altKey)return 'native';
+  return key==='z'||(key==='y'&&!event.shiftKey)?'forward':'native';
 }
 export function createKeyboardForwarder({route,dispatch,publishModifiers=()=>{},clearModifiers=()=>{},report=()=>{},mac=false}) {
-  const forwarded=new Set();
+  const forwarded=new Map();let currentOwner;
+  const keyOf=event=>event.code||event.key;
+  const releaseEvent=event=>({key:event.key,code:event.code,ctrlKey:false,altKey:false,shiftKey:false,metaKey:false});
+  function release(owner) {
+    let released=false;
+    for(const [key,entry] of forwarded){
+      if(entry.owner!==owner)continue;
+      dispatch('keyup',entry.event);forwarded.delete(key);released=true;
+    }
+    if(currentOwner!==owner&&!released)return false;
+    if(currentOwner===owner)currentOwner=undefined;
+    clearModifiers();return true;
+  }
   return {
-    keydown(event,composing,platformMac=mac) {
+    keydown(owner,event,composing,platformMac=mac) {
+      if(currentOwner!==owner){if(currentOwner!==undefined)release(currentOwner);currentOwner=owner;}
       publishModifiers(event);
       if(route(event,composing,platformMac)!=='forward')return false;
-      event.preventDefault();dispatch('keydown',event);forwarded.add(event.code||event.key);report();return true;
+      event.preventDefault();dispatch('keydown',event);forwarded.set(keyOf(event),{owner,event:releaseEvent(event)});report();return true;
     },
-    keyup(event) {
-      publishModifiers(event);
-      if(!forwarded.delete(event.code||event.key))return false;
-      event.preventDefault();dispatch('keyup',event);return true;
+    keyup(owner,event) {
+      const key=keyOf(event);const entry=forwarded.get(key);
+      if(currentOwner!==owner&&entry?.owner!==owner)return false;
+      if(currentOwner===owner)publishModifiers(event);
+      if(entry?.owner!==owner)return false;
+      forwarded.delete(key);event.preventDefault();dispatch('keyup',event);return true;
     },
-    blur() { clearModifiers();forwarded.clear(); },
+    blur:release,
   };
 }
 export function beforeInputRoute(event,composing) {

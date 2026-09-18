@@ -145,11 +145,11 @@ export function semanticBridge(root,invoke,report,shortcuts) {
     if(editable){
       element.addEventListener('keydown',event=>{
         const state=element.qosState;
-        if(!state.active||elements.get(state.key)!==element||!element.route||state.disabled||state.readOnly)return;
-        shortcuts?.keydown?.(event,state.composing);
+        if(!state.active||elements.get(state.key)!==element||!element.route||state.disabled||state.readOnly||document.activeElement!==element)return;
+        shortcuts?.keydown?.(element,event,state.composing);
       });
-      element.addEventListener('keyup',event=>shortcuts?.keyup?.(event));
-      element.addEventListener('blur',()=>shortcuts?.blur?.());
+      element.addEventListener('keyup',event=>shortcuts?.keyup?.(element,event));
+      element.addEventListener('blur',()=>shortcuts?.blur?.(element));
       element.addEventListener('input',event=>{
         const state=element.qosState;
         if(state.composing||event.isComposing)return;
@@ -191,14 +191,16 @@ export function semanticBridge(root,invoke,report,shortcuts) {
       let element=elements.get(key);
       const editable=['TextInput','MultilineTextInput'].includes(node.role);
       if(element&&element.qosEditable!==editable){
-        element.qosState.active=false;element.route=undefined;element.remove();elements.delete(key);element=undefined;
+        shortcuts?.blur?.(element);element.qosState.active=false;element.route=undefined;element.remove();elements.delete(key);element=undefined;
       }
       if(!element){
         element=createElement(editable,key,node.role);elements.set(key,element);
       }
       element.route={owner,target:node.action_target};
-      element.qosState.disabled=Boolean(node.state?.disabled);
-      element.qosState.readOnly=Boolean(node.state?.read_only);
+      const disabled=Boolean(node.state?.disabled),readOnly=Boolean(node.state?.read_only);
+      if(editable&&!element.qosState.disabled&&!element.qosState.readOnly&&(disabled||readOnly))shortcuts?.blur?.(element);
+      element.qosState.disabled=disabled;
+      element.qosState.readOnly=readOnly;
       if(node.state?.focused&&!canonicalFocus)canonicalFocus=element;
       if(element.parentNode!==parent)parent.append(element);
       const role=node.role&&typeof node.role==='object'?(node.role.Heading?'heading':undefined):roles[node.role];
@@ -238,7 +240,7 @@ export function semanticBridge(root,invoke,report,shortcuts) {
       for(const child of node.children??[])walk(child,parent);
     }
     walk(snapshot.root,root);
-    for(const [key,element] of elements)if(!live.has(key)){element.qosState.active=false;element.route=undefined;element.remove();elements.delete(key);}
+    for(const [key,element] of elements)if(!live.has(key)){shortcuts?.blur?.(element);element.qosState.active=false;element.route=undefined;element.remove();elements.delete(key);}
     for(const recovery of recoveries.values())syncRecovery(recovery);
     for(const element of elements.values())element.dataset.qosFocused=String(element===canonicalFocus);
     const active=document.activeElement;
@@ -264,5 +266,5 @@ export function semanticBridge(root,invoke,report,shortcuts) {
     }
     root.dataset.nodeCount=String(elements.size);
   }
-  return {update,close(){pendingFocus=undefined;clearActiveDescendant();for(const element of elements.values()){element.qosState.active=false;element.route=undefined;}for(const surface of recoverySurfaces)surface.remove();recoverySurfaces.clear();recoveries.clear();root.replaceChildren();elements.clear();}};
+  return {update,close(){pendingFocus=undefined;clearActiveDescendant();for(const element of elements.values()){shortcuts?.blur?.(element);element.qosState.active=false;element.route=undefined;}for(const surface of recoverySurfaces)surface.remove();recoverySurfaces.clear();recoveries.clear();root.replaceChildren();elements.clear();}};
 }

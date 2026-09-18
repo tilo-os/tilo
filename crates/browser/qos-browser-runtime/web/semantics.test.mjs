@@ -119,8 +119,14 @@ test('semantic editor keeps native text, selection, clipboard, browser, and IME 
 });
 
 test('disabled read-only and stale semantic editors cannot forward history mutations',()=>{
-  const dispatched=[];
-  const shortcuts=createKeyboardForwarder({route:semanticKeyboardRoute,mac:true,dispatch:(...args)=>dispatched.push(args)});
+  const dispatched=[];const modifiers=[];let clears=0;
+  const shortcuts=createKeyboardForwarder({
+    route:semanticKeyboardRoute,
+    mac:true,
+    dispatch:(type,keyEvent)=>dispatched.push([type,keyEvent.key]),
+    publishModifiers:keyEvent=>modifiers.push(modifierSnapshot(keyEvent)),
+    clearModifiers:()=>{clears++;},
+  });
   const root=new Element('div');const bridge=semanticBridge(root,()=>true,()=>{},shortcuts);
   const view=state=>snapshot({role:'TextInput',name:'Title',action_target:'title',value:'draft',state:{focusable:true,...state},text_selection:{anchor:5,focus:5}});
   bridge.update(view({disabled:true}));
@@ -130,6 +136,67 @@ test('disabled read-only and stale semantic editors cannot forward history mutat
   bridge.update({root:{path:'chat',children:[]}});
   readOnly.dispatchEvent(event('keydown',{key:'z',metaKey:true}));
   assert.deepEqual(dispatched,[]);
+  assert.deepEqual(modifiers,[]);
+  assert.equal(clears,0);
+});
+
+test('semantic owner releases on read-only transition and stale lifecycle cannot consume a new owner',()=>{
+  const dispatched=[];const modifiers=[];let clears=0;
+  const shortcuts=createKeyboardForwarder({
+    route:semanticKeyboardRoute,
+    mac:true,
+    dispatch:(type,keyEvent)=>dispatched.push([type,keyEvent.key]),
+    publishModifiers:keyEvent=>modifiers.push(modifierSnapshot(keyEvent)),
+    clearModifiers:()=>{clears++;},
+  });
+  const root=new Element('div');const bridge=semanticBridge(root,()=>true,()=>{},shortcuts);
+  const view=(firstState={},secondState={})=>({root:{path:'app',children:[
+    {path:'first',semantics:{semantic_key:'first',role:'TextInput',name:'First',action_target:'first',value:'A',state:{focusable:true,...firstState},text_selection:{anchor:1,focus:1}}},
+    {path:'second',semantics:{semantic_key:'second',role:'TextInput',name:'Second',action_target:'second',value:'B',state:{focusable:true,...secondState},text_selection:{anchor:1,focus:1}}},
+  ]}});
+  bridge.update(view());
+  const first=root.children[0],second=root.children[1];
+  document.activeElement=first;
+  first.dispatchEvent(event('keydown',{key:'z',code:'KeyZ',metaKey:true}));
+  bridge.update(view({read_only:true}));
+  document.activeElement=second;
+  second.dispatchEvent(event('keydown',{key:'z',code:'KeyZ',metaKey:true}));
+  first.dispatchEvent(event('keyup',{key:'z',code:'KeyZ'}));
+  first.dispatchEvent(event('blur'));
+  second.dispatchEvent(event('keyup',{key:'z',code:'KeyZ'}));
+  assert.deepEqual(dispatched,[['keydown','z'],['keyup','z'],['keydown','z'],['keyup','z']]);
+  assert.deepEqual(modifiers,[
+    [false,false,false,true],
+    [false,false,false,true],
+    [false,false,false,false],
+  ]);
+  assert.equal(clears,1,'only the original owner transition clears before the second owner finishes normally');
+});
+
+test('semantic removal and bridge disposal release each outstanding owner once',()=>{
+  const dispatched=[];const modifiers=[];let clears=0;
+  const shortcuts=createKeyboardForwarder({
+    route:semanticKeyboardRoute,
+    mac:true,
+    dispatch:(type,keyEvent)=>dispatched.push([type,keyEvent.key]),
+    publishModifiers:keyEvent=>modifiers.push(modifierSnapshot(keyEvent)),
+    clearModifiers:()=>{clears++;},
+  });
+  const root=new Element('div');const bridge=semanticBridge(root,()=>true,()=>{},shortcuts);
+  const view=()=>snapshot({role:'TextInput',name:'Title',action_target:'title',value:'draft',state:{focusable:true},text_selection:{anchor:5,focus:5}});
+  bridge.update(view());
+  const removed=root.children[0];document.activeElement=removed;
+  removed.dispatchEvent(event('keydown',{key:'z',code:'KeyZ',metaKey:true}));
+  bridge.update({root:{path:'chat',children:[]}});
+  bridge.update(view());
+  const disposed=root.children[0];document.activeElement=disposed;
+  disposed.dispatchEvent(event('keydown',{key:'z',code:'KeyZ',metaKey:true}));
+  bridge.close();
+  removed.dispatchEvent(event('blur'));
+  disposed.dispatchEvent(event('keyup',{key:'z',code:'KeyZ'}));
+  assert.deepEqual(dispatched,[['keydown','z'],['keyup','z'],['keydown','z'],['keyup','z']]);
+  assert.deepEqual(modifiers,[[false,false,false,true],[false,false,false,true]],'disposed and removed stale events publish no modifiers');
+  assert.equal(clears,2);
 });
 
 test('CJK preedit commits once and ignores the trailing input event',()=>{

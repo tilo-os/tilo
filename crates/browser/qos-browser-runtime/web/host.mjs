@@ -33,8 +33,8 @@ export async function mountDesktop(target,options={}) {
   let semanticKeys;
   const semantic=semanticBridge(accessibility,(...args)=>runtime.semantic(id,...args),report,{
     keydown:(...args)=>active()&&semanticKeys?.keydown(...args),
-    keyup:event=>active()&&semanticKeys?.keyup(event),
-    blur:()=>{if(active())semanticKeys?.blur();},
+    keyup:(...args)=>active()&&semanticKeys?.keyup(...args),
+    blur:owner=>{if(active())semanticKeys?.blur(owner);},
   });
   const listeners=new AbortController();const on=(node,type,fn,opts={})=>node.addEventListener(type,fn,{...opts,signal:listeners.signal});
   function active(){return !closed&&!surface.inert&&registry.current(token)&&id!==undefined;}
@@ -105,9 +105,9 @@ export async function mountDesktop(target,options={}) {
   let closeWrites=[];
   const cleanup=recoverableClose({
     begin(){
-      closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
+      semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
       if(id!==undefined)closeWrites=JSON.parse(runtime.close(id));
-      semantic.close();surface.remove();
+      surface.remove();
     },
     async settle(){
       await flush.catch(()=>{});
@@ -159,17 +159,18 @@ export async function mountDesktop(target,options={}) {
     const dispatchKey=(type,event)=>canvas.dispatchEvent(new KeyboardEvent(type,event));
     const hiddenKeys=createKeyboardForwarder({route:keyboardRoute,mac:config.mac,dispatch:dispatchKey,clearModifiers,report:()=>report({lastInput:'keyboard'})});
     semanticKeys=createKeyboardForwarder({route:semanticKeyboardRoute,mac:config.mac,dispatch:dispatchKey,publishModifiers,clearModifiers,report:()=>report({lastInput:'keyboard'})});
+    const hiddenKeyOwner={};
     const dispatchCanvasKey=key=>{canvas.dispatchEvent(new KeyboardEvent('keydown',{key}));canvas.dispatchEvent(new KeyboardEvent('keyup',{key}));};
     on(editor,'keydown',event=>{
-      hiddenKeys.keydown(event,composing);
+      hiddenKeys.keydown(hiddenKeyOwner,event,composing);
     });
-    on(editor,'keyup',event=>hiddenKeys.keyup(event));
+    on(editor,'keyup',event=>hiddenKeys.keyup(hiddenKeyOwner,event));
     on(editor,'compositionstart',()=>{composing=true;runtime.ime(id,'start','');report({lastInput:'compositionstart'});});
     on(editor,'compositionupdate',event=>{runtime.ime(id,'preedit',event.data);});
     on(editor,'compositionend',event=>{runtime.ime(id,'preedit','');runtime.ime(id,'commit',event.data);composing=false;editor.value='';report({lastInput:'compositioncommit'});});
     on(editor,'beforeinput',event=>{const route=beforeInputRoute(event,composing);if(route.kind==='ignore')return;event.preventDefault();if(route.kind==='commit'){runtime.ime(id,'commit',route.text);editor.value='';report({lastInput:'beforeinput'});}else if(route.kind==='key'){dispatchCanvasKey(route.key);report({lastInput:'beforeinput-key'});}});
     on(editor,'focus',()=>{canvas.dispatchEvent(new FocusEvent('focus'));if(active())runtime.ime(id,'start','');});
-    on(editor,'blur',()=>{if(active()){if(composing){runtime.ime(id,'preedit','');composing=false;report({lastInput:'compositioncancel'});}hiddenKeys.blur();runtime.ime(id,'end','');canvas.dispatchEvent(new FocusEvent('blur'));}});
+    on(editor,'blur',()=>{if(active()){if(composing){runtime.ime(id,'preedit','');composing=false;report({lastInput:'compositioncancel'});}hiddenKeys.blur(hiddenKeyOwner);runtime.ime(id,'end','');canvas.dispatchEvent(new FocusEvent('blur'));}});
     on(canvas,'blur',()=>{if(active())clearModifiers();});
     on(canvas,'pointerdown',()=>report({lastInput:'pointer'}));
     on(canvas,'wheel',event=>{

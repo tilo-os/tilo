@@ -80,7 +80,16 @@ test('semantic native editors forward only canonical history shortcuts', () => {
   assert.equal(typeof route,'function');
   assert.equal(route({key:'z',metaKey:true},false,true),'forward');
   assert.equal(route({key:'z',metaKey:true,shiftKey:true},false,true),'forward');
+  assert.equal(route({key:'y',metaKey:true},false,true),'native');
+  assert.equal(route({key:'y',metaKey:true,shiftKey:true},false,true),'native');
+  assert.equal(route({key:'z',metaKey:true,ctrlKey:true},false,true),'native');
+  assert.equal(route({key:'z',metaKey:true,altKey:true},false,true),'native');
+  assert.equal(route({key:'z',ctrlKey:true},false,false),'forward');
+  assert.equal(route({key:'z',ctrlKey:true,shiftKey:true},false,false),'forward');
   assert.equal(route({key:'y',ctrlKey:true},false,false),'forward');
+  assert.equal(route({key:'y',ctrlKey:true,shiftKey:true},false,false),'native');
+  assert.equal(route({key:'z',ctrlKey:true,metaKey:true},false,false),'native');
+  assert.equal(route({key:'z',ctrlKey:true,altKey:true},false,false),'native');
   for(const event of [
     {key:'a',metaKey:true},
     {key:'c',metaKey:true},
@@ -96,6 +105,7 @@ test('semantic native editors forward only canonical history shortcuts', () => {
 
 test('shared key forwarder sends one paired event and clears modifiers on blur', () => {
   const dispatched=[];const modifiers=[];let clears=0;
+  const owner={};
   const forwarder=hostCore.createKeyboardForwarder({
     route:hostCore.semanticKeyboardRoute,
     dispatch:(type,event)=>dispatched.push([type,event.key,event.shiftKey]),
@@ -104,15 +114,41 @@ test('shared key forwarder sends one paired event and clears modifiers on blur',
   });
   const down={key:'z',code:'KeyZ',metaKey:true,shiftKey:true,defaultPrevented:false,preventDefault(){this.defaultPrevented=true;}};
   const up={key:'z',code:'KeyZ',metaKey:false,shiftKey:false,defaultPrevented:false,preventDefault(){this.defaultPrevented=true;}};
-  assert.equal(forwarder.keydown(down,false,true),true);
-  assert.equal(forwarder.keyup(up),true);
-  assert.equal(forwarder.keyup(up),false,'a repeated keyup cannot dispatch twice');
-  forwarder.blur();
+  assert.equal(forwarder.keydown(owner,down,false,true),true);
+  assert.equal(forwarder.keyup(owner,up),true);
+  assert.equal(forwarder.keyup(owner,up),false,'a repeated keyup cannot dispatch twice');
+  forwarder.blur(owner);
   assert.deepEqual(dispatched,[['keydown','z',true],['keyup','z',false]]);
   assert.deepEqual(modifiers,[[false,false,true,true],[false,false,false,false],[false,false,false,false]]);
   assert.equal(clears,1);
   assert.equal(down.defaultPrevented,true);
   assert.equal(up.defaultPrevented,true);
+});
+
+test('blur synthesizes release for its forwarded owner and stale owners cannot interfere', () => {
+  const dispatched=[];const modifiers=[];let clears=0;
+  const owner={},stale={};
+  const forwarder=hostCore.createKeyboardForwarder({
+    route:hostCore.semanticKeyboardRoute,
+    mac:true,
+    dispatch:(type,event)=>dispatched.push([type,event.key,event.metaKey,event.shiftKey]),
+    publishModifiers:event=>modifiers.push(hostCore.modifierSnapshot(event)),
+    clearModifiers:()=>{clears++;},
+  });
+  const down={key:'z',code:'KeyZ',metaKey:true,shiftKey:true,preventDefault(){}};
+  const up={key:'z',code:'KeyZ',preventDefault(){this.defaultPrevented=true;}};
+  assert.equal(forwarder.keydown(owner,down,false),true);
+  assert.equal(forwarder.keyup(stale,up),false);
+  assert.equal(forwarder.blur(stale),false);
+  assert.equal(forwarder.blur(owner),true);
+  assert.equal(forwarder.keyup(owner,up),false,'the later physical release is already settled');
+  assert.deepEqual(dispatched,[
+    ['keydown','z',true,true],
+    ['keyup','z',false,false],
+  ]);
+  assert.deepEqual(modifiers,[[false,false,true,true]],'stale and post-blur releases cannot publish modifiers');
+  assert.equal(clears,1);
+  assert.equal(up.defaultPrevented,undefined,'an unowned keyup stays native');
 });
 
 test('beforeinput covers soft-keyboard edits without duplicating composition or paste', () => {
