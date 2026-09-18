@@ -5373,9 +5373,20 @@ impl ShellOverlayHost {
             return;
         }
         let st = chrome.borrow_mut();
+        let mut changed = false;
         for (strip_id, closing) in closing_per_strip {
-            st.tree_mut()
-                .nudge_active_group_off_closing(strip_id, &closing);
+            let mut tree = st.tree_mut();
+            let before = tree.active_group_for(strip_id);
+            let after = tree.nudge_active_group_off_closing(strip_id, &closing);
+            changed |= before != after;
+        }
+        if changed {
+            // Closing the focused group's last tab changes the destination
+            // for keyboard input immediately, before the fade finishes. Keep
+            // that focus hand-off durable at the same boundary: a crash or
+            // logout during the animation must not restart with the stale
+            // closing group selected.
+            st.tree().flush_to_disk();
         }
     }
 
@@ -29826,6 +29837,41 @@ mod resync_strips_tests {
             .group_at_for_tests(strip_id, 0)
             .expect("the sibling window group remains");
         assert_eq!(group.active_tab_id(), 2);
+    }
+
+    #[test]
+    fn closing_focused_group_persists_focus_on_the_surviving_window() {
+        let (mut tree, strip_id, first_group) = one_group_seed();
+        let state_dir = tempfile::tempdir().expect("temporary state directory");
+        let state_path = state_dir.path().join("state.json");
+        let second_group = 202;
+        tree.workspaces[0].strips[0]
+            .window_groups
+            .push(make_stub_group(second_group, "Second"));
+        tree.persist_path = Some(state_path.clone());
+        tree.seed_doc_from_cache();
+        tree.flush_to_disk();
+
+        let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        assert!(host.close_tab_in_group(first_group, Some(1)));
+        host.tick_active_group_reconcile_for_tests();
+
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("focus hand-off is durable during the close fade");
+        assert_eq!(
+            restarted.active_group_for(strip_id),
+            Some(second_group),
+            "restart must focus the surviving sibling, not the group whose close animation began"
+        );
+        assert_eq!(
+            restarted.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .map(|group| group.id)
+                .collect::<Vec<_>>(),
+            vec![second_group],
+            "the close and its focus hand-off must reach disk as one observable state"
+        );
     }
 
     #[test]
