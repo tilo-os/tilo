@@ -33,10 +33,11 @@ const FIELD_MIN_W: f64 = 72.0;
 const TOGGLE_W: [f64; 3] = [30.0, 26.0, 30.0];
 const ACTION_W: [f64; 5] = [28.0, 28.0, 72.0, 40.0, 28.0];
 const COUNT_W: f64 = 78.0;
-/// Deliberately off-scale seams between the toggle chips and between the
-/// action buttons; the 5 px field radius.
-const TOGGLE_SEAM: f64 = 5.0;
-const ACTION_SEAM: f64 = 6.0;
+/// Seams on the base grid (HIG §7b): the three mode toggles read as one
+/// segmented group (`s1`), the action buttons are siblings (`s2`); the 5 px
+/// field radius.
+const TOGGLE_SEAM: f64 = ui::tokens::Spacing::BASE.s1 as f64;
+const ACTION_SEAM: f64 = ui::tokens::Spacing::BASE.s2 as f64;
 const FIELD_RADIUS: f64 = 5.0;
 /// Type roles (renderer input; scaled once): chip labels, field/action text.
 const LABEL_FONT: f32 = 12.5;
@@ -682,18 +683,21 @@ impl FindBar {
             (Action::ToggleRegex, regex_l, regex_w, self.options.regex),
         ] {
             let rect = Rect::new(x, field_y, x + width, field_y + m.field_h);
-            let (background, foreground) = if active {
-                (ctx.palette.accent, ctx.palette.on_accent)
+            // Rest: the chip face with its derived edge; active: the accent
+            // fill alone (a chosen accent never carries a hairline).
+            let foreground = if active {
+                ctx.scene.fill(
+                    Fill::NonZero,
+                    ctx.transform,
+                    ctx.palette.accent,
+                    None,
+                    &vello::kurbo::RoundedRect::from_rect(rect, FIELD_RADIUS),
+                );
+                ctx.palette.on_accent
             } else {
-                (ctx.palette.chip, ctx.palette.text_dim)
+                ui::surface::card(ctx.scene, ctx.transform, rect, FIELD_RADIUS, ctx.palette.chip);
+                ctx.palette.text_dim
             };
-            ctx.scene.fill(
-                Fill::NonZero,
-                ctx.transform,
-                background,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(rect, FIELD_RADIUS),
-            );
             // Centred on the measured label box, not a per-glyph estimate.
             let (label_w, label_h) = ctx.tr.measure(label, LABEL_FONT, None);
             let text_x = rect.x0 + (width - f64::from(label_w)).max(0.0) / 2.0;
@@ -779,13 +783,7 @@ impl FindBar {
             (Action::Close, "✕".to_string(), close_w),
         ] {
             let rect = Rect::new(x, field_y, x + width, field_y + m.field_h);
-            ctx.scene.fill(
-                Fill::NonZero,
-                ctx.transform,
-                ctx.palette.chip,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(rect, FIELD_RADIUS),
-            );
+            ui::surface::card(ctx.scene, ctx.transform, rect, FIELD_RADIUS, ctx.palette.chip);
             let (label_w, label_h) = ctx.tr.measure(&label, ACTION_FONT, None);
             let text_x = rect.x0 + (width - f64::from(label_w)).max(0.0) / 2.0;
             ctx.tr.draw_text(

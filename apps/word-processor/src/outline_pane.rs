@@ -123,13 +123,9 @@ impl OutlinePane {
             let rect = Rect::new(x0, y, right, y + row_h);
             let active = active_id == Some(heading.id.as_str());
             if active {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    palette.chip,
-                    None,
-                    &vello::kurbo::RoundedRect::from_rect(rect, 5.0),
-                );
+                // The current heading is a lifted row: the chip face with
+                // its derived edge, never an accent wash (HIG §9.3).
+                ui::surface::card(scene, transform, rect, 5.0, palette.chip);
             }
             let (size, ink) = match heading.level {
                 1 => (13.5, palette.text),
