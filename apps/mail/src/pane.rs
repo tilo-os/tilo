@@ -26,12 +26,14 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::webview::{SharedEngine, WebViewCommand};
-use ui::widget::{EmptyState, TextInput, WebView};
+use ui::widget::{Button, ButtonFace, EmptyState, TextInput, WebView};
 
 use crate::account::AccountStore;
+use ui::surface::{card, edge_on, pill, separator};
+
 use crate::draw::{
     ACCOUNT_HEADER_H, BACK_CLEARANCE, CHIP_CLEARANCE, CHIP_INSET, CHIP_SIZE, FOLDER_ROW_H,
-    HEADER_H, LIST_ROW_H, draw_avatar, elide, fill_rect, fill_round, stroke_round,
+    HEADER_H, LIST_ROW_H, draw_avatar, elide, fill_rect,
 };
 use crate::model::{Addr, Folder, Message, MessageId};
 use crate::state::{CtxAction, Intent, MailState, Shared};
@@ -717,7 +719,7 @@ impl Pane {
         if let Some((rect, _)) = self.hits.iter().find(|(_, h)| matches!(h, Hit::Compose)) {
             let hov = rect.contains(st.last_mouse);
             let col = if hov { c.accent[4] } else { c.accent[5] };
-            fill_round(scene, t, *rect, 10.0, col);
+            pill(scene, t, *rect, col, None, Some(10.0));
             let label = "Compose";
             let (w, _) = tr.measure_weighted(label, 14.0, None, TextWeight::Semibold);
             // Icon + label centred as a unit.
@@ -775,10 +777,13 @@ impl Pane {
         };
         let active = ai == st.accounts.active;
         let hov = rect.contains(st.last_mouse);
+        // The active account is a lifted card with its derived edge (HIG
+        // §9.3 / §9.5): selection is a lift, not an accent wash, and a bare
+        // wash on the sidebar had no edge at all on the dark preset.
         if active {
-            fill_round(scene, t, rect, 9.0, c.accent[5].with_alpha_factor(0.12));
+            card(scene, t, rect, 9.0, theme.bg_active);
         } else if hov {
-            fill_round(scene, t, rect, 9.0, c.lift(0.35));
+            card(scene, t, rect, 9.0, theme.bg_hover);
         }
         let chev = if account.collapsed {
             Icon::ChevronRight
@@ -847,7 +852,7 @@ impl Pane {
         let gear = account_gear_rect(rect);
         let ghov = gear.contains(st.last_mouse);
         if ghov {
-            fill_round(scene, t, gear, 8.0, c.lift(0.72));
+            pill(scene, t, gear, theme.bg_hover, None, Some(8.0));
         }
         Icon::Settings.draw(
             scene,
@@ -870,7 +875,7 @@ impl Pane {
         let c = &theme.tokens.colors;
         let hov = rect.contains(self.shared.borrow().last_mouse);
         if hov {
-            fill_round(scene, t, rect, 9.0, c.lift(0.35));
+            pill(scene, t, rect, theme.bg_hover, None, Some(9.0));
         }
         let cy = rect.y0 + ADD_ACCOUNT_ROW_H / 2.0;
         let icon = Rect::new(rect.x0 + 12.0, cy - 8.0, rect.x0 + 28.0, cy + 8.0);
@@ -908,8 +913,10 @@ impl Pane {
         let active_account = ai == st.accounts.active;
         let selected = active_account && f == st.folder;
         let hov = rect.contains(st.last_mouse);
+        // Selection is a lift with the accent kept to the leading bar (HIG
+        // §9.3 / §9.4); hover is the shared hover tier.
         if selected {
-            fill_round(scene, t, rect, 8.0, c.accent[5].with_alpha_factor(0.20));
+            pill(scene, t, rect, theme.bg_active, None, Some(8.0));
             fill_rect(
                 scene,
                 t,
@@ -917,7 +924,7 @@ impl Pane {
                 c.accent[5],
             );
         } else if hov {
-            fill_round(scene, t, rect, 8.0, c.lift(0.35));
+            pill(scene, t, rect, theme.bg_hover, None, Some(8.0));
         }
         let sp = &theme.tokens.spacing;
         let cy = rect.y0 + FOLDER_ROW_H / 2.0;
@@ -981,7 +988,7 @@ impl Pane {
             return;
         };
         let bg = if selected { c.accent[5] } else { c.neutral[3] };
-        fill_round(scene, t, badge, 10.0, bg);
+        pill(scene, t, badge, bg, None, Some(10.0));
         tr.draw_text_weighted(
             scene,
             &txt,
@@ -1039,19 +1046,13 @@ impl Pane {
                 None,
             );
         }
-        fill_round(scene, t, sr, 9.0, c.surfaces.raised);
-        stroke_round(
-            scene,
-            t,
-            sr,
-            9.0,
-            1.0,
-            if st.search_focused {
-                c.border_focus
-            } else {
-                c.border_standard
-            },
-        );
+        // The field's rest edge is derived from its fill (HIG §9.5); focus
+        // keeps the focus ring.
+        if st.search_focused {
+            pill(scene, t, sr, c.surfaces.raised, Some(c.border_focus), Some(9.0));
+        } else {
+            card(scene, t, sr, 9.0, c.surfaces.raised);
+        }
         // The search and clear glyphs each own a square the box's height, so
         // they stay centred on the box (and on the input between them) at any
         // text scale; the glyph itself is the small icon token, text-scaled.
@@ -1089,23 +1090,15 @@ impl Pane {
         // Manual sync / refresh button.
         let rb = self.refresh_box_rect();
         let rb_hov = rb.contains(st.last_mouse);
-        fill_round(
-            scene,
-            t,
-            rb,
-            9.0,
-            if rb_hov {
-                c.lift(0.72)
-            } else {
-                c.surfaces.raised
-            },
-        );
-        stroke_round(scene, t, rb, 9.0, 1.0, c.border_standard);
+        // The shared Neutral button face (HIG §8) with no label; the glyph
+        // is drawn in the face's ink.
+        let face = ButtonFace::new(rb, "").radius(9.0).hovered(rb_hov);
+        Button::paint(scene, t, tr, theme, &face);
         Icon::Refresh.draw(
             scene,
             t,
             rb.inset(-(rb.height() - icon) / 2.0),
-            c.neutral[7],
+            face.colors(theme).2,
         );
     }
 
@@ -1247,8 +1240,10 @@ impl Pane {
         }
         let row = Rect::new(rect.x0 + swipe_dx, rect.y0, rect.x1 + swipe_dx, rect.y1);
 
+        // Selection is a lift with the accent kept to the leading bar (HIG
+        // §9.3 / §9.4), the same tier the folder rows use.
         if selected {
-            fill_rect(scene, t, row, c.accent[5].with_alpha_factor(0.16));
+            fill_rect(scene, t, row, theme.bg_active);
             fill_rect(
                 scene,
                 t,
@@ -1258,11 +1253,16 @@ impl Pane {
         } else if hov && swipe_dx.abs() < 1.0 {
             fill_rect(scene, t, row, c.lift(0.35));
         }
-        fill_rect(
+        // The rule between rows is derived against the list's base and stops
+        // an `s3` short of both ends (HIG §9.5).
+        separator(
             scene,
             t,
-            Rect::new(row.x0 + 12.0, row.y1 - 1.0, row.x1, row.y1),
-            c.neutral[2],
+            row.x0,
+            row.x1,
+            row.y1 - 0.5,
+            f64::from(theme.tokens.spacing.s3),
+            c.surfaces.base,
         );
         row
     }
@@ -1423,7 +1423,7 @@ impl Pane {
             let badge_h = (f64::from(bh) + 2.0).max(16.0);
             let bx = right - f64::from(bw) - 12.0;
             let badge = Rect::new(bx - 6.0, subj_cy - badge_h / 2.0, right, subj_cy + badge_h / 2.0);
-            fill_round(scene, t, badge, badge_h / 2.0, c.neutral[3]);
+            pill(scene, t, badge, c.neutral[3], None, None);
             tr.draw_text_weighted(
                 scene,
                 &badge_txt,
@@ -1500,25 +1500,19 @@ impl Pane {
                 _ => continue,
             };
             let hov = rect.contains(last_mouse);
-            let bg = if hov { c.lift(0.72) } else { c.lift(0.35) };
-            fill_round(scene, t, *rect, 8.0, bg);
-            stroke_round(
-                scene,
-                t,
-                *rect,
-                8.0,
-                1.0,
-                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-            );
+            // The shared button face (HIG §8): Neutral, or DangerOutline for
+            // the destructive action; glyph and label are drawn in the face's
+            // ink (the starred star keeps its warning fill).
+            let face = ButtonFace::new(*rect, "").radius(8.0).hovered(hov);
+            let face = if danger { face.danger_outline() } else { face };
+            Button::paint(scene, t, tr, theme, &face);
             // The Star action fills its glyph when the message is starred, so
             // the favourited state is a solid star, not merely a tinted outline.
             let is_star_on = matches!(hit, Hit::Star) && starred;
-            let col = if danger {
-                c.semantic.danger
-            } else if is_star_on {
+            let col = if is_star_on {
                 c.semantic.warning
             } else {
-                c.neutral[8]
+                face.colors(theme).2
             };
             let paint_icon = |scene: &mut Scene, ibox: Rect| {
                 if is_star_on {
@@ -1696,11 +1690,13 @@ impl Pane {
             head.read,
             st.inspection == Some(head.id),
         );
+        // The rule under the thread heading is derived against the reader's
+        // raised ground (HIG §9.5).
         fill_rect(
             scene,
             t,
             Rect::new(content_x, y, rr.x1 - 24.0, y + 1.0),
-            c.border_standard,
+            edge_on(c.surfaces.raised),
         );
         y += 16.0;
 
@@ -1805,7 +1801,14 @@ impl Pane {
             content_x + f64::from(label_w) + 34.0,
             y + 17.0,
         );
-        fill_round(scene, t, pill, 7.0, c.accent[5].with_alpha_factor(0.14));
+        ui::surface::pill(
+            scene,
+            t,
+            pill,
+            c.accent[5].with_alpha_factor(0.14),
+            None,
+            Some(7.0),
+        );
         Icon::Eye.draw(
             scene,
             t,
@@ -1921,20 +1924,12 @@ impl Pane {
         let (lw, _) = tr.measure(label, 11.5, None);
         let pill = Rect::new(body.x0, y, body.x0 + 30.0 + f64::from(lw) + 14.0, y + 28.0);
         let hov = pill.contains(self.shared.borrow().last_mouse);
-        fill_round(
+        card(
             scene,
             t,
             pill,
             8.0,
-            if hov { c.lift(0.72) } else { c.lift(0.35) },
-        );
-        stroke_round(
-            scene,
-            t,
-            pill,
-            8.0,
-            1.0,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            if hov { theme.bg_hover } else { c.lift(0.35) },
         );
         icon.draw(
             scene,
@@ -1968,8 +1963,8 @@ impl Pane {
         plain: &str,
     ) {
         let c = &theme.tokens.colors;
-        fill_round(scene, t, body, 6.0, c.surfaces.base);
-        stroke_round(scene, t, body, 6.0, 1.0, c.border_standard);
+        // A base-filled box on the raised reader: fill + derived edge.
+        card(scene, t, body, 6.0, c.surfaces.base);
         let x = body.x0 + 18.0;
         let width = (body.width() - 36.0).max(80.0) as f32;
         let mut y = body.y0 + 18.0;
@@ -2218,20 +2213,12 @@ impl Pane {
             }
             let chip = Rect::new(ax, yy, ax + chip_w, yy + 30.0);
             let hov = chip.contains(hov_mouse);
-            fill_round(
+            card(
                 scene,
                 t,
                 chip,
                 8.0,
-                if hov { c.lift(0.72) } else { c.lift(0.35) },
-            );
-            stroke_round(
-                scene,
-                t,
-                chip,
-                8.0,
-                1.0,
-                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+                if hov { theme.bg_hover } else { c.lift(0.35) },
             );
             a.icon().draw(
                 scene,
@@ -2270,7 +2257,8 @@ impl Pane {
                 col,
             );
             chip_hits.push((chip, msg.id, ai));
-            ax += chip_w + 10.0;
+            // Sibling chips sit an `s3` apart (HIG §7b).
+            ax += chip_w + f64::from(theme.tokens.spacing.s3);
         }
         yy + 30.0
     }

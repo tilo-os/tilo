@@ -2637,7 +2637,26 @@ impl ChatApp {
                     Hit::CallLeave => ("Leave call".into(), Role::Button, false),
                     _ => return None,
                 };
-                Some((*rect, hit.clone(), name, role, selected))
+                // The composer's pointer target is the whole box (clicking
+                // its padding focuses it), but what assistive technology
+                // reads as the text field is the band the shared `TextInput`
+                // was laid out into — the attach / emoji / send buttons sit
+                // beside that band, not inside it. Before the first paint
+                // the band is empty, so the box stands in for it.
+                let text_band = |field: &ui::widget::TextInput| {
+                    let inner = field.get_rect();
+                    if inner.width() > 0.0 && inner.height() > 0.0 {
+                        inner
+                    } else {
+                        *rect
+                    }
+                };
+                let rect = match hit {
+                    Hit::FocusMain => text_band(&self.composer_main),
+                    Hit::FocusThread => text_band(&self.composer_thread),
+                    _ => *rect,
+                };
+                Some((rect, hit.clone(), name, role, selected))
             })
             .collect()
     }

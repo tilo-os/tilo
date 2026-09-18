@@ -21,21 +21,21 @@ use std::time::{Duration, Instant};
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
-use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::qos_actions::OperationKind;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::tokens::spacing::Spacing;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
-use ui::widget::{TextInput, Widget};
+use ui::widget::{Banner, BannerKind, Button, ButtonFace, TextInput, Widget};
 
 use crate::add_panel::{AddAccountPanel, AddPanelEvent};
 use crate::doc::AuthDoc;
@@ -52,7 +52,20 @@ const COMPACT_EDIT_BTN_W: f64 = 64.0;
 const ADD_BTN_H: f64 = 40.0;
 const SEARCH_H: f64 = 44.0;
 const HEADER_H: f64 = 150.0;
-const PERSISTENCE_BANNER_H: f64 = 48.0;
+/// The unsaved-vault banner: an `s2` breath under the header hairline, the
+/// 32 px band itself, then an `s4` section gap before the first card (which
+/// the list pads by its own `s2`, so the band the list reserves is `s4 - s2`
+/// shorter than the visible gap). Spelled from `Spacing::BASE` because
+/// layout runs without a theme.
+const BANNER_TOP_GAP: f64 = Spacing::BASE.s2 as f64;
+/// The shared `Banner`'s pinned 1× band (its own content-height floor).
+const BANNER_H: f64 = 44.0;
+const BANNER_BOTTOM_GAP: f64 = (Spacing::BASE.s4 - Spacing::BASE.s2) as f64;
+const PERSISTENCE_BANNER_BAND: f64 = BANNER_TOP_GAP + BANNER_H + BANNER_BOTTOM_GAP;
+/// Gap between the banner's message and its Retry button (`s2`): the two
+/// used to share an edge.
+const BANNER_RETRY_GAP: f64 = Spacing::BASE.s2 as f64;
+const BANNER_RETRY_W: f64 = 92.0;
 /// The header actions, the search field, the persistence banner and the
 /// account list share one centred content column no wider than this at
 /// normal type. A row is an identity on the left and a code on the right; an
@@ -62,8 +75,8 @@ const PERSISTENCE_BANNER_H: f64 = 48.0;
 const READABLE_CONTENT_W: f64 = 760.0;
 /// Top inset of the header's action row.
 const HEADER_BTN_TOP: f64 = 18.0;
-/// Gap between the Edit and Add buttons.
-const HEADER_BTN_GAP: f64 = 10.0;
+/// Gap between the Edit and Add buttons — siblings, so the `s3` step.
+const HEADER_BTN_GAP: f64 = Spacing::BASE.s3 as f64;
 /// Horizontal padding inside a header button around its measured label (the
 /// `s4` spacing step, spelled out because layout runs without a theme).
 const HEADER_BTN_PAD: f64 = 16.0;
@@ -933,9 +946,9 @@ impl AuthenticatorApp {
             "Set up selected"
         };
         let add_label = if compact { "+ Add" } else { "+  Add account" };
-        let (edit_w, edit_h) =
+        let (edit_w, _) =
             text_renderer.measure_weighted(edit_label, 14.0, None, TextWeight::Medium);
-        let (tw, th) = text_renderer.measure_weighted(add_label, 14.0, None, TextWeight::Semibold);
+        let (tw, _) = text_renderer.measure_weighted(add_label, 14.0, None, TextWeight::Semibold);
         self.header_label_w = Some((f64::from(tw), f64::from(edit_w)));
         self.layout_header_buttons();
 
@@ -956,67 +969,34 @@ impl AuthenticatorApp {
             TextWeight::Medium,
         );
 
-        // Edit button.
+        // Edit and Add are the shared button face (HIG §8): the neutral rest
+        // edge, the disabled treatment, the primary fill and the label's
+        // centring all come from `Button::paint` rather than a local copy
+        // that stroked `border_standard` over a raised fill (invisible on the
+        // dark preset) and painted its label literal white.
         let can_edit = self.selected.is_some_and(|id| self.vault.get(id).is_some());
         let edit_hovered = can_edit && self.edit_btn_rect.contains(self.last_mouse);
-        let edit_shape =
-            RoundedRect::from_rect(self.edit_btn_rect, f64::from(theme.tokens.radii.md));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            if edit_hovered {
-                theme.tokens.colors.lift(0.72)
-            } else {
-                theme.tokens.colors.surfaces.raised
-            },
-            None,
-            &edit_shape,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &edit_shape,
-        );
-        let edit_color = if can_edit {
-            theme.tokens.colors.text_primary
-        } else {
-            theme.tokens.colors.text_dim.with_alpha_factor(0.55)
-        };
-        text_renderer.draw_text_weighted(
+        Button::paint(
             scene,
-            edit_label,
-            14.0,
-            edit_color,
-            transform
-                * Affine::translate((
-                    self.edit_btn_rect.center().x - f64::from(edit_w) / 2.0,
-                    self.edit_btn_rect.center().y - f64::from(edit_h) / 2.0,
-                )),
-            None,
-            TextWeight::Medium,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonFace::new(self.edit_btn_rect, edit_label)
+                .text_size(14.0)
+                .hovered(edit_hovered)
+                .disabled(!can_edit),
         );
         let hovered = self.add_btn_rect.contains(self.last_mouse);
-        let shape = RoundedRect::from_rect(self.add_btn_rect, f64::from(theme.tokens.radii.md));
-        let bg = if hovered {
-            theme.accent_hover
-        } else {
-            theme.accent_primary
-        };
-        scene.fill(Fill::NonZero, transform, bg, None, &shape);
-        text_renderer.draw_text_weighted(
+        Button::paint(
             scene,
-            add_label,
-            14.0,
-            Color::WHITE,
-            transform
-                * Affine::translate((
-                    self.add_btn_rect.center().x - f64::from(tw) / 2.0,
-                    self.add_btn_rect.center().y - f64::from(th) / 2.0,
-                )),
-            None,
-            TextWeight::Semibold,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonFace::new(self.add_btn_rect, add_label)
+                .primary()
+                .text_size(14.0)
+                .weight(TextWeight::Semibold)
+                .hovered(hovered),
         );
 
         // Search field (TextInput draws its own chrome, focus ring and
@@ -1183,7 +1163,7 @@ impl Widget for AuthenticatorApp {
             self.rect.y0
                 + HEADER_H
                 + if self.persistence_pending {
-                    PERSISTENCE_BANNER_H + 8.0
+                    PERSISTENCE_BANNER_BAND
                 } else {
                     0.0
                 },
@@ -1191,11 +1171,12 @@ impl Widget for AuthenticatorApp {
             self.rect.y1 - 12.0,
         );
         self.persistence_retry_rect = if self.persistence_pending {
+            let banner_top = self.rect.y0 + HEADER_H + BANNER_TOP_GAP;
             Rect::new(
-                c.x1 - OUTER_PAD - 92.0,
-                self.rect.y0 + HEADER_H + 8.0,
+                c.x1 - OUTER_PAD - BANNER_RETRY_W,
+                banner_top,
                 c.x1 - OUTER_PAD,
-                self.rect.y0 + HEADER_H + 40.0,
+                banner_top + BANNER_H,
             )
         } else {
             Rect::ZERO
@@ -1223,18 +1204,15 @@ impl Widget for AuthenticatorApp {
         );
         self.draw_header(scene, transform, text_renderer, theme);
         if self.persistence_pending {
+            // The banner stops an `s2` short of Retry (they used to share an
+            // edge) and is the shared `Banner` face (HIG §8): semantic tint,
+            // edge, leading bar and icon from the toolkit, with the app's
+            // Retry beside it.
             let banner = Rect::new(
                 self.content_rect.x0 + OUTER_PAD,
-                self.rect.y0 + HEADER_H + 8.0,
-                self.content_rect.x1 - OUTER_PAD,
-                self.rect.y0 + HEADER_H + 40.0,
-            );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.semantic.danger.with_alpha_factor(0.14),
-                None,
-                &RoundedRect::from_rect(banner, f64::from(theme.tokens.radii.md)),
+                self.persistence_retry_rect.y0,
+                self.persistence_retry_rect.x0 - BANNER_RETRY_GAP,
+                self.persistence_retry_rect.y1,
             );
             let banner_message = if self.rect.width() < 480.0 {
                 "Vault not saved — retry"
@@ -1243,39 +1221,33 @@ impl Widget for AuthenticatorApp {
                     .as_deref()
                     .unwrap_or("Local vault changes aren't saved — restore access, then retry.")
             };
-            text_renderer.draw_text(
+            Banner::paint(
                 scene,
-                banner_message,
-                13.0,
-                theme.tokens.colors.semantic.danger,
-                transform * Affine::translate((banner.x0 + 12.0, banner.center().y - 8.0)),
-                Some((self.persistence_retry_rect.x0 - banner.x0 - 24.0) as f32),
-            );
-            scene.fill(
-                Fill::NonZero,
                 transform,
-                theme.accent_primary,
+                text_renderer,
+                theme,
+                banner,
+                BannerKind::Error,
+                BannerKind::Error.default_icon(),
+                banner_message,
                 None,
-                &RoundedRect::from_rect(
-                    self.persistence_retry_rect,
-                    f64::from(theme.tokens.radii.sm),
-                ),
+                false,
+                self.last_mouse,
             );
-            text_renderer.draw_text_weighted(
+            Button::paint(
                 scene,
-                "Retry",
-                13.0,
-                theme.on_surface(theme.accent_primary).ink,
-                transform
-                    * Affine::translate((
-                        self.persistence_retry_rect.x0 + 23.0,
-                        self.persistence_retry_rect.center().y - 8.0,
-                    )),
-                None,
-                TextWeight::Semibold,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(self.persistence_retry_rect, "Retry")
+                    .primary()
+                    .text_size(13.0)
+                    .weight(TextWeight::Semibold)
+                    .radius(f64::from(theme.tokens.radii.sm)),
             );
         }
-        // Hairline under the header.
+        // Hairline under the header: derived against the base it is drawn on
+        // (HIG §9.5) — a half-alpha `border_standard` vanished on dark.
         let line = Rect::new(
             self.rect.x0,
             self.header_rect.y1 - 1.0,
@@ -1285,7 +1257,7 @@ impl Widget for AuthenticatorApp {
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.tokens.colors.border_standard.with_alpha_factor(0.5),
+            ui::surface::edge_on(theme.tokens.colors.surfaces.base),
             None,
             &line,
         );

@@ -135,14 +135,19 @@ impl CountdownRing {
             .with_caps(Cap::Round)
             .with_join(Join::Round);
 
-        // Faint full-circle track. Use the standard border token rather than a
-        // white overlay so the track stays visible on light surfaces (a white
-        // 10% overlay vanishes against a light background, orphaning the arc).
+        // Faint full-circle track, derived against the raised card the ring
+        // sits on (HIG §9.5) at the panel-border strength so a 3 px arc reads
+        // as a track rather than a hairline. A declared `border_standard` was
+        // three shades from `raised` on the dark preset and left the arc
+        // orphaned; a white overlay would vanish on a light card.
         let track = Circle::new(self.center, self.radius);
         scene.stroke(
             &Stroke::new(self.thickness),
             transform,
-            theme.tokens.colors.border_standard,
+            ui::surface::edge_on_with(
+                theme.tokens.colors.surfaces.raised,
+                ui::chrome::PANEL_BORDER_ALPHA,
+            ),
             None,
             &track,
         );

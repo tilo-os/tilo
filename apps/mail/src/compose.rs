@@ -33,6 +33,8 @@
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
+
+use ui::surface::{card, edge_on, edge_outline, pill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::Widget;
@@ -57,9 +59,13 @@ const LABEL_W: f64 = 54.0;
 const MIN_W: f64 = 380.0;
 const MIN_H: f64 = 340.0;
 const RESIZE_GRIP: f64 = 8.0;
-/// Gap between header field rows (authored, off the spacing scale: `s1`
-/// crowds the underlines, `s2` reads as separate groups).
-const HEADER_ROW_GAP: f64 = 6.0;
+/// Gap between header field rows: related rows that read as one group, so
+/// the `s2` step (HIG §7b).
+const HEADER_ROW_GAP: f64 = ui::tokens::spacing::Spacing::BASE.s2 as f64;
+/// Gap between two formatting-toolbar glyph squares (`s1`) and the extra
+/// gap after the inline-marks group (`s2`, so the group gap is `s3`).
+const TOOLBAR_GLYPH_GAP: f64 = ui::tokens::spacing::Spacing::BASE.s1 as f64;
+const TOOLBAR_GROUP_EXTRA_GAP: f64 = ui::tokens::spacing::Spacing::BASE.s2 as f64;
 /// Default window size at 1×; scaled with the text so the header rows,
 /// toolbar and button bar still leave a usable body at 200%.
 const DEFAULT_W: f64 = 560.0;
@@ -1013,10 +1019,12 @@ impl ComposeWindow {
                     Rect::new(tx, toolbar_y, tx + tw, toolbar_y + tw),
                     hit,
                 ));
-                tx += tw + 2.0;
-                // small gap after the inline-marks group
+                // Glyph squares are `s1` apart (they used to sit 2 px apart,
+                // touching at 1×); the inline-marks group ends with an extra
+                // `s2`, so the group gap is the `s3` sibling step (HIG §7b).
+                tx += tw + TOOLBAR_GLYPH_GAP;
                 if matches!(hit, ComposeHit::Underline) {
-                    tx += 6.0;
+                    tx += TOOLBAR_GROUP_EXTRA_GAP;
                 }
             }
         }
@@ -1861,15 +1869,17 @@ impl ComposeWindow {
             false,
         );
 
-        // Resize affordance (bottom-right grip dots).
-        let g = Rect::new(r.x1 - 14.0, r.y1 - 14.0, r.x1 - 4.0, r.y1 - 4.0);
-        stroke_round(
-            scene,
+        // Resize affordance (bottom-right grip): lives inside the window's
+        // padding ring, an `s1` clear of the Discard button's corner (the
+        // two used to share an edge) and `s1` in from the window's own edge.
+        let s1 = f64::from(theme.tokens.spacing.s1);
+        let g = Rect::new(r.x1 - PAD + s1, r.y1 - PAD + s1, r.x1 - s1, r.y1 - s1);
+        scene.stroke(
+            &Stroke::new(1.2),
             t,
-            g,
-            2.0,
-            1.2,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 51),
+            ui::surface::edge_on_with(c.surfaces.raised, ui::chrome::GLOW_ALPHA),
+            None,
+            &RoundedRect::from_rect(g, 2.0),
         );
 
         let _ = presence;
@@ -1964,19 +1974,13 @@ impl ComposeWindow {
     ) {
         let c = &theme.tokens.colors;
         let body = self.body_rect();
-        fill_round(scene, t, body, 8.0, c.surfaces.base);
-        stroke_round(
-            scene,
-            t,
-            body,
-            8.0,
-            1.0,
-            if matches!(self.focus, Field::Body) {
-                c.border_focus
-            } else {
-                c.border_standard
-            },
-        );
+        // The body card's rest edge is derived from its base fill (HIG §9.5);
+        // focus keeps the focus ring.
+        if matches!(self.focus, Field::Body) {
+            pill(scene, t, body, c.surfaces.base, Some(c.border_focus), Some(8.0));
+        } else {
+            card(scene, t, body, 8.0, c.surfaces.base);
+        }
         match self.format {
             ComposeFormat::Html => {
                 scene.push_layer(
@@ -2008,35 +2012,31 @@ impl ComposeWindow {
     ) {
         let c = &theme.tokens.colors;
         let r = self.rect;
-        // Drop shadow.
-        let shadow = Rect::new(r.x0 + 2.0, r.y0 + 4.0, r.x1 + 2.0, r.y1 + 6.0);
-        scene.fill(
-            Fill::NonZero,
+        // Drop shadow: the window's own shape on the Object tier of the
+        // elevation ladder (HIG §9.1 / §9.3), not a solid rect nudged down,
+        // which read as a grey bar under the window on the light preset.
+        ui::surface::shadow(scene, t, r, 14.0, &theme.tokens.elevation.e3);
+        // Window body: a floating Panel, so the derived panel border, crisp
+        // on the outermost pixel row (HIG §9.5).
+        pill(scene, t, r, c.surfaces.raised, None, Some(14.0));
+        scene.stroke(
+            &Stroke::new(1.0),
             t,
-            Color::from_rgba8(0, 0, 0, 90),
+            ui::chrome::panel_border(theme),
             None,
-            &RoundedRect::from_rect(shadow, 14.0),
-        );
-        // Window body.
-        fill_round(scene, t, r, 14.0, c.surfaces.raised);
-        stroke_round(
-            scene,
-            t,
-            r,
-            14.0,
-            1.0,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            &edge_outline(r, 14.0),
         );
 
         // Title bar: the measured bar height (`ComposeMetrics::title_h`), the
         // heading centred on it from its own line box.
         let title = Rect::new(r.x0, r.y0, r.x1, r.y0 + self.metrics.title_h);
-        fill_round(
+        pill(
             scene,
             t,
             Rect::new(title.x0, title.y0, title.x1, title.y0 + 24.0),
-            14.0,
             c.surfaces.base,
+            None,
+            Some(14.0),
         );
         fill(
             scene,
@@ -2044,11 +2044,13 @@ impl ComposeWindow {
             Rect::new(title.x0, title.y0 + 12.0, title.x1, title.y1),
             c.surfaces.base,
         );
+        // The title bar's rule is derived against the bar it closes (HIG
+        // §9.5); the declared `border_standard` vanished on dark.
         fill(
             scene,
             t,
             Rect::new(title.x0, title.y1 - 1.0, title.x1, title.y1),
-            c.border_standard,
+            edge_on(c.surfaces.base),
         );
         let heading = if self.title_hint.is_empty() {
             "New message".to_string()
@@ -2081,7 +2083,7 @@ impl ComposeWindow {
             };
             let hov = rect.contains(self.last_mouse);
             if hov {
-                fill_round(scene, t, *rect, 7.0, c.lift(0.72));
+                pill(scene, t, *rect, theme.bg_hover, None, Some(7.0));
             }
             let (gw, gh) = tr.measure(glyph, TOOLBAR_GLYPH_SIZE, None);
             tr.draw_text(
@@ -2128,7 +2130,7 @@ impl ComposeWindow {
                 ax + 7.0 + f64::from(gw) + 7.0 + f64::from(lw) + 8.0,
                 cy + chip_h / 2.0,
             );
-            fill_round(scene, t, chip, 7.0, c.lift(0.72));
+            card(scene, t, chip, 7.0, c.lift(0.72));
             tr.draw_text(
                 scene,
                 "\u{1F4CE}",
@@ -2180,6 +2182,8 @@ impl ComposeWindow {
             t * Affine::translate((self.rect.x0 + PAD, fr.center().y - f64::from(lh) / 2.0)),
             None,
         );
+        // The field's underline is derived against the window it is drawn on
+        // (HIG §9.5); focus keeps the focus colour.
         fill(
             scene,
             t,
@@ -2187,7 +2191,7 @@ impl ComposeWindow {
             if focused {
                 c.border_focus
             } else {
-                c.border_standard
+                edge_on(c.surfaces.raised)
             },
         );
     }
@@ -2211,14 +2215,27 @@ impl ComposeWindow {
             return;
         };
         let hov = rect.contains(self.last_mouse);
-        let bg = if active {
-            c.accent[5].with_alpha_factor(0.22)
-        } else if hov {
-            c.lift(0.72)
+        // At rest the chip is a lifted surface with its derived edge (HIG
+        // §9.5); the "on" state is an accent wash, which is its own contrast
+        // step and takes no edge.
+        if active {
+            pill(
+                scene,
+                t,
+                rect,
+                c.accent[5].with_alpha_factor(0.22),
+                None,
+                Some(7.0),
+            );
         } else {
-            c.lift(0.35)
-        };
-        fill_round(scene, t, rect, 7.0, bg);
+            card(
+                scene,
+                t,
+                rect,
+                7.0,
+                if hov { theme.bg_hover } else { c.lift(0.35) },
+            );
+        }
         // Label centred on the chip from its measured box, both axes.
         let label = crate::i18n::t(label_key);
         let (lw, lh) = tr.measure(&label, CHIP_SIZE, None);
@@ -2278,14 +2295,26 @@ impl ComposeWindow {
                 _ => continue,
             };
             let hov = rect.contains(self.last_mouse);
-            let bg = if active {
-                c.accent[5].with_alpha_factor(0.28)
-            } else if hov {
-                c.lift(0.72)
+            // Rest: lifted square with its derived edge (HIG §9.5); active:
+            // an accent wash, its own contrast step, no edge.
+            if active {
+                pill(
+                    scene,
+                    t,
+                    *rect,
+                    c.accent[5].with_alpha_factor(0.28),
+                    None,
+                    Some(6.0),
+                );
             } else {
-                c.lift(0.35)
-            };
-            fill_round(scene, t, *rect, 6.0, bg);
+                card(
+                    scene,
+                    t,
+                    *rect,
+                    6.0,
+                    if hov { theme.bg_hover } else { c.lift(0.35) },
+                );
+            }
             let col = if active { c.text_primary } else { c.neutral[8] };
             // Glyph centred on its square from the measured box; the U's
             // underline sits at the glyph's baseline (the box's lower fifth).
@@ -2332,20 +2361,12 @@ impl ComposeWindow {
             return;
         };
         let hov = rect.contains(self.last_mouse);
-        fill_round(
+        card(
             scene,
             t,
             rect,
             7.0,
-            if hov { c.lift(0.72) } else { c.lift(0.35) },
-        );
-        stroke_round(
-            scene,
-            t,
-            rect,
-            7.0,
-            1.0,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            if hov { theme.bg_hover } else { c.lift(0.35) },
         );
         let label = match self.format {
             ComposeFormat::Html => "\u{25CF} HTML",
@@ -2388,18 +2409,19 @@ impl ComposeWindow {
         // 6 px the window's padding allows), so it never paints over the body.
         let band = self.prompt_band;
         let panel = Rect::new(band.x0 - 6.0, band.y0, band.x1 + 6.0, band.y1);
-        fill_round(scene, t, panel, 9.0, c.surfaces.raised);
-        stroke_round(
+        // An inline Panel: the derived panel border, or the danger colour
+        // while the prompt is rejecting its input.
+        pill(
             scene,
             t,
             panel,
-            9.0,
-            1.0,
-            if error.is_some() {
+            c.surfaces.raised,
+            Some(if error.is_some() {
                 c.semantic.danger
             } else {
-                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26)
-            },
+                ui::chrome::panel_border(theme)
+            }),
+            Some(9.0),
         );
         let label = crate::i18n::t(match kind {
             PromptKind::Attach => "mail-compose-prompt-attach",
@@ -2414,8 +2436,9 @@ impl ComposeWindow {
             t * Affine::translate((panel.x0 + 10.0, field.center().y - f64::from(lh) / 2.0)),
             None,
         );
-        // Input chrome.
-        fill_round(
+        // Input chrome: the prompt's field is the focused one, so it wears
+        // the focus ring.
+        pill(
             scene,
             t,
             Rect::new(
@@ -2424,21 +2447,9 @@ impl ComposeWindow {
                 field.x1 + 2.0,
                 field.y1 + 1.0,
             ),
-            6.0,
             c.surfaces.base,
-        );
-        stroke_round(
-            scene,
-            t,
-            Rect::new(
-                field.x0 - 2.0,
-                field.y0 - 1.0,
-                field.x1 + 2.0,
-                field.y1 + 1.0,
-            ),
-            6.0,
-            1.0,
-            c.border_focus,
+            Some(c.border_focus),
+            Some(6.0),
         );
         // Buttons.
         self.draw_prompt_buttons(scene, t, tr, theme, confirm, cancel);
@@ -2558,24 +2569,6 @@ impl ComposeWindow {
 
 fn fill(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
     scene.fill(Fill::NonZero, t, color, None, &rect);
-}
-fn fill_round(scene: &mut Scene, t: Affine, rect: Rect, r: f64, color: Color) {
-    scene.fill(
-        Fill::NonZero,
-        t,
-        color,
-        None,
-        &RoundedRect::from_rect(rect, r),
-    );
-}
-fn stroke_round(scene: &mut Scene, t: Affine, rect: Rect, r: f64, w: f64, color: Color) {
-    scene.stroke(
-        &Stroke::new(w),
-        t,
-        color,
-        None,
-        &RoundedRect::from_rect(rect, r),
-    );
 }
 
 #[cfg(test)]
