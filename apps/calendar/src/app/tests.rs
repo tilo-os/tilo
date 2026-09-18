@@ -1,4 +1,3 @@
-
 use super::*;
 use automerge::ROOT;
 use serial_test::serial;

@@ -193,8 +193,8 @@ pub fn begin_job(req: &WriteRequest, typed_confirmation: &str) -> JobStart {
     JobStart::Started
 }
 
-pub use crate::profile::{encode_profile_block, write_profile_block};
 use crate::profile::write_profile_block_bound;
+pub use crate::profile::{encode_profile_block, write_profile_block};
 
 /// The terminal result of running a job to completion.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -65,9 +65,9 @@ pub mod doc;
 mod export_dialog;
 mod host;
 pub mod model;
+pub mod probe;
 pub mod profile;
 pub mod profile_cli;
-pub mod probe;
 pub mod release;
 pub mod write;
 
