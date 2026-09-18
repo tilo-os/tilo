@@ -5516,7 +5516,7 @@ mod availability_control_tests {
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(&registry_path).unwrap(),
         ));
@@ -5571,10 +5571,7 @@ mod availability_control_tests {
             .unwrap()
             .create_dir(ROOT_INO, "offline", 1)
             .unwrap();
-        let heuristics = Arc::new(Heuristics::new(
-            Arc::clone(&hydrator),
-            Arc::clone(&namespace),
-        ));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(&registry_path).unwrap(),
         ));
@@ -5627,10 +5624,7 @@ mod availability_control_tests {
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(&registry_path).unwrap(),
         ));
-        let heuristics = Arc::new(Heuristics::new(
-            Arc::clone(&hydrator),
-            Arc::clone(&namespace),
-        ));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
         let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
             .with_availability(Arc::clone(&registry))
             .with_pinned_hydration();
@@ -5698,10 +5692,7 @@ mod availability_control_tests {
                 )
                 .unwrap();
         }
-        let heuristics = Arc::new(Heuristics::new(
-            Arc::clone(&hydrator),
-            Arc::clone(&namespace),
-        ));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
         ));
@@ -5774,7 +5765,7 @@ mod availability_control_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .create_file(ROOT_INO, "shared.txt", None, 0, 1)
             .unwrap();
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
         ));
@@ -5814,7 +5805,7 @@ mod availability_control_tests {
             .unwrap();
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
         ));
@@ -5860,7 +5851,7 @@ mod availability_control_tests {
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
         ));
@@ -5896,7 +5887,7 @@ mod availability_control_tests {
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
         ));
@@ -6005,7 +5996,7 @@ mod availability_control_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .put(current)
             .unwrap();
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let fs = QuickFS::new(namespace, hydrator, heuristics)
             .with_availability(Arc::clone(&registry))
             .with_eviction_queue(queue);
@@ -6069,7 +6060,7 @@ mod share_projection_tests {
         let endpoint = Endpoint::bind(presets::N0).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let fs =
             QuickFS::new(namespace, hydrator, heuristics).with_share_authority(authority.clone());
 
@@ -6127,7 +6118,7 @@ mod thumb_tests {
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store.clone()));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let provider = ThumbProvider::open(&thumb_dir).unwrap();
         let fs = QuickFS::new(namespace.clone(), hydrator, heuristics).with_thumbs(provider);
         (namespace, store, fs)
@@ -6220,7 +6211,7 @@ mod thumb_tests {
             .record_id_for(ino)
             .unwrap();
         let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let device = ed25519_dalek::SigningKey::from_bytes(&[0x72; 32]);
         let person = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
         let actor = collab_types::FileActor {
@@ -6393,7 +6384,7 @@ mod predictive_tests {
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         (
             namespace.clone(),
             QuickFS::new(namespace, hydrator, heuristics),
@@ -6883,7 +6874,7 @@ mod history_integration_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .record_id_for(ino)
             .unwrap();
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let history = Arc::new(
             crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap(),
         );
@@ -6972,7 +6963,7 @@ mod history_integration_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .record_id_for(ino)
             .unwrap();
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let history = Arc::new(
             crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap(),
         );
@@ -7080,7 +7071,7 @@ mod record_publisher_integration_tests {
             .record_id_for(ino)
             .unwrap();
         let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let history = Arc::new(crate::history::FileHistoryStore::open(&history_path).unwrap());
         let repository =
             Arc::new(crate::record_repository::RecordRepository::open(&repository_path).unwrap());
@@ -7285,7 +7276,7 @@ mod record_publisher_integration_tests {
             .unwrap(),
         );
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let restarted = QuickFS::new(namespace, hydrator, heuristics)
             .with_history(history.clone(), actor)
             .unwrap()
@@ -7539,7 +7530,7 @@ mod record_publisher_integration_tests {
             .record_id_for(ino)
             .unwrap();
         let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let history = Arc::new(
             crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap(),
         );
@@ -7968,10 +7959,7 @@ mod record_publisher_integration_tests {
             .unwrap(),
         ));
         let restarted_hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let restarted_heuristics = Arc::new(Heuristics::new(
-            restarted_hydrator.clone(),
-            restarted_namespace.clone(),
-        ));
+        let restarted_heuristics = Arc::new(Heuristics::new(restarted_hydrator.clone()));
         let restarted = QuickFS::new(
             restarted_namespace.clone(),
             restarted_hydrator,
@@ -8055,7 +8043,7 @@ mod record_publisher_integration_tests {
             .record_id_for(ino)
             .unwrap();
         let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let history_path = dir.path().join("history.json");
         let records_path = dir.path().join("records");
         let journal_path = dir.path().join("transactions");
