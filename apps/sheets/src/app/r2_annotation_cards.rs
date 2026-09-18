@@ -106,7 +106,11 @@ fn painted_annotation_targets_follow_the_measured_rows() {
 
     let m = app.metrics.clone();
     let chart_rows = m.chart_card_rows();
-    let chart_card_top = app.grid_rect.y0 + 14.0;
+    // Cards float `s3` below the column-header band (never over its labels).
+    // Computed here from the grid geometry, independently of the production
+    // helper the painter uses, so a regression in either shows.
+    let body_top = app.grid_rect.y0 + m.grid.col_header_h();
+    let chart_card_top = body_top + m.s3;
     let chart_targets: Vec<Rect> = app
         .annotation_clicks
         .iter()
@@ -129,7 +133,7 @@ fn painted_annotation_targets_follow_the_measured_rows() {
     }
 
     let comment_rows = m.comment_card_rows();
-    let comment_card_top = app.grid_rect.y0 + 14.0;
+    let comment_card_top = body_top + m.s3;
     let toggle = app
         .annotation_clicks
         .iter()

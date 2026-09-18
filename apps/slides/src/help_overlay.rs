@@ -6,7 +6,6 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Color;
 use winit::keyboard::{Key, NamedKey};
 
 use ui::text_render::{TextRenderer, TextWeight};
@@ -14,7 +13,10 @@ use ui::theme::Theme;
 
 use crate::chrome;
 use crate::model::Palette;
-use crate::render;
+
+/// How far the shortcuts dialog dims the editor behind it
+/// (`ui::chrome::fill_scrim` strength).
+const SCRIM_STRENGTH: f32 = 0.6;
 
 #[derive(Default)]
 pub(super) struct HelpOverlay {
@@ -81,27 +83,17 @@ impl HelpOverlay {
         }
 
         let colors = &theme.tokens.colors;
-        chrome::fill_rect(
-            scene,
-            transform,
-            viewport,
-            render::with_alpha(Color::BLACK, 150),
-        );
+        // Dim the editor in the theme's own scrim, then the dialog panel
+        // (HIG §9.1 Panel role) — not a literal black wash under a raised
+        // card with a declared-alpha ink stroke.
+        ui::chrome::fill_scrim(scene, transform, viewport, SCRIM_STRENGTH, theme);
 
         let width = 580.0_f64.min(viewport.width() - 80.0);
         let height = 588.0_f64.min(viewport.height() - 60.0);
         let x = viewport.x0 + (viewport.width() - width) / 2.0;
         let y = viewport.y0 + (viewport.height() - height) / 2.0;
         let card = Rect::new(x, y, x + width, y + height);
-        chrome::fill_rrect(scene, transform, card, 16.0, colors.surfaces.raised);
-        chrome::stroke_rrect(
-            scene,
-            transform,
-            card,
-            16.0,
-            render::with_alpha(colors.text_primary, 30),
-            1.0,
-        );
+        chrome::panel(scene, transform, theme, card, 16.0);
 
         let content_x = card.x0 + 32.0;
         text.draw_text_weighted(

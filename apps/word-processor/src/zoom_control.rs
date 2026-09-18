@@ -1,8 +1,8 @@
 //! Toolbar zoom control and page-scale transform.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::Color;
 
 use ui::text_render::TextRenderer;
 
@@ -242,13 +242,9 @@ fn draw_button(
     label_size: (f64, f64),
     radius: f64,
 ) {
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        chip,
-        None,
-        &RoundedRect::from_rect(rect, radius),
-    );
+    // The chip face with its derived rest edge (HIG §9.5): the fill alone is
+    // the bar's own tone and disappeared on the dark preset.
+    ui::surface::card(scene, transform, rect, radius, chip);
     text.draw_text(
         scene,
         label,

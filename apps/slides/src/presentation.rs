@@ -7,7 +7,7 @@
 use std::time::{Duration, Instant};
 
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, Stroke, Vec2};
+use vello::kurbo::{Affine, Rect, Vec2};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::keyboard::{Key, NamedKey};
 
@@ -22,6 +22,8 @@ use crate::strings::{tr, tr_args};
 use crate::{chrome, render};
 
 const TRANSITION_MS: u128 = 240;
+/// The presentation / presenter stage ground every frame and panel sits on.
+const STAGE: Color = Color::BLACK;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Blank {
@@ -375,7 +377,7 @@ impl Presentation {
             return;
         }
 
-        chrome::fill_rect(scene, transform, frame.rect, Color::BLACK);
+        chrome::fill_rect(scene, transform, frame.rect, STAGE);
         if self.draw_blank(scene, transform, frame.rect) {
             return;
         }
@@ -529,7 +531,7 @@ impl Presentation {
         frame: &PresentationFrame<'_>,
     ) {
         let palette = Palette::resolve(frame.deck.palette, theme);
-        chrome::fill_rect(scene, transform, frame.rect, Color::BLACK);
+        chrome::fill_rect(scene, transform, frame.rect, STAGE);
         if self.draw_blank(scene, transform, frame.rect) {
             return;
         }
@@ -608,16 +610,17 @@ impl Presentation {
         palette: &Palette,
         panel: Rect,
     ) {
-        chrome::fill_rect(scene, transform, panel, theme.tokens.colors.surfaces.raised);
-        scene.stroke(
-            &Stroke::new(1.0),
+        let raised = theme.tokens.colors.surfaces.raised;
+        chrome::fill_rect(scene, transform, panel, raised);
+        // The panel's top rule is its own derived edge, crisp on its first
+        // pixel row.
+        chrome::hairline_h(
+            scene,
             transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &Line::new(
-                Point::new(panel.x0, panel.y0),
-                Point::new(panel.x1, panel.y0),
-            ),
+            panel.x0,
+            panel.x1,
+            panel.y0,
+            ui::surface::edge_on(raised),
         );
         let x = panel.x0 + 40.0;
         text.draw_text_weighted(
@@ -681,12 +684,13 @@ impl Presentation {
                 6.0,
                 frame.images,
             );
+            // A frame on the raised notes panel: its derived edge.
             chrome::stroke_rrect(
                 scene,
                 transform,
                 preview,
                 6.0,
-                render::with_alpha(Color::WHITE, 40),
+                ui::surface::edge_on(raised),
                 1.0,
             );
         }
@@ -983,12 +987,14 @@ fn draw_presenter_current(
             frame.images,
         );
     }
+    // The slide frame is the stage's derived edge (the presenter stage is
+    // painted `Color::BLACK`, see `draw_presenter`).
     chrome::stroke_rrect(
         scene,
         transform,
         destination,
         12.0,
-        render::with_alpha(colors.text_primary, 30),
+        ui::surface::edge_on(STAGE),
         1.0,
     );
 }
@@ -1038,19 +1044,11 @@ fn draw_presenter_next(
             transform,
             destination,
             8.0,
-            render::with_alpha(colors.text_primary, 30),
+            ui::surface::edge_on(STAGE),
             1.0,
         );
     } else {
-        chrome::fill_rrect(scene, transform, destination, 8.0, colors.surfaces.raised);
-        chrome::stroke_rrect(
-            scene,
-            transform,
-            destination,
-            8.0,
-            render::with_alpha(colors.text_primary, 24),
-            1.0,
-        );
+        ui::surface::card(scene, transform, destination, 8.0, colors.surfaces.raised);
         chrome::text_centered(
             scene,
             transform,
@@ -1088,15 +1086,7 @@ fn draw_presenter_notes(
         TextWeight::Semibold,
     );
     let panel = Rect::new(right.x0, top + m.caption_adv(), right.x1, body.y1);
-    chrome::fill_rrect(scene, transform, panel, 10.0, colors.surfaces.raised);
-    chrome::stroke_rrect(
-        scene,
-        transform,
-        panel,
-        10.0,
-        render::with_alpha(colors.text_primary, 22),
-        1.0,
-    );
+    ui::surface::card(scene, transform, panel, 10.0, colors.surfaces.raised);
     let notes = frame.slide().map_or("", |slide| slide.notes.as_str());
     let no_notes = tr("slides-no-notes");
     text.draw_text_weighted(
