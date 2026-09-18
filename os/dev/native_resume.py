@@ -167,3 +167,86 @@ def import_reconstructed(native, receipt_path, receipt_sha256, inputs, approved_
     identity = t.inspect_local(receipt['reference'], 'aarch64', receipt['config_digest'])
     check_complete(native, identity, inputs, receipt['metadata_sha256'], approved_reconstruction_sha256)
     return identity
+
+
+RECONSTRUCTED_PARTIAL = 'tilo-development-reconstructed-partial-native-checkpoint'
+PARTIAL_HELPER = '9d7a6b259c9b75b6c5031472bfed05b6461c1893'
+
+
+def validate_reconstructed_metadata(native, receipt, raw, approval, receipt_sha, source, legacy_checkpoints, legacy_union):
+    """Depth-one opt-in: preserve producer purpose and independently approved chain."""
+    t = native.tools
+    require(isinstance(approval, dict), 'explicit reconstructed partial admission required')
+    require(set(approval) == {'schema', 'purpose', 'source_revision', 'helper_revision', 'run_id', 'run_number',
+        'attempt', 'reconstruction_sha256', 'resume_helper_sha256', 'producer_sha256', 'receipts'}, 'partial admission schema differs')
+    require(approval['schema'] == 1 and approval['purpose'] == 'tilo-reconstructed-partial-admission'
+        and approval['source_revision'] == SOURCE and approval['helper_revision'] == PARTIAL_HELPER
+        and approval['run_id'] == 21554 and approval['run_number'] == 8166 and approval['attempt'] == 1,
+        'unreviewed reconstructed partial producer')
+    require(isinstance(approval['receipts'], dict) and 1 <= len(approval['receipts']) <= 2
+        and receipt_sha in approval['receipts'], 'partial receipt not independently admitted')
+    admitted = approval['receipts'][receipt_sha]
+    require(set(admitted) == {'inventory', 'capture_script_sha256'}, 'partial admission entry differs')
+    require(set(receipt) == {'schema','purpose','reference','config_digest','metadata_sha256','source_revision',
+        'helper_revision','run_number','run_id','inventory','reconstruction_sha256','installable',
+        'complete_native_builder','build_success','resume_admitted','raw_manifest_verified','raw_config_verified',
+        'payload_hashes_verified','temporary_public_context_removed_on_exit'}, 'reconstructed receipt schema differs')
+    require(receipt['schema'] == 1 and receipt['purpose'] == RECONSTRUCTED_PARTIAL
+        and receipt['source_revision'] == SOURCE and receipt['helper_revision'] == PARTIAL_HELPER
+        and receipt['run_id'] == 21554 and receipt['run_number'] == 8166
+        and receipt['inventory'] == admitted['inventory'] and receipt['inventory'], 'reconstructed receipt identity differs')
+    require(all(receipt[k] is False for k in ('installable','complete_native_builder','build_success','resume_admitted')),
+        'reconstructed partial claimed completion/admission')
+    require(t.sha(raw) == receipt['metadata_sha256'], 'reconstructed partial metadata differs')
+    value = t.strict_json(raw)
+    require(value['schema'] == 1 and value['purpose'] == RECONSTRUCTED_PARTIAL and value['architecture'] == 'aarch64'
+        and all(value[k] is False for k in ('installable','complete_native_builder','build_success','resume_admitted','original_recipe_executed_verbatim'))
+        and all(value[k] == approval[k] for k in ('source_revision','helper_revision','run_id','run_number','attempt'))
+        and value['inventory'] == admitted['inventory'] and value['capture_script_sha256'] == admitted['capture_script_sha256'],
+        'reconstructed metadata producer/capture differs')
+    reconstruction = value['reconstruction']
+    canonical_sha = t.sha(t.canonical(reconstruction))
+    require(canonical_sha == approval['reconstruction_sha256'] == receipt['reconstruction_sha256']
+        == value['reconstruction_sha256'], 'producer reconstruction approval differs')
+    require(reconstruction['schema'] == 1 and reconstruction['purpose'] == 'tilo-native-reconstruction'
+        and reconstruction['source_revision'] == SOURCE and reconstruction['run_id'] == '21554'
+        and reconstruction['attempt'] == '1' and reconstruction['original_recipe_executed_verbatim'] is False
+        and reconstruction['resume_helper_sha256'] == approval['resume_helper_sha256']
+        and reconstruction['producer_sha256'] == approval['producer_sha256']
+        and reconstruction['checkpoints'] == legacy_checkpoints and reconstruction['reused_inventory'] == legacy_union,
+        'producer seed chain differs')
+    original = (Path(source)/'os/Containerfile').read_text()
+    original_driver = (Path(source)/'os/dev/build-image.sh').read_text()
+    derived, missing = derive_recipe(original, legacy_union, native.REQUIRED)
+    driver = derive_driver(original_driver, reconstruction['source_path'], reconstruction['derived_recipe_path'], reconstruction['seed_image_id'])
+    for key, text in [('original_recipe_sha256',original),('derived_recipe_sha256',derived),
+                      ('original_driver_sha256',original_driver),('derived_driver_sha256',driver)]:
+        require(t.sha(text.encode()) == reconstruction[key], 'producer derivation differs: '+key)
+    require(reconstruction['missing_targets'] == missing, 'producer missing targets differ')
+    require(set(receipt['inventory']) <= set(missing['release']) | set(missing['windows']), 'partial contains unbuilt seed target')
+    return value
+
+
+def validate_reconstructed_partial(native, receipt, receipt_sha, approval, source, legacy_checkpoints, legacy_union, destination, union):
+    t = native.tools
+    require(re.fullmatch(r'code\.podesta\.ai/qos/tilo-development-partial-native-aarch64@sha256:[0-9a-f]{64}',receipt['reference']), 'partial repository differs')
+    require(t.registry_identity(receipt['reference'],'aarch64') == receipt['config_digest'], 'partial registry config differs')
+    t.command('podman','--remote=false','pull','--tls-verify=true','--platform=linux/arm64',receipt['reference'])
+    identity=t.inspect_local(receipt['reference'],'aarch64',receipt['config_digest'])
+    with t.mounted(identity) as root:
+        raw=t.read_bounded(root/'partial-checkpoint.json',1024*1024)
+        validate_reconstructed_metadata(native,receipt,raw,approval,receipt_sha,source,legacy_checkpoints,legacy_union)
+        partial=root/'partial'
+        require(partial.is_dir() and not partial.is_symlink() and {p.name for p in partial.iterdir()} == set(receipt['inventory']), 'partial file set differs')
+        for name,record in receipt['inventory'].items():
+            require(name in set(native.REQUIRED)|{'browser'},'unexpected partial binary')
+            path=partial/name
+            require(path.is_file() and not path.is_symlink() and path.stat().st_mode & 0o111,'invalid partial ELF')
+            actual,header=native.file_record(path)
+            require(actual == record and len(header)==64 and header[:7]==b'\x7fELF\x02\x01\x01'
+                and struct.unpack_from('<H',header,18)[0]==183 and struct.unpack_from('<H',header,16)[0] in (2,3),'partial ELF differs')
+            require(name not in union or union[name]==record,'overlapping checkpoint binaries differ')
+            if name not in union:
+                shutil.copyfile(path,destination/name);(destination/name).chmod(0o755)
+                require(native.file_record(destination/name)[0]==record,'copied checkpoint differs')
+                union[name]=record
