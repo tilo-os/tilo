@@ -48,10 +48,10 @@ zbus = { workspace = true, optional = true, default-features = true }
 libc.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-ui = { package = "tilo-app", path = "../../crates/app/tilo-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
-ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 
 [lints]
 workspace = true
