@@ -1,7 +1,7 @@
 //! Per-frame wire-up coverage for cross-strip tab drag-drop.
 //!
 //! The cross-group case is covered by unit tests in
-//! `ui/src/widget/group_row.rs`. Cross-*strip* can't resolve from inside
+//! `crates/sdk/ui-core/src/widget/group_row.rs`. Cross-*strip* can't resolve from inside
 //! a single `GroupRow` (which only sees its own siblings), so the broker
 //! lives shell-side: [`ShellOverlayHost`] holds per-strip `GroupRow`
 //! pointers and [`WorkspaceTree`] tracks every strip's identity. Without

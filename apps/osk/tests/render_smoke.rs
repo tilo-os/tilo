@@ -4,7 +4,7 @@
 //! toolbar + keycaps + labels).
 //!
 //! Skips gracefully when no wgpu adapter is available, matching the other
-//! offscreen tests (e.g. `ui/tests/icon_grid_test.rs`). Set
+//! offscreen tests (e.g. `crates/sdk/ui-core/tests/icon_grid_test.rs`). Set
 //! `QUICK_UI_SCREENSHOT_DIR=<path>` to dump a PNG.
 
 #![allow(

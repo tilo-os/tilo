@@ -4282,7 +4282,8 @@ mod tests {
         bar.activity_headline = Some("Quinten · 2 permission changes".into());
         bar.activity_unread = 4;
         let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/assets/fonts"),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../crates/sdk/ui-core/assets/fonts"),
             "en-US",
         );
         let mut renderer = TextRenderer::with_font_catalog(&catalog).unwrap();

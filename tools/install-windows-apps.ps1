@@ -74,7 +74,7 @@ New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
 New-Item -ItemType Directory -Path $menuDirectory -Force | Out-Null
 $fontDirectory = Join-Path $installDirectory 'fonts'
 New-Item -ItemType Directory -Path $fontDirectory -Force | Out-Null
-$fontSource = Join-Path $repository 'ui/assets/fonts'
+$fontSource = Join-Path $repository 'crates/sdk/ui-core/assets/fonts'
 Get-ChildItem -LiteralPath $fontSource -Recurse -File | ForEach-Object {
     $fontTarget = Join-Path $fontDirectory ([IO.Path]::GetRelativePath($fontSource, $_.FullName))
     # Live apps memory-map these shared files. Avoid overwriting unchanged

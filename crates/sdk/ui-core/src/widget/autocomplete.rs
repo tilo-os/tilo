@@ -2,7 +2,7 @@
 //! it.
 //!
 //! A real [`TextInput`] (so it inherits selection, clipboard, IME, caret
-//! navigation and theming for free, per `ui/HIG.md` §8) with a suggestion
+//! navigation and theming for free, per `crates/sdk/ui-core/HIG.md` §8) with a suggestion
 //! popover drawn in the overlay pass so it composites above sibling content.
 //!
 //! Any app attaches a suggestion source — a closure via

@@ -7033,14 +7033,14 @@ fn title_from_name(name: &str) -> String {
 
 fn find_repo_root(start: &Path) -> Option<PathBuf> {
     start.ancestors().find_map(|path| {
-        (path.join("ui/Cargo.toml").is_file() && path.join("apps").is_dir())
+        (path.join("crates/sdk/ui-core/Cargo.toml").is_file() && path.join("apps").is_dir())
             .then(|| path.to_path_buf())
     })
 }
 
 fn ui_dir_from_ancestor(start: &Path) -> Option<PathBuf> {
     start.ancestors().find_map(|root| {
-        let ui = root.join("ui");
+        let ui = root.join("crates/sdk/ui-core");
         ui.join("Cargo.toml").is_file().then_some(ui)
     })
 }
@@ -7058,7 +7058,7 @@ fn discover_ui_dir(current_dir: &Path, repo: Option<&Path>) -> Option<PathBuf> {
         return Some(candidate);
     }
     if let Some(root) = repo {
-        return Some(root.join("ui"));
+        return Some(root.join("crates/sdk/ui-core"));
     }
     if let Ok(executable) = std::env::current_exe()
         && let Some(ui) = ui_dir_from_ancestor(&executable)
@@ -7085,7 +7085,7 @@ fn resolve_ui_dir(
     );
     let Some(candidate) = candidate else {
         bail!(
-            "could not locate the Tilo UI toolkit; run inside a Tilo checkout, set TILO_UI_PATH, or pass `--ui-path /path/to/tilo/ui`"
+            "could not locate the Tilo UI toolkit; run inside a Tilo checkout, set TILO_UI_PATH, or pass `--ui-path /path/to/tilo/crates/sdk/ui-core`"
         );
     };
     if !candidate.join("Cargo.toml").is_file() {
@@ -7159,7 +7159,7 @@ fn cargo_toml(spec: &AppSpec) -> String {
     let patches = if spec.workspace_member {
         String::new()
     } else {
-        let repo = spec.ui_path.parent().unwrap_or_else(|| Path::new(".."));
+        let repo = checkout_root_for_ui(&spec.ui_path);
         format!(
             "\n[patch.crates-io]\nwinit = {{ path = {:?} }}\nvello_encoding = {{ path = {:?} }}\nvello = {{ path = {:?} }}\n",
             repo.join("vendor/winit").to_string_lossy(),
@@ -7168,11 +7168,7 @@ fn cargo_toml(spec: &AppSpec) -> String {
         )
     };
     let extras = format!("{lints}{patches}");
-    let sdk_path = spec
-        .ui_path
-        .parent()
-        .unwrap_or_else(|| Path::new(".."))
-        .join("crates/sdk/tilo-app");
+    let sdk_path = sdk_path_for_ui(&spec.ui_path);
     format!(
         "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[dependencies]\nui = {{ package = \"tilo-app\", path = {sdk_path:?} }}\nserde = {{ version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n{lints}",
         name = spec.package_name,
@@ -7180,6 +7176,28 @@ fn cargo_toml(spec: &AppSpec) -> String {
         sdk_path = sdk_path.to_string_lossy(),
         lints = extras,
     )
+}
+
+fn checkout_root_for_ui(ui_path: &Path) -> &Path {
+    if ui_path.ends_with("crates/sdk/ui-core") {
+        ui_path
+            .ancestors()
+            .nth(3)
+            .unwrap_or_else(|| Path::new(".."))
+    } else {
+        ui_path.parent().unwrap_or_else(|| Path::new(".."))
+    }
+}
+
+fn sdk_path_for_ui(ui_path: &Path) -> PathBuf {
+    if ui_path.ends_with("crates/sdk/ui-core") {
+        ui_path
+            .parent()
+            .unwrap_or_else(|| Path::new(".."))
+            .join("tilo-app")
+    } else {
+        checkout_root_for_ui(ui_path).join("crates/sdk/tilo-app")
+    }
 }
 
 fn app_lib(spec: &AppSpec) -> String {
