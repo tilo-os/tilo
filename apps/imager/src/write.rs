@@ -541,7 +541,7 @@ fn stream_copy_bound(
         ));
     }
     if let Some(expected) = expected_identity
-        && SourceIdentity::from_metadata(&metadata) != Some(expected)
+        && SourceIdentity::from_file(&reader)? != Some(expected)
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -857,14 +857,15 @@ fn run_job_file_bound(
         Ok(metadata) => metadata,
         Err(error) => return JobResult::WriteFailed(error.to_string()),
     };
-    if !metadata.is_file()
-        || metadata.len() != req.source.size
-        || req
-            .source
-            .identity
-            .is_some_and(|expected| SourceIdentity::from_metadata(&metadata) != Some(expected))
-    {
+    if !metadata.is_file() || metadata.len() != req.source.size {
         return JobResult::WriteFailed("source image changed after review".into());
+    }
+    if let Some(expected) = req.source.identity {
+        match SourceIdentity::from_file(&source) {
+            Ok(Some(actual)) if actual == expected => {}
+            Ok(_) => return JobResult::WriteFailed("source image changed after review".into()),
+            Err(error) => return JobResult::WriteFailed(error.to_string()),
+        }
     }
     if let Some(expected) = req.source.expected_sha256.as_deref() {
         let actual = match hash_source_exact(&mut source, req.source.size, should_cancel) {
@@ -2374,11 +2375,10 @@ mod tests {
         let mut target = tempfile::tempfile().unwrap();
         let target_size = data.len() as u64 + PROFILE_BLOCK_SIZE as u64 + 4096;
         target.set_len(target_size).unwrap();
-        let metadata = source.as_file().metadata().unwrap();
         let mut request = req();
         request.source.path = source.path().to_string_lossy().into_owned();
         request.source.size = data.len() as u64;
-        request.source.identity = SourceIdentity::from_metadata(&metadata);
+        request.source.identity = SourceIdentity::from_file(source.as_file()).unwrap();
         request.source.installable = true;
         request.target.size = target_size;
 
@@ -2516,26 +2516,86 @@ mod tests {
     #[test]
     fn replaced_source_is_rejected_before_destination_is_opened() {
         let data = sample_bytes(4096);
-        let src = tmp_with(&data);
-        let mut wrong_identity = SourceIdentity::from_metadata(&src.as_file().metadata().unwrap())
+        let root = tempfile::tempdir().unwrap();
+        let selected = root.path().join("selected.img");
+        std::fs::write(&selected, &data).unwrap();
+        let held = std::fs::File::open(&selected).unwrap();
+        let identity = SourceIdentity::from_file(&held)
+            .unwrap()
             .expect("test platform exposes file identity");
-        wrong_identity.file = wrong_identity.file.wrapping_add(1);
+        std::fs::rename(&selected, root.path().join("reviewed.img")).unwrap();
+        std::fs::write(&selected, &data).unwrap();
         let dst = tmp_with(b"leave destination untouched");
 
         let result = run_job_paths_bound(
-            src.path(),
+            &selected,
             dst.path(),
             data.len() as u64,
-            Some(wrong_identity),
+            Some(identity),
             None,
             &|| false,
-            |_| {},
+            |_| panic!("a replaced source must not produce write progress"),
         );
         assert!(
             matches!(result, JobResult::WriteFailed(ref message) if message.contains("replaced"))
         );
         assert_eq!(
             std::fs::read(dst.path()).unwrap(),
+            b"leave destination untouched"
+        );
+
+        let absent_destination = root.path().join("not-created.img");
+        let result = run_job_paths_bound(
+            &selected,
+            &absent_destination,
+            data.len() as u64,
+            Some(identity),
+            None,
+            &|| false,
+            |_| panic!("a replaced source must not produce write progress"),
+        );
+        assert!(matches!(result, JobResult::WriteFailed(_)));
+        assert!(!absent_destination.exists());
+
+        // The held identity still authorizes the original file at its new path.
+        let result = run_job_paths_bound(
+            &root.path().join("reviewed.img"),
+            dst.path(),
+            data.len() as u64,
+            Some(identity),
+            None,
+            &|| false,
+            |_| {},
+        );
+        assert_eq!(result, JobResult::Verified);
+        assert_eq!(std::fs::read(dst.path()).unwrap(), data);
+    }
+
+    #[test]
+    fn descriptor_writer_rejects_another_file_with_identical_bytes_before_mutation() {
+        let data = sample_bytes(4096);
+        let reviewed = tmp_with(&data);
+        let replacement = tmp_with(&data);
+        let mut target = tmp_with(b"leave destination untouched");
+        target.as_file_mut().seek(SeekFrom::Start(7)).unwrap();
+        let mut request = req();
+        request.source.path = replacement.path().to_string_lossy().into_owned();
+        request.source.size = data.len() as u64;
+        request.source.identity = Some(
+            SourceIdentity::from_file(reviewed.as_file())
+                .unwrap()
+                .expect("test platform exposes file identity"),
+        );
+        request.source.installable = false;
+
+        let result = run_job_file_bound(&request, target.as_file_mut(), &|| false, |_| {
+            panic!("a replaced source must not produce write progress");
+        });
+
+        assert!(matches!(result, JobResult::WriteFailed(_)));
+        assert_eq!(target.as_file_mut().stream_position().unwrap(), 7);
+        assert_eq!(
+            std::fs::read(target.path()).unwrap(),
             b"leave destination untouched"
         );
     }
@@ -2551,7 +2611,7 @@ mod tests {
             src.path(),
             dst.path(),
             data.len() as u64,
-            SourceIdentity::from_metadata(&src.as_file().metadata().unwrap()),
+            SourceIdentity::from_file(src.as_file()).unwrap(),
             Some(&wrong_digest),
             &|| false,
             |_| {},

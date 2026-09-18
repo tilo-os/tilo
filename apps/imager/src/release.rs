@@ -515,7 +515,7 @@ fn verified_image(release: &QosRelease) -> Result<Source, String> {
     let image = root.join("qos-installer.img");
     if image.is_file() {
         if sha256(&image)? == release.image_sha256 {
-            return Ok(source_for(release, &image));
+            return source_for(release, &image);
         }
         fs::remove_file(&image)
             .map_err(|error| format!("Could not replace an invalid cached installer: {error}"))?;
@@ -566,17 +566,17 @@ fn verified_image(release: &QosRelease) -> Result<Source, String> {
     fs::rename(&image_part, &image)
         .map_err(|error| format!("Could not publish the verified installer cache: {error}"))?;
     let _ = fs::remove_file(&archive_part);
-    Ok(source_for(release, &image))
+    source_for(release, &image)
 }
 
-fn source_for(release: &QosRelease, image: &Path) -> Source {
+fn source_for(release: &QosRelease, image: &Path) -> Result<Source, String> {
+    let file = File::open(image)
+        .map_err(|error| format!("Could not open the verified installer: {error}"))?;
     let mut source = release.to_source();
     source.path = image.to_string_lossy().into_owned();
-    source.identity = image
-        .metadata()
-        .ok()
-        .and_then(|metadata| crate::model::SourceIdentity::from_metadata(&metadata));
-    source
+    source.identity = crate::model::SourceIdentity::from_file(&file)
+        .map_err(|error| format!("Could not identify the verified installer: {error}"))?;
+    Ok(source)
 }
 
 /// Download and verify without blocking the UI thread.
@@ -692,10 +692,16 @@ mod tests {
             image_sha256: "b".repeat(64),
         };
 
-        let source = source_for(&release, image.path());
+        let source = source_for(&release, image.path()).unwrap();
         let expected = "b".repeat(64);
         assert_eq!(source.expected_sha256.as_deref(), Some(expected.as_str()));
         assert!(source.identity.is_some());
+        assert_eq!(
+            source.identity,
+            crate::model::SourceIdentity::from_file(image.as_file()).unwrap()
+        );
+        let missing = image.path().with_extension("missing");
+        assert!(source_for(&release, &missing).is_err());
     }
 
     #[test]
