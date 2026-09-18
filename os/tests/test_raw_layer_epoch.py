@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import subprocess
 import textwrap
+import tempfile
 import unittest
 from unittest.mock import patch
 from test_assembly_registry_cache import AssemblyCache, d
@@ -24,8 +25,11 @@ class RawLayerEpoch(unittest.TestCase):
 
     def test_workflow_anchor_validation_and_optional_argv(self):
         workflow = (Path(__file__).resolve().parents[2]/'.forgejo/workflows/development-compile.yml').read_text()
-        self.assertEqual(workflow.count('ASSEMBLY_LAYER_EPOCH_ANCHOR: ${{ inputs.assembly_layer_epoch_anchor }}'), 2)
+        self.assertEqual(workflow.count('ASSEMBLY_LAYER_EPOCH_ANCHOR: ${{ inputs.assembly_layer_epoch_anchor }}'), 3)
         self.assertIn('"${layer_epoch_args[@]}"', workflow)
+        self.assertIn("fetch-depth: ${{ inputs.assembly_layer_epoch_anchor != '' && '0' || '5' }}", workflow)
+        self.assertIn("filter: ${{ inputs.assembly_layer_epoch_anchor != '' && 'blob:none' || '' }}", workflow)
+        self.assertLess(workflow.index('Validate layer timestamp anchor before building tools'), workflow.index('docker build --file'))
         guard = textwrap.dedent('          anchor = ' + workflow.split('          anchor = ', 1)[1].split("          s = importlib.util.spec_from_file_location('compile'", 1)[0])
         valid = {'ASSEMBLY_LAYER_EPOCH_ANCHOR':'b'*40, 'COMPILE_MODE':'full-build',
                  'RECONSTRUCTED_NATIVE_RECEIPT':'{}', 'WPE_ADOPTION_RECEIPT':'{}'}
@@ -43,6 +47,27 @@ class RawLayerEpoch(unittest.TestCase):
                 env=dict(os.environ, ASSEMBLY_LAYER_EPOCH_ANCHOR=anchor), capture_output=True)
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertEqual(result.stdout,expected)
+
+    def test_workflow_ancestry_gate_executes_against_source_checkout(self):
+        workflow = (Path(__file__).resolve().parents[2]/'.forgejo/workflows/development-compile.yml').read_text()
+        step = workflow.split('- name: Validate layer timestamp anchor before building tools',1)[1]
+        shell = textwrap.dedent(step.split('        run: |\n',1)[1].split('      # The workflow checkout',1)[0])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root/'application-source';repo.mkdir()
+            controller=root/'controller';controller.mkdir()
+            def git(*args):
+                return subprocess.check_output(['git','-C',str(repo),*args],stderr=subprocess.DEVNULL,text=True).strip()
+            git('init');git('config','user.email','fixture@example.invalid');git('config','user.name','Fixture')
+            git('commit','--allow-empty','-m','anchor');anchor=git('rev-parse','HEAD')
+            git('commit','--allow-empty','-m','source');source=git('rev-parse','HEAD')
+            env=dict(os.environ,SOURCE_REVISION=source,ASSEMBLY_LAYER_EPOCH_ANCHOR=anchor)
+            result=subprocess.run(['bash','-c',shell],cwd=controller,env=env,capture_output=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            env['ASSEMBLY_LAYER_EPOCH_ANCHOR']='f'*40
+            self.assertNotEqual(subprocess.run(['bash','-c',shell],cwd=controller,env=env,capture_output=True).returncode,0)
+            env.update(ASSEMBLY_LAYER_EPOCH_ANCHOR=anchor,SOURCE_REVISION=anchor)
+            self.assertNotEqual(subprocess.run(['bash','-c',shell],cwd=controller,env=env,capture_output=True).returncode,0)
 
     def test_anchor_records_both_epochs_without_changing_source(self):
         env = self.env()
