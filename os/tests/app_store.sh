@@ -215,7 +215,8 @@ fi
 # while nothing built, installed or started a `ush`.
 #
 # The convention this asserts: a required service `<name>` is served by
-# /usr/lib/systemd/user/tilo-<name>.service, globally enabled, whose ExecStart
+# /usr/lib/systemd/user/tilo-<name>.service, enabled directly or through a
+# shipped socket activation unit, whose ExecStart
 # runs a binary the image installs on the socket the launcher looks at.
 required="$(grep -rh '^[a-z_-]* *= *"required@' "${manifests[@]}" \
               | sed 's/^\([a-z_-]*\) *=.*/\1/' | sort -u)"
@@ -253,7 +254,14 @@ else
       native="$REPO/shell/src/compositor/native.rs"
       service="$REPO/shell/src/shell/tool_intents.rs"
       if grep -Fq 'let tool_service = match crate::shell::tool_intents::spawn()' "$native" \
-          && grep -Fq 'service.pump_workspace_settings(&frame_builder.chrome_handle())' "$native" \
+          && python3 -c '
+import pathlib, re, sys
+source = pathlib.Path(sys.argv[1]).read_text()
+# Keep the call connected to the compositor chrome handle, including when
+# a local binding is shared with adjacent workspace/identity handlers.
+pattern = r"if let Some\(service\) = tool_service\.as_ref\(\)\s*\{\s*(?:service\.pump_workspace_settings\(&frame_builder\.chrome_handle\(\)\)|let (\w+) = frame_builder\.chrome_handle\(\);\s*service\.pump_workspace_settings\(&\1\))"
+sys.exit(0 if re.search(pattern, source) else 1)
+' "$native" \
           && grep -Fq 'pub const TOOL_SERVICE: &str = "tools";' "$service" \
           && grep -Fq 'launcher::services::socket_for(TOOL_SERVICE)' "$service"; then
         ok "the native compositor starts 'tools' on the canonical socket and handles workspace routes"
@@ -272,11 +280,21 @@ else
       shipped unable to launch."
       continue
     fi
-    grep -q "systemctl --global enable tilo-$unit_name.service" "$CONTAINERFILE" \
-      && ok "tilo-$unit_name.service is globally enabled, so '$svc' is served for every session" \
-      || bad "$unit_rel exists but os/Containerfile never runs
-      'systemctl --global enable tilo-$unit_name.service' — the unit would ship disabled
-      and apps [$users] still could not launch."
+    socket_rel="os/usr/lib/systemd/user/tilo-$unit_name.socket"
+    socket="$REPO/$socket_rel"
+    if grep -q "systemctl --global enable tilo-$unit_name.service" "$CONTAINERFILE"; then
+      ok "tilo-$unit_name.service is globally enabled, so '$svc' is served for every session"
+    elif [ -r "$socket" ] \
+        && grep -q "systemctl --global enable tilo-$unit_name.socket" "$CONTAINERFILE" \
+        && containerfile_has_copy "$CONTAINERFILE" "$socket_rel" "/usr/lib/systemd/user/tilo-$unit_name.socket" \
+        && grep -Fxq "ListenStream=%t/tilo/services/$svc.sock" "$socket" \
+        && grep -Fxq "Service=tilo-$unit_name.service" "$socket" \
+        && grep -Eq '^WantedBy=.+\.target$' "$socket"; then
+      ok "tilo-$unit_name.socket is installed and globally enabled on the canonical '$svc' socket"
+    else
+      bad "$unit_rel has neither a globally enabled service nor an installed, enabled
+      activation socket serving '$svc' and activating tilo-$unit_name.service."
+    fi
     grep -q "ExecStart=.*%t/tilo/services/$svc\.sock" "$unit" \
       && ok "tilo-$unit_name.service serves the socket path the launcher resolves" \
       || bad "$unit_rel does not serve %t/tilo/services/$svc.sock, which is where
