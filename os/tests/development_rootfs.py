@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -31,7 +32,8 @@ def raw_rootfs_containerfile():
 
 
 def stage_rootfs_crypto(context, source=CRYPTO):
-    if not source.is_file() or not os.access(source, os.X_OK):
+    if not source.is_file() or not source.stat().st_mode & (
+            stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
         raise RuntimeError(f'native rootfs verifier missing executable {source}')
     destination = context / 'tilo-crypto'
     shutil.copy2(source, destination)
