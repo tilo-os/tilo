@@ -53,6 +53,53 @@ from run duration and the observed container pull-to-create interval. It does no
 sum parallel jobs into elapsed time or invent missing timestamps. Raw job logs and
 credentials are not written to the report; use `--input` for saved local fixtures.
 
+## Linux builds in WSL: keep the checkout on the Linux filesystem
+
+Use a separate Linux checkout under your WSL home directory for sustained Rust
+development. On the investigated WSL host, `/mnt/c` preserves fractional mtimes
+on normal writes but truncates explicitly restored mtimes to whole seconds.
+Cargo restores fingerprint timestamps, so generated files and proc-macro outputs
+can appear newer on every unchanged check. A 2026-09-19 no-edit Cargo trace showed
+`serde_derive` 633 ms and `tracing_attributes` 500 ms newer than those truncated
+fingerprints. This causes real dependency recompilation; adding compiler cache
+capacity does not repair local freshness checks.
+
+Start a new, independent checkout **inside a WSL shell**, leaving any running
+Windows-hosted checkout in place:
+
+```bash
+mkdir -p "$HOME/src"
+git clone ssh://git@code.sandbox.example/qos/qos.git "$HOME/src/tilo-linux"
+cd "$HOME/src/tilo-linux"
+git switch -c codex/my-change
+findmnt -T "$PWD" -o FSTYPE,TARGET
+tools/check-build-env.sh
+cargo check -p shell --tests --locked
+```
+
+The destination must be new, and the mount should be a native Linux filesystem
+(normally ext4), not a Windows drive mounted under `/mnt/c` or another `/mnt`
+drive. Set up SSH authentication and the native packages described below first.
+Rustup uses the checked-in toolchain. This clone contains committed remote state;
+uncommitted changes from another checkout are not copied automatically. Bring
+over the intended branch or reviewed patch explicitly before testing it.
+
+Each checkout owns its ordinary `target/`. Never set `CARGO_TARGET_DIR`, share
+target directories, or relocate an active checkout. The first native-filesystem
+build can be cold; the benefit is reliable reuse on later unchanged invocations.
+Native Windows builds remain in their Windows checkout.
+
+To diagnose unexpected rebuilding after an already successful check, run the
+same command with fingerprint logging and inspect the reported dirty inputs:
+
+```bash
+CARGO_LOG=cargo::core::compiler::fingerprint=info \
+  cargo check -p shell --tests --locked 2>target/cargo-fingerprint.log
+```
+
+Do not rewrite source or fingerprint timestamps to force freshness. The trace
+may identify a genuine source, configuration or generated-input change instead.
+
 ## What the build needs
 
 Install Rust through rustup and the native dependencies below, either on the host
