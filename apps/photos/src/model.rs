@@ -100,6 +100,10 @@ impl ImageAnalysis {
             &self.pets.join(" "),
             &self.people.join(" "),
         ]
+        .into_iter()
+        .filter(|value| !value.trim().is_empty())
+        .map(str::trim)
+        .collect::<Vec<_>>()
         .join(" ")
     }
 
@@ -615,6 +619,22 @@ impl OpenImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_analysis_has_no_searchable_whitespace() {
+        assert_eq!(ImageAnalysis::default().searchable_text(), "");
+    }
+
+    #[test]
+    fn searchable_analysis_joins_only_meaningful_fields() {
+        let analysis = ImageAnalysis {
+            ocr_text: "  MARKET  ".to_owned(),
+            objects: vec!["sign".to_owned()],
+            pets: vec!["  ".to_owned()],
+            ..ImageAnalysis::default()
+        };
+        assert_eq!(analysis.searchable_text(), "MARKET sign");
+    }
 
     #[test]
     fn legacy_analysis_provenance_deserializes_without_model_identity() {
