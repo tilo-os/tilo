@@ -17,6 +17,8 @@
 #   3. os/dev/disk-image.sh -> os/output/installer/qcow2/disk.qcow2.
 #
 # Flags: --stub-ui (no cargo; placeholder UI)  --no-cargo (reuse os/tilo-installer)
+#        --reuse-image-installer (inherit the already-built native installer)
+#        --image-only (stop at the unsigned installer layer, before disk/signing)
 #        --dev-login (local diagnostics only; requires TILO_INSTALLER_DEV_PASSWORD)
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
@@ -31,16 +33,23 @@ export TMPDIR
 
 STUB_UI=0
 DO_CARGO=1
+REUSE_IMAGE_INSTALLER=0
+IMAGE_ONLY=0
+BINARY_MODES=0
 DEV_LOGIN=0
 for a in "$@"; do
   case "$a" in
-    --stub-ui) STUB_UI=1; DO_CARGO=0 ;;
-    --no-cargo) DO_CARGO=0 ;;
+    --stub-ui) STUB_UI=1; DO_CARGO=0; BINARY_MODES=$((BINARY_MODES + 1)) ;;
+    --no-cargo) DO_CARGO=0; BINARY_MODES=$((BINARY_MODES + 1)) ;;
+    --reuse-image-installer) REUSE_IMAGE_INSTALLER=1; DO_CARGO=0; BINARY_MODES=$((BINARY_MODES + 1)) ;;
+    --image-only) IMAGE_ONLY=1 ;;
     --dev-login) DEV_LOGIN=1 ;;
     -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
     *) die "unknown arg: $a" ;;
   esac
 done
+
+[ "$BINARY_MODES" -le 1 ] || die "choose only one installer binary source"
 
 if [ "$DEV_LOGIN" = 1 ] && [ -z "${TILO_INSTALLER_DEV_PASSWORD:-}" ]; then
   die "--dev-login requires a non-empty TILO_INSTALLER_DEV_PASSWORD"
@@ -52,7 +61,9 @@ fi
 podman image exists "$TILO_IMAGE" \
   || die "$TILO_IMAGE not in rootless podman storage — run ./os/dev/build-image.sh first"
 
-if [ "$STUB_UI" = 1 ]; then
+if [ "$REUSE_IMAGE_INSTALLER" = 1 ]; then
+  msg "1/3 inheriting /usr/bin/tilo-installer from the selected base (no Cargo build)"
+elif [ "$STUB_UI" = 1 ]; then
   msg "1/3 writing stub tilo-installer (--stub-ui: OS-plumbing test, no UI)"
   cat > "$TILO_OS_DIR/tilo-installer" <<'STUB'
 #!/bin/bash
@@ -89,8 +100,13 @@ mkdir -p "$INSTALLER_CONTEXT/rootfs/usr" \
          "$INSTALLER_CONTEXT/rootfs/etc/greetd" \
          "$INSTALLER_CONTEXT/rootfs/usr/share/tilo"
 cp -a "$TILO_OS_DIR/usr/." "$INSTALLER_CONTEXT/rootfs/usr/"
-install -Dm0755 "$TILO_OS_DIR/tilo-installer" \
-  "$INSTALLER_CONTEXT/rootfs/usr/bin/tilo-installer"
+if [ "$REUSE_IMAGE_INSTALLER" = 0 ]; then
+  install -Dm0755 "$TILO_OS_DIR/tilo-installer" \
+    "$INSTALLER_CONTEXT/rootfs/usr/bin/tilo-installer"
+else
+  # Do not let a stale overlay copy replace the selected base binary.
+  rm -f "$INSTALLER_CONTEXT/rootfs/usr/bin/tilo-installer"
+fi
 install -Dm0755 "$TILO_OS_DIR/dev/uki-cmdline.py" \
   "$INSTALLER_CONTEXT/rootfs/usr/libexec/tilo-uki-cmdline"
 install -Dm0644 "$TILO_OS_DIR/etc/greetd/config.toml" \
@@ -103,6 +119,12 @@ podman build \
   -t "$TILO_INSTALLER_IMAGE" -f "$TILO_OS_DIR/Containerfile.installer" "$INSTALLER_CONTEXT"
 cleanup_installer_context
 trap - EXIT
+
+if [ "$IMAGE_ONLY" = 1 ]; then
+  msg "DONE: intermediate installer image $TILO_INSTALLER_IMAGE"
+  msg "The new rootfs and modified live/target UKIs require sealing and signing before disk creation."
+  exit 0
+fi
 
 msg "3/3 disk image -> installer qcow2"
 # The live root holds both the booted composefs tree and a second unpacked image

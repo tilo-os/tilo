@@ -36,7 +36,8 @@ COPY rootfs/ /
 # login surface from release media, and validate the result in one final layer.
 # A developer can opt in to SSH only for a local diagnostic image paired with
 # the explicit non-default password required by build-custom-installer.sh.
-RUN printf 'kargs = ["tilo.install"]\n' \
+RUN test -x /usr/bin/tilo-installer \
+    && printf 'kargs = ["tilo.install"]\n' \
       > /usr/lib/bootc/kargs.d/50-installer.toml \
     # Keep tilo.mode=normal: tilo-deployment derives the equal-width repair UKI
     # from it. Error-only kernel/udev logging and Plymouth already keep boot
