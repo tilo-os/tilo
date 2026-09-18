@@ -681,6 +681,12 @@ impl ProjectionOverlay {
         let modes_top = r.y0 + 82.0;
         let gap = 8.0;
         let cell_w = (r.width() - 40.0 - gap * 2.0) / 3.0;
+        // Control role (HIG §9.1/§9.3): the chosen layout is a lift with the
+        // tier's hairline, never an accent wash (the accent means live
+        // state, §9.4); idle cells rest on the lift floor with an edge
+        // derived from that floor (§9.5).
+        let floor = colors.lift(0.35);
+        let idle_edge = ui::surface::edge_on(floor);
         for (i, mode) in ProjectionMode::ALL.iter().enumerate() {
             let cell = Rect::new(
                 r.x0 + 20.0 + usize_to_f64_lossy(i) * (cell_w + gap),
@@ -693,26 +699,24 @@ impl ProjectionOverlay {
             }
             let selected = self.controller.options.mode == *mode;
             let supported = self.controller.selected_device_supports(*mode);
+            let radius = ui::chrome::ChromeRole::Control.radius(theme, cell.height());
+            let shape = RoundedRect::from_rect(cell, radius);
+            let tier =
+                ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(selected));
             scene.fill(
                 Fill::NonZero,
                 transform,
-                if selected {
-                    colors.accent[5].with_alpha_factor(0.24)
-                } else {
-                    colors.lift(0.35)
-                },
+                if selected { tier.fill } else { floor },
                 None,
-                &RoundedRect::from_rect(cell, 12.0),
+                &shape,
             );
-            if selected {
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.5),
-                    transform,
-                    colors.accent[5],
-                    None,
-                    &RoundedRect::from_rect(cell, 12.0),
-                );
-            }
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                tier.border.unwrap_or(idle_edge),
+                None,
+                &ui::surface::edge_outline(cell, radius),
+            );
             ui::icons::draw_icon(
                 scene,
                 transform,
@@ -724,7 +728,7 @@ impl ProjectionOverlay {
                 ),
                 ui::icons::Icon::Monitor,
                 if selected {
-                    colors.accent[6]
+                    colors.text_primary
                 } else if !supported {
                     colors.text_dim.with_alpha_factor(0.42)
                 } else {
@@ -828,6 +832,11 @@ impl ProjectionOverlay {
         ];
         let widths = [76.0, 88.0, 76.0];
         let mut chip_x = x0;
+        // Control chips at the Control radius (9 was off the radius scale):
+        // the engaged "Auto" choice is a lift with the tier's hairline, idle
+        // chips rest on the lift floor with a derived edge.
+        let floor = colors.lift(0.35);
+        let idle_edge = ui::surface::edge_on(floor);
         for (i, (label, width)) in labels.iter().zip(widths).enumerate() {
             let chip = Rect::new(chip_x, r.y0 + 208.0, chip_x + width, r.y0 + 238.0);
             match i {
@@ -835,16 +844,23 @@ impl ProjectionOverlay {
                 1 => self.resolution_rect = chip,
                 _ => self.fps_rect = chip,
             }
+            let on = i == 0 && self.controller.options.stream_policy.adaptive;
+            let radius = ui::chrome::ChromeRole::Control.radius(theme, chip.height());
+            let shape = RoundedRect::from_rect(chip, radius);
+            let tier = ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(on));
             scene.fill(
                 Fill::NonZero,
                 transform,
-                if i == 0 && self.controller.options.stream_policy.adaptive {
-                    colors.accent[5].with_alpha_factor(0.24)
-                } else {
-                    colors.lift(0.35)
-                },
+                if on { tier.fill } else { floor },
                 None,
-                &RoundedRect::from_rect(chip, 9.0),
+                &shape,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                tier.border.unwrap_or(idle_edge),
+                None,
+                &ui::surface::edge_outline(chip, radius),
             );
             let (label_w, label_h) = text_renderer.measure(label, type_scale.xs, None);
             text_renderer.draw_text_weighted(
@@ -1022,22 +1038,33 @@ impl ProjectionOverlay {
 
         let colors = &theme.tokens.colors;
         let type_scale = &theme.tokens.typography.scale;
+        // Control role: the selected device is a lift (HIG §9.3); every row
+        // carries an edge derived from its fill (§9.5).
+        let floor = colors.lift(0.35);
+        let idle_edge = ui::surface::edge_on(floor);
         for (i, device) in self.controller.devices.iter().take(max_rows).enumerate() {
             let row = self.row_rect(i);
             self.device_rects.push(row);
             let selected = self.controller.selected == i;
             let connected = matches!(&self.controller.status, ProjectionStatus::Connected { device_id } if device_id == &device.id);
             let connecting = matches!(&self.controller.status, ProjectionStatus::Connecting { device_id } if device_id == &device.id);
+            let radius = ui::chrome::ChromeRole::Control.radius(theme, row.height());
+            let shape = RoundedRect::from_rect(row, radius);
+            let tier =
+                ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(selected));
             scene.fill(
                 Fill::NonZero,
                 transform,
-                if selected {
-                    colors.accent[5].with_alpha_factor(0.18)
-                } else {
-                    colors.lift(0.35)
-                },
+                if selected { tier.fill } else { floor },
                 None,
-                &RoundedRect::from_rect(row, 12.0),
+                &shape,
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                tier.border.unwrap_or(idle_edge),
+                None,
+                &ui::surface::edge_outline(row, radius),
             );
             ui::icons::draw_icon(
                 scene,
@@ -1155,6 +1182,27 @@ impl ProjectionOverlay {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// HIG §9.5: the sheet's Panel border on its ground, and the derived edge
+    /// of its lift-floor cells and rows, must register on every palette.
+    #[test]
+    fn sheet_cells_keep_an_edge_on_every_palette() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let ground = ui::chrome::shell::panel_ground(&theme);
+            let floor = theme.tokens.colors.lift(0.35);
+            for (what, edge, fill) in [
+                ("panel border", ui::chrome::shell::panel_border(&theme), ground),
+                ("mode cell / device row", ui::surface::edge_on(floor), floor),
+            ] {
+                let delta = ui::surface::edge_delta(edge, fill);
+                assert!(
+                    delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                    "{}: the {what} must separate from its fill (Δ luminance {delta:.4})",
+                    theme.name
+                );
+            }
+        }
+    }
 
     fn airplay_device() -> crate::shell::projection::ProjectionDevice {
         crate::shell::projection::ProjectionDevice {
