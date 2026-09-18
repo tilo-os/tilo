@@ -423,6 +423,10 @@ executes the verified local image ID with implicit pulling disabled. The
 packaged `bootc` must advertise all required installation flags; source and
 target signature policy and fetch checks remain enabled.
 
+The test disk explicitly uses Btrfs, matching the development disk layout.
+It does not inherit a root filesystem default from the Fedora base image;
+composefs installation requires a filesystem supporting fs-verity.
+
 When `REGISTRY_AUTH_FILE` is supplied, the source verifier's private temporary
 snapshot is also mounted read-only into the installation container. The mount
 and environment setting apply only to that invocation; credential bytes are

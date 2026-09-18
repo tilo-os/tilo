@@ -29,7 +29,8 @@ source = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(source)
 
 FLAGS = ('--via-loopback', '--generic-image', '--composefs-backend', '--bootloader',
-         '--source-imgref', '--target-imgref', '--enforce-container-sigpolicy', '--run-fetch-check')
+         '--filesystem', '--source-imgref', '--target-imgref',
+         '--enforce-container-sigpolicy', '--run-fetch-check')
 
 
 
@@ -96,7 +97,7 @@ def create(args):
                 '--volume', f'{path}:/output/disk.raw:rw',
                 '--entrypoint=/usr/bin/bootc', verified.image_id,
                 'install', 'to-disk', '--via-loopback', '--generic-image',
-                '--composefs-backend', '--bootloader=systemd',
+                '--composefs-backend', '--bootloader=systemd', '--filesystem=btrfs',
                 '--source-imgref=docker://' + args.source,
                 '--target-imgref=' + args.target,
                 '--enforce-container-sigpolicy', '--run-fetch-check', '/output/disk.raw'])
