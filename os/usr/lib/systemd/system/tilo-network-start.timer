@@ -1,0 +1,10 @@
+[Unit]
+Description=Start NetworkManager concurrently with graphical login
+
+[Timer]
+OnBootSec=0
+AccuracySec=1ms
+Unit=NetworkManager.service
+
+[Install]
+WantedBy=timers.target
