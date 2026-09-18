@@ -1059,19 +1059,25 @@ impl Pane {
         let c = &theme.tokens.colors;
         let s = self.scale();
         let label = format!("{} selected", state.selected_bulk_ids().len());
-        tr.draw_text_weighted(
-            scene,
-            &label,
-            12.0,
-            c.text_primary,
-            t * Affine::translate((
-                self.rect.x0 + 14.0 * s,
-                self.rect.y0 + self.header_h() + 15.0 * s,
-            )),
-            None,
-            TextWeight::Semibold,
-        );
-        for (rect, hit) in self.bulk_action_rects() {
+        let actions = self.bulk_action_rects();
+        let label_x = self.rect.x0 + 14.0 * s;
+        let label_right = actions[0].0.x0 - 10.0 * s;
+        let (label_w, _) = tr.measure_weighted(&label, 12.0, None, TextWeight::Semibold);
+        // At 200% text the compact toolbar intentionally prioritizes its
+        // full-size controls. The count is already stated in the header, so
+        // omit a clipped duplicate rather than rendering "2 sel…".
+        if label_x + f64::from(label_w) <= label_right {
+            tr.draw_text_weighted(
+                scene,
+                &label,
+                12.0,
+                c.text_primary,
+                t * Affine::translate((label_x, self.rect.y0 + self.header_h() + 15.0 * s)),
+                None,
+                TextWeight::Semibold,
+            );
+        }
+        for (rect, hit) in actions {
             let hover = rect.contains(state.last_mouse);
             fill_round(
                 scene,
