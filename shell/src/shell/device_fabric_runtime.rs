@@ -131,6 +131,18 @@ fn identity_matches_local_focus(
     })
 }
 
+fn stale_remote_capture_owner(
+    previous: Option<&crate::shell::physical_gamepad::PhysicalGamepadBinding>,
+    current: Option<&crate::shell::physical_gamepad::PhysicalGamepadBinding>,
+) -> Option<(String, String)> {
+    previous.and_then(|previous| {
+        let same_owner = current.is_some_and(|current| {
+            current.app_id == previous.app_id && current.workspace_id == previous.workspace_id
+        });
+        (!same_owner).then(|| (previous.app_id.clone(), previous.workspace_id.clone()))
+    })
+}
+
 #[derive(Default)]
 struct GamepadAuthorizationState {
     pending: BTreeMap<[u8; 16], PendingGamepadAuthorization>,
@@ -1366,10 +1378,11 @@ pub struct DeviceFabricRuntime {
     remote_capture: Option<crate::shell::remote_capture::runtime::SharedRemoteCaptureRuntime>,
     remote_capture_online_peers: BTreeSet<crate::shell::personal_continuity::DeviceId>,
     remote_capture_pending_actions: VecDeque<crate::shell::network::ReceivedPersonalFabricAction>,
+    remote_capture_stale_focus: BTreeSet<(String, String)>,
     tethering: crate::shell::personal_tethering_runtime::PersonalTetheringRuntime,
     gamepad_broker: ProductionGamepadBroker,
     inbound_gamepads: BTreeMap<[u8; 16], InboundGamepadForwarding>,
-    local_gamepad_focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
+    local_app_focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
     policy: Option<ContinuityPolicySnapshot>,
 }
 
@@ -1393,6 +1406,7 @@ impl DeviceFabricRuntime {
             remote_capture: None,
             remote_capture_online_peers: BTreeSet::new(),
             remote_capture_pending_actions: VecDeque::new(),
+            remote_capture_stale_focus: BTreeSet::new(),
             tethering: Default::default(),
             gamepad_broker: os_actions::ForwardedPeripheralBroker::new(
                 os_actions::LinuxVirtualGamepadFactory::new(
@@ -1400,7 +1414,7 @@ impl DeviceFabricRuntime {
                 ),
             ),
             inbound_gamepads: BTreeMap::new(),
-            local_gamepad_focus: None,
+            local_app_focus: None,
             policy: None,
         }
     }
@@ -1420,12 +1434,17 @@ impl DeviceFabricRuntime {
     }
 
     /// Supply the compositor's current locally verified app focus. Remote
-    /// gamepad claims are never allowed to establish this authority.
-    pub fn set_local_gamepad_focus(
+    /// claims are never allowed to establish this authority.
+    pub fn set_local_app_focus(
         &mut self,
         focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
     ) {
-        self.local_gamepad_focus = focus;
+        if let Some(owner) =
+            stale_remote_capture_owner(self.local_app_focus.as_ref(), focus.as_ref())
+        {
+            self.remote_capture_stale_focus.insert(owner);
+        }
+        self.local_app_focus = focus;
     }
 
     /// Sample local state and project authenticated remote state into the OS.
@@ -1458,7 +1477,7 @@ impl DeviceFabricRuntime {
         crate::shell::remote_audio::pump(
             network,
             policy.permits(ContinuityCapability::Media),
-            self.local_gamepad_focus.as_ref(),
+            self.local_app_focus.as_ref(),
         );
         self.pump_realtime_continuity(network, policy);
         self.pump_notification_continuity(network, policy);
@@ -1620,6 +1639,7 @@ impl DeviceFabricRuntime {
             }
             self.remote_capture_online_peers.clear();
             self.remote_capture_pending_actions.clear();
+            self.remote_capture_stale_focus.clear();
         }
     }
 
@@ -1904,6 +1924,9 @@ impl DeviceFabricRuntime {
         let Ok(mut runtime) = runtime.try_lock() else {
             return;
         };
+        for (app_id, workspace_id) in std::mem::take(&mut self.remote_capture_stale_focus) {
+            runtime.teardown_target_app(&app_id, &workspace_id);
+        }
         if !policy.permits(ContinuityCapability::Media) {
             runtime.teardown_all();
             self.remote_capture_online_peers.clear();
@@ -1982,7 +2005,7 @@ impl DeviceFabricRuntime {
                 sequence,
                 event,
             } => {
-                let local_focus = self.local_gamepad_focus.as_ref();
+                let local_focus = self.local_app_focus.as_ref();
                 let focus_valid = self
                     .inbound_gamepads
                     .get(forwarding_id)
@@ -2109,7 +2132,7 @@ impl DeviceFabricRuntime {
                 );
                 continue;
             }
-            if !pending.matches_local_focus(self.local_gamepad_focus.as_ref()) {
+            if !pending.matches_local_focus(self.local_app_focus.as_ref()) {
                 let _ = network.send_personal_fabric_action(
                     &pending.source,
                     PersonalFabricAction::GamepadForwardGrant {
@@ -2283,7 +2306,7 @@ impl DeviceFabricRuntime {
                     || !online.contains(&session.source)
                     || !identity_matches_local_focus(
                         &session.identity,
-                        self.local_gamepad_focus.as_ref(),
+                        self.local_app_focus.as_ref(),
                     )
                     || !self.gamepad_broker.has_lease(session.lease))
                 .then_some((*id, session.source.clone(), session.lease_nonce))
@@ -8953,6 +8976,37 @@ mod tests {
                 ..exact
             })
         ));
+    }
+
+    #[test]
+    fn remote_capture_owner_changes_only_across_app_or_workspace_focus() {
+        let previous = crate::shell::physical_gamepad::PhysicalGamepadBinding {
+            app_id: "dev.tilo.Camera".into(),
+            workspace_id: "room-a".into(),
+            session_id: "tab-a".into(),
+        };
+        let same_owner = crate::shell::physical_gamepad::PhysicalGamepadBinding {
+            session_id: "tab-b".into(),
+            ..previous.clone()
+        };
+        let other_app = crate::shell::physical_gamepad::PhysicalGamepadBinding {
+            app_id: "dev.tilo.Calls".into(),
+            ..previous.clone()
+        };
+
+        assert_eq!(
+            stale_remote_capture_owner(Some(&previous), Some(&same_owner)),
+            None
+        );
+        assert_eq!(
+            stale_remote_capture_owner(Some(&previous), Some(&other_app)),
+            Some(("dev.tilo.Camera".into(), "room-a".into()))
+        );
+        assert_eq!(
+            stale_remote_capture_owner(Some(&previous), None),
+            Some(("dev.tilo.Camera".into(), "room-a".into()))
+        );
+        assert_eq!(stale_remote_capture_owner(None, Some(&previous)), None);
     }
 
     #[test]
