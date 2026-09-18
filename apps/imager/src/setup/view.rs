@@ -40,7 +40,7 @@ type WorkerTask = Box<dyn FnOnce() + Send + 'static>;
 type WorkerLauncher = fn(&str, WorkerTask) -> Result<(), String>;
 type ImportLauncher = fn() -> ImportApp;
 
-const FULL_OS_UNAVAILABLE: &str = "Full qOS installation is not available in this build yet.";
+const FULL_OS_UNAVAILABLE: &str = "Full Tilo installation is not available in this build yet.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SetupCapabilities {
@@ -292,7 +292,7 @@ impl SetupApp {
                 },
             });
             app.status =
-                "qOS Desktop is installed and verified. Sign out when you are ready.".into();
+                "Tilo Desktop is installed and verified. Sign out when you are ready.".into();
         }
         app
     }
@@ -430,24 +430,24 @@ impl SetupApp {
                 let result = if on_full_os_review {
                     self.internal_download_flow
                         .as_mut()
-                        .ok_or_else(|| "Full qOS download is unavailable.".to_string())
+                        .ok_or_else(|| "Full Tilo download is unavailable.".to_string())
                         .and_then(|flow| {
                             let key = flow
                                 .offered_selection()
-                                .ok_or("No Full qOS download is currently offered.")?;
+                                .ok_or("No Full Tilo download is currently offered.")?;
                             flow.start_selected(key)
                         })
                 } else {
-                    Err("Full qOS downloads can start only from the Full qOS review.".into())
+                    Err("Full Tilo downloads can start only from the Full Tilo review.".into())
                 };
-                self.apply_internal_command_result(result, "Downloading qOS…");
+                self.apply_internal_command_result(result, "Downloading Tilo…");
             }
             #[cfg(any(target_os = "linux", windows, all(test, unix)))]
             SetupCommand::PauseInternalDownload => {
                 let result = self
                     .internal_download_flow
                     .as_mut()
-                    .ok_or_else(|| "Full qOS download is unavailable.".to_string())
+                    .ok_or_else(|| "Full Tilo download is unavailable.".to_string())
                     .and_then(InternalDownloadFlow::pause);
                 self.apply_internal_command_result(result, "Pausing download…");
             }
@@ -458,14 +458,14 @@ impl SetupApp {
                     .as_mut()
                     .ok_or_else(|| "No saved download is available.".to_string())
                     .and_then(InternalDownloadFlow::resume);
-                self.apply_internal_command_result(result, "Downloading qOS…");
+                self.apply_internal_command_result(result, "Downloading Tilo…");
             }
             #[cfg(any(target_os = "linux", windows, all(test, unix)))]
             SetupCommand::CancelInternalDownload => {
                 let result = self
                     .internal_download_flow
                     .as_mut()
-                    .ok_or_else(|| "Full qOS download is unavailable.".to_string())
+                    .ok_or_else(|| "Full Tilo download is unavailable.".to_string())
                     .and_then(InternalDownloadFlow::cancel);
                 self.apply_internal_command_result(result, "Cancelling download…");
             }
@@ -690,7 +690,7 @@ impl SetupApp {
                 match self.desktop_flow.state() {
                     DesktopFlowState::Installed { .. } => {
                         self.status =
-                            "qOS Desktop is installed and verified. Sign out when you are ready."
+                            "Tilo Desktop is installed and verified. Sign out when you are ready."
                                 .into();
                         self.status_is_error = false;
                     }
@@ -742,7 +742,7 @@ impl SetupApp {
     fn desktop_experience_status(&self) -> (String, bool) {
         match self.desktop_flow.state() {
             DesktopFlowState::Checking => (
-                "Checking this host and the authenticated qOS Desktop catalog…".into(),
+                "Checking this host and the authenticated Tilo Desktop catalog…".into(),
                 false,
             ),
             DesktopFlowState::Unavailable { host, reasons } => {
@@ -750,14 +750,14 @@ impl SetupApp {
             }
             DesktopFlowState::Ready(selection) => (
                 format!(
-                    "qOS Desktop {} is available for {}.",
+                    "Tilo Desktop {} is available for {}.",
                     selection.release.version, selection.host
                 ),
                 false,
             ),
             DesktopFlowState::Downloading(selection) => (
                 format!(
-                    "Downloading qOS Desktop {} for {}.",
+                    "Downloading Tilo Desktop {} for {}.",
                     selection.release.version, selection.host
                 ),
                 false,
@@ -767,14 +767,14 @@ impl SetupApp {
             | DesktopFlowState::Installing(selection)
             | DesktopFlowState::Verifying(selection) => (
                 format!(
-                    "Installing qOS Desktop {} for {}.",
+                    "Installing Tilo Desktop {} for {}.",
                     selection.release.version, selection.host
                 ),
                 false,
             ),
             DesktopFlowState::Installed { selection, result } => (
                 format!(
-                    "qOS Desktop {} is installed and verified on {}.",
+                    "Tilo Desktop {} is installed and verified on {}.",
                     result.version, selection.host
                 ),
                 false,
@@ -789,7 +789,7 @@ impl SetupApp {
         let header = stack()
             .with_gap(RELATED)
             .push(Box::new(
-                Text::new("Choose your qOS experience")
+                Text::new("Choose your Tilo experience")
                     .with_role(TextRole::Title)
                     .with_heading_level(1),
             ))
@@ -803,10 +803,10 @@ impl SetupApp {
             let selected = self.chosen_experience == Some(experience);
             let description = match experience {
                 Experience::Desktop => {
-                    "Add the qOS desktop session to a supported Linux installation."
+                    "Add the Tilo desktop session to a supported Linux installation."
                 }
                 Experience::FullOs => {
-                    "Install qOS alongside your current operating system and keep the current OS as the startup default."
+                    "Install Tilo alongside your current operating system and keep the current OS as the startup default."
                 }
             };
             let mut choose = self
@@ -946,7 +946,7 @@ impl SetupApp {
         let destination = match &folder.destination {
             FolderDestination::Resolved(path) => path.display().to_string(),
             FolderDestination::Unresolved => {
-                "Pending — choose and review a qOS-managed destination after login".into()
+                "Pending — choose and review a Tilo-managed destination after login".into()
             }
         };
         let destination_field = TextInput::local()
@@ -1040,7 +1040,7 @@ impl SetupApp {
         let header = stack()
             .with_gap(RELATED)
             .push(Box::new(
-                Text::new("Bring your files into qOS")
+                Text::new("Bring your files into Tilo")
                     .with_role(TextRole::Title)
                     .with_heading_level(1),
             ))
@@ -1056,7 +1056,7 @@ impl SetupApp {
             .push(Box::new(self.mode_card(
                 FolderMode::Connected,
                 "Keep selected folders connected",
-                "Keep a local qOS copy and carry changes over when synchronization runs.",
+                "Keep a local Tilo copy and carry changes over when synchronization runs.",
             )))
             .push(Box::new(self.mode_card(
                 FolderMode::Later,
@@ -1076,7 +1076,7 @@ impl SetupApp {
             modes = modes.push(Box::new(Card::titled(
                 "Help me choose",
                 Box::new(Text::new(
-                    "If you are trying qOS or are unsure, choose Copy. If you will keep working in both systems, Connected may fit when folder syncing is available for this computer. You can always decide later.",
+                    "If you are trying Tilo or are unsure, choose Copy. If you will keep working in both systems, Connected may fit when folder syncing is available for this computer. You can always decide later.",
                 )),
             )));
         }
@@ -1115,9 +1115,9 @@ impl SetupApp {
 
     fn review_copy_status(&self, experience: Experience) -> Card {
         let pending = if experience == Experience::FullOs {
-            "Full qOS folder copying remains pending until target-side migration resolves and reviews retained volume identities after installation. No destination or copy is authorized yet."
+            "Full Tilo folder copying remains pending until target-side migration resolves and reviews retained volume identities after installation. No destination or copy is authorized yet."
         } else {
-            "Your folder choices are retained. After the first qOS login, setup will resolve and show each qOS-managed destination for review before any copy begins."
+            "Your folder choices are retained. After the first Tilo login, setup will resolve and show each Tilo-managed destination for review before any copy begins."
         };
         Card::titled(
             "Folder copy status",
@@ -1145,7 +1145,7 @@ impl SetupApp {
             }
             DesktopFlowState::Ready(selection) => {
                 let action = if selection.already_installed {
-                    "The matching package is already installed. Continue to verify the qOS login session. Approve verification when asked."
+                    "The matching package is already installed. Continue to verify the Tilo login session. Approve verification when asked."
                 } else {
                     "Continue to download the authenticated package. Approve installation when asked."
                 };
@@ -1155,27 +1155,27 @@ impl SetupApp {
                 )
             }
             DesktopFlowState::Downloading(selection) => format!(
-                "Downloading and verifying qOS Desktop {} for {}. Cancellation here stops before native authorization.",
+                "Downloading and verifying Tilo Desktop {} for {}. Cancellation here stops before native authorization.",
                 selection.release.version, selection.host
             ),
             DesktopFlowState::Authorizing(selection) => format!(
-                "Waiting for authorization for qOS Desktop {} on {}. No native transaction has been reported yet.",
+                "Waiting for authorization for Tilo Desktop {} on {}. No native transaction has been reported yet.",
                 selection.release.version, selection.host
             ),
             DesktopFlowState::Preparing(selection) => format!(
-                "The helper is independently rechecking qOS Desktop {} for {}.",
+                "The helper is independently rechecking Tilo Desktop {} for {}.",
                 selection.release.version, selection.host
             ),
             DesktopFlowState::Installing(selection) => format!(
-                "The native package manager is installing qOS Desktop {} on {}. Closing this view will not cancel the transaction.",
+                "The native package manager is installing Tilo Desktop {} on {}. Closing this view will not cancel the transaction.",
                 selection.release.version, selection.host
             ),
             DesktopFlowState::Verifying(selection) => format!(
-                "Verifying the installed package and qOS login session for {}.",
+                "Verifying the installed package and Tilo login session for {}.",
                 selection.host
             ),
             DesktopFlowState::Installed { selection, result } => format!(
-                "qOS Desktop {} is verified on {}. Save your work and sign out when you are ready, then choose qOS on the login screen. Setup will not sign you out or change the default session. Selected folders remain pending for first-login review.",
+                "Tilo Desktop {} is verified on {}. Save your work and sign out when you are ready, then choose Tilo on the login screen. Setup will not sign you out or change the default session. Selected folders remain pending for first-login review.",
                 result.version, selection.host
             ),
             DesktopFlowState::Failed { kind, message, .. } => {
@@ -1194,7 +1194,7 @@ impl SetupApp {
             }
         };
         Card::titled(
-            "qOS Desktop readiness",
+            "Tilo Desktop readiness",
             Box::new(
                 Text::new(&detail)
                     .with_id("setup.desktop.status")
@@ -1224,7 +1224,7 @@ impl SetupApp {
             if flow.can_start() {
                 actions = actions.push(Box::new(self.button(
                     "setup.internal.start",
-                    "Download qOS",
+                    "Download Tilo",
                     SetupCommand::StartInternalDownload,
                 )));
             }
@@ -1266,15 +1266,15 @@ impl SetupApp {
             content = content.push(Box::new(actions));
         } else {
             let detail = self.internal_download_error.as_deref().unwrap_or(
-                "Full qOS download is unavailable on this computer. Installation has not started.",
+                "Full Tilo download is unavailable on this computer. Installation has not started.",
             );
             content = content.push(Box::new(
-                Text::new(&format!("Full qOS download\n{detail}"))
+                Text::new(&format!("Full Tilo download\n{detail}"))
                     .with_id("setup.internal.status")
                     .with_live(Politeness::Assertive),
             ));
         }
-        Card::titled("Full qOS download", Box::new(content))
+        Card::titled("Full Tilo download", Box::new(content))
     }
 
     #[allow(
@@ -1330,12 +1330,12 @@ impl SetupApp {
             |bytes| {
                 if skipped_count == 0 {
                     format!(
-                        "Estimated qOS space for selected files: {}",
+                        "Estimated Tilo space for selected files: {}",
                         format_bytes(bytes)
                     )
                 } else {
                     format!(
-                        "Estimated qOS space for counted files: {}. This total is incomplete because {} skipped.",
+                        "Estimated Tilo space for counted files: {}. This total is incomplete because {} skipped.",
                         format_bytes(bytes),
                         skipped_count_phrase(skipped_count)
                     )
@@ -1367,9 +1367,9 @@ impl SetupApp {
         );
         let header = stack().push(Box::new(
             Text::new(if installed {
-                "qOS Desktop is installed"
+                "Tilo Desktop is installed"
             } else {
-                "Review qOS setup"
+                "Review Tilo setup"
             })
             .with_role(TextRole::Title)
             .with_heading_level(1),
@@ -1385,7 +1385,7 @@ impl SetupApp {
         body = body.push(Box::new(Card::titled(
                     "Operating systems",
                     Box::new(Text::new(&format!(
-                        "{retained}. qOS setup uses {}. Your existing OS stays the startup default initially.",
+                        "{retained}. Tilo setup uses {}. Your existing OS stays the startup default initially.",
                         experience_label(plan.experience)
                     ))),
                 )))
@@ -1467,7 +1467,7 @@ impl SetupApp {
                 match self.desktop_flow.state() {
                     DesktopFlowState::Ready(_) => (
                         "setup.install",
-                        "Install qOS Desktop",
+                        "Install Tilo Desktop",
                         SetupCommand::InstallDesktop,
                         true,
                     ),
@@ -1485,7 +1485,7 @@ impl SetupApp {
                     ),
                     DesktopFlowState::Installed { .. } => (
                         "setup.install",
-                        "qOS Desktop installed",
+                        "Tilo Desktop installed",
                         SetupCommand::InstallDesktop,
                         false,
                     ),
@@ -1523,7 +1523,7 @@ impl SetupApp {
                     .with_gap(SIBLING)
                     .push(Box::new(
                         Text::new(&format!(
-                            "Set up qOS  ·  Step {} of 3",
+                            "Set up Tilo  ·  Step {} of 3",
                             match page {
                                 SetupPage::Experience => 1,
                                 SetupPage::Folders => 2,
@@ -1604,22 +1604,22 @@ pub(super) fn system_folder_reason(path: &Path) -> Option<&'static str> {
 
 fn experience_label(experience: Experience) -> &'static str {
     match experience {
-        Experience::Desktop => "qOS Desktop",
-        Experience::FullOs => "Full qOS",
+        Experience::Desktop => "Tilo Desktop",
+        Experience::FullOs => "Full Tilo",
     }
 }
 
 fn experience_unavailable_reason(capabilities: Capabilities, experience: Experience) -> String {
     match experience {
         Experience::Desktop if capabilities.host == HostOs::Windows => {
-            "qOS Desktop is available only on supported Linux installations.".into()
+            "Tilo Desktop is available only on supported Linux installations.".into()
         }
         Experience::Desktop if capabilities.host == HostOs::Linux => {
-            "qOS Desktop is not available for this Linux installation in this build yet.".into()
+            "Tilo Desktop is not available for this Linux installation in this build yet.".into()
         }
-        Experience::Desktop => "qOS Desktop is unavailable on this operating system.".into(),
+        Experience::Desktop => "Tilo Desktop is unavailable on this operating system.".into(),
         Experience::FullOs => {
-            "Full qOS installation is not available for this computer in this build yet.".into()
+            "Full Tilo installation is not available for this computer in this build yet.".into()
         }
     }
 }
@@ -2101,7 +2101,7 @@ mod tests {
         harness
             .expect(
                 &SemanticExpectation::named("setup.internal.status")
-                    .name_contains("Full qOS download"),
+                    .name_contains("Full Tilo download"),
             )
             .unwrap();
         harness
@@ -2218,7 +2218,7 @@ mod tests {
         assert!(app.status_is_error);
         assert_eq!(
             app.status,
-            "Full qOS downloads can start only from the Full qOS review."
+            "Full Tilo downloads can start only from the Full Tilo review."
         );
         assert!(
             app.internal_download_flow
@@ -2286,7 +2286,7 @@ mod tests {
         assert!(duplicate_is_error);
         assert_eq!(
             duplicate_status,
-            "A Full qOS download cannot start in its current state."
+            "A Full Tilo download cannot start in its current state."
         );
         assert_eq!(requests_after, requests);
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -2770,7 +2770,7 @@ mod tests {
             .collect::<Vec<_>>();
         let desktop = labels
             .iter()
-            .position(|label| label == "qOS Desktop readiness")
+            .position(|label| label == "Tilo Desktop readiness")
             .unwrap();
         let operating_systems = labels
             .iter()
@@ -2786,20 +2786,20 @@ mod tests {
 
         assert!(
             harness
-                .a11y_node_named("qOS Desktop is installed")
+                .a11y_node_named("Tilo Desktop is installed")
                 .is_some()
         );
         assert!(
             harness
                 .a11y_node_named(
-                    "qOS Desktop is installed and verified. Sign out when you are ready."
+                    "Tilo Desktop is installed and verified. Sign out when you are ready."
                 )
                 .is_some()
         );
         harness
             .expect(
                 &SemanticExpectation::named("setup.desktop.status")
-                    .name_contains("choose qOS on the login screen"),
+                    .name_contains("choose Tilo on the login screen"),
             )
             .unwrap();
         let labels = harness
@@ -2810,7 +2810,7 @@ mod tests {
         assert!(
             labels
                 .iter()
-                .position(|label| label == "qOS Desktop readiness")
+                .position(|label| label == "Tilo Desktop readiness")
                 .unwrap()
                 < labels
                     .iter()

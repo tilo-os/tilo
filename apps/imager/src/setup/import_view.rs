@@ -163,7 +163,7 @@ impl ImportApp {
             .canonicalize()
             .map_err(|error| error.to_string())?;
         let source = base.join("Documents");
-        let destination_parent = base.join("qOS files");
+        let destination_parent = base.join("Tilo files");
         std::fs::create_dir(&source).map_err(|error| error.to_string())?;
         std::fs::create_dir(&destination_parent).map_err(|error| error.to_string())?;
         let store = MigrationStore::open_at(&base.join("state"))?;
@@ -202,9 +202,9 @@ impl ImportApp {
                 app.status = if app.identity_ready {
                     "Review the resolved source and destination, then choose Copy."
                 } else if scenario == "import-first-login-later" {
-                    "Your choices are saved. Return to Add folders to qOS whenever you are ready."
+                    "Your choices are saved. Return to Add folders to Tilo whenever you are ready."
                 } else {
-                    "Finish setting up your qOS identity to continue. Your choices remain pending."
+                    "Finish setting up your Tilo identity to continue. Your choices remain pending."
                 }
                 .into();
             }
@@ -599,7 +599,7 @@ impl ImportApp {
 
     fn validate_continued_operation(&self, index: usize) -> Result<(), String> {
         if self.continuation.is_some() && !self.identity_ready {
-            return Err("Finish setting up your qOS identity to continue.".into());
+            return Err("Finish setting up your Tilo identity to continue.".into());
         }
         if let Some(folder) = self.continued_index(index) {
             self.continuation
@@ -636,7 +636,7 @@ impl ImportApp {
 
     fn check_continued_review_allowed(&self, index: usize) -> Result<(), String> {
         if !self.identity_ready {
-            return Err("Finish identity setup in qOS first.".into());
+            return Err("Finish identity setup in Tilo first.".into());
         }
         if self.worker.is_some() || self.review_request.is_some() {
             return Err("Wait for the active copy or folder review.".into());
@@ -744,7 +744,7 @@ impl ImportApp {
 
     fn request_identity_gate(&mut self, command: ImportCommand) -> Result<(), String> {
         if self.gate_request.is_some() {
-            return Err("Waiting for the qOS session check.".into());
+            return Err("Waiting for the Tilo session check.".into());
         }
         let (tx, rx) = mpsc::channel();
         std::thread::Builder::new()
@@ -754,7 +754,7 @@ impl ImportApp {
             })
             .map_err(|e| e.to_string())?;
         self.gate_request = Some((command, rx));
-        self.status = "Checking whether qOS identity setup is complete…".into();
+        self.status = "Checking whether Tilo identity setup is complete…".into();
         Ok(())
     }
 
@@ -1196,7 +1196,7 @@ impl ImportApp {
             }
             ImportCommand::PickDestination => {
                 self.picker = Some((PickTarget::DestinationParent, folders::pick_folder()));
-                self.status = "Choose where qOS should create the copied folder.".into();
+                self.status = "Choose where Tilo should create the copied folder.".into();
                 Ok(())
             }
             ImportCommand::PrepareReview => self.prepare_review(),
@@ -1482,7 +1482,7 @@ impl ImportApp {
 
     fn continuation_card(&self, c: &Continuation) -> Card {
         let mut body = Column::new().with_no_padding().with_intrinsic_height()
-            .push(Box::new(Text::new("Saved Desktop folder choices. Complete identity setup in qOS, then review each actual destination. Originals stay unchanged; local Copy does not enable sync or sharing.").with_id("import.continuation.explanation")));
+            .push(Box::new(Text::new("Saved Desktop folder choices. Complete identity setup in Tilo, then review each actual destination. Originals stay unchanged; local Copy does not enable sync or sharing.").with_id("import.continuation.explanation")));
         if !self.identity_ready {
             body = body.push(Box::new(
                 self.button(
@@ -1582,12 +1582,12 @@ impl ImportApp {
         let header = stack()
             .with_gap(RELATED)
             .push(Box::new(
-                Text::new("Add folders to qOS")
+                Text::new("Add folders to Tilo")
                     .with_role(TextRole::Title)
                     .with_heading_level(1),
             ))
             .push(Box::new(Text::new(
-                "Choose a folder and where to copy it. qOS checks each copied file and keeps your originals. Folder sync is not available yet.",
+                "Choose a folder and where to copy it. Tilo checks each copied file and keeps your originals. Folder sync is not available yet.",
             ).dimmed()));
         // Each group of the page — the unavailable notice, the saved Desktop
         // choices, the imports under their heading, the copy form — sits a
