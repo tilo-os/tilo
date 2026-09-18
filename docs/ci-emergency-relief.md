@@ -29,11 +29,12 @@ health guarantee.
 | Infrastructure `ffbd0a1` | Adds completed-cleanup tolerance and live-runner deletion guards, retained in later images. These guards do not prove the cause of historical runner loss. |
 | Infrastructure `3e2e8ba` | Deploys repository-scoped full-builder seed clones with broker image `48a5bf...`. Actual repository 23 snapshot cloning is proven; its first observed job used a public image, so this is not private-builder cache-hit evidence. |
 | Infrastructure `a970175` | Deploys current broker `c80bd455...` with both AX41 v2 seeds. Both replicas Ready with zero restarts at acceptance. Normal repository 23 control and lint jobs received isolated snapshot clones and created their pinned containers without a pull event; timings below. |
+| Infrastructure `64d2359` | Current broker `ef490a74...` disables unrelated generic pre-pull only after verifying qOS repository scope. Global reserve, readiness and lifecycle behavior remain. Both replicas Ready with zero restarts; 316 installed-runtime tests passed. |
 
 Broker image:
 
 ```text
-code.podesta.ai/podestaai/sandbox-broker@sha256:c80bd455e9959e48d1a06d14f26a823402a34eee79d050a3ae939ef425225fc7
+code.podesta.ai/podestaai/sandbox-broker@sha256:ef490a749d8ab68778cafef86626cddb4579ed1bbc8b14996713979680075624
 ```
 
 The broker runs as Deployment `sandbox-broker` in namespace `sandbox-broker`.
@@ -43,7 +44,7 @@ five-second intervals. Startup-probe recovery is healthy independently of the
 performance patch. The `c568...` image patched a source-tree copy, while the running
 broker imported its implementation from `site-packages`; the intended performance
 guard therefore did **not** take effect. Infrastructure `506195f` replaces that
-image with the imported-module correction. The current `a970175` deployment
+image with the imported-module correction. The current `64d2359` deployment
 retains that correction, the exclusive quality lane, and `ffbd0a1` cleanup guards
 that tolerate completed resources and protect live runners. Green probes and
 source changes alone do not prove end-to-end improvement; the production
@@ -176,6 +177,12 @@ is now successful; the complete check run is not claimed green. The linked UI ru
 `6d221fd91261761bfbadbc36b3ff30f901857a9c`. Cloud/ARM cold startup remains outside this proof.
 The separate generic full-builder pilot 22744 measured a **236.876-second cold
 pull**; do not represent these two lean-image hits as eliminating that path.
+
+The later `64d2359` rollout preserves the historical `c80bd455...` cache acceptance
+above. A naturally created cold ARM repository 23 worker at 23:03:43 UTC had
+`CI_WARM=false` and no snapshot in its manifest and was still awaiting scheduling
+at observation. This establishes requested cold-worker configuration, not executed
+ARM startup, cache behavior or runtime performance.
 
 The separate storage recovery task reports expansion/cleanup without a Forgejo
 restart. This is an operator report, not a retained-space or sustained-write
