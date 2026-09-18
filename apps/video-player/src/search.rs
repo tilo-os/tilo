@@ -181,6 +181,19 @@ impl VideoPlayerSearchProvider {
             } else {
                 annotation.text.clone()
             };
+            let action = if ctx.media.has_media
+                && ctx.media.can_control_transport
+                && ctx.media.media_ref.as_deref() == Some(annotation.media_ref.as_str())
+            {
+                "jump"
+            } else {
+                "show"
+            };
+            let subtitle = if action == "jump" {
+                format!("Jump to {:.1}s", annotation.time_ms as f64 / 1000.0)
+            } else {
+                format!("Timestamp · {:.1}s", annotation.time_ms as f64 / 1000.0)
+            };
             let _ = provider.catalog.upsert(
                 crate::actions::annotation_resource_id(&annotation.id),
                 format!(
@@ -192,13 +205,10 @@ impl VideoPlayerSearchProvider {
                     &title,
                     ActionAddress::new(
                         crate::actions::annotation_resource_id(&annotation.id),
-                        "show",
+                        action,
                     ),
                 )
-                .with_subtitle(format!(
-                    "Timestamp · {:.1}s",
-                    annotation.time_ms as f64 / 1000.0
-                ))
+                .with_subtitle(subtitle)
                 .with_icon(Icon::Pin),
             );
         }
@@ -261,6 +271,7 @@ mod tests {
             media: MediaAvailability {
                 has_media: true,
                 source_id: Some("fixture://munich".into()),
+                media_ref: Some("fixture-media://munich".into()),
                 can_control_transport: true,
             },
             settings: PlaybackSettingsState {
@@ -309,6 +320,7 @@ mod tests {
             media: MediaAvailability {
                 has_media: false,
                 source_id: None,
+                media_ref: None,
                 can_control_transport: true,
             },
             settings: PlaybackSettingsState {
@@ -364,6 +376,7 @@ mod tests {
             media: MediaAvailability {
                 has_media: true,
                 source_id: Some("fixture://large".into()),
+                media_ref: Some("fixture-media://large".into()),
                 can_control_transport: true,
             },
             settings: PlaybackSettingsState {
@@ -399,6 +412,7 @@ mod tests {
             media: MediaAvailability {
                 has_media: false,
                 source_id: None,
+                media_ref: None,
                 can_control_transport: true,
             },
             settings: PlaybackSettingsState {
@@ -445,5 +459,45 @@ mod tests {
                         "show"
                     )))
         );
+    }
+
+    #[test]
+    fn matching_current_media_prefers_the_marker_jump_action() {
+        let context = PlayerResourceCtx {
+            title: "Review.mp4",
+            media: MediaAvailability {
+                has_media: true,
+                source_id: Some("fixture://review-open-2".into()),
+                media_ref: Some("fixture-media://review".into()),
+                can_control_transport: true,
+            },
+            settings: PlaybackSettingsState {
+                autoplay: true,
+                loop_enabled: false,
+                rate: 1.0,
+            },
+            audio_tracks: &[],
+            subtitle_tracks: &[],
+            chapters: &[],
+            library: crate::actions::LocalLibraryState::default(),
+        };
+        let shared = crate::shared::SharedLibrary {
+            playlists: Vec::new(),
+            items: Vec::new(),
+            annotations: vec![crate::shared::TimestampAnnotation {
+                id: "review-cut".into(),
+                media_ref: "fixture-media://review".into(),
+                time_ms: 12_500,
+                text: "Check this cut".into(),
+            }],
+        };
+        let provider = VideoPlayerSearchProvider::new(&context, &shared);
+        assert!(provider.search("Check this cut").iter().any(|hit| {
+            hit.action_address()
+                == Some(ActionAddress::new(
+                    crate::actions::annotation_resource_id("review-cut"),
+                    "jump",
+                ))
+        }));
     }
 }
