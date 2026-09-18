@@ -3911,7 +3911,6 @@ struct BodyDesign {
     tile_value_dy: f64,
     tile_unit_inset: f64,
     hourly_h: f64,
-    hourly_label_text: f32,
     day_row_h: f64,
     day_label_text: f32,
     aq_band_text: f32,
@@ -3936,7 +3935,6 @@ const BODY: BodyDesign = BodyDesign {
     tile_value_dy: 30.0,
     tile_unit_inset: 22.0,
     hourly_h: 190.0,
-    hourly_label_text: 11.0,
     day_row_h: 42.0,
     day_label_text: 13.0,
     aq_band_text: 19.0,
@@ -4094,13 +4092,16 @@ struct DayRowGeometry {
     show_precip: bool,
     show_extras: bool,
     show_cond: bool,
-    /// Width the lo / hi temperature labels reserve ("-12°" at 14pt).
-    temp_w: f64,
-    /// Width of the precipitation cluster (dot, gap, "63%").
-    precip_w: f64,
     /// Radius of the precipitation / UV severity dots.
     dot_r: f64,
 }
+
+/// The 7-day row's authored column widths: the widest day label
+/// ("Tomorrow", 14pt Medium), the precipitation cluster (dot, gap, "63%")
+/// and the radius of its severity dot.
+const DAY_LABEL_W: f64 = 72.0;
+const DAY_PRECIP_W: f64 = 46.0;
+const DAY_DOT_R: f64 = 3.0;
 
 impl DayRowGeometry {
     /// One column grid for every row, laid out from the card's `s4` gutters
@@ -4115,11 +4116,7 @@ impl DayRowGeometry {
             f64::from(spacing.s3),
             f64::from(spacing.s4),
         );
-        // The row's authored column widths: the widest day label
-        // ("Tomorrow", 14pt Medium), the precipitation cluster (dot, gap,
-        // "63%"), the 28 px glyph, the UV + wind extras column, and the room
-        // the condition text needs before it is worth showing.
-        let (label_w, precip_w, dot_r) = (72.0, 46.0, 3.0);
+        let (label_w, precip_w, dot_r) = (DAY_LABEL_W, DAY_PRECIP_W, DAY_DOT_R);
         let (icon_edge, extras_w, cond_min_w) = (28.0, 132.0, 96.0);
         let inner_l = dcard.x0 + s4;
         let inner_r = dcard.x1 - s4;
@@ -4168,8 +4165,6 @@ impl DayRowGeometry {
             show_precip,
             show_extras,
             show_cond,
-            temp_w,
-            precip_w,
             dot_r,
         }
     }
@@ -4446,7 +4441,6 @@ mod day_row_geometry_tests {
                 geo.inner_r - (geo.bar_x1 + s2) >= temp_w - 1e-9,
                 "{card_w}: a {temp_w}px hi label runs past the card gutter"
             );
-            assert!((geo.temp_w - temp_w).abs() < 1e-9);
             if geo.show_precip {
                 assert!(
                     geo.precip_left - geo.dot_r - geo.icon_x1 >= s3 - 1e-9,
@@ -4454,13 +4448,13 @@ mod day_row_geometry_tests {
                     geo.precip_left,
                     geo.icon_x1
                 );
-                assert!(geo.lo_x - geo.temp_w - (geo.precip_left + geo.precip_w) >= s3 - 1e-9);
+                assert!(geo.lo_x - temp_w - (geo.precip_left + super::DAY_PRECIP_W) >= s3 - 1e-9);
             }
             if geo.show_extras {
                 let next = if geo.show_precip {
                     geo.precip_left - geo.dot_r
                 } else {
-                    geo.lo_x - geo.temp_w
+                    geo.lo_x - temp_w
                 };
                 assert!(
                     next - geo.extras_right >= s3 - 1e-9,
