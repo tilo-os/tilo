@@ -51,7 +51,7 @@ struct ProviderState {
 #[derive(Clone)]
 enum MaterializationSeed {
     Library,
-    Photo(PhotoResourceSeed),
+    Photo(Box<PhotoResourceSeed>),
     Album {
         id: String,
         name: String,
@@ -249,7 +249,7 @@ impl PhotosSearchProvider {
                 photo.id.clone(),
                 searchable,
                 result,
-                MaterializationSeed::Photo(PhotoResourceSeed::from(photo)),
+                MaterializationSeed::Photo(Box::new(PhotoResourceSeed::from(photo))),
             );
         }
         for album in &library.albums {
