@@ -3905,7 +3905,10 @@ impl PhotosApp {
         true
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "collection paging forwards the shared Widget event context to retained buttons"
+    )]
     fn handle_collection_page_event(
         &mut self,
         event: &winit::event::WindowEvent,
