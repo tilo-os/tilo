@@ -3259,6 +3259,12 @@ impl PhotosApp {
                         .with_hashed_key("photos:destination-album-dialog")
                         .with_children(cards)
                 } else {
+                    if !self.album_editor && !self.metadata_editor {
+                        cards.push(self.timeline_index.accessibility(
+                            self.timeline_index_metrics,
+                            &self.timeline_index_markers,
+                        ));
+                    }
                     AccessNode::new(Role::List)
                         .with_name(tr("photos-library"))
                         .with_description(format!("{} photographs", self.library_total))
@@ -3266,113 +3272,6 @@ impl PhotosApp {
                         .with_hashed_key("photos:library-grid")
                         .with_children(cards)
                 }
-            } else if self.album_editor {
-                cards.push(
-                    AccessNode::new(Role::TextInput)
-                        .with_name("Album name")
-                        .with_value(self.album_name_input.value())
-                        .with_bounds(self.album_name_input.get_rect())
-                        .with_state(AccessState {
-                            focusable: true,
-                            focused: self.album_name_input.is_focused(),
-                            ..Default::default()
-                        })
-                        .with_hashed_key("photos:album-editor:name"),
-                );
-                for (hit, button) in &self.album_page_buttons {
-                    let (name, target) = match hit {
-                        AlbumEditorHit::PreviousPage => (
-                            "Show previous photographs",
-                            "photos:album-editor:previous-page",
-                        ),
-                        AlbumEditorHit::NextPage => {
-                            ("Show next photographs", "photos:album-editor:next-page")
-                        }
-                        _ => continue,
-                    };
-                    cards.push(
-                        AccessNode::new(Role::Button)
-                            .with_name(name)
-                            .with_description(self.library_page_label())
-                            .with_bounds(button.get_rect())
-                            .with_state(AccessState {
-                                focusable: button.is_enabled(),
-                                focused: button.is_focused(),
-                                disabled: !button.is_enabled(),
-                                ..Default::default()
-                            })
-                            .with_action_target(target),
-                    );
-                }
-                for (hit, bounds) in &self.album_editor_hits {
-                    let (name, target) = match hit {
-                        AlbumEditorHit::Save => ("Save album", "photos:album-editor:save"),
-                        AlbumEditorHit::Cancel => {
-                            ("Cancel album editing", "photos:album-editor:cancel")
-                        }
-                        AlbumEditorHit::Delete => ("Delete album", "photos:album-editor:delete"),
-                        AlbumEditorHit::ConfirmDelete => (
-                            "Confirm deleting album",
-                            "photos:album-editor:confirm-delete",
-                        ),
-                        AlbumEditorHit::New
-                        | AlbumEditorHit::Edit
-                        | AlbumEditorHit::PreviousPage
-                        | AlbumEditorHit::NextPage => continue,
-                    };
-                    cards.push(
-                        AccessNode::new(Role::Button)
-                            .with_name(name)
-                            .with_bounds(*bounds)
-                            .with_state(AccessState {
-                                focusable: true,
-                                ..Default::default()
-                            })
-                            .with_action_target(target),
-                    );
-                }
-            } else {
-                for (hit, bounds) in &self.album_editor_hits {
-                    let (name, target) = match hit {
-                        AlbumEditorHit::New => ("New album", "photos:album-editor:new"),
-                        AlbumEditorHit::Edit => ("Edit selected album", "photos:album-editor:edit"),
-                        _ => continue,
-                    };
-                    cards.push(
-                        AccessNode::new(Role::Button)
-                            .with_name(name)
-                            .with_bounds(*bounds)
-                            .with_state(AccessState {
-                                focusable: true,
-                                ..Default::default()
-                            })
-                            .with_action_target(target),
-                    );
-                }
-            }
-            if self.selection_album_chooser {
-                AccessNode::new(Role::Dialog)
-                    .with_name("Choose destination album")
-                    .with_description("Choose one album, then use it as the destination")
-                    .with_bounds(self.canvas_rect)
-                    .with_state(AccessState::new().modal(true))
-                    .with_hashed_key("photos:destination-album-dialog")
-                    .with_children(cards)
-            } else {
-                if !self.album_editor && !self.metadata_editor {
-                    cards.push(
-                        self.timeline_index.accessibility(
-                            self.timeline_index_metrics,
-                            &self.timeline_index_markers,
-                        ),
-                    );
-                }
-                AccessNode::new(Role::List)
-                    .with_name(tr("photos-library"))
-                    .with_description(format!("{} photographs", self.library_total))
-                    .with_bounds(self.canvas_rect)
-                    .with_hashed_key("photos:library-grid")
-                    .with_children(cards)
             }
         } else {
             AccessNode::new(Role::Image)
