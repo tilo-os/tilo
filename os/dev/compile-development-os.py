@@ -613,7 +613,8 @@ def installation_tooling(image):
 
 def build_environment(wpe, generation, revision, manifest, signer, cache,
                       architecture='x86_64', pins=None, adoption_sha256='',
-                      fex_payload_candidate='', windows_guest_candidate='', hardware_profile='generic'):
+                      fex_payload_candidate='', windows_guest_candidate='', hardware_profile='generic',
+                      verified_native_reuse=False):
     hardware_definition(hardware_profile, architecture)
     # No inherited TILO_BUILD_ARGS, prebuilt payload, skip-build or remote engine
     # settings can change this from a complete, local, source build.
@@ -652,9 +653,36 @@ def build_environment(wpe, generation, revision, manifest, signer, cache,
         env.update({name: pins[name] for name in ('RPMS_REF', 'KERNEL_RPMS_REF') if name in pins})
     for name, value in cache.items():
         env['TILO_BUILD_ARGS'] += f' --build-arg {name}={value}'
-    for filename in CACHE_CREDENTIALS.values():
+    for filename in (() if verified_native_reuse else CACHE_CREDENTIALS.values()):
         env['TILO_BUILD_ARGS'] += f' --secret id={filename},src={(CACHE_SECRETS / filename).as_posix()}'
     return env
+
+
+
+def assembly_cache(environment, architecture, mode, native_id, adopted_receipt_sha256):
+    """Enable public intermediate-layer reuse only after strict native import."""
+    if (mode != 'full-build' or architecture not in ARCHITECTURES
+            or not re.fullmatch(r'sha256:[0-9a-f]{64}', native_id)
+            or environment.get('TILO_NATIVE_BUILDER_IMAGE_ID') != native_id
+            or environment.get('TILO_RAW_ROOTFS_ONLY') != '1'
+            or environment.get('TILO_PUBLIC_TRUST_MODE') != 'development'
+            or environment.get('TILO_WITH_BROWSER') != '1'
+            or not re.fullmatch(r'[0-9a-f]{64}', adopted_receipt_sha256 or '')
+            or environment.get('TILO_WPE_ADOPTION_SHA256') != adopted_receipt_sha256):
+        raise ValueError('assembly cache requires verified native and adopted WPE raw development assembly')
+    arguments = environment['TILO_BUILD_ARGS']
+    if '--secret' in arguments or '--cache-' in arguments or '--layers' in arguments:
+        raise ValueError('assembly cache arguments must be controller-owned without compiler secrets')
+    repository = 'code.podesta.ai/qos/tilo-development-assembly-cache-' + architecture + '-v1'
+    flags = ['--layers=true', '--skip-unused-stages=true', '--cache-from', repository, '--cache-to', repository]
+    environment['TILO_BUILD_ARGS'] += ' ' + ' '.join(flags)
+    return {'schema': 1, 'purpose': 'development-raw-assembly-registry-cache',
+            'repository': repository, 'architecture': architecture, 'flags': flags,
+            'native_image_id': native_id, 'wpe_receipt_sha256': adopted_receipt_sha256,
+            'intermediate_uploads_during_build': True, 'private_signing_stages': False,
+            'final_artifact_verification_required': True,
+            'cross_run_cache_hits_verified': False,
+            'limitations': 'Fresh public trust and source inputs can invalidate layers; cache is not artifact acceptance.'}
 
 
 def retain_compilation(revision, generation, epoch, target, manifest, architecture='x86_64'):
@@ -861,7 +889,8 @@ def main(argv=None):
         '--output', str(PRIVATE / 'public')))
     shutil.copytree(PRIVATE / 'public', EVIDENCE / 'public-trust')
     env = build_environment(args.wpe, args.generation, args.revision, trust['manifest_sha256'], signer['signer'], cache, args.architecture, pins, args.wpe_adoption_sha256,
-                            args.fex_payload_candidate, args.windows_guest_candidate, args.hardware_profile)
+                            args.fex_payload_candidate, args.windows_guest_candidate, args.hardware_profile,
+                            verified_native_reuse=bool(args.reconstructed_native_receipt and args.wpe_adoption_receipt))
     epoch = int(run('git', 'show', '-s', '--format=%ct', args.revision))
     env['SOURCE_DATE_EPOCH'] = str(epoch)
     if args.mode == 'native-payload' or args.native_builder_receipt or args.reconstructed_native_receipt:
@@ -879,6 +908,11 @@ def main(argv=None):
         if args.native_builder_receipt or args.reconstructed_native_receipt:
             native_id = import_selected_native(native_builder, args, native_inputs)
             env['TILO_NATIVE_BUILDER_IMAGE_ID'] = native_id
+            if args.reconstructed_native_receipt and args.wpe_adoption_receipt:
+                registry_cache = assembly_cache(env, args.architecture, args.mode, native_id, args.wpe_adoption_sha256)
+                cache_receipt = json.loads((EVIDENCE / 'cache-configuration.json').read_text())
+                cache_receipt['assembly_registry_cache'] = registry_cache
+                write_receipt('cache-configuration.json', cache_receipt)
             if args.reconstructed_native_receipt:
                 write_receipt('reconstructed-native-adoption.json', {
                     'schema': 1, 'source_revision': args.revision, 'image_id': native_id,
