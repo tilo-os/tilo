@@ -835,6 +835,24 @@ impl Action {
             },
         ),
         chrome(
+            "quick-settings.clipboard",
+            "Open clipboard history",
+            "Search, pin, remove, or reuse private clipboard items",
+            |st, _| {
+                st.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Clipboard);
+                Ok(())
+            },
+        ),
+        chrome(
+            "quick-settings.devices",
+            "Open devices and media",
+            "Certified devices, media routes, remote input, and handoffs",
+            |st, _| {
+                st.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Devices);
+                Ok(())
+            },
+        ),
+        chrome(
             "projection.open",
             "Project to a display",
             "Miracast, Google Cast, AirPlay, or FCast",
@@ -1585,9 +1603,27 @@ mod tests {
         assert!(chrome.borrow().overlays.ws_settings);
 
         invoke_action(&results, "quick-settings.open", &chrome);
-        let state = chrome.borrow();
-        assert!(state.overlays.quick_settings);
-        assert!(!state.overlays.ws_settings);
+        {
+            let state = chrome.borrow();
+            assert!(state.overlays.quick_settings);
+            assert!(!state.overlays.ws_settings);
+            assert_eq!(
+                state.quick_settings.current_level(),
+                &crate::shell::quick_settings::QsLevel::Root
+            );
+        }
+
+        invoke_action(&results, "quick-settings.clipboard", &chrome);
+        assert_eq!(
+            chrome.borrow().quick_settings.current_level(),
+            &crate::shell::quick_settings::QsLevel::Clipboard
+        );
+
+        invoke_action(&results, "quick-settings.devices", &chrome);
+        assert_eq!(
+            chrome.borrow().quick_settings.current_level(),
+            &crate::shell::quick_settings::QsLevel::Devices
+        );
     }
 
     #[test]

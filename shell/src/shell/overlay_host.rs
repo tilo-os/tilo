@@ -132,7 +132,9 @@ mod clipboard_manager_tests {
             ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
         host.set_clipboard_manager_bridge(bridge(store.clone()));
 
-        host.apply_quick_settings_root_action(RootAction::OpenClipboard, &chrome);
+        chrome
+            .borrow_mut()
+            .open_quick_settings_level(crate::shell::quick_settings::QsLevel::Clipboard);
         assert_eq!(
             chrome.borrow().quick_settings.current_level(),
             &crate::shell::quick_settings::QsLevel::Clipboard
@@ -172,7 +174,9 @@ mod clipboard_manager_tests {
         let mut host =
             ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
         host.set_clipboard_manager_bridge(bridge(store.clone()));
-        host.apply_quick_settings_root_action(RootAction::OpenClipboard, &chrome);
+        chrome
+            .borrow_mut()
+            .open_quick_settings_level(crate::shell::quick_settings::QsLevel::Clipboard);
 
         assert!(host.handle_qs_clipboard_keyboard(&Key::Named(NamedKey::ArrowDown), false));
         assert!(host.handle_qs_clipboard_keyboard(&Key::Named(NamedKey::Enter), false));
@@ -209,7 +213,9 @@ mod clipboard_manager_tests {
         let mut host =
             ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
         host.set_clipboard_manager_bridge(bridge(store.clone()));
-        host.apply_quick_settings_root_action(RootAction::OpenClipboard, &chrome);
+        chrome
+            .borrow_mut()
+            .open_quick_settings_level(crate::shell::quick_settings::QsLevel::Clipboard);
 
         assert!(host.handle_qs_clipboard_keyboard(&Key::Character("alpha".into()), false));
         let matches = host.filtered_clipboard_history();
@@ -434,7 +440,9 @@ mod device_fabric_ui_tests {
             recorded.borrow_mut().push(action);
             Ok(bridge_view.clone())
         }));
-        host.apply_quick_settings_root_action(RootAction::OpenDevices, &chrome);
+        chrome
+            .borrow_mut()
+            .open_quick_settings_level(crate::shell::quick_settings::QsLevel::Devices);
         assert_eq!(
             chrome.borrow().quick_settings.current_level(),
             &crate::shell::quick_settings::QsLevel::Devices
@@ -1089,7 +1097,9 @@ mod device_fabric_ui_tests {
             ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         host.set_device_fabric_bridge(Rc::new(move |_| Ok(view.clone())));
-        host.apply_quick_settings_root_action(RootAction::OpenDevices, &chrome);
+        chrome
+            .borrow_mut()
+            .open_quick_settings_level(crate::shell::quick_settings::QsLevel::Devices);
         assert!(host.handle_qs_device_fabric_keyboard(&Key::Named(NamedKey::End)));
         assert!(
             host.qs_device_fabric_start > 0,
@@ -13252,30 +13262,6 @@ impl ShellOverlayHost {
                 drop(st);
                 self.qs_notification_history_start = 0;
                 self.qs_notification_wheel_remainder = 0.0;
-            }
-            RootAction::OpenClipboard => {
-                let mut st = chrome.borrow_mut();
-                st.quick_settings
-                    .push_level(crate::shell::quick_settings::QsLevel::Clipboard);
-                st.bump();
-                drop(st);
-                self.qs_clipboard_history_start = 0;
-                self.qs_clipboard_wheel_remainder = 0.0;
-                self.qs_clipboard_query.clear();
-                self.qs_selected_clipboard = self
-                    .filtered_clipboard_history()
-                    .first()
-                    .map(|item| item.id);
-            }
-            RootAction::OpenDevices => {
-                let mut st = chrome.borrow_mut();
-                st.quick_settings
-                    .push_level(crate::shell::quick_settings::QsLevel::Devices);
-                st.bump();
-                drop(st);
-                self.qs_selected_media = None;
-                self.qs_device_fabric_start = 0;
-                self.qs_device_fabric_wheel_remainder = 0.0;
             }
             RootAction::Changed(pending) => {
                 chrome.borrow_mut().bump();
