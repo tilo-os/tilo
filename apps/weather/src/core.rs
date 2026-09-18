@@ -375,6 +375,10 @@ impl Core {
         self.geocode_inflight || self.pending_query_at.is_some()
     }
 
+    pub fn search_deadline(&self) -> Option<Instant> {
+        self.pending_query_at.map(|at| at + GEOCODE_DEBOUNCE)
+    }
+
     /// Whether a geocode debounce is armed (so the app keeps pumping frames
     /// until it fires).
     pub fn debounce_pending(&self) -> bool {
@@ -671,8 +675,15 @@ impl Core {
             .cloned()
             .or_else(|| self.search_results.first().cloned());
         if let Some(loc) = picked {
-            self.model.add_location(loc.clone());
-            self.queue_durable_action(WeatherAction::AddLocation { location: loc });
+            self.model.add_location(loc);
+            // Persist the retained identity/rank after coordinate deduplication,
+            // and the selection that add_location made in the live model.
+            let Some(location) = self.model.selected_location().cloned() else {
+                return false;
+            };
+            let id = location.id.to_string();
+            self.queue_durable_action(WeatherAction::AddLocation { location });
+            self.queue_durable_action(WeatherAction::SelectLocation { id });
             self.scroll = 0.0;
             self.refresh_selected();
             self.nav_request = Some(NavIntent::ShowDetail);
@@ -794,11 +805,20 @@ impl Core {
                     )
             })
             .collect();
-        AccessNode::new(Role::List)
+        let places = AccessNode::new(Role::List)
             .with_name("Saved places")
             .with_description("Use Up and Down Arrow to change city, Enter to open its forecast, or slash to search for another city.")
             .with_bounds(rect)
-            .with_children(items)
+            .with_children(items);
+        let mut children = Vec::new();
+        if let Some(search) = self.search.accessibility() {
+            children.push(search);
+        }
+        children.push(places);
+        AccessNode::new(Role::Group)
+            .with_name("Weather")
+            .with_bounds(rect)
+            .with_children(children)
             .with_keyed_action_routes("weather-overview")
     }
 
@@ -1703,6 +1723,25 @@ impl Core {
             ctx.node_id,
             ctx.taffy,
         );
+        self.finish_search_edit(&before, ac_handled)
+    }
+
+    pub fn perform_search_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        key_path: &[u64],
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        if !self.search.is_editing() {
+            self.begin_search();
+        }
+        let before = self.search.text().to_string();
+        let handled = self.search.perform_action_at(action, key_path, state, path);
+        self.finish_search_edit(&before, handled).unwrap_or(false)
+    }
+
+    fn finish_search_edit(&mut self, before: &str, ac_handled: bool) -> Option<bool> {
         match self.search.take_outcome() {
             AutocompleteOutcome::Accepted(value) => {
                 if self.commit_search_pick(&value) {
@@ -3947,14 +3986,62 @@ mod helper_tests {
     }
 
     #[test]
+    fn accessible_city_search_selects_a_result_and_queues_its_forecast() {
+        use super::*;
+        use std::{cell::RefCell, rc::Rc};
+        use ui::a11y::Action;
+        let mut core = Core::new(WeatherModel::default(), Units::METRIC);
+        let results = crate::sample::sample_model().locations;
+        let chosen = results[1].clone();
+        core.geocode_cache.insert("city".into(), results);
+        let core = Rc::new(RefCell::new(core));
+        let mut pane = crate::panes::OverviewPane::new(core.clone());
+        let mut state = AutoCommit::new();
+        let search = pane.accessibility().unwrap().children.remove(0);
+        assert!(pane.perform_semantic_action(
+            search.action_target.as_deref().unwrap(),
+            &Action::SetValue("city".into()),
+            &mut state,
+            &automerge::ROOT,
+        ));
+        assert_eq!(core.borrow().search_query, "city");
+        assert!(core.borrow().pending_query_at.is_some());
+        let deadline = core.borrow().search_deadline().unwrap();
+        assert_eq!(core.borrow().search_deadline(), Some(deadline));
+        let search = pane.accessibility().unwrap().children.remove(0);
+        let row = &search.children[1];
+        assert_eq!(row.name.as_deref(), Some(result_label(&chosen).as_str()));
+        assert!(pane.perform_semantic_action(
+            row.action_target.as_deref().unwrap(),
+            &Action::Activate,
+            &mut state,
+            &automerge::ROOT,
+        ));
+        let core = core.borrow();
+        assert_eq!(core.model.selected_location().unwrap().id, chosen.id);
+        assert!(
+            core.outbox
+                .iter()
+                .any(|request| matches!(request, Request::Forecast { .. }))
+        );
+        assert!(!core.search.is_editing());
+        assert!(core.search_query.is_empty());
+        assert!(core.search_deadline().is_none());
+    }
+
+    #[test]
     fn weather_accessibility_summarises_saved_places_and_forecast() {
         let model = crate::sample::sample_model();
         let core = Core::new(model, Units::METRIC);
         let overview = core.overview_accessibility(vello::kurbo::Rect::new(0.0, 0.0, 300.0, 700.0));
-        assert_eq!(overview.role, ui::a11y::Role::List);
-        assert_eq!(overview.children.len(), 4);
-        assert!(overview.children[0].state.selected);
-        assert!(overview.children.iter().all(|item| item.state.focusable));
+        assert_eq!(overview.role, ui::a11y::Role::Group);
+        assert_eq!(overview.children[0].role, ui::a11y::Role::TextInput);
+        assert_eq!(overview.children[0].name.as_deref(), Some("Search city…"));
+        let places = &overview.children[1];
+        assert_eq!(places.role, ui::a11y::Role::List);
+        assert_eq!(places.children.len(), 4);
+        assert!(places.children[0].state.selected);
+        assert!(places.children.iter().all(|item| item.state.focusable));
         let detail = core.detail_accessibility(vello::kurbo::Rect::new(300.0, 0.0, 1200.0, 700.0));
         assert_eq!(detail.name.as_deref(), Some("San Francisco forecast"));
         assert!(detail.description.unwrap().contains("hourly readings"));

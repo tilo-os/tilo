@@ -150,6 +150,8 @@ pub struct NavShell {
 
     animating: bool,
     dirty: bool,
+    host_structure_dirty: bool,
+    host_sidebar_modal: bool,
     last_tick: Option<Instant>,
     /// The outer layout theme. `apply_layout` is intentionally theme-free in
     /// the shared Widget contract, but this shell owns a second child-layout
@@ -189,6 +191,8 @@ impl NavShell {
             detail_node: None,
             animating: false,
             dirty: false,
+            host_structure_dirty: false,
+            host_sidebar_modal: false,
             last_tick: None,
             layout_theme: Theme::dark(),
         }
@@ -269,17 +273,19 @@ impl NavShell {
 
     pub fn set_overview(&mut self, overview: Element) {
         self.overview = overview;
+        self.host_structure_dirty = true;
     }
 
     pub fn set_detail(&mut self, detail: Element) {
         self.detail = Some(detail);
+        self.host_structure_dirty = true;
     }
 
     /// Replace the single content pane of a [`NavShell::sidebar_over_content`]
     /// shell. Writes the same slot as [`Self::set_overview`]; named so a
     /// single-pane app doesn't have to call its content an "overview".
     pub fn set_content(&mut self, content: Element) {
-        self.overview = content;
+        self.set_overview(content);
     }
 
     pub fn has_detail(&self) -> bool {
@@ -288,6 +294,7 @@ impl NavShell {
 
     pub fn set_sidebar(&mut self, sidebar: Option<Element>) {
         self.sidebar = sidebar;
+        self.host_structure_dirty = true;
     }
 
     // --- layout-mode queries ---------------------------------------------
@@ -842,15 +849,38 @@ impl Widget for NavShell {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_theme = theme.clone();
-        // Children live in an isolated inner tree: their rects escape normal
-        // flow in overlay/push mode.
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
+        // Register the real panels in the host tree so accessibility actions
+        // and keyboard focus have dispatch destinations. As with ModalDialog,
+        // place_children still resolves their final overlay/push geometry.
+        self.host_structure_dirty = false;
+        self.host_sidebar_modal = self.overlay_sidebar_is_modal();
+        let mut children = Vec::new();
+        if !self.host_sidebar_modal {
+            children.push(self.overview.build_layout(taffy, theme, node_map));
+            if let Some(detail) = self.detail.as_mut() {
+                children.push(detail.build_layout(taffy, theme, node_map));
+            }
+        }
+        if let Some(sidebar) = self.sidebar.as_mut() {
+            children.push(sidebar.build_layout(taffy, theme, node_map));
+        }
+        for child in &children {
+            if let Ok(style) = taffy.style(*child) {
+                let mut style = style.clone();
+                style.position = taffy::Position::Absolute;
+                let _ = taffy.set_style(*child, style);
+            }
+        }
+        let node = taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
             },
-            ..Default::default()
-        });
+            &children,
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -1157,7 +1187,9 @@ impl Widget for NavShell {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let mut d = self.overview.take_structure_dirty();
+        let mut d = std::mem::take(&mut self.host_structure_dirty)
+            || self.host_sidebar_modal != self.overlay_sidebar_is_modal();
+        d |= self.overview.take_structure_dirty();
         if let Some(det) = self.detail.as_mut() {
             d |= det.take_structure_dirty();
         }
@@ -1402,6 +1434,39 @@ mod tests {
         };
         lay_out(&mut ns, w, 640.0);
         ns
+    }
+
+    #[test]
+    fn host_registration_tracks_modal_drawers_and_replaced_panels() {
+        let mut ns = shell(420.0, true);
+        ns.close_sidebar();
+        ns.snap();
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::new();
+        let mut map = HashMap::new();
+        let node = ns.build_layout(&mut taffy, &theme, &mut map);
+        assert_eq!(taffy.children(node).unwrap().len(), 3);
+        assert!(!ns.take_structure_dirty());
+
+        ns.open_sidebar();
+        ns.snap();
+        assert!(ns.take_structure_dirty());
+        let mut taffy = TaffyTree::new();
+        let mut map = HashMap::new();
+        let node = ns.build_layout(&mut taffy, &theme, &mut map);
+        let children = taffy.children(node).unwrap();
+        assert_eq!(children.len(), 1);
+        let sidebar = ns.sidebar.as_deref().unwrap();
+        assert!(std::ptr::addr_eq(
+            map[&children[0]],
+            sidebar as *const dyn Widget
+        ));
+        assert!(!ns.take_structure_dirty());
+
+        ns.set_overview(Box::new(Text::new("replacement")));
+        assert!(ns.take_structure_dirty());
+        ns.close_sidebar();
+        assert!(ns.take_structure_dirty());
     }
 
     fn lay_out(ns: &mut NavShell, w: f64, h: f64) {

@@ -905,7 +905,47 @@ impl Widget for Autocomplete {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        self.input.accessibility()
+        use crate::a11y::{AccessNode, AccessState, Politeness, Role, hash_key};
+        let mut node = self.input.accessibility()?;
+        let id = self.test_id().unwrap_or("autocomplete");
+        // This widget owns the embedded input and its synthetic result rows.
+        // Publish one keyed route for all of them instead of leaking the
+        // inner TextInput's otherwise unhandled action target.
+        node.action_target = None;
+        node.key = Some(hash_key(&id));
+        node.bounds = Some(self.rect.into());
+        node.state.expanded = Some(self.open);
+        if let Some(panel) = self.dropdown_rect() {
+            for (index, suggestion) in self.suggestions.iter().take(self.max_visible).enumerate() {
+                let mut row = AccessNode::new(Role::Button)
+                    .with_name(&suggestion.label)
+                    .with_key(hash_key(&(
+                        "autocomplete-suggestion",
+                        suggestion.value.as_str(),
+                    )))
+                    .with_bounds(self.row_rect(panel, index))
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(self.highlight == Some(index)),
+                    );
+                if let Some(detail) = &suggestion.detail {
+                    row = row.with_description(detail);
+                }
+                node.children.push(row);
+            }
+            if self.suggestions.is_empty()
+                && let Some(status) = &self.status
+            {
+                node.children.push(
+                    AccessNode::new(Role::StaticText)
+                        .with_name(status)
+                        .with_live(Politeness::Polite)
+                        .with_bounds(panel),
+                );
+            }
+        }
+        Some(node.with_keyed_action_routes(id))
     }
 
     fn perform_action(
@@ -914,13 +954,88 @@ impl Widget for Autocomplete {
         state: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
-        Widget::perform_action(&mut self.input, action, state, path)
+        use crate::a11y::Action;
+        match action {
+            Action::Focus | Action::Expand => {
+                self.begin_edit();
+                true
+            }
+            Action::Collapse => {
+                self.cancel();
+                true
+            }
+            _ => {
+                let handled = Widget::perform_action(&mut self.input, action, state, path);
+                if handled && matches!(action, Action::SetValue(_)) {
+                    self.input.set_focus(true);
+                    self.outcome = AutocompleteOutcome::None;
+                    self.recompute();
+                    self.open = true;
+                    self.highlight = None;
+                }
+                handled
+            }
+        }
+    }
+
+    fn perform_action_at(
+        &mut self,
+        action: &crate::a11y::Action,
+        key_path: &[u64],
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        use crate::a11y::{Action, hash_key};
+        let own_key = hash_key(&self.test_id().unwrap_or("autocomplete"));
+        if key_path.is_empty() || key_path == [own_key] {
+            return self.perform_action(action, state, path);
+        }
+        if !self.open || !matches!(action, Action::Activate) {
+            return false;
+        }
+        let Some(value) = self
+            .suggestions
+            .iter()
+            .take(self.max_visible)
+            .find(|suggestion| {
+                key_path.last()
+                    == Some(&hash_key(&(
+                        "autocomplete-suggestion",
+                        suggestion.value.as_str(),
+                    )))
+            })
+            .map(|suggestion| suggestion.value.clone())
+        else {
+            return false;
+        };
+        self.accept(value);
+        true
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accessible_edits_update_suggestions_and_activate_the_selected_value() {
+        use crate::a11y::{Action, hash_key};
+        let mut ac = suggester_paths();
+        let mut state = AutoCommit::new();
+        assert!(ac.perform_action(&Action::SetValue("al".into()), &mut state, &automerge::ROOT));
+        assert_eq!(ac.suggestions().len(), 2);
+        let node = ac.accessibility().unwrap();
+        assert_eq!(node.children[1].name.as_deref(), Some("album"));
+        let key = hash_key(&("autocomplete-suggestion", "album"));
+        assert!(ac.perform_action_at(&Action::Activate, &[key], &mut state, &automerge::ROOT));
+        assert_eq!(ac.text(), "album");
+        assert_eq!(
+            ac.take_outcome(),
+            AutocompleteOutcome::Accepted("album".into())
+        );
+        assert!(!ac.is_open());
+        assert!(!ac.perform_action_at(&Action::Activate, &[key], &mut state, &automerge::ROOT));
+    }
 
     fn suggester_paths() -> Autocomplete {
         Autocomplete::new().with_suggester(|q| {
