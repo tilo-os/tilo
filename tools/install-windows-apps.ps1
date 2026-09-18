@@ -91,10 +91,17 @@ foreach ($application in $applications) {
     $title = Get-TiloWindowsAppName -Application $application
     $shortcutPath = Join-Path $menuDirectory "$title.lnk"
     $shortcut = $shortcutShell.CreateShortcut($shortcutPath)
-    $shortcut.TargetPath = $destination
-    $shortcut.WorkingDirectory = [Environment]::GetFolderPath('UserProfile')
-    $shortcut.Description = "Tilo $title"
-    $shortcut.Save()
+    $workingDirectory = [Environment]::GetFolderPath('UserProfile')
+    # A binary update does not require rewriting an unchanged Start entry.
+    # Preserve its shell metadata and avoid needless catalog invalidation.
+    if ($shortcut.TargetPath -ne $destination -or
+        $shortcut.WorkingDirectory -ne $workingDirectory -or
+        $shortcut.Description -ne "Tilo $title") {
+        $shortcut.TargetPath = $destination
+        $shortcut.WorkingDirectory = $workingDirectory
+        $shortcut.Description = "Tilo $title"
+        $shortcut.Save()
+    }
     if ($application -eq 'clocks') {
         & $hostHelper register 'dev.tilo.clocks' "Tilo $title" $destination $shortcutPath
         if ($LASTEXITCODE -ne 0) { throw 'Could not register Clocks for Windows notifications.' }
