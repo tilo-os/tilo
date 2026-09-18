@@ -18,6 +18,18 @@ for package in sane-backends sane-backends-drivers-scanners; do
   fi
 done
 
+# Camera document scans and Photos imports both route OCR through the shared
+# tilo-ocr adapter, whose production backend invokes this local binary with
+# an explicit language. Shipping the scanner without the engine or its English
+# model would leave a visible OCR action that can never succeed on the image.
+for package in tesseract tesseract-langpack-eng; do
+  if grep -q "^    $package \\\\$" "$containerfile"; then
+    ok "$package is part of the immutable local OCR runtime"
+  else
+    bad "$package is absent while Camera and Photos advertise local OCR"
+  fi
+done
+
 # Keep the image contract tied to the production probe rather than merely
 # proving that an unrelated scanner package happens to be installed.
 source_adapter="$repo/shell/src/shell/remote_capture_source.rs"
