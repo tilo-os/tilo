@@ -8121,7 +8121,7 @@ impl ShellOverlayHost {
         };
         for reading in readings {
             let mut st = chrome.borrow_mut();
-            Self::apply_one_qs_reading(&mut st, reading);
+            self.apply_one_qs_reading(&mut st, reading);
         }
     }
 
@@ -8171,6 +8171,7 @@ impl ShellOverlayHost {
     /// [`Self::apply_quick_settings_readings`], split out to keep that
     /// function under the line-count ceiling.
     fn apply_one_qs_reading(
+        &mut self,
         st: &mut crate::shell::chrome_state::ChromeState,
         reading: crate::shell::qs_refresh::QsReading,
     ) {
@@ -8193,6 +8194,10 @@ impl ShellOverlayHost {
                 QsReading::Firmware(updates) => {
                     st.quick_settings.firmware_updates = updates.map(|v| v.len());
                     st.bump();
+                    return;
+                }
+                QsReading::WifiJoin(join) => {
+                    self.apply_wifi_join_result(st, join);
                     return;
                 }
             };
@@ -8246,6 +8251,77 @@ impl ShellOverlayHost {
                     connected: d.connected,
                 })
                 .collect();
+        }
+        st.bump();
+    }
+
+    fn apply_wifi_join_result(
+        &mut self,
+        st: &mut crate::shell::chrome_state::ChromeState,
+        join: crate::shell::qs_refresh::WifiJoinResult,
+    ) {
+        let crate::shell::qs_refresh::WifiJoinResult {
+            ssid,
+            password,
+            shared_credential,
+            result,
+        } = join;
+        st.quick_settings.wifi_joining = None;
+        match result {
+            Ok(()) => {
+                st.quick_settings.wifi_password = None;
+                for network in &mut st.quick_settings.wifi_networks {
+                    network.connected = network.ssid == ssid;
+                }
+                st.quick_settings.wifi = true;
+                let share_result = if !shared_credential {
+                    password.as_ref().and_then(|password| {
+                        self.wifi_secret_bridge.as_ref().map(|bridge| {
+                            bridge(WifiSecretAction::Share {
+                                ssid: ssid.clone(),
+                                password: password.clone(),
+                            })
+                        })
+                    })
+                } else {
+                    None
+                };
+                let detail = if shared_credential {
+                    "Used the encrypted credential from one of your certified devices."
+                } else if share_result.as_ref().is_some_and(Result::is_err) {
+                    "Connected, but encrypted sharing is temporarily unavailable."
+                } else if share_result.is_some() {
+                    "Connected and encrypted separately for each certified device."
+                } else if password.is_some() {
+                    "Connected. This saved network will rejoin automatically."
+                } else {
+                    "Connected to the open network."
+                };
+                st.push_notification(format!("Connected to {ssid}"), detail);
+            }
+            Err(error) => {
+                tracing::warn!(target: "tilo::os_actions", op = "connect_wifi", %error, "wifi join failed");
+                if let Some(prompt) = st
+                    .quick_settings
+                    .wifi_password
+                    .as_mut()
+                    .filter(|prompt| prompt.ssid == ssid)
+                {
+                    prompt.connecting = false;
+                    prompt.selection.anchor = 0;
+                    prompt.selection.cursor = prompt.password.len();
+                    prompt.error = Some(if shared_credential {
+                        "The saved password no longer works. Enter the current password.".into()
+                    } else {
+                        "Couldn't join. Check the password.".into()
+                    });
+                } else {
+                    st.push_notification(
+                        format!("Couldn’t connect to {ssid}"),
+                        "The network did not accept the connection. Try again from Wi‑Fi settings.",
+                    );
+                }
+            }
         }
         st.bump();
     }
@@ -10505,6 +10581,12 @@ impl ShellOverlayHost {
         let mstate = modifiers.state();
         let super_down = mstate.super_key();
         let shift_down = mstate.shift_key();
+        // Workspace naming is a text-field modal.  It must arbitrate before
+        // every shell chord: otherwise Super+W/K/T can close a tab or open a
+        // palette while the field is visibly active.
+        if self.handle_workspace_rename_key(logical_key, modifiers, handled) {
+            return true;
+        }
         if self.status_editing {
             match logical_key {
                 Key::Named(NamedKey::Escape) => {
@@ -10616,6 +10698,32 @@ impl ShellOverlayHost {
                         .then_some(ShortcutGuideFocus::Binding(
                             settings_store::hardware::ShortcutAction::FocusPreviousWindow,
                         ));
+            }
+            *handled = true;
+            return true;
+        }
+        // Quick Settings is modal. Its own drill-in/root handler above gets
+        // first refusal, F1 remains the documented shortcut-guide escape
+        // hatch, and Escape follows the normal dismissal/back ladder. Every
+        // other key is consumed before it can reach a hidden app or shell
+        // action (including configured shortcuts and Super chords below).
+        if self.overlay_flags().quick_settings {
+            if matches!(logical_key, Key::Named(NamedKey::Escape)) {
+                if self.overlay_flags().shortcut_help {
+                    if let Some(chrome) = self.chrome.as_ref() {
+                        let mut st = chrome.borrow_mut();
+                        st.overlays.shortcut_help = false;
+                        st.bump();
+                    }
+                    self.shortcut_rebind = None;
+                    self.shortcut_rebind_message = None;
+                    self.shortcut_guide_focus = None;
+                    *handled = true;
+                    return true;
+                }
+                if self.handle_shell_escape_chord(handled) {
+                    return true;
+                }
             }
             *handled = true;
             return true;
@@ -10885,17 +10993,7 @@ impl ShellOverlayHost {
         {
             return true;
         }
-        // Quick Settings is a modal input owner even when the key is not one
-        // of its navigation controls. Keep ordinary text and unknown keys
-        // from falling through to the focused client (a terminal must not
-        // receive characters typed while the popover is open). F1 remains the
-        // explicit desktop-help escape hatch above, and Escape is handled by
-        // the dismissal ladder immediately above.
-        if self.overlay_flags().quick_settings {
-            *handled = true;
-            return true;
-        }
-        self.handle_workspace_rename_key(logical_key, modifiers, handled)
+        false
     }
 
     /// Arrow/Enter navigation of the room overview list, unmodified so
@@ -11364,6 +11462,12 @@ impl ShellOverlayHost {
         let shift = mods_state.shift_key();
         let ctrl = mods_state.control_key() || mods_state.super_key();
         let mut st = chrome.borrow_mut();
+        if matches!(logical_key, Key::Named(NamedKey::Escape)) {
+            st.editing_workspace_name = None;
+            st.bump();
+            *handled = true;
+            return true;
+        }
         // Pulled out by value first so it isn't a separate
         // immutable borrow alongside `buf`.
         let sel = st.editing_workspace_name_selection;
@@ -11386,7 +11490,10 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        false
+        // A modal text field owns even keys it does not interpret. This is
+        // what prevents a reserved/global chord from mutating the desktop.
+        *handled = true;
+        true
     }
 
     /// Every workspace-rename chord but `Enter`, applied to `buf`/`sel` in
@@ -12124,7 +12231,18 @@ impl ShellOverlayHost {
             &mut chrome.borrow_mut().quick_settings,
             self.qs_actions.as_ref(),
         );
-        Self::finish_quick_settings_drill_in_click(&chrome, outcome);
+        match outcome {
+            crate::shell::quick_settings_wifi::WifiPaneOutcome::DrillIn(outcome) => {
+                Self::finish_quick_settings_drill_in_click(&chrome, outcome);
+            }
+            crate::shell::quick_settings_wifi::WifiPaneOutcome::JoinOpen(ssid) => {
+                let mut state = chrome.borrow_mut();
+                state.quick_settings.wifi_joining = Some(ssid.clone());
+                state.bump();
+                drop(state);
+                self.qs_refresh.kick_wifi_join(ssid, None, false);
+            }
+        }
         let _ = self.try_connect_with_shared_wifi_password();
     }
 
@@ -21303,59 +21421,16 @@ impl ShellOverlayHost {
                 p.connecting = true;
                 p.error = None;
             }
+            st.quick_settings.wifi_joining = Some(ssid.clone());
             st.bump();
         }
-        let result = self.qs_actions.connect_wifi(&ssid, Some(&password));
-        let share_result = if result.is_ok() {
-            self.wifi_secret_bridge.as_ref().map(|bridge| {
-                bridge(WifiSecretAction::Share {
-                    ssid: ssid.clone(),
-                    password: password.clone(),
-                })
-            })
-        } else {
-            None
-        };
-        let mut st = chrome.borrow_mut();
-        match result {
-            Ok(()) => {
-                st.quick_settings.wifi_password = None;
-                // Mark the joined row directly — the next poll is on the
-                // popover's next open.
-                for n in &mut st.quick_settings.wifi_networks {
-                    n.connected = n.ssid == ssid;
-                }
-                st.quick_settings.wifi = true;
-                st.push_notification(
-                    format!("Connected to {ssid}"),
-                    if share_result.as_ref().is_some_and(Result::is_err) {
-                        "Saved on this device, but encrypted sharing is temporarily unavailable."
-                    } else if share_result.is_some() {
-                        "Saved and encrypted separately for each of your certified devices."
-                    } else {
-                        "This network is saved; the machine will rejoin it automatically."
-                    },
-                );
-            }
-            Err(e) => {
-                tracing::warn!(target: "tilo::os_actions", op = "connect_wifi", error = %e, "wifi join failed");
-                if let Some(p) = st.quick_settings.wifi_password.as_mut() {
-                    p.connecting = false;
-                    // Kept (not cleared) and selected, so a typo is a
-                    // correction and a fresh keystroke replaces it.
-                    p.selection.anchor = 0;
-                    p.selection.cursor = p.password.len();
-                    p.error = Some("Couldn't join. Check the password.".to_string());
-                }
-            }
-        }
-        st.bump();
+        self.qs_refresh.kick_wifi_join(ssid, Some(password), false);
     }
 
     /// Use a credential from another certified device without ever putting it
     /// into the visible password editor. A rejected saved secret leaves the
     /// ordinary prompt in place so the person can correct it.
-    fn try_connect_with_shared_wifi_password(&self) -> bool {
+    fn try_connect_with_shared_wifi_password(&mut self) -> bool {
         let (Some(chrome), Some(bridge)) = (self.chrome.clone(), self.wifi_secret_bridge.as_ref())
         else {
             return false;
@@ -21376,31 +21451,12 @@ impl ShellOverlayHost {
             prompt.connecting = true;
             prompt.error = None;
         }
-        let result = self.qs_actions.connect_wifi(&ssid, Some(&password));
-        let mut state = chrome.borrow_mut();
-        match result {
-            Ok(()) => {
-                state.quick_settings.wifi_password = None;
-                for network in &mut state.quick_settings.wifi_networks {
-                    network.connected = network.ssid == ssid;
-                }
-                state.quick_settings.wifi = true;
-                state.push_notification(
-                    format!("Connected to {ssid}"),
-                    "Used the encrypted credential from one of your certified devices.",
-                );
-            }
-            Err(error) => {
-                tracing::warn!(target: "tilo::os_actions", op = "connect_wifi", error = %error, "shared wifi credential was rejected");
-                if let Some(prompt) = state.quick_settings.wifi_password.as_mut() {
-                    prompt.connecting = false;
-                    prompt.error = Some(
-                        "The saved password no longer works. Enter the current password.".into(),
-                    );
-                }
-            }
+        {
+            let mut state = chrome.borrow_mut();
+            state.quick_settings.wifi_joining = Some(ssid.clone());
+            state.bump();
         }
-        state.bump();
+        self.qs_refresh.kick_wifi_join(ssid, Some(password), true);
         true
     }
 
@@ -22393,6 +22449,24 @@ mod wifi_password_tests {
         Key::Character(s.into())
     }
 
+    fn finish_join(
+        host: &mut ShellOverlayHost,
+        chrome: &crate::shell::chrome_state::Chrome,
+        password: Option<&str>,
+        shared_credential: bool,
+        result: Result<(), &str>,
+    ) {
+        host.apply_wifi_join_result(
+            &mut chrome.borrow_mut(),
+            crate::shell::qs_refresh::WifiJoinResult {
+                ssid: "Cafe WiFi".into(),
+                password: password.map(str::to_owned),
+                shared_credential,
+                result: result.map_err(str::to_owned),
+            },
+        );
+    }
+
     #[test]
     fn a_protected_network_asks_for_a_password_instead_of_failing_silently() {
         let (mut h, chrome, rec) = host_on_wifi_pane(false);
@@ -22440,19 +22514,29 @@ mod wifi_password_tests {
         reason = "the borrow feeds both assertions right after; ending it earlier would mean \
                   cloning test fixture data for no real gain"
     )]
-    fn enter_submits_the_typed_password_to_the_join() {
+    fn enter_starts_a_nonblocking_password_join_and_success_finishes_it() {
         let (mut h, chrome, rec) = host_on_wifi_pane(false);
         h.begin_wifi_password("Cafe WiFi");
         for c in ["p", "w", "1"] {
             press(&mut h, &ch(c));
         }
         press(&mut h, &Key::Named(NamedKey::Enter));
-        assert_eq!(
-            rec.attempts.borrow().as_slice(),
-            [("Cafe WiFi".to_string(), Some("pw1".to_string()))],
-            "the passphrase reaches nmcli — this is the whole point of the field"
+        assert!(
+            rec.attempts.borrow().is_empty(),
+            "the input thread never calls nmcli"
         );
+        assert!(
+            chrome
+                .borrow()
+                .quick_settings
+                .wifi_password
+                .as_ref()
+                .is_some_and(|prompt| prompt.connecting),
+            "the prompt immediately exposes progress"
+        );
+        finish_join(&mut h, &chrome, Some("pw1"), false, Ok(()));
         let st = chrome.borrow();
+        assert!(st.quick_settings.wifi_joining.is_none());
         assert!(
             st.quick_settings.wifi_password.is_none(),
             "a successful join closes the prompt"
@@ -22468,7 +22552,7 @@ mod wifi_password_tests {
 
     #[test]
     fn successful_join_shares_the_password_through_the_secret_bridge() {
-        let (mut host, _chrome, _) = host_on_wifi_pane(false);
+        let (mut host, chrome, _) = host_on_wifi_pane(false);
         let shared = std::rc::Rc::new(RefCell::new(Vec::new()));
         let observed = shared.clone();
         host.set_wifi_secret_bridge(std::rc::Rc::new(move |action| match action {
@@ -22483,6 +22567,7 @@ mod wifi_password_tests {
             press(&mut host, &ch(character));
         }
         press(&mut host, &Key::Named(NamedKey::Enter));
+        finish_join(&mut host, &chrome, Some("pw1"), false, Ok(()));
         assert_eq!(
             shared.borrow().as_slice(),
             [("Cafe WiFi".to_string(), "pw1".to_string())]
@@ -22500,14 +22585,25 @@ mod wifi_password_tests {
         }));
         host.begin_wifi_password("Cafe WiFi");
         assert!(host.try_connect_with_shared_wifi_password());
-        assert_eq!(
-            recorder.attempts.borrow().as_slice(),
-            [(
-                "Cafe WiFi".to_string(),
-                Some("from-another-device".to_string())
-            )]
+        assert!(recorder.attempts.borrow().is_empty());
+        assert!(
+            chrome
+                .borrow()
+                .quick_settings
+                .wifi_password
+                .as_ref()
+                .unwrap()
+                .connecting
+        );
+        finish_join(
+            &mut host,
+            &chrome,
+            Some("from-another-device"),
+            true,
+            Ok(()),
         );
         assert!(chrome.borrow().quick_settings.wifi_password.is_none());
+        assert!(chrome.borrow().quick_settings.wifi_joining.is_none());
     }
 
     #[test]
@@ -22523,12 +22619,14 @@ mod wifi_password_tests {
             press(&mut h, &ch(c));
         }
         press(&mut h, &Key::Named(NamedKey::Enter));
+        finish_join(&mut h, &chrome, Some("bad"), false, Err("rejected"));
         let st = chrome.borrow();
         let p = st
             .quick_settings
             .wifi_password
             .as_ref()
             .expect("the prompt survives a rejection");
+        assert!(st.quick_settings.wifi_joining.is_none());
         assert!(!p.connecting, "the attempt is over");
         assert!(p.error.is_some(), "and the reason is on screen");
         assert_eq!(p.password, "bad", "a typo is a correction, not a retype");
@@ -22545,6 +22643,7 @@ mod wifi_password_tests {
         h.begin_wifi_password("Cafe WiFi");
         press(&mut h, &ch("x"));
         press(&mut h, &Key::Named(NamedKey::Enter));
+        finish_join(&mut h, &chrome, Some("x"), false, Err("rejected"));
         assert!(
             chrome
                 .borrow()
@@ -22626,6 +22725,108 @@ mod palette_dispatch_tests {
         let chrome = ChromeState::new(tree);
         let host = ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
         (host, chrome)
+    }
+
+    #[test]
+    fn workspace_rename_owns_reserved_chords_in_production_dispatch() {
+        let (mut host, chrome) = host_with_chrome();
+        {
+            let mut state = chrome.borrow_mut();
+            state.editing_workspace_name = Some("Draft name".into());
+            state.editing_workspace_name_selection =
+                ui::text_selection::Selection::collapsed("Draft name".len());
+        }
+        let before = chrome.borrow().tree().clone();
+        let modifiers = winit::event::Modifiers::from(winit::keyboard::ModifiersState::SUPER);
+        let state = AutoCommit::new();
+        for key in ["w", "k", "t"] {
+            let mut handled = false;
+            assert!(host.handle_shell_keyboard_event(
+                &Key::Character(key.into()),
+                modifiers,
+                false,
+                &state,
+                &automerge::ROOT,
+                &mut handled,
+            ));
+            assert!(handled);
+            assert!(!host.palette_visible, "Super+{key} must not open a palette");
+            assert!(chrome.borrow().editing_workspace_name.is_some());
+        }
+        assert_eq!(
+            format!("{:?}", chrome.borrow().tree().workspaces),
+            format!("{:?}", before.workspaces)
+        );
+        assert_eq!(chrome.borrow().tree().active_strip, before.active_strip);
+    }
+
+    #[test]
+    fn quick_settings_owns_reserved_chords_but_keeps_f1_and_escape_paths() {
+        let (mut host, chrome) = host_with_chrome();
+        chrome.borrow_mut().overlays.quick_settings = true;
+        let before = chrome.borrow().tree().clone();
+        let modifiers = winit::event::Modifiers::from(winit::keyboard::ModifiersState::SUPER);
+        let state = AutoCommit::new();
+        for key in ["w", "k", "t"] {
+            let mut handled = false;
+            assert!(host.handle_shell_keyboard_event(
+                &Key::Character(key.into()),
+                modifiers,
+                false,
+                &state,
+                &automerge::ROOT,
+                &mut handled,
+            ));
+            assert!(handled);
+            assert!(
+                !host.palette_visible,
+                "Super+{key} must not escape Quick Settings"
+            );
+            assert!(chrome.borrow().overlays.quick_settings);
+        }
+        assert_eq!(
+            format!("{:?}", chrome.borrow().tree().workspaces),
+            format!("{:?}", before.workspaces)
+        );
+        assert_eq!(chrome.borrow().tree().active_strip, before.active_strip);
+
+        let mut handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::F1),
+            winit::event::Modifiers::default(),
+            false,
+            &state,
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert!(handled);
+        assert!(chrome.borrow().overlays.quick_settings);
+        assert!(chrome.borrow().overlays.shortcut_help);
+
+        handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::Escape),
+            winit::event::Modifiers::default(),
+            false,
+            &state,
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert!(handled);
+        assert!(!chrome.borrow().overlays.shortcut_help);
+        assert!(chrome.borrow().overlays.quick_settings);
+
+        handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::Escape),
+            winit::event::Modifiers::default(),
+            false,
+            &state,
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert!(handled);
+        assert!(!chrome.borrow().overlays.quick_settings);
     }
 
     #[test]

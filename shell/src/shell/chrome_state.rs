@@ -289,6 +289,10 @@ pub struct QuickSettingsState {
     /// drill-in list.
     pub nav_stack: Vec<QsLevel>,
     pub wifi_networks: Vec<WifiNetwork>,
+    /// SSID currently being joined off-thread. Kept separate from the
+    /// password prompt so open networks can show progress without presenting
+    /// an irrelevant secret field.
+    pub wifi_joining: Option<String>,
     pub bt_devices: Vec<BtDevice>,
     /// The passphrase prompt for a protected network; `None` except
     /// while the user is typing into it.
@@ -358,6 +362,7 @@ impl Default for QuickSettingsState {
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
+            wifi_joining: None,
             bt_devices: Vec::new(),
             wifi_password: None,
             power_profile: PowerProfile::Balanced,
@@ -393,6 +398,7 @@ impl QuickSettingsState {
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
+            wifi_joining: None,
             bt_devices: Vec::new(),
             wifi_password: None,
             power_profile: PowerProfile::Balanced,
