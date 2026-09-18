@@ -19,18 +19,19 @@ use std::rc::Rc;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::command::{CommandSink, FileCommand, push};
 use crate::favorites::Favorite;
 use crate::i18n::t;
-use ui::ColorCompat;
+use ui::chrome::{SelectionState, panel_shadow, selection_tier};
 use ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tokens::spacing::Spacing;
 use ui::widget::Widget;
 use ui::widget::drag::{DragController, ListMetrics};
 
@@ -38,16 +39,22 @@ use ui::widget::drag::{DragController, ListMetrics};
 /// tests + layout expectations hold).
 pub const SIDEBAR_WIDTH: f64 = 200.0;
 
-const PAD: f64 = 12.0;
-const TOP: f64 = 10.0;
+// One rhythm for the sidebar (HIG §7b): the panel gutter and every inset
+// inside a row are `s3`; a section is separated from the previous one by
+// `s3` as well; the icon and its label are `s2` apart; adjacent row pills
+// keep an `s1` gap between them (half an `s1` off each row's top and bottom).
+const PAD: f64 = Spacing::BASE.s3 as f64;
+const TOP: f64 = Spacing::BASE.s3 as f64;
 const HEADER_H: f64 = 26.0;
 const ROW_H: f64 = 34.0;
-const SECTION_GAP: f64 = 10.0;
+const SECTION_GAP: f64 = Spacing::BASE.s3 as f64;
 const ICON_PX: f64 = 17.0;
 /// Inset from a row's left edge to its icon. The section captions share it,
 /// so "FAVOURITES" / "SYSTEM" sit on the icons' left edge instead of 8px
 /// outside it.
-const ROW_CONTENT_INSET: f64 = 10.0;
+const ROW_CONTENT_INSET: f64 = Spacing::BASE.s3 as f64;
+const ICON_LABEL_GAP: f64 = Spacing::BASE.s2 as f64;
+const PILL_INSET_Y: f64 = Spacing::BASE.s1 as f64 / 2.0;
 
 /// The laid-out geometry of the favourites band — written by the sidebar in
 /// `apply_layout` so the app (and tests / the shots demo) can synthesise a
@@ -350,47 +357,53 @@ impl PlacesSidebar {
             ghost,
         } = visual;
         let tokens = &theme.tokens;
-        let accent = tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
-        let pill = Rect::new(rect.x0, rect.y0 + 2.0, rect.x1, rect.y1 - 2.0);
+        let radius = f64::from(tokens.radii.md);
+        let pill = Rect::new(rect.x0, rect.y0 + PILL_INSET_Y, rect.x1, rect.y1 - PILL_INSET_Y);
         if ghost {
-            let mut a = accent;
-            a = Color::from_rgba8(a.r(), a.g(), a.b(), 0xe0);
+            // The dragged favourite is genuinely off the surface (HIG §9.3):
+            // it casts the Panel shadow and reads as a raised card with its
+            // derived edge, not as an accent wash.
+            panel_shadow(scene, transform, pill, radius, theme, 1.0);
+            ui::surface::card(scene, transform, pill, radius, tokens.colors.surfaces.raised);
+        } else if active || hovered {
+            // The chosen place is a lift, never an accent fill (HIG §9.3).
+            let tier = selection_tier(theme, SelectionState::new(active, hovered, false));
             scene.fill(
                 Fill::NonZero,
                 transform,
-                a,
+                tier.fill,
                 None,
-                &RoundedRect::from_rect(pill, f64::from(tokens.radii.md)),
+                &RoundedRect::from_rect(pill, radius),
             );
-        } else if active {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                accent,
-                None,
-                &RoundedRect::from_rect(pill, f64::from(tokens.radii.md)),
-            );
-        } else if hovered {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                tokens.colors.lift(0.72),
-                None,
-                &RoundedRect::from_rect(pill, f64::from(tokens.radii.md)),
-            );
+            if let Some(border) = tier.border {
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    transform,
+                    border,
+                    None,
+                    &ui::surface::edge_outline(pill, radius),
+                );
+            }
+            if let Some(glow) = tier.inner_glow {
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    transform,
+                    glow,
+                    None,
+                    &ui::surface::edge_outline(pill.inset(-1.0), radius - 1.0),
+                );
+            }
         }
 
-        let selected = active || ghost;
-        let icon_color = if selected {
-            Color::WHITE
+        // A lifted face is still the theme's own surface, so the row keeps its
+        // ordinary ink; the active place is told apart by its lift, not by
+        // white-on-accent text.
+        let icon_color = if active || ghost {
+            tokens.colors.text_primary
         } else {
             tokens.colors.text_dim
         };
-        let text_color = if selected {
-            Color::WHITE
-        } else {
-            tokens.colors.text_primary
-        };
+        let text_color = tokens.colors.text_primary;
         let icon_x = rect.x0 + ROW_CONTENT_INSET;
         let icon_y = rect.y0 + (rect.height() - ICON_PX) / 2.0;
         draw_icon(
@@ -411,7 +424,7 @@ impl PlacesSidebar {
             label,
             size,
             text_color,
-            transform * Affine::translate((icon_x + ICON_PX + 10.0, ty)),
+            transform * Affine::translate((icon_x + ICON_PX + ICON_LABEL_GAP, ty)),
             None,
         );
     }
@@ -767,21 +780,21 @@ impl Widget for PlacesSidebar {
 
 impl PlacesSidebar {
     /// Panel background (a hair lighter than the content) + a quiet divider.
+    /// The sidebar sits on the app base with a derived hairline down its
+    /// right edge (HIG §9.5). It stays on `surfaces.base` because its rows
+    /// are painted with the shared selection tier, which lifts from `base`:
+    /// a lifted panel would swallow the tier's hover step. The edge is
+    /// measured against the panel's own fill, so it registers on dark, light
+    /// and high-contrast alike.
     fn draw_panel_bg(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let tokens = &theme.tokens;
+        let fill = theme.tokens.colors.surfaces.base;
+        scene.fill(Fill::NonZero, transform, fill, None, &self.rect);
         scene.fill(
             Fill::NonZero,
             transform,
-            tokens.colors.lift(0.35),
+            ui::surface::edge_on(fill),
             None,
-            &self.rect,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            ui::tokens::colors::Colors::hairline_on(tokens.colors.surfaces.raised, 26),
-            None,
-            &Line::new((self.rect.x1, self.rect.y0), (self.rect.x1, self.rect.y1)),
+            &Rect::new(self.rect.x1 - 1.0, self.rect.y0, self.rect.x1, self.rect.y1),
         );
     }
 
@@ -1328,5 +1341,34 @@ mod tests {
             sink.borrow().last(),
             Some(FileCommand::Navigate(path)) if path.ends_with("Documents")
         ));
+    }
+
+    /// HIG §7b, one rhythm for the sidebar: adjacent row pills keep an `s1`
+    /// gap, a section is an `s3` from the previous one, and every inset is a
+    /// token step — so no two neighbours touch at 1×.
+    #[test]
+    fn rows_and_sections_keep_token_gaps() {
+        let sink = new_sink();
+        let store = new_store(favorites::defaults(
+            Path::new("/home/u"),
+            &favorites::UserDirs::default(),
+        ));
+        let mut sb = PlacesSidebar::new(store, PathBuf::from("/home/u"), sink);
+        let _ = lay_out(&mut sb);
+        let s1 = f64::from(Spacing::BASE.s1);
+        let s3 = f64::from(Spacing::BASE.s3);
+        let favs = sb.fav_count();
+        assert!(favs >= 2, "defaults seed several favourites");
+        for i in 0..favs - 1 {
+            let a = sb.fav_row_rect(i);
+            let b = sb.fav_row_rect(i + 1);
+            let gap = (b.y0 + PILL_INSET_Y) - (a.y1 - PILL_INSET_Y);
+            assert!((gap - s1).abs() < 0.01, "pills {i}/{} gap {gap}", i + 1);
+        }
+        let last = sb.fav_row_rect(favs - 1);
+        assert!((sb.sys_header_y() - last.y1 - s3).abs() < 0.01);
+        assert_eq!(PAD, s3);
+        assert_eq!(ROW_CONTENT_INSET, s3);
+        assert!(sb.row_x0() > sb.rect.x0 && sb.row_x1() < sb.rect.x1);
     }
 }

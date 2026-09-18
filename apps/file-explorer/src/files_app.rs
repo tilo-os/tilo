@@ -3627,20 +3627,26 @@ impl FileExplorerWidget {
             &self.rect,
         );
         let rect = self.collab_panel_rect();
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.lg));
+        // Panel role (HIG §9.1/§9.5): the sheet is the same material as every
+        // other floating Panel — `panel_ground` under the derived Panel
+        // border, with its elevation — not a raised slot stroked with a
+        // declared border that vanishes on the dark preset.
+        let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
+        let shape = RoundedRect::from_rect(rect, radius);
+        ui::chrome::panel_shadow(scene, transform, rect, radius, theme, 1.0);
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.raised,
+            ui::chrome::panel_ground(theme),
             None,
             &shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.tokens.colors.border_standard,
+            ui::chrome::panel_border(theme),
             None,
-            &shape,
+            &ui::surface::edge_outline(rect, radius),
         );
         let x = rect.x0 + 24.0;
         text_renderer.draw_text(
@@ -3686,42 +3692,16 @@ impl FileExplorerWidget {
         if let Some(action_rect) = self.collab_panel_action_rect()
             && let Some(label) = self.collab_panel_action_label()
         {
-            let action_color = match panel.action.as_ref() {
-                Some(CollabPanelAction::ApplySafeMerge { .. }) => accent,
-                _ => theme.tokens.colors.semantic.danger,
+            // The shared button face (HIG §8): the outlined destructive style
+            // for the irreversible actions, the primary for a safe merge.
+            let face = ui::widget::ButtonFace::new(action_rect, &label)
+                .text_size(theme.tokens.typography.scale.sm)
+                .wrap_label();
+            let face = match panel.action.as_ref() {
+                Some(CollabPanelAction::ApplySafeMerge { .. }) => face.primary(),
+                _ => face.danger_outline(),
             };
-            let action_shape = RoundedRect::from_rect(action_rect, 8.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                action_color.with_alpha_factor(0.14),
-                None,
-                &action_shape,
-            );
-            scene.stroke(
-                &Stroke::new(1.5),
-                transform,
-                action_color,
-                None,
-                &action_shape,
-            );
-            let (label_width, _) = text_renderer.measure(
-                &label,
-                theme.tokens.typography.scale.sm,
-                Some((action_rect.width() - 24.0) as f32),
-            );
-            text_renderer.draw_text(
-                scene,
-                &label,
-                theme.tokens.typography.scale.sm,
-                action_color,
-                transform
-                    * Affine::translate((
-                        action_rect.x0 + (action_rect.width() - f64::from(label_width)) / 2.0,
-                        action_rect.y0 + 9.0,
-                    )),
-                Some((action_rect.width() - 24.0) as f32),
-            );
+            ui::widget::Button::paint(scene, transform, text_renderer, theme, &face);
         }
         let close_rect = Rect::new(
             rect.x1 - 42.0,
@@ -3790,9 +3770,16 @@ impl FileExplorerWidget {
                     .flatten()
             });
         let Some(rect) = rect else { return };
+        // A live drop target is state the user did not choose and must notice
+        // (HIG §9.4), so the accent is the right ink here. The face matches
+        // the row highlight's insets so the two never disagree by a pixel.
         let accent = theme.tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
-        let inset = Rect::new(rect.x0 + 6.0, rect.y0 + 2.0, rect.x1 - 6.0, rect.y1 - 2.0);
-        let shape = RoundedRect::from_rect(inset, 8.0);
+        let (ix, iy) = (
+            f64::from(theme.tokens.spacing.s2),
+            f64::from(theme.tokens.spacing.s1) / 2.0,
+        );
+        let inset = Rect::new(rect.x0 + ix, rect.y0 + iy, rect.x1 - ix, rect.y1 - iy);
+        let shape = RoundedRect::from_rect(inset, f64::from(theme.tokens.radii.md));
         scene.fill(
             Fill::NonZero,
             transform,
@@ -3813,8 +3800,7 @@ impl FileExplorerWidget {
         text_renderer: &mut ui::text_render::TextRenderer,
         theme: &ui::Theme,
     ) {
-        use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
-        use vello::peniko::Fill;
+        use vello::kurbo::{Affine, Rect};
         let Some(path) = &self.pin_drag else { return };
         let count = self.drag_paths.len().max(1);
         let glyph = ui::icons::icon_for_path(path, path.is_dir());
@@ -3838,21 +3824,11 @@ impl FileExplorerWidget {
         let x0 = self.last_cursor.x + 14.0;
         let y0 = self.last_cursor.y + 6.0;
         let rect = Rect::new(x0, y0, x0 + w, y0 + h);
-        let shape = RoundedRect::from_rect(rect, f64::from(tokens.radii.md));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            tokens.colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            tokens.colors.border_standard,
-            None,
-            &shape,
-        );
+        // The ghost is genuinely off the surface (HIG §9.3): it casts the
+        // Panel shadow and its edge derives from its own raised face.
+        let radius = f64::from(tokens.radii.md);
+        ui::chrome::panel_shadow(scene, transform, rect, radius, theme, 1.0);
+        ui::surface::card(scene, transform, rect, radius, tokens.colors.surfaces.raised);
         let accent = tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
         let iy = y0 + (h - icon) / 2.0;
         ui::icons::draw_icon(
