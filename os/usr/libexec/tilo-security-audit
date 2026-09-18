@@ -68,6 +68,7 @@ else
 fi
 optional_crypto_module="$(find /usr/lib /usr/lib64 \
   \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
+     -o -name 'libshout.so*' \
      -o -path '*/gstreamer-1.0/libgstdtls.so' \
      -o -path '*/gstreamer-1.0/libgstcurl.so' \
      -o -path '*/gstreamer-1.0/libgstshout2.so' \

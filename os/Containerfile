@@ -2239,9 +2239,13 @@ RUN chmod 0755 /usr/libexec/tilo/luks-enrolment-test.sh \
 # Qt's ARM compatibility frontend is also
 # offline and does not need its optional OpenSSL TLS backend. Rust-native code
 # owns network security, while foundational distro consumers use the built-in
-# provider. Delete these loadable surfaces before the composefs root is sealed.
+# provider. The Shoutcast library has no remaining consumer after its plugin is
+# removed, so delete that payload too. Keep RPM metadata intact because Fedora
+# records the plugin dependency at the aggregate bundle level.
+# Delete these loadable surfaces before the composefs root is sealed.
 RUN find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
+         -o -name 'libshout.so*' \
          -o -path '*/gstreamer-1.0/libgstdtls.so' \
          -o -path '*/gstreamer-1.0/libgstcurl.so' \
          -o -path '*/gstreamer-1.0/libgstshout2.so' \
@@ -2252,6 +2256,7 @@ RUN find /usr/lib /usr/lib64 \
       \( -type f -o -type l \) -delete \
     && ! find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
+         -o -name 'libshout.so*' \
          -o -path '*/gstreamer-1.0/libgstdtls.so' \
          -o -path '*/gstreamer-1.0/libgstcurl.so' \
          -o -path '*/gstreamer-1.0/libgstshout2.so' \
