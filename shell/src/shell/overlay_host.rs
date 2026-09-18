@@ -35,13 +35,16 @@ use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    Button, ButtonFace, CrossStripDetach, FloatingWindow, GroupRow, Image, ImageFit, OutputSpan,
-    PROMPT_HEIGHT, PermissionPrompt, PromptChoice, Widget, WindowGroup as UiWindowGroup,
+    Button, ButtonFace, CrossStripDetach, FloatingWindow, GroupRow, OutputSpan, PROMPT_HEIGHT,
+    PermissionPrompt, PromptChoice, Widget, WindowGroup as UiWindowGroup,
 };
 use ui::{CommandEntry, CommandPalette};
 
+#[cfg(test)]
+use crate::shell::capture_surface::CaptureSurfaceKind;
 use crate::shell::capture_surface::{
-    CaptureMirrorImage, CaptureSurfaceKind, CaptureSurfaceRequest,
+    CaptureMirrorImage, CaptureSurfaceRequest, PreparedCaptureSurface, capture_mirror_initial_size,
+    capture_mirror_origin, visible_capture_spawn,
 };
 use crate::shell::chrome_state::{Chrome, WsTab};
 use crate::shell::collaborators_overlay::{
@@ -1802,92 +1805,6 @@ pub enum WifiSecretAction {
 }
 
 pub type WifiSecretBridge = std::rc::Rc<dyn Fn(WifiSecretAction) -> Result<Option<String>, String>>;
-
-fn capture_mirror_origin(
-    bounds: Rect,
-    source: Option<Rect>,
-    window_size: vello::kurbo::Size,
-) -> Point {
-    let top = bounds.y0 + 52.0;
-    let right = bounds.x1 - window_size.width - 16.0;
-    let bottom = bounds.y1 - window_size.height - 16.0;
-    let left = bounds.x0 + 16.0;
-    let candidates = [
-        Point::new(right, bottom),
-        Point::new(right, top),
-        Point::new(left, bottom),
-        Point::new(left, top),
-    ];
-    source.map_or(candidates[0], |source| {
-        candidates
-            .into_iter()
-            .enumerate()
-            .min_by(|(ai, a), (bi, b)| {
-                let a_rect = Rect::from_origin_size(*a, window_size);
-                let b_rect = Rect::from_origin_size(*b, window_size);
-                let a_overlap = a_rect.intersect(source).area().max(0.0);
-                let b_overlap = b_rect.intersect(source).area().max(0.0);
-                a_overlap.total_cmp(&b_overlap).then_with(|| ai.cmp(bi))
-            })
-            .map_or(candidates[0], |(_, origin)| origin)
-    })
-}
-
-/// Keep the ownership handoff meaningful when its source lives on the
-/// continuous desktop but wholly outside the physical output. Visible pixels
-/// are used exactly; off-screen pixels collapse to a small edge portal on the
-/// side where the source lives, so the resulting `PiP` arrives from its real
-/// virtual direction instead of popping in at the destination.
-fn visible_capture_spawn(bounds: Rect, source: Option<Rect>) -> Option<Rect> {
-    const PORTAL_WIDTH: f64 = 84.0;
-    const PORTAL_HEIGHT: f64 = 52.0;
-    const EDGE_INSET: f64 = 6.0;
-    const TOP_SAFE: f64 = 48.0;
-
-    let source = source.filter(|rect| rect.is_finite() && rect.area() > 1.0)?;
-    let visible = source.intersect(bounds);
-    if visible.width() > 1.0 && visible.height() > 1.0 {
-        return Some(visible);
-    }
-
-    let center = source.center();
-    let x = if center.x < bounds.x0 {
-        bounds.x0 + EDGE_INSET
-    } else if center.x > bounds.x1 {
-        bounds.x1 - EDGE_INSET - PORTAL_WIDTH
-    } else {
-        (center.x - PORTAL_WIDTH / 2.0).clamp(
-            bounds.x0 + EDGE_INSET,
-            bounds.x1 - EDGE_INSET - PORTAL_WIDTH,
-        )
-    };
-    let y = if center.y < bounds.y0 {
-        bounds.y0 + TOP_SAFE
-    } else if center.y > bounds.y1 {
-        bounds.y1 - EDGE_INSET - PORTAL_HEIGHT
-    } else {
-        (center.y - PORTAL_HEIGHT / 2.0)
-            .clamp(bounds.y0 + TOP_SAFE, bounds.y1 - EDGE_INSET - PORTAL_HEIGHT)
-    };
-    Some(Rect::new(x, y, x + PORTAL_WIDTH, y + PORTAL_HEIGHT))
-}
-
-fn capture_mirror_initial_size(
-    viewport: Rect,
-    source_aspect: f64,
-    preferred: Option<vello::kurbo::Size>,
-) -> vello::kurbo::Size {
-    let requested_width = preferred.map_or(420.0, |size| size.width);
-    let width_cap = (viewport.width() * 0.44).clamp(300.0, 720.0);
-    let width = requested_width.min(width_cap).clamp(240.0, 720.0);
-    let aspect = preferred
-        .filter(|size| size.width > 1.0 && size.height > 1.0)
-        .map_or(source_aspect, |size| size.width / size.height)
-        .max(0.1);
-    let height_cap = (viewport.height() * 0.55).max(135.0);
-    let height = (width / aspect).clamp(135.0, 520.0).min(height_cap);
-    vello::kurbo::Size::new(width, height)
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ShortcutGuideFocus {
@@ -3888,61 +3805,17 @@ impl ShellOverlayHost {
     /// user's window geometry; pinned requests use unique ids and remain
     /// immutable after insertion.
     pub(crate) fn upsert_capture_surface(&mut self, request: CaptureSurfaceRequest<'_>) {
-        let CaptureSurfaceRequest {
+        let PreparedCaptureSurface {
             id,
             title,
-            rgba,
-            width,
-            height,
+            image,
+            pixel_aspect,
+            preferred_size,
             spawn_from,
-            kind,
-        } = request;
-        let pixel_aspect = f64::from(width) / f64::from(height.max(1));
-        let (image, preferred_size, handoff_layers, crossfade_preview, document_aspect) = match kind
-        {
-            CaptureSurfaceKind::Live {
-                preferred_size,
-                handoff_layers,
-            } => (
-                Image::from_rgba(rgba, width, height)
-                    .with_fit(ImageFit::Contain)
-                    .with_alt(format!("Live capture: {title}")),
-                preferred_size,
-                handoff_layers,
-                None,
-                None,
-            ),
-            CaptureSurfaceKind::Pinned { preview } => {
-                let document_aspect = (pixel_aspect < 0.58).then_some(pixel_aspect);
-                let fit = if document_aspect.is_some() {
-                    ImageFit::Fill
-                } else {
-                    ImageFit::Contain
-                };
-                let image = Image::from_rgba(rgba, width, height)
-                    .with_fit(fit)
-                    .with_alt(format!("Pinned screenshot: {title}"));
-                let preview_rgba: Vec<u8> = preview
-                    .pixels
-                    .into_iter()
-                    .flat_map(std::iter::IntoIterator::into_iter)
-                    .collect();
-                let preview_image = Image::from_rgba(
-                    std::sync::Arc::from(preview_rgba),
-                    u32::from(preview.columns.max(1)),
-                    u32::from(preview.rows.max(1)),
-                )
-                .with_fit(ImageFit::Fill)
-                .with_alt(format!("Pinned screenshot preview: {title}"));
-                (
-                    image,
-                    document_aspect.map(|_| vello::kurbo::Size::new(340.0, 420.0)),
-                    Vec::new(),
-                    Some(preview_image),
-                    document_aspect,
-                )
-            }
-        };
+            handoff_layers,
+            crossfade_preview,
+            document_aspect,
+        } = request.prepare();
         if let Some((_, window)) = self
             .capture_mirrors
             .iter_mut()
