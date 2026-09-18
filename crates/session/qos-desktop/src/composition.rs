@@ -162,7 +162,7 @@ impl DesktopSurface {
         let external_navigation = chrome.navigation == NavigationChrome::External;
         let mut column = Column::new()
             .with_fill_remaining_height()
-            .with_vertical_padding(8.0)
+            .with_vertical_padding(if external_navigation { 0.0 } else { 8.0 })
             .with_horizontal_padding(0.0, 0.0);
         if !external_navigation { column = column.push(Box::new(WorkspaceView::new(
                 tree.workspaces.len(),
