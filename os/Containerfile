@@ -944,7 +944,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # for the `greetd` user via etc/polkit-1/rules.d/49-tilo-greeter-power.rules.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     greetd \
-    greetd-tuigreet \
     fprintd \
     fprintd-pam \
     polkit \
@@ -1316,7 +1315,9 @@ COPY os/usr/share/tilo/fs-capabilities.json /usr/share/tilo/fs-capabilities.json
 # Wayland session desktop entries. Two files land here:
 #   - shell.desktop          — default session (no peer-sync)
 #   - shell-peer-sync.desktop — opt-in session (Iroh enabled)
-# tuigreet lists both at the login prompt; see docs/peer-sync.md.
+# The custom graphical greeter lists both at the login prompt; see
+# docs/peer-sync.md. The separate text-mode tuigreet package is intentionally
+# absent from this image.
 COPY \
     os/usr/share/wayland-sessions/shell.desktop \
     os/usr/share/wayland-sessions/shell-peer-sync.desktop \
