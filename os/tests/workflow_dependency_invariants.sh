@@ -62,8 +62,9 @@ fi
 
 if grep -Fq 'group: snapshot-rpms-${{ github.ref }}' "$rpm_snapshot_workflow" \
    && grep -Fq 'cancel-in-progress: false' "$rpm_snapshot_workflow" \
-   && grep -Fq 'test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"' \
-     "$rpm_snapshot_workflow"; then
+   && grep -Fq 'git diff --quiet "$GITHUB_SHA" FETCH_HEAD -- "${snapshot_inputs[@]}"' \
+     "$rpm_snapshot_workflow" \
+   && grep -Fq 'git checkout --detach FETCH_HEAD' "$rpm_snapshot_workflow"; then
   printf 'ok    RPM snapshot refreshes cannot starve and stale runs cannot publish\n'
 else
   printf 'RPM snapshot refreshes may be cancelled indefinitely or publish stale pins\n' >&2
