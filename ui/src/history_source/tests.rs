@@ -21,6 +21,110 @@ use crate::widget::{ActivityTimeline, HistoryFilter};
 const T0: i64 = 1_780_000_000; // 2026-06-08T…, comfortably in the Tilo era.
 const HOUR: i64 = 3_600;
 
+#[test]
+fn browsing_history_preserves_pending_action_and_committed_entry_ids() {
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "title", "saved").unwrap();
+    let saved = doc.commit().unwrap();
+    let saved_id = entry_id_from_hash(&saved.to_string());
+    doc.put(ROOT, "title", "still typing").unwrap();
+    let pending = doc.pending_ops();
+
+    assert_eq!(committed_heads(&doc), vec![saved]);
+    assert_eq!(
+        doc.pending_ops(),
+        pending,
+        "cache lookup must not commit an edit"
+    );
+
+    let entries = source().entries(&mut doc);
+    assert_eq!(
+        doc.pending_ops(),
+        pending,
+        "listing must not commit an edit"
+    );
+    assert_eq!(
+        entries.iter().map(|entry| entry.id).collect::<Vec<_>>(),
+        vec![saved_id]
+    );
+    assert_eq!(heads_for_entry(&mut doc, &saved_id), Some(vec![saved]));
+    assert_eq!(
+        doc.pending_ops(),
+        pending,
+        "navigation must not commit an edit"
+    );
+    assert_eq!(version_index_for_entry(&mut doc, &saved_id), Some(0));
+    assert_eq!(doc.pending_ops(), pending, "lookup must not commit an edit");
+    let comparison = compare_entries(&mut doc, &[saved_id]).unwrap();
+    assert_eq!(
+        doc.pending_ops(),
+        pending,
+        "comparison must not commit an edit"
+    );
+    let snapshot = AutoCommit::load(&comparison.after_document).unwrap();
+    assert_eq!(
+        snapshot.get(ROOT, "title").unwrap().unwrap().0.to_str(),
+        Some("saved")
+    );
+    assert_eq!(
+        doc.get(ROOT, "title").unwrap().unwrap().0.to_str(),
+        Some("still typing")
+    );
+
+    // The app's eventual action boundary must retain its metadata and all edits.
+    doc.put(ROOT, "title", "finished typing").unwrap();
+    doc.commit_with(CommitOptions::default().with_message("Rename document"));
+    let changes = doc.get_changes(&[]);
+    assert_eq!(changes.len(), 2);
+    assert_eq!(
+        changes[1].message().map(String::as_str),
+        Some("Rename document")
+    );
+}
+
+#[test]
+fn browsing_uncommitted_document_does_not_invent_history() {
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "title", "draft").unwrap();
+    let pending = doc.pending_ops();
+    assert!(committed_heads(&doc).is_empty());
+    assert!(source().entries(&mut doc).is_empty());
+    assert!(heads_for_entry(&mut doc, &HistoryEntryId([9; 16])).is_none());
+    assert!(matches!(
+        compare_entries(&mut doc, &[HistoryEntryId([9; 16])]),
+        Err(CompareError::UnknownEntry(_))
+    ));
+    assert_eq!(doc.pending_ops(), pending);
+    assert!(doc.commit().is_some());
+    assert_eq!(doc.get_changes(&[]).len(), 1);
+}
+
+#[test]
+fn history_preview_preserves_pending_text_edits() {
+    let (mut doc, block) = two_identity_document();
+    let entries = source().entries(&mut doc);
+    let first = content_rows(&entries)[0].id;
+    let c = qdoc::model::open(&doc, &ROOT).unwrap();
+    let mut ids = qdoc::IdGen::new(doc.get_actor().to_hex_string());
+    qdoc::DocMut {
+        doc: &mut doc,
+        c: &c,
+        ids: &mut ids,
+    }
+    .splice_text(&block, 12, 0, " typing");
+    let pending = doc.pending_ops();
+    assert!(pending > 0);
+    let preview = materialize_entry(&mut doc, &first).unwrap().unwrap();
+    assert_eq!(preview.blocks[0].text, "hello");
+    assert!(
+        materialize_entry(&mut doc, &HistoryEntryId([9; 16]))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(doc.pending_ops(), pending);
+    assert!(doc.commit().is_some());
+}
+
 fn at(secs: i64) -> SystemTime {
     let secs = u64::try_from(secs).unwrap_or(0);
     UNIX_EPOCH
