@@ -657,12 +657,12 @@ pub fn connect_wifi(ssid: &str, password: Option<&str>) -> Result<(), String> {
     }
 }
 
-/// Disconnect the exact NetworkManager connection used for a remote
+/// Disconnect the exact `NetworkManager` connection used for a remote
 /// tethering grant. This does not forget the profile or affect other radios.
 ///
 /// # Errors
 ///
-/// Returns an error when `ssid` is invalid or NetworkManager rejects the
+/// Returns an error when `ssid` is invalid or `NetworkManager` rejects the
 /// targeted disconnect.
 pub fn disconnect_wifi(ssid: &str) -> Result<(), String> {
     if ssid.is_empty() || ssid.len() > 32 || ssid.chars().any(char::is_control) {
@@ -764,7 +764,7 @@ pub struct SavedNetworkProfile {
     pub autoconnect: bool,
 }
 
-/// The only NetworkManager profile fields eligible for personal-device
+/// The only `NetworkManager` profile fields eligible for personal-device
 /// roaming. UUID is deliberately absent: it is a machine-local lookup
 /// capability, never portable state.
 pub struct PortableWifiProfileSecret {
@@ -773,14 +773,14 @@ pub struct PortableWifiProfileSecret {
     pub password: Zeroizing<String>,
 }
 
-/// Resolve one explicit NetworkManager profile into portable Wi-Fi semantics.
+/// Resolve one explicit `NetworkManager` profile into portable Wi-Fi semantics.
 /// The query allowlist excludes interface names, MAC addresses, routes, DNS,
 /// autoconnect state, and every other machine-specific property.
 ///
 /// # Errors
 ///
 /// Returns an error for malformed UUIDs, non-Wi-Fi/enterprise/open profiles,
-/// missing secrets, or an unavailable NetworkManager command.
+/// missing secrets, or an unavailable `NetworkManager` command.
 pub fn portable_wifi_profile_secret(uuid: &str) -> Result<PortableWifiProfileSecret, String> {
     validate_uuid(uuid)?;
     let output = Zeroizing::new(run_capture(
