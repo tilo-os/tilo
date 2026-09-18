@@ -44,6 +44,12 @@ class FinalizationTests(unittest.TestCase):
         value.inspect = lambda identifier: finalizer.image_id(identifier)
         return value
 
+    def test_media_profile_explicit_and_bad_profile_rejected(self):
+        value=request();value['boot_profile']='installer-media'
+        self.assertEqual(finalizer.validate_request(value)['boot_profile'],'installer-media')
+        value['boot_profile']='unchecked-image'
+        with self.assertRaises(ValueError):finalizer.validate_request(value)
+
     def test_final_build_reuses_signed_rootfs_and_never_calls_build_image(self):
         identifier = 'sha256:' + '9' * 64
         command = finalizer.build_final_command(request(), identifier, self.root / 'image.iid')
