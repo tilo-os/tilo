@@ -23,7 +23,11 @@ use tilo_user_identity::{
 
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024;
 
-fn open_readonly_without_symlinks(path: &Path) -> std::io::Result<std::fs::File> {
+fn open_without_symlinks(
+    path: &Path,
+    flags: libc::c_int,
+    mode: libc::mode_t,
+) -> std::io::Result<std::fs::File> {
     const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
     const RESOLVE_NO_SYMLINKS: u64 = 0x04;
 
@@ -40,11 +44,11 @@ fn open_readonly_without_symlinks(path: &Path) -> std::io::Result<std::fs::File>
             "artifact path contains an embedded NUL byte",
         )
     })?;
-    let flags = u64::try_from(libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK)
+    let flags = u64::try_from(flags)
         .map_err(|_| std::io::Error::other("open flags are outside the Linux u64 ABI"))?;
     let how = OpenHow {
         flags,
-        mode: 0,
+        mode: u64::from(mode),
         resolve: RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
     };
     // SAFETY: path and open_how remain live for this syscall. A successful
@@ -65,6 +69,18 @@ fn open_readonly_without_symlinks(path: &Path) -> std::io::Result<std::fs::File>
         .map_err(|_| std::io::Error::other("openat2 returned an invalid descriptor"))?;
     // SAFETY: openat2 returned this owned descriptor and no other File owns it.
     Ok(unsafe { std::fs::File::from_raw_fd(descriptor) })
+}
+
+fn open_readonly_without_symlinks(path: &Path) -> std::io::Result<std::fs::File> {
+    open_without_symlinks(path, libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK, 0)
+}
+
+fn open_lock_without_symlinks(path: &Path) -> std::io::Result<std::fs::File> {
+    open_without_symlinks(
+        path,
+        libc::O_RDWR | libc::O_CREAT | libc::O_CLOEXEC | libc::O_NONBLOCK,
+        0o600,
+    )
 }
 
 fn usage() -> String {
@@ -613,15 +629,7 @@ fn install_trust(
         return Err("trust directory must be caller-owned mode 0700 and not a symlink".into());
     }
 
-    let mut update_lock_options = OpenOptions::new();
-    update_lock_options
-        .read(true)
-        .write(true)
-        .create(true)
-        .mode(0o600)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    let update_lock = update_lock_options
-        .open(&update_lock_path)
+    let update_lock = open_lock_without_symlinks(&update_lock_path)
         .map_err(|error| format!("cannot open {}: {error}", update_lock_path.display()))?;
     let update_lock_metadata = update_lock
         .metadata()
@@ -643,15 +651,7 @@ fn install_trust(
     }
 
     let lock_path = trust_dir.join(".arm.lock");
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .write(true)
-        .create(true)
-        .mode(0o600)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    let lock = options
-        .open(&lock_path)
+    let lock = open_lock_without_symlinks(&lock_path)
         .map_err(|error| format!("cannot open {}: {error}", lock_path.display()))?;
     let lock_metadata = lock
         .metadata()
@@ -869,14 +869,7 @@ fn lock_generation_state(path: &Path) -> Result<std::fs::File, String> {
     let mut lock_name = path.as_os_str().to_owned();
     lock_name.push(".lock");
     let lock_path = PathBuf::from(lock_name);
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .write(true)
-        .create(true)
-        .mode(0o600)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    let file = options.open(&lock_path).map_err(|error| {
+    let file = open_lock_without_symlinks(&lock_path).map_err(|error| {
         format!(
             "cannot open generation lock {}: {error}",
             lock_path.display()
@@ -1143,7 +1136,14 @@ mod tests {
 
     #[test]
     fn generation_lock_rejects_an_aliased_inode() {
+        use std::os::unix::fs::symlink;
+
         let temp = tempfile::tempdir().expect("temporary directory");
+        let linked_parent = temp.path().join("linked-parent");
+        symlink(temp.path(), &linked_parent).expect("lock parent symlink");
+        assert!(lock_generation_state(&linked_parent.join("other-generation")).is_err());
+        assert!(!temp.path().join("other-generation.lock").exists());
+
         let state = temp.path().join("generation");
         drop(lock_generation_state(&state).expect("create generation lock"));
         let lock = temp.path().join("generation.lock");
