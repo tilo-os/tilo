@@ -29,7 +29,10 @@ on:
 
 concurrency:
   group: snapshot-rpms-${{ github.ref }}
-  cancel-in-progress: true
+  # Package-set snapshots are expensive and must be allowed to finish. The
+  # publish step rejects a stale GITHUB_SHA, while the newest queued run then
+  # refreshes the pin for current main.
+  cancel-in-progress: false
 
 jobs:
   signing-preflight:
