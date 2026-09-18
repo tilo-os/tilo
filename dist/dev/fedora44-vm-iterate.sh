@@ -140,7 +140,10 @@ build_one() {
             '# For information about cache directory tags, see:' \\
             '#       http://www.brynosaurus.com/cachedir/' > '$target_rel/CACHEDIR.TAG'
         fi
-        exec flock '$target_rel/.build.lock' env \\
+        # flock stays behind as the lock owner while Cargo runs. Its --close
+        # mode prevents Cargo, rustc, and sccache's long-lived server from
+        # inheriting the lock descriptor and wedging every later build.
+        exec flock --close '$target_rel/.build.lock' env \\
           CARGO_TARGET_DIR='$target_rel' \\
           RUSTC_WRAPPER=sccache \\
           cargo build --locked$quoted"
