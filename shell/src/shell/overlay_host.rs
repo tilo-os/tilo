@@ -7120,9 +7120,9 @@ impl ShellOverlayHost {
             let records = st.records().clone();
             let mut tree = st.tree_mut();
             let local = self.room_records.borrow();
-            self.room_activity.refresh(&mut tree);
+            self.room_activity.refresh(&mut *tree);
             self.room_activity
-                .refresh_records_with_local(&mut tree, &records, &*local);
+                .refresh_records_with_local(&mut *tree, &records, &*local);
         }
         self.refresh_history_narrative();
     }
@@ -7151,9 +7151,9 @@ impl ShellOverlayHost {
             let records = st.records().clone();
             let mut tree = st.tree_mut();
             let local = self.room_records.borrow();
-            self.room_activity.refresh(&mut tree);
+            self.room_activity.refresh(&mut *tree);
             self.room_activity
-                .refresh_records_with_local(&mut tree, &records, &*local);
+                .refresh_records_with_local(&mut *tree, &records, &*local);
             tree.active.raw()
         };
         self.refresh_history_narrative();
@@ -7932,7 +7932,7 @@ impl ShellOverlayHost {
                     scale_factor,
                     &modifiers,
                     cursor,
-                    &mut tree,
+                    &mut *tree,
                     Some(&records),
                 )
             };
