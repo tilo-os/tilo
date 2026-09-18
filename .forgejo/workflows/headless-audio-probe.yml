@@ -1,0 +1,38 @@
+name: Isolated headless audio dependency probe
+on:
+  push:
+    branches: [codex/ci-audio-fix-probe]
+jobs:
+  audio:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [runner, runner-arm64]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 12
+    container:
+      image: code.podesta.ai/qos/tilo-builder:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - name: Replace only the conflicting audio daemon and exercise its socket
+        run: |
+          set -euo pipefail
+          echo IyEvdXNyL2Jpbi9lbnYgYmFzaAojIFN1cHBseSB0aGUgcHJpdmF0ZSBQdWxzZUF1ZGlvIHRlc3QgZGFlbW9uIGluc2lkZSBhbiBlcGhlbWVyYWwgQ0kgY29udGFpbmVyLgojIE9sZGVyIGJ1aWxkZXJzIGNvbnRhaW4gdGhlIGNvbmZsaWN0aW5nIFBpcGVXaXJlIFB1bHNlQXVkaW8gc2VydmljZSBpbnN0ZWFkLgpzZXQgLWV1byBwaXBlZmFpbAoKaWYgY29tbWFuZCAtdiBwdWxzZWF1ZGlvID4vZGV2L251bGw7IHRoZW4gZXhpdCAwOyBmaQppZiBbWyAke0dJVEhVQl9BQ1RJT05TOi19ICE9IHRydWUgXV0gfHwgISB7IHRlc3QgLWYgLy5kb2NrZXJlbnYgfHwgdGVzdCAtZiAvcnVuLy5jb250YWluZXJlbnY7IH07IHRoZW4KICAgIGVjaG8gJ2F1ZGlvIGRlcGVuZGVuY3kgaW5zdGFsbGF0aW9uIGlzIHJlc3RyaWN0ZWQgdG8gQ0kgY29udGFpbmVycycgPiYyCiAgICBleGl0IDEKZmkKCiMgS2VlcCBldmVyeSBpbnN0YWxsZWQgcGFja2FnZSBwaW5uZWQgZXhjZXB0IHRoZSBleHBsaWNpdGx5IHJlcGxhY2VkIGRhZW1vbi4KIyBJbiBwYXJ0aWN1bGFyLCBkbyBub3QgdXBkYXRlIE1lc2EsIGZvbnRzIG9yIGxpYnB1bHNlIGluIGdvbGRlbi1pbWFnZSBqb2JzLgppbnN0YWxsZWQ9JChycG0gLXFhIC0tcWYgJyV7TkFNRX1cbicgfCBzb3J0IC11IHwgZ3JlcCAtdnggcGlwZXdpcmUtcHVsc2VhdWRpbyB8IHBhc3RlIC1zZCwgLSkKb3B0aW9ucz0oLXkgLS1zZXRvcHQ9aW5zdGFsbF93ZWFrX2RlcHM9RmFsc2UgLS1zZXRvcHQ9b2Jzb2xldGVzPUZhbHNlCiAgICAtLXNldG9wdD1iZXN0PUZhbHNlIC0tc2V0b3B0PWNsZWFuX3JlcXVpcmVtZW50c19vbl9yZW1vdmU9RmFsc2UKICAgICItLWV4Y2x1ZGU9JGluc3RhbGxlZCIpCmlmIHJwbSAtcSBwaXBld2lyZS1wdWxzZWF1ZGlvID4vZGV2L251bGwgMj4mMTsgdGhlbgogICAgZG5mIHN3YXAgIiR7b3B0aW9uc1tAXX0iIHBpcGV3aXJlLXB1bHNlYXVkaW8gcHVsc2VhdWRpbwplbHNlCiAgICBkbmYgaW5zdGFsbCAiJHtvcHRpb25zW0BdfSIgcHVsc2VhdWRpbwpmaQpjb21tYW5kIC12IHB1bHNlYXVkaW8gPi9kZXYvbnVsbCB8fCB7CiAgICBlY2hvICdQdWxzZUF1ZGlvIGluc3RhbGxhdGlvbiBkaWQgbm90IHN1cHBseSB0aGUgcmVxdWlyZWQgdGVzdCBkYWVtb24nID4mMgogICAgZXhpdCAxCn0K | base64 -d > /tmp/ensure-headless-audio.sh
+          echo IyEvdXNyL2Jpbi9lbnYgYmFzaAojIFJ1biB0ZXN0cyBhZ2FpbnN0IGFuIGlzb2xhdGVkIHNvZnR3YXJlIGF1ZGlvIGVuZHBvaW50LCB3aXRoIG5vIGRlc2t0b3Avc2Vzc2lvbi4KIyBHU3RyZWFtZXIgc3RpbGwgZGVjb2RlcyBhbmQgcmVuZGVycyB0aHJvdWdoIGl0cyBwcm9kdWN0aW9uIFB1bHNlQXVkaW8gc2luay4KIyBUaGlzIHByb3ZlcyB0aGUgdHJhbnNwb3J0IHBpcGVsaW5lLCBub3QgcGh5c2ljYWwgc3BlYWtlciBvdXRwdXQuCnNldCAtZXVvIHBpcGVmYWlsCmlmIFsgIiQjIiAtZXEgMCBdOyB0aGVuCiAgICBlY2hvICJ1c2FnZTogJDAgQ09NTUFORCBbQVJHIC4uLl0iID4mMgogICAgZXhpdCAyCmZpCmNvbW1hbmQgLXYgcHVsc2VhdWRpbyA+L2Rldi9udWxsIHx8IHsKICAgIGVjaG8gImhlYWRsZXNzIGF1ZGlvIHJlcXVpcmVzIHB1bHNlYXVkaW8gKGluY2x1ZGVkIGluIHRoZSBDSSBidWlsZGVyKSIgPiYyCiAgICBleGl0IDEKfQojIFB1bHNlIGNsaWVudHMgc3BsaXQgUFVMU0VfU0VSVkVSIGF0IHdoaXRlc3BhY2UsIGFuZCBVbml4IHNvY2tldCBwYXRocyBoYXZlIGEKIyBzbWFsbCBsZW5ndGggbGltaXQuIFVzZSBhIHNob3J0IHByaXZhdGUgcnVudGltZSBwYXRoIGV2ZW4gaWYgVE1QRElSIGNvbnRhaW5zCiMgc3BhY2VzIG9yIHBvaW50cyBhdCBhIGRlZXBseSBuZXN0ZWQgYnVpbGQgZGlyZWN0b3J5LgphdWRpb19kaXI9JChta3RlbXAgLWQgL3RtcC90aWxvLWF1ZGlvLlhYWFhYWFhYKQphdWRpb19waWQ9CmNsZWFudXAoKSB7CiAgICBpZiBbIC1uICIkYXVkaW9fcGlkIiBdOyB0aGVuCiAgICAgICAga2lsbCAiJGF1ZGlvX3BpZCIgMj4vZGV2L251bGwgfHwgdHJ1ZQogICAgICAgIHdhaXQgIiRhdWRpb19waWQiIDI+L2Rldi9udWxsIHx8IHRydWUKICAgIGZpCiAgICBybSAtcmYgLS0gIiRhdWRpb19kaXIiCn0KdHJhcCBjbGVhbnVwIEVYSVQKdHJhcCAnZXhpdCAxMzAnIElOVAp0cmFwICdleGl0IDE0MycgVEVSTQpjaG1vZCA3MDAgIiRhdWRpb19kaXIiCmV4cG9ydCBQVUxTRV9SVU5USU1FX1BBVEg9IiRhdWRpb19kaXIiCmV4cG9ydCBQVUxTRV9TVEFURV9QQVRIPSIkYXVkaW9fZGlyL3N0YXRlIgpleHBvcnQgUFVMU0VfQ09PS0lFPSIkYXVkaW9fZGlyL2Nvb2tpZSIKZXhwb3J0IFBVTFNFX1NFUlZFUj0idW5peDokYXVkaW9fZGlyL25hdGl2ZSIKIyBUaGUgc29ja2V0IGlzIHJlYWNoYWJsZSBvbmx5IGluc2lkZSBvdXIgbW9kZS0wNzAwIHRlbXBvcmFyeSBkaXJlY3RvcnkuCiMgTG9hZCB0aGUgb3V0cHV0IGJlZm9yZSBvcGVuaW5nIHRoZSBzb2NrZXQgc28gcmVhZGluZXNzIGluY2x1ZGVzIHRoZSBlbmRwb2ludC4KIyBQdWxzZSBwYXJzZXMgbW9kdWxlIGFyZ3VtZW50cyBpdHNlbGYgYWZ0ZXIgc2hlbGwgcXVvdGluZyBoYXMgYmVlbiByZW1vdmVkLgpzb2NrZXRfcGF0aD0ke2F1ZGlvX2Rpci8vXFwvXFxcXH0vbmF0aXZlCnNvY2tldF9wYXRoPSR7c29ja2V0X3BhdGgvL1wiL1xcXCJ9CnB1bHNlYXVkaW8gLS1kYWVtb25pemU9bm8gLS1leGl0LWlkbGUtdGltZT0tMSAtLXVzZS1waWQtZmlsZT1ubyBcCiAgICAtLWhpZ2gtcHJpb3JpdHk9bm8gLS1yZWFsdGltZT1ubyAtLWRpc2FibGUtc2htPXllcyAtLWxvZy10YXJnZXQ9c3RkZXJyIC1uIFwKICAgIC0tbG9hZD0ibW9kdWxlLW51bGwtc2luayBzaW5rX25hbWU9dGlsb190ZXN0X291dHB1dCIgXAogICAgLS1sb2FkPSJtb2R1bGUtbmF0aXZlLXByb3RvY29sLXVuaXggc29ja2V0PVwiJHNvY2tldF9wYXRoXCIgYXV0aC1hbm9ueW1vdXM9MSIgXAogICAgPiIkYXVkaW9fZGlyL3NlcnZlci5sb2ciIDI+JjEgJgphdWRpb19waWQ9JCEKZm9yICgoYXR0ZW1wdCA9IDA7IGF0dGVtcHQgPCAxMDA7IGF0dGVtcHQrKykpOyBkbwogICAgaWYgWyAtUyAiJGF1ZGlvX2Rpci9uYXRpdmUiIF07IHRoZW4KICAgICAgICBpZiAiJEAiOyB0aGVuIHN0YXR1cz0wOyBlbHNlIHN0YXR1cz0kPzsgZmkKICAgICAgICBpZiBbICIkc3RhdHVzIiAtbmUgMCBdOyB0aGVuIGNhdCAiJGF1ZGlvX2Rpci9zZXJ2ZXIubG9nIiA+JjI7IGZpCiAgICAgICAgZXhpdCAiJHN0YXR1cyIKICAgIGZpCiAgICBpZiAhIGtpbGwgLTAgIiRhdWRpb19waWQiIDI+L2Rldi9udWxsOyB0aGVuIGJyZWFrOyBmaQogICAgc2xlZXAgMC4wNQpkb25lCmNhdCAiJGF1ZGlvX2Rpci9zZXJ2ZXIubG9nIiA+JjIKZWNobyAiaGVhZGxlc3MgYXVkaW8gZmFpbGVkIHRvIGV4cG9zZSBpdHMgaXNvbGF0ZWQgZW5kcG9pbnQiID4mMgpleGl0IDEK | base64 -d > /tmp/with-headless-audio.sh
+          rpm -qa --qf '%{NAME} %{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n' | sort > /tmp/before-rpms
+          bash /tmp/ensure-headless-audio.sh
+          rpm -qa --qf '%{NAME} %{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n' | sort > /tmp/after-rpms
+          python3 - <<'PY'
+          from pathlib import Path
+          before = dict(line.split(' ', 1) for line in Path('/tmp/before-rpms').read_text().splitlines())
+          after = dict(line.split(' ', 1) for line in Path('/tmp/after-rpms').read_text().splitlines())
+          for name, version in before.items():
+              if name != 'pipewire-pulseaudio':
+                  assert after.get(name) == version, (name, version, after.get(name))
+          assert 'pulseaudio' in after
+          print('Existing package versions preserved; PulseAudio available')
+          PY
+          bash /tmp/with-headless-audio.sh python3 -c 'import os,socket; s=socket.socket(socket.AF_UNIX); s.connect(os.environ["PULSE_SERVER"].removeprefix("unix:")); s.close(); print("Private production audio wrapper endpoint reachable")'
+          bash /tmp/ensure-headless-audio.sh
