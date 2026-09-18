@@ -70,7 +70,7 @@ iroh.workspace = true
 iroh-base.workspace = true
 
 # Identity + workspace directory + cert-chain verification.
-tilo-user-identity = { path = "../../identity/tilo-user-identity" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 runtime-identity = { path = "../../runtime/runtime-identity" }
 
 # Workspace CRDT (same version as identity + shell).
