@@ -723,6 +723,8 @@ def main(argv=None):
         'openssl': ('openssl', 'version')}.items()})
     metadata = json.loads(run('cargo', 'metadata', '--locked', '--no-deps', '--format-version', '1'))
     write_receipt('workspace.json', {'packages': sorted(package['name'] for package in metadata['packages'])})
+    run('cargo', 'build', '--locked', '--release', '-p', 'tilo-crypto')
+    run('install', '-m', '0755', 'target/release/tilo-crypto', '/usr/local/bin/tilo-crypto')
     run('bash', 'os/tests/app_store.sh', capture=False)
     signer = json.loads(run('python3', 'os/dev/setup-development-signer.py', str(PRIVATE / 'signer')))
     identity_env = os.environ.copy()
