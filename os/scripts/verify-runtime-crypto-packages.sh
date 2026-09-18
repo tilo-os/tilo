@@ -17,7 +17,6 @@ allowed_libssl='gstreamer1-plugins-bad-free
 krb5-libs
 libcurl
 libevent
-libshout
 python3-libs
 qt6-qtbase
 rpm-sequoia
@@ -26,6 +25,7 @@ forbidden_packages='efitools
 git
 git-core
 gnutls-utils
+libshout
 mokutil
 nss-tools
 openvpn
