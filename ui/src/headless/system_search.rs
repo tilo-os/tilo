@@ -369,9 +369,10 @@ impl FrameHarness {
         self.system_search.overlay = None;
         self.system_search.rows.clear();
         if let Some(saved) = self.system_search.saved_focus.take() {
+            // Restore the retained owner without issuing an explicit focus request:
+            // desktop hosts interpret that request as a new navigation gesture.
             // SAFETY: restore only a stable identity in the current admitted tree.
-            let focus = unsafe { saved.restore(&self.node_map, &self.bindings, None) };
-            self.set_focused(focus);
+            self.focused = unsafe { saved.restore(&self.node_map, &self.bindings, None) };
         }
     }
     fn system_search_providers(&self, needle: &str, scope: SearchScope) -> Vec<SnapshotProvider> {

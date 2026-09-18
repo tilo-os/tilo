@@ -2792,4 +2792,125 @@ mod tests {
                 .is_err()
         );
     }
+    #[test]
+    fn global_search_escape_preserves_selected_calculator_route_and_pan() {
+        let (root, handle, _) = fixture_with_topology(|tree| {
+            let strip = &mut tree.workspaces[0].strips[0];
+            let tabs = std::mem::take(&mut strip.window_groups[0].tabs);
+            strip.window_groups = tabs
+                .into_iter()
+                .filter(|tab| tab.title == "Writer" || tab.title == "Calculator")
+                .enumerate()
+                .map(|(index, tab)| WindowGroup {
+                    id: 100 + index as u64,
+                    active_tab: tab.id,
+                    tabs: vec![tab],
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                })
+                .collect();
+        });
+        let mut root = Box::new(root);
+        let root_ptr = std::ptr::from_mut(root.as_mut());
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(),
+            root,
+            (740, 720),
+            Theme::dark(),
+            ui::TextRenderer::new(),
+            ui::permissions::UserId("author".into()),
+        );
+        frame.click_named("word_processor").unwrap();
+        settle_external_navigation(root_ptr, &mut frame);
+        let writer_owner = frame.inspection().keyboard_focus_owner.unwrap();
+        let before_heads = handle
+            .records
+            .borrow()
+            .values()
+            .map(|record| {
+                record
+                    .store
+                    .read(&record.checkout.id, |doc| doc.clone().get_heads())
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        handle
+            .open_global_search(&mut frame, &handle.generation, "Calculator")
+            .unwrap();
+        let calculator = handle
+            .search
+            .borrow()
+            .data
+            .tabs
+            .iter()
+            .find(|tab| tab.app_id == "dev.qos.calculator")
+            .unwrap()
+            .instance_id;
+        let (owner, filter) = browser_semantic_route(&frame, "Filter: Records");
+        frame
+            .perform_semantic_named(&owner, Some(&filter), &ui::a11y::Action::Activate)
+            .unwrap();
+        let semantics = frame.inspection().root.semantics.unwrap();
+        let rows = &semantics.children[1].children;
+        assert_eq!(
+            rows.len(),
+            1,
+            "Records filter must select the admitted Calculator tab, not launch an app"
+        );
+        let bounds = rows[0].bounds.unwrap().to_rect();
+        frame.click_at(bounds.center().x, bounds.center().y);
+        handle.process_global_search(&mut frame).unwrap();
+        settle_external_navigation(root_ptr, &mut frame);
+        let selected = handle.navigation.borrow().clone();
+        assert_eq!(selected["active"]["tab"], calculator.to_string());
+        let pan = selected["desktopPan"]["offset"].as_f64().unwrap();
+        assert!(pan > 0.0, "narrow desktop must have panned to Calculator");
+        assert_eq!(
+            frame.inspection().keyboard_focus_owner.as_deref(),
+            Some(writer_owner.as_str()),
+            "existing Select policy preserves the old editor owner without a new focus gesture"
+        );
+
+        handle
+            .open_global_search(&mut frame, &handle.generation, "")
+            .unwrap();
+        frame.send_host_event(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit(
+            "Writer".into(),
+        )));
+        assert_eq!(frame.global_search_query(), Some("Writer"));
+        frame.key("Escape");
+        handle.process_global_search(&mut frame).unwrap();
+        settle_external_navigation(root_ptr, &mut frame);
+        let after = handle.navigation.borrow();
+        assert_eq!(
+            after["active"], selected["active"],
+            "dismissing Search must not reinterpret restored Writer focus as a new navigation gesture"
+        );
+        assert_eq!(
+            after["desktopPan"]["offset"],
+            selected["desktopPan"]["offset"]
+        );
+        assert_eq!(
+            frame.inspection().keyboard_focus_owner.as_deref(),
+            Some(writer_owner.as_str())
+        );
+        assert_eq!(
+            handle
+                .records
+                .borrow()
+                .values()
+                .map(|record| {
+                    record
+                        .store
+                        .read(&record.checkout.id, |doc| doc.clone().get_heads())
+                        .unwrap()
+                })
+                .collect::<Vec<_>>(),
+            before_heads
+        );
+        assert!(handle.session_requests.borrow().is_empty());
+        assert!(frame.take_caller_operation().is_none());
+        assert!(frame.take_global_search_intent().is_none());
+    }
 }
