@@ -28,7 +28,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
 
 use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Politeness, Role};
@@ -78,6 +78,83 @@ const ICON_GAP: f32 = 6.0;
 const LABEL_PAD_X: f32 = 12.0;
 /// Gap between adjacent buttons.
 const BTN_GAP: f32 = 6.0;
+
+/// Coarse, bundled coastlines for the private/offline Places overview. These
+/// are intentionally only continental silhouettes: they add orientation but
+/// cannot be mistaken for current navigation data or a precision basemap.
+const OFFLINE_WORLD_LANDMASSES: &[&[(f64, f64)]] = &[
+    &[
+        (72.0, -168.0),
+        (70.0, -140.0),
+        (60.0, -125.0),
+        (50.0, -124.0),
+        (32.0, -117.0),
+        (18.0, -104.0),
+        (8.0, -83.0),
+        (20.0, -74.0),
+        (45.0, -61.0),
+        (58.0, -72.0),
+        (72.0, -95.0),
+        (72.0, -168.0),
+    ],
+    &[
+        (13.0, -81.0),
+        (6.0, -77.0),
+        (-8.0, -78.0),
+        (-25.0, -70.0),
+        (-55.0, -68.0),
+        (-52.0, -42.0),
+        (-20.0, -40.0),
+        (2.0, -50.0),
+        (13.0, -61.0),
+        (13.0, -81.0),
+    ],
+    &[
+        (36.0, -10.0),
+        (51.0, -5.0),
+        (61.0, 15.0),
+        (70.0, 40.0),
+        (58.0, 65.0),
+        (72.0, 110.0),
+        (62.0, 165.0),
+        (45.0, 145.0),
+        (20.0, 121.0),
+        (7.0, 106.0),
+        (22.0, 78.0),
+        (10.0, 43.0),
+        (31.0, 31.0),
+        (36.0, -10.0),
+    ],
+    &[
+        (35.0, -17.0),
+        (31.0, 31.0),
+        (12.0, 44.0),
+        (-12.0, 43.0),
+        (-35.0, 20.0),
+        (-30.0, 10.0),
+        (-5.0, 8.0),
+        (15.0, -17.0),
+        (35.0, -17.0),
+    ],
+    &[
+        (-10.0, 113.0),
+        (-18.0, 146.0),
+        (-39.0, 147.0),
+        (-44.0, 115.0),
+        (-25.0, 112.0),
+        (-10.0, 113.0),
+    ],
+    &[
+        (-63.0, -180.0),
+        (-70.0, -120.0),
+        (-72.0, -60.0),
+        (-68.0, 0.0),
+        (-72.0, 60.0),
+        (-69.0, 120.0),
+        (-63.0, 180.0),
+        (-63.0, -180.0),
+    ],
+];
 /// Horizontal room a group separator occupies, rule included.
 const SEP_W: f32 = 17.0;
 
@@ -2833,8 +2910,8 @@ impl PhotosApp {
         self.show_library();
         self.library_destination = LibraryDestination::Places;
         self.places_viewport = crate::places::MapViewport {
-            latitude: 37.0,
-            longitude: -40.0,
+            latitude: 18.0,
+            longitude: 0.0,
             zoom: 1.5,
         };
     }
@@ -9721,6 +9798,59 @@ impl PhotosApp {
             None,
             &map,
         );
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &map,
+        );
+        // A bundled, deliberately low-detail land silhouette gives the
+        // offline map genuine geographic orientation without contacting a
+        // tile provider. Roads and live place data belong to Maps; Photos
+        // needs a calm spatial index that remains useful on an airplane.
+        for landmass in OFFLINE_WORLD_LANDMASSES {
+            let mut coast = BezPath::new();
+            let mut visible_points = 0_usize;
+            for &(latitude, longitude) in *landmass {
+                let location = crate::model::PhotoLocation {
+                    latitude,
+                    longitude,
+                    label: None,
+                    provenance: crate::model::LocationProvenance::default(),
+                };
+                let Some((x, y)) =
+                    self.places_viewport
+                        .project(&location, map.width(), map.height())
+                else {
+                    continue;
+                };
+                let point = (map.x0 + x, map.y0 + y);
+                if visible_points == 0 {
+                    coast.move_to(point);
+                } else {
+                    coast.line_to(point);
+                }
+                visible_points += 1;
+            }
+            if visible_points >= 3 {
+                coast.close_path();
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.neutral[3],
+                    None,
+                    &coast,
+                );
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    transform,
+                    theme.tokens.colors.neutral[5],
+                    None,
+                    &coast,
+                );
+            }
+        }
         // Calm offline geographic grid: it retains spatial orientation while
         // clearly avoiding a claim that live roads/tiles were downloaded.
         for step in 1..10 {
@@ -9823,6 +9953,13 @@ impl PhotosApp {
             {
                 let side = (radius * 1.25).max(18.0);
                 let scale = (side / f64::from(image.width)).min(side / f64::from(image.height));
+                scene.push_layer(
+                    Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    1.0,
+                    transform,
+                    &Circle::new(point, radius - 3.0),
+                );
                 let image_transform = transform
                     * Affine::translate((
                         point.x - f64::from(image.width) * scale * 0.5,
@@ -9830,6 +9967,7 @@ impl PhotosApp {
                     ))
                     * Affine::scale(scale);
                 scene.draw_image(image, image_transform);
+                scene.pop_layer();
             }
             text_renderer.draw_text_weighted(
                 scene,
@@ -9850,7 +9988,57 @@ impl PhotosApp {
                 self.places_hits
                     .push((PlacesHit::Marker(photo_id.clone()), hit));
             }
+            if map.width() >= 560.0 {
+                let label_width =
+                    (cluster.label.chars().count() as f64 * 6.5 + 24.0).clamp(72.0, 180.0);
+                let label_x =
+                    (point.x - label_width * 0.5).clamp(map.x0 + 6.0, map.x1 - label_width - 6.0);
+                let label_y = (point.y + radius + 6.0).min(map.y1 - 34.0);
+                let label = Rect::new(label_x, label_y, label_x + label_width, label_y + 26.0);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.surfaces.raised,
+                    None,
+                    &RoundedRect::from_rect(label, 8.0),
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    &cluster.label,
+                    10.0,
+                    theme.text_primary,
+                    transform * Affine::translate((label.x0 + 10.0, label.y0 + 7.0)),
+                    Some((label.width() - 20.0) as f32),
+                    TextWeight::Medium,
+                );
+            }
         }
+        scene.pop_layer();
+        // The mode switch belongs to map chrome, so paint it after the clipped
+        // cartography instead of letting the map substrate cover it.
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &toggle,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &toggle,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "List",
+            12.0,
+            theme.text_primary,
+            transform * Affine::translate((toggle.x0 + 28.0, toggle.y0 + 11.0)),
+            Some(60.0),
+            TextWeight::Medium,
+        );
     }
 
     fn draw_places_list(
@@ -13035,6 +13223,22 @@ impl Widget for PhotosApp {
                 node_id,
                 taffy,
             );
+        }
+        if self.directory_import_pending.get().is_none()
+            && matches!(
+                event,
+                winit::event::WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Released,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+            )
+            && let Some((hit, _)) = self
+                .directory_import_buttons
+                .iter()
+                .find(|(_, button)| button.is_enabled() && button.get_rect().contains(self.pointer))
+        {
+            self.directory_import_pending.set(Some(*hit));
         }
         if let Some(hit) = self.directory_import_pending.take() {
             if self.activate_directory_status(hit) {
