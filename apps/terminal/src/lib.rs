@@ -59,11 +59,13 @@ mod app_widget_impl;
 pub(crate) mod tests;
 
 /// Process connections explicitly granted to one hosted Terminal instance.
+#[cfg_attr(not(unix), derive(Default))]
 pub struct HostedProcessServices {
     #[cfg(unix)]
     pub ush: Option<std::os::unix::net::UnixStream>,
 }
 
+#[cfg(unix)]
 impl Default for HostedProcessServices {
     fn default() -> Self {
         let ush = std::env::var_os("XDG_RUNTIME_DIR")
@@ -73,6 +75,7 @@ impl Default for HostedProcessServices {
     }
 }
 
+#[cfg(unix)]
 impl HostedProcessServices {
     /// Discover the session-owned `ush` supervisor below one runtime directory.
     ///
@@ -86,10 +89,12 @@ impl HostedProcessServices {
     }
 }
 
+#[cfg(unix)]
 const USH_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// Connect the owner-only session socket without letting a stale or saturated
 /// endpoint stall shell construction indefinitely.
+#[cfg(unix)]
 fn discover_ush(runtime: &std::path::Path) -> std::io::Result<std::os::unix::net::UnixStream> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
 
@@ -131,6 +136,7 @@ fn discover_ush(runtime: &std::path::Path) -> std::io::Result<std::os::unix::net
 }
 
 /// Non-blocking Unix-domain connect with a finite deadline.
+#[cfg(unix)]
 fn connect_unix_socket_bounded(
     path: &std::path::Path,
     timeout: std::time::Duration,
@@ -225,6 +231,7 @@ fn connect_unix_socket_bounded(
     Ok(std::os::unix::net::UnixStream::from(fd))
 }
 
+#[cfg(unix)]
 fn wait_for_unix_connect(
     fd: std::os::fd::RawFd,
     timeout: std::time::Duration,

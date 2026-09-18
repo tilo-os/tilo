@@ -212,8 +212,9 @@ cargo test --locked -p scratchpad --all-targets
 
 Files supports native local-file browsing and operations, including drive and UNC
 paths. Its Start menu entry is **Files** and its Cargo package is `file-explorer`.
-The Tilo filesystem projection and received-share service transport are not yet
-available on native Windows; their control operations return errors. Delete uses
+The Tilo filesystem projection, received-share transport, and shell-owned Nearby
+Send service are not yet available on native Windows; their control operations
+return errors. Delete uses
 the Windows recycle bin, but in-app recycle-bin browsing and per-item restoration
 are not implemented. Projection-dependent screenshot scenarios also fail explicitly.
 
@@ -299,6 +300,8 @@ content hashes and edits, so both its document and this store must survive a
 restart. Live startup and headless automation install the durable store before
 opening images; screenshot fixtures stay in memory. Completed thumbnail jobs
 wake the host so the library finishes loading without pointer or keyboard input.
+Photos' launcher-provided model gateway remains Unix-only; Windows reports model
+analysis unavailable instead of bypassing that service with direct network access.
 
 ```powershell
 cargo test --locked -p photos --all-targets
