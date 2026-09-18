@@ -1,0 +1,435 @@
+//! Bounded real-file indexing for Photos.
+//!
+//! A directory import is an explicit local filesystem operation. It discovers
+//! only supported image files beneath the selected root, reads actual EXIF
+//! metadata where it exists, stages verified bytes in the content store, and
+//! returns canonical `LibraryPhoto` values for the normal action boundary to
+//! commit. It never invents dates, locations, labels, people, or descriptions.
+
+use std::fs;
+use std::io::{BufReader, Read};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::model::{LibraryPhoto, LocationProvenance, OpenImage, PhotoLocation};
+
+/// Conservative limits for one explicit directory import. They prevent a
+/// mounted photo archive or a malicious directory tree from monopolising the
+/// client while still comfortably covering a few hundred normal photographs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImportLimits {
+    pub max_files: usize,
+    pub max_depth: usize,
+    pub max_encoded_bytes: u64,
+}
+
+impl Default for ImportLimits {
+    fn default() -> Self {
+        Self {
+            max_files: 2_000,
+            max_depth: 12,
+            max_encoded_bytes: 64 * 1024 * 1024,
+        }
+    }
+}
+
+/// User-visible options for a real import. EXIF GPS is retained only because
+/// selecting this import is explicit; it is never reverse-geocoded, uploaded,
+/// or inferred from network/location services.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImportOptions {
+    pub limits: ImportLimits,
+    pub retain_exif_location: bool,
+}
+
+impl Default for ImportOptions {
+    fn default() -> Self {
+        Self {
+            limits: ImportLimits::default(),
+            retain_exif_location: true,
+        }
+    }
+}
+
+/// Incremental state suitable for a shared progress widget. `current` is a
+/// local source path and must never be put in a resource, search index, or
+/// collaborative document.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportProgress {
+    pub discovered: usize,
+    pub indexed: usize,
+    pub skipped: usize,
+    pub current: Option<PathBuf>,
+}
+
+/// Actual metadata read from a photo container. `orientation` is exposed even
+/// when the current renderer does not transform pixels yet, so import clients
+/// can draw the correct rotation without reparsing source bytes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ExifMetadata {
+    pub captured_at: Option<String>,
+    pub orientation: Option<u16>,
+    pub location: Option<PhotoLocation>,
+}
+
+/// One successful staged import. The source path is local diagnostic data,
+/// while `photo` is safe for the normal portable document action.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IndexedPhoto {
+    pub source: PathBuf,
+    pub photo: LibraryPhoto,
+    pub exif: ExifMetadata,
+}
+
+/// A per-file failure that is intentionally non-fatal: an inaccessible or
+/// malformed image must not make the remaining selected photos disappear.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportFailure {
+    pub source: PathBuf,
+    pub message: String,
+    pub retryable: bool,
+}
+
+/// Terminal result of a bounded import. `cancelled` is explicit so a UI can
+/// distinguish a partial user cancellation from a successful short import.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ImportReport {
+    pub photos: Vec<IndexedPhoto>,
+    pub failures: Vec<ImportFailure>,
+    pub discovered: usize,
+    pub cancelled: bool,
+    pub limit_reached: bool,
+}
+
+/// Index one explicitly selected directory. Progress runs on the caller's
+/// worker thread; it is never emitted by the CRDT. Cancellation is checked
+/// before descent, after discovery, and before each bounded file read.
+pub fn index_directory<F>(
+    root: &Path,
+    options: ImportOptions,
+    cancelled: &AtomicBool,
+    mut progress: F,
+) -> Result<ImportReport, String>
+where
+    F: FnMut(ImportProgress),
+{
+    let root_meta =
+        fs::symlink_metadata(root).map_err(|_| "The selected folder is unavailable".to_owned())?;
+    if !root_meta.file_type().is_dir() || root_meta.file_type().is_symlink() {
+        return Err("Select a real folder, not a symbolic link".to_owned());
+    }
+    let mut report = ImportReport::default();
+    let mut stack = vec![(root.to_path_buf(), 0_usize)];
+    while let Some((directory, depth)) = stack.pop() {
+        if cancelled.load(Ordering::Acquire) {
+            report.cancelled = true;
+            break;
+        }
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(_) => {
+                report.failures.push(ImportFailure {
+                    source: directory,
+                    message: "Could not read this folder".to_owned(),
+                    retryable: true,
+                });
+                continue;
+            }
+        };
+        for entry in entries {
+            if cancelled.load(Ordering::Acquire) {
+                report.cancelled = true;
+                break;
+            }
+            let Ok(entry) = entry else { continue };
+            let path = entry.path();
+            let Ok(meta) = entry.metadata() else {
+                report.failures.push(ImportFailure {
+                    source: path,
+                    message: "Could not inspect this item".to_owned(),
+                    retryable: true,
+                });
+                continue;
+            };
+            // DirEntry::metadata follows neither an entry symlink nor a
+            // symlinked directory here; refusing them also closes traversal
+            // loops and avoids silently importing an unrelated tree.
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+            if meta.is_dir() {
+                if depth < options.limits.max_depth {
+                    stack.push((path, depth + 1));
+                }
+                continue;
+            }
+            if !meta.is_file() || !supported_image(&path) {
+                continue;
+            }
+            if report.discovered >= options.limits.max_files {
+                report.limit_reached = true;
+                break;
+            }
+            report.discovered += 1;
+            progress(ImportProgress {
+                discovered: report.discovered,
+                indexed: report.photos.len(),
+                skipped: report.failures.len(),
+                current: Some(path.clone()),
+            });
+            match index_file(&path, options, cancelled) {
+                Ok(indexed) => report.photos.push(indexed),
+                Err(error) if error == "Import cancelled" => {
+                    report.cancelled = true;
+                    break;
+                }
+                Err(message) => report.failures.push(ImportFailure {
+                    source: path,
+                    message,
+                    retryable: true,
+                }),
+            }
+        }
+        if report.cancelled || report.limit_reached {
+            break;
+        }
+    }
+    progress(ImportProgress {
+        discovered: report.discovered,
+        indexed: report.photos.len(),
+        skipped: report.failures.len(),
+        current: None,
+    });
+    Ok(report)
+}
+
+/// Index one real image file with the same byte and metadata bounds used by
+/// directory import. The returned record can be dispatched as `ImportPhoto`.
+pub fn index_file(
+    path: &Path,
+    options: ImportOptions,
+    cancelled: &AtomicBool,
+) -> Result<IndexedPhoto, String> {
+    if cancelled.load(Ordering::Acquire) {
+        return Err("Import cancelled".to_owned());
+    }
+    let meta = fs::metadata(path).map_err(|_| "Could not read this image".to_owned())?;
+    if !meta.is_file() || meta.len() == 0 || meta.len() > options.limits.max_encoded_bytes {
+        return Err("Image is empty or exceeds the import size limit".to_owned());
+    }
+    let exif = read_exif(path).unwrap_or_default();
+    if cancelled.load(Ordering::Acquire) {
+        return Err("Import cancelled".to_owned());
+    }
+    let bytes = read_bounded(path, options.limits.max_encoded_bytes)?;
+    if cancelled.load(Ordering::Acquire) {
+        return Err("Import cancelled".to_owned());
+    }
+    // Decode once before staging. Header dimensions alone are not a promise
+    // that the complete payload is a safe image.
+    let decoded = crate::pixels::decode(&bytes)
+        .ok_or_else(|| "This image cannot be decoded safely".to_owned())?;
+    let content = qdoc::blobstore::put(&bytes)
+        .ok_or_else(|| "Photos could not retain these bytes locally".to_owned())?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "This image has no usable file name".to_owned())?;
+    let open = OpenImage::from_path(&path.to_string_lossy(), decoded.w, decoded.h)
+        .with_content(content)
+        .portable();
+    let mut photo = LibraryPhoto::from_image(open);
+    photo.image.name = name.to_owned();
+    photo.captured_at.clone_from(&exif.captured_at);
+    if options.retain_exif_location {
+        photo.location.clone_from(&exif.location);
+    }
+    Ok(IndexedPhoto {
+        source: path.to_path_buf(),
+        photo,
+        exif,
+    })
+}
+
+/// Read actual EXIF from a bounded-size image. Parsing failure is intentionally
+/// non-fatal: many valid PNG/WebP files simply have no EXIF container.
+#[must_use]
+pub fn read_exif(path: &Path) -> Option<ExifMetadata> {
+    let file = fs::File::open(path).ok()?;
+    let mut reader = BufReader::new(file);
+    let exif = exif::Reader::new().read_from_container(&mut reader).ok()?;
+    let captured_at = [
+        exif::Tag::DateTimeOriginal,
+        exif::Tag::DateTimeDigitized,
+        exif::Tag::DateTime,
+    ]
+    .iter()
+    .find_map(|tag| ascii_field(exif.get_field(*tag, exif::In::PRIMARY)?));
+    let orientation = exif
+        .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+        .and_then(short_field)
+        .filter(|value| (1..=8).contains(value));
+    let location = match (
+        gps_coordinate(&exif, exif::Tag::GPSLatitude, exif::Tag::GPSLatitudeRef),
+        gps_coordinate(&exif, exif::Tag::GPSLongitude, exif::Tag::GPSLongitudeRef),
+    ) {
+        (Some(latitude), Some(longitude)) => Some(PhotoLocation {
+            latitude,
+            longitude,
+            label: None,
+            provenance: LocationProvenance {
+                source: "exif".to_owned(),
+                scope: "shared".to_owned(),
+            },
+        }),
+        _ => None,
+    };
+    Some(ExifMetadata {
+        captured_at,
+        orientation,
+        location,
+    })
+}
+
+fn gps_coordinate(exif: &exif::Exif, value_tag: exif::Tag, ref_tag: exif::Tag) -> Option<f64> {
+    let field = exif.get_field(value_tag, exif::In::PRIMARY)?;
+    let exif::Value::Rational(values) = &field.value else {
+        return None;
+    };
+    let [degrees, minutes, seconds, ..] = values.as_slice() else {
+        return None;
+    };
+    if degrees.denom == 0 || minutes.denom == 0 || seconds.denom == 0 {
+        return None;
+    }
+    let magnitude = f64::from(degrees.num) / f64::from(degrees.denom)
+        + f64::from(minutes.num) / f64::from(minutes.denom) / 60.0
+        + f64::from(seconds.num) / f64::from(seconds.denom) / 3600.0;
+    let reference = ascii_field(exif.get_field(ref_tag, exif::In::PRIMARY)?)?;
+    let signed = match reference.as_str() {
+        "N" | "E" => magnitude,
+        "S" | "W" => -magnitude,
+        _ => return None,
+    };
+    signed.is_finite().then_some(signed)
+}
+
+fn ascii_field(field: &exif::Field) -> Option<String> {
+    let exif::Value::Ascii(values) = &field.value else {
+        return None;
+    };
+    let value = values.first()?;
+    let text = std::str::from_utf8(value)
+        .ok()?
+        .trim_matches(char::from(0))
+        .trim();
+    (!text.is_empty()).then_some(text.to_owned())
+}
+
+fn short_field(field: &exif::Field) -> Option<u16> {
+    let exif::Value::Short(values) = &field.value else {
+        return None;
+    };
+    values.first().copied()
+}
+
+fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+    let file = fs::File::open(path).map_err(|_| "Could not read this image".to_owned())?;
+    let mut bytes = Vec::new();
+    file.take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Could not read this image".to_owned())?;
+    if bytes.len() as u64 > limit {
+        return Err("Image exceeds the import size limit".to_owned());
+    }
+    Ok(bytes)
+}
+
+fn supported_image(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "jpg" | "jpeg" | "png" | "webp"
+            )
+        })
+}
+
+/// A cheap cancellation handle for a UI worker. It is deliberately not a
+/// resource/action: cancellation affects only this device's in-flight job.
+#[must_use]
+pub fn cancellation_token() -> Arc<AtomicBool> {
+    Arc::new(AtomicBool::new(false))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn png(path: &Path) {
+        let file = fs::File::create(path).unwrap();
+        let mut encoder = png::Encoder::new(file, 2, 1);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer
+            .write_image_data(&[8, 20, 30, 255, 40, 50, 60, 255])
+            .unwrap();
+    }
+
+    #[test]
+    fn directory_import_is_bounded_real_and_reports_progress() {
+        let directory = tempfile::tempdir().unwrap();
+        png(&directory.path().join("one.png"));
+        png(&directory.path().join("two.png"));
+        fs::write(directory.path().join("ignore.txt"), "not an image").unwrap();
+        let cancelled = AtomicBool::new(false);
+        let mut progress = Vec::new();
+        let report = index_directory(
+            directory.path(),
+            ImportOptions {
+                limits: ImportLimits {
+                    max_files: 1,
+                    ..ImportLimits::default()
+                },
+                ..ImportOptions::default()
+            },
+            &cancelled,
+            |value| progress.push(value),
+        )
+        .unwrap();
+        assert_eq!(report.discovered, 1);
+        assert_eq!(report.photos.len(), 1);
+        assert!(report.limit_reached);
+        assert!(report.photos[0].photo.image.content.is_some());
+        assert!(progress.last().is_some_and(|value| value.current.is_none()));
+    }
+
+    #[test]
+    fn cancelled_import_does_not_open_or_stage_a_file() {
+        let directory = tempfile::tempdir().unwrap();
+        png(&directory.path().join("one.png"));
+        let cancelled = AtomicBool::new(true);
+        let report = index_directory(
+            directory.path(),
+            ImportOptions::default(),
+            &cancelled,
+            |_| {},
+        )
+        .unwrap();
+        assert!(report.cancelled);
+        assert!(report.photos.is_empty());
+        assert_eq!(report.discovered, 0);
+    }
+
+    #[test]
+    fn exif_reader_has_no_synthetic_fallback_for_a_plain_png() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("plain.png");
+        png(&path);
+        assert!(read_exif(&path).is_none());
+    }
+}

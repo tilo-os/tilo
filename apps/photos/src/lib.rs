@@ -64,6 +64,8 @@ pub mod actions;
 pub mod analysis;
 pub mod app;
 pub mod doc;
+/// Bounded, cancellation-aware real-file discovery and metadata ingestion.
+pub mod import;
 pub mod model;
 pub mod people;
 pub mod pixels;
