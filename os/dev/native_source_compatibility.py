@@ -43,7 +43,8 @@ def read_approval(path, digest):
 CACHE_BASE = '344257f56275919abc63181d8954e838f9b5303e'
 CACHE_TRUST = 'e5241775387c6afb39d2e6bf8350a59a8aa478b3'
 CACHE_API = 'f6881005fc62dd54cba7dbe7c241149151adfd74'
-CACHE_SOURCE = 'a89fe484328ff4206c35f842c07c3824b9df18ef'
+CACHE_VIEWER = 'a89fe484328ff4206c35f842c07c3824b9df18ef'
+CACHE_SOURCE = '317eb82f7178b14623350f933088093cd3cdfd23'
 
 
 def verify(repo, revision, path, digest, native_receipt_sha256, reconstruction_sha256):
@@ -55,16 +56,18 @@ def verify(repo, revision, path, digest, native_receipt_sha256, reconstruction_s
     require(type(approval['schema']) is int and approval['schema'] == 2
         and approval['assembly_source_revision'] == revision == CACHE_SOURCE,
         'cache admission requires exact reviewed source')
-    require(git(repo, 'show', '-s', '--format=%P', CACHE_SOURCE).decode().strip() == CACHE_API
+    require(git(repo, 'show', '-s', '--format=%P', CACHE_SOURCE).decode().strip() == CACHE_VIEWER
+        and git(repo, 'show', '-s', '--format=%P', CACHE_VIEWER).decode().strip() == CACHE_API
         and git(repo, 'show', '-s', '--format=%P', CACHE_API).decode().strip() == CACHE_TRUST
         and git(repo, 'show', '-s', '--format=%P', CACHE_TRUST).decode().strip() == CACHE_BASE,
         'reviewed cache correction ancestry differs')
     for parent, child, name in ((CACHE_BASE, CACHE_TRUST, 'os/Containerfile'),
                                  (CACHE_TRUST, CACHE_API, 'os/dev/build-image.sh'),
-                                 (CACHE_API, CACHE_SOURCE, 'os/Containerfile')):
+                                 (CACHE_API, CACHE_VIEWER, 'os/Containerfile'),
+                                 (CACHE_VIEWER, CACHE_SOURCE, 'os/Containerfile')):
         require(git(repo, 'diff-tree', '--no-commit-id', '--name-only', '--no-renames', '-r', '-z', parent, child)
                 == name.encode() + b'\0', 'cache correction path differs')
-    # Exact commit pins bind the reviewed relocation, guarded API and SSH dependency correction bytes;
+    # Exact commit pins bind the reviewed relocation, guarded API, SSH dependency and build-only trust parser bytes;
     # they are not an extensible allowlist of build-script changes.
     previous = approval['previous_approval_json'].encode()
     require(sha(previous) == approval['previous_approval_sha256'], 'previous admission digest differs')
@@ -79,13 +82,27 @@ def verify(repo, revision, path, digest, native_receipt_sha256, reconstruction_s
         changes[name] = dict(old_blob=blobs[0], new_blob=blobs[1],
             old_sha256=sha(git(repo, 'show', SOURCE + ':' + name)),
             new_sha256=sha(git(repo, 'show', revision + ':' + name)))
-    verify_rootfs(git(repo, 'show', SOURCE + ':os/Containerfile'), git(repo, 'show', revision + ':os/Containerfile'))
+    verify_cache_recipe(git(repo, 'show', SOURCE + ':os/Containerfile'), git(repo, 'show', revision + ':os/Containerfile'))
     verify_policy_placement(git(repo, 'show', revision + ':os/Containerfile'))
     verify_wpe_bridge(approval['wpe_bridge'], changes['os/Containerfile'], sha(git(repo, 'show', SOURCE + ':os/dev/build-wpe.sh')))
     result.update(approval=approval, approval_sha256=digest, assembly_source_revision=revision,
         assembly_epoch=int(git(repo, 'show', '-s', '--format=%ct', revision)), changes=changes,
         layer_epoch_anchor=CACHE_BASE, layer_epoch=int(git(repo, 'show', '-s', '--format=%ct', CACHE_BASE)))
     return result
+
+
+TRUST_TOOL_STAGE = (b'# Public trust parsing is a build-only operation. The pinned base supplies the\n'
+                    b'# OpenSSL CLI while its ABI libraries remain part of the runtime package policy.\n'
+                    b'FROM ${BASE_REF} AS public-trust-tools\n\n')
+
+
+def verify_cache_recipe(original, actual):
+    # The exact source pin permits only this inert alias to an already pinned
+    # base. No native compilation instruction, dependency or payload changes.
+    require(actual.count(TRUST_TOOL_STAGE) == 1, 'exact build-only trust stage required')
+    require(actual.index(TRUST_TOOL_STAGE) < actual.index(b'FROM ${BASE_REF} AS rootfs\n'),
+            'trust tools stage must precede rootfs')
+    verify_rootfs(original, actual.replace(TRUST_TOOL_STAGE, b'', 1))
 
 
 def _verify_base(repo, revision, path, digest, native_receipt_sha256, reconstruction_sha256, checkout_revision=None):
