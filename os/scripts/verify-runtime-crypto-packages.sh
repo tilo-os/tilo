@@ -32,6 +32,9 @@ openvpn
 openssl
 openssl-devel
 pesign
+python3-dbus-next
+python3-gobject
+yt-dlp
 sbsigntools
 systemd-resolved'
 
