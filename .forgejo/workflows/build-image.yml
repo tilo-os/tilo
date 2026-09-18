@@ -870,7 +870,7 @@ jobs:
           # Fixed QEMU hardware makes this a stable regression gate. Keep a
           # generous ceiling for shared-runner variance while still catching a
           # newly serialized network wait, initramfs stall, or service timeout.
-          ./os/dev/vm.sh ssh 'TILO_BOOT_USERSPACE_BUDGET_SEC=30 /usr/libexec/tilo/boot-performance-gate.sh'
+          ./os/dev/vm.sh ssh 'TILO_BOOT_USERSPACE_BUDGET_SEC=20 /usr/libexec/tilo/boot-performance-gate.sh'
 
           # This is a fresh installed user, so the real compositor must start
           # directly into its trusted first-login identity ceremony. The
