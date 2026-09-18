@@ -4,7 +4,9 @@
 //! Apps obtain credentials through `accounts::CredentialBroker`; this process
 //! is for organizing, reviewing and revoking them.
 
-use accounts::{CredentialGrant, GeneratedPasswordPolicy, SecretId, SecretItem, SecretStore};
+use accounts::{
+    CredentialGrant, GeneratedPasswordPolicy, SecretCustody, SecretId, SecretItem, SecretStore,
+};
 use std::collections::HashMap;
 use ui::widget::Widget;
 
@@ -87,6 +89,12 @@ impl PasswordsModel {
     pub fn app_grants(&self) -> Vec<CredentialGrant> {
         self.store.grants()
     }
+    /// Where the encryption key for this vault is currently held. A
+    /// `LocalFile` result is still encrypted storage, but it is not a system
+    /// keyring and the UI must not present it as one.
+    pub fn custody(&self) -> SecretCustody {
+        self.store.custody()
+    }
     /// Revoke one exact app/account/origin relationship.
     pub fn revoke_app_grant(&mut self, grant: &CredentialGrant) -> Result<bool, String> {
         self.store
@@ -111,11 +119,14 @@ impl PasswordsModel {
                         .origins
                         .iter()
                         .any(|origin| origin.to_lowercase().contains(&query))
-                    || item.notes.to_lowercase().contains(&query)
-                    || item.fields.iter().any(|(name, value)| {
-                        name.to_lowercase().contains(&query)
-                            || value.to_lowercase().contains(&query)
-                    })
+                    // Search is local to the open vault, but notes and custom
+                    // values frequently *are* secrets. Never make them a
+                    // search index, which also keeps them out of search
+                    // history/provider integrations.
+                    || item
+                        .fields
+                        .keys()
+                        .any(|name| name.to_lowercase().contains(&query))
                     || item
                         .tags
                         .iter()
@@ -266,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn search_finds_context_but_never_the_secret_itself() {
+    fn search_indexes_only_non_secret_local_metadata() {
         let root = std::env::temp_dir().join(format!(
             "tilo-passwords-search-{}-{:?}",
             std::process::id(),
@@ -280,16 +291,12 @@ mod tests {
         item.tags.insert("work".into());
         model.save_item(&mut item).unwrap();
 
-        for query in [
-            "people.example",
-            "finance",
-            "account number",
-            "a-1942",
-            "work",
-        ] {
+        for query in ["people.example", "account number", "work"] {
             assert_eq!(model.search(query).len(), 1, "query: {query}");
         }
-        assert!(model.search("DoNotIndexThis7").is_empty());
+        for secret in ["DoNotIndexThis7", "managed by finance", "a-1942"] {
+            assert!(model.search(secret).is_empty(), "secret query: {secret}");
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 
