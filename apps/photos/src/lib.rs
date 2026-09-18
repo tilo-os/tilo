@@ -160,6 +160,7 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "error",
     "opened",
     "library",
+    "people",
     "selection",
     "selection-many-albums",
     "album-manage",
@@ -339,7 +340,12 @@ pub fn seed_scenario(
         // different light treatments make thumbnail, selection and metadata
         // hierarchy legible in the gallery instead of simulating a library
         // with repeated placeholder art.
-        "library" | "selection" | "selection-many-albums" | "album-manage" | "metadata-edit" => {
+        "library"
+        | "people"
+        | "selection"
+        | "selection-many-albums"
+        | "album-manage"
+        | "metadata-edit" => {
             let mut library = PhotosDoc::library(doc);
             let mut travel = Vec::new();
             for (variant, (name, captured_at)) in [
@@ -415,6 +421,8 @@ pub fn seed_scenario(
                 app.show_album_editor_for_shot(doc);
             } else if scenario == "metadata-edit" {
                 app.show_metadata_editor_for_shot(doc);
+            } else if scenario == "people" {
+                app.show_people();
             } else {
                 app.show_library();
             }
