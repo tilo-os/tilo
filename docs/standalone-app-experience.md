@@ -3,6 +3,11 @@
 Status: implementation plan and source audit, 2026-09-18. This document does not
 claim that standalone sharing or universal history browsing is available yet.
 
+Implemented foundation: the runtime RPC client accepts owned asynchronous I/O,
+and the Unix descriptor adapter uses that same implementation. Protocol tests
+exercise a real Windows named pipe as well as bounded in-memory connections.
+This does not add service discovery, launch authentication or a standalone host.
+
 ## Product requirement
 
 A person opens Calculator, Notes or another Tilo app from their normal desktop
@@ -93,12 +98,14 @@ checks and remote isolation remain required even when local apps are trusted.
 
 ### Reuse the service protocol, separate its platform boundary
 
-`runtime-portal` currently combines acquiring an inherited Unix descriptor
-with constructing a Cap'n Proto RPC client. Separate those concerns: keep the
-Unix descriptor adapter, and let the common client accept owned connected
-asynchronous I/O. Retain the existing `LocalSet` execution model. A Windows
-handle must be an owned transport object, not an integer cast to a Unix fd.
-Transport construction itself does not authenticate a caller.
+`runtime-portal::CapnpClient::from_connected_io` accepts an owned connected
+asynchronous stream. The Unix descriptor adapter retains its launcher discovery
+and passes the acquired stream to this common constructor. The existing
+`LocalSet` execution model is unchanged. Windows adapters must supply owned
+transport objects, not integers cast to Unix fds. Transport construction itself
+does not authenticate a caller; authenticated Windows discovery remains work
+for the standalone launcher. Establish availability with actual service calls,
+not capability-resolution notifications.
 
 Likewise, separate broker admission from serving an already admitted connection.
 The platform launcher must supply a verified app/workspace identity tied to the
