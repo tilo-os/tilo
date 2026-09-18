@@ -89,6 +89,12 @@ pub(crate) const MAX_BATCH_PHOTOS: usize = 4_096;
 const MAX_ANALYSIS_TEXT_CHARS: usize = crate::analysis::MAX_OCR_CHARS;
 const MAX_ANALYSIS_LABELS: usize = 64;
 const MAX_ANALYSIS_LABEL_CHARS: usize = 128;
+/// Keep the contextual analysis tree compact. Longer OCR remains fully
+/// addressable through numbered chunks, and label entries beyond this window
+/// resolve through exact resource ids.
+const ANALYSIS_TEXT_CHUNK_BYTES: usize = 480;
+const ANALYSIS_TEXT_CONTEXT_CHUNKS: usize = 12;
+const ANALYSIS_LABEL_CONTEXT_LIMIT: usize = 16;
 type LabelCounts = Vec<(String, usize)>;
 
 /// A stable, metadata-only position in the chronological timeline.
@@ -502,6 +508,14 @@ pub enum PhotosAction {
         photo_id: String,
         analysis: Option<ImageAnalysis>,
     },
+    /// Merge one analyzer's bounded result into the photograph's existing
+    /// intelligence. OCR and vision are independent components: completing
+    /// either must not erase the other, irrespective of worker completion
+    /// order.
+    MergeImageAnalysis {
+        photo_id: String,
+        analysis: ImageAnalysis,
+    },
     /// Set one explicit, already user-authorized shared location. This action
     /// never reverse-geocodes or uploads; `provenance` tells peers where the
     /// retained coordinates came from.
@@ -645,37 +659,168 @@ fn valid_analysis(analysis: &ImageAnalysis) -> bool {
             .ocr_text
             .chars()
             .all(|character| !character.is_control() || matches!(character, '\n' | '\r' | '\t'));
-    let provenance = &analysis.provenance;
-    !analysis.is_empty()
+    fn valid_provenance(provenance: &crate::model::AnalysisProvenance) -> bool {
+        matches!(provenance.scope.as_str(), "shared")
+            && matches!(
+                provenance.source.as_str(),
+                "local-ocr" | "local-vision" | "local-description" | "user"
+            )
+            && compact_text(&provenance.engine, 128)
+            && compact_text(&provenance.model_id, 128)
+            && (provenance.model_revision.is_empty()
+                || (matches!(provenance.model_revision.len(), 40 | 64)
+                    && provenance
+                        .model_revision
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit())))
+            && (provenance.source != "local-vision"
+                || (!provenance.model_id.is_empty()
+                    && !provenance.model_revision.is_empty()
+                    && provenance.engine == "tilo-vision"))
+            && compact_text(&provenance.language, 16)
+            && (provenance.content.is_empty()
+                || (provenance.content.len() == CONTENT_HEX_LEN
+                    && provenance
+                        .content
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))))
+    }
+    (!analysis.is_empty()
+        || analysis.ocr_provenance.is_some()
+        || analysis.vision_provenance.is_some())
         && valid_ocr
         && compact_text(&analysis.description, 1_024)
         && labels(&analysis.objects)
         && labels(&analysis.pets)
         && labels(&analysis.people)
-        && matches!(provenance.scope.as_str(), "shared")
+        && valid_provenance(&analysis.provenance)
+        && analysis.ocr_provenance.as_ref().is_none_or(|provenance| {
+            valid_provenance(provenance)
+                && matches!(
+                    provenance.source.as_str(),
+                    "local-ocr" | "local-vision" | "user"
+                )
+        })
+        && analysis
+            .vision_provenance
+            .as_ref()
+            .is_none_or(|provenance| {
+                valid_provenance(provenance)
+                    && matches!(
+                        provenance.source.as_str(),
+                        // `local-ocr` is retained only for pre-component
+                        // combined records that were valid in older Photos.
+                        "local-ocr" | "local-vision" | "local-description" | "user"
+                    )
+            })
+}
+
+fn analysis_content_matches(photo: &LibraryPhoto, analysis: &ImageAnalysis) -> bool {
+    [
+        Some(&analysis.provenance),
+        analysis.ocr_provenance.as_ref(),
+        analysis.vision_provenance.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .all(|provenance| {
+        provenance.content.is_empty()
+            || photo.image.content.as_deref() == Some(provenance.content.as_str())
+    })
+}
+
+fn analysis_names_exact_content(photo: &LibraryPhoto, analysis: &ImageAnalysis) -> bool {
+    let Some(content) = photo.image.content.as_deref() else {
+        return false;
+    };
+    [
+        Some(&analysis.provenance),
+        analysis.ocr_provenance.as_ref(),
+        analysis.vision_provenance.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .all(|provenance| provenance.content == content)
+}
+
+fn merge_image_analysis(
+    existing: Option<&ImageAnalysis>,
+    incoming: ImageAnalysis,
+    content: Option<&str>,
+) -> ImageAnalysis {
+    let mut merged = existing.cloned().unwrap_or_default();
+    let component_is_current = |provenance: &crate::model::AnalysisProvenance| {
+        provenance.content.is_empty() || Some(provenance.content.as_str()) == content
+    };
+    let ocr_provenance = merged.ocr_provenance.as_ref().unwrap_or(&merged.provenance);
+    if !merged.ocr_text.is_empty() && !component_is_current(ocr_provenance) {
+        merged.ocr_text.clear();
+        merged.ocr_provenance = None;
+    }
+    let vision_provenance = merged
+        .vision_provenance
+        .as_ref()
+        .unwrap_or(&merged.provenance);
+    if (!merged.description.is_empty() || !merged.objects.is_empty() || !merged.pets.is_empty())
+        && !component_is_current(vision_provenance)
+    {
+        merged.description.clear();
+        merged.objects.clear();
+        merged.pets.clear();
+        merged.vision_provenance = None;
+    }
+    // Hydrate component provenance for pre-component records before changing
+    // anything. This prevents a new OCR result from making an older visual
+    // description look as though OCR produced it (and vice versa).
+    if merged.ocr_provenance.is_none() && !merged.ocr_text.is_empty() {
+        merged.ocr_provenance = Some(merged.provenance.clone());
+    }
+    if merged.vision_provenance.is_none()
+        && (!merged.description.is_empty() || !merged.objects.is_empty() || !merged.pets.is_empty())
         && matches!(
-            provenance.source.as_str(),
-            "local-ocr" | "local-vision" | "local-description" | "user"
+            merged.provenance.source.as_str(),
+            "local-vision" | "local-description" | "user"
         )
-        && compact_text(&provenance.engine, 128)
-        && compact_text(&provenance.model_id, 128)
-        && (provenance.model_revision.is_empty()
-            || (matches!(provenance.model_revision.len(), 40 | 64)
-                && provenance
-                    .model_revision
-                    .bytes()
-                    .all(|byte| byte.is_ascii_hexdigit())))
-        && (provenance.source != "local-vision"
-            || (!provenance.model_id.is_empty()
-                && !provenance.model_revision.is_empty()
-                && provenance.engine == "tilo-vision"))
-        && compact_text(&provenance.language, 16)
-        && (provenance.content.is_empty()
-            || (provenance.content.len() == CONTENT_HEX_LEN
-                && provenance
-                    .content
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))))
+    {
+        merged.vision_provenance = Some(merged.provenance.clone());
+    }
+    match incoming.provenance.source.as_str() {
+        "local-ocr" => {
+            merged.ocr_text = incoming.ocr_text;
+            merged.ocr_provenance = incoming
+                .ocr_provenance
+                .or_else(|| Some(incoming.provenance.clone()));
+        }
+        "local-vision" | "local-description" => {
+            merged.description = incoming.description;
+            merged.objects = incoming.objects;
+            merged.pets = incoming.pets;
+            // A dedicated OCR result wins over incidental vision OCR. Vision
+            // still refreshes OCR produced by an older vision pass, including
+            // clearing text the current model no longer observes.
+            let dedicated_ocr = merged.ocr_provenance.as_ref().is_some_and(|provenance| {
+                matches!(provenance.source.as_str(), "local-ocr" | "user")
+            });
+            if !dedicated_ocr && incoming.provenance.source == "local-vision" {
+                merged.ocr_text = incoming.ocr_text;
+                merged.ocr_provenance = incoming
+                    .ocr_provenance
+                    .or_else(|| (!merged.ocr_text.is_empty()).then(|| incoming.provenance.clone()));
+            }
+            merged.vision_provenance = incoming
+                .vision_provenance
+                .or_else(|| Some(incoming.provenance.clone()));
+        }
+        _ => return incoming,
+    }
+    // Keep the legacy primary field meaningful for older peers while the
+    // component fields retain the complete, non-lossy audit trail.
+    merged.provenance = merged
+        .vision_provenance
+        .clone()
+        .or_else(|| merged.ocr_provenance.clone())
+        .unwrap_or(incoming.provenance);
+    merged
 }
 
 impl Action for PhotosAction {
@@ -1105,15 +1250,51 @@ impl Action for PhotosAction {
                 let photo = library.photo_mut(photo_id).ok_or_else(|| {
                     ActionError::Refused("that photograph is no longer in the library".into())
                 })?;
-                if let Some(value) = analysis
-                    && !value.provenance.content.is_empty()
-                    && photo.image.content.as_deref() != Some(&value.provenance.content)
-                {
+                if analysis.as_ref().is_some_and(|value| {
+                    !analysis_content_matches(photo, value)
+                        || (value.provenance.source.starts_with("local-")
+                            && !analysis_names_exact_content(photo, value))
+                }) {
                     return Err(ActionError::Refused(
                         "analysis provenance does not name this photograph's content".into(),
                     ));
                 }
                 photo.analysis.clone_from(analysis);
+                PhotosDoc::set_library(doc, &library);
+                Ok(())
+            }
+            Self::MergeImageAnalysis { photo_id, analysis } => {
+                if validate_resource_id(photo_id).is_err()
+                    || !valid_analysis(analysis)
+                    || !matches!(
+                        analysis.provenance.source.as_str(),
+                        "local-ocr" | "local-vision" | "local-description"
+                    )
+                {
+                    return Err(ActionError::Refused(
+                        "image analysis must be compact, explicitly shared, and carry analyzer provenance".into(),
+                    ));
+                }
+                let mut library = PhotosDoc::library(doc);
+                let photo = library.photo_mut(photo_id).ok_or_else(|| {
+                    ActionError::Refused("that photograph is no longer in the library".into())
+                })?;
+                if !analysis_names_exact_content(photo, analysis) {
+                    return Err(ActionError::Refused(
+                        "analysis components do not name this photograph's content".into(),
+                    ));
+                }
+                let merged = merge_image_analysis(
+                    photo.analysis.as_ref(),
+                    analysis.clone(),
+                    photo.image.content.as_deref(),
+                );
+                if !valid_analysis(&merged) {
+                    return Err(ActionError::Refused(
+                        "merged image analysis is invalid or exceeds a shared-data bound".into(),
+                    ));
+                }
+                photo.analysis = Some(merged);
                 PhotosDoc::set_library(doc, &library);
                 Ok(())
             }
@@ -1416,6 +1597,12 @@ impl ResourceProvider for PhotosResources {
         }
         if id == "photos.library-analysis" {
             return Some(library_analysis_resource());
+        }
+        if let Some((photo_id, _)) = id.split_once("#analysis")
+            && let Some(photo) = PhotosDoc::photo(doc, photo_id)
+            && let Some(analysis) = photo.analysis.as_ref()
+        {
+            return analysis_resource_for_id(&photo.id, analysis, id);
         }
         if let Some(photo) = PhotosDoc::photo(doc, id) {
             return Some(photo_resource(&photo));
@@ -2235,6 +2422,308 @@ impl PhotoResourceSeed {
     }
 }
 
+fn bounded_text_chunk_ranges(value: &str) -> Vec<std::ops::Range<usize>> {
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    let mut bytes = 0_usize;
+    for (index, character) in value.char_indices() {
+        if bytes > 0 && bytes.saturating_add(character.len_utf8()) > ANALYSIS_TEXT_CHUNK_BYTES {
+            chunks.push(start..index);
+            start = index;
+            bytes = 0;
+        }
+        bytes += character.len_utf8();
+    }
+    if start < value.len() {
+        chunks.push(start..value.len());
+    }
+    chunks
+}
+
+fn analysis_text_resource(id: &str, kind: &str, label: &str, text: &str) -> Resource {
+    let chunks = bounded_text_chunk_ranges(text);
+    let mut resource = Resource::new(
+        id,
+        kind,
+        format!(
+            "{label} · {} character{} · {} part{}",
+            text.chars().count(),
+            if text.chars().count() == 1 { "" } else { "s" },
+            chunks.len(),
+            if chunks.len() == 1 { "" } else { "s" }
+        ),
+    );
+    for (index, chunk) in chunks.iter().take(ANALYSIS_TEXT_CONTEXT_CHUNKS).enumerate() {
+        resource = resource.with_child(Resource::new(
+            format!("{id}/{index}"),
+            format!("{kind}.part"),
+            &text[chunk.clone()],
+        ));
+    }
+    resource
+}
+
+fn analysis_labels_resource(id: &str, kind: &str, label: &str, values: &[String]) -> Resource {
+    let mut resource = Resource::new(
+        id,
+        kind,
+        format!(
+            "{} {label}{}",
+            values.len(),
+            if values.len() == 1 { "" } else { "s" }
+        ),
+    );
+    for (index, value) in values.iter().take(ANALYSIS_LABEL_CONTEXT_LIMIT).enumerate() {
+        resource = resource.with_child(Resource::new(
+            format!("{id}/{index}"),
+            format!("{kind}.label"),
+            value,
+        ));
+    }
+    resource
+}
+
+fn analysis_scalar_resource(id: &str, kind: &str, field: &str, value: &str) -> Resource {
+    let value = if value.is_empty() {
+        "Not recorded"
+    } else {
+        value
+    };
+    let label = format!("{field}: {value}");
+    if label.len() <= ANALYSIS_TEXT_CHUNK_BYTES {
+        Resource::new(id, kind, label)
+    } else {
+        analysis_text_resource(id, kind, field, value)
+    }
+}
+
+fn analysis_provenance_resource(
+    id: &str,
+    component: &str,
+    provenance: &crate::model::AnalysisProvenance,
+) -> Resource {
+    let mut resource = Resource::new(
+        id,
+        "photos.analysis.provenance",
+        format!("{component} provenance"),
+    );
+    for (field, value) in [
+        ("source", provenance.source.as_str()),
+        ("engine", provenance.engine.as_str()),
+        ("model", provenance.model_id.as_str()),
+        ("revision", provenance.model_revision.as_str()),
+        ("language", provenance.language.as_str()),
+        ("content", provenance.content.as_str()),
+        ("scope", provenance.scope.as_str()),
+    ] {
+        resource = resource.with_child(analysis_scalar_resource(
+            &format!("{id}/{field}"),
+            &format!("photos.analysis.provenance.{field}"),
+            match field {
+                "model" => "Model",
+                "revision" => "Model revision",
+                _ => field,
+            },
+            value,
+        ));
+    }
+    resource
+}
+
+fn analysis_component_provenance<'a>(
+    analysis: &'a ImageAnalysis,
+    vision: bool,
+) -> Option<&'a crate::model::AnalysisProvenance> {
+    if vision {
+        analysis.vision_provenance.as_ref().or_else(|| {
+            (!analysis.description.is_empty()
+                || !analysis.objects.is_empty()
+                || !analysis.pets.is_empty())
+            .then_some(&analysis.provenance)
+        })
+    } else {
+        analysis
+            .ocr_provenance
+            .as_ref()
+            .or_else(|| (!analysis.ocr_text.is_empty()).then_some(&analysis.provenance))
+    }
+}
+
+fn analysis_resource(photo_id: &str, analysis: &ImageAnalysis) -> Resource {
+    let id = format!("{photo_id}#analysis");
+    let mut root = Resource::new(&id, "photos.analysis", "Shared image intelligence");
+
+    let ocr_id = format!("{id}/ocr");
+    let mut ocr = Resource::new(&ocr_id, "photos.analysis.ocr", "Recognized text");
+    ocr = ocr.with_child(analysis_text_resource(
+        &format!("{ocr_id}/text"),
+        "photos.analysis.ocr.text",
+        "Recognized text",
+        &analysis.ocr_text,
+    ));
+    if let Some(provenance) = analysis_component_provenance(analysis, false) {
+        ocr = ocr.with_child(analysis_provenance_resource(
+            &format!("{ocr_id}/provenance"),
+            "OCR",
+            provenance,
+        ));
+    }
+    if let Some(spec) = operation(
+        "refresh",
+        "Recognize text again locally",
+        &PhotosOperation::AnalyzeText {
+            resource_id: photo_id.to_owned(),
+            language: analysis_component_provenance(analysis, false)
+                .map(|provenance| provenance.language.as_str())
+                .filter(|language| !language.is_empty())
+                .unwrap_or("eng")
+                .to_owned(),
+        },
+    ) {
+        ocr = ocr.with_action(spec.with_description(
+            "Replace only the shared OCR component after a bounded local recognition job",
+        ));
+    }
+    root = root.with_child(ocr);
+
+    let vision_id = format!("{id}/vision");
+    let mut vision = Resource::new(&vision_id, "photos.analysis.vision", "Visual analysis")
+        .with_child(analysis_text_resource(
+            &format!("{vision_id}/description"),
+            "photos.analysis.description",
+            "Description",
+            &analysis.description,
+        ))
+        .with_child(analysis_labels_resource(
+            &format!("{vision_id}/objects"),
+            "photos.analysis.objects",
+            "object",
+            &analysis.objects,
+        ))
+        .with_child(analysis_labels_resource(
+            &format!("{vision_id}/pets"),
+            "photos.analysis.pets",
+            "pet",
+            &analysis.pets,
+        ))
+        .with_child(analysis_labels_resource(
+            &format!("{vision_id}/people"),
+            "photos.analysis.people",
+            "person",
+            &analysis.people,
+        ));
+    if let Some(provenance) = analysis_component_provenance(analysis, true) {
+        vision = vision.with_child(analysis_provenance_resource(
+            &format!("{vision_id}/provenance"),
+            "Visual analysis",
+            provenance,
+        ));
+    }
+    if let Some(spec) = operation(
+        "refresh",
+        "Analyze image again locally",
+        &PhotosOperation::AnalyzeImage {
+            resource_id: photo_id.to_owned(),
+        },
+    ) {
+        let unavailable = local_vision_unavailable_reason();
+        let spec = spec.with_description(match unavailable.as_deref() {
+            Some(reason) => format!("Unavailable: {reason}"),
+            None => "Replace only the shared description and recognized-object components after a signed local analysis job".to_owned(),
+        });
+        vision = vision.with_action(match unavailable {
+            Some(reason) => spec.unavailable("local_vision_unavailable", reason),
+            None => spec,
+        });
+    }
+    root = root.with_child(vision);
+
+    // Component-specific deletion is intentionally not synthesized with a
+    // read-modify-write `SetImageAnalysis`: replaying that snapshot could
+    // erase a concurrent refresh of the other component. Whole-record removal
+    // is the only deletion whose current action semantics are unambiguous.
+    if let Some(spec) = direct_spec(
+        "remove",
+        "Remove all shared analysis",
+        &PhotosAction::SetImageAnalysis {
+            photo_id: photo_id.to_owned(),
+            analysis: None,
+        },
+    ) {
+        root = root.with_action(spec.destructive().reversible().with_description(
+            "Remove recognized text, description, object and pet labels, and their provenance without changing the photograph",
+        ));
+    }
+    root
+}
+
+fn find_analysis_descendant(resource: &Resource, id: &str) -> Option<Resource> {
+    if resource.id.0 == id {
+        return Some(resource.clone());
+    }
+    resource
+        .children
+        .iter()
+        .find_map(|child| find_analysis_descendant(child, id))
+}
+
+fn analysis_resource_for_id(
+    photo_id: &str,
+    analysis: &ImageAnalysis,
+    requested_id: &str,
+) -> Option<Resource> {
+    let root = analysis_resource(photo_id, analysis);
+    if let Some(resource) = find_analysis_descendant(&root, requested_id) {
+        return Some(resource);
+    }
+
+    let base = format!("{photo_id}#analysis");
+    for (path, kind, values) in [
+        (
+            "vision/objects",
+            "photos.analysis.objects",
+            &analysis.objects,
+        ),
+        ("vision/pets", "photos.analysis.pets", &analysis.pets),
+        ("vision/people", "photos.analysis.people", &analysis.people),
+    ] {
+        let prefix = format!("{base}/{path}/");
+        if let Some(index) = requested_id
+            .strip_prefix(&prefix)
+            .and_then(|index| index.parse::<usize>().ok())
+            && let Some(value) = values.get(index)
+        {
+            return Some(Resource::new(requested_id, format!("{kind}.label"), value));
+        }
+    }
+    for (path, kind, text) in [
+        (
+            "ocr/text",
+            "photos.analysis.ocr.text",
+            analysis.ocr_text.as_str(),
+        ),
+        (
+            "vision/description",
+            "photos.analysis.description",
+            analysis.description.as_str(),
+        ),
+    ] {
+        let prefix = format!("{base}/{path}/");
+        if let Some(index) = requested_id
+            .strip_prefix(&prefix)
+            .and_then(|index| index.parse::<usize>().ok())
+            && let Some(chunk) = bounded_text_chunk_ranges(text).get(index)
+        {
+            return Some(Resource::new(
+                requested_id,
+                format!("{kind}.part"),
+                &text[chunk.clone()],
+            ));
+        }
+    }
+    None
+}
+
 pub(crate) fn photo_resource(photo: &LibraryPhoto) -> Resource {
     photo_resource_from_seed(&PhotoResourceSeed::from(photo))
 }
@@ -2270,15 +2759,7 @@ pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
         ));
     }
     if let Some(analysis) = &photo.analysis {
-        item = item.with_child(Resource::new(
-            format!("{}#analysis", photo.id),
-            "photos.analysis",
-            if analysis.description.is_empty() {
-                "Shared image intelligence".to_owned()
-            } else {
-                analysis.description.clone()
-            },
-        ));
+        item = item.with_child(analysis_resource(&photo.id, analysis));
     }
     if let Some(location) = &photo.location {
         item = item.with_child(Resource::new(
@@ -3114,6 +3595,7 @@ mod tests {
                 scope: "shared".to_owned(),
                 ..crate::model::AnalysisProvenance::default()
             },
+            ..ImageAnalysis::default()
         }
     }
 
@@ -3304,6 +3786,398 @@ mod tests {
             .apply(&mut doc)
             .is_err()
         );
+    }
+
+    #[test]
+    fn analysis_components_are_bounded_typed_and_exactly_materializable() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let photo = portable_photo("inspectable-analysis.png", 40, 20);
+        let id = photo.id.clone();
+        let content = photo.image.content.clone().unwrap();
+        PhotosAction::ImportPhoto { photo }.apply(&mut doc).unwrap();
+
+        let ocr_provenance = crate::model::AnalysisProvenance {
+            source: "local-ocr".into(),
+            engine: "tilo-ocr".into(),
+            language: "deu".into(),
+            content: content.clone(),
+            scope: "shared".into(),
+            ..Default::default()
+        };
+        let vision_provenance = crate::model::AnalysisProvenance {
+            source: "local-vision".into(),
+            engine: "tilo-vision".into(),
+            model_id: "local-vision-model".into(),
+            model_revision: "a".repeat(64),
+            content: content.clone(),
+            scope: "shared".into(),
+            ..Default::default()
+        };
+        let analysis = ImageAnalysis {
+            ocr_text: "α".repeat(20_000),
+            description: "A broad city view with bicycles and dogs. ".repeat(16),
+            objects: (0..40).map(|index| format!("object-{index}")).collect(),
+            pets: (0..40).map(|index| format!("pet-{index}")).collect(),
+            people: vec!["Ada".into(), "Sam".into()],
+            provenance: vision_provenance.clone(),
+            ocr_provenance: Some(ocr_provenance),
+            vision_provenance: Some(vision_provenance),
+        };
+        PhotosAction::SetImageAnalysis {
+            photo_id: id.clone(),
+            analysis: Some(analysis),
+        }
+        .apply(&mut doc)
+        .unwrap();
+
+        let analysis_id = format!("{id}#analysis");
+        let resource = PhotosResources
+            .resource(&doc, &analysis_id)
+            .expect("analysis is directly addressable");
+        assert_eq!(resource.kind, "photos.analysis");
+        assert_eq!(resource.children.len(), 2, "only OCR and vision components");
+        assert!(resource.actions.iter().any(|action| action.id == "remove"));
+
+        let ocr = PhotosResources
+            .resource(&doc, &format!("{analysis_id}/ocr"))
+            .expect("OCR component is directly addressable");
+        assert_eq!(ocr.kind, "photos.analysis.ocr");
+        let text = ocr
+            .children
+            .iter()
+            .find(|child| child.kind == "photos.analysis.ocr.text")
+            .expect("OCR publishes typed text");
+        assert_eq!(text.children.len(), ANALYSIS_TEXT_CONTEXT_CHUNKS);
+        assert!(
+            text.children
+                .iter()
+                .all(|chunk| chunk.label.len() <= ANALYSIS_TEXT_CHUNK_BYTES)
+        );
+        let refresh = ocr
+            .actions
+            .iter()
+            .find(|action| action.id == "refresh")
+            .expect("OCR component owns canonical refresh");
+        let tilo_actions::ActionInput::Immediate(encoded) = &refresh.input else {
+            panic!("refresh is an immediate operation request");
+        };
+        assert_eq!(
+            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(PhotosOperation::AnalyzeText {
+                resource_id: id.clone(),
+                language: "deu".into(),
+            })
+        );
+
+        let late_text_id = format!("{analysis_id}/ocr/text/20");
+        let late_text = PhotosResources
+            .resource(&doc, &late_text_id)
+            .expect("OCR outside the contextual window resolves exactly");
+        assert_eq!(late_text.kind, "photos.analysis.ocr.text.part");
+        assert!(!late_text.label.is_empty());
+        assert!(late_text.label.len() <= ANALYSIS_TEXT_CHUNK_BYTES);
+
+        let late_object_id = format!("{analysis_id}/vision/objects/20");
+        let late_object = PhotosResources
+            .resource(&doc, &late_object_id)
+            .expect("object outside the contextual window resolves exactly");
+        assert_eq!(late_object.kind, "photos.analysis.objects.label");
+        assert_eq!(late_object.label, "object-20");
+
+        let language = PhotosResources
+            .resource(&doc, &format!("{analysis_id}/ocr/provenance/language"))
+            .expect("OCR language provenance is inspectable");
+        assert_eq!(language.kind, "photos.analysis.provenance.language");
+        assert_eq!(language.label, "language: deu");
+        let model = PhotosResources
+            .resource(&doc, &format!("{analysis_id}/vision/provenance/model"))
+            .expect("vision model provenance is inspectable");
+        assert_eq!(model.kind, "photos.analysis.provenance.model");
+        assert_eq!(model.label, "Model: local-vision-model");
+        let revision = PhotosResources
+            .resource(&doc, &format!("{analysis_id}/vision/provenance/revision"))
+            .expect("vision model revision is inspectable");
+        assert_eq!(revision.kind, "photos.analysis.provenance.revision");
+        assert_eq!(
+            revision.label,
+            format!("Model revision: {}", "a".repeat(64))
+        );
+        let analyzed_content = PhotosResources
+            .resource(&doc, &format!("{analysis_id}/ocr/provenance/content"))
+            .expect("analyzed content identity is inspectable");
+        assert_eq!(analyzed_content.kind, "photos.analysis.provenance.content");
+        assert_eq!(analyzed_content.label, format!("content: {content}"));
+
+        let vision = PhotosResources
+            .resource(&doc, &format!("{analysis_id}/vision"))
+            .expect("vision component is directly addressable");
+        let refresh = vision
+            .actions
+            .iter()
+            .find(|action| action.id == "refresh")
+            .expect("vision component owns canonical refresh");
+        let tilo_actions::ActionInput::Immediate(encoded) = &refresh.input else {
+            panic!("refresh is an immediate operation request");
+        };
+        assert_eq!(
+            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(PhotosOperation::AnalyzeImage {
+                resource_id: id.clone(),
+            })
+        );
+        assert!(
+            PhotosResources
+                .resource(&doc, &format!("{analysis_id}/vision/objects/40"))
+                .is_none(),
+            "exact lookup refuses an out-of-range derived child"
+        );
+    }
+
+    fn shared_ocr_component(content: &str, text: &str) -> ImageAnalysis {
+        let provenance = crate::model::AnalysisProvenance {
+            source: "local-ocr".into(),
+            engine: "tilo-ocr".into(),
+            language: "eng".into(),
+            content: content.into(),
+            scope: "shared".into(),
+            ..Default::default()
+        };
+        ImageAnalysis {
+            ocr_text: text.into(),
+            provenance: provenance.clone(),
+            ocr_provenance: Some(provenance),
+            ..Default::default()
+        }
+    }
+
+    fn shared_vision_component(content: &str) -> ImageAnalysis {
+        let provenance = crate::model::AnalysisProvenance {
+            source: "local-vision".into(),
+            engine: "tilo-vision".into(),
+            model_id: "signed-vision-model".into(),
+            model_revision: "a".repeat(64),
+            content: content.into(),
+            scope: "shared".into(),
+            ..Default::default()
+        };
+        ImageAnalysis {
+            ocr_text: "incidental sign text".into(),
+            description: "A dog beside a red bicycle".into(),
+            objects: vec!["bicycle".into()],
+            pets: vec!["dog".into()],
+            provenance: provenance.clone(),
+            ocr_provenance: Some(provenance.clone()),
+            vision_provenance: Some(provenance),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ocr_then_vision_merges_components_without_replacing_dedicated_text() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let photo = portable_photo("ocr-then-vision.png", 40, 20);
+        let id = photo.id.clone();
+        let content = photo.image.content.clone().unwrap();
+        PhotosAction::ImportPhoto { photo }.apply(&mut doc).unwrap();
+
+        for analysis in [
+            shared_ocr_component(&content, "dedicated receipt text"),
+            shared_vision_component(&content),
+        ] {
+            PhotosAction::MergeImageAnalysis {
+                photo_id: id.clone(),
+                analysis,
+            }
+            .apply(&mut doc)
+            .unwrap();
+        }
+
+        let merged = PhotosDoc::photo(&doc, &id).unwrap().analysis.unwrap();
+        assert_eq!(merged.ocr_text, "dedicated receipt text");
+        assert_eq!(merged.description, "A dog beside a red bicycle");
+        assert_eq!(merged.objects, ["bicycle"]);
+        assert_eq!(merged.pets, ["dog"]);
+        assert_eq!(merged.ocr_provenance.unwrap().source, "local-ocr");
+        assert_eq!(merged.vision_provenance.unwrap().source, "local-vision");
+    }
+
+    #[test]
+    fn vision_then_ocr_replaces_only_text_and_rejects_cross_content_merges() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let photo = portable_photo("vision-then-ocr.png", 40, 20);
+        let id = photo.id.clone();
+        let content = photo.image.content.clone().unwrap();
+        PhotosAction::ImportPhoto { photo }.apply(&mut doc).unwrap();
+
+        PhotosAction::MergeImageAnalysis {
+            photo_id: id.clone(),
+            analysis: shared_vision_component(&content),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        PhotosAction::MergeImageAnalysis {
+            photo_id: id.clone(),
+            analysis: shared_ocr_component(&content, "new dedicated text"),
+        }
+        .apply(&mut doc)
+        .unwrap();
+
+        let merged = PhotosDoc::photo(&doc, &id).unwrap().analysis.unwrap();
+        assert_eq!(merged.ocr_text, "new dedicated text");
+        assert_eq!(merged.description, "A dog beside a red bicycle");
+        assert_eq!(merged.objects, ["bicycle"]);
+        assert_eq!(merged.ocr_provenance.unwrap().source, "local-ocr");
+        assert_eq!(merged.vision_provenance.unwrap().source, "local-vision");
+
+        assert!(
+            PhotosAction::MergeImageAnalysis {
+                photo_id: id,
+                analysis: shared_ocr_component(&"f".repeat(64), "wrong bytes"),
+            }
+            .apply(&mut doc)
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_new_vision_pass_refreshes_only_incidental_vision_ocr() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let photo = portable_photo("vision-refresh.png", 40, 20);
+        let id = photo.id.clone();
+        let content = photo.image.content.clone().unwrap();
+        PhotosAction::ImportPhoto { photo }.apply(&mut doc).unwrap();
+
+        let mut first = shared_vision_component(&content);
+        first.ocr_text = "old sign".into();
+        PhotosAction::MergeImageAnalysis {
+            photo_id: id.clone(),
+            analysis: first,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let mut refreshed = shared_vision_component(&content);
+        refreshed.ocr_text.clear();
+        refreshed.ocr_provenance = None;
+        refreshed.description = "The same scene after a model refresh".into();
+        PhotosAction::MergeImageAnalysis {
+            photo_id: id.clone(),
+            analysis: refreshed,
+        }
+        .apply(&mut doc)
+        .unwrap();
+
+        let merged = PhotosDoc::photo(&doc, &id).unwrap().analysis.unwrap();
+        assert!(merged.ocr_text.is_empty());
+        assert!(merged.ocr_provenance.is_none());
+        assert_eq!(merged.description, "The same scene after a model refresh");
+        assert!(merged.vision_provenance.is_some());
+    }
+
+    #[test]
+    fn legacy_combined_local_ocr_record_can_refresh_ocr_without_losing_visual_fields() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let photo = portable_photo("legacy-combined.png", 40, 20);
+        let id = photo.id.clone();
+        let content = photo.image.content.clone().unwrap();
+        PhotosAction::ImportPhoto { photo }.apply(&mut doc).unwrap();
+        PhotosAction::SetImageAnalysis {
+            photo_id: id.clone(),
+            analysis: Some(shared_analysis(content.clone())),
+        }
+        .apply(&mut doc)
+        .unwrap();
+
+        PhotosAction::MergeImageAnalysis {
+            photo_id: id.clone(),
+            analysis: shared_ocr_component(&content, "refreshed receipt"),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let merged = PhotosDoc::photo(&doc, &id).unwrap().analysis.unwrap();
+        assert_eq!(merged.ocr_text, "refreshed receipt");
+        assert_eq!(merged.description, "A dog beside a red bicycle");
+        assert_eq!(merged.objects, ["bicycle"]);
+    }
+
+    #[test]
+    fn fresh_component_replaces_stale_existing_analysis_instead_of_being_blocked() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let photo = portable_photo("stale-analysis.png", 40, 20);
+        let id = photo.id.clone();
+        let content = photo.image.content.clone().unwrap();
+        PhotosAction::ImportPhoto { photo }.apply(&mut doc).unwrap();
+        let stale_content = "f".repeat(64);
+        let mut library = PhotosDoc::library(&doc);
+        library.photo_mut(&id).unwrap().analysis = Some(shared_vision_component(&stale_content));
+        PhotosDoc::set_library(&mut doc, &library);
+
+        PhotosAction::MergeImageAnalysis {
+            photo_id: id.clone(),
+            analysis: shared_ocr_component(&content, "current bytes"),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let merged = PhotosDoc::photo(&doc, &id).unwrap().analysis.unwrap();
+        assert_eq!(merged.ocr_text, "current bytes");
+        assert!(merged.description.is_empty());
+        assert!(merged.vision_provenance.is_none());
+    }
+
+    #[test]
+    fn new_path_only_analysis_is_rejected_but_empty_vision_completion_is_retained() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let path_only = LibraryPhoto::from_image(OpenImage::from_path("legacy.png", 40, 20));
+        let path_id = path_only.id.clone();
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos: vec![path_only],
+                ..Default::default()
+            },
+        );
+        assert!(
+            PhotosAction::MergeImageAnalysis {
+                photo_id: path_id.clone(),
+                analysis: shared_ocr_component("", "unbound text"),
+            }
+            .apply(&mut doc)
+            .is_err()
+        );
+        assert!(
+            PhotosAction::SetImageAnalysis {
+                photo_id: path_id,
+                analysis: Some(shared_ocr_component("", "unbound text")),
+            }
+            .apply(&mut doc)
+            .is_err()
+        );
+
+        let photo = portable_photo("blank-vision.png", 40, 20);
+        let id = photo.id.clone();
+        let content = photo.image.content.clone().unwrap();
+        PhotosAction::ImportPhoto { photo }.apply(&mut doc).unwrap();
+        let mut blank = shared_vision_component(&content);
+        blank.ocr_text.clear();
+        blank.description.clear();
+        blank.objects.clear();
+        blank.pets.clear();
+        blank.ocr_provenance = None;
+        PhotosAction::MergeImageAnalysis {
+            photo_id: id.clone(),
+            analysis: blank,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let stored = PhotosDoc::photo(&doc, &id).unwrap().analysis.unwrap();
+        assert!(stored.is_empty());
+        assert!(stored.vision_provenance.is_some());
     }
 
     #[test]
