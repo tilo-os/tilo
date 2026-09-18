@@ -251,6 +251,15 @@ fn hex_prefix(bytes: &[u8], count: usize) -> String {
     output
 }
 
+fn nearby_action_locator(kind: &str, bytes: &[u8; 16]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"dev.tilo.files.nearby-action-locator.v1\0");
+    hasher.update(kind.as_bytes());
+    hasher.update([0]);
+    hasher.update(bytes);
+    hex_prefix(&hasher.finalize(), 16)
+}
+
 /// Opaque, bounded resource identity for a local Templates entry.
 ///
 /// A resource tree is searchable and may be retained in activity/history, so
@@ -7016,7 +7025,118 @@ impl FileExplorerWidget {
         Self::append_navigation_actions(&mut folder);
         self.append_favorite_action(&mut folder);
         self.append_creation_actions(&mut folder);
+        self.append_nearby_receiver_resources(&mut folder);
         folder
+    }
+
+    #[allow(
+        clippy::expect_used,
+        reason = "nearby payloads contain only fixed tuples of serializable opaque handles"
+    )]
+    fn append_nearby_receiver_resources(&self, folder: &mut Resource) {
+        use ui::collaboration::{NearbyTransferDirection, NearbyTransferPhase};
+
+        for transfer in self.nearby_send.transfers() {
+            let mut resource = Resource::new(
+                format!(
+                    "nearby-transfer:{}",
+                    nearby_action_locator("transfer", transfer.handle.as_bytes())
+                ),
+                "files.nearby-transfer",
+                transfer.name.clone(),
+            );
+            if transfer.direction == NearbyTransferDirection::Receiving
+                && matches!(
+                    transfer.phase,
+                    NearbyTransferPhase::AwaitingConsent | NearbyTransferPhase::AwaitingDestination
+                )
+            {
+                for destination in self.nearby_send.destinations() {
+                    resource.actions.push(
+                        ActionSpec::operation(
+                            format!(
+                                "accept-{}",
+                                nearby_action_locator("destination", destination.handle.as_bytes())
+                            ),
+                            t_args(
+                                "files-nearby-save-to-destination",
+                                &[arg("destination", destination.label.clone())],
+                            ),
+                            OperationKind::Effect,
+                            "files.nearby-decide",
+                            &(transfer.handle, Some(destination.handle), false),
+                        )
+                        .expect("nearby accept payload is serializable")
+                        .with_contract(ActionContract {
+                            permission: PermissionRequirement::Write,
+                            risk: RiskLevel::Privileged,
+                            confirmation: ConfirmationPolicy::Confirm,
+                            retry: RetryPolicy::AtMostOnce,
+                            ..ActionContract::default()
+                        }),
+                    );
+                }
+                resource.actions.push(
+                    ActionSpec::operation(
+                        "decline",
+                        t("files-nearby-declined"),
+                        OperationKind::Effect,
+                        "files.nearby-decide",
+                        &(
+                            transfer.handle,
+                            None::<ui::collaboration::NearbyDestinationHandle>,
+                            false,
+                        ),
+                    )
+                    .expect("nearby decline payload is serializable")
+                    .with_contract(ActionContract {
+                        permission: PermissionRequirement::Write,
+                        retry: RetryPolicy::AtMostOnce,
+                        ..ActionContract::default()
+                    }),
+                );
+            }
+            if transfer.phase == NearbyTransferPhase::Failed {
+                resource.actions.push(
+                    ActionSpec::operation(
+                        "retry",
+                        t("files-nearby-retry"),
+                        OperationKind::Effect,
+                        "files.nearby-retry",
+                        &transfer.handle,
+                    )
+                    .expect("nearby retry payload is serializable")
+                    .with_contract(ActionContract {
+                        permission: PermissionRequirement::Read,
+                        retry: RetryPolicy::AtMostOnce,
+                        ..ActionContract::default()
+                    }),
+                );
+            }
+            if matches!(
+                transfer.phase,
+                NearbyTransferPhase::Queued | NearbyTransferPhase::Transferring
+            ) {
+                resource.actions.push(
+                    ActionSpec::operation(
+                        "cancel",
+                        t("files-nearby-cancelled"),
+                        OperationKind::Effect,
+                        "files.nearby-cancel",
+                        &transfer.handle,
+                    )
+                    .expect("nearby cancel payload is serializable")
+                    .with_contract(ActionContract {
+                        permission: PermissionRequirement::Write,
+                        retry: RetryPolicy::AtMostOnce,
+                        ..ActionContract::default()
+                    }),
+                );
+            }
+            if !resource.actions.is_empty() {
+                folder.children.push(resource);
+            }
+        }
     }
 
     fn folder_resource_base(&self) -> Resource {
@@ -7526,6 +7646,9 @@ impl Widget for FileExplorerWidget {
             "files.folder-command",
             "files.entry-command",
             "files.nearby-send",
+            "files.nearby-decide",
+            "files.nearby-retry",
+            "files.nearby-cancel",
             "files.rename",
             "files.share-link",
             "files.remote-account",
@@ -8425,6 +8548,72 @@ impl Widget for FileExplorerWidget {
                 self.nearby_send_path = Some(target.clone());
                 self.nearby_send.send(&target, handle);
                 self.status = Some(t("files-nearby-queueing"));
+            }
+            (OperationKind::Effect, "files.nearby-decide") => {
+                let (handle, destination, remember_for_session): (
+                    ui::collaboration::NearbyTransferHandle,
+                    Option<ui::collaboration::NearbyDestinationHandle>,
+                    bool,
+                ) = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                let transfer = self
+                    .nearby_send
+                    .transfers()
+                    .iter()
+                    .find(|transfer| transfer.handle == handle)
+                    .ok_or_else(|| "nearby transfer is no longer available".to_string())?;
+                if transfer.direction != ui::collaboration::NearbyTransferDirection::Receiving
+                    || !matches!(
+                        transfer.phase,
+                        ui::collaboration::NearbyTransferPhase::AwaitingConsent
+                            | ui::collaboration::NearbyTransferPhase::AwaitingDestination
+                    )
+                {
+                    return Err("nearby transfer no longer awaits a receiver decision".into());
+                }
+                if let Some(destination) = destination
+                    && !self
+                        .nearby_send
+                        .destinations()
+                        .iter()
+                        .any(|candidate| candidate.handle == destination)
+                {
+                    return Err("nearby destination is no longer available".into());
+                }
+                self.nearby_send
+                    .decide(handle, destination, remember_for_session);
+                self.status = Some(if destination.is_some() {
+                    t("files-nearby-accepted")
+                } else {
+                    t("files-nearby-declined")
+                });
+            }
+            (OperationKind::Effect, "files.nearby-retry") => {
+                let handle: ui::collaboration::NearbyTransferHandle =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                if !self.nearby_send.transfers().iter().any(|transfer| {
+                    transfer.handle == handle
+                        && transfer.phase == ui::collaboration::NearbyTransferPhase::Failed
+                }) {
+                    return Err("nearby transfer is not retryable".into());
+                }
+                self.nearby_send.retry(handle);
+                self.status = Some(t("files-nearby-retrying"));
+            }
+            (OperationKind::Effect, "files.nearby-cancel") => {
+                let handle: ui::collaboration::NearbyTransferHandle =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                if !self.nearby_send.transfers().iter().any(|transfer| {
+                    transfer.handle == handle
+                        && matches!(
+                            transfer.phase,
+                            ui::collaboration::NearbyTransferPhase::Queued
+                                | ui::collaboration::NearbyTransferPhase::Transferring
+                        )
+                }) {
+                    return Err("nearby transfer is not cancellable".into());
+                }
+                self.nearby_send.cancel(handle);
+                self.status = Some(t("files-nearby-cancelled"));
             }
             (OperationKind::Effect, "files.rename") => {
                 let args: Vec<String> =
@@ -10583,6 +10772,74 @@ mod command_path_tests {
             Some(PathBuf::from("/home/tester")),
         );
         (w, cfg)
+    }
+
+    #[test]
+    fn nearby_receiver_actions_are_opaque_confirmed_and_current() {
+        use ui::collaboration::{
+            NearbyDestinationHandle, NearbyTransferDestination, NearbyTransferDirection,
+            NearbyTransferHandle, NearbyTransferPhase, NearbyTransferSnapshot,
+            NearbyTransferStatus,
+        };
+        use ui::tilo_actions::ActionInput;
+
+        let transfer = NearbyTransferHandle::from_issued_bytes([0x41; 16]);
+        let destination = NearbyDestinationHandle::from_issued_bytes([0x42; 16]);
+        let mut snapshot = NearbyTransferSnapshot {
+            destinations: vec![NearbyTransferDestination {
+                handle: destination,
+                label: "Workspace files".into(),
+                remembered_for_session: false,
+            }],
+            transfers: vec![NearbyTransferStatus {
+                handle: transfer,
+                name: "Photos".into(),
+                device_label: "Travel laptop".into(),
+                direction: NearbyTransferDirection::Receiving,
+                phase: NearbyTransferPhase::AwaitingConsent,
+                transferred_bytes: 0,
+                total_bytes: 42,
+            }],
+            ..Default::default()
+        };
+        let (mut widget, _config) = hermetic();
+        widget
+            .nearby_send
+            .install_snapshot_for_test(snapshot.clone());
+        let root = widget.action_directory_folder_root();
+        let transfer_resource = root
+            .children
+            .iter()
+            .find(|resource| resource.kind == "files.nearby-transfer")
+            .expect("incoming transfer resource");
+        assert!(!transfer_resource.id.as_str().contains("41414141"));
+        let accept = transfer_resource
+            .actions
+            .iter()
+            .find(|action| action.id.starts_with("accept-"))
+            .expect("accept action");
+        assert_eq!(accept.contract.confirmation, ConfirmationPolicy::Confirm);
+        assert!(!accept.id.contains("42424242"));
+        let ActionInput::Immediate(encoded) = &accept.input else {
+            panic!("accept is nullary over an app-owned opaque payload")
+        };
+
+        snapshot.transfers.clear();
+        widget.nearby_send.install_snapshot_for_test(snapshot);
+        let document = automerge::AutoCommit::new();
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut widget,
+                OperationKind::Effect,
+                &encoded.type_id,
+                &encoded.payload,
+                &document,
+                &automerge::ROOT,
+            )
+            .expect_err("stale receiver decision must fail closed")
+            .contains("no longer available")
+        );
+        assert!(widget.nearby_send.take_requests().is_empty());
     }
 
     #[test]
