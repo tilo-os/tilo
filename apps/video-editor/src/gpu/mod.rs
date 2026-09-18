@@ -1382,7 +1382,7 @@ mod tests {
             },
         ];
         let gray_then_sepia = px(&c.frame(&p, 1.0, 32, 32, &mut NoSources), 32, 16, 20);
-        p.clip_mut(cid).unwrap().effects.swap(0, 1);
+        p.clip_mut(cid).unwrap().move_effect_down(0);
         let sepia_then_gray = px(&c.frame(&p, 1.0, 32, 32, &mut NoSources), 32, 16, 20);
         assert!(
             gray_then_sepia.r - gray_then_sepia.b > 0.08,

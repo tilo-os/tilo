@@ -104,6 +104,39 @@ stale bindings, missing semantics, and invalid or unhandled operations are
 certification failures. The SDK exposes direct CRDT field controls as searchable
 actions and records their mutations in shared history.
 
+Generic controls are toolkit-owned. Application code must compose retained
+widgets or their documented immediate-mode faces; drawing a button, segmented
+selector, card, field, dialog, list row, or sidebar from raw rounded rectangles
+is not a normal implementation option. Custom painting is reserved for the
+app's domain visualization (for example a graph, map, waveform, or document
+canvas), and every interactive custom region must publish a stable semantic
+target, name, bounds, state, and the same action used by pointer input. Source
+presubmit ratchets app-owned rounded-rectangle painting at its existing debt
+ceiling, so new exceptions require an explicit baseline change and review.
+
+For a control inside a legitimate domain canvas, construct one shared face and
+reuse it for paint, input, and semantics. `minimum_target` preserves compact
+painting while adapting the other bounds to the host pointer environment:
+
+```rust
+let add = ui::ButtonFace::icon_only(add_rect, ui::Icon::Plus, "Add function")
+    .ghost()
+    .minimum_target(self.interaction);
+
+ui::Button::paint(scene, transform, text, theme, &add);
+if add.hit_test(pointer) {
+    self.invoke("graph:add");
+}
+let semantics = add.accessibility("graph:add");
+```
+
+Store the environment delivered by `Widget::set_interaction_environment`; do
+not assume mouse sizing. `ButtonFace` and `SegmentedFace` keep paint, input, and
+accessibility paired, while icon-only faces require a spoken name. Native
+certification rejects discrete actionable targets below the 24×24 WCAG floor;
+the preferred toolkit baseline remains 32×32 for fine pointers and 48×48 for
+touch. Expanded neighbouring targets must not overlap.
+
 ## Productivity & documents
 
 | Crate | What it is |

@@ -26,11 +26,13 @@ use winit::event::WindowEvent;
 
 use ui::ColorCompat;
 use ui::Widget;
+use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{TextInput, TooltipHost, VideoPlayer};
+use ui::widget::tooltip::TooltipHost;
+use ui::widget::{ContextMenu as SharedContextMenu, MenuItem, TextInput, VideoPlayer};
 
 use crate::actions::{self, ChatAction};
 use crate::call::{CallState, SoundEngine};
@@ -67,11 +69,53 @@ pub(crate) enum Focus {
 
 /// A right-click context menu over a channel or category row, or the
 /// inline rename editor it can open.
-#[derive(Clone, Debug)]
 pub(crate) struct ContextMenu {
     pub target: MenuTarget,
-    pub anchor: Point,
     pub items: Vec<MenuAction>,
+    /// Toolkit-owned paint, clamping, pointer/keyboard routing, focus trap,
+    /// and accessibility. Chat only maps the selected row to its domain
+    /// action.
+    pub widget: SharedContextMenu,
+}
+
+impl ContextMenu {
+    pub(crate) fn new(
+        target: MenuTarget,
+        anchor: Point,
+        items: Vec<MenuAction>,
+        viewport: Rect,
+    ) -> Self {
+        let mut widget = SharedContextMenu::new();
+        for action in &items {
+            let item = if action.is_destructive() {
+                MenuItem::destructive_selection(action.label())
+            } else {
+                MenuItem::selection(action.label())
+            };
+            let icon = match action {
+                MenuAction::Rename | MenuAction::EditMessage => Icon::Pencil,
+                MenuAction::Delete | MenuAction::DeleteMessage => Icon::Trash,
+                MenuAction::MoveUp => Icon::ChevronUp,
+                MenuAction::MoveDown | MenuAction::ToggleCollapse => Icon::ChevronDown,
+                MenuAction::NewChannelHere
+                | MenuAction::NewVoiceChannelHere
+                | MenuAction::NewCategory => Icon::Plus,
+                MenuAction::Archive => Icon::Archive,
+                MenuAction::PinMessage => Icon::Pin,
+            };
+            widget.push(item.with_icon(icon));
+        }
+        if viewport.width() > 0.0 && viewport.height() > 0.0 {
+            widget.open_at_clamped([anchor.x as f32, anchor.y as f32], viewport);
+        } else {
+            widget.open_at([anchor.x as f32, anchor.y as f32]);
+        }
+        Self {
+            target,
+            items,
+            widget,
+        }
+    }
 }
 
 /// What a context menu / create flow acts on.
@@ -239,11 +283,6 @@ pub(crate) enum Hit {
     VoiceChannel(Id),
     /// Toggle a category's collapsed state.
     CategoryToggle(Id),
-    /// Execute a context-menu / create action.
-    MenuAction {
-        target: MenuTarget,
-        action: MenuAction,
-    },
     /// The "+" create-channel button on a category header.
     AddChannel {
         workspace: Id,
@@ -1081,11 +1120,12 @@ impl ChatApp {
                 self.call = CallState::default();
             }
             "context" => {
-                self.menu = Some(ContextMenu {
-                    target: MenuTarget::Channel("c_frontend".into()),
-                    anchor: Point::new(240.0, 230.0),
-                    items: MenuAction::for_channel().to_vec(),
-                });
+                self.menu = Some(ContextMenu::new(
+                    MenuTarget::Channel("c_frontend".into()),
+                    Point::new(240.0, 230.0),
+                    MenuAction::for_channel().to_vec(),
+                    self.rect,
+                ));
             }
             "call" => {
                 // The expanded full-window call overlay against the demo
@@ -1197,11 +1237,12 @@ impl ChatApp {
                 self.right_flap.snap(false);
                 self.thread_open = None;
                 self.call = CallState::default();
-                self.menu = Some(ContextMenu {
-                    target: MenuTarget::Message("m_me2".into()),
-                    anchor: Point::new(360.0, 300.0),
-                    items: MenuAction::for_message().to_vec(),
-                });
+                self.menu = Some(ContextMenu::new(
+                    MenuTarget::Message("m_me2".into()),
+                    Point::new(360.0, 300.0),
+                    MenuAction::for_message().to_vec(),
+                    self.rect,
+                ));
             }
             _ => {
                 self.thread_open = None;
@@ -3147,8 +3188,9 @@ impl Widget for ChatApp {
         }
 
         // Top-most popovers.
-        if let Some(menu) = self.menu.clone() {
-            self.draw_context_menu(scene, tf, tr, theme, &menu, &mut hits);
+        if let Some(mut menu) = self.menu.take() {
+            menu.widget.draw(scene, tf, tr, theme, presence);
+            self.menu = Some(menu);
         }
         if self.emoji_open {
             self.draw_emoji_picker(scene, tf, tr, theme, &mut hits);
@@ -3304,6 +3346,11 @@ impl Widget for ChatApp {
             children.push(heading);
         }
         children.push(conversation);
+        if let Some(menu) = self.menu.as_ref()
+            && let Some(menu_node) = menu.widget.accessibility()
+        {
+            children.push(menu_node);
+        }
         Some(
             AccessNode::new(Role::Group)
                 .with_name("Chat")
@@ -3346,6 +3393,27 @@ impl Widget for ChatApp {
         state: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
+        if target.starts_with("context-menu:item:") {
+            let Some(mut menu) = self.menu.take() else {
+                return false;
+            };
+            let menu_handled = menu
+                .widget
+                .perform_semantic_action(target, action, state, path);
+            let selection = menu.widget.take_selection();
+            let selected = selection.and_then(|index| menu.items.get(index).copied());
+            let menu_target = menu.target.clone();
+            if menu.widget.is_open() {
+                self.menu = Some(menu);
+            }
+            if let Some(selected) = selected {
+                if self.can_participate() {
+                    self.apply_menu_action(menu_target, selected, state);
+                }
+                return true;
+            }
+            return menu_handled;
+        }
         let hit = self
             .semantic_hits()
             .into_iter()
@@ -3591,6 +3659,18 @@ impl Widget for ChatApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn traps_focus(&self) -> bool {
+        self.menu
+            .as_ref()
+            .is_some_and(|menu| menu.widget.traps_focus())
+    }
+
+    fn modal_capture(&self) -> Option<Rect> {
+        self.menu
+            .as_ref()
+            .and_then(|menu| menu.widget.modal_capture())
     }
 
     fn take_structure_dirty(&mut self) -> bool {

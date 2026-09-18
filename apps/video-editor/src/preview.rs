@@ -920,7 +920,7 @@ mod tests {
         // The drone open (clips[0]) carries seeded effects; strip them and prove
         // adding a grayscale effect desaturates its composite base.
         let cid = p.clips[0].id;
-        p.clip_mut(cid).unwrap().effects.clear();
+        p.clip_mut(cid).unwrap().clear_effects();
         let before = match composite(&p, 6.0) {
             CompositedFrame::Clip { base, .. } => base,
             _ => panic!("expected clip"),
