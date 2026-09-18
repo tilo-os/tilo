@@ -184,18 +184,33 @@ impl WpFormat {
             // bytes.
             WpFormat::Html => {
                 let snap = dr.materialize();
-                Ok(qdoc_html::render_html(&snap, qdoc_html::HtmlOptions::default()).into_bytes())
+                #[cfg(feature = "thin")]
+                let rendered = qdoc::export_html::render_html(
+                    &snap,
+                    qdoc::export_html::HtmlOptions::default(),
+                );
+                #[cfg(not(feature = "thin"))]
+                let rendered = qdoc_html::render_html(&snap, qdoc_html::HtmlOptions::default());
+                Ok(rendered.into_bytes())
             }
             WpFormat::Rtf => {
                 let snap = dr.materialize();
-                Ok(qdoc_rtf::render_rtf(&snap).into_bytes())
+                #[cfg(feature = "thin")]
+                let rendered = qdoc::export_rtf::render_rtf(&snap);
+                #[cfg(not(feature = "thin"))]
+                let rendered = qdoc_rtf::render_rtf(&snap);
+                Ok(rendered.into_bytes())
             }
             // EPUB isn't a `FormatProvider` codec either — it assembles an OCF
             // ZIP container from the materialized snapshot via `qdoc-epub`. Map its
             // error into the shared `CodecError`.
             WpFormat::Epub => {
                 let snap = dr.materialize();
-                qdoc_epub::render_epub(&snap).map_err(|e| qdoc::CodecError::Export(e.to_string()))
+                #[cfg(feature = "thin")]
+                let rendered = qdoc::export_epub::render_epub(&snap);
+                #[cfg(not(feature = "thin"))]
+                let rendered = qdoc_epub::render_epub(&snap);
+                rendered.map_err(|e| qdoc::CodecError::Export(e.to_string()))
             }
         }
     }

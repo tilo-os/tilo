@@ -2557,6 +2557,12 @@ impl App {
             resource: resource.id.as_str().to_owned(),
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),
+            resource_presentation_json: resource
+                .presentation
+                .as_ref()
+                .filter(|presentation| presentation.is_valid())
+                .and_then(|presentation| serde_json::to_string(presentation).ok())
+                .unwrap_or_default(),
             action: None,
             descriptor: None,
             has_children: may_descend
@@ -2579,6 +2585,7 @@ impl App {
             resource: resource.id.as_str().to_owned(),
             resource_kind: exported.resource_kind.clone(),
             resource_label: exported.resource_label.clone(),
+            resource_presentation_json: String::new(),
             action: Some(action_id.to_owned()),
             descriptor: Some(exported.clone()),
             has_children: false,
@@ -2717,6 +2724,7 @@ impl App {
                 + row.resource.len()
                 + row.resource_kind.len()
                 + row.resource_label.len()
+                + row.resource_presentation_json.len()
                 + row.action.as_ref().map_or(0, String::len)
                 + row.visibility_action.as_ref().map_or(0, String::len)
                 + row.visibility_contract_json.len()
