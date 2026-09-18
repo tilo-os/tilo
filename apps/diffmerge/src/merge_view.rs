@@ -46,11 +46,11 @@ const CHIP_FONT_SIZE: f32 = 11.5;
 const COMPACT_SOURCE_FONT_SIZE: f32 = 12.0;
 const MERGED_HEADER_FONT_SIZE: f32 = 13.0;
 const GUTTER_FONT_SIZE: f32 = 11.0;
-/// Chip label padding and inter-chip gap for the wide and compact layouts.
+/// Chip label padding for the wide and compact layouts. The inter-chip gap
+/// is a spacing step read from the theme at the use site (`s2` wide, `s1`
+/// compact — HIG §7b siblings in a dense row).
 const CHIP_PAD_X: f64 = 8.0;
 const CHIP_PAD_X_COMPACT: f64 = 7.0;
-const CHIP_GAP: f64 = 6.0;
-const CHIP_GAP_COMPACT: f64 = 4.0;
 /// Minimum x where compact chips start (after the status label).
 const COMPACT_CHIPS_X: f64 = 64.0;
 /// Minimum merged-band line-number gutter.
@@ -610,7 +610,7 @@ impl MergeView {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                c.border_standard,
+                ui::surface::edge_on(c.surfaces.raised),
                 None,
                 &Line::new(Point::new(x, band_top), Point::new(x, band_bot)),
             );
@@ -725,10 +725,11 @@ impl MergeView {
             (HunkChoice::Theirs, c.semantic.info),
             (HunkChoice::Both, c.text_dim),
         ];
+        let sp = &theme.tokens.spacing;
         let (pad_x, gap) = if compact {
-            (CHIP_PAD_X_COMPACT, CHIP_GAP_COMPACT)
+            (CHIP_PAD_X_COMPACT, f64::from(sp.s1))
         } else {
-            (CHIP_PAD_X, CHIP_GAP)
+            (CHIP_PAD_X, f64::from(sp.s2))
         };
 
         // Status label on the left. On a phone, keep this semantically distinct
@@ -813,8 +814,10 @@ impl MergeView {
                 None,
                 &rr,
             );
+            // A selected chip is filled in its hue; the label takes the ink
+            // that reads on that hue rather than a fixed near-black.
             let text_col = if selected {
-                Color::from_rgb8(10, 14, 22)
+                c.on_surface(col).ink
             } else {
                 col
             };
@@ -1421,6 +1424,15 @@ fn draw_header(
 ) {
     let c = &theme.tokens.colors;
     scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &col);
+    // The header band's top edge, derived against the band itself, so the
+    // raised header reads as a surface above the raised source columns.
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        ui::surface::edge_on(c.surfaces.raised),
+        None,
+        &Rect::new(col.x0, col.y0, col.x1, col.y0 + 1.0),
+    );
     // Accent underline keyed to the column role.
     let underline = Rect::new(col.x0, col.y1 - 2.0, col.x1, col.y1);
     scene.fill(Fill::NonZero, transform, accent, None, &underline);

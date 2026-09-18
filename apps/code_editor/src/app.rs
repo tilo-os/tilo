@@ -43,7 +43,7 @@ use std::time::{Duration, Instant};
 use automerge::ReadDoc;
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::style_helpers::length;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{Dimension, LengthPercentageAuto, NodeId, Size, Style, TaffyTree};
 use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -140,9 +140,13 @@ impl Widget for BottomPanelToggle {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // Centred in the chrome bar an `s1` clear of its top and of the
+        // editor below (HIG §7: nothing touches), instead of a full-height
+        // slab whose bottom edge shared pixels with the content.
+        let inset = theme.tokens.spacing.s1;
         #[allow(
             clippy::unwrap_used,
             reason = "inserting one fixed leaf into the app-owned layout tree is infallible unless the taffy arena is already corrupted"
@@ -151,7 +155,13 @@ impl Widget for BottomPanelToggle {
             .new_leaf(Style {
                 size: Size {
                     width: Dimension::length(PANEL_TOGGLE_W),
-                    height: Dimension::length(EDITOR_CHROME_H),
+                    height: Dimension::length(EDITOR_CHROME_H - 2.0 * inset),
+                },
+                margin: taffy::Rect {
+                    left: LengthPercentageAuto::length(0.0),
+                    right: LengthPercentageAuto::length(0.0),
+                    top: LengthPercentageAuto::length(inset),
+                    bottom: LengthPercentageAuto::length(inset),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
@@ -1096,11 +1106,12 @@ impl CodeApp {
             c.surfaces.raised
         };
         scene.fill(Fill::NonZero, transform, bg, None, &rect);
-        // Right divider, matching the tab bar's seams.
+        // Right divider, matching the tab bar's seams; derived against the
+        // face it closes so it stays visible on the dark preset.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            c.border_standard,
+            ui::surface::edge_on(bg),
             None,
             &Line::new(
                 Point::new(rect.x1, rect.y0 + 6.0),
@@ -1115,7 +1126,7 @@ impl CodeApp {
         let line_color = if self.sidebar_open() {
             c.text_primary
         } else {
-            c.neutral[8]
+            c.text_dim
         };
         let stroke = Stroke::new(1.6);
         for dy in [-5.0, 0.0, 5.0] {
@@ -5697,11 +5708,22 @@ mod tests {
             .get("code.bottom-panel-toggle")
             .copied()
             .expect("retained dock trigger");
-        assert_eq!(
-            trigger.y0, tabs.y0,
-            "trigger stays in the existing chrome row"
+        // The trigger stays in the chrome row, centred an `s1` clear of the
+        // row's top and of the editor below it (HIG §7: nothing touches), so
+        // it neither spans the full bar nor shares pixels with the content.
+        let inset = f64::from(ui::theme::Theme::dark().tokens.spacing.s1);
+        assert!(
+            (trigger.y0 - (tabs.y0 + inset)).abs() < 0.01,
+            "trigger stays in the existing chrome row, inset s1: {} vs {}",
+            trigger.y0,
+            tabs.y0
         );
-        assert_eq!(trigger.height(), tabs.height());
+        assert!(
+            (trigger.height() - (tabs.height() - 2.0 * inset)).abs() < 0.01,
+            "trigger is the chrome row minus the s1 insets: {} vs {}",
+            trigger.height(),
+            tabs.height()
+        );
         assert!(
             tabs.x1 <= trigger.x0,
             "tab pills and dock trigger must not overlap"
@@ -5790,8 +5812,12 @@ mod tests {
             "open panel stays inside the resized viewport"
         );
         assert_eq!(panel_standard.height(), panel_narrow.height());
-        assert_eq!(trigger_standard.y0, tabs_standard.y0);
-        assert_eq!(trigger_standard.height(), tabs_standard.height());
+        // Same inset geometry after the resize: in the chrome row, `s1` clear
+        // of its top and of the editor.
+        assert!((trigger_standard.y0 - (tabs_standard.y0 + inset)).abs() < 0.01);
+        assert!(
+            (trigger_standard.height() - (tabs_standard.height() - 2.0 * inset)).abs() < 0.01
+        );
         assert!(tabs_standard.x1 <= trigger_standard.x0);
         let resized_snapshot = driver.inspection();
         let resized_trigger = trigger_semantics(&resized_snapshot);
