@@ -7269,6 +7269,47 @@ fn reviewed_restore_case(boundary: u8) {
                         }),
                 )
                 .unwrap();
+                let prior = store.load_baseline(record.id).unwrap();
+                let prior_attention = store
+                    .selected_attention(record.id, &format::NativePath::from(proposal.path.clone()))
+                    .unwrap();
+                let probe = BaselineAppendProbe {
+                    generation: store.current.generation,
+                    checkpoint: true,
+                    reject_call: 1,
+                    calls: std::cell::Cell::new(0),
+                };
+                store.overlay_bytes = 9 * 1024 * 1024;
+                assert!(matches!(
+                    store.append_checked_with_baseline(
+                        Change::BaselineCommit {
+                            connection: record.id.0,
+                            expected: equality.revision(),
+                            root,
+                            count: 2,
+                            source: record.source.identity.into(),
+                            destination: record.destination.identity.into(),
+                            initial_review: false,
+                        },
+                        RecoveryChecks {
+                            mode: VerificationMode::NativeLive(&payer),
+                            ..RecoveryChecks::default()
+                        },
+                        BaselineAppendCheck::Host(&probe)
+                    ),
+                    Err(StoreError::RecoveryRequired)
+                ));
+                assert_eq!(probe.calls.get(), 1);
+                assert_eq!(store.load_baseline(record.id).unwrap(), prior);
+                assert_eq!(
+                    store
+                        .selected_attention(
+                            record.id,
+                            &format::NativePath::from(proposal.path.clone())
+                        )
+                        .unwrap(),
+                    prior_attention
+                );
                 store
                     .append_native(
                         Change::BaselineCommit {
@@ -10361,4 +10402,153 @@ fn native_executor_reviewed_nested_initial_requires_baseline_ancestor_before_int
             .entries
             .is_empty()
     );
+}
+
+// Store-ordering instrumentation only. This cannot construct native evidence.
+pub(super) struct BaselineAppendProbe {
+    generation: u64,
+    checkpoint: bool,
+    reject_call: usize,
+    calls: std::cell::Cell<usize>,
+}
+impl BaselineAppendProbe {
+    pub(super) fn validate(&self, store: &ConnectionStore) -> Result<(), StoreError> {
+        self.calls.set(self.calls.get() + 1);
+        self.assert_preparation_finished(store);
+        if self.calls.get() == self.reject_call {
+            Err(StoreError::RecoveryRequired)
+        } else {
+            Ok(())
+        }
+    }
+    fn assert_preparation_finished(&self, store: &ConnectionStore) {
+        assert_eq!(
+            store.current.generation > self.generation,
+            self.checkpoint,
+            "final proof must run after any actual checkpoint and second reduction"
+        );
+    }
+}
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep pre-write refusal, healthy control and post-fsync durable-error assertions under the same actual checkpoint and second-reduction setup."
+)]
+fn native_baseline_final_validation_refuses_before_event_after_checkpoint_preparation() {
+    for checkpoint in [false, true] {
+        for reject_call in [1, 0, 2] {
+            let (_temp, path) = fixture();
+            let mut store = ConnectionStore::open_at(&path).unwrap();
+            let record = create(&mut store, 790);
+            commit_test_baseline(&mut store, record.id);
+            let baseline = store.load_baseline(record.id).unwrap();
+            let record = store.load_connection(record.id).unwrap();
+            let cancel = AtomicBool::new(false);
+            let live = native_verified_addition_facts(&mut store, &record, b"second", &cancel);
+            let payer = store
+                .native_read_context(
+                    &live,
+                    std::time::Instant::now() + std::time::Duration::from_secs(30),
+                    &cancel,
+                )
+                .unwrap();
+            let root = storage::build_pages(
+                &store.storage,
+                [b"file".as_slice(), b"second".as_slice()]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ordinal, path)| {
+                        Ok(Row::Baseline(format::BaselineEntry {
+                            connection: record.id.0,
+                            revision: live.revision + 1,
+                            ordinal: u32::try_from(ordinal).unwrap(),
+                            path: format::NativePath::Unix(path.to_vec()),
+                            state: format::State::File {
+                                sha256: [7; 32],
+                                bytes: 3,
+                                executable: false,
+                            },
+                        }))
+                    }),
+            )
+            .unwrap();
+            let before = store.load_connection(record.id).unwrap();
+            let operation = store.operation(live.id()).unwrap();
+            let probe = BaselineAppendProbe {
+                generation: store.current.generation,
+                checkpoint,
+                reject_call,
+                calls: std::cell::Cell::new(0),
+            };
+            if checkpoint {
+                store.overlay_bytes = 9 * 1024 * 1024;
+            }
+            let result = store.append_checked_with_baseline(
+                Change::BaselineCommit {
+                    connection: record.id.0,
+                    expected: live.revision,
+                    root,
+                    count: 2,
+                    source: record.source.identity.into(),
+                    destination: record.destination.identity.into(),
+                    initial_review: false,
+                },
+                RecoveryChecks {
+                    mode: VerificationMode::NativeLive(&payer),
+                    ..RecoveryChecks::default()
+                },
+                BaselineAppendCheck::Host(&probe),
+            );
+            if reject_call == 2 {
+                assert!(matches!(result, Err(StoreError::RecoveryRequired)));
+                assert_eq!(probe.calls.get(), 2);
+                assert!(
+                    store.validate().is_err(),
+                    "post-write failure must poison this owner"
+                );
+            } else if reject_call == 1 {
+                assert!(
+                    matches!(result, Err(StoreError::RecoveryRequired)),
+                    "a final proof refusal must prevent the BaselineCommit event"
+                );
+                assert_eq!(store.load_connection(record.id).unwrap(), before);
+                assert_eq!(store.operation(live.id()).unwrap(), operation);
+                assert_eq!(store.load_baseline(record.id).unwrap(), baseline);
+                assert_eq!(probe.calls.get(), 1);
+            } else {
+                result.unwrap();
+                assert_eq!(
+                    store
+                        .load_baseline(record.id)
+                        .unwrap()
+                        .entries()
+                        .unwrap()
+                        .len(),
+                    2
+                );
+                assert_eq!(
+                    probe.calls.get(),
+                    2,
+                    "recheck while proof owners remain held through fsync"
+                );
+            }
+            drop(store);
+            let reopened = ConnectionStore::open_at(&path).unwrap();
+            if reject_call == 1 {
+                assert_eq!(reopened.load_connection(record.id).unwrap(), before);
+                assert_eq!(reopened.load_baseline(record.id).unwrap(), baseline);
+                assert_eq!(reopened.operation(live.id()).unwrap(), operation);
+            } else {
+                assert_eq!(
+                    reopened
+                        .load_baseline(record.id)
+                        .unwrap()
+                        .entries()
+                        .unwrap()
+                        .len(),
+                    2
+                );
+            }
+        }
+    }
 }

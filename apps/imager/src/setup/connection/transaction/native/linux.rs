@@ -80,13 +80,40 @@ mod tests {
         verify_selected_write(&endpoint).unwrap();
         endpoint
     }
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum BaselineFault {
+        Healthy,
+        Receiver,
+        Root,
+    }
+    #[derive(Clone, Copy)]
+    struct BaselineCase {
+        checkpoint: bool,
+        fault: BaselineFault,
+    }
     #[test]
     #[ignore = "authorized Linux filesystem and helper required; execution remains UNRUN"]
+    fn native_conflicts_preserve_actual_edit_edit_and_edit_delete_without_publication() {
+        conflict_selected_cases(None);
+    }
+    #[test]
+    #[ignore = "authorized Linux filesystem and helper required; execution remains UNRUN"]
+    fn native_baseline_commit_rechecks_native_proof_after_preparation() {
+        for checkpoint in [false, true] {
+            for fault in [
+                BaselineFault::Healthy,
+                BaselineFault::Receiver,
+                BaselineFault::Root,
+            ] {
+                conflict_selected_cases(Some(BaselineCase { checkpoint, fault }));
+            }
+        }
+    }
     #[expect(
         clippy::too_many_lines,
         reason = "Keep real-state boundary setup, continuation/refusal and exact retained-byte assertions together."
     )]
-    fn native_conflicts_preserve_actual_edit_edit_and_edit_delete_without_publication() {
+    fn conflict_selected_cases(baseline_case: Option<BaselineCase>) {
         use crate::setup::connection::{
             model::{Conflict, Decision, EntryState},
             store::{
@@ -128,6 +155,7 @@ mod tests {
                     .take(if restart == 0 { 74 } else { 1 })
                     .map(move |resume| (absent, restart, reverse, resume))
             })
+            .filter(|case| baseline_case.is_none() || *case == (None, 0, false, 0))
         {
             let tree = fixture();
             let paths = [tree.path().join("left"), tree.path().join("right")];
@@ -1087,6 +1115,9 @@ mod tests {
                         drop(restore);
                         drop(store);
                         store = ConnectionStore::open_at(&tree.path().join("store")).unwrap();
+                        // This old session is retained solely to assert that the
+                        // subsequently closed gate cannot admit active work.
+                        let session = store.transaction_session(record.id).unwrap();
                         let current = store.load_connection(record.id).unwrap();
                         let fence = if stopped {
                             Some(
@@ -1108,8 +1139,11 @@ mod tests {
                                 &cancel,
                             )
                             .unwrap();
-                        let session = store.transaction_session(record.id).unwrap();
                         if let Some(fence) = fence {
+                            assert!(matches!(
+                                store.transaction_session(record.id),
+                                Err(StoreError::Disconnected)
+                            ));
                             assert!(
                                 NativeEpoch::recover_selected_tombstone(
                                     &mut store,
@@ -1500,12 +1534,22 @@ mod tests {
                 }
                 if (35..45).contains(&restore_restart) {
                     let reserved = if matches!(restore_restart, 36 | 38..=44) {
-                        Some(
-                            store
-                                .reserve_native_namespace(&mut live, target)
-                                .unwrap()
-                                .name(),
+                        let mut proof = NativeEpoch::selected_restore(
+                            &mut store,
+                            &live,
+                            &endpoints[0],
+                            &endpoints[1],
+                            &cancel,
                         )
+                        .unwrap();
+                        let reservation = store
+                            .reserve_selected_namespace(&mut live, &mut proof)
+                            .unwrap();
+                        proof.validate(&store, &live).unwrap();
+                        let name = reservation.name();
+                        assert!(!paths[target_index].join(&name).exists());
+                        drop(proof);
+                        Some(name)
                     } else {
                         None
                     };
@@ -2871,9 +2915,128 @@ mod tests {
                 let candidate = store
                     .prepare_baseline(&equal, &mut compared, &cancel)
                     .unwrap();
-                store
-                    .commit_baseline(&mut equal, candidate, &mut compared, &cancel)
-                    .unwrap();
+                if let Some(case) = baseline_case {
+                    let before = store.load_connection(record.id).unwrap();
+                    let old_conflict = store.conflict_record(conflict.id).unwrap();
+                    let attention = store
+                        .selected_attention_snapshot_for_test(record.id)
+                        .unwrap();
+                    assert!(!attention.is_empty());
+                    let receipts = store.pending_page(record.id, None, 128).unwrap().entries;
+                    let private = store.recovery_page(record.id, None, 128).unwrap().entries;
+                    let private_bytes: Vec<_> = private
+                        .iter()
+                        .map(|entry| {
+                            let path = tree
+                                .path()
+                                .join("store/recovery")
+                                .join("5d".repeat(16))
+                                .join(format!("{}-{}", entry.id.operation.serial, entry.id.slot));
+                            let bytes = std::fs::read(&path).unwrap();
+                            (path, bytes)
+                        })
+                        .collect();
+                    let generation = store.baseline_checkpoint_generation_for_test();
+                    if case.checkpoint {
+                        store.force_baseline_checkpoint_for_test();
+                    }
+                    let invoked = std::rc::Rc::new(std::cell::Cell::new(false));
+                    let called = invoked.clone();
+                    let root = paths[1].clone();
+                    let retained = tree.path().join("retained-baseline-root");
+                    let moved = retained.clone();
+                    let bytes = selected_bytes.to_vec();
+                    crate::setup::connection::store::before_native_baseline_write_for_test(
+                        case.fault == BaselineFault::Receiver,
+                        move || {
+                            called.set(true);
+                            if case.fault == BaselineFault::Root {
+                                std::fs::rename(&root, &moved).unwrap();
+                                std::fs::create_dir(&root).unwrap();
+                                std::fs::write(root.join("file"), bytes).unwrap();
+                            }
+                        },
+                    );
+                    let result =
+                        store.commit_baseline(&mut equal, candidate, &mut compared, &cancel);
+                    assert!(
+                        invoked.get(),
+                        "fault must occur after actual append preparation"
+                    );
+                    assert_eq!(
+                        store.baseline_checkpoint_generation_for_test() > generation,
+                        case.checkpoint
+                    );
+                    if case.fault != BaselineFault::Healthy {
+                        assert!(result.is_err());
+                        assert_eq!(store.load_connection(record.id).unwrap(), before);
+                        assert_eq!(store.conflict_record(conflict.id).unwrap(), old_conflict);
+                        assert_eq!(
+                            store
+                                .selected_attention_snapshot_for_test(record.id)
+                                .unwrap(),
+                            attention
+                        );
+                        assert_eq!(
+                            store.pending_page(record.id, None, 128).unwrap().entries,
+                            receipts
+                        );
+                        drop(compared);
+                        drop(evidence);
+                        store.checkpoint().unwrap();
+                        drop(store);
+                        let store = ConnectionStore::open_at(&tree.path().join("store")).unwrap();
+                        assert_eq!(store.load_connection(record.id).unwrap(), before);
+                        assert_eq!(store.conflict_record(conflict.id).unwrap(), old_conflict);
+                        assert_eq!(
+                            store
+                                .selected_attention_snapshot_for_test(record.id)
+                                .unwrap(),
+                            attention
+                        );
+                        assert_eq!(
+                            store.pending_page(record.id, None, 128).unwrap().entries,
+                            receipts
+                        );
+                        assert_eq!(
+                            store.recovery_page(record.id, None, 128).unwrap().entries,
+                            private
+                        );
+                        assert_eq!(
+                            store
+                                .load_baseline(record.id)
+                                .unwrap()
+                                .entries()
+                                .unwrap()
+                                .get(&RelativePath::unix(b"file").unwrap()),
+                            Some(&baseline_value)
+                        );
+                        for (path, bytes) in private_bytes {
+                            assert_eq!(std::fs::read(path).unwrap(), bytes);
+                        }
+                        for path in &paths {
+                            assert_eq!(std::fs::read(path.join("file")).unwrap(), selected_bytes);
+                        }
+                        if case.fault == BaselineFault::Root {
+                            assert_eq!(
+                                std::fs::read(retained.join("file")).unwrap(),
+                                selected_bytes
+                            );
+                        }
+                        continue;
+                    }
+                    result.unwrap();
+                    assert!(
+                        store
+                            .selected_attention_snapshot_for_test(record.id)
+                            .unwrap()
+                            .is_empty()
+                    );
+                } else {
+                    store
+                        .commit_baseline(&mut equal, candidate, &mut compared, &cancel)
+                        .unwrap();
+                }
                 assert!(store.conflict_record(conflict.id).unwrap().resolved);
                 assert_eq!(
                     store
@@ -10254,6 +10417,11 @@ fn observe_comparison(
     Ok(source.entries().get(path).cloned())
 }
 impl super::CompletionEvidence for super::NativeOutcome<'_, '_> {
+    #[cfg(test)]
+    fn revoke_for_test(&mut self) {
+        self.epoch.leases.revoke();
+    }
+
     fn fresh(
         &mut self,
         store: &crate::setup::connection::store::ConnectionStore,
@@ -10270,6 +10438,11 @@ impl super::CompletionEvidence for super::NativeOutcome<'_, '_> {
     }
 }
 impl super::CompletionEvidence for super::NativeDeletion<'_, '_> {
+    #[cfg(test)]
+    fn revoke_for_test(&mut self) {
+        self.epoch.leases.revoke();
+    }
+
     fn fresh(
         &mut self,
         store: &crate::setup::connection::store::ConnectionStore,
@@ -10322,6 +10495,11 @@ impl super::NativeDeletion<'_, '_> {
     }
 }
 impl super::VerifiedComparison<'_> {
+    #[cfg(test)]
+    pub(in crate::setup::connection) fn revoke_for_test(&mut self) {
+        self.evidence.revoke_for_test();
+    }
+
     pub(in crate::setup::connection) fn validate(
         &mut self,
         store: &crate::setup::connection::store::ConnectionStore,
@@ -12047,6 +12225,11 @@ impl super::NativeEquality<'_> {
     }
 }
 impl super::CompletionEvidence for super::NativeEquality<'_> {
+    #[cfg(test)]
+    fn revoke_for_test(&mut self) {
+        self.epoch.leases.revoke();
+    }
+
     fn fresh(
         &mut self,
         store: &crate::setup::connection::store::ConnectionStore,
@@ -12580,13 +12763,14 @@ mod never_begun_tests {
         reason = "Keep real-state boundary setup, continuation/refusal and exact retained-byte assertions together."
     )]
     fn case(reverse: bool, reserved: bool, disconnect: bool, damage: u8) {
+        let leaf = if damage == 0 { "file" } else { "folder/file" };
         let tree = tests::fixture();
         let source_path = tree.path().join("source");
         let target_path = tree.path().join("target");
         for path in [&source_path, &target_path] {
             std::fs::create_dir_all(path.join("folder")).unwrap();
         }
-        std::fs::write(source_path.join("folder/file"), b"proposal").unwrap();
+        std::fs::write(source_path.join(leaf), b"proposal").unwrap();
         let source_endpoint = tests::endpoint(&source_path);
         let target_endpoint = tests::endpoint(&target_path);
         let binding = |path: &std::path::Path| {
@@ -12632,7 +12816,7 @@ mod never_begun_tests {
             connection: record.id,
             expected_revision: record.revision,
             expected_baseline: None,
-            path: RelativePath::unix(b"folder/file").unwrap(),
+            path: RelativePath::unix(leaf.as_bytes()).unwrap(),
             source_before,
             destination_before,
             decision: Decision::Propagate { from },
@@ -12668,12 +12852,8 @@ mod never_begun_tests {
         drop(session);
         match damage {
             1 => {
-                std::fs::rename(
-                    source_path.join("folder/file"),
-                    source_path.join("retained"),
-                )
-                .unwrap();
-                std::fs::write(source_path.join("folder/file"), b"proposal").unwrap();
+                std::fs::rename(source_path.join(leaf), source_path.join("retained")).unwrap();
+                std::fs::write(source_path.join(leaf), b"proposal").unwrap();
             }
             2 => {
                 std::fs::rename(
@@ -12682,7 +12862,7 @@ mod never_begun_tests {
                 )
                 .unwrap();
                 std::fs::create_dir(source_path.join("folder")).unwrap();
-                std::fs::write(source_path.join("folder/file"), b"proposal").unwrap();
+                std::fs::write(source_path.join(leaf), b"proposal").unwrap();
             }
             3 => {
                 std::fs::rename(
@@ -12741,17 +12921,14 @@ mod never_begun_tests {
                     .entries()
                     .is_none()
             );
-            assert!(!target_path.join("folder/file").exists());
+            assert!(!target_path.join(leaf).exists());
             match damage {
                 1 => {
                     assert_eq!(
                         std::fs::read(source_path.join("retained")).unwrap(),
                         b"proposal"
                     );
-                    assert_eq!(
-                        std::fs::read(source_path.join("folder/file")).unwrap(),
-                        b"proposal"
-                    );
+                    assert_eq!(std::fs::read(source_path.join(leaf)).unwrap(), b"proposal");
                 }
                 2 | 3 => {
                     assert_eq!(
@@ -12759,16 +12936,10 @@ mod never_begun_tests {
                         b"proposal"
                     );
                     if damage == 2 {
-                        assert_eq!(
-                            std::fs::read(source_path.join("folder/file")).unwrap(),
-                            b"proposal"
-                        );
+                        assert_eq!(std::fs::read(source_path.join(leaf)).unwrap(), b"proposal");
                     }
                 }
-                _ => assert_eq!(
-                    std::fs::read(source_path.join("folder/file")).unwrap(),
-                    b"proposal"
-                ),
+                _ => assert_eq!(std::fs::read(source_path.join(leaf)).unwrap(), b"proposal"),
             }
             if damage == 4 {
                 assert_eq!(
@@ -12810,11 +12981,8 @@ mod never_begun_tests {
                     .entries()
                     .is_none()
             );
-            assert!(!target_path.join("folder/file").exists());
-            assert_eq!(
-                std::fs::read(source_path.join("folder/file")).unwrap(),
-                b"proposal"
-            );
+            assert!(!target_path.join(leaf).exists());
+            assert_eq!(std::fs::read(source_path.join(leaf)).unwrap(), b"proposal");
             assert_eq!(
                 store.pending_page(id.connection, None, 8).unwrap().entries[0].stage,
                 ReceiptStage::AccountedPending
@@ -12878,14 +13046,8 @@ mod never_begun_tests {
         store
             .commit_baseline(&mut live, candidate, &mut comparison, &cancel)
             .unwrap();
-        assert_eq!(
-            std::fs::read(source_path.join("folder/file")).unwrap(),
-            b"proposal"
-        );
-        assert_eq!(
-            std::fs::read(target_path.join("folder/file")).unwrap(),
-            b"proposal"
-        );
+        assert_eq!(std::fs::read(source_path.join(leaf)).unwrap(), b"proposal");
+        assert_eq!(std::fs::read(target_path.join(leaf)).unwrap(), b"proposal");
         assert_eq!(
             store
                 .load_baseline(id.connection)
