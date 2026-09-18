@@ -1,5 +1,6 @@
 """Offline kernel7864 recipe derivation and admitted checkpoint restoration."""
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -111,12 +112,35 @@ def replace_prepared(root, replacement):
     require(root.is_dir() and not root.is_symlink() and root.resolve()==root,
             'prepared source path changed')
     require(replacement.is_dir() and not replacement.is_symlink(), 'replacement changed')
+    require(replacement.resolve()==replacement and root.parent in (replacement.parent,replacement.parent.parent)
+            and replacement!=root and root not in replacement.parents,
+            'replacement must be in owned temporary sibling directory')
     backup=root.with_name(root.name+'.before-resume')
     require(not backup.exists() and not backup.is_symlink(),'prior restore exists')
-    root.rename(backup)
+    try: root.rename(backup)
+    except OSError as error:
+        if error.errno != errno.EXDEV: raise
+        # OverlayFS may refuse renaming a lower-layer directory. Copy the entire
+        # prepared tree first; do not use shutil.move, whose copy/remove fallback
+        # can leave the only original partially removed when an operation fails.
+        try: shutil.copytree(root,backup,symlinks=True,copy_function=shutil.copy2)
+        except BaseException:
+            if backup.exists(): shutil.rmtree(backup)
+            raise
+        try: shutil.rmtree(root)
+        except BaseException:
+            # Preserve the complete backup if even removal/rollback cannot finish.
+            try:
+                if root.exists(): shutil.rmtree(root)
+                backup.rename(root)
+            except BaseException as rollback_error:
+                raise RuntimeError('prepared source rollback failed; complete backup retained at '+str(backup)) from rollback_error
+            raise
     try: replacement.rename(root)
     except BaseException:
-        backup.rename(root)
+        try: backup.rename(root)
+        except BaseException as rollback_error:
+            raise RuntimeError('prepared source rollback failed; complete backup retained at '+str(backup)) from rollback_error
         raise
     require(backup.parent==root.parent and backup.name==root.name+'.before-resume'
             and backup.resolve()==backup and backup.is_dir() and not backup.is_symlink(),

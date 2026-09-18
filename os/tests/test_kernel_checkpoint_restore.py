@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import unittest
 import hashlib
+import errno
 import json
 import tarfile
 import io
@@ -70,6 +71,62 @@ class Restoration(unittest.TestCase):
     with self.assertRaises(OSError):m.replace_prepared(root,new)
    self.assertEqual((root/'old').read_text(),'old')
    self.assertFalse(root.with_name('source.before-resume').exists())
+ def test_overlay_exdev_success_and_failed_install_rollback(self):
+  for fail_install in (False,True):
+   with self.subTest(fail_install=fail_install), tempfile.TemporaryDirectory() as d:
+    parent=Path(d);root=parent/'source';root.mkdir();(root/'old').write_bytes(b'original')
+    (root/'link').symlink_to('old');stamp=1700000000123456789
+    import os
+    os.utime(root/'old',ns=(stamp,stamp));os.chmod(root/'old',0o640)
+    new=parent/'new';new.mkdir();(new/'valid').write_bytes(b'verified')
+    rename=Path.rename
+    def overlay_rename(path,target):
+     if path==root:raise OSError(errno.EXDEV,'lower overlay directory')
+     if path==new and fail_install:raise OSError(errno.EIO,'injected install failure')
+     return rename(path,target)
+    with patch.object(Path,'rename',overlay_rename):
+     if fail_install:
+      with self.assertRaises(OSError):m.replace_prepared(root,new)
+     else:m.replace_prepared(root,new)
+    self.assertFalse(parent.joinpath('source.before-resume').exists())
+    if fail_install:
+     self.assertEqual((root/'old').read_bytes(),b'original')
+     self.assertEqual((root/'old').stat().st_mtime_ns,stamp)
+     self.assertEqual((root/'old').stat().st_mode&0o777,0o640)
+     self.assertTrue((root/'link').is_symlink())
+    else:self.assertEqual((root/'valid').read_bytes(),b'verified')
+ def test_overlay_copy_failure_preserves_original(self):
+  with tempfile.TemporaryDirectory() as d:
+   parent=Path(d);root=parent/'source';root.mkdir();(root/'old').write_text('original')
+   new=parent/'new';new.mkdir()
+   with patch.object(Path,'rename',side_effect=OSError(errno.EXDEV,'overlay')), patch.object(m.shutil,'copytree',side_effect=OSError(errno.ENOSPC,'full')):
+    with self.assertRaises(OSError):m.replace_prepared(root,new)
+   self.assertEqual((root/'old').read_text(),'original')
+ def test_overlay_rollback_failure_retains_complete_backup(self):
+  with tempfile.TemporaryDirectory() as d:
+   parent=Path(d);root=parent/'source';root.mkdir();(root/'old').write_text('original')
+   new=parent/'new';new.mkdir()
+   def failing_rename(path,target):
+    raise OSError(errno.EXDEV if path==root else errno.EIO,'injected')
+   with patch.object(Path,'rename',failing_rename):
+    with self.assertRaisesRegex(RuntimeError,'complete backup retained'):m.replace_prepared(root,new)
+   self.assertEqual((parent/'source.before-resume/old').read_text(),'original')
+ def test_overlay_partial_removal_failure_restores_complete_original(self):
+  with tempfile.TemporaryDirectory() as d:
+   parent=Path(d);root=parent/'source';root.mkdir();(root/'old').write_text('original');(root/'other').write_text('other')
+   new=parent/'new';new.mkdir();rename=Path.rename;rmtree=m.shutil.rmtree;failed=False
+   def overlay_rename(path,target):
+    if path==root:raise OSError(errno.EXDEV,'overlay')
+    return rename(path,target)
+   def partial_remove(path,*a,**kw):
+    nonlocal failed
+    if path==root and not failed:
+     failed=True;(root/'old').unlink();raise OSError(errno.EIO,'partial source removal')
+    return rmtree(path,*a,**kw)
+   with patch.object(Path,'rename',overlay_rename),patch.object(m.shutil,'rmtree',partial_remove):
+    with self.assertRaises(OSError):m.replace_prepared(root,new)
+   self.assertEqual((root/'old').read_text(),'original')
+   self.assertEqual((root/'other').read_text(),'other')
  def test_toolchain_requires_actual_rpm_inventory(self):
   expected={'rpm_nevras':['fixture-0:1-1.aarch64'],'rpm_nevras_sha256':hashlib.sha256(b'fixture-0:1-1.aarch64\n').hexdigest(),'executables':[]}
   with self.assertRaisesRegex(ValueError,'installed RPM'):
