@@ -23,6 +23,8 @@ containerfile="$repo/os/Containerfile"
 # login chain without exposing an unfiltered interface, and
 # the packaged-app external AT-SPI client and installed-app accessibility gate,
 # the build-only residual OpenSSL ABI package gate (removed after it runs).
+# The redundant model-storage oneshot is now absent; systemd provisions the
+# model and gateway directories directly without a helper on socket activation.
 # Rustls now compiles the fixed CA-bundle path
 # into its loader, so the former systemd environment override is absent. Sorting
 # intentionally ignores instruction order:
@@ -30,7 +32,7 @@ containerfile="$repo/os/Containerfile"
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=3a1c238a191949d6fa11d88b754a5feab7f5925991a4bf8cbbacfd0e3c5bbede
+expected_contract=a35e3107b8ca6eb589a41787651c8e4e45680a8201a17e919f110d84c5fb3939
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
