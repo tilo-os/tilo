@@ -9845,12 +9845,24 @@ impl Widget for WordProcessorWidget {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
-            } => self.handle_right_press(state, tb_h, handled),
+            } => {
+                let was_handled = *handled;
+                self.handle_right_press(state, tb_h, handled);
+                if !was_handled && self.focused && self.rect.contains(self.pointer) {
+                    *focus_target = Some(node_id);
+                }
+            },
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => self.handle_left_press(state, tb_h, shift, ctrl, handled),
+            } => {
+                let was_handled = *handled;
+                self.handle_left_press(state, tb_h, shift, ctrl, handled);
+                if !was_handled && self.focused && self.rect.contains(self.pointer) {
+                    *focus_target = Some(node_id);
+                }
+            },
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,

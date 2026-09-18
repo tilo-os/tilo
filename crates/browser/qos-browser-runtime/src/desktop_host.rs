@@ -642,6 +642,185 @@ mod tests {
         );
         (root, handle, cache)
     }
+    fn browser_semantic_route(frame: &ui::headless::FrameHarness, label: &str) -> (String, String) {
+        fn find(node: &ui::headless::InspectionNode, label: &str) -> Option<(String, String)> {
+            fn target(node: &ui::a11y::AccessNode, label: &str) -> Option<String> {
+                if node.name.as_deref() == Some(label) {
+                    return node.action_target.clone();
+                }
+                node.children.iter().find_map(|node| target(node, label))
+            }
+            if let Some(target) = node.semantics.as_ref().and_then(|node| target(node, label)) {
+                return Some((node.path.clone(), target));
+            }
+            node.children.iter().find_map(|node| find(node, label))
+        }
+        find(&frame.inspection().root, label).expect("exported browser semantic route")
+    }
+    #[test]
+    fn browser_semantic_tab_activation_updates_canonical_selection() {
+        let (root, handle, _) = fixture();
+        let mut topology = handle.tree.borrow().clone();
+        let groups = &mut topology.workspaces[0].strips[0].window_groups;
+        let chat = groups[0].tabs.remove(1);
+        groups[0].tabs.pop();
+        groups.push(WindowGroup {
+            id: 4,
+            active_tab: chat.id,
+            tabs: vec![chat],
+            width: WindowWidth::Normal,
+            maximized: false,
+        });
+        *handle.inbox.borrow_mut() = Some((
+            Admission {
+                tree: topology,
+                routes: root.resolver.host.routes.clone(),
+                required: vec![],
+                missing: vec![],
+                unsupported: vec![],
+                pending: 0,
+            },
+            handle.permissions.borrow().clone(),
+        ));
+        let root = Box::new(root);
+        let root_ptr = std::ptr::from_ref(root.as_ref());
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::state::State::new(),
+            root,
+            (1280, 720),
+            ui::Theme::dark(),
+            ui::TextRenderer::new(),
+            ui::permissions::UserId("author".into()),
+        );
+        frame.poll_frame().unwrap();
+        let (owner, target) = browser_semantic_route(&frame, "Notes");
+        frame
+            .perform_semantic_named(&owner, Some(&target), &ui::a11y::Action::Focus)
+            .unwrap();
+        fn focused(node: &ui::headless::InspectionNode, path: &str) -> Option<bool> {
+            if node.path == path {
+                return node.semantics.as_ref().map(|node| node.state.focused);
+            }
+            node.children.iter().find_map(|node| focused(node, path))
+        }
+        assert_eq!(
+            focused(&frame.inspection().root, &owner),
+            Some(true),
+            "requested tab owner must retain focus"
+        );
+        frame
+            .perform_semantic_named(&owner, Some(&target), &ui::a11y::Action::Activate)
+            .unwrap();
+        frame.poll_frame().unwrap();
+        assert_eq!(
+            handle.tree.borrow().workspaces[0].strips[0].window_groups[0].active_tab,
+            (5 << 48) | 12
+        );
+        assert!(frame.inspection_json().unwrap().contains("notes"));
+        // SAFETY: frame retains this boxed root throughout the test; this read
+        // ends before sending input, and no borrowed reference survives a frame mutation.
+        let tab_center = |name: &str| unsafe {
+            (&*root_ptr).surface.row(StripId(2)).unwrap().groups[0].children()[0]
+                .test_rects()
+                .into_iter()
+                .find(|(id, _)| id == name)
+                .unwrap()
+                .1
+                .center()
+        };
+        let point = tab_center("tab:Writer");
+        frame.click_at(point.x, point.y);
+        frame.poll_frame().unwrap();
+        assert_eq!(
+            handle.tree.borrow().workspaces[0].strips[0].window_groups[0].active_tab,
+            (5 << 48) | 10,
+            "painted Writer tab click"
+        );
+        let chat = handle
+            .records
+            .borrow()
+            .values()
+            .find(|record| record.app == "dev.qos.chat")
+            .unwrap()
+            .clone();
+        let chat_before = chat
+            .store
+            .read(&chat.checkout.id, |doc| doc.clone().save())
+            .unwrap();
+        frame.click_named("word_processor").unwrap();
+        assert!(
+            frame.frame_output().ime.is_some(),
+            "clicked Writer must own the native IME route"
+        );
+        frame.send_host_event(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit(
+            "Two-group pointer Writer".into(),
+        )));
+        let writer = handle
+            .records
+            .borrow()
+            .values()
+            .find(|record| record.app == "dev.qos.word-processor")
+            .unwrap()
+            .clone();
+        assert!(
+            writer
+                .store
+                .read(&writer.checkout.id, |doc| serde_json::to_string(
+                    &automerge::AutoSerde::from(doc)
+                )
+                .unwrap())
+                .unwrap()
+                .contains("Two-group pointer Writer")
+        );
+        assert_eq!(
+            chat.store
+                .read(&chat.checkout.id, |doc| doc.clone().save())
+                .unwrap(),
+            chat_before,
+            "Writer input must not mutate Chat"
+        );
+        let writer_before = writer
+            .store
+            .read(&writer.checkout.id, |doc| doc.clone().save())
+            .unwrap();
+        let (composer, composer_target) = browser_semantic_route(&frame, "Message composer");
+        frame
+            .perform_semantic_named(&composer, Some(&composer_target), &ui::a11y::Action::Focus)
+            .unwrap();
+        frame
+            .perform_semantic_named(
+                &composer,
+                Some(&composer_target),
+                &ui::a11y::Action::SetValue("Two-group Chat draft".into()),
+            )
+            .unwrap();
+        frame.key("Enter");
+        assert!(
+            chat.store
+                .read(&chat.checkout.id, |doc| serde_json::to_string(
+                    &automerge::AutoSerde::from(doc)
+                )
+                .unwrap())
+                .unwrap()
+                .contains("Two-group Chat draft")
+        );
+        assert_eq!(
+            writer
+                .store
+                .read(&writer.checkout.id, |doc| doc.clone().save())
+                .unwrap(),
+            writer_before,
+            "Chat input must not mutate Writer"
+        );
+        let point = tab_center("tab:Notes");
+        frame.click_at(point.x, point.y);
+        frame.poll_frame().unwrap();
+        assert_eq!(
+            handle.tree.borrow().workspaces[0].strips[0].window_groups[0].active_tab,
+            (5 << 48) | 12,
+            "painted Notes tab click"
+        );
+    }
     #[test]
     fn actual_desktop_hosts_checked_writer_chat_notes_calculator_and_preserves_writer_route() {
         let (root, handle, cache) = fixture();

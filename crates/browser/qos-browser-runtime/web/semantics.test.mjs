@@ -358,3 +358,20 @@ test('disabled and removed semantic nodes reject stale activation',()=>{
   assert.equal(calls.length,0);
   assert.deepEqual(reports.map(report=>report.semanticResult),['rejected','stale-target']);
 });
+
+test('duplicate tab test IDs route by current path while canonical group identity survives insertion and reorder',()=>{
+  const calls=[];const root=new Element('div');const bridge=semanticBridge(root,(...args)=>{calls.push(args);return true;},()=>{});
+  const group=(id,index)=>({path:`desktop/row/WindowGroup[${index}]/TabBar[0]`,test_id:'tabs',semantics:{role:'TabBar',semantic_key:`tabbar:g${id}`,children:[{role:'Tab',name:`Notes ${id}`,action_target:`tab:${id}`,state:{selected:false}}]}});
+  const view=ids=>({root:{path:'desktop',children:ids.map(group)}});
+  document.activeElement=document.body;bridge.update(view([10,20]));
+  const first=root.children.find(node=>node.children[0]?.getAttribute('aria-label')==='Notes 10');
+  const notes=first.children[0];notes.dispatchEvent(event('click'));
+  assert.equal(calls.at(-1)[0],'desktop/row/WindowGroup[0]/TabBar[0]','a duplicate test ID cannot choose the other group');
+  assert.equal(calls.at(-1)[1],'tab:10');
+  bridge.update(view([30,20,10]));
+  const retained=root.children.find(node=>node.children[0]?.getAttribute('aria-label')==='Notes 10');
+  assert.equal(retained,first,'the existing canonical group retains its DOM owner after insertion/reorder');
+  assert.equal(retained.children[0],notes,'the existing tab DOM node survives its changed route path');
+  notes.dispatchEvent(event('click'));
+  assert.equal(calls.at(-1)[0],'desktop/row/WindowGroup[2]/TabBar[0]');
+});

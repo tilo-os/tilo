@@ -2393,6 +2393,7 @@ impl Widget for TabBar {
             .and_then(|i| self.tabs.get(i))
             .map(|t| t.title.clone());
         let mut node = AccessNode::new(Role::TabBar)
+            .with_semantic_key(format!("tabbar:{}", self.group_id_tag))
             .with_optional_value(value)
             .with_state(AccessState {
                 focusable: self.is_focusable(),

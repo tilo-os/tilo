@@ -23,3 +23,16 @@ test('publication failure during a transport attempt schedules another attempt a
  const c=clock();let calls=0,r;r=createRecoveryCoordinator({attempt:async()=>{calls++;if(calls===1)r.schedule();},...c});
  await r.retry();assert.equal(c.timers.size,1);await c.tick(500);assert.equal(calls,2);r.dispose();
 });
+test('fractional jitter publishes integer EpochMs deadlines matching capped coalesced timers',async()=>{
+ const c=clock(),epoch=1789720459000,states=[];
+ const r=createRecoveryCoordinator({...c,now:()=>epoch+c.now(),random:()=>0.314285,attempt:async()=>{throw Error('offline');},onState:s=>states.push(s)});
+ r.schedule();r.schedule();
+ for(let index=0;index<5;index++){
+  assert.equal(c.timers.size,1,'repeated schedule requests coalesce');
+  const next=[...c.timers.values()][0],state=states.at(-1),delay=next.at-c.now();
+  assert(Number.isSafeInteger(delay));assert(delay>=500&&delay<=4000);
+  assert(Number.isSafeInteger(state.nextAttemptAtMs));assert.equal(state.nextAttemptAtMs,epoch+next.at);
+  await c.tick(delay);
+ }
+ r.dispose();
+});

@@ -6,8 +6,8 @@ export function createRecoveryCoordinator({attempt,onState=()=>{},now=Date.now,r
  function schedule(){
   if(disposed||timer!==null)return;
   if(active){requested=true;return;}requested=false;
-  const delay=(0.5+Math.max(0,Math.min(1,random()))*0.5)*Math.min(4000,1000*2**Math.min(counter,3));
-  nextAttemptAtMs=now()+delay;timer=setTimeout(()=>{timer=null;nextAttemptAtMs=null;void retry().catch(()=>{});},delay);emit();
+  const delay=Math.round((0.5+Math.max(0,Math.min(1,random()))*0.5)*Math.min(4000,1000*2**Math.min(counter,3)));
+  nextAttemptAtMs=Math.round(now())+delay;timer=setTimeout(()=>{timer=null;nextAttemptAtMs=null;void retry().catch(()=>{});},delay);emit();
  }
  function retry(){
   if(disposed)return Promise.reject(Error('Session closed'));

@@ -186,8 +186,18 @@ export function semanticBridge(root,invoke,report,shortcuts) {
     const ownedBeforeUpdate=new Set(elements.values());
     const activeBeforeUpdate=document.activeElement;
     let canonicalFocus;
-    function semantic(node,owner,parent,index){
-      const key=JSON.stringify([owner,node.semantic_key??node.action_target??index]);live.add(key);
+    // A test ID is a convenient alias only when it names one current widget.
+    // Keep DOM identity separate from the route, which changes with layout paths.
+    const testIds=new Map(),semanticOwners=new Map();
+    function countOwners(node){
+      if(node.test_id)testIds.set(node.test_id,(testIds.get(node.test_id)??0)+1);
+      const key=node.semantics?.semantic_key;
+      if(key)semanticOwners.set(key,(semanticOwners.get(key)??0)+1);
+      for(const child of node.children??[])countOwners(child);
+    }
+    countOwners(snapshot.root);
+    function semantic(node,owner,parent,index,identity){
+      const key=JSON.stringify([identity,node.semantic_key??node.action_target??index]);live.add(key);
       let element=elements.get(key);
       const editable=['TextInput','MultilineTextInput'].includes(node.role);
       if(element&&element.qosEditable!==editable){
@@ -233,10 +243,15 @@ export function semanticBridge(root,invoke,report,shortcuts) {
         }
       }
       else if(!node.children?.length)element.textContent=value||node.name||'';
-      (node.children??[]).forEach((child,i)=>semantic(child,owner,element,`${index}/${i}`));
+      (node.children??[]).forEach((child,i)=>semantic(child,owner,element,`${index}/${i}`,identity));
     }
     function walk(node,parent){
-      if(node.semantics)semantic(node.semantics,node.test_id??node.path,parent,node.path);
+      if(node.semantics){
+        const uniqueTestId=node.test_id&&testIds.get(node.test_id)===1;
+        const semanticKey=node.semantics.semantic_key;
+        const identity=semanticKey&&semanticOwners.get(semanticKey)===1?['semantic',semanticKey]:uniqueTestId?['test',node.test_id]:['path',node.path];
+        semantic(node.semantics,uniqueTestId?node.test_id:node.path,parent,node.path,identity);
+      }
       for(const child of node.children??[])walk(child,parent);
     }
     walk(snapshot.root,root);
