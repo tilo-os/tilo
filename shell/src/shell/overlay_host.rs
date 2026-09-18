@@ -13860,6 +13860,31 @@ fn shortcut_reference_rows(
     ]
 }
 
+/// Reference cards stay in predictable rows instead of squeezing long labels
+/// into a fixed four-column grid.  Three columns leave enough room for the
+/// longest production chord on compact outputs; the wider card earns a fourth.
+fn shortcut_reference_columns(body_width: f64) -> usize {
+    if body_width >= 840.0 { 4 } else { 3 }
+}
+
+fn shortcut_reference_cell_rect(
+    body: Rect,
+    index: usize,
+    columns: usize,
+    top: f64,
+    row_step: f64,
+) -> Rect {
+    let columns = columns.max(1);
+    let gap = 14.0;
+    let cell_width =
+        (body.width() - gap * usize_to_f64_lossy(columns - 1)) / usize_to_f64_lossy(columns);
+    let column = index % columns;
+    let row = index / columns;
+    let x = body.x0 + usize_to_f64_lossy(column) * (cell_width + gap);
+    let y = top + usize_to_f64_lossy(row) * row_step;
+    Rect::new(x, y, x + cell_width, y + row_step)
+}
+
 fn shortcut_guide_chord(chord: &settings_store::hardware::KeyChord) -> String {
     let display = chord.display();
     let Some((modifiers, key)) = display.rsplit_once('+') else {
@@ -17033,7 +17058,7 @@ impl ShellOverlayHost {
                 &RoundedRect::from_rect(done.inflate(3.0, 3.0), 12.0),
             );
         }
-        let label_size = theme.tokens.typography.scale.xs;
+        let label_size = theme.tokens.typography.scale.sm;
         let (done_w, done_h) = text_renderer.measure("Done", label_size, None);
         text_renderer.draw_text_weighted(
             scene,
@@ -17113,7 +17138,7 @@ impl ShellOverlayHost {
                     scene,
                     "Hold Guide for desktop controls. Release it and every button goes back to your game.",
                     theme.tokens.typography.scale.sm,
-                    colors.text_dim,
+                    colors.text_primary,
                     transform.pre_translate((body.x0 + 104.0, body.y0 + 14.0).into()),
                     Some(f64_to_f32_lossy(body.width() - 104.0)),
                 );
@@ -17395,24 +17420,32 @@ impl ShellOverlayHost {
                 );
                 let references = shortcut_reference_rows(shortcuts);
                 let visible_references = references.as_slice();
-                let reference_columns = 4;
-                let reference_step = if compact { 37.0 } else { 41.0 };
+                let reference_columns = shortcut_reference_columns(body.width());
+                let reference_step = if reference_columns == 3 {
+                    if compact { 31.0 } else { 35.0 }
+                } else if compact {
+                    37.0
+                } else {
+                    41.0
+                };
                 let reference_offset = 18.0;
                 for (index, (label, chord)) in visible_references.iter().enumerate() {
-                    let reference_columns = reference_columns.max(1);
-                    let column = index.checked_rem(reference_columns).unwrap_or_default();
-                    let row = index.checked_div(reference_columns).unwrap_or_default();
-                    let cell_width = body.width() / usize_to_f64_lossy(reference_columns);
-                    let x = body.x0 + usize_to_f64_lossy(column) * cell_width;
-                    let y =
-                        essentials_y + reference_offset + usize_to_f64_lossy(row) * reference_step;
+                    let cell = shortcut_reference_cell_rect(
+                        body,
+                        index,
+                        reference_columns,
+                        essentials_y + reference_offset,
+                        reference_step,
+                    );
+                    let x = cell.x0;
+                    let y = cell.y0;
                     text_renderer.draw_text(
                         scene,
                         label,
                         theme.tokens.typography.scale.sm,
                         colors.text_primary,
                         transform.pre_translate((x, y).into()),
-                        Some(f64_to_f32_lossy(cell_width - 12.0)),
+                        Some(f64_to_f32_lossy(cell.width())),
                     );
                     let chord_size = theme.tokens.typography.scale.sm;
                     let (chord_width, chord_height) =
@@ -17420,7 +17453,7 @@ impl ShellOverlayHost {
                     let pill = Rect::new(
                         x,
                         y + 19.0,
-                        (x + f64::from(chord_width) + 22.0).min(x + cell_width - 12.0),
+                        (x + f64::from(chord_width) + 22.0).min(cell.x1),
                         y + 19.0 + f64::from(chord_height) + 10.0,
                     );
                     scene.fill(
@@ -17457,7 +17490,7 @@ impl ShellOverlayHost {
                         scene,
                         "Pointer: click to focus · drag tabs or groups to reorder · drag an edge to resize",
                         theme.tokens.typography.scale.xs,
-                        colors.text_dim,
+                        colors.text_primary,
                         transform.pre_translate((body.x0, pointer_y + 14.0).into()),
                         Some(f64_to_f32_lossy(body.width())),
                     );
@@ -17468,7 +17501,7 @@ impl ShellOverlayHost {
                             scene,
                             "Vim mode · h j k l",
                             theme.tokens.typography.scale.xs,
-                            colors.text_dim,
+                            colors.text_primary,
                             transform.pre_translate((body.x0, pointer_y + 50.0).into()),
                             None,
                         );
@@ -22822,8 +22855,8 @@ mod palette_dispatch_tests {
         let body_height = 422.0;
         let essentials_y = 22.0 + 3.0 * 48.0 + 6.0;
         let reference_offset = 18.0;
-        let reference_step = 37.0;
-        let final_row = rows.len().div_ceil(4).saturating_sub(1);
+        let reference_step = 31.0;
+        let final_row = rows.len().div_ceil(3).saturating_sub(1);
         let final_pill_bottom =
             essentials_y + reference_offset + usize_to_f64_lossy(final_row) * reference_step + 35.0;
 
@@ -22852,8 +22885,10 @@ mod palette_dispatch_tests {
         let mut renderer = TextRenderer::new();
         let chord_size = Theme::dark().tokens.typography.scale.sm;
         // An 800-wide viewport yields a 736-wide panel and 688-wide body. The
-        // compact guide uses four columns without truncating key labels.
-        let available_text_width = 688.0 / 4.0 - 26.0;
+        // compact guide uses three comfortably spaced columns.
+        let columns = shortcut_reference_columns(688.0);
+        assert_eq!(columns, 3);
+        let available_text_width = (688.0 - 14.0 * 2.0) / 3.0 - 14.0;
         for (_, chord) in rows {
             let (width, _) = renderer.measure(&chord, chord_size, None);
             assert!(
@@ -22861,6 +22896,27 @@ mod palette_dispatch_tests {
                 "{chord:?} must not clip inside the compact guide's key pill"
             );
         }
+    }
+
+    #[test]
+    fn shortcut_reference_columns_are_responsive_and_row_aligned() {
+        assert_eq!(shortcut_reference_columns(688.0), 3);
+        assert_eq!(shortcut_reference_columns(912.0), 4);
+
+        let body = Rect::new(56.0, 120.0, 744.0, 542.0);
+        let first = shortcut_reference_cell_rect(body, 0, 3, 300.0, 31.0);
+        let close_tab = shortcut_reference_cell_rect(body, 2, 3, 300.0, 31.0);
+        let next_row = shortcut_reference_cell_rect(body, 3, 3, 300.0, 31.0);
+        assert_eq!(
+            first.y0, close_tab.y0,
+            "Close tab must share its row baseline"
+        );
+        assert_eq!(
+            first.x0, next_row.x0,
+            "row-major cards keep columns aligned"
+        );
+        assert_eq!(next_row.y0 - first.y0, 31.0);
+        assert!(close_tab.x1 <= body.x1);
     }
 
     #[test]
@@ -25436,7 +25492,7 @@ mod overlay_event_absorb_tests {
         let body_bottom = panel.y1 - 22.0;
         let body_top = panel.y0 + 88.0;
         let essentials_y = body_top + 22.0 + 3.0 * 48.0 + 6.0;
-        let compact_final_pill_bottom = essentials_y + 18.0 + 4.0 * 37.0 + 35.0;
+        let compact_final_pill_bottom = essentials_y + 18.0 + 6.0 * 31.0 + 35.0;
         assert!(
             compact_final_pill_bottom <= body_bottom,
             "compact help's final recovery shortcut must fit without clipping: pill={compact_final_pill_bottom}, body={body_bottom}"
