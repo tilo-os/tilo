@@ -4,7 +4,6 @@
 Run only in the disposable development-source CI container, as root. All test
 keys live in a new private /var/lib directory and are removed with the fixture.
 """
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -128,8 +127,9 @@ def main():
         signer = metadata['signer']
         certificate = root / 'exported.crt'
         run(signer, 'export-efi-cert', str(certificate))
-        der = run('openssl', 'x509', '-in', str(certificate), '-outform', 'DER')
-        assert hashlib.sha256(der).hexdigest() == metadata['efi_certificate_sha256']
+        identity = run('/usr/local/bin/tilo-crypto', 'certificate-sha256',
+                       str(certificate)).decode().strip()
+        assert identity == metadata['efi_certificate_sha256']
         assert (home / 'efi-signing.key').stat().st_mode & 0o077 == 0
         assert (home / 'pcr-signing.key').stat().st_mode & 0o077 == 0
         run(*provision, success=False)
@@ -138,8 +138,8 @@ def main():
         message.write_bytes(b'generation-bound PCR authorization fixture\0' + (42).to_bytes(8, 'big'))
         signature = root / 'pcr.signature'
         run(signer, 'sign-sha256-rsa-pkcs1', str(message), str(signature))
-        verification = ['openssl', 'dgst', '-sha256', '-verify', metadata['pcr_public'],
-                        '-signature', str(signature), str(message)]
+        verification = ['/usr/local/bin/tilo-crypto', 'verify-rsa-sha256',
+                        metadata['pcr_public'], str(message), str(signature)]
         run(*verification)
         message.write_bytes(b'different PCR authorization')
         run(*verification, success=False)
