@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """A workspace is shared: what one member puts in the room, the others have.
 
-A room *is* a workspace (`plan/collaboration.md` §4), and what a room
-holds is its **record index** (`plan/rooms.md`) — the references to the
+A room *is* a workspace (`docs/architecture/collaboration.md` §4), and what a room
+holds is its **record index** (`docs/architecture/rooms.md`) — the references to the
 documents in it. This checks that the index replicates between the room's
 members, in both directions, and that a person's own view of the room
 does not travel with it.

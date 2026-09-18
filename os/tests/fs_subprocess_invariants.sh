@@ -3,7 +3,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-monitor="$root/fs/src/smart_monitor.rs"
+monitor="$root/crates/system/fs/src/smart_monitor.rs"
 
 grep -Fq 'tokio::task::spawn_blocking' "$monitor"
 grep -Fq 'bounded_command::run(' "$monitor"

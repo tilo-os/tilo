@@ -4,7 +4,7 @@
 > firewall, the per-workspace sandbox and the portal capability model, in more
 > detail than anywhere else. It predates the machine-scoped work, so on identity,
 > the boot chain and disk encryption it is superseded by
-> [docs/security/](../docs/security/README.md).
+> [docs/security/](../security/README.md).
 
 The security boundary is the **workspace**. Every workspace runs apps inside its own Bubblewrap sandbox with its own user namespace, mount namespace, seccomp-bpf filter, and a per-workspace Wayland bridge socket. Capabilities (filesystem, hardware, network) require explicit grants surfaced as inline prompts; grants persist in the workspace's CRDT and replicate to peers.
 
@@ -24,7 +24,7 @@ The scenarios we defend against:
 - Identity decisions carry the whole peer id (`PeerOrigin`), never a fold of it: an equality check a digest can be ground against is not an identity check.
 - The personal signing identity is the user root. It certifies each device key; workspace hosts accept only device certificates chaining to the configured user root and permitted by the workspace membership/revocation state.
 
-Invite tokens are signed ed25519 blobs scoped to a workspace; see `plan/collaboration.md §7` for the wire format and validation order.
+Invite tokens are signed ed25519 blobs scoped to a workspace; see `docs/architecture/collaboration.md §7` for the wire format and validation order.
 
 ## Sandbox: Bubblewrap profile
 
@@ -102,7 +102,7 @@ Replication semantics:
 - Grants replicate to peers as part of the room document.
 - **Only the owner can grant.** Non-owners see the grant rows in the Permissions tab but the Revoke button is disabled.
 - A grant revocation writes the removal to the CRDT; the next workspace start uses the updated profile.
-- **Only the owner can grant over the wire either.** A room document's owner and capability list are accepted only from the peer entitled to write them, so a guest cannot project its own cache into the room and let automerge's last-writer-wins decide who administers it. See `plan/collaboration.md §4` — "Write authority on a room's governance" — for the record that decides it, why the invite's signature is what makes it checkable by the receiver, and what it does not yet cover (a relayed or delegated governance change, which needs the op signed rather than the hop authenticated).
+- **Only the owner can grant over the wire either.** A room document's owner and capability list are accepted only from the peer entitled to write them, so a guest cannot project its own cache into the room and let automerge's last-writer-wins decide who administers it. See `docs/architecture/collaboration.md §4` — "Write authority on a room's governance" — for the record that decides it, why the invite's signature is what makes it checkable by the receiver, and what it does not yet cover (a relayed or delegated governance change, which needs the op signed rather than the hop authenticated).
 
 ### Inline prompt
 
@@ -144,11 +144,11 @@ Step 3 needs something to empty that queue. The compositor drains `PromptQueueHa
 
   **Next launch is the operative phrase.** A confined app's mount namespace is fixed when `bwrap` creates it, so a grant made mid-session cannot add anything to the namespace the app is already living in. `shell/tests/portal_grant_reaches_sandbox.rs` asserts the grant→bind chain end to end; what it asserts is the *next* launch. For a running app the portal additionally publishes the pick through `shell::portal::doc_store`, which is where the three candidate mechanisms — a launch-time grant, a live re-bind, and a document store — are compared and one is chosen. The shipped store is `HostPathStore`, which is correct for callers sharing the compositor's namespace and reports `reaches_confined_apps() == false` rather than pretending otherwise; the compositor logs that at startup.
 
-**The mount is the second enforcement point** (`fs/src/acl.rs`). `fs --acl FILE` binds a capability list to the mount, and every `open`/`read`/`write` is answered by `collab_types::decide_capability` — the same function the compositor calls, so a path readable through one and not the other is a bug rather than a policy. Without `--acl` the mount keeps the Unix-veneer-only behaviour, which is the documented opt-out.
+**The mount is the second enforcement point** (`crates/system/fs/src/acl.rs`). `fs --acl FILE` binds a capability list to the mount, and every `open`/`read`/`write` is answered by `collab_types::decide_capability` — the same function the compositor calls, so a path readable through one and not the other is a bug rather than a policy. Without `--acl` the mount keeps the Unix-veneer-only behaviour, which is the documented opt-out.
 
 Two properties this rests on:
 
-- **The list is re-read while the mount is up** (`fs/src/caps_file.rs`). `/var/workspace` is mounted at boot and lives as long as the session, so a list read only at mount time could not express a grant — or a revocation — made afterwards. A deleted list denies everything (its absence is the producer saying nothing is granted); an unreadable or malformed one keeps the last good list, because the file is rewritten in place and a reader can catch it truncated.
+- **The list is re-read while the mount is up** (`crates/system/fs/src/caps_file.rs`). `/var/workspace` is mounted at boot and lives as long as the session, so a list read only at mount time could not express a grant — or a revocation — made afterwards. A deleted list denies everything (its absence is the producer saying nothing is granted); an unreadable or malformed one keeps the last good list, because the file is rewritten in place and a reader can catch it truncated.
 - **The shipped image enforces.** `os/usr/lib/systemd/system/fs.service` passes `--acl /var/lib/tilo/fs-capabilities.json`, seeded by `tmpfiles.d` from `/usr/share/tilo/fs-capabilities.json`. Be plain about what that default is: it grants the local session read+write on the whole workspace — exactly what an unenforced mount already gave. It narrows nothing on a single-user desktop. What it buys is that the enforcement point is *live*, so a restriction added to that list bites without a remount, and a mount joined from a peer's ticket has somewhere to put a narrower policy. The shipped default uses a human-readable principal (`person:local`); the mount itself presents the same durable, certified device key as the shell, so remote policies may name a stable cryptographic subject.
 
 ### Network
