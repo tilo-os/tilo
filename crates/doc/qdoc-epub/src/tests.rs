@@ -10,7 +10,9 @@
 use super::*;
 use qdoc::snapshot::{AttrVal, BlockView, DocSnapshot};
 use std::collections::BTreeMap;
+use std::io::Cursor;
 use std::io::Read;
+use zip::CompressionMethod;
 use zip::ZipArchive;
 
 fn empty_snapshot() -> DocSnapshot {

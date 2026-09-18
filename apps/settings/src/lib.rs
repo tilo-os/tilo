@@ -8,6 +8,8 @@
 //! desktop layout and a single-pane narrow layout. The binary in `main.rs`
 //! is a thin shim that hands the widget to `ui::App` for the live event
 //! loop, or renders one offscreen frame for `--shots`.
+//! Release builds keep this composition app-local while service engines live
+//! in the shared runtime, preserving independently updatable settings UI.
 //!
 //! ## Module map
 //!
@@ -68,11 +70,13 @@ pub mod prefs;
 pub mod region;
 pub mod search_provider;
 pub mod settings_app;
+#[cfg(not(feature = "thin"))]
 pub mod shots;
 pub mod sidebar;
 pub mod widgets;
 
 pub use settings_app::SettingsApp;
+#[cfg(not(feature = "thin"))]
 pub use shots::render_to_path;
 
 /// Ensure an Automerge `Text` object exists at `key` under `root`, returning it.

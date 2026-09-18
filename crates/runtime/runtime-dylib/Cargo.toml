@@ -33,6 +33,40 @@ comemo = "0.5"
 tilo-callstream = { path = "../../collab/tilo-callstream" }
 rustypipe.workspace = true
 iroh.workspace = true
+# Desktop-owned service implementations are shared runtime code, not app
+# payload. Settings composes all of these control surfaces and would otherwise
+# statically repeat several megabytes of the same implementations in its qpkg.
+settings-store = { path = "../../system/settings-store" }
+desktop-policy = { path = "../../system/desktop-policy" }
+launcher = { path = "../../packaging/launcher" }
+tilo-desktop-entry = { path = "../../system/desktop-entry" }
+collab-types = { path = "../../collab/collab-types" }
+tilo-actions = { path = "../../collab/actions" }
+os-actions = { path = "../../system/os-actions" }
+runtime-identity = { path = "../runtime-identity" }
+tilo-user-identity = { path = "../../identity/tilo-user-identity" }
+runtime-fs = { path = "../runtime-fs" }
+tilo-relay = { path = "../../hosting/tilo-relay" }
+tilo-bluez = { path = "../../system/tilo-bluez" }
+runtime-portal-xdg = { path = "../runtime-portal-xdg" }
+accounts = { path = "../../system/accounts" }
+agent-provider-config = { path = "../../agent/provider-config" }
+tilo-model-gateway = { path = "../../agent/model-gateway" }
+media = { path = "../../media" }
+atomic-file = { path = "../../system/atomic-file" }
+# Versioned format/network engines used by system apps. Keeping these in the
+# runtime bundle lets qpkgs contain policy and UI while the replaceable engine
+# implementations are stored once per runtime generation.
+chrono-tz = "0.10.4"
+vte = "0.15.0"
+pdfium-render = "0.8.37"
+thumbnail = { path = "../../thumbnail", features = ["pdf"] }
+roxmltree = "0.20"
+xattr = "1.6.1"
+mime_guess = "2.0.5"
+app-catalogue = { path = "../../packaging/app-catalogue" }
+app-host = { path = "../../packaging/app-host" }
+registry-types = { path = "../../packaging/registry-types" }
 
 [lints]
 workspace = true
