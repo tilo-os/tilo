@@ -86,7 +86,7 @@ jobs:
 
   select:
     needs: builder
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 15
     container:
       image: code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
