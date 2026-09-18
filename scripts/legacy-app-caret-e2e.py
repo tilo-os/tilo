@@ -293,6 +293,11 @@ def preflight_toolkit_runtime(
     preflight_env.pop("WAYLAND_DISPLAY", None)
     preflight_env.pop("DISPLAY", None)
     if case.name == "qt6":
+        # The copied plugin tree is needed only for the Wayland run on hosts
+        # whose checkout is virtiofs.  Loading the offscreen backend from that
+        # tmpfs copy aborts in Qt before it can produce diagnostics, so let the
+        # compositor-independent health check use the installed plugin tree.
+        preflight_env.pop("QT_PLUGIN_PATH", None)
         preflight_env["QT_QPA_PLATFORM"] = "offscreen"
         command = [executable, *case.args]
     else:
