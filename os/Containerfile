@@ -2234,8 +2234,9 @@ RUN chmod 0755 /usr/libexec/tilo/luks-enrolment-test.sh \
 # fatal, so a UKI in /boot does not fail it either.
 # Fedora's OpenSSL libraries carry optional legacy-provider and ENGINE DSOs for
 # compatibility with old applications. The GStreamer bad-free bundle also
-# carries OpenSSL-backed DTLS, curl, and Icecast/Shoutcast plugins; Tilo uses
-# none of those network media paths. Qt's ARM compatibility frontend is also
+# carries OpenSSL-backed DTLS, curl, and Icecast/Shoutcast plugins; its WebRTC,
+# ICE and SRTP companions are unusable here and likewise serve no Tilo path.
+# Qt's ARM compatibility frontend is also
 # offline and does not need its optional OpenSSL TLS backend. Rust-native code
 # owns network security, while foundational distro consumers use the built-in
 # provider. Delete these loadable surfaces before the composefs root is sealed.
@@ -2244,6 +2245,9 @@ RUN find /usr/lib /usr/lib64 \
          -o -path '*/gstreamer-1.0/libgstdtls.so' \
          -o -path '*/gstreamer-1.0/libgstcurl.so' \
          -o -path '*/gstreamer-1.0/libgstshout2.so' \
+         -o -path '*/gstreamer-1.0/libgstwebrtc.so' \
+         -o -path '*/gstreamer-1.0/libgstnice.so' \
+         -o -path '*/gstreamer-1.0/libgstsrtp.so' \
          -o -path '*/qt6/plugins/tls/libqopensslbackend.so' \) \
       \( -type f -o -type l \) -delete \
     && ! find /usr/lib /usr/lib64 \
@@ -2251,6 +2255,9 @@ RUN find /usr/lib /usr/lib64 \
          -o -path '*/gstreamer-1.0/libgstdtls.so' \
          -o -path '*/gstreamer-1.0/libgstcurl.so' \
          -o -path '*/gstreamer-1.0/libgstshout2.so' \
+         -o -path '*/gstreamer-1.0/libgstwebrtc.so' \
+         -o -path '*/gstreamer-1.0/libgstnice.so' \
+         -o -path '*/gstreamer-1.0/libgstsrtp.so' \
          -o -path '*/qt6/plugins/tls/libqopensslbackend.so' \) \
       \( -type f -o -type l \) -print -quit | grep -q . \
     && bash /usr/local/bin/verify-runtime-crypto-packages.sh \
