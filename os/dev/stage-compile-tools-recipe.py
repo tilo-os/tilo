@@ -8,6 +8,7 @@ import re
 import subprocess
 
 RECIPE = 'os/Containerfile.development-compile'
+BUILD_REQUIREMENTS = b'\nRUN chmod 0755 /var/lib && /usr/local/bin/cosign version\n'
 
 
 def git(directory, *arguments):
@@ -33,12 +34,17 @@ def stage(controller, controller_revision, source, source_revision, output, rece
     data = git(selected, 'show', revision + ':' + RECIPE)
     if not 0 < len(data) <= 65536 or recipe.read_bytes() != data:
         raise ValueError('tools recipe bytes differ from pinned Git blob')
+    # Derive a build-only recipe; the independently pinned source stays intact.
+    # Keep byte-identical to the native launcher's tools recipe for reuse.
+    build_data = data + BUILD_REQUIREMENTS
     value = {'schema': 1, 'purpose': 'assembly-tools-source-selection',
              'controller_revision': controller_revision, 'application_revision': revision,
              'recipe': RECIPE, 'recipe_sha256': hashlib.sha256(data).hexdigest(),
+             'build_recipe_sha256': hashlib.sha256(build_data).hexdigest(),
+             'build_requirements': BUILD_REQUIREMENTS.decode().strip(),
              'selected_application_checkout': bool(source), 'tools_built': False}
     with Path(output).open('xb') as stream:
-        stream.write(data)
+        stream.write(build_data)
     with Path(receipt).open('x', encoding='utf-8') as stream:
         json.dump(value, stream, indent=2, sort_keys=True)
         stream.write('\n')

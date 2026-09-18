@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 from pathlib import Path
 import subprocess
@@ -34,16 +35,38 @@ class ToolsSourceTests(unittest.TestCase):
 
     def test_separate_source_preserves_required_legacy_tools(self):
         value=self.stage()
-        self.assertEqual((self.root/'Containerfile').read_bytes(),(self.source/m.RECIPE).read_bytes())
+        self.assertEqual((self.root/'Containerfile').read_bytes(),(self.source/m.RECIPE).read_bytes()+m.BUILD_REQUIREMENTS)
         self.assertIn(b'openssl sbsigntools',(self.root/'Containerfile').read_bytes())
         self.assertEqual(value['application_revision'],self.frozen)
         self.assertTrue(value['selected_application_checkout'])
 
     def test_default_retains_controller_recipe(self):
         value=self.stage(False)
-        self.assertEqual((self.root/'Containerfile').read_bytes(),(self.controller/m.RECIPE).read_bytes())
+        self.assertEqual((self.root/'Containerfile').read_bytes(),(self.controller/m.RECIPE).read_bytes()+m.BUILD_REQUIREMENTS)
         self.assertEqual(value['application_revision'],self.current)
         self.assertFalse(value['selected_application_checkout'])
+
+    def test_assembly_and_native_recipe_bytes_match(self):
+        value=self.stage()
+        spec=importlib.util.spec_from_file_location('native_tools', Path(__file__).resolve().parents[1]/'dev/launch-native-resume.py')
+        native=importlib.util.module_from_spec(spec); spec.loader.exec_module(native)
+        build=self.root/'native-build'; build.mkdir()
+        cosign=self.root/'cosign'; cosign.write_bytes(b'public tool fixture')
+        native.stage_tools_context(self.source,build,cosign)
+        self.assertEqual((build/'Containerfile').read_bytes(),(self.root/'Containerfile').read_bytes())
+        self.assertEqual(hashlib.sha256((build/'Containerfile').read_bytes()).hexdigest(),value['build_recipe_sha256'])
+
+    def test_derived_recipe_hash_and_clean_source_without_final_newline(self):
+        source,revision=self.repo('no-final-newline', b'FROM legacy')
+        value=m.stage(self.controller,self.current,source,revision,self.root/'Containerfile',self.root/'receipt.json')
+        source_data=(source/m.RECIPE).read_bytes()
+        built=(self.root/'Containerfile').read_bytes()
+        self.assertEqual(source_data,b'FROM legacy')
+        self.assertEqual(built,b'FROM legacy\nRUN chmod 0755 /var/lib && /usr/local/bin/cosign version\n')
+        self.assertEqual(value['recipe_sha256'],hashlib.sha256(source_data).hexdigest())
+        self.assertEqual(value['build_recipe_sha256'],hashlib.sha256(built).hexdigest())
+        self.assertNotEqual(value['recipe_sha256'],value['build_recipe_sha256'])
+        self.assertEqual(m.git(source,'status','--porcelain'),b'')
 
     def test_dirty_or_wrong_source_never_stages_recipe(self):
         self.frozen='0'*40
@@ -61,7 +84,7 @@ class ToolsSourceTests(unittest.TestCase):
         self.assertEqual(value['controller_revision'],helper_revision)
         self.assertNotEqual(value['controller_revision'],self.current)
         self.assertEqual(value['application_revision'],self.frozen)
-        self.assertEqual((self.root/'Containerfile').read_bytes(),(self.source/m.RECIPE).read_bytes())
+        self.assertEqual((self.root/'Containerfile').read_bytes(),(self.source/m.RECIPE).read_bytes()+m.BUILD_REQUIREMENTS)
         with self.assertRaises(ValueError):
             m.stage(helpers,self.current,self.source,self.frozen,self.root/'bad',self.root/'bad.json')
 
