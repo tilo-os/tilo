@@ -29,6 +29,7 @@ github_cache_workflows=(
   "$workflows/snapshot-rpms.yml"
 )
 cosign_workflows=(
+  "$workflows/build-builder-image.yml"
   "$workflows/build-image.yml"
   "$workflows/build-kernel.yml"
   "$workflows/tilo-relay.yaml"
@@ -38,6 +39,7 @@ cosign_workflows=(
 )
 syft_workflow="$workflows/build-image.yml"
 release_signed_workflows=(
+  "$workflows/build-builder-image.yml"
   "$workflows/build-image.yml"
   "$workflows/build-kernel.yml"
   "$workflows/tilo-relay.yaml"
