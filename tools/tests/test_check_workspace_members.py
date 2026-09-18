@@ -45,8 +45,11 @@ class WorkspaceMemberTests(unittest.TestCase):
     def test_complete_inventory_accepts_root_and_discovered_members(self) -> None:
         self.crate("apps/editor")
         self.crate("crates/media/core")
+        self.crate("examples/packaging/hello")
         self.crate("fs")
-        self.configure(["apps/editor", "crates/media/core", "fs"])
+        self.configure(
+            ["apps/editor", "crates/media/core", "examples/packaging/hello", "fs"]
+        )
         self.assertEqual(self.errors(), [])
 
     def test_duplicate_member_is_rejected(self) -> None:
@@ -59,11 +62,13 @@ class WorkspaceMemberTests(unittest.TestCase):
 
     def test_unlisted_and_stale_members_are_both_reported(self) -> None:
         self.crate("crates/media/core")
+        self.crate("examples/packaging/hello")
         self.configure(["crates/missing"])
         self.assertEqual(
             self.errors(),
             [
                 "crate is not a workspace member: crates/media/core",
+                "crate is not a workspace member: examples/packaging/hello",
                 "workspace member has no Cargo.toml: crates/missing",
             ],
         )

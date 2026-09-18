@@ -34,7 +34,7 @@ def string_list(document: dict, key: str) -> tuple[str, ...]:
 
 def discover_crates(root: Path, excluded: frozenset[str]) -> frozenset[str]:
     crates: set[str] = set()
-    for top_level in ("apps", "crates"):
+    for top_level in ("apps", "crates", "examples"):
         directory = root / top_level
         if not directory.is_dir():
             continue
