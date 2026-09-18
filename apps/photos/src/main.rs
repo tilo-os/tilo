@@ -152,7 +152,7 @@ fn render_scenario(
     // waits for a decode.
     let settle_frames = if matches!(
         scenario,
-        "library" | "selection" | "album-manage" | "metadata-edit"
+        "library" | "selection" | "selection-many-albums" | "album-manage" | "metadata-edit"
     ) {
         // A library queues one bounded thumbnail job per sync.  Give the
         // deterministic offscreen gallery enough frames to show the fully
