@@ -19,11 +19,11 @@ use qdoc::diff::{BlockOp, RunOp, diff_snapshots};
 use qdoc::{BlockView, DocSnapshot, Document, DocxCodec, FormatProvider, MarkSpan, OdtCodec};
 use std::fmt::Write as _;
 
-const SAMPLE_ODT: &[u8] = include_bytes!("fixtures/sample.odt");
-const SAMPLE_DOCX: &[u8] = include_bytes!("fixtures/sample.docx");
-const ZIPBOMB_DOCX: &[u8] = include_bytes!("fixtures/zipbomb.docx");
-const XXE_DOCX: &[u8] = include_bytes!("fixtures/xxe.docx");
-const XXE_ODT: &[u8] = include_bytes!("fixtures/xxe.odt");
+const SAMPLE_ODT: &[u8] = include_bytes!("../../fixtures/sample.odt");
+const SAMPLE_DOCX: &[u8] = include_bytes!("../../fixtures/sample.docx");
+const ZIPBOMB_DOCX: &[u8] = include_bytes!("../../fixtures/zipbomb.docx");
+const XXE_DOCX: &[u8] = include_bytes!("../../fixtures/xxe.docx");
+const XXE_ODT: &[u8] = include_bytes!("../../fixtures/xxe.odt");
 
 #[allow(
     clippy::expect_used,
