@@ -50,10 +50,9 @@ Single Cargo workspace, no submodules.
 
 ## Building
 
-Needs the pinned toolchain (rustup reads `rust-toolchain.toml` automatically) and a set of
-native libraries. `tools/check-build-env.sh` names any that are missing — Rust otherwise
-reports an absent one as `pkg-config exited with status code 1` inside a `-sys` crate without
-saying which. [`DEVELOPMENT.md`](DEVELOPMENT.md) maps them to packages.
+Install Rust through rustup and the native dependencies listed in
+[`DEVELOPMENT.md`](DEVELOPMENT.md). Rustup selects the toolchain from
+`rust-toolchain.toml`. Check dependencies with `tools/check-build-env.sh`.
 
 ```bash
 cargo build -p shell        # compositor, tilo-control, shots
@@ -72,16 +71,15 @@ target until a native runner can validate the Nix closure.
 
 ## Testing
 
-Scope tests to what you are changing; the compile dominates.
+Run tests for the affected package or module:
 
 ```bash
 cargo test -p shell --lib room_activity
 cargo test -p shell --test interaction_test   # headless Wayland state, no GPU
 ```
 
-Every app renders offscreen to a PNG with no display attached, and a running desktop can be
-driven over a socket — semantically through its exported actions, or with synthetic input
-when the thing under test is the pointer itself:
+Render PNGs without a display, invoke desktop actions, or test pointer and keyboard
+input through the control socket:
 
 ```bash
 cargo run --bin shots -- --mode offscreen --out target/shots
@@ -110,14 +108,13 @@ portal-mediated grants, FUSE-projected workspaces, and headless test infrastruct
 produces the same pixels as the live binary.
 
 Collaboration between different people works today; durable encrypted channel membership and
-the production secret-store boundary are being completed before it is called ready for syncing
-your own devices. Also outstanding for daily-driver use: multi-workspace-per-output and cross-GPU
+the production secret-store boundary are still required for device sync.
+Also outstanding for daily use: multi-workspace-per-output and cross-GPU
 monitor handling, per-app audio routing, and recorded hardware acceptance for session lock and
 power management. The app/shell AT-SPI bridge now includes compositor-owned OOBE, desktop and
 protected-lock endpoints, and the installed-image workflow walks those trees through an external
-AT-SPI client. Human screen-reader acceptance and a successful run of the new installed-system
-gate remain evidence requirements; they are not missing implementation hidden behind a status
-claim.
+AT-SPI client. Human screen-reader acceptance and a successful installed-system
+gate run are still required.
 
 Release packaging covers the platform matrix in `docs/install-contract.json`,
 but the first public Imager, installer image, and Linux package registries have

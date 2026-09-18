@@ -134,10 +134,6 @@ Inline marks inside any non-code block:
 
 ## Current boundaries
 
-Keep this list evidence-based. Cross-block keyboard selection and
-drag-to-reorder/re-parent are implemented and covered by the shared editor and
-sidebar tests; they are deliberately not listed as missing features.
-
 - **Link text doesn't track renames.** A `[[Welcome]]` link points at
   the page id resolved at the time the block was parsed. If you
   rename the target page, the link still navigates correctly but the

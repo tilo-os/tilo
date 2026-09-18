@@ -1,16 +1,13 @@
 # Development Guide
 
-Machine and environment notes: getting a working build on a host, and running the
-result. What Tilo *is* and how to work in the code is in `AGENTS.md`.
+Build dependencies, local development and testing. See `AGENTS.md` for repository
+conventions.
 
 ## What the build needs
 
-Rust (rustup reads `rust-toolchain.toml` automatically) and a set of native
-libraries. How the libraries get there is out of scope — container, nix shell, or
-installed on the host all work.
-
-Rust reports an absent one as `pkg-config exited with status code 1` inside a
-`-sys` crate without naming it, so:
+Install Rust through rustup and the native dependencies below, either on the host
+or in your build container or Nix shell. Rustup reads `rust-toolchain.toml`.
+Check dependencies with:
 
 ```bash
 tools/check-build-env.sh
@@ -36,9 +33,8 @@ Modules, and the Fedora packages providing them. Note `xkbcommon-devel`,
 | `bwrap` (binary) | `bubblewrap` | the launcher's confinement tests drive the real sandbox |
 | `rust-analyzer` (binary) | `rustup component add rust-analyzer` | the code editor's language-server test drives a real server |
 
-The last two are test *subjects*: those suites fail rather than skip without
-them, which is deliberate. They belong wherever `cargo` runs — inside the
-container if you build in one, since that is the `/usr` the sandbox binds.
+The sandbox and language-server tests require `bwrap` and `rust-analyzer`.
+Install them where Cargo runs, including inside a build container.
 
 ### Native Windows Imager builds
 
@@ -101,11 +97,8 @@ the routing and the sccache-namespace problem, and the shim with them.
 
 ### Fedora 44 disposable-VM loop
 
-For desktop UX work, do **not** build an RPM after every edit.  The dedicated
-loop keeps a prepared Fedora 44 toolbox and one target directory for this
-checkout, builds only the selected debug executable, and copies that executable
-to a disposable VM.  It deliberately never runs `rpm-ostree`, changes the host
-login session, or reboots a machine.
+For desktop development, build the selected debug executable in a Fedora 44
+toolbox and copy it to a disposable VM:
 
 ```bash
 # One time.  This builds a dependency image and creates a persistent distrobox.
@@ -126,17 +119,10 @@ TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh cycle shell
 
 Use SSH keys normally (set `TILO_VM_SSH_IDENTITY` when the key is not in the
 SSH agent), or provide `TILO_VM_PASSWORD` only in the invoking environment.
-The loop checks
-`systemd-detect-virt` in the remote guest before
-copying anything.  It intentionally does not use remote `loginctl`, `systemctl`,
-or a QEMU power action: after `handoff` (or `cycle`), log out through the VM's
-visible UI and then log back in.  That is part of the test — it exercises the
-session wrapper's cleanup path rather than making remote termination look like
-a valid logout.  QEMU and the physical host remain untouched.
-
-`verify` is a read-only proof after that UI transition: it compares the
-deployed debug shell with `/proc/<pid>/exe` for a running shell in the guest,
-not merely with the configuration file that asks the greeter to start it.
+The script checks `systemd-detect-virt` before copying files. After `handoff`
+or `cycle`, log out and back in through the VM's UI to test session cleanup.
+`verify` compares the deployed debug shell with the running guest process's
+`/proc/<pid>/exe`.
 
 The VM needs the `tilo-session-devel` developer entry once, and **"Tilo (my
 build)"** must be selected in its greeter once.  `deploy shell` writes the
@@ -182,7 +168,7 @@ omits the package path, so worktrees of one repo collide and cargo reports
 
 ### What does not make builds faster here
 
-Measured on `ui`'s test binary, so nobody spends the day rediscovering it:
+Measurements from `ui`'s test binary:
 
 | change | effect |
 |---|---|
@@ -192,23 +178,18 @@ Measured on `ui`'s test binary, so nobody spends the day rediscovering it:
 | nightly `--jobs-frontend=4` / `=8` | +13% / 0% |
 | nightly cranelift backend | 23% slower |
 
-Linking is not the bottleneck and the multi-hundred-MB binaries are not either.
 Compilation dominates: `-Z time-passes` puts type checking at 14% of a debug
 build and LLVM at 29%, the rest rustc lowering MIR to IR.
 
 Run-to-run noise on a busy machine is ±20%, which is larger than most of the
-effects above. Measure on an idle machine or not at all.
+effects above. Measure on an idle machine.
 
-What *is* real for concurrent work, where several worktrees build the same
-tree at once: sccache is the only sharing there is, since target directories
-cannot be shared. Measured, a fresh worktree building `ui` takes 126 s at 77%
-hits against ~562 s cold.
+Use sccache to share compilation results across worktrees; target directories
+cannot be shared. A measured `ui` build in a fresh worktree took 126 s at 77%
+cache hits, compared with ~562 s cold.
 
-That is also the thing easiest to destroy. Every change to `build.rustflags`
-invalidates the whole cache for every worktree simultaneously — measured at
-1.75% hits during a day of flag changes, recovering to 33% once they stopped.
-Batch flag changes, and do not make one while a long verification run is in
-flight.
+Changing `build.rustflags` invalidates cached compilations across worktrees.
+Batch flag changes and avoid them during verification runs.
 
 ### Sizing the compilation cache
 
@@ -216,10 +197,9 @@ flight.
 cacheable units, a few GB compressed (measured: 105,000 objects in 100 GB, mean
 0.97 MB, median 0.22 MB).
 
-Two halves. Dependencies never change unless `Cargo.lock` does and should stay
-resident. Workspace members turn over whenever a shared crate is touched —
-`ui` invalidates the compositor and every app behind it — at roughly 3–5 GB per
-full set, so 200 GB keeps about forty branch-versions hot.
+Cache dependencies between lockfile changes. Changes to a shared crate such as
+`ui` rebuild the compositor and dependent apps. At roughly 3–5 GB per full set,
+200 GB holds about forty versions.
 
 Prefer cache over target directories when trading disk: a cached object serves
 every worktree and survives `cargo clean`, a target directory serves one and
@@ -231,8 +211,7 @@ fully cold rebuild.
 ## Disk, and why builds hang
 
 One worktree's `target/` reaches 150+ GB. Delete `target/` from worktrees whose
-branches have landed — the sccache keeps the compilations, so the cost is one
-warmer-than-cold rebuild rather than a cold one.
+branches have landed; sccache retains reusable compilation results.
 
 If builds *hang* rather than run slowly — uninterruptible sleep, no progress at
 all — that is btrfs metadata exhaustion, and deleting files alone will not fix
@@ -244,9 +223,8 @@ it: freed space returns inside existing chunks, so `df` moves while
 sudo btrfs balance start -dusage=80 -dlimit=25 /var/home
 ```
 
-Use 80, not 30. Data chunks here average ~96% full, so `-dusage=30` relocates
-nothing and exits 0 — which reads as the remedy failing rather than not
-applying.
+In this environment, `-dusage=30` relocated no chunks despite exiting
+successfully; `-dusage=80` was needed.
 
 `/tmp` is a 16 GB tmpfs. Concurrent rustc processes fill it, and the resulting
 failures do not name the cause: bogus "Quota exceeded" messages, exit 1 with no
@@ -277,19 +255,14 @@ VM login `quickuser` / `tilo`. Check the FUSE mount with
 
 ## Running Tilo on your own machine (Silverblue / Bazzite)
 
-You do not have to boot the Tilo image to run the Tilo shell. `dist/` packages the
-compositor as a Wayland session you can pick at the login screen of the
-Silverblue-family host you already use, and adds a second, developer-only entry
-that starts *the build you just made* instead of the installed one.
-
-Two loops come out of that, and they are for different things:
+`dist/` packages the compositor as a Wayland login session for Silverblue-family
+hosts. An optional developer entry starts a local build.
 
 - **Nested** — the compositor runs as a window inside your current session.
-  Seconds per iteration, no logging out, but it is a client of your real
-  compositor: no DRM, no seat, no session lock worth testing.
+  No logout is needed. DRM, seat access and session locking are unavailable.
 - **Real session** — the compositor drives KMS on its own VT, as a login
-  session. That is where the lock screen, input, and multi-output paths are
-  actually exercised, and it costs a log-out per iteration.
+  session. Use this to test screen locking, input and multiple outputs.
+  Log out and back in after each build.
 
 ### Install once
 
@@ -317,10 +290,8 @@ $ rpm -qlp dist/rpm/build/RPMS/x86_64/tilo-session-devel-0.1.0-1.fc43.x86_64.rpm
 /usr/share/wayland-sessions/tilo-dev.desktop
 ```
 
-`/usr/share/wayland-sessions/` is the point of the exercise: GDM scans that
-directory and nothing else — not `/usr/local/share`, not `~/.local/share` — and
-on an ostree host it is inside the read-only composefs, so a session entry can
-only get there as part of `/usr`.
+GDM reads session entries from `/usr/share/wayland-sessions/`. On an ostree host,
+this directory is read-only, so install the entries through the package.
 
 Then install, either way:
 
@@ -345,8 +316,8 @@ Skip `tilo-session-devel` on any machine you are not developing Tilo on — see
 
 ### Edit → build → run nested
 
-The compositor prints its socket name as an assignment you can paste, and
-writes it to a fixed path, so nothing has to be read out of a log:
+The compositor prints its socket name and writes it to
+`$XDG_RUNTIME_DIR/tilo-session/wayland-display`:
 
 ```console
 $ cargo build -p shell && ./target/debug/shell --backend winit
@@ -355,7 +326,7 @@ tilo compositor listening on "wayland-1"
   also written to /run/user/1000/tilo-session/wayland-display
 ```
 
-So pointing anything at it is one step:
+Run an app on that socket:
 
 ```bash
 cargo build -p terminal
@@ -365,8 +336,7 @@ WAYLAND_DISPLAY=$(cat "$XDG_RUNTIME_DIR/tilo-session/wayland-display") ./target/
 The file is last-writer-wins — start a second compositor and it names the
 second one. The printed line stays authoritative for a particular process.
 
-Tilo nests inside Tilo, which is the quickest way to check that a build is a
-working Wayland server and not just a window that painted:
+To test a nested Tilo compositor:
 
 ```bash
 ./target/debug/shell --backend winit &                     # outer → wayland-1
@@ -486,6 +456,5 @@ git config core.hooksPath .githooks
 ```
 
 `pre-commit` runs `scripts/check-workspace-complete.sh`, which fails if any crate
-under `apps/` or `crates/` is missing from `[workspace].members` — that once let
-37 apps drop out of the build. Compilation and tests run in CI
-(`.forgejo/workflows/check.yml`), not the hook, so commits stay fast.
+under `apps/` or `crates/` is missing from `[workspace].members`. Compilation and
+tests run in CI (`.forgejo/workflows/check.yml`).
