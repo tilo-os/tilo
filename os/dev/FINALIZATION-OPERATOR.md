@@ -106,7 +106,9 @@ they do not prove a real finalization, signing operation or boot.
 The request selects one explicitly admitted source/epoch pair:
 4583a44c4056c67cfd1ebc4f1e02c7fa4aff3ffc /1789690573 or
 8fff1d6001b64a80bc730e87d3ffc529d2d9e70a /1789733507, or its reviewed
-DNS rootfs correction36c58be61ef1b25f24ae130c5ab4dde5d2350d45 /1789748444.
+DNS rootfs correction36c58be61ef1b25f24ae130c5ab4dde5d2350d45 /1789748444,
+or reviewed runtime-package policy successor
+b4f01a7d5437d015950c9b79be37e673b09b829c /1789749860.
 The workflow checks out the source emitted by request validation; the launcher
 checks that Git identity and emits matching source markers. Staging validates
 the retained receipt against this exact request, and the finalizer authenticates

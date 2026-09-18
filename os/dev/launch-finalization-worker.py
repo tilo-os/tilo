@@ -21,7 +21,8 @@ CONFIG = 'sha256:8deaeea8c5fd08f67856c6a82efa87ad5c580e829c46fd8b15d58900c6d5e47
 SOURCE = '4583a44c4056c67cfd1ebc4f1e02c7fa4aff3ffc'
 # Independently reviewed assembly sources; native artifact provenance is separate.
 SOURCES = {SOURCE: 1789690573, '8fff1d6001b64a80bc730e87d3ffc529d2d9e70a': 1789733507,
-           '36c58be61ef1b25f24ae130c5ab4dde5d2350d45': 1789748444}
+           '36c58be61ef1b25f24ae130c5ab4dde5d2350d45': 1789748444,
+           'b4f01a7d5437d015950c9b79be37e673b09b829c': 1789749860}
 HEX = re.compile(r'[0-9a-f]{64}')
 DIRECTORY_MODES = {'/var/lib': 0o755, '/var/lib/containers': 0o755,
                    '/work': 0o755, '/evidence': 0o700}
