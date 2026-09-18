@@ -2,8 +2,6 @@
 Description=Tilo per-user hosted model gateway
 Documentation=file:///usr/share/doc/tilo/model-gateway.md
 PartOf=tilo-graphical-session.target
-Requires=tilo-model-storage.service
-After=tilo-model-storage.service
 # Started by tilo-model-gateway.socket only when Settings or Agent connects.
 # Network availability is handled by individual hosted-model requests; daemon
 # activation and local configuration access must remain available offline.
@@ -17,6 +15,8 @@ UMask=0077
 RuntimeDirectory=tilo
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
+ConfigurationDirectory=tilo
+ConfigurationDirectoryMode=0700
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=%h/.config/tilo %t/tilo
