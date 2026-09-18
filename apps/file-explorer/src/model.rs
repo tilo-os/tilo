@@ -2190,14 +2190,21 @@ pub(crate) mod fixture_io_guard {
     /// Rust runs independent unit tests concurrently in one process. Keeping
     /// this state thread-local prevents one negative-boundary test from
     /// denying legitimate fixture I/O in an unrelated test.
-    pub(crate) struct DenyAmbientIo(PhantomData<Rc<()>>);
+    pub(crate) struct DenyAmbientIo {
+        owner: std::thread::ThreadId,
+        not_send: PhantomData<Rc<()>>,
+    }
     impl DenyAmbientIo {
         pub(crate) fn new() -> Self {
             DENY.with(|deny| assert!(!deny.replace(true), "ambient guard already armed"));
             ATTEMPTS.set(0);
-            Self(PhantomData)
+            Self {
+                owner: std::thread::current().id(),
+                not_send: PhantomData,
+            }
         }
         pub(crate) fn attempts(&self) -> usize {
+            assert_eq!(self.owner, std::thread::current().id());
             ATTEMPTS.get()
         }
     }
@@ -2211,7 +2218,10 @@ pub(crate) mod fixture_io_guard {
         DENY.with(|deny| assert!(!deny.get(), "ambient I/O denied: {boundary}"));
     }
 
-    pub(crate) struct OwnedListings(PhantomData<Rc<()>>);
+    pub(crate) struct OwnedListings {
+        owner: std::thread::ThreadId,
+        not_send: PhantomData<Rc<()>>,
+    }
     impl OwnedListings {
         pub(crate) fn new(root: &Path) -> Self {
             LISTINGS.with(|listings| {
@@ -2222,9 +2232,13 @@ pub(crate) mod fixture_io_guard {
                     entries: Vec::new(),
                 });
             });
-            Self(PhantomData)
+            Self {
+                owner: std::thread::current().id(),
+                not_send: PhantomData,
+            }
         }
         pub(crate) fn observations(&self) -> Vec<(PathBuf, bool)> {
+            assert_eq!(self.owner, std::thread::current().id());
             LISTINGS.with(|listings| {
                 listings
                     .borrow()
