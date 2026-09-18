@@ -695,7 +695,7 @@ impl PasswordsSurface {
             .iter()
             .filter(|(label, _)| label.as_str() != "network")
             .collect::<Vec<_>>();
-        custom_fields.sort_by(|(left, _), (right, _)| left.cmp(right));
+        custom_fields.sort_by_key(|(left, _)| *left);
         self.draft_custom_fields = Zeroizing::new(
             custom_fields
                 .into_iter()
@@ -954,7 +954,7 @@ impl PasswordsSurface {
                 ActiveField::Password,
             ]),
             SecretItemKind::Wifi | SecretItemKind::Other => {
-                fields.extend([ActiveField::Username, ActiveField::Password])
+                fields.extend([ActiveField::Username, ActiveField::Password]);
             }
             SecretItemKind::SecureNote => {}
         }
@@ -1217,7 +1217,7 @@ impl PasswordsSurface {
                     item.id.clone(),
                     secret.to_string(),
                     std::time::Instant::now() + std::time::Duration::from_secs(10),
-                ))
+                ));
             }
             Err(error) => self.status = error,
         }
@@ -1273,13 +1273,13 @@ impl PasswordsSurface {
         };
         match item.kind {
             SecretItemKind::Login | SecretItemKind::ApiKey | SecretItemKind::Wifi if row == 0 => {
-                self.copy_identity_selected()
+                self.copy_identity_selected();
             }
             SecretItemKind::Login | SecretItemKind::ApiKey | SecretItemKind::Wifi if row == 1 => {
-                self.copy_selected()
+                self.copy_selected();
             }
             SecretItemKind::Login | SecretItemKind::ApiKey if row == 2 => {
-                self.copy_origin_selected()
+                self.copy_origin_selected();
             }
             SecretItemKind::SecureNote | SecretItemKind::Other if row == 0 => self.copy_selected(),
             _ => {}
@@ -3965,19 +3965,19 @@ impl Widget for PasswordsSurface {
                     );
                 }
                 ShowcaseMode::Vault => {
-                    self.draw_list(scene, tr, transform, theme, compact_content, true)
+                    self.draw_list(scene, tr, transform, theme, compact_content, true);
                 }
                 ShowcaseMode::Editor | ShowcaseMode::DeleteConfirm => {
-                    self.draw_editor(scene, tr, transform, theme, compact_content)
+                    self.draw_editor(scene, tr, transform, theme, compact_content);
                 }
                 ShowcaseMode::Health => {
-                    self.draw_health(scene, tr, transform, theme, compact_content)
+                    self.draw_health(scene, tr, transform, theme, compact_content);
                 }
                 ShowcaseMode::AppAccess => {
-                    self.draw_app_access(scene, tr, transform, theme, compact_content)
+                    self.draw_app_access(scene, tr, transform, theme, compact_content);
                 }
                 ShowcaseMode::Import | ShowcaseMode::Export => {
-                    self.draw_list(scene, tr, transform, theme, compact_content, true)
+                    self.draw_list(scene, tr, transform, theme, compact_content, true);
                 }
             }
             if self.drawer.is_open() {
@@ -4010,12 +4010,12 @@ impl Widget for PasswordsSurface {
         match self.mode {
             ShowcaseMode::Vault => self.draw_detail(scene, tr, transform, theme, detail),
             ShowcaseMode::Editor | ShowcaseMode::DeleteConfirm => {
-                self.draw_editor(scene, tr, transform, theme, detail)
+                self.draw_editor(scene, tr, transform, theme, detail);
             }
             ShowcaseMode::Health => self.draw_health(scene, tr, transform, theme, detail),
             ShowcaseMode::AppAccess => self.draw_app_access(scene, tr, transform, theme, detail),
             ShowcaseMode::Import | ShowcaseMode::Export => {
-                self.draw_detail(scene, tr, transform, theme, detail)
+                self.draw_detail(scene, tr, transform, theme, detail);
             }
         }
         self.draw_transfer_dialog(scene, tr, transform, theme, presence);
@@ -4152,7 +4152,7 @@ impl Widget for PasswordsSurface {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_pointer = Point::new(position.x / scale, position.y / scale)
+                self.last_pointer = Point::new(position.x / scale, position.y / scale);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -4267,7 +4267,6 @@ impl Widget for PasswordsSurface {
                     ShowcaseMode::AppAccess => {
                         if self.activate_app_access(panel, self.last_pointer) {
                             *handled = true;
-                            return;
                         }
                     }
                     ShowcaseMode::Vault if self.drawer.is_overlay() && self.mobile_detail => {
@@ -4341,7 +4340,6 @@ impl Widget for PasswordsSurface {
                         {
                             self.activate_detail_row_at(1, self.last_pointer.x, panel.x1);
                             *handled = true;
-                            return;
                         }
                     }
                     ShowcaseMode::Editor => {
@@ -4432,7 +4430,6 @@ impl Widget for PasswordsSurface {
                         if save.contains(self.last_pointer) {
                             self.save_draft();
                             *handled = true;
-                            return;
                         }
                     }
                     _ => {}
@@ -4618,7 +4615,7 @@ impl Widget for PasswordsSurface {
                         Key::Named(NamedKey::Enter) => match self.transfer_dialog {
                             Some(TransferDialog::ImportPreview { .. }) => self.apply_import(),
                             Some(TransferDialog::ExportPlaintext { acknowledged: true }) => {
-                                self.begin_plaintext_export()
+                                self.begin_plaintext_export();
                             }
                             Some(TransferDialog::DeleteConfirm { .. }) => self.confirm_delete(),
                             Some(TransferDialog::Backup) => self.begin_encrypted_backup(),
@@ -5154,22 +5151,22 @@ impl Widget for PasswordsSurface {
             ("passwords.add", Action::Activate) => self.begin_add(),
             ("passwords.filter.all", Action::Activate) => self.select_filter(VaultFilter::All),
             ("passwords.filter.favorites", Action::Activate) => {
-                self.select_filter(VaultFilter::Favorites)
+                self.select_filter(VaultFilter::Favorites);
             }
             ("passwords.filter.logins", Action::Activate) => {
-                self.select_filter(VaultFilter::Kind(SecretItemKind::Login))
+                self.select_filter(VaultFilter::Kind(SecretItemKind::Login));
             }
             ("passwords.filter.api-keys", Action::Activate) => {
-                self.select_filter(VaultFilter::Kind(SecretItemKind::ApiKey))
+                self.select_filter(VaultFilter::Kind(SecretItemKind::ApiKey));
             }
             ("passwords.filter.notes", Action::Activate) => {
-                self.select_filter(VaultFilter::Kind(SecretItemKind::SecureNote))
+                self.select_filter(VaultFilter::Kind(SecretItemKind::SecureNote));
             }
             ("passwords.filter.wifi", Action::Activate) => {
-                self.select_filter(VaultFilter::Kind(SecretItemKind::Wifi))
+                self.select_filter(VaultFilter::Kind(SecretItemKind::Wifi));
             }
             ("passwords.filter.other", Action::Activate) => {
-                self.select_filter(VaultFilter::Kind(SecretItemKind::Other))
+                self.select_filter(VaultFilter::Kind(SecretItemKind::Other));
             }
             (target, Action::Activate) if target.starts_with("passwords.favorite:") => {
                 let Some(index) = target
