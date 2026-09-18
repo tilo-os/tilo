@@ -8,7 +8,7 @@
 use std::rc::Rc;
 
 use crate::shell::device_fabric::{DeviceKind, DisplayEdge};
-use crate::shell::device_fabric_runtime::MediaHandoffPhase;
+use crate::shell::device_fabric_runtime::{BluetoothHandoffPhaseView, MediaHandoffPhase};
 use crate::shell::overlay_host::{
     DeviceFabricBridge, DeviceFabricUiAction, DeviceFabricView, RealtimeContinuityBridge,
     RealtimeContinuityUiAction,
@@ -187,6 +187,62 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
             ),
             title: format!("{verb} moving {}", status.title),
             subtitle: format!("Media handoff to {}", status.target_label),
+            action,
+            confirm: false,
+        });
+    }
+    for authorization in &view.bluetooth_authorizations {
+        for (approved, verb) in [(true, "Allow"), (false, "Decline")] {
+            actions.push(DeviceAction {
+                id: format!(
+                    "bluetooth.consent.{}.{}",
+                    if approved { "allow" } else { "decline" },
+                    opaque(&authorization.request_id)
+                ),
+                title: format!(
+                    "{verb} handoff of {} from {}",
+                    authorization.accessory_name, authorization.source_label
+                ),
+                subtitle: "Resolve this exact Bluetooth pairing handoff request".into(),
+                action: DeviceFabricUiAction::AuthorizeBluetoothHandoff {
+                    request_id: authorization.request_id,
+                    approved,
+                },
+                confirm: approved,
+            });
+        }
+    }
+    for status in &view.bluetooth_handoffs {
+        let (verb, action) = match status.phase {
+            BluetoothHandoffPhaseView::Completed => continue,
+            BluetoothHandoffPhaseView::Failed(_) | BluetoothHandoffPhaseView::Cancelled
+                if status.outbound =>
+            {
+                (
+                    "Retry",
+                    DeviceFabricUiAction::RetryBluetoothHandoff {
+                        request_id: status.request_id,
+                    },
+                )
+            }
+            BluetoothHandoffPhaseView::Failed(_) | BluetoothHandoffPhaseView::Cancelled => {
+                continue;
+            }
+            _ => (
+                "Cancel",
+                DeviceFabricUiAction::CancelBluetoothHandoff {
+                    request_id: status.request_id,
+                },
+            ),
+        };
+        actions.push(DeviceAction {
+            id: format!(
+                "bluetooth.{}.{}",
+                verb.to_ascii_lowercase(),
+                opaque(&status.request_id)
+            ),
+            title: format!("{verb} handoff of {}", status.accessory_name),
+            subtitle: format!("Bluetooth continuity with {}", status.peer_label),
             action,
             confirm: false,
         });
@@ -757,6 +813,24 @@ mod tests {
     fn fixture() -> DeviceFabricView {
         let peer = device("certified-peer-secret-looking-id");
         DeviceFabricView {
+            bluetooth_authorizations: vec![
+                crate::shell::overlay_host::BluetoothHandoffAuthorizationView {
+                    request_id: [0x44; 16],
+                    accessory_name: "Headphones".into(),
+                    source_label: "Laptop".into(),
+                },
+            ],
+            bluetooth_handoffs: vec![
+                crate::shell::device_fabric_runtime::BluetoothHandoffStatusView {
+                    request_id: [0x45; 16],
+                    accessory_name: "Headphones".into(),
+                    peer_label: "Laptop".into(),
+                    outbound: true,
+                    phase: BluetoothHandoffPhaseView::Failed(
+                        crate::shell::device_fabric_runtime::BluetoothHandoffFailure::Send,
+                    ),
+                },
+            ],
             devices: vec![FabricDeviceView {
                 id: peer.clone(),
                 label: "Travel phone".into(),
@@ -802,12 +876,28 @@ mod tests {
     fn action_locators_do_not_disclose_identity_session_or_device_paths() {
         let actions = device_actions(&fixture());
         assert!(!actions.is_empty());
-        for action in actions {
+        for action in &actions {
             assert!(!action.id.contains("certified-peer-secret-looking-id"));
             assert!(!action.id.contains("private-session-token"));
             assert!(!action.id.contains("2f6465762f"));
             assert!(!action.id.contains("43434343"));
+            assert!(!action.id.contains("44444444"));
+            assert!(!action.id.contains("45454545"));
         }
+        assert!(actions.iter().any(|action| {
+            action.action
+                == DeviceFabricUiAction::AuthorizeBluetoothHandoff {
+                    request_id: [0x44; 16],
+                    approved: true,
+                }
+                && action.confirm
+        }));
+        assert!(actions.iter().any(|action| {
+            action.action
+                == DeviceFabricUiAction::RetryBluetoothHandoff {
+                    request_id: [0x45; 16],
+                }
+        }));
     }
 
     #[test]
