@@ -246,7 +246,9 @@ pub fn build_accessibility_tree(
     });
     clock.set_bounds(access_rect(layout.clock));
 
-    let mut password = AccessNode::new(AccessRole::TextInput);
+    // `PasswordInput` maps to AT-SPI's PasswordText role. That lets Orca and
+    // braille clients suppress credential echo while retaining editable text.
+    let mut password = AccessNode::new(AccessRole::PasswordInput);
     password.set_label("Password");
     password.set_bounds(access_rect(layout.password));
     password.add_action(AccessAction::Focus);
@@ -777,7 +779,7 @@ mod tests {
         let passwords = update
             .nodes
             .iter()
-            .filter(|(_, node)| node.role() == AccessRole::TextInput)
+            .filter(|(_, node)| node.role() == AccessRole::PasswordInput)
             .collect::<Vec<_>>();
         assert_eq!(
             passwords.len(),
