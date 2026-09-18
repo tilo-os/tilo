@@ -30,6 +30,7 @@ done
 crypto_source="$repo/crates/system/tilo-crypto/src/lib.rs"
 development_signer="$repo/os/dev/development-signer.py"
 development_signer_setup="$repo/os/dev/setup-development-signer.py"
+development_compiler="$repo/os/dev/compile-development-os.py"
 if grep -Eq 'pkcs1v15::SigningKey|SigningKey::<Sha(256|512)>' "$crypto_source"; then
   bad 'Tilo-owned RSA signing regressed from ring to the timing-vulnerable RustCrypto operation'
 elif grep -Fq 'AuthenticodeSignature::new' "$crypto_source"; then
@@ -46,6 +47,12 @@ if grep -Eq "(/usr/bin/(openssl|sbsign)|\['(openssl|sbsign)')" \
   bad 'development key provisioning or private operations still invoke OpenSSL/sbsigntools'
 else
   ok 'development key provisioning and private operations use the Rust-native signer'
+fi
+if grep -Eq "run\('openssl', '(genpkey|pkey)'|subprocess\.run\(\['openssl', 'pkey'" \
+    "$development_compiler"; then
+  bad 'development registry-owner key generation still invokes OpenSSL'
+else
+  ok 'development registry-owner key generation uses Rust-native Ed25519'
 fi
 if RUSTC_WRAPPER= cargo tree --manifest-path "$repo/Cargo.toml" -p tilo-crypto -d \
     | grep -Eq '^rsa v'; then
