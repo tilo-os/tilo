@@ -871,6 +871,63 @@ fn stepping_month_changes_anchor_month() {
 // --- responsive layout ---------------------------------------------
 
 #[test]
+fn schedule_overlap_warning_reflows_and_keeps_complete_semantics() {
+    for (width, text_scale) in [(880.0, 1.0), (880.0, 2.0), (390.0, 2.0)] {
+        let mut app = CalendarApp::new_demo();
+        let selected = match app.selection {
+            Some(Sel::Event(id)) => id,
+            _ => panic!("demo opens an event editor"),
+        };
+        let edited = app.model.event(selected).expect("selected event").clone();
+        let mut overlapping = edited.clone();
+        overlapping.id = Id::new_v4();
+        overlapping.title = "Design review follow-up".into();
+        overlapping.start = edited.start + chrono::Duration::minutes(15);
+        overlapping.end = edited.end + chrono::Duration::minutes(30);
+        overlapping.recurrence = Recurrence::Weekly;
+        app.model.events.push(overlapping);
+
+        app.text_scale = text_scale;
+        app.rect = Rect::new(0.0, 0.0, width, 844.0);
+        app.relayout();
+
+        assert!(
+            app.form.conflict.area() > 0.0,
+            "{width}px / {text_scale}× retains warning"
+        );
+        assert!(
+            app.form.conflict.y1 <= app.form.location.y0,
+            "warning reserves its own lane before location at {width}px / {text_scale}×"
+        );
+        for control in [
+            app.form.title,
+            app.form.allday,
+            app.form.start_date,
+            app.form.start_time,
+            app.form.end_date,
+            app.form.end_time,
+            app.form.location,
+            app.form.calendar,
+            app.form.invite,
+        ] {
+            assert!(
+                app.form.conflict.intersect(control).area() <= 0.0,
+                "conflict warning overlaps form target {control:?} at {width}px / {text_scale}×"
+            );
+        }
+
+        let semantics = app.accessibility().expect("calendar semantic tree");
+        let warning = semantics
+            .children
+            .iter()
+            .filter_map(|node| node.name.as_deref())
+            .find(|name| name.starts_with("Schedule conflict:"))
+            .expect("full conflict names reach assistive technology");
+        assert!(warning.contains("Design review follow-up"));
+    }
+}
+
+#[test]
 fn large_text_desktop_keeps_modal_form_controls_in_bounds() {
     let mut app = CalendarApp::new_demo();
     app.detail_open = true;
