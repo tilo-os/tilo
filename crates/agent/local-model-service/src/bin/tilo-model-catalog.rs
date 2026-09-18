@@ -374,16 +374,22 @@ fn resolve_artifact(
     } else {
         source_dir.join(&source.file)
     };
-    let metadata = fs::symlink_metadata(&path)
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    let mut file = options
+        .open(&path)
+        .map_err(|error| format!("could not securely open {}: {error}", path.display()))?;
+    let metadata = file
+        .metadata()
         .map_err(|error| format!("could not inspect {}: {error}", path.display()))?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
+    if !metadata.is_file() {
         return Err(format!(
             "artifact {} must be a regular file",
             path.display()
         ));
     }
-    let mut file =
-        File::open(&path).map_err(|error| format!("could not open {}: {error}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 64 * 1024];
     let mut size_bytes = 0_u64;
@@ -664,6 +670,23 @@ mod tests {
         source.models[0].artifact.sha256 = Some("f".repeat(64));
         let error = compile(source, temp.path(), &SigningKey::from_bytes(&[3; 32])).unwrap_err();
         assert!(error.contains("SHA-256 does not match"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn artifact_digest_never_follows_a_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let source = source(temp.path());
+        let runtime = temp.path().join("runtime.bin");
+        let replacement = temp.path().join("replacement.bin");
+        fs::write(&replacement, b"substituted release payload").unwrap();
+        fs::remove_file(&runtime).unwrap();
+        symlink(&replacement, &runtime).unwrap();
+
+        let error = compile(source, temp.path(), &SigningKey::from_bytes(&[3; 32])).unwrap_err();
+        assert!(error.contains("could not securely open"));
     }
 
     #[test]
