@@ -7,6 +7,8 @@ publish.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 [dependencies]
+qos-relay = { path = "../../hosting/qos-relay" }
+uuid.workspace = true
 postcard = { workspace = true, features = ["alloc", "use-std"] }
 web-time = { version = "1", features = ["serde"] }
 ed25519-dalek.workspace = true
@@ -29,10 +31,8 @@ vello.workspace = true
 winit.workspace = true
 wgpu.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-qos-relay = { path = "../../hosting/qos-relay" }
 iroh.workspace = true
 iroh-base.workspace = true
-uuid.workspace = true
 wasm-bindgen = "=0.2.108"
 wasm-bindgen-futures = "=0.4.58"
 js-sys = "=0.3.85"

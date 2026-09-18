@@ -114,6 +114,9 @@ impl Drop for RelayClient {
 /// Failure modes.
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
+    /// TLS no_application_protocol: the only permitted state-only fallback.
+    #[error("relay protocol unsupported")]
+    UnsupportedProtocol,
     /// Iroh dial / bi-stream.
     #[error("iroh: {0}")]
     Iroh(String),
@@ -126,6 +129,18 @@ pub enum ClientError {
     /// I/O.
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+}
+
+fn classify_connect_error(error: iroh::endpoint::ConnectError) -> ClientError {
+    use iroh::endpoint::{ConnectError, ConnectingError, ConnectionError, TransportErrorCode};
+    let connection = match &error {
+        ConnectError::Connection { source, .. } => Some(source),
+        ConnectError::Connecting { source: ConnectingError::ConnectionError { source, .. }, .. } => Some(source),
+        _ => None,
+    };
+    if matches!(connection, Some(ConnectionError::TransportError(error)) if error.code == TransportErrorCode::crypto(120)) {
+        ClientError::UnsupportedProtocol
+    } else { ClientError::Iroh(error.to_string()) }
 }
 
 impl RelayClient {
@@ -557,7 +572,7 @@ impl RelayClient {
                 },
             )
             .await
-            .map_err(|e| ClientError::Iroh(e.to_string()))?;
+            .map_err(classify_connect_error)?;
         let (mut send, mut recv) = conn
             .open_bi()
             .await
@@ -898,6 +913,16 @@ async fn next_v2_event<R: tokio::io::AsyncRead + Unpin>(
 #[cfg(test)]
 mod scheduling_tests {
     use super::*;
+    #[test]
+    fn only_tls_no_application_protocol_allows_fallback() {
+        use iroh::endpoint::{ConnectionError, ConnectError, TransportError, TransportErrorCode};
+        for code in [40, 42, 120] {
+            let error: ConnectError=ConnectionError::TransportError(TransportError::new(TransportErrorCode::crypto(code),"test".into())).into();
+            assert_eq!(matches!(super::classify_connect_error(error),super::ClientError::UnsupportedProtocol),code==120);
+        }
+        let error:ConnectError=ConnectionError::TimedOut.into();
+        assert!(!matches!(super::classify_connect_error(error),super::ClientError::UnsupportedProtocol));
+    }
     use crate::peer_actions::{ActionMessage, DirectedAction};
     use uuid::Uuid;
 

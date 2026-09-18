@@ -1,3 +1,4 @@
+import {createActionClient} from './action-client.mjs';
 import {commitPeerWrites,commitPeerBatches} from './peer-persistence.mjs';
 import {createRecoveryCoordinator} from './peer-recovery.mjs';
 import {retryableMemo} from './asset-recovery.mjs';
@@ -8,7 +9,7 @@ export function createConnectPeer({init,runtime,mountDesktop,acquireStorage,acqu
 const initialize=retryableMemo(init);
 return async function connectPeer(options={}){
   const {enrollmentBaseUrl='/qos-peer/enrollment',signal}=options;
-  let lease;
+  let lease,actionsV1,actionRevision=0n,actionRecovery=false,actionTimer=null,actionPolling=false;
   let id,closed=false,closing=false,snapshot={phase:'authenticating',records:[]},connection,storage,namespace,raw,flush=Promise.resolve(),failed=false,generation=0;
   const subscribers=new Set(),mounts=new Set(),failedMounts=new Set(),pendingMounts=new Set(),mountControllers=new Set();
   let reconnecting,closePromise,setup,operationId=0,surfaceId=0,healthRevision=0n,saving,admissionTimer=null,admissionDeadline=null,admissionRevision=0;
@@ -34,7 +35,12 @@ return async function connectPeer(options={}){
     });
     return flush;
   }
-  const update=value=>{if(closed||closing)return;let next=JSON.parse(value);if(failed)next={...next,phase:'incomplete',error:snapshot.error,persistence:'failed'};if(next.phase==='ready'){if(admissionTimer!==null)timerClear(admissionTimer);admissionTimer=null;admissionDeadline=null;clearFailure('admission');}report(next);if(next.health?.transport?.phase==='offline'||next.phase==='failed'){coordinator.schedule();}if(next.phase==='ready'&&next.health?.transport?.authenticated){coordinator.reset();}if(next.persistenceNeeded)void persist().catch(()=>{});};
+  function pollActions(){
+    if(!actionsV1||closed||closing||actionPolling)return;
+    if(actionTimer!==null)timerClear(actionTimer);actionTimer=null;actionPolling=true;
+    void actionsV1.recover().catch(()=>{}).finally(()=>{actionPolling=false;if(!closed&&!closing)actionTimer=timerSet(pollActions,1000);});
+  }
+  const update=value=>{if(closed||closing)return;if(actionsV1){try{runtime.peer_action_context(id);}catch{actionsV1.invalidate('identity-or-transport-unavailable');actionRecovery=false;}}let next=JSON.parse(value);if(failed)next={...next,phase:'incomplete',error:snapshot.error,persistence:'failed'};if(next.phase==='ready'){if(admissionTimer!==null)timerClear(admissionTimer);admissionTimer=null;admissionDeadline=null;clearFailure('admission');}report(next);if(next.health?.transport?.phase==='offline'||next.phase==='failed'){coordinator.schedule();}if(next.phase==='ready'&&next.health?.transport?.authenticated){coordinator.reset();if(actionsV1&&!actionRecovery){actionRecovery=true;pollActions();}}if(next.persistenceNeeded)void persist().catch(()=>{});};
   async function post(route,body){
     const response=await fetchEnrollment(`${enrollmentBaseUrl}/${route}`,{method:'POST',headers:{'Content-Type':'application/json'},body,signal,cache:'no-store',credentials:'same-origin'});
     const text=await response.text();
@@ -64,7 +70,7 @@ return async function connectPeer(options={}){
     admissionTimer=timerSet(()=>{admissionTimer=null;if(closed||closing)return;clearFailure('admission');health={...health,admission:{...health.admission,phase:'failed'},failures:[...health.failures,{id:'session:admission',code:'admission-timeout',scope:{kind:'admission'},severity:'error',message:'Shared state is taking longer to load.',recovery:[{kind:'refresh-checkpoint'}],occurredAtMs:now()}]};report({});},10000);
   }
   const connect=async(old)=>{
-    admissionAttempt();await refreshEnrollment();
+    actionRecovery=false;actionsV1?.invalidate("reconnecting");admissionAttempt();await refreshEnrollment();
     if(closed||closing)throw Error('Session disposed during enrollment');
     if(old===undefined){
       const current=generation;
@@ -78,6 +84,28 @@ return async function connectPeer(options={}){
       if(closed||closing)return;
     }
     clearFailure('connection');await persist();
+    if(typeof runtime.peer_action_request==='function'){
+      if(!actionsV1){
+        const key={type:'privateActions',workspace:namespace.room};
+        actionsV1=await createActionClient({
+          context:()=>JSON.parse(runtime.peer_action_context(id)),
+          load:async()=>{const rows=await storage.hydrate();const saved=rows.find(row=>row.key?.type==='privateActions'&&row.key.workspace===namespace.room);if(saved)actionRevision=BigInt(saved.revision);return saved?JSON.parse(new TextDecoder().decode(saved.bytes)):undefined;},
+          commit:value=>{
+            const write={key,revision:String(++actionRevision),bytes:new TextEncoder().encode(JSON.stringify(value)),actor:null};
+            const task=flush.catch(()=>{}).then(()=>storage.commit([write]));flush=task;return task;
+          },
+          request:async message=>{
+            if(closed||closing||id===undefined)throw Error('Action transport disconnected');
+            const request=runtime.peer_action_request(id,JSON.stringify(message));
+            const deadline=now()+10000;
+            try{while(!closed&&!closing){const response=runtime.peer_action_response(id,request);if(response)return JSON.parse(response);if(now()>=deadline)throw Error('Action response expired; outcome unknown');await new Promise(resolve=>timerSet(resolve,25));}throw Error('Action transport disconnected');}
+            finally{if(id!==undefined)runtime.peer_action_forget(id,request);}
+          },
+        });
+      }
+      // Recovery observes retained IDs only. It never submits an old effect again.
+      pollActions();
+    }
   };
   const coordinator=createRecoveryCoordinator({...recoveryClock,attempt:async()=>{
     try{health={...health,transport:{...health.transport,phase:'reconnecting',authenticated:false}};report({});await connect(id);}catch(error){connectionFailure(error);throw error;}
@@ -106,7 +134,7 @@ return async function connectPeer(options={}){
   function close(){
     if(closed)return Promise.resolve();
     if(closePromise)return closePromise;
-    closing=true;if(admissionTimer!==null)timerClear(admissionTimer);admissionTimer=null;admissionDeadline=null;coordinator.dispose();events?.removeEventListener?.('online',online);
+    closing=true;if(actionTimer!==null)timerClear(actionTimer);actionTimer=null;if(admissionTimer!==null)timerClear(admissionTimer);admissionTimer=null;admissionDeadline=null;coordinator.dispose();events?.removeEventListener?.('online',online);
     closePromise=(async()=>{
       for(const waiter of admissionWaiters)waiter.reject(Error('Session closed'));
       for(const waiter of surfaceWaiters.values())waiter.reject(Error('Session closed'));surfaceWaiters.clear();
@@ -119,6 +147,7 @@ return async function connectPeer(options={}){
       // Stop the replaceable endpoint even when component settlement retains
       // custody. Keep its durable owner addressable for the next retry.
       if(id!==undefined)await runtime.disconnect_peer(id);
+      await actionsV1?.close();
       await settleMounts(mounts);
       failed=false;await persist(false);
       generation++;if(id!==undefined){await runtime.close_peer(id);id=undefined;}
@@ -198,7 +227,7 @@ return async function connectPeer(options={}){
     if(signal?.aborted)throw signal.reason??Error('Session aborted');
     setup=connect();await setup;
     if(closed||closing)throw signal?.reason??Error('Session disposed during connection');
-    return {getSnapshot:()=>snapshot,subscribe(listener){subscribers.add(listener);return()=>subscribers.delete(listener);},
+    return {get actionsV1(){return actionsV1;},getSnapshot:()=>snapshot,subscribe(listener){subscribers.add(listener);return()=>subscribers.delete(listener);},
       async mountDesktop(target,mountOptions={}){
         if(closed||closing)throw Error('Session closed');
         if(snapshot.phase!=='ready')throw Error('Certified record hydration is incomplete');

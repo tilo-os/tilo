@@ -10,6 +10,7 @@ export interface PeerSnapshot {
  recoveryAvailable?:boolean;
 }
 export interface CertifiedPeer {
+ readonly actionsV1?:CertifiedActionsV1;
  getSnapshot():PeerSnapshot;
  subscribe(listener:(snapshot:PeerSnapshot)=>void):()=>void;
  mountDesktop(target:HTMLElement,options:Pick<MountOptions,'app'|'instance'|'signal'|'onStatus'>&{onSurface?:(surfaceId:string)=>void;onMount?:(mount:DesktopMount)=>void}):Promise<DesktopMount>;
@@ -136,4 +137,46 @@ export interface SessionHealth {
   };
   failures: SessionFailure[];
   recoveryOperations: RecoveryOperation[];
+}
+
+/** Private broker API. This is deliberately not the legacy agent sendAction API. */
+export interface BrokerRoute {
+ app_peer:string; app_id:string; record_id:string; resource:string; action:string; revision:string|null;
+}
+export type ActionConfirmation={kind:'confirm'}|{kind:'phrase';phrase:string};
+export interface ActionIntent extends BrokerRoute {invocation?:string;argument?:unknown;confirmation?:ActionConfirmation|null}
+export type PrivateInvocationUpdate=
+ | {state:'accepted';invocation:string}
+ | {state:'progress';invocation:string;sequence:string;phase:string;completed:number|null;total:number|null;message:string|null}
+ | {state:'item';invocation:string;sequence:string;value:unknown}
+ | {state:'succeeded';invocation:string;output:{value?:unknown;resources:string[]}}
+ | {state:'failed';invocation:string;error:{code:string;message:string;details?:unknown;retryable:boolean}}
+ | {state:'cancelled';invocation:string;message:string|null};
+export interface ActionBinding {room:string;sender:string;senderRoot:string;target:string;targetRoot:string;certificate:string}
+export interface PrivateInvocation {
+ invocation:string;host:string;binding:ActionBinding;intent:BrokerRoute&{type:'invoke_bound';host:string;invocation:string;argument:unknown;confirmation:ActionConfirmation|null};
+ state:'unknown'|'accepted'|'progress'|'item'|'succeeded'|'failed'|'cancelled';reason:string|null;
+ update:PrivateInvocationUpdate|null;terminal:boolean;cancellationRequested:boolean;
+}
+export interface BrokerCatalogue {
+ version:1;surfaces:Array<{peer_id:string;app_id:string;cluster_id:string;record_id:string;actions:Array<{
+ resource:string;action:string;revision?:string;label?:string;description?:string;
+ contract:{confirmation:{mode:'none'}|{mode:'confirm'}|{mode:'phrase';phrase:string};[key:string]:unknown};
+ [key:string]:unknown;
+ }>}>;
+}
+export type BrokerCapability={state:'unavailable';reason:string}|{state:'ready';host:string;binding:ActionBinding;catalogue:BrokerCatalogue};
+export interface ActionSnapshot {version:1;capability:BrokerCapability;entries:PrivateInvocation[]}
+export interface CertifiedActionsV1 {
+ readonly version:1;
+ getSnapshot():ActionSnapshot;
+ /** Independent of state/health generation; private values must not be logged. */
+ subscribe(listener:(snapshot:ActionSnapshot)=>void):()=>void;
+ catalogue():Promise<Extract<BrokerCapability,{state:'ready'}>>;
+ /** Commit full intent before send. Reusing an ID observes status; never reruns. */
+ invoke(intent:ActionIntent):Promise<PrivateInvocation>;
+ status(invocation:string):Promise<PrivateInvocation>;
+ /** Cooperative acknowledgement; only a durable cancelled update is terminal. */
+ cancel(invocation:string):Promise<PrivateInvocation>;
+ recover():Promise<ActionSnapshot>;
 }

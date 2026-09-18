@@ -41,6 +41,8 @@ struct Bootstrap {
 }
 use crate::peer_journal::Journal;
 struct Peer {
+    actions: RefCell<crate::action_client::PendingActions>,
+    action_v2: std::cell::Cell<bool>,
     admission_failure: RefCell<Option<String>>,
     was_ready: std::cell::Cell<bool>,
     published: RefCell<BTreeSet<Vec<u8>>>,
@@ -196,20 +198,30 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
         .bind()
         .await
         .map_err(error)?;
-    let connected = RelayClient::connect_to_enrolled_home_peer(
+    let connected = RelayClient::connect_v2_to_enrolled_home_peer(
         endpoint.clone(),
-        config.relay_address,
+        config.relay_address.clone(),
         config.root_public_key,
         config.host_certificate.device_public_key,
         config.certificate.clone(),
         key.clone(),
-        revoked,
+        revoked.clone(),
     )
     .await;
+    // Only the typed TLS ALPN refusal permits v1. Auth and policy failures do not.
+    let (connected, action_v2) = match connected {
+        Err(qos_relay::client::ClientError::UnsupportedProtocol) => (RelayClient::connect_to_enrolled_home_peer(
+            endpoint.clone(), config.relay_address, config.root_public_key,
+            config.host_certificate.device_public_key, config.certificate.clone(),key.clone(),revoked,
+        ).await, false),
+        result => (result, true),
+    };
     let client=match connected {Ok(client)=>client,Err(failure)=>{endpoint.close().await;return Err(error(failure));}};
     let session = match RelayCoeditSession::join(client, workspace, device) {Ok(session)=>Rc::new(session),Err(failure)=>{endpoint.close().await;return Err(error(failure));}};
     let id = existing.unwrap_or_else(||NEXT.with(|next|{let id=next.get();next.set(id+1);id}));
     let peer=if let Some(peer)=owner{
+        peer.action_v2.set(action_v2);
+        *peer.actions.borrow_mut()=Default::default();
         peer.transport_generation.set(peer.transport_generation.get()+1);
         let prior=peer.endpoint.borrow_mut().replace(endpoint.clone());
         *peer.session.borrow_mut()=Some(session.clone());
@@ -217,6 +229,7 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
         if let Some(prior)=prior{prior.close().await;}
         peer
     }else{Rc::new(Peer {
+        actions: RefCell::default(),action_v2: std::cell::Cell::new(action_v2),
         admission_failure: RefCell::new(None),was_ready: std::cell::Cell::new(false),published: RefCell::new(BTreeSet::new()),
         id,cache,outbox:RefCell::new(outbox),endpoint:RefCell::new(Some(endpoint.clone())),session:RefCell::new(Some(session.clone())),state:RefCell::new(state),_key:key,
         callback:callback.ok_or_else(||error("missing status callback"))?,closed:std::cell::Cell::new(false),transport_generation:std::cell::Cell::new(1),transport_connected:std::cell::Cell::new(true),rejected_checkpoints:RefCell::new(BTreeSet::new()),last_relay_contact:std::cell::Cell::new(None),last_peer_contact:std::cell::Cell::new(None),batches:RefCell::new(BTreeMap::new()),next_batch:std::cell::Cell::new(0),storage_epoch:RefCell::new(None),committed_at:std::cell::Cell::new(None),
@@ -230,6 +243,11 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
         since: vec![], room: config.bootstrap.room, invite_id: None,
     };
     let setup=(||->Result<(),JsValue>{
+        if action_v2 {
+            let room = peer.state.borrow().room().parse().map_err(error)?;
+            session.enable_actions(room).map_err(error)?;
+            session.enable_broker_client(room).map_err(error)?;
+        }
         // Rewrite legacy journal framing only through the same atomic cache transaction.
         stage_journal(&peer,&peer.state.borrow(),&peer.outbox.borrow()).map_err(error)?;
         session.publish_presence(postcard::to_allocvec(&hello).map_err(error)?).map_err(error)?;
@@ -239,6 +257,20 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
     if let Err(error)=setup {peer.transport_connected.set(false);endpoint.close().await;return Err(error);}
     PEERS.with(|peers| peers.borrow_mut().insert(id, peer.clone()));
     report(&peer, "admitting", None);
+    if action_v2 {
+        let peer=peer.clone();let session=session.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            while let Some(event)=session.recv_action().await {
+                if peer.closed.get()||peer.transport_generation.get()!=transport_generation{return;}
+                // Delivered is attested by the same mutually authenticated relay.
+                // Current membership/certificate validity is rechecked for every response.
+                if action_context(&peer).is_ok() {
+                    let root=peer.state.borrow().authority().user_public_key;
+                    peer.actions.borrow_mut().receive(event,root);
+                }
+            }
+        });
+    }
     wasm_bindgen_futures::spawn_local(async move {
         while let Some(inbound) = session.recv().await {
             if peer.closed.get() || peer.transport_generation.get()!=transport_generation {
@@ -615,4 +647,45 @@ pub(crate) fn desktop_state(id:u32)->Result<StatePeer,String>{
         if let Some(reason)=state.incomplete_reason(){return Err(reason)}
         Ok(state.clone())
     })
+}
+
+fn action_context(peer:&Peer)->Result<serde_json::Value,String>{
+    if peer.closed.get()||!peer.transport_connected.get(){return Err("action transport disconnected".into());}
+    if !peer.action_v2.get(){return Err("state-only peer: actions unavailable".into());}
+    let state=peer.state.borrow();let target=state.authority();let sender=peer._key.verifying_key().to_bytes();
+    state.permissions(target.device_public_key,SystemTime::now())?;
+    state.permissions(sender,SystemTime::now())?;
+    let own=state.certificates().into_iter().find(|cert|cert.device_public_key==sender).ok_or("sender certificate missing")?;
+    let hex=|bytes:[u8;32]|bytes.iter().map(|b|format!("{b:02x}")).collect::<String>();
+    Ok(serde_json::json!({"room":state.room(),"sender":hex(sender),"senderRoot":hex(own.user_public_key),"target":hex(target.device_public_key),"targetRoot":hex(target.user_public_key),"certificate":serde_json::to_string(target).map_err(|e|e.to_string())?}))
+}
+#[wasm_bindgen]
+pub fn peer_action_context(id:u32)->Result<String,JsValue>{
+    let peer=PEERS.with(|peers|peers.borrow().get(&id).cloned()).ok_or_else(||error("closed peer"))?;
+    action_context(&peer).map(|value|value.to_string()).map_err(error)
+}
+#[wasm_bindgen]
+pub fn peer_action_request(id:u32,message:String)->Result<String,JsValue>{
+    use qos_relay::peer_actions::{ActionMessage,DirectedAction};
+    let peer=PEERS.with(|peers|peers.borrow().get(&id).cloned()).ok_or_else(||error("closed peer"))?;
+    action_context(&peer).map_err(error)?;
+    let message:ActionMessage=serde_json::from_str(&message).map_err(error)?;
+    if !matches!(message,ActionMessage::CatalogueRefresh|ActionMessage::InvokeBound{..}|ActionMessage::Status{..}|ActionMessage::Cancel{..}){return Err(error("unsupported client request"));}
+    let state=peer.state.borrow();
+    let action=DirectedAction{room:state.room().parse().map_err(error)?,request_id:uuid::Uuid::new_v4(),source:peer._key.verifying_key().to_bytes(),target:state.authority().device_public_key,message};
+    let request=action.request_id;
+    peer.actions.borrow_mut().insert(action.clone()).map_err(error)?;
+    let result=peer.session.borrow().as_ref().ok_or_else(||error("action transport disconnected"))?.send_action(action);
+    if let Err(failure)=result{peer.actions.borrow_mut().forget(request);return Err(error(failure));}
+    Ok(request.to_string())
+}
+#[wasm_bindgen]
+pub fn peer_action_response(id:u32,request:String)->Result<Option<String>,JsValue>{
+    let peer=PEERS.with(|peers|peers.borrow().get(&id).cloned()).ok_or_else(||error("closed peer"))?;
+    action_context(&peer).map_err(error)?;
+    peer.actions.borrow_mut().take(request.parse().map_err(error)?).map(|value|Ok(crate::action_client::browser_response(value).to_string())).transpose()
+}
+#[wasm_bindgen]
+pub fn peer_action_forget(id:u32,request:String){
+    if let (Some(peer),Ok(request))=(PEERS.with(|peers|peers.borrow().get(&id).cloned()),request.parse()){peer.actions.borrow_mut().forget(request);}
 }

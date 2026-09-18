@@ -687,35 +687,34 @@ async fn invoke_and_observe(
         peer_actions::{ActionMessage, DirectedAction},
         transport_v2::EnvelopeV2,
     };
-    let request_id = uuid::Uuid::new_v4();
-    client
-        .send_action(EnvelopeV2::Directed(DirectedAction {
-            room,
-            request_id,
-            source: cert.device_public_key,
-            target: native.device_public_key,
-            message: operation,
-        }))
-        .unwrap();
+    // The production browser correlator, on the actual certified relay/broker path.
+    let mut pending = qos_browser_runtime::action_client::PendingActions::default();
+    let mut request_id = uuid::Uuid::new_v4();
+    let directed=DirectedAction {room,request_id,source:cert.device_public_key,target:native.device_public_key,message:operation};
+    pending.insert(directed.clone()).unwrap();
+    client.send_action(EnvelopeV2::Directed(directed)).unwrap();
     let mut success = false;
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if success && table_cells(remote) == 4 { break; }
             tokio::select! {
                 state = client.recv() => apply_state(remote, state.unwrap()),
-                event = client.recv_action() => match event.unwrap() {
-                    EnvelopeV2::Delivered { action, source_user } if action.request_id == request_id => {
-                        assert_eq!(source_user, native.user_public_key); assert_eq!(action.room, room); assert_eq!(action.source, native.device_public_key); assert_eq!(action.target, cert.device_public_key);
-                        match action.message {
-                            ActionMessage::Observation { host: got, invocation: id, update: Some(update), uncertain, .. } => {
-                                assert_eq!(got, host); assert_eq!(id, invocation); assert!(!uncertain);
-                                if update.is_terminal() { assert!(matches!(update, qos_actions::InvocationUpdate::Succeeded { .. }), "actual operation failed: {update:?}"); success = true; }
-                            },
-                            other => panic!("actual operation response: {other:?}"),
+                event = client.recv_action() => {
+                    if !pending.receive(event.unwrap(),native.user_public_key){continue;}
+                    match pending.take(request_id).unwrap() {
+                        ActionMessage::Observation { host: got, invocation: id, update, uncertain, .. } => {
+                            assert_eq!(got, host); assert_eq!(id, invocation); assert!(!uncertain);
+                            if let Some(update)=update {if update.is_terminal(){assert!(matches!(update,qos_actions::InvocationUpdate::Succeeded{..}),"actual operation failed: {update:?}");success=true;}}
+                            if !success {
+                                // Same original full UUID: lost/pending response recovery is Status,
+                                // never another Invoke or another confirmation grant.
+                                request_id=uuid::Uuid::new_v4();
+                                let status=DirectedAction{room,request_id,source:cert.device_public_key,target:native.device_public_key,message:ActionMessage::Status{invocation}};
+                                pending.insert(status.clone()).unwrap();client.send_action(EnvelopeV2::Directed(status)).unwrap();
+                            }
                         }
-                    },
-                    EnvelopeV2::Unavailable { request_id: id, reason, .. } if id == request_id => panic!("operation unavailable: {reason:?}"),
-                    _ => {},
+                        other=>panic!("actual browser action response: {other:?}"),
+                    }
                 }
             }
         }

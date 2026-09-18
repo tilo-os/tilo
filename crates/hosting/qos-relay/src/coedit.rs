@@ -242,6 +242,15 @@ impl RelayCoeditSession {
             .send_action(crate::transport_v2::EnvelopeV2::EnableActions { room })
     }
 
+    /// Negotiate client access to an attached durable broker on this same lane.
+    /// Call after `enable_actions`, which preserves subscribe-before-enable ordering.
+    pub fn enable_broker_client(&self, room: uuid::Uuid) -> Result<(), crate::client::ClientError> {
+        if crate::room_workspace_id(&room.to_string()).ok() != Some(self.workspace_id) {
+            return Err(crate::client::ClientError::Codec("action room differs from co-edit room".into()));
+        }
+        self.client.send_action(crate::transport_v2::EnvelopeV2::EnableBrokerClient { room })
+    }
+
     /// Send privately through the co-edit session's existing demultiplexer.
     ///
     /// # Errors

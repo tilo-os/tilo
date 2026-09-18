@@ -540,6 +540,7 @@ impl ActionHost {
                         StorageKey::Primary { package, workspace } => serde_json::json!({"kind":"primary","app":package,"room":workspace}),
                         StorageKey::View { workspace, instance } => serde_json::json!({"kind":"view","room":workspace,"instance":instance}),
                         StorageKey::Admission { workspace } => serde_json::json!({"kind":"admission","room":workspace}),
+                        StorageKey::PrivateActions { workspace } => serde_json::json!({"kind":"private_actions","room":workspace}),
                     };
                     serde_json::json!({"key":key,"actor":write.value.actor,"bytes":write.value.bytes,"revision":write.revision})
                 }).collect::<Vec<_>>();

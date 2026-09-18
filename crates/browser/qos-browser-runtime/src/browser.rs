@@ -62,10 +62,12 @@ pub(crate) enum DiskKey {
         workspace: String,
         instance: u64,
     },
+    PrivateActions { workspace: String },
 }
 impl From<&StorageKey> for DiskKey {
     fn from(k: &StorageKey) -> Self {
         match k {
+            StorageKey::PrivateActions { workspace } => Self::PrivateActions { workspace:workspace.clone() },
             StorageKey::Admission { workspace } => Self::Admission { workspace:workspace.clone() },
             StorageKey::Record {
                 package,
@@ -93,6 +95,7 @@ impl From<&StorageKey> for DiskKey {
 impl From<DiskKey> for StorageKey {
     fn from(k: DiskKey) -> Self {
         match k {
+            DiskKey::PrivateActions { workspace } => Self::PrivateActions { workspace },
             DiskKey::Admission { workspace } => Self::Admission { workspace },
             DiskKey::Record {
                 package,

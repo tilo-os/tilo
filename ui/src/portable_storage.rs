@@ -76,11 +76,13 @@ pub enum StorageKey {
         workspace: String,
         instance: u64,
     },
+    /// Private device action intents and observations; never shared app state.
+    PrivateActions { workspace: String },
 }
 impl StorageKey {
     fn validate(&self) -> Result<(), String> {
         let ids = match self {
-            Self::Admission { workspace } => vec![workspace],
+            Self::Admission { workspace } | Self::PrivateActions { workspace } => vec![workspace],
             Self::Primary { package, workspace } => vec![package, workspace],
             Self::Record {
                 package,
