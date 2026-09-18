@@ -56,10 +56,17 @@ use crate::probe;
 use crate::timecode::{clock, frame_step, snap_to_frame, timecode};
 
 // ---- layout constants ----------------------------------------------------
+// The spacing steps live in `crate::layout` (`S1`..`S4`, read from the
+// theme's `Spacing::BASE`); everything here that is a gap or an inset is one
+// of them, so one relationship always gets one step (HIG §7b).
+use crate::layout::{self, S1, S2, S3};
 const TOPBAR_H: f64 = 48.0;
 /// Width of the export progress / outcome chip under the topbar.
 const EXPORT_CHIP_W: f64 = 176.0;
-const TIMELINE_H: f64 = 304.0;
+/// The timeline pane: a ruler, two picture lanes, two sound lanes at their
+/// shortest, the add-track row, and the `S1` gutters between them — the
+/// sample project's timeline, which is also the most the demo captures show.
+const TIMELINE_H: f64 = 320.0;
 const BIN_W: f64 = 268.0;
 const INSPECTOR_W: f64 = 300.0;
 const GUTTER_W: f64 = 128.0;
@@ -71,17 +78,20 @@ const TRANSPORT_H: f64 = 58.0;
 /// happen to be near each other — see `transport_buttons`, `history_buttons`
 /// and `readout_tops`.
 const TRANSPORT_CONTROL_CY: f64 = 20.0;
-const LANE_GAP: f64 = 4.0;
+/// The gutter between lanes, and between a track head and its lane stripe.
+const LANE_GAP: f64 = S1;
 const VIDEO_LANE_H: f64 = 62.0;
-const AUDIO_LANE_H: f64 = 46.0;
+/// The shortest lane a track head fits in with its name band, kind line and
+/// meter each a step clear of the next (see `layout::MIN_LANE_H`). It was
+/// 46, which put the kind line a pixel off the meter.
+const AUDIO_LANE_H: f64 = crate::layout::MIN_LANE_H;
 const TRIM_HIT: f64 = 8.0;
 /// The side panes' content inset — the inspector's controls and both pane
 /// headings. The theme's `spacing.s3` step (its `padding_standard`), which is
 /// also `TOPBAR_EDGE` and the track heads' name inset, so the project
 /// button, "MEDIA BIN", "INSPECTOR", every inspector control and every lane
-/// name start the same distance from their pane's edge. It was 14, two
-/// pixels off every neighbour and off the spacing scale.
-const PAD: f64 = 12.0;
+/// name start the same distance from their pane's edge.
+const PAD: f64 = S3;
 /// Overlay-scrollbar geometry, matching [`ui::widget::DocumentViewport`] so
 /// the timeline's bar is the same object the rest of the fleet shows.
 const SCROLLBAR_THICKNESS: f64 = 8.0;
@@ -155,6 +165,8 @@ const MEDIA_UNREADABLE_SHORT: &str = "Unreadable";
 /// the bin is docked beside the editor (the wide desktop layout).
 /// Height of a collapsible inspector section header.
 const SECTION_H: f64 = 24.0;
+/// Height of the two add-track buttons in the gutter footer.
+const ADD_TRACK_H: f64 = 24.0;
 /// The inset a picture-in-picture preset places a clip at: a third of the
 /// frame, a small margin off the corner. Big enough to see, small enough to
 /// leave the frame underneath readable.
@@ -187,17 +199,18 @@ const BIN_BREAKPOINT: f64 = 900.0;
 /// the collapsed-bin and collapsed-inspector controls are the only way back to
 /// those panes.
 const TOPBAR_TOUCH_TARGET: f64 = 36.0;
-const TOPBAR_CONTROL_Y: f64 = 6.0;
-/// The topbar's outer inset, the same at both edges (the theme's `spacing.s3`
-/// step). The leading edge used to be 12 and the trailing one 14, so the
-/// project button and Export sat at different distances from their window
-/// edges.
-const TOPBAR_EDGE: f64 = 12.0;
-/// The gap between neighbouring topbar commands. Deliberately between the
-/// theme's `s2` (8) and `s3` (12) steps: at `s3` the compact layout no longer
-/// fits both side-panel toggles beside Import and Export at 420px, and at
-/// `s2` the three labelled commands read as one run.
-const TOPBAR_GAP: f64 = 10.0;
+/// The commands centred on the bar's midline.
+const TOPBAR_CONTROL_Y: f64 = (TOPBAR_H - TOPBAR_TOUCH_TARGET) / 2.0;
+/// The topbar's outer inset, the same at both edges: the theme's `spacing.s3`
+/// step, which is also `PAD`, so the project button starts where "MEDIA BIN"
+/// does under it.
+const TOPBAR_EDGE: f64 = S3;
+/// The gap between neighbouring topbar commands: `s3`, the step siblings of
+/// equal weight keep everywhere else in the editor (HIG §7b). It was 10,
+/// between two steps; the compact layout drops the project button below
+/// 480px rather than squeezing the gap, and both side-panel toggles still fit
+/// beside Import and Export at 390px.
+const TOPBAR_GAP: f64 = S3;
 /// One width for the three labelled commands — Import, Split and Export.
 /// Import was 112 beside two 110s.
 const TOPBAR_BTN_W: f64 = 110.0;
@@ -2128,9 +2141,9 @@ impl VideoEditorApp {
         // overlay, so the user can summon the collapsed bin.
         let menu_btn = if overlay {
             Rect::new(
-                r.x0 + 8.0,
+                r.x0 + TOPBAR_EDGE,
                 r.y0 + TOPBAR_CONTROL_Y,
-                r.x0 + 8.0 + TOPBAR_TOUCH_TARGET,
+                r.x0 + TOPBAR_EDGE + TOPBAR_TOUCH_TARGET,
                 r.y0 + TOPBAR_CONTROL_Y + TOPBAR_TOUCH_TARGET,
             )
         } else {
@@ -2158,7 +2171,7 @@ impl VideoEditorApp {
         // entirely: a truncation so short it reads as a different project name
         // would be worse than nothing, and the shortcuts still reach it.
         let project_x0 = if overlay {
-            menu_btn.x1 + 8.0
+            menu_btn.x1 + TOPBAR_GAP
         } else {
             r.x0 + TOPBAR_EDGE
         };
@@ -2166,7 +2179,7 @@ impl VideoEditorApp {
             inspector_btn.x0
         } else {
             import_btn.x0
-        } - 12.0;
+        } - TOPBAR_GAP;
         let project_btn = {
             let want = PROJECT_BTN_W.min(leading_limit - project_x0);
             if want >= PROJECT_BTN_MIN_W {
@@ -2453,13 +2466,18 @@ impl VideoEditorApp {
     /// on a 46px audio lane. Centring the pills also put them across the row
     /// that now carries the fader's reading, which is why that row had no
     /// width to state it in.
+    /// Test conveniences over [`layout::track_head`]; the paint and the
+    /// hit-tests read the bands from one `TrackHead` directly.
+    #[cfg(test)]
     fn mute_pill_rect(&self, header: Rect) -> Rect {
-        Rect::new(
-            header.x1 - 26.0,
-            header.y0 + 7.0,
-            header.x1 - 8.0,
-            header.y0 + 25.0,
-        )
+        layout::track_head(header).mute
+    }
+
+    /// The card a lane's head is drawn on: the gutter cell, a step clear of
+    /// the lane stripe beside it. Every head control is laid out inside it
+    /// (`layout::track_head`), so the paint and the hit-test agree.
+    fn track_head_rect(&self, r: &Regions, lane: &Rect) -> Rect {
+        layout::track_head_card(r.gutter, lane)
     }
 
     /// The master strip: the corner of the timeline left of the ruler, above
@@ -2477,13 +2495,8 @@ impl VideoEditorApp {
 
     /// The clip flag inside it: what is clicked to walk the overloads.
     fn clip_flag_rect(&self, r: &Regions) -> Rect {
-        let strip = self.master_strip_rect(r);
-        Rect::new(
-            strip.x1 - 52.0,
-            strip.y0 + 4.0,
-            strip.x1 - 8.0,
-            strip.y0 + 18.0,
-        )
+        let m = layout::master_strip(self.master_strip_rect(r));
+        Rect::new(m.readout.x1 - 52.0, m.readout.y0, m.readout.x1, m.readout.y1)
     }
 
     /// The lane's level meter, along the foot of its head.
@@ -2493,25 +2506,14 @@ impl VideoEditorApp {
     /// is decided in these 128 pixels, and a level you have to open a panel to
     /// see is a level nobody looks at. Full width, so a glance down the
     /// gutter reads every lane at once.
+    #[cfg(test)]
     fn track_meter_rect(&self, header: Rect) -> Rect {
-        Rect::new(
-            header.x0 + 10.0,
-            header.y1 - 8.0,
-            header.x1 - 10.0,
-            header.y1 - 2.0,
-        )
+        layout::track_head(header).meter
     }
 
-    /// The lock pill rect, immediately left of the mute pill.
+    #[cfg(test)]
     fn lock_pill_rect(&self, header: Rect) -> Rect {
-        let m = self.mute_pill_rect(header);
-        Rect::new(m.x0 - 22.0, m.y0, m.x1 - 22.0, m.y1)
-    }
-
-    /// The solo pill rect, immediately left of the lock pill.
-    fn solo_pill_rect(&self, header: Rect) -> Rect {
-        let l = self.lock_pill_rect(header);
-        Rect::new(l.x0 - 22.0, l.y0, l.x1 - 22.0, l.y1)
+        layout::track_head(header).lock
     }
 
     /// The two "add track" buttons in the gutter footer, if there is room below
@@ -2520,14 +2522,15 @@ impl VideoEditorApp {
         let lanes = self.lane_rects(r);
         let y = lanes
             .last()
-            .map_or(r.gutter.y0 + 6.0, |(_, _, l)| l.y1 + LANE_GAP + 4.0);
-        if y + 24.0 > r.timeline.y1 {
+            .map_or(r.gutter.y0 + S2, |(_, _, l)| l.y1 + S2);
+        if y + ADD_TRACK_H > r.timeline.y1 {
             return Vec::new();
         }
-        let pad = 8.0;
-        let w = (r.gutter.width() - pad * 2.0 - 6.0) / 2.0;
-        let vbtn = Rect::new(r.gutter.x0 + pad, y, r.gutter.x0 + pad + w, y + 24.0);
-        let abtn = Rect::new(vbtn.x1 + 6.0, y, vbtn.x1 + 6.0 + w, y + 24.0);
+        // Two related buttons in one footer: `S2` between them and to the
+        // gutter's edges, the same step the bin's rows keep.
+        let w = (r.gutter.width() - S2 * 3.0) / 2.0;
+        let vbtn = Rect::new(r.gutter.x0 + S2, y, r.gutter.x0 + S2 + w, y + ADD_TRACK_H);
+        let abtn = Rect::new(vbtn.x1 + S2, y, vbtn.x1 + S2 + w, y + ADD_TRACK_H);
         vec![(TrackKind::Video, vbtn), (TrackKind::Audio, abtn)]
     }
 
@@ -2671,8 +2674,10 @@ impl VideoEditorApp {
         v.into_iter().map(|m| m.id).collect()
     }
 
-    /// Row pitch of the media bin list, and where the first row starts.
-    const BIN_ROW_H: f64 = 56.0;
+    /// Row pitch of the media bin list — a row's body plus the `S2` that
+    /// separates related rows in one list — and where the first row starts.
+    const BIN_ROW_BODY: f64 = 50.0;
+    const BIN_ROW_H: f64 = Self::BIN_ROW_BODY + S2;
     const BIN_LIST_TOP: f64 = 40.0;
 
     /// The bin header's "+ Title" button, which makes a title source, places
@@ -2687,7 +2692,7 @@ impl VideoEditorApp {
         let mut out = Vec::new();
         let mut y = r.bin.y0 + Self::BIN_LIST_TOP - self.bin_scroll;
         for mid in self.bin_order() {
-            let rect = Rect::new(r.bin.x0 + 8.0, y, r.bin.x1 - 8.0, y + Self::BIN_ROW_H - 6.0);
+            let rect = Rect::new(r.bin.x0 + S2, y, r.bin.x1 - S2, y + Self::BIN_ROW_BODY);
             out.push((mid, rect));
             y += Self::BIN_ROW_H;
         }
@@ -5201,7 +5206,7 @@ impl VideoEditorApp {
             return false;
         }
         for (tid, _kind, lane) in self.lane_rects(r) {
-            let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
+            let header = self.track_head_rect(r, &lane);
             if header.contains(p) {
                 self.open_track_menu(tid, p);
                 return true;
@@ -6018,7 +6023,7 @@ impl VideoEditorApp {
         for (i, t) in Transition::ALL.iter().enumerate() {
             let sx0 = x0 + i as f64 * seg_w;
             l.transitions
-                .push((*t, Rect::new(sx0, y + 15.0, sx0 + seg_w - 3.0, y + 37.0)));
+                .push((*t, Rect::new(sx0, y + 15.0, sx0 + seg_w, y + 37.0)));
         }
         y += 48.0;
         // Transition length, only when there is a transition to size.
@@ -6063,7 +6068,7 @@ impl VideoEditorApp {
             for (i, ch) in crate::curve::Channel::ALL.iter().enumerate() {
                 let cx = x0 + i as f64 * cw;
                 l.curve_channels
-                    .push((*ch, Rect::new(cx, y, cx + cw - 3.0, y + 24.0)));
+                    .push((*ch, Rect::new(cx, y, cx + cw, y + 24.0)));
             }
             y += 32.0;
             // Square, so the diagonal that means "unchanged" really is a
@@ -6121,18 +6126,22 @@ impl VideoEditorApp {
             l.anchor_label_y = y;
             y += 20.0;
             let cell = (x1 - x0) / 3.0;
+            // Three segmented rows an `S1` apart: each row is one shared
+            // control whose segments abut (the face draws the separators),
+            // and the rows are neighbours that must not touch.
             for ay in ANCHOR_STOPS {
                 for (col, ax) in ANCHOR_STOPS.iter().enumerate() {
                     let cx = x0 + col as f64 * cell;
                     l.anchor
-                        .push(((*ax, ay), Rect::new(cx, y, cx + cell - 3.0, y + 22.0)));
+                        .push(((*ax, ay), Rect::new(cx, y, cx + cell, y + 22.0)));
                 }
-                y += 25.0;
+                y += 22.0 + S1;
             }
             y += 6.0;
             // Picture-in-picture, as the four corners it is actually used for.
             y += 16.0;
-            let bw = (x1 - x0 - 18.0) / 4.0;
+            // Four sibling buttons, `S2` apart.
+            let bw = (x1 - x0 - 3.0 * S2) / 4.0;
             for (i, (label, corner)) in [
                 ("↖", (-1.0, -1.0)),
                 ("↗", (1.0, -1.0)),
@@ -6142,7 +6151,7 @@ impl VideoEditorApp {
             .into_iter()
             .enumerate()
             {
-                let bx = x0 + i as f64 * (bw + 6.0);
+                let bx = x0 + i as f64 * (bw + S2);
                 l.pip
                     .push((label, corner, Rect::new(bx, y, bx + bw, y + 26.0)));
             }
@@ -6158,7 +6167,7 @@ impl VideoEditorApp {
             for (i, rate) in SPEED_PRESETS.iter().enumerate() {
                 let px0 = x0 + i as f64 * pw;
                 l.speed_presets
-                    .push((*rate, Rect::new(px0, y, px0 + pw - 3.0, y + 24.0)));
+                    .push((*rate, Rect::new(px0, y, px0 + pw, y + 24.0)));
             }
             y += 32.0;
             l.reverse = Some(Rect::new(x0, y, x1, y + 26.0));
@@ -6207,15 +6216,16 @@ impl VideoEditorApp {
                     y += 20.0;
                     let sw = 26.0;
                     for (i, (_, col)) in crate::model::KEY_PRESETS.iter().enumerate() {
-                        let sx = x0 + i as f64 * (sw + 5.0);
+                        let sx = x0 + i as f64 * (sw + S1);
                         if sx + sw > x1 {
                             break;
                         }
                         l.key_colors.push((*col, Rect::new(sx, y, sx + sw, y + sw)));
                     }
                     // Sampling the plate is how a key is really set; the
-                    // presets are only a starting point.
-                    let pick_x = x0 + 3.0 * (sw + 5.0);
+                    // presets are only a starting point. It starts a sibling
+                    // step past the swatches.
+                    let pick_x = x0 + 3.0 * (sw + S1) + S2;
                     if pick_x + 96.0 <= x1 {
                         l.key_pick = Some(Rect::new(pick_x, y, x1, y + sw));
                     }
@@ -6244,7 +6254,7 @@ impl VideoEditorApp {
                 for (i, s) in crate::model::MaskShape::ALL.iter().enumerate() {
                     let sx = x0 + i as f64 * mw;
                     l.mask_shapes
-                        .push((*s, Rect::new(sx, y, sx + mw - 3.0, y + 24.0)));
+                        .push((*s, Rect::new(sx, y, sx + mw, y + 24.0)));
                 }
                 y += 32.0;
                 if clip.mask.is_active() {
@@ -6284,7 +6294,7 @@ impl VideoEditorApp {
             for (i, a) in TextAlign::ALL.iter().enumerate() {
                 let ax = x0 + i as f64 * aw;
                 l.title_align
-                    .push((*a, Rect::new(ax, y, ax + aw - 3.0, y + 24.0)));
+                    .push((*a, Rect::new(ax, y, ax + aw, y + 24.0)));
             }
             // The caption above the chooser needs its own line: at the
             // ordinary 16px gap it landed on the alignment row's buttons.
@@ -6362,8 +6372,7 @@ impl VideoEditorApp {
         let c = &theme.tokens.colors;
         let ch = self.curve_channel;
         let spline = clip.curves.spline(ch);
-        fill_rrect(scene, tf, c.lift(0.35), canvas, 8.0);
-        stroke_rrect(scene, tf, c.border_standard, canvas, 8.0, 1.0);
+        well(scene, tf, theme, canvas, 8.0);
 
         // Quarter grid. Faint, because it is a reading aid and the curve is
         // the content.
@@ -6561,9 +6570,14 @@ impl VideoEditorApp {
         for (m, row) in &l.marker_rows {
             let (name_rect, note_btn, rename, del) = marker_row_parts(*row);
             let hovered = row.contains(self.last_mouse);
-            if hovered {
-                fill_rrect(scene, tf, c.lift(0.35), *row, 6.0);
-            }
+            selection_row(
+                scene,
+                tf,
+                theme,
+                *row,
+                6.0,
+                ui::chrome::SelectionState::new(false, hovered, false),
+            );
             let Some((_, mk, _)) = self
                 .project
                 .all_markers()
@@ -6638,9 +6652,14 @@ impl VideoEditorApp {
                     (rename, ui::icons::Icon::Pencil, c.text_primary),
                     (del, ui::icons::Icon::X, c.semantic.danger),
                 ] {
-                    if rect.contains(self.last_mouse) {
-                        fill_rrect(scene, tf, with_alpha(tint, 0.18), rect, 4.0);
-                    }
+                    selection_row(
+                        scene,
+                        tf,
+                        theme,
+                        rect,
+                        4.0,
+                        ui::chrome::SelectionState::new(false, rect.contains(self.last_mouse), false),
+                    );
                     let g = 11.0;
                     let box_ = Rect::new(
                         rect.center().x - g / 2.0,
@@ -6751,7 +6770,7 @@ impl VideoEditorApp {
         for (i, (_, w, h)) in FRAME_PRESETS.iter().enumerate() {
             let sx0 = x0 + i as f64 * seg_w;
             l.project_frames
-                .push(((*w, *h), Rect::new(sx0, *y, sx0 + seg_w - 3.0, *y + 24.0)));
+                .push(((*w, *h), Rect::new(sx0, *y, sx0 + seg_w, *y + 24.0)));
         }
         *y += 32.0;
         l.project_rate_y = *y;
@@ -6760,7 +6779,7 @@ impl VideoEditorApp {
         for (i, rate) in RATE_PRESETS.iter().enumerate() {
             let sx0 = x0 + i as f64 * rate_w;
             l.project_rates
-                .push((*rate, Rect::new(sx0, *y, sx0 + rate_w - 3.0, *y + 24.0)));
+                .push((*rate, Rect::new(sx0, *y, sx0 + rate_w, *y + 24.0)));
         }
         *y += 32.0;
         // Offered only when there is a source to copy a shape from, and only
@@ -6805,13 +6824,19 @@ impl VideoEditorApp {
         let cy = row.center().y;
         // 22px tall targets — the row is 24px, so this is as close to the
         // toolkit's minimum as the row allows, and a real improvement on the
-        // 16x18 boxes these were.
+        // 16x18 boxes these were. Neighbours sit an `S1` apart (the reorder
+        // pair used to be a pixel apart, and read as one control).
         let h = 11.0;
         let key = Rect::new(row.x0, cy - 9.0, row.x0 + KEY_BOX, cy + 9.0);
-        let up = Rect::new(key.x1 + 4.0, cy - h, key.x1 + 26.0, cy + h);
-        let down = Rect::new(up.x1 + 1.0, cy - h, up.x1 + 23.0, cy + h);
+        let up = Rect::new(key.x1 + S1, cy - h, key.x1 + S1 + 22.0, cy + h);
+        let down = Rect::new(up.x1 + S1, cy - h, up.x1 + S1 + 22.0, cy + h);
         let remove = Rect::new(row.x1 - 22.0, cy - h, row.x1, cy + h);
-        let slider = Rect::new(row.x1 - 96.0, cy - 4.0, row.x1 - 30.0, cy + 4.0);
+        let slider = Rect::new(
+            remove.x0 - S2 - 66.0,
+            cy - 4.0,
+            remove.x0 - S2,
+            cy + 4.0,
+        );
         (key, up, down, slider, remove)
     }
 
@@ -8054,10 +8079,11 @@ enum MarkerField {
 fn marker_row_parts(row: Rect) -> (Rect, Rect, Rect, Rect) {
     // The icons sit on the row's first line, so a row grown to carry a note
     // keeps them beside the name rather than floating down beside the note.
+    // Three sibling targets an `S1` apart; they were two pixels apart.
     let cy = row.y0 + 13.0;
     let del = Rect::new(row.x1 - 22.0, cy - 11.0, row.x1, cy + 11.0);
-    let rename = Rect::new(del.x0 - 24.0, cy - 11.0, del.x0 - 2.0, cy + 11.0);
-    let note = Rect::new(rename.x0 - 24.0, cy - 11.0, rename.x0 - 2.0, cy + 11.0);
+    let rename = Rect::new(del.x0 - S1 - 22.0, cy - 11.0, del.x0 - S1, cy + 11.0);
+    let note = Rect::new(rename.x0 - S1 - 22.0, cy - 11.0, rename.x0 - S1, cy + 11.0);
     let name = Rect::new(row.x0 + 16.0, row.y0, note.x0 - 60.0, row.y0 + 26.0);
     (name, note, rename, del)
 }
@@ -9222,15 +9248,12 @@ impl Widget for VideoEditorApp {
         // Track-header pills and the add-track buttons.
         if r.gutter.contains(point) {
             for (_, _, lane) in self.lane_rects(&r) {
-                let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
+                let header = self.track_head_rect(&r, &lane);
+                let head = layout::track_head(header);
                 if header.contains(point)
-                    && [
-                        self.mute_pill_rect(header),
-                        self.lock_pill_rect(header),
-                        self.solo_pill_rect(header),
-                    ]
-                    .iter()
-                    .any(|pill| pill.contains(point))
+                    && [head.mute, head.lock, head.solo]
+                        .iter()
+                        .any(|pill| pill.contains(point))
                 {
                     return Some(CursorIcon::Pointer);
                 }
@@ -12859,13 +12882,16 @@ impl VideoEditorApp {
                 }
             }
             for (tid, _kind, lane) in self.lane_rects(r) {
-                let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
+                let header = self.track_head_rect(r, &lane);
                 if header.contains(p) {
-                    if self.mute_pill_rect(header).contains(p) {
+                    // The same bands the paint reads (`layout::track_head`),
+                    // so the pill under the pointer is the pill that was drawn.
+                    let head = layout::track_head(header);
+                    if head.mute.contains(p) {
                         self.toggle_track_mute(state, tid);
-                    } else if self.lock_pill_rect(header).contains(p) {
+                    } else if head.lock.contains(p) {
                         self.toggle_track_lock(state, tid);
-                    } else if self.solo_pill_rect(header).contains(p) {
+                    } else if head.solo.contains(p) {
                         self.toggle_track_solo(state, tid);
                     }
                     return;
@@ -14379,40 +14405,30 @@ impl VideoEditorApp {
         fill_rect(scene, tf, c.surfaces.base, self.rect);
         // Top bar.
         fill_rect(scene, tf, c.surfaces.raised, r.topbar);
+        // The bar's foot, on its own last pixel row: derived against the
+        // raised bar, so it still shows where the raised side panes meet it.
         stroke_line(
             scene,
             tf,
-            c.border_standard,
+            pane_hairline(theme),
             r.topbar.x0,
-            r.topbar.y1,
+            r.topbar.y1 - 0.5,
             r.topbar.x1,
-            r.topbar.y1,
+            r.topbar.y1 - 0.5,
             1.0,
         );
         // Leading slot: a hamburger toggle when the bin is collapsed to an
         // overlay flap. The OS owns the window title/app-name/logo, so the app
         // draws no glyph or wordmark here.
         if r.bin_overlay {
-            self.draw_hamburger(scene, tf, theme, r.menu_btn);
+            self.draw_hamburger(scene, tf, tr, theme, r.menu_btn);
         }
         // Inspector toggle, present only while the inspector is collapsed.
         if r.inspector_overlay && r.inspector_btn.width() > 0.0 {
             let rect = r.inspector_btn;
             let open = self.inspector_flap.is_open(self.inspector_split());
             let hovered = rect.contains(self.last_mouse);
-            let bg = if open {
-                c.accent[5]
-            } else if hovered {
-                c.lift(0.72)
-            } else {
-                c.neutral[3]
-            };
-            fill_rrect(scene, tf, bg, rect, 7.0);
-            let fg = if open {
-                on_fill(theme, bg).1
-            } else {
-                c.text_primary
-            };
+            let fg = paint_icon_toggle(scene, tf, tr, theme, rect, open, hovered);
             // A panel glyph: the pane outline with its right column filled,
             // which is where the inspector lives and what the toggle reveals.
             let g = rect.inset(-8.0);
@@ -14885,26 +14901,20 @@ impl VideoEditorApp {
 
     /// Three-bar hamburger that summons the collapsed media bin. Highlights
     /// while the flap is open so it reads as a pressed toggle.
-    fn draw_hamburger(&self, scene: &mut Scene, tf: Affine, theme: &Theme, rect: Rect) {
+    fn draw_hamburger(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) {
         if rect.width() <= 0.0 {
             return;
         }
-        let c = &theme.tokens.colors;
         let open = self.bin_flap.is_open(self.bin_layout());
         let hovered = rect.contains(self.last_mouse);
-        let bg = if open {
-            c.accent[5]
-        } else if hovered {
-            c.lift(0.72)
-        } else {
-            c.neutral[3]
-        };
-        fill_rrect(scene, tf, bg, rect, 7.0);
-        let bar = if open {
-            on_fill(theme, bg).1
-        } else {
-            c.text_primary
-        };
+        let bar = paint_icon_toggle(scene, tf, tr, theme, rect, open, hovered);
         let bx0 = rect.x0 + 7.0;
         let bx1 = rect.x1 - 7.0;
         for i in 0..3 {
@@ -14926,10 +14936,10 @@ impl VideoEditorApp {
         stroke_line(
             scene,
             tf,
-            c.border_standard,
-            r.bin.x1,
+            pane_hairline(theme),
+            r.bin.x1 - 0.5,
             r.bin.y0,
-            r.bin.x1,
+            r.bin.x1 - 0.5,
             r.bin.y1,
             1.0,
         );
@@ -15026,18 +15036,24 @@ impl VideoEditorApp {
             };
             let selected = self.selected_media == Some(mid);
             let hover = self.hover_media == Some(mid);
-            if selected {
-                fill_rrect(scene, tf, with_alpha(c.accent[5], 0.22), rect, 8.0);
-                stroke_rrect(scene, tf, c.accent[5], rect, 8.0, 1.5);
-            } else if hover {
-                fill_rrect(scene, tf, c.lift(0.35), rect, 8.0);
-            }
-            // Thumbnail swatch.
+            // The chosen row is a lift with its derived hairline (HIG §9.3),
+            // not the accent wash and accent outline it used to wear — the
+            // accent is for live state, and the outline collided with the
+            // keyboard cursor's ring.
+            selection_row(
+                scene,
+                tf,
+                theme,
+                rect,
+                f64::from(theme.tokens.radii.md),
+                ui::chrome::SelectionState::new(selected, hover, false),
+            );
+            // Thumbnail swatch, inset the row's own `S2`.
             let thumb = Rect::new(
-                rect.x0 + 8.0,
-                rect.y0 + 8.0,
-                rect.x0 + 8.0 + 64.0,
-                rect.y1 - 8.0,
+                rect.x0 + S2,
+                rect.y0 + S2,
+                rect.x0 + S2 + 64.0,
+                rect.y1 - S2,
             );
             let base = clip_color(theme, m.palette);
             fill_rrect(scene, tf, darken(base, 0.25), thumb, 5.0);
@@ -15108,13 +15124,20 @@ impl VideoEditorApp {
                 &Circle::new(Point::new(thumb.x1 - 8.0, thumb.y0 + 8.0), 4.0),
             );
             // text (the name is drawn by the inline rename field while editing).
-            let tx = thumb.x1 + 12.0;
+            let tx = thumb.x1 + S3;
+            // Name over metadata as one block centred on the row: two
+            // measured line boxes an `S1` apart, rather than two fixed tops
+            // that left the lines three pixels from each other.
+            let name_h = line_height(tr, 13.0);
+            let sub_h = line_height(tr, 11.0);
+            let block_top = rect.y0 + (rect.height() - (name_h + S1 + sub_h)) / 2.0;
+            let sub_top = block_top + name_h + S1;
             let renaming = self.bin_rename.as_ref().map(|(id, _)| *id) == Some(mid);
             if !renaming {
                 // Pixel-accurate elision: a character budget cuts "IMG_0001.MOV"
                 // and "Wwwwwwwwwwww.mov" at the same place though one is half
                 // again as wide.
-                let avail = (rect.x1 - 8.0 - tx) as f32;
+                let avail = (rect.x1 - S2 - tx) as f32;
                 let shown = elide_w(&m.name, avail, tr);
                 text_w(
                     scene,
@@ -15124,7 +15147,7 @@ impl VideoEditorApp {
                     13.0,
                     c.text_primary,
                     tx,
-                    rect.y0 + 10.0,
+                    block_top,
                     TextWeight::Medium,
                 );
             }
@@ -15145,7 +15168,7 @@ impl VideoEditorApp {
                 (None, None)
             };
             let (sw, _) = tr.measure(&sub, 11.0, None);
-            let right = rect.x1 - 8.0;
+            let right = rect.x1 - S2;
             // Longest wording that fits, rather than one that fits nowhere and
             // elides to "Not on this devi…". Beside the metadata when there is
             // room; in its place when there is not.
@@ -15161,11 +15184,13 @@ impl VideoEditorApp {
             });
             // The metadata line survives unless the chip had to take its place.
             if chip.map(|(x0, _)| x0 > tx).unwrap_or(true) {
-                text(scene, tr, tf, &sub, 11.0, c.text_dim, tx, rect.y0 + 30.0);
+                text(scene, tr, tf, &sub, 11.0, c.text_dim, tx, sub_top);
             }
             if let Some((cx0, label)) = chip {
                 let w = tr.measure(label, 10.5, None).0 as f64 + 14.0;
-                let chip = Rect::new(cx0, rect.y0 + 28.0, cx0 + w, rect.y0 + 45.0);
+                // On the metadata line's own band, so the chip and the words
+                // beside it centre on one line.
+                let chip = Rect::new(cx0, sub_top - 1.5, cx0 + w, sub_top + sub_h + 1.5);
                 fill_rrect(scene, tf, with_alpha(c.semantic.warning, 0.20), chip, 4.0);
                 stroke_rrect(
                     scene,
@@ -15393,7 +15418,14 @@ impl VideoEditorApp {
             // every light theme, which is how "No clip at playhead" came to be
             // near-invisible on a white desktop.
             fill_rect(scene, tf, c.surfaces.base, canvas);
-            stroke_rrect(scene, tf, c.border_standard, canvas, 2.0, 1.0);
+            stroke_rrect(
+                scene,
+                tf,
+                ui::surface::edge_on(c.surfaces.base),
+                canvas.inset(-0.5),
+                1.5,
+                1.0,
+            );
             // Nothing to composite, or nothing to composite *with*. Both are
             // said in words rather than papered over with an invented picture,
             // and both go through the shared empty state so the preview reads
@@ -15499,11 +15531,18 @@ impl VideoEditorApp {
                 );
             }
         }
-        // Safe-area guide.
+        // Safe-area guide: a faint white over footage, as every monitor draws
+        // it; over the empty canvas — the theme's own surface — a derived
+        // hairline, because white on a paper-white canvas is no guide at all.
+        let guide = if showed_real {
+            with_alpha(Color::WHITE, 0.12)
+        } else {
+            ui::surface::edge_on(c.surfaces.base)
+        };
         stroke_rrect(
             scene,
             tf,
-            with_alpha(Color::WHITE, 0.12),
+            guide,
             canvas.inset(-canvas.width() * 0.05),
             0.0,
             1.0,
@@ -15524,11 +15563,11 @@ impl VideoEditorApp {
         stroke_line(
             scene,
             tf,
-            c.border_standard,
+            pane_hairline(theme),
             r.transport.x0,
-            r.transport.y0,
+            r.transport.y0 + 0.5,
             r.transport.x1,
-            r.transport.y0,
+            r.transport.y0 + 0.5,
             1.0,
         );
         // Everything below is clipped to the transport, so no control drawn
@@ -15544,22 +15583,19 @@ impl VideoEditorApp {
         for (i, (action, rect)) in self.transport_buttons(r).into_iter().enumerate() {
             let is_play = action == TransportAction::PlayPause;
             let hovered = rect.contains(self.last_mouse);
-            let bg = if is_play {
-                c.accent[5]
-            } else if hovered {
-                c.lift(0.72)
-            } else {
-                c.neutral[3]
-            };
-            scene.fill(
-                Fill::NonZero,
-                tf,
-                bg,
-                None,
-                &Circle::new(rect.center(), rect.width() / 2.0),
-            );
+            // The shared button face at a radius of half its width, so each
+            // control is the fleet's button as a disc — Primary for play, the
+            // neutral rest face with its edge for the rest — instead of a bare
+            // ramp fill that had no edge and no press state.
+            let mut face = ui::widget::ButtonFace::new(rect, "")
+                .radius(rect.width() / 2.0)
+                .hovered(hovered);
+            if is_play {
+                face = face.primary();
+            }
+            ui::widget::Button::paint(scene, tf, tr, theme, &face);
             let col = if is_play {
-                on_fill(theme, bg).1
+                on_fill(theme, theme.accent_primary).1
             } else {
                 c.text_primary
             };
@@ -15691,18 +15727,19 @@ impl VideoEditorApp {
             scene.pop_layer();
             return;
         }
-        fill_rrect(scene, tf, c.neutral[3], scrub, 4.0);
+        // The shared slider face, as the inspector's rows use: the fleet's
+        // track, fill, knob and hover rather than a bare ramp bar under a
+        // local knob.
         let frac = (self.playhead / self.project.duration()).clamp(0.0, 1.0);
-        let filled = Rect::new(
-            scrub.x0,
-            scrub.y0,
-            scrub.x0 + scrub.width() * frac,
-            scrub.y1,
+        draw_track(
+            scene,
+            tf,
+            theme,
+            scrub,
+            frac,
+            hit_slider(scrub, self.last_mouse),
+            self.drag == Some(Drag::Scrubber),
         );
-        fill_rrect(scene, tf, c.accent[5], filled, 4.0);
-        let knob = Circle::new(Point::new(filled.x1, scrub.center().y), 6.0);
-        scene.fill(Fill::NonZero, tf, c.surfaces.raised, None, &knob);
-        scene.stroke(&Stroke::new(1.5), tf, c.border_focus, None, &knob);
         scene.pop_layer();
     }
 
@@ -15809,10 +15846,10 @@ impl VideoEditorApp {
         stroke_line(
             scene,
             tf,
-            c.border_standard,
-            r.inspector.x0,
+            pane_hairline(theme),
+            r.inspector.x0 + 0.5,
             r.inspector.y0,
-            r.inspector.x0,
+            r.inspector.x0 + 0.5,
             r.inspector.y1,
             1.0,
         );
@@ -15944,13 +15981,9 @@ impl VideoEditorApp {
             let label = format!("{} clips selected", self.selection.len());
             let (lw, _) = tr.measure_weighted(&label, 10.5, None, TextWeight::Medium);
             let pillr = Rect::new(x1 - lw as f64 - 14.0, heading.y0, x1, heading.y1);
-            fill_rrect(
-                scene,
-                tf,
-                with_alpha(c.accent[5], 0.22),
-                pillr,
-                PANE_HEADING_H / 2.0,
-            );
+            // A quiet capsule with its derived edge; the count keeps the
+            // accent in its words, not as a wash under them.
+            well(scene, tf, theme, pillr, PANE_HEADING_H / 2.0);
             let pill_y = text_baseline(pillr, 10.5, tr);
             text_w(
                 scene,
@@ -16263,7 +16296,7 @@ impl VideoEditorApp {
             );
             for (pal, rect) in &l.colors {
                 let sw = clip_color(theme, *pal);
-                fill_rrect(scene, tf, sw, *rect, 6.0);
+                ui::surface::card(scene, tf, *rect, 6.0, sw);
                 if rect.contains(self.last_mouse) && clip.palette != *pal {
                     stroke_rrect(scene, tf, with_alpha(c.text_primary, 0.5), *rect, 6.0, 1.5);
                 }
@@ -16377,18 +16410,18 @@ impl VideoEditorApp {
                     && (clip.transform.pos_x.signum() - corner.0).abs() < 1e-6
                     && (clip.transform.pos_y.signum() - corner.1).abs() < 1e-6;
                 let hovered = rect.contains(self.last_mouse);
-                let bg = if on {
-                    c.accent[5]
-                } else if hovered {
-                    c.lift(0.72)
-                } else {
-                    c.neutral[3]
-                };
-                fill_rrect(scene, tf, bg, *rect, 6.0);
-                stroke_rrect(scene, tf, c.border_standard, *rect, 6.0, 1.0);
+                // The shared button face — Primary for the preset in force —
+                // with the corner glyph painted over it in the face's ink.
+                let mut face = ui::widget::ButtonFace::new(*rect, "")
+                    .radius(6.0)
+                    .hovered(hovered);
+                if on {
+                    face = face.primary();
+                }
+                ui::widget::Button::paint(scene, tf, tr, theme, &face);
                 // A miniature frame with the inset drawn in the named corner.
                 let fg = if on {
-                    on_fill(theme, bg).1
+                    on_fill(theme, theme.accent_primary).1
                 } else {
                     c.text_primary
                 };
@@ -16613,7 +16646,7 @@ impl VideoEditorApp {
                 .zip(col)
                 .all(|(a, b)| (a - b).abs() < 1e-6);
             let swatch = Color::new([col[0] as f32, col[1] as f32, col[2] as f32, 1.0]);
-            fill_rrect(scene, tf, swatch, *rect, 5.0);
+            ui::surface::card(scene, tf, *rect, 5.0, swatch);
             // The chosen swatch takes a ring rather than a tick, so the
             // colour it names is never covered by the mark that selects it.
             if on {
@@ -16699,19 +16732,12 @@ impl VideoEditorApp {
                 .title_edit
                 .as_ref()
                 .map(|(m, _)| Some(*m) == media.as_ref().map(|m| m.id));
-            fill_rrect(scene, tf, c.lift(0.35), rect, 6.0);
-            stroke_rrect(
-                scene,
-                tf,
-                if editing == Some(true) {
-                    c.border_focus
-                } else {
-                    c.border_standard
-                },
-                rect,
-                6.0,
-                1.0,
-            );
+            // A field: the well with its derived rest edge, and the focus
+            // ring over it while the inline editor owns the words.
+            well(scene, tf, theme, rect, 6.0);
+            if editing == Some(true) {
+                stroke_rrect(scene, tf, c.border_focus, rect, 6.0, FOCUS_RING_W);
+            }
             // While the inline editor owns this box it draws the words itself
             // (with a caret); otherwise show them, or say plainly that there
             // are none rather than leaving an empty box that looks broken.
@@ -16850,9 +16876,12 @@ impl VideoEditorApp {
                 // drawn on a chequer-free plate with a border: without one the
                 // white swatch vanishes on a light theme and the dark one on a
                 // dark theme.
-                fill_rrect(scene, tf, c.neutral[3], *rect, 6.0);
-                fill_rrect(scene, tf, sw, *rect, 6.0);
-                stroke_rrect(scene, tf, with_alpha(c.text_primary, 0.25), *rect, 6.0, 1.0);
+                // A plate under a swatch that may be translucent, then the
+                // swatch with an edge derived against its own colour — so the
+                // white swatch shows on a light pane and the black one on a
+                // dark pane without a theme-blind ink wash.
+                fill_rrect(scene, tf, c.lift(0.35), *rect, 6.0);
+                ui::surface::card(scene, tf, *rect, 6.0, sw);
                 if col
                     .iter()
                     .zip(cur.iter())
@@ -16917,7 +16946,7 @@ impl VideoEditorApp {
                     continue;
                 };
                 let (_key, up, down, slider, remove) = Self::effect_row_parts(*row);
-                fill_rrect(scene, tf, c.lift(0.35), *row, 6.0);
+                well(scene, tf, theme, *row, 6.0);
                 // Reorder / remove: real icons on hover-lit hit targets, sized to
                 // the pointer rather than to the glyph. These were raw Unicode
                 // arrows in 16x18px boxes with no hover state at all.
@@ -16926,9 +16955,18 @@ impl VideoEditorApp {
                     (up, ui::icons::Icon::ChevronUp, i > 0),
                     (down, ui::icons::Icon::ChevronDown, !last),
                 ] {
-                    if enabled && rect.contains(self.last_mouse) {
-                        fill_rrect(scene, tf, c.overlay_medium, rect, 4.0);
-                    }
+                    selection_row(
+                        scene,
+                        tf,
+                        theme,
+                        rect,
+                        4.0,
+                        ui::chrome::SelectionState::new(
+                            false,
+                            enabled && rect.contains(self.last_mouse),
+                            false,
+                        ),
+                    );
                     let col = if enabled {
                         c.text_primary
                     } else {
@@ -16974,9 +17012,14 @@ impl VideoEditorApp {
                     matches!(self.drag, Some(Drag::EffectAmount { idx, .. }) if idx == i),
                 );
                 // Remove.
-                if remove.contains(self.last_mouse) {
-                    fill_rrect(scene, tf, with_alpha(c.semantic.danger, 0.18), remove, 4.0);
-                }
+                selection_row(
+                    scene,
+                    tf,
+                    theme,
+                    remove,
+                    4.0,
+                    ui::chrome::SelectionState::new(false, remove.contains(self.last_mouse), false),
+                );
                 let g = 12.0;
                 let xbox = Rect::new(
                     remove.center().x - g / 2.0,
@@ -17052,9 +17095,14 @@ impl VideoEditorApp {
     ) {
         let c = &theme.tokens.colors;
         let open = !self.collapsed.contains(&section);
-        if rect.contains(self.last_mouse) {
-            fill_rrect(scene, tf, c.lift(0.35), rect, 5.0);
-        }
+        selection_row(
+            scene,
+            tf,
+            theme,
+            rect,
+            5.0,
+            ui::chrome::SelectionState::new(false, rect.contains(self.last_mouse), false),
+        );
         let g = 11.0;
         let arrow = Rect::new(
             rect.x0 + 1.0,
@@ -17252,31 +17300,19 @@ impl VideoEditorApp {
             return;
         }
         fill_rect(scene, tf, c.surfaces.raised, strip);
+        // The readout line and the meter under it, centred as one block a
+        // step apart (`layout::master_strip`): the meter used to sit two
+        // pixels under the words.
+        let m = layout::master_strip(strip);
         // Nothing to mix, nothing to meter. A dead meter on a picture-only
         // timeline would read as an output that is broken.
         if !crate::audio::has_audio(&self.project) {
-            text(
-                scene,
-                tr,
-                tf,
-                "NO AUDIO",
-                9.0,
-                c.text_dim,
-                strip.x0 + 12.0,
-                strip.y0 + 10.0,
-            );
+            let y = text_baseline(strip, 9.0, tr);
+            text(scene, tr, tf, "NO AUDIO", 9.0, c.text_dim, m.readout.x0, y);
             return;
         }
-        text(
-            scene,
-            tr,
-            tf,
-            "MIX",
-            9.0,
-            c.text_dim,
-            strip.x0 + 12.0,
-            strip.y0 + 5.0,
-        );
+        let readout_y = text_baseline(m.readout, 9.0, tr);
+        text(scene, tr, tf, "MIX", 9.0, c.text_dim, m.readout.x0, readout_y);
         let flag = self.clip_flag_rect(r);
         if self.mix.clipped() {
             let hot = flag.contains(self.last_mouse);
@@ -17316,19 +17352,14 @@ impl VideoEditorApp {
                 9.0,
                 c.text_dim,
                 flag.x1 - f64::from(w),
-                strip.y0 + 5.0,
+                readout_y,
             );
         }
         draw_level_meter(
             scene,
             tf,
             theme,
-            Rect::new(
-                strip.x0 + 12.0,
-                strip.y1 - 12.0,
-                strip.x1 - 8.0,
-                strip.y1 - 5.0,
-            ),
+            m.meter,
             self.mix.master,
             self.mix.master_hold,
             self.mix.clipped(),
@@ -17350,14 +17381,17 @@ impl VideoEditorApp {
     ) {
         let c = &theme.tokens.colors;
         fill_rect(scene, tf, c.surfaces.base, r.timeline);
+        // The ruler row's top pixel: derived against the raised ruler and
+        // master strip it is drawn on, so the seam shows against the raised
+        // side panes above it too.
         stroke_line(
             scene,
             tf,
-            c.border_standard,
+            pane_hairline(theme),
             r.timeline.x0,
-            r.timeline.y0,
+            r.timeline.y0 + 0.5,
             r.timeline.x1,
-            r.timeline.y0,
+            r.timeline.y0 + 0.5,
             1.0,
         );
 
@@ -17376,7 +17410,7 @@ impl VideoEditorApp {
                 stroke_line(
                     scene,
                     tf,
-                    c.border_standard,
+                    pane_hairline(theme),
                     x,
                     r.ruler.y1 - 8.0,
                     x,
@@ -17394,11 +17428,13 @@ impl VideoEditorApp {
                     x + 4.0,
                     r.ruler.y0 + 6.0,
                 );
-                // faint grid line down the lanes
+                // faint grid line down the lanes: a reading aid, so it is a
+                // fraction of the control hairline, derived against the base
+                // it runs over rather than a declared border at half alpha.
                 stroke_line(
                     scene,
                     tf,
-                    with_alpha(c.border_standard, 0.4),
+                    ui::surface::edge_on_with(c.surfaces.base, ui::chrome::HAIRLINE_ALPHA / 2),
                     x,
                     r.lanes.y0,
                     x,
@@ -17512,32 +17548,45 @@ impl VideoEditorApp {
         // --- lanes + headers + clips ---
         let lanes = self.lane_rects(r);
         for (tid, kind, lane) in &lanes {
-            // lane background stripe
+            // Lane stripe: a lifted band with its derived edge, so the lane
+            // reads against the base in light as well as dark — the sound
+            // lanes used to be a 5 % success wash that vanished on white.
+            // Both kinds take the same lift; a sound lane keeps a hint of its
+            // kind in it.
+            let stripe_rect = Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1);
             let stripe = if *kind == TrackKind::Video {
-                c.lift(0.35)
+                c.lift(0.5)
             } else {
-                with_alpha(c.semantic.success, 0.05)
+                tinted(c.lift(0.5), c.semantic.success, 0.08)
             };
-            fill_rect(
+            ui::surface::card(scene, tf, stripe_rect, 0.0, stripe);
+            // The head: a raised card a step clear of its lane stripe, with
+            // its name, pills, kind line and meter on the measured bands of
+            // `layout::track_head` — the same bands the hit-test reads.
+            let header = self.track_head_rect(r, lane);
+            let head = layout::track_head(header);
+            ui::surface::card(
                 scene,
                 tf,
-                stripe,
-                Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1),
+                header,
+                f64::from(theme.tokens.radii.sm),
+                c.surfaces.raised,
             );
-            // header
-            let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
-            fill_rect(scene, tf, c.surfaces.raised, header);
             let track = self.project.track(*tid);
             let name = track.map(|t| t.name.as_str()).unwrap_or("?");
+            // Elided to its band, which ends a step short of the pills: a
+            // lane a collaborator named "Voiceover" must not run under them.
+            let name = elide_at(name, head.name.width() as f32, 13.0, tr);
+            let name_y = text_baseline(head.name, 13.0, tr);
             text_w(
                 scene,
                 tr,
                 tf,
-                name,
+                &name,
                 13.0,
                 c.text_primary,
-                header.x0 + 12.0,
-                header.y0 + 8.0,
+                head.name.x0,
+                name_y,
                 TextWeight::Semibold,
             );
             // What the lane is, and — when it has been moved off unity or
@@ -17558,22 +17607,9 @@ impl VideoEditorApp {
                     line.push_str(&format!(" · {}", t.pan_words()));
                 }
             }
-            let line = elide_at(
-                &line,
-                (header.x1 - 10.0 - (header.x0 + 12.0)) as f32,
-                9.0,
-                tr,
-            );
-            text(
-                scene,
-                tr,
-                tf,
-                &line,
-                9.0,
-                c.text_dim,
-                header.x0 + 12.0,
-                header.y0 + 26.0,
-            );
+            let line = elide_at(&line, head.kind.width() as f32, 9.0, tr);
+            let kind_y = text_baseline(head.kind, 9.0, tr);
+            text(scene, tr, tf, &line, 9.0, c.text_dim, head.kind.x0, kind_y);
             // The lane's level. Fed from the mix that made the sound, so a
             // bar moving here is the same measurement the master meter and
             // the clip warning are reading — never a second opinion.
@@ -17589,7 +17625,7 @@ impl VideoEditorApp {
                     scene,
                     tf,
                     theme,
-                    self.track_meter_rect(header),
+                    head.meter,
                     level.map(|l| l.level).unwrap_or_default(),
                     level.map(|l| l.hold).unwrap_or(0.0),
                     level.is_some_and(|l| l.clipped),
@@ -17599,26 +17635,43 @@ impl VideoEditorApp {
             let muted = track.map(|t| t.muted).unwrap_or(false);
             let locked = track.map(|t| t.locked).unwrap_or(false);
             let solo = track.map(|t| t.solo).unwrap_or(false);
+            let pill_radius = f64::from(theme.tokens.radii.sm);
             for (pill, on, label, on_bg) in [
-                (self.mute_pill_rect(header), muted, "M", c.semantic.danger),
-                (self.lock_pill_rect(header), locked, "L", c.semantic.warning),
-                (self.solo_pill_rect(header), solo, "S", c.semantic.info),
+                (head.mute, muted, "M", c.semantic.danger),
+                (head.lock, locked, "L", c.semantic.warning),
+                (head.solo, solo, "S", c.semantic.info),
             ] {
-                let pill_hover = pill.contains(self.last_mouse);
-                let pill_bg = if on {
-                    on_bg
-                } else if pill_hover {
-                    c.lift(0.72)
+                let hovered = pill.contains(self.last_mouse);
+                if on {
+                    // Lit: the state's own semantic colour — a plain step
+                    // against the head — with ink resolved to read on it.
+                    let bg = if hovered { lighten(on_bg, 0.12) } else { on_bg };
+                    let (bg, fg) = on_fill(theme, bg);
+                    fill_rrect(scene, tf, bg, pill, pill_radius);
+                    let at = text_centre(pill, label, 10.0, TextWeight::Semibold, tr);
+                    text_w(
+                        scene,
+                        tr,
+                        tf,
+                        label,
+                        10.0,
+                        fg,
+                        at.x,
+                        at.y,
+                        TextWeight::Semibold,
+                    );
                 } else {
-                    c.neutral[3]
-                };
-                let (pill_bg, on_fg) = on_fill(theme, pill_bg);
-                fill_rrect(scene, tf, pill_bg, pill, 4.0);
-                let fg = if on { on_fg } else { c.text_dim };
-                let at = text_centre(pill, label, 10.0, TextWeight::Regular, tr);
-                text(scene, tr, tf, label, 10.0, fg, at.x, at.y);
+                    // Off: the shared neutral face, so the toggle carries the
+                    // fleet's rest edge and hover rather than a bare ramp
+                    // fill.
+                    let face = ui::widget::ButtonFace::new(pill, label)
+                        .radius(pill_radius)
+                        .text_size(10.0)
+                        .weight(TextWeight::Regular)
+                        .hovered(hovered);
+                    ui::widget::Button::paint(scene, tf, tr, theme, &face);
+                }
             }
-            let _ = locked;
         }
 
         // Clip bodies clipped to the lane area so they don't bleed over the gutter/ruler.
@@ -17765,26 +17818,19 @@ impl VideoEditorApp {
         // ruler exists to give. The chip keeps its hit rect and its keyboard
         // route (Z, zoom to fit) while the tag is over it.
         let chip = self.zoom_chip_rect(r);
-        let chip_hover = chip.contains(self.last_mouse);
-        fill_rrect(
-            scene,
-            tf,
-            if chip_hover {
-                c.overlay_medium
-            } else {
-                c.neutral[3]
-            },
-            chip,
-            5.0,
-        );
-        stroke_rrect(scene, tf, c.border_standard, chip, 5.0, 1.0);
         let zl = if self.zoom >= 100.0 {
             format!("{:.0} px/s", self.zoom)
         } else {
             format!("{:.1} px/s", self.zoom)
         };
-        let at = text_centre(chip, &zl, 10.0, TextWeight::Regular, tr);
-        text(scene, tr, tf, &zl, 10.0, c.text_dim, at.x, at.y);
+        // A button (it zooms to fit), so it wears the shared face rather than
+        // a ramp fill under a declared border.
+        let face = ui::widget::ButtonFace::new(chip, &zl)
+            .radius(f64::from(theme.tokens.radii.sm))
+            .text_size(10.0)
+            .weight(TextWeight::Regular)
+            .hovered(chip.contains(self.last_mouse));
+        ui::widget::Button::paint(scene, tf, tr, theme, &face);
 
         // --- playhead ---
         let px = self.time_to_x(self.playhead, &r.lanes);
@@ -17875,22 +17921,17 @@ impl VideoEditorApp {
 
         // Add-track buttons in the gutter footer.
         for (kind, rect) in self.add_track_buttons(r) {
-            let hover = rect.contains(self.last_mouse);
-            fill_rrect(
-                scene,
-                tf,
-                if hover { c.lift(0.72) } else { c.neutral[3] },
-                rect,
-                6.0,
-            );
-            stroke_rrect(scene, tf, c.border_standard, rect, 6.0, 1.0);
             let label = if kind == TrackKind::Video {
                 "+ Video"
             } else {
                 "+ Audio"
             };
-            let at = text_centre(rect, label, 11.0, TextWeight::Regular, tr);
-            text(scene, tr, tf, label, 11.0, c.text_primary, at.x, at.y);
+            let face = ui::widget::ButtonFace::new(rect, label)
+                .radius(f64::from(theme.tokens.radii.sm))
+                .text_size(11.0)
+                .weight(TextWeight::Regular)
+                .hovered(rect.contains(self.last_mouse));
+            ui::widget::Button::paint(scene, tf, tr, theme, &face);
         }
 
         // Horizontal scrollbar, floated over the bottom of the lane area.
@@ -18255,7 +18296,17 @@ impl VideoEditorApp {
                 &RoundedRect::from_rect(cr, 6.0),
             );
         } else {
-            stroke_rrect(scene, tf, with_alpha(c.surfaces.base, 0.55), cr, 6.0, 1.0);
+            // The rest edge, derived against the clip's own body so it shows
+            // on a pale label in light as on a deep one in dark; the old
+            // half-alpha base wash was a light ring on white.
+            stroke_rrect(
+                scene,
+                tf,
+                ui::surface::edge_on(body),
+                cr.inset(-0.5),
+                5.5,
+                1.0,
+            );
         }
     }
 
@@ -18463,19 +18514,30 @@ impl VideoEditorApp {
         let c = &theme.tokens.colors;
         let l = self.goto_layout(r, tr, theme);
         let ty = l.type_sizes;
+        // A floating Panel (HIG §9.1): the panel ground with its derived
+        // border — and, because the card *is* the focused field, the focus
+        // ring over it, in danger while the entry cannot be read.
         let radius = f64::from(theme.tokens.radii.lg);
-        fill_rrect(scene, tf, c.surfaces.raised, l.card, radius);
+        fill_rrect(scene, tf, ui::chrome::panel_ground(theme), l.card, radius);
+        stroke_rrect(
+            scene,
+            tf,
+            ui::chrome::panel_border(theme),
+            l.card.inset(-0.5),
+            radius - 0.5,
+            1.0,
+        );
         stroke_rrect(
             scene,
             tf,
             if self.goto_notice {
                 c.semantic.danger
             } else {
-                c.accent[6]
+                c.border_focus
             },
             l.card,
             radius,
-            1.5,
+            FOCUS_RING_W,
         );
         let x = l.card.x0 + f64::from(theme.tokens.spacing.s4);
         text(
@@ -18678,7 +18740,7 @@ impl VideoEditorApp {
             ExportStatus::Rendering { progress } => {
                 let bar = Rect::new(status.x0, status.y0, status.x1, status.y0 + s2);
                 let radius = f64::from(theme.tokens.radii.sm);
-                fill_rrect(scene, tf, c.neutral[3], bar, radius);
+                well(scene, tf, theme, bar, radius);
                 let f = Rect::new(
                     bar.x0,
                     bar.y0,
@@ -19037,6 +19099,87 @@ fn stroke_rrect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect, radius:
         &RoundedRect::from_rect(rect, radius),
     );
 }
+
+/// The hairline between two of the editor's raised panes — the topbar and
+/// the side panes under it, the timeline's ruler and the panes above it.
+/// Derived against the raised surface it is drawn on (HIG §9.5): the
+/// declared `border_standard` is three shades off `raised` on the dark preset
+/// and vanished exactly where two raised panes met.
+fn pane_hairline(theme: &Theme) -> Color {
+    ui::surface::edge_on(theme.tokens.colors.surfaces.raised)
+}
+
+/// A resting, non-button surface on a raised pane — a meter's track, the
+/// title's words box, an effect row, the curve editor's box: the Control
+/// role's idle floor (`lift(0.35)`) with its derived edge, through the one
+/// shared card painter.
+fn well(scene: &mut Scene, tf: Affine, theme: &Theme, rect: Rect, radius: f64) {
+    ui::surface::card(scene, tf, rect, radius, theme.tokens.colors.lift(0.35));
+}
+
+/// A chosen or hovered list row — a bin item, a section header, a marker
+/// row, a key control: the shell's one selection vocabulary, a lift with its
+/// derived hairline and inner glow (HIG §9.3), never an accent wash. Paints
+/// nothing for an idle row, so the list reads as rows on the pane.
+fn selection_row(
+    scene: &mut Scene,
+    tf: Affine,
+    theme: &Theme,
+    rect: Rect,
+    radius: f64,
+    state: ui::chrome::SelectionState,
+) {
+    let tier = ui::chrome::selection_tier(theme, state);
+    if tier.fill.components[3] > 0.0 {
+        fill_rrect(scene, tf, tier.fill, rect, radius);
+    }
+    if let Some(border) = tier.border {
+        scene.stroke(
+            &Stroke::new(1.0),
+            tf,
+            border,
+            None,
+            &ui::surface::edge_outline(rect, radius),
+        );
+    }
+    if let Some(glow) = tier.inner_glow {
+        scene.stroke(
+            &Stroke::new(1.0),
+            tf,
+            glow,
+            None,
+            &RoundedRect::from_rect(rect.inset(-1.5), (radius - 1.5).max(0.0)),
+        );
+    }
+}
+
+/// A square icon toggle in the topbar — the hamburger that summons the
+/// collapsed bin, the toggle that summons the collapsed inspector. The
+/// shared button face (Primary while its panel is open, the neutral rest
+/// face otherwise), returning the ink the caller paints its glyph in.
+fn paint_icon_toggle(
+    scene: &mut Scene,
+    tf: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    open: bool,
+    hovered: bool,
+) -> Color {
+    let mut face = ui::widget::ButtonFace::new(rect, "")
+        .radius(7.0)
+        .hovered(hovered)
+        .pressed(open);
+    if open {
+        face = face.primary();
+    }
+    ui::widget::Button::paint(scene, tf, tr, theme, &face);
+    if open {
+        on_fill(theme, theme.accent_primary).1
+    } else {
+        theme.tokens.colors.text_primary
+    }
+}
 fn stroke_line(
     scene: &mut Scene,
     tf: Affine,
@@ -19368,9 +19511,14 @@ fn draw_key_control(
 ) {
     let c = &theme.tokens.colors;
     let ctr = rect.center();
-    if hovered {
-        fill_rrect(scene, tf, c.lift(0.72), rect, 5.0);
-    }
+    selection_row(
+        scene,
+        tf,
+        theme,
+        rect,
+        5.0,
+        ui::chrome::SelectionState::new(false, hovered, false),
+    );
     let (r, col, filled) = match state {
         KeyState::Off => (4.0, c.text_tertiary, false),
         KeyState::Between => (5.5, c.accent[5], false),
@@ -19570,7 +19718,9 @@ fn draw_level_meter(
         (area.x1 - flag_w - 2.0).max(area.x0),
         area.y1,
     );
-    fill_rrect(scene, tf, c.neutral[3], bars, 1.5);
+    // The empty track: a quiet well with its derived edge, so an idle meter
+    // is still a meter on either theme rather than a ramp slot.
+    ui::surface::card(scene, tf, bars, 1.5, c.lift(0.35));
     let h = ((area.height() - 2.0) / 2.0).max(1.0);
     let thresholds = meter_thresholds();
     for (i, l) in level.iter().enumerate() {
@@ -19602,12 +19752,12 @@ fn draw_level_meter(
         );
     }
     let flag = Rect::new(area.x1 - flag_w, area.y0, area.x1, area.y1);
-    let (fill, _) = if clipped {
-        on_fill(theme, c.semantic.danger)
+    if clipped {
+        let (fill, _) = on_fill(theme, c.semantic.danger);
+        fill_rrect(scene, tf, fill, flag, 1.5);
     } else {
-        (c.neutral[3], c.text_dim)
-    };
-    fill_rrect(scene, tf, fill, flag, 1.5);
+        ui::surface::card(scene, tf, flag, 1.5, c.lift(0.35));
+    }
 }
 
 fn hit_slider(track: Rect, p: Point) -> bool {
@@ -19746,6 +19896,16 @@ fn darken(c: Color, t: f64) -> Color {
         lerp_u8(c.r(), 0, t),
         lerp_u8(c.g(), 0, t),
         lerp_u8(c.b(), 0, t),
+    )
+}
+/// `tint` laid over `base` at `t`, as one opaque colour — a lane stripe that
+/// keeps a hint of its kind without becoming a translucent wash that reads
+/// differently on every ground under it.
+fn tinted(base: Color, tint: Color, t: f64) -> Color {
+    Color::from_rgb8(
+        lerp_u8(base.r(), tint.r(), t),
+        lerp_u8(base.g(), tint.g(), t),
+        lerp_u8(base.b(), tint.b(), t),
     )
 }
 
@@ -23255,7 +23415,7 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         let r = app.regions();
         let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
-        let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
+        let header = app.track_head_rect(&r, &lane);
         let pill = app.lock_pill_rect(header);
         assert!(
             header.contains(pill.center()),
@@ -23326,7 +23486,7 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         let r = app.regions();
         let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
-        let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
+        let header = app.track_head_rect(&r, &lane);
         let pill = app.lock_pill_rect(header);
         click(&mut app, &mut doc, pill.center().x, pill.center().y);
         let before = app.project.clips_on(tid).len();
@@ -23651,7 +23811,7 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         let r = app.regions();
         let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
-        let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
+        let header = app.track_head_rect(&r, &lane);
         move_to(&mut app, &mut doc, header.x0 + 20.0, header.center().y);
         right_press(&mut app, &mut doc);
         assert!(matches!(app.menu_target, Some(MenuTarget::Track(t)) if t == tid));
@@ -23735,7 +23895,7 @@ mod tests {
             .find(|(t, _, _)| *t == tid)
             .unwrap()
             .2;
-        let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
+        let header = app.track_head_rect(&r, &lane);
         let pill = app.lock_pill_rect(header);
         click(&mut app, &mut doc, pill.center().x, pill.center().y);
         assert_eq!(app.cursor_shape(cr.center()), Some(CursorIcon::NotAllowed));
@@ -25295,7 +25455,7 @@ mod tests {
             "Ctrl+C is handled"
         );
         // Lock the source track, then paste.
-        let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
+        let header = app.track_head_rect(&r, &lane);
         let pill = app.lock_pill_rect(header);
         click(&mut app, &mut doc, pill.center().x, pill.center().y);
         app.playhead = 2.0;
@@ -29960,7 +30120,7 @@ mod tests {
             .into_iter()
             .find(|(_, kind, _)| *kind == TrackKind::Video)
             .expect("the sample timeline has a picture lane");
-        let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
+        let header = app.track_head_rect(&r, &lane);
         let strip = app.track_meter_rect(header);
         // The head only, never the lane: turning the sound on also asks for a
         // waveform, and a waveform lands on the *clip*. Comparing the whole

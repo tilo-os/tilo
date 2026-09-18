@@ -10,6 +10,7 @@ use ui::history_mode::{
     HistoryDefinition, HistoryPresentation, HistoryPreview, HistoryScopeDefinition,
     PreviewAccessibility, PreviewInput, PreviewNavigation, PreviewView,
 };
+use ui::tokens::Spacing;
 use ui::{TextRenderer, Theme};
 use vello::{
     Scene,
@@ -91,7 +92,14 @@ impl HistoryPreview for LibraryPreview {
         Ok(())
     }
     fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        scene.fill(Fill::NonZero, t, theme.bg_primary, None, &self.bounds);
+        // The library panel is a raised surface on the history host's ground,
+        // so it carries a derived rest edge (`ui::surface::card`, HIG §9.5)
+        // instead of a bare fill. Its content follows one rhythm: the row,
+        // the specimen band and the token list are `s3` siblings inset `s3`
+        // from the panel edge, so none of them paints over that edge.
+        let inset = f64::from(Spacing::BASE.s3);
+        let radius = f64::from(theme.tokens.radii.md);
+        ui::surface::card(scene, t, self.bounds, radius, theme.bg_primary);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1., t, &self.bounds);
         if let Some(s) = self
             .specs
@@ -99,16 +107,22 @@ impl HistoryPreview for LibraryPreview {
             .find(|s| Some(&s.id) == self.view.page.as_ref())
         {
             let y = self.bounds.y0 - self.view.scroll.1;
-            let row = Rect::new(self.bounds.x0 + 12., y + 12., self.bounds.x1 - 12., y + 70.);
+            let (x0, x1) = (self.bounds.x0 + inset, self.bounds.x1 - inset);
+            let row = Rect::new(x0, y + inset, x1, y + inset + f64::from(crate::widgets::ROW_H));
             crate::widgets::ThemeRow::from_spec(s, true).draw_snapshot(scene, t, tr, theme, row);
             self.specimen.set_spec(s);
             let height = f64::from(self.specimen.narrow_intrinsic_height(theme.text_scale));
+            let specimen_top = row.y1 + inset;
             self.specimen.draw_snapshot(
                 scene,
                 t,
                 tr,
-                Rect::new(self.bounds.x0, y + 80., self.bounds.x1, y + 80. + height),
+                Rect::new(x0, specimen_top, x1, specimen_top + height),
             );
+            // The token list is text and chips: one `s4` of padding inside the
+            // panel's content edge so its glyphs breathe like a card's.
+            let tokens_inset = f64::from(Spacing::BASE.s4);
+            let tokens_top = specimen_top + height + inset;
             crate::customizer::draw_snapshot_tokens(
                 scene,
                 t,
@@ -116,10 +130,10 @@ impl HistoryPreview for LibraryPreview {
                 theme,
                 s,
                 Rect::new(
-                    self.bounds.x0 + 18.,
-                    y + 90. + height,
-                    self.bounds.x1 - 18.,
-                    y + 700. + height,
+                    self.bounds.x0 + tokens_inset,
+                    tokens_top,
+                    self.bounds.x1 - tokens_inset,
+                    self.bounds.y1.max(tokens_top),
                 ),
             );
         } else {

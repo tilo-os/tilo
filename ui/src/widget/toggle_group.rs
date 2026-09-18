@@ -460,23 +460,31 @@ impl ToggleGroup {
                     }
                 }
                 scene.pop_layer();
+                // Separators and outer edge derive from the track (HIG
+                // §9.5); separators stop `s1` short of the edge so they
+                // never run into the corner radius.
+                let track_edge = crate::surface::edge_on(colors.surfaces.raised);
+                let inset = f64::from(theme.tokens.spacing.s1);
                 let sep = Stroke::new(1.0);
                 for seg in segs.iter().take(segs.len().saturating_sub(1)) {
                     let x = seg.x1;
                     scene.stroke(
                         &sep,
                         transform,
-                        colors.border_standard,
+                        track_edge,
                         None,
-                        &Line::new(Point::new(x, outer.y0), Point::new(x, outer.y1)),
+                        &Line::new(
+                            Point::new(x, outer.y0 + inset),
+                            Point::new(x, outer.y1 - inset),
+                        ),
                     );
                 }
                 scene.stroke(
                     &Stroke::new(1.0),
                     transform,
-                    colors.border_standard,
+                    track_edge,
                     None,
-                    &outer_shape,
+                    &crate::surface::edge_outline(outer, face.radius),
                 );
             }
             SegmentedStyle::Pill => {
@@ -677,8 +685,11 @@ impl Widget for ToggleGroup {
         scene.pop_layer();
 
         // Each `stroke(Line, ...)` call is a single `DrawTag::COLOR` entry —
-        // what `separator_count` accounts for at the API level.
-        let separator_color = colors.border_standard;
+        // what `separator_count` accounts for at the API level. Separators
+        // and outer edge derive from the track (HIG §9.5); separators stop
+        // `s1` short of the edge so they never run into the corner radius.
+        let track_edge = crate::surface::edge_on(colors.surfaces.raised);
+        let inset = f64::from(theme.tokens.spacing.s1);
         let separator_stroke = Stroke::new(1.0);
         for seg_rect in self
             .segment_rects
@@ -686,22 +697,26 @@ impl Widget for ToggleGroup {
             .take(self.segments.len().saturating_sub(1))
         {
             let x = seg_rect.x1;
-            let line = Line::new(Point::new(x, self.rect.y0), Point::new(x, self.rect.y1));
-            scene.stroke(&separator_stroke, transform, separator_color, None, &line);
+            let line = Line::new(
+                Point::new(x, self.rect.y0 + inset),
+                Point::new(x, self.rect.y1 - inset),
+            );
+            scene.stroke(&separator_stroke, transform, track_edge, None, &line);
         }
 
         // Focus ring: prominent focus colour at 2px.
         let (border_w, border_c) = if self.is_focused {
             (2.0, colors.border_focus)
         } else {
-            (1.0, colors.border_standard)
+            (1.0, track_edge)
         };
+        // Rest edge and focus ring share one half-pixel-inset outline.
         scene.stroke(
             &Stroke::new(border_w),
             transform,
             border_c,
             None,
-            &outer_shape,
+            &crate::surface::edge_outline(self.rect, radius),
         );
 
         // Vertical centering uses the typography scale because cosmic-text's

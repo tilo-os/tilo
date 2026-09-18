@@ -111,6 +111,9 @@ const PILL_FONT: f32 = 12.5;
 /// switch and an overflow menu. Re-evaluated from the live width every layout
 /// pass, so resizing across the threshold reflows immediately.
 const COMPACT_W: f64 = 760.0;
+/// Horizontal label padding of one Edit / Preview segment at rest: one `s3`
+/// a side, squeezed no further than `s2` when the compact bar is short.
+const SEG_PAD_X: f64 = ui::tokens::spacing::Spacing::BASE.s3 as f64;
 
 /// How long a transient toast (Save / Open feedback) stays on screen.
 const FLASH_MS: u128 = 3200;
@@ -139,7 +142,7 @@ struct Document {
 
 /// A toolbar button's logical action, resolved by hit-testing the cached
 /// per-frame button rectangles.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum TbAction {
     PrevDoc,
     NextDoc,
@@ -1075,17 +1078,19 @@ impl TypstApp {
         active: bool,
     ) {
         let c = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(rect, 7.0);
-        let bg = if active {
-            theme.accent_primary
+        if active {
+            let shape = RoundedRect::from_rect(rect, 7.0);
+            scene.fill(Fill::NonZero, t, theme.accent_primary, None, &shape);
         } else {
-            c.lift(0.35)
-        };
-        scene.fill(Fill::NonZero, t, bg, None, &shape);
-        if !active {
-            scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
+            // A rest button carries its derived edge (HIG §9.5), never the
+            // declared `border_standard` that vanished on the dark toolbar.
+            ui::surface::card(scene, t, rect, 7.0, c.lift(0.35));
         }
-        let fg = if active { Color::WHITE } else { c.text_primary };
+        let fg = if active {
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
+        } else {
+            c.text_primary
+        };
         // Centre on the measured line box, never `size × 1.25`.
         let (tw, th) = tr.measure_weighted(label, PILL_FONT, None, TextWeight::Medium);
         let tx = rect.x0 + (rect.width() - f64::from(tw)) / 2.0;
@@ -1113,11 +1118,11 @@ impl TypstApp {
         let c = &theme.tokens.colors;
         let tb = self.toolbar_rect;
         scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &tb);
-        // bottom hairline
+        // Bar role: one derived hairline under the toolbar.
         scene.fill(
             Fill::NonZero,
             t,
-            c.border_standard,
+            ui::chrome::chrome_hairline(theme),
             None,
             &Rect::new(tb.x0, tb.y1 - 1.0, tb.x1, tb.y1),
         );
@@ -1269,13 +1274,30 @@ impl TypstApp {
             rx -= 10.0;
         }
 
-        // Segmented Edit / Preview switch, centred in the remaining span.
-        let seg = self.draw_view_switch(scene, t, tr, theme, y);
+        // Left cluster first. The name chip is capped so the whole `‹ name ›`
+        // group leaves room for the view switch plus an `s3` on either side —
+        // the arrows are part of the group and must not be forgotten, or the
+        // `›` lands under the switch at phone widths.
+        let gap = f64::from(theme.tokens.spacing.s3);
+        let left_x = tb.x0 + 12.0;
+        let switch_w = self.view_switch_width(tr);
+        let arrows = if self.documents.len() > 1 {
+            Self::pill_width(tr, "‹") + 6.0 + 6.0 + Self::pill_width(tr, "›")
+        } else {
+            0.0
+        };
+        // The chip may elide all the way down to a lone ellipsis before the
+        // switch is allowed to give ground; a fixed 64 px floor left the two
+        // colliding on a 360 px bar with two documents and a problems badge.
+        let (ell_w, _) = tr.measure_weighted("…", PILL_FONT, None, TextWeight::Semibold);
+        let min_chip = f64::from(ell_w) + 24.0;
+        let max_chip = (rx - gap - switch_w - gap - left_x - arrows).max(min_chip);
+        let cluster_end = self.draw_doc_switcher(scene, t, tr, theme, left_x, y, max_chip, false);
 
-        // Document switcher on the left, capped so it never reaches the switch.
-        let max_chip = (seg.x0 - (tb.x0 + 12.0) - 12.0).max(64.0);
-        let _ = self.draw_doc_switcher(scene, t, tr, theme, tb.x0 + 12.0, y, max_chip, false);
-        let _ = rx;
+        // Segmented Edit / Preview switch: centred in the toolbar when that
+        // fits, otherwise pushed right of the left cluster (never over it) and
+        // kept clear of the right cluster by the same `s3`.
+        let _ = self.draw_view_switch(scene, t, tr, theme, y, cluster_end + gap, rx - gap);
     }
 
     /// Draw the `‹ [name] ›` document switcher starting at `x`. `max_chip` caps
@@ -1326,13 +1348,7 @@ impl TypstApp {
         let (lw, _) = tr.measure_weighted(&label, PILL_FONT, None, TextWeight::Semibold);
         let chip_w = (f64::from(lw) + 24.0).min(max_chip);
         let chip = Rect::new(x, y, x + chip_w, y + self.pill_h);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            c.surfaces.base,
-            None,
-            &RoundedRect::from_rect(chip, 7.0),
-        );
+        ui::surface::card(scene, t, chip, 7.0, c.surfaces.base);
         tr.draw_text_weighted(
             scene,
             &label,
@@ -1361,8 +1377,24 @@ impl TypstApp {
         x
     }
 
-    /// A two-segment Edit / Preview toggle, centred in the toolbar. Returns its
-    /// rect so callers can avoid overlapping it.
+    /// Measured widths of the Edit / Preview segments at this frame's scale,
+    /// each label plus `SEG_PAD_X` a side.
+    fn view_switch_segments(tr: &mut TextRenderer) -> (f64, f64) {
+        let (ew, _) = tr.measure_weighted("Edit", PILL_FONT, None, TextWeight::Medium);
+        let (pw, _) = tr.measure_weighted("Preview", PILL_FONT, None, TextWeight::Medium);
+        (f64::from(ew) + 2.0 * SEG_PAD_X, f64::from(pw) + 2.0 * SEG_PAD_X)
+    }
+
+    /// Total width the Edit / Preview switch paints at.
+    fn view_switch_width(&self, tr: &mut TextRenderer) -> f64 {
+        let (ew, pw) = Self::view_switch_segments(tr);
+        ew + pw
+    }
+
+    /// A two-segment Edit / Preview toggle, centred in the toolbar when the
+    /// centre lies inside `[min_x0, max_x1]`, otherwise clamped into that span
+    /// so it never overlaps the clusters on either side. Returns its rect.
+    #[allow(clippy::too_many_arguments)]
     fn draw_view_switch(
         &mut self,
         scene: &mut Scene,
@@ -1370,32 +1402,34 @@ impl TypstApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         y: f64,
+        min_x0: f64,
+        max_x1: f64,
     ) -> Rect {
         let c = &theme.tokens.colors;
         let tb = self.toolbar_rect;
         let seg_edit = "Edit";
         let seg_prev = "Preview";
-        let (ew, _) = tr.measure_weighted(seg_edit, PILL_FONT, None, TextWeight::Medium);
-        let (pw, _) = tr.measure_weighted(seg_prev, PILL_FONT, None, TextWeight::Medium);
-        let ew = f64::from(ew) + 22.0;
-        let pw = f64::from(pw) + 22.0;
+        let (mut ew, mut pw) = Self::view_switch_segments(tr);
+        // When even the elided document chip leaves too little span, the two
+        // segments give up label padding symmetrically (down to `s2` a side)
+        // before anything is allowed to overlap.
+        let avail = (max_x1 - min_x0).max(0.0);
+        let over = ew + pw - avail;
+        if over > 0.0 {
+            let min_pad = f64::from(theme.tokens.spacing.s2);
+            let squeeze = (over / 4.0).min(SEG_PAD_X - min_pad).max(0.0);
+            ew -= 2.0 * squeeze;
+            pw -= 2.0 * squeeze;
+        }
         let total = ew + pw;
-        let x0 = (tb.x0 + tb.width() * 0.5 - total * 0.5).round();
+        let centred = (tb.x0 + tb.width() * 0.5 - total * 0.5).round();
+        // Clamp toward the left cluster last so, when the span is still too
+        // short, the switch yields on the right rather than sliding under the
+        // document group; `draw_toolbar_compact` sizes the chip so that only
+        // happens below the narrowest supported viewport.
+        let x0 = centred.min(max_x1 - total).max(min_x0).round();
         let outer = Rect::new(x0, y, x0 + total, y + self.pill_h);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            c.lift(0.35),
-            None,
-            &RoundedRect::from_rect(outer, 8.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            c.border_standard,
-            None,
-            &RoundedRect::from_rect(outer, 8.0),
-        );
+        ui::surface::card(scene, t, outer, 8.0, c.lift(0.35));
 
         let edit_active = matches!(self.compact_view, CompactPane::Editor);
         // Edit segment.
@@ -1489,7 +1523,11 @@ impl TypstApp {
             let shape = RoundedRect::from_rect(rect.inflate(-2.0, -2.0), 6.0);
             scene.fill(Fill::NonZero, t, theme.accent_primary, None, &shape);
         }
-        let fg = if active { Color::WHITE } else { c.text_primary };
+        let fg = if active {
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
+        } else {
+            c.text_primary
+        };
         // Centre on the measured line box, never `size × 1.25`.
         let (tw, th) = tr.measure_weighted(label, PILL_FONT, None, TextWeight::Medium);
         let tx = rect.x0 + (rect.width() - f64::from(tw)) / 2.0;
@@ -1549,27 +1587,29 @@ impl TypstApp {
         let y0 = self.toolbar_rect.y1 + 4.0;
         let panel = Rect::new(x0, y0, x1, y0 + h);
 
-        // Shadow + card.
-        scene.fill(
-            Fill::NonZero,
+        // Panel role (HIG §9.5): the shared floating-panel ground and its
+        // derived border, so this menu matches every other menu on the
+        // desktop instead of a declared edge that vanished on dark.
+        ui::surface::shadow(
+            scene,
             t,
-            c.surfaces.overlay,
-            None,
-            &RoundedRect::from_rect(panel.inflate(3.0, 3.0), 12.0),
+            panel,
+            10.0,
+            &theme.tokens.elevation.e3,
         );
         scene.fill(
             Fill::NonZero,
             t,
-            c.surfaces.raised,
+            ui::chrome::panel_ground(theme),
             None,
             &RoundedRect::from_rect(panel, 10.0),
         );
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            c.border_standard,
+            ui::chrome::panel_border(theme),
             None,
-            &RoundedRect::from_rect(panel, 10.0),
+            &ui::surface::edge_outline(panel, 10.0),
         );
 
         let mut y = y0 + pad;
@@ -1610,7 +1650,11 @@ impl TypstApp {
         // grip dots
         let cx = f64::midpoint(dr.x0, dr.x1);
         let cy = f64::midpoint(dr.y0, dr.y1);
-        let dot_color = if active { Color::WHITE } else { c.text_dim };
+        let dot_color = if active {
+            c.on_accent(ui::tokens::colors::NON_TEXT_MIN_CONTRAST)
+        } else {
+            c.text_dim
+        };
         for k in -1i32..=1 {
             let cyk = cy + f64::from(k) * 6.0;
             scene.fill(
@@ -2780,6 +2824,40 @@ mod tests {
         app.layout_in(Rect::new(0.0, 0.0, 1280.0, 720.0));
         assert!(!app.compact, "reflowed back to split after widening");
         assert!(app.preview_rect.area() > 0.0);
+    }
+
+    /// Rule 1 of the 1× bar on the compact toolbar: with several documents
+    /// *and* a problems badge, no two toolbar hit rects overlap at the phone
+    /// viewport or wider — the document chip elides and the switch squeezes
+    /// before anything is painted over a neighbouring control.
+    #[test]
+    fn compact_toolbar_controls_never_overlap_at_phone_width() {
+        for w in [390.0, 480.0, 560.0] {
+            let (mut app, _doc) = fresh();
+            assert!(app.documents.len() > 1, "demo carries several documents");
+            app.warn_count = 1;
+            app.layout_in(Rect::new(0.0, 0.0, w, 720.0));
+            assert!(app.compact);
+            render_once(&mut app);
+            let hits = app.toolbar_hits.clone();
+            assert!(
+                hits.iter().any(|(a, _)| *a == TbAction::ShowPreview),
+                "w={w}: the view switch is painted"
+            );
+            assert!(
+                hits.iter().any(|(a, _)| *a == TbAction::ToggleProblems),
+                "w={w}: the problems badge is painted"
+            );
+            for (i, (a, ra)) in hits.iter().enumerate() {
+                for (b, rb) in hits.iter().skip(i + 1) {
+                    let ix = ra.intersect(*rb);
+                    assert!(
+                        ix.width() <= 0.0 || ix.height() <= 0.0,
+                        "w={w}: {a:?} {ra:?} overlaps {b:?} {rb:?}"
+                    );
+                }
+            }
+        }
     }
 
     /// Tapping the compact Edit/Preview segmented control through the real

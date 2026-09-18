@@ -14,8 +14,8 @@ use ui::widget::image_viewer::ImageViewport;
 use ui::{TextRenderer, Theme};
 use vello::{
     Scene,
-    kurbo::{Affine, Rect, Vec2},
-    peniko::{BlendMode, Fill, ImageData},
+    kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2},
+    peniko::{BlendMode, Color, Fill, ImageData},
 };
 const LIBRARY_ONE_COLUMN_MAX_W: f64 = 460.;
 const LIBRARY_TWO_COLUMN_MAX_W: f64 = 720.;
@@ -41,6 +41,13 @@ fn compact_label(label: &str, max_chars: usize) -> String {
         head
     }
 }
+/// A control's rest face on `ground`: one hairline step off it (HIG §9.3),
+/// measured so it registers on a white light-theme card and a dark one.
+pub(crate) fn control_face(ground: Color) -> Color {
+    let wash = ui::tokens::colors::Colors::hairline_on(ground, ui::chrome::HAIRLINE_ALPHA);
+    ui::tokens::colors::over(ground, wash, wash.components[3])
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "pure shared library card painter"
@@ -60,21 +67,30 @@ pub(crate) fn paint_card(
     let large_text = theme.text_scale > 1.25;
     let card_w = card.width();
     let x = card.x0;
-    scene.fill(
+    let card_radius = f64::from(theme.tokens.radii.md);
+    // The card is one rounded surface with a derived edge; its preview tray
+    // and footer are painted inside that shape so the edge stays closed all
+    // the way round (HIG §9.5).
+    let card_fill = if hovered {
+        theme.bg_hover
+    } else {
+        theme.tokens.colors.surfaces.window_card
+    };
+    let card_shape = RoundedRect::from_rect(card, card_radius);
+    scene.fill(Fill::NonZero, transform, card_fill, None, &card_shape);
+    scene.push_layer(
         Fill::NonZero,
+        BlendMode::default(),
+        1.0,
         transform,
-        if hovered {
-            theme.tokens.colors.neutral[3]
-        } else {
-            theme.tokens.colors.surfaces.window_card
-        },
-        None,
-        &card,
+        &card_shape,
     );
+    // The preview tray is a step off the card fill (measured, so it
+    // registers on a white light-theme card as well as a dark one).
     scene.fill(
         Fill::NonZero,
         transform,
-        theme.tokens.colors.neutral[2],
+        control_face(card_fill),
         None,
         &preview,
     );
@@ -112,12 +128,13 @@ pub(crate) fn paint_card(
         None,
         &footer,
     );
-    scene.fill(
-        Fill::NonZero,
+    scene.pop_layer();
+    scene.stroke(
+        &Stroke::new(1.0),
         transform,
-        theme.border_standard,
+        ui::surface::edge_on(card_fill),
         None,
-        &Rect::new(footer.x0, footer.y0, footer.x1, footer.y0 + 1.0),
+        &ui::surface::edge_outline(card, card_radius),
     );
     // One description of the action row (see `card_action_controls`):
     // paint, hit-testing and the accessibility export all read it.

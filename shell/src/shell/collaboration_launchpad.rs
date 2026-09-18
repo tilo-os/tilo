@@ -378,33 +378,32 @@ impl Widget for CollaborationLaunchpad {
             );
         }
 
+        // Control role (HIG §9.1/§9.3): an action tile takes `radii.lg`. The
+        // hovered or keyboard-selected tile is a lift with the tier's
+        // hairline — never an accent wash, which is reserved for live state
+        // (§9.4) — and an idle tile rests on its translucent floor with an
+        // edge derived from that floor (§9.5), so the six cards read as cards
+        // on the dark grid as well as the light one.
+        let floor = theme.bg_primary.with_alpha_factor(0.78);
+        let idle_edge = ui::surface::edge_on(theme.bg_primary);
         for (index, (action, rect)) in LaunchpadAction::ALL.into_iter().zip(cards).enumerate() {
             let active = hovered == Some(index) || (self.focused && self.selected == index);
-            let surface = if active {
-                theme.accent_primary.with_alpha_factor(0.13)
-            } else {
-                theme.bg_primary.with_alpha_factor(0.78)
-            };
-            // Control role (HIG §9.1): an action tile takes `radii.lg`; the
-            // former literal 16 is off the 4/8/12/24 radius scale.
+            let tier =
+                ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(active));
+            let surface = if active { tier.fill } else { floor };
             let shape = RoundedRect::from_rect(
                 rect,
                 ui::chrome::ChromeRole::Control.radius(theme, rect.height()),
             );
             scene.fill(Fill::NonZero, transform, surface, None, &shape);
+            let focused = self.focused && self.selected == index;
             scene.stroke(
-                &Stroke::new(if self.focused && self.selected == index {
-                    2.0
-                } else {
-                    1.0
-                }),
+                &Stroke::new(if focused { 2.0 } else { 1.0 }),
                 transform,
-                if self.focused && self.selected == index {
+                if focused {
                     theme.border_focus
-                } else if active {
-                    theme.accent_primary.with_alpha_factor(0.55)
                 } else {
-                    theme.border_standard.with_alpha_factor(0.72)
+                    tier.border.unwrap_or(idle_edge)
                 },
                 None,
                 &shape,
@@ -672,6 +671,22 @@ impl Widget for CollaborationLaunchpad {
 mod tests {
     use super::*;
     use automerge::ReadDoc as _;
+
+    /// HIG §9.5: an idle card's edge derives from its own floor and must
+    /// register on every shipped palette — the former `border_standard` at
+    /// 0.72 alpha was invisible on the dark grid.
+    #[test]
+    fn launchpad_cards_keep_an_edge_on_every_palette() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let floor = theme.bg_primary;
+            let delta = ui::surface::edge_delta(ui::surface::edge_on(floor), floor);
+            assert!(
+                delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                "{}: the card edge must separate it from its floor (Δ luminance {delta:.4})",
+                theme.name
+            );
+        }
+    }
 
     #[test]
     fn desktop_launchpad_exposes_an_app_opener() {

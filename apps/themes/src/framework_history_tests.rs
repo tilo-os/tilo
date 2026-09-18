@@ -254,3 +254,78 @@ fn legacy_reset_delete_and_native_precedence_keep_other_records_and_one_undo() {
         );
     }
 }
+
+/// The frozen library panel is a raised surface on the history host's
+/// ground; HIG §9.5 asks every such surface for a visible rest edge in dark
+/// and light alike. Render the real preview over the host ground with the
+/// offscreen renderer, then read the panel's outermost pixel column against
+/// the fill one step inside it: the edge must move relative luminance by at
+/// least the toolkit's hairline floor on both presets. The frames are written
+/// under `target/ux1x/a3/themes/after/<theme>/history-panel.png` as the
+/// visual evidence (the launcher has no `--shots` route into history mode).
+#[test]
+fn library_panel_paints_a_visible_derived_edge_in_dark_and_light() {
+    use ui::a11y::relative_luminance;
+    use ui::offscreen::OffscreenRenderer;
+    use vello::kurbo::{Affine, Rect};
+    use vello::peniko::{Color, Fill};
+
+    let (doc, selected, _) = fixture();
+    let (w, h) = (640_u32, 960_u32);
+    let bounds = Rect::new(24.0, 24.0, f64::from(w) - 24.0, f64::from(h) - 24.0);
+    for theme in [ui::Theme::dark(), ui::Theme::light()] {
+        let mut panel = preview(&doc, selected, PreviewSide::After);
+        let mut tr = ui::TextRenderer::new();
+        panel.layout(bounds, &mut tr, &theme).unwrap();
+        let mut scene = vello::Scene::new();
+        // The host ground the panel sits on.
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            theme.bg_app,
+            None,
+            &Rect::new(0.0, 0.0, f64::from(w), f64::from(h)),
+        );
+        panel.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+
+        let mut renderer = OffscreenRenderer::new(w, h);
+        let rgba = renderer.render_rgba(&scene);
+        let px = |x: f64, y: f64| -> Color {
+            let i = ((y as usize) * (w as usize) + (x as usize)) * 4;
+            Color::new([
+                f32::from(rgba[i]) / 255.0,
+                f32::from(rgba[i + 1]) / 255.0,
+                f32::from(rgba[i + 2]) / 255.0,
+                1.0,
+            ])
+        };
+        // Sample on the panel's left edge, halfway down: the outermost pixel
+        // column carries the derived hairline; six pixels in is the panel's
+        // own fill (the content is inset `s3` = 12 from the edge).
+        let y = bounds.center().y;
+        let edge = relative_luminance(px(bounds.x0, y));
+        let fill = relative_luminance(px(bounds.x0 + 6.0, y));
+        assert!(
+            (edge - fill).abs() >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+            "{}: the library panel's edge must register against its fill \
+             (edge {edge:.4} vs fill {fill:.4})",
+            theme.name
+        );
+        let ground = relative_luminance(px(bounds.x0 - 6.0, y));
+        assert!(
+            (fill - ground).abs() >= ui::tokens::colors::HAIRLINE_MIN_DELTA
+                || (edge - ground).abs() >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+            "{}: the panel must step off the host ground (fill {fill:.4}, edge {edge:.4}, ground {ground:.4})",
+            theme.name
+        );
+
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/ux1x/a3/themes/after")
+            .join(if theme.name.to_ascii_lowercase().contains("light") { "light" } else { "dark" })
+            .join("history-panel.png");
+        if let Some(parent) = out.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        renderer.render_png(&scene, theme.bg_app, &out);
+    }
+}

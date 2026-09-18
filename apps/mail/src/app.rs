@@ -31,8 +31,8 @@ use std::sync::Arc;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size as TSize, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -51,7 +51,9 @@ use ui::widget::{
 use crate::account::{Account, AccountStore};
 use crate::compose::{ComposeAction, ComposeWindow};
 use crate::doc::MailDoc;
-use crate::draw::{fill_rect, fill_round, stroke_round};
+use ui::surface::pill;
+
+use crate::draw::fill_rect;
 use crate::engine::{EngineEvent, EngineRequest, EngineRequestId, EngineRequestKind};
 use crate::model::{
     AccountConfig, Addr, Attachment, ComposeFormat, Draft, Folder, Message, MessageId,
@@ -1463,9 +1465,15 @@ impl MailApp {
 
             // Sign-in method pills, each sized from the wider label.
             let pill_w = m.pill_w;
+            // The two pills of one segmented control sit an `s2` apart.
+            let pill_gap = SETUP_PILL_GAP;
             let pw_pill = Rect::new(fx, y, fx + pill_w, y + field_h);
-            let oauth_pill =
-                Rect::new(fx + pill_w + 10.0, y, fx + pill_w * 2.0 + 10.0, y + field_h);
+            let oauth_pill = Rect::new(
+                fx + pill_w + pill_gap,
+                y,
+                fx + pill_w * 2.0 + pill_gap,
+                y + field_h,
+            );
             Self::push_setup_hit(&mut self.overlay_hits, band, pw_pill, OverlayHit::AuthPassword);
             Self::push_setup_hit(&mut self.overlay_hits, band, oauth_pill, OverlayHit::AuthOAuth);
             y += field_h + SETUP_ROW_GAP;
@@ -2001,24 +2009,19 @@ impl MailApp {
         };
         let c = &theme.tokens.colors;
         let mr = context_menu_rect(menu, self.rect);
-        scene.fill(
-            Fill::NonZero,
+        // The shadow is the menu's own shape from the elevation ladder (HIG
+        // §9.3); the solid offset rect it replaces read as a grey bar under
+        // the menu on the light preset.
+        ui::surface::shadow(scene, t, mr, 10.0, &theme.tokens.elevation.e2);
+        // A floating Panel: the derived panel border, crisp on the outermost
+        // pixel row (HIG §9.5).
+        pill(scene, t, mr, c.surfaces.raised, None, Some(10.0));
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
             t,
-            Color::from_rgba8(0, 0, 0, 80),
+            ui::chrome::panel_border(theme),
             None,
-            &RoundedRect::from_rect(
-                Rect::new(mr.x0 + 1.0, mr.y0 + 3.0, mr.x1 + 1.0, mr.y1 + 4.0),
-                10.0,
-            ),
-        );
-        fill_round(scene, t, mr, 10.0, c.surfaces.raised);
-        stroke_round(
-            scene,
-            t,
-            mr,
-            10.0,
-            1.0,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            &ui::surface::edge_outline(mr, 10.0),
         );
         let (read, starred) = self
             .shared
@@ -2031,12 +2034,13 @@ impl MailApp {
         for a in &menu.items {
             let item = Rect::new(mr.x0, y, mr.x1, y + 28.0);
             if item.contains(last_mouse) {
-                fill_round(
+                pill(
                     scene,
                     t,
                     Rect::new(item.x0 + 4.0, item.y0 + 1.0, item.x1 - 4.0, item.y1 - 1.0),
-                    6.0,
-                    c.lift(0.72),
+                    theme.bg_hover,
+                    None,
+                    Some(6.0),
                 );
             }
             let danger = matches!(a, CtxAction::Delete);
@@ -2093,22 +2097,19 @@ impl MailApp {
         let c = &theme.tokens.colors;
         fill_rect(scene, t, self.rect, c.surfaces.overlay);
         let p = self.overlay_panel_rect();
-        // Soft drop shadow so the sheet floats above the dimmed mailbox.
-        scene.fill(
-            Fill::NonZero,
+        // The sheet floats above the dimmed mailbox on the Panel tier of the
+        // elevation ladder (HIG §9.1 / §9.3): the shadow is the sheet's own
+        // shape, blurred, not a solid rect nudged down (a grey bar on light).
+        ui::surface::shadow(scene, t, p, 16.0, &theme.tokens.elevation.e4);
+        // The sheet is a floating Panel: derived panel border, crisp on the
+        // outermost pixel row (HIG §9.5).
+        pill(scene, t, p, c.surfaces.raised, None, Some(16.0));
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
             t,
-            Color::from_rgba8(0, 0, 0, 90),
+            ui::chrome::panel_border(theme),
             None,
-            &RoundedRect::from_rect(Rect::new(p.x0, p.y0 + 6.0, p.x1, p.y1 + 10.0), 16.0),
-        );
-        fill_round(scene, t, p, 16.0, c.surfaces.raised);
-        stroke_round(
-            scene,
-            t,
-            p,
-            16.0,
-            1.0,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            &ui::surface::edge_outline(p, 16.0),
         );
         let lx = p.x0 + SETUP_PAD;
         let last_mouse = self.shared.borrow().last_mouse;
@@ -2629,6 +2630,9 @@ const SETUP_PAD: f64 = 26.0;
 /// sign-in row, under the SMTP row and around the hint.
 const SETUP_HEADING_TOP: f64 = 20.0;
 const SETUP_ROW_GAP: f64 = 12.0;
+/// Gap between the two sign-in pills (`s2`; the hit list is rebuilt without
+/// a theme, so the base step is spelled out).
+const SETUP_PILL_GAP: f64 = ui::tokens::spacing::Spacing::BASE.s2 as f64;
 const SETUP_SECTION_GAP: f64 = 20.0;
 const SETUP_HINT_GAP: f64 = 18.0;
 const SETUP_FOOTER_PAD: f64 = 16.0;

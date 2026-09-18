@@ -163,12 +163,15 @@ impl OverviewGrid {
             None,
             TextWeight::Regular,
         );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
+        // The header rule is the window ground's derived edge on one crisp
+        // pixel row.
+        chrome::hairline_h(
+            scene,
             transform,
-            colors.border_standard,
-            None,
-            &vello::kurbo::Line::new((window.x0, divider_y), (window.x1, divider_y)),
+            window.x0,
+            window.x1,
+            divider_y.floor(),
+            ui::surface::edge_on(colors.surfaces.base),
         );
         let (area, thumbs, max) = self.geometry(window, deck.slides.len());
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &area);
@@ -229,6 +232,8 @@ impl OverviewGrid {
         render::draw_slide(
             scene, transform, text, theme, palette, slide, rect, 8.0, images,
         );
+        // The thumbnail frame is the window ground's derived edge; the
+        // current slide keeps its accent ring.
         chrome::stroke_rrect(
             scene,
             transform,
@@ -237,7 +242,7 @@ impl OverviewGrid {
             if index == current {
                 palette.accent
             } else {
-                render::with_alpha(colors.text_primary, 30)
+                ui::surface::edge_on(colors.surfaces.base)
             },
             if index == current { 2.5 } else { 1.0 },
         );

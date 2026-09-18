@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -397,25 +397,27 @@ fn draw_groups(
             // Keep the chip inside its column even when a scaled glyph's
             // measured advance lands exactly on the right edge.
             let kx = x + col_w - f64::from(kw) - 4.0 * scale;
-            // Soft chip background — translucent white for a "kbd"
-            // affordance without needing per-theme tinting.
             let chip_pad_x = 6.0 * scale;
             let chip_pad_y = 2.0 * scale;
-            let chip = RoundedRect::from_rect(
-                Rect::new(
-                    kx - chip_pad_x,
-                    row_y - chip_pad_y,
-                    kx + f64::from(kw) + chip_pad_x,
-                    row_y + f64::from(row_size) * scale + chip_pad_y,
-                ),
-                f64::from(tokens.radii.sm) * scale,
+            let chip = Rect::new(
+                kx - chip_pad_x,
+                row_y - chip_pad_y,
+                kx + f64::from(kw) + chip_pad_x,
+                row_y + f64::from(row_size) * scale + chip_pad_y,
             );
-            scene.fill(
-                Fill::NonZero,
+            // A kbd chip: one derived hairline step off the frame's ground
+            // (`ModalFrame` paints `surfaces.raised`), so the key registers
+            // on every preset — `lift(0.72)` landed on the light frame's own
+            // colour — with a crisp edge derived from that fill (HIG §9.5).
+            let ground = tokens.colors.surfaces.raised;
+            let step = ui::surface::edge_on(ground);
+            let kbd_fill = ui::tokens::colors::over(ground, step, step.components[3]);
+            ui::surface::card(
+                scene,
                 transform,
-                tokens.colors.lift(0.72),
-                None,
-                &chip,
+                chip,
+                f64::from(tokens.radii.sm) * scale,
+                kbd_fill,
             );
             text_renderer.draw_text(
                 scene,

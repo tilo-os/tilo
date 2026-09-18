@@ -1,12 +1,15 @@
 //! Pure saved-place painting shared with the live Weather overview. No live Core or services.
 use crate::{
-    core::{CHIP_NAME_TEXT, ChipMetrics, lerp_color, text_left, text_right, text_sm, text_x2l},
+    core::{
+        CHIP_NAME_TEXT, ChipMetrics, hover_wash, lerp_color, text_left, text_right, text_sm,
+        text_x2l,
+    },
     icon,
     model::{SavedLocation, WeatherSnapshot},
     units::Units,
     wxcode::Sky,
 };
-use ui::{TextRenderer, Theme, color_compat::ColorCompat, text_render::TextWeight};
+use ui::{TextRenderer, Theme, text_render::TextWeight};
 use vello::{
     Scene,
     kurbo::{Affine, Rect, RoundedRect, Stroke},
@@ -31,25 +34,23 @@ pub(crate) fn draw_saved_place(
     accent: Color,
 ) {
     let c = &theme.tokens.colors;
+    let radius = f64::from(theme.tokens.radii.md);
     let bg = if selected {
         lerp_color(c.surfaces.base, accent, 0.18)
-    } else if hovered {
-        c.neutral[2]
     } else {
         c.surfaces.raised
     };
-    let shape = RoundedRect::from_rect(chip, f64::from(theme.tokens.radii.md));
-    scene.fill(Fill::NonZero, t, bg, None, &shape);
+    // Fill plus the edge derived from that fill (HIG §9.5); hover is a
+    // derived wash over the rest face, and the selected city keeps its
+    // accent ring. The declared `border_standard` stroke this replaces was
+    // three shades off `raised` on dark and vanished.
+    ui::surface::card(scene, t, chip, radius, bg);
+    let shape = RoundedRect::from_rect(chip, radius);
+    if hovered && !selected {
+        scene.fill(Fill::NonZero, t, hover_wash(bg), None, &shape);
+    }
     if selected {
         scene.stroke(&Stroke::new(1.5), t, accent, None, &shape);
-    } else {
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            c.border_standard.with_alpha_factor(0.6),
-            None,
-            &shape,
-        );
     }
     // Glyph, identity block and temperature all centre on the chip from
     // their measured heights, so a scaled row keeps them on one axis

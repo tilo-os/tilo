@@ -42,6 +42,9 @@ use ui::tokens::Metrics;
 use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
 use ui::tokens::spacing::Spacing;
 use ui::tokens::typography::TypeScale;
+use ui::chrome::{GLOW_ALPHA, SelectionState, SelectionTier};
+use ui::surface::{card, edge_on, edge_outline, separator, shadow};
+use ui::tokens::colors::{Colors, over};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
     Avatar, Button, ButtonFace, ButtonStyle, Checkbox, CheckboxFace, Chip, ChipLead, ChipStyle,
@@ -3111,14 +3114,14 @@ impl ContactsApp {
         let c = &theme.tokens.colors;
         let rect = self.hit.back;
         let hovered = rect.contains(self.last_mouse);
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.full));
         let bg = if hovered {
             c.surfaces.raised
         } else {
             c.surfaces.base
         };
-        scene.fill(Fill::NonZero, t, bg, None, &shape);
-        scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
+        // A capsule with its derived edge (HIG §9.5); `radii.full` is the
+        // 9999 sentinel, so the capsule radius is the pill's own half height.
+        card(scene, t, rect, rect.height() / 2.0, bg);
         // Left chevron.
         let cyp = rect.center().y;
         let cxp = rect.x0 + 18.0;
@@ -3149,12 +3152,13 @@ impl ContactsApp {
             self.rect.y0 + toolbar_h,
         );
         scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &bar);
-        scene.stroke(
-            &Stroke::new(1.0),
+        // Bar role: one chrome hairline under the app bar (HIG §9.5).
+        scene.fill(
+            Fill::NonZero,
             t,
-            c.border_standard,
+            ui::chrome::chrome_hairline(theme),
             None,
-            &Line::new((bar.x0, bar.y1), (bar.x1, bar.y1)),
+            &Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1),
         );
         // No app-name wordmark — the OS titlebar shows "Contacts". The toolbar's
         // left slot carries the functional people-count instead.
@@ -3305,7 +3309,7 @@ impl ContactsApp {
         // Rows (clipped to body).
         let metrics = self.row_metrics();
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &self.list_body);
-        for (id, rr) in &self.list_rows {
+        for (index, (id, rr)) in self.list_rows.iter().enumerate() {
             if rr.y1 < self.list_body.y0 || rr.y0 > self.list_body.y1 {
                 continue;
             }
@@ -3313,7 +3317,24 @@ impl ContactsApp {
                 continue;
             };
             let selected = self.selected == Some(*id);
-            Self::draw_list_row(scene, t, tr, theme, contact, *rr, selected, &metrics);
+            // The selected row's pill replaces the separators on *both* of
+            // its sides: the one under it and the one under the row above,
+            // so the pill keeps the same clear band above and below.
+            let next_selected = self
+                .list_rows
+                .get(index.saturating_add(1))
+                .is_some_and(|(next, _)| self.selected == Some(*next));
+            Self::draw_list_row(
+                scene,
+                t,
+                tr,
+                theme,
+                contact,
+                *rr,
+                selected,
+                !selected && !next_selected,
+                &metrics,
+            );
         }
         if self.list_rows.is_empty() {
             self.draw_list_empty_state(scene, t, tr, theme);
@@ -3323,7 +3344,12 @@ impl ContactsApp {
     }
 
     /// Draw one contact row: selection highlight, avatar, name/subtitle
-    /// (elided to fit), favourite star, and the bottom separator.
+    /// (elided to fit), favourite star, and — when `separator_below` — the
+    /// rule under it (the caller drops it on either side of a selected row).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "draw-context bundle plus the row's two state flags"
+    )]
     fn draw_list_row(
         scene: &mut Scene,
         t: Affine,
@@ -3332,32 +3358,44 @@ impl ContactsApp {
         contact: &Contact,
         rr: Rect,
         selected: bool,
+        separator_below: bool,
         m: &ContactRowMetrics,
     ) {
         let c = &theme.tokens.colors;
         let sp = &theme.tokens.spacing;
         if selected {
-            let bg = RoundedRect::from_rect(rr.inset(-0.0), f64::from(theme.tokens.radii.md));
+            // Selection is a lift (HIG §9.3/§9.4): the toolkit's selection
+            // tier — fill, derived hairline, inner glow — on a pill inset
+            // `s2` from the pane sides and half an `s1` from the rows above
+            // and below, never an accent wash or bar.
+            let pill = selection_pill(rr, sp);
+            let radius = f64::from(theme.tokens.radii.md);
+            let tier = row_tier_on(c.surfaces.base, SelectionState::active(true));
             scene.fill(
                 Fill::NonZero,
                 t,
-                theme.accent_primary.with_alpha_factor(0.18),
+                tier.fill,
                 None,
-                &bg,
+                &RoundedRect::from_rect(pill, radius),
             );
-            // Left accent bar.
-            scene.fill(
-                Fill::NonZero,
-                t,
-                theme.accent_primary,
-                None,
-                &Rect::new(
-                    rr.x0,
-                    rr.y0 + f64::from(sp.s2),
-                    rr.x0 + 3.0,
-                    rr.y1 - f64::from(sp.s2),
-                ),
-            );
+            if let Some(border) = tier.border {
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    t,
+                    border,
+                    None,
+                    &edge_outline(pill, radius),
+                );
+            }
+            if let Some(glow) = tier.inner_glow {
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    t,
+                    glow,
+                    None,
+                    &edge_outline(pill.inset(-1.0), (radius - 1.0).max(0.0)),
+                );
+            }
         }
         // Avatar: the same `PAD` inset as the search and filter controls
         // above the list, vertically centred in the row.
@@ -3399,24 +3437,23 @@ impl ContactsApp {
             );
         }
         if contact.favorite {
-            // The star sits on the name line's centre, inset like the avatar.
+            // A trailing indicator sits on the row's centre line (HIG §7),
+            // like the avatar, inset like the avatar.
             draw_star(
                 scene,
                 t,
-                Point::new(rr.x1 - PAD - 6.0, name_y + m.name_h / 2.0),
+                Point::new(rr.x1 - PAD - 6.0, rr.center().y),
                 6.0,
                 theme.accent_primary,
                 true,
             );
         }
-        // Separator.
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            c.border_standard.with_alpha_factor(0.5),
-            None,
-            &Line::new((rr.x0 + PAD, rr.y1), (rr.x1 - PAD, rr.y1)),
-        );
+        // Separator between rows, derived against the list ground and inset
+        // like a Panel separator (HIG §9.5); a selection pill's own edge
+        // replaces it above and below that row.
+        if separator_below {
+            separator(scene, t, rr.x0, rr.x1, rr.y1 - 0.5, PAD, c.surfaces.base);
+        }
     }
 
     /// The "no contacts yet" / "no matches" placeholder shown when the
@@ -3482,10 +3519,15 @@ impl ContactsApp {
             dx0 + DIVIDER_W,
             self.detail_rect.y1,
         );
+        // The splitter is one derived hairline step off the base ground it
+        // divides — a contrast step on every preset (the declared
+        // `border_standard` vanished on dark; the raised tier is white on
+        // white in light) — and accent only while it is live under the
+        // pointer.
         let color = if self.divider_hover || self.divider_drag {
             theme.accent_primary
         } else {
-            theme.tokens.colors.border_standard
+            row_tier_on(theme.tokens.colors.surfaces.base, SelectionState::active(true)).fill
         };
         scene.fill(Fill::NonZero, t, color, None, &r);
     }
@@ -3922,16 +3964,16 @@ impl ContactsApp {
         {
             let r = self.hit.fav_toggle;
             let hovered = r.contains(self.last_mouse);
-            let shape = RoundedRect::from_rect(r, f64::from(theme.tokens.radii.md));
+            // The on state is the accent wash resolved onto the pane, so the
+            // pill is an opaque surface its own edge derives from.
             let bg = if fav {
-                theme.accent_primary.with_alpha_factor(0.18)
+                over(c.surfaces.base, theme.accent_primary, 0.18)
             } else if hovered {
                 theme.bg_hover
             } else {
                 c.surfaces.raised
             };
-            scene.fill(Fill::NonZero, t, bg, None, &shape);
-            scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
+            card(scene, t, r, f64::from(theme.tokens.radii.md), bg);
             draw_star(
                 scene,
                 t,
@@ -4122,8 +4164,7 @@ impl ContactsApp {
             chip(scene, t, tr, theme, *rect, lbl, false);
         }
         for (_target, rect) in &self.hit.remove_btns {
-            let shape = RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.md));
-            scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
+            card(scene, t, *rect, f64::from(theme.tokens.radii.md), c.surfaces.raised);
             // minus glyph
             let cy = rect.center().y;
             scene.stroke(
@@ -4139,9 +4180,7 @@ impl ContactsApp {
         add_button(scene, t, tr, theme, self.hit.add_address, "+ Add address");
         {
             let r = self.hit.cal_btn;
-            let shape = RoundedRect::from_rect(r, f64::from(theme.tokens.radii.md));
-            scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &shape);
-            scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
+            card(scene, t, r, f64::from(theme.tokens.radii.md), c.surfaces.raised);
             draw_calendar_glyph(scene, t, r, theme);
         }
     }
@@ -4313,7 +4352,7 @@ impl ContactsApp {
             }
             let s = d.to_string();
             let dw = f64::from(tr.measure(&s, 12.0, None).0);
-            let col = if is_sel { Color::WHITE } else { c.text_primary };
+            let col = if is_sel { c.on_accent(4.5) } else { c.text_primary };
             tr.draw_text(
                 scene,
                 &s,
@@ -4790,20 +4829,67 @@ fn contact_chip_style(theme: &Theme, active: bool) -> ChipStyle {
     }
 }
 
+/// A floating Panel (HIG §9.1/§9.5): the theme's elevation shadow, the Panel
+/// ground and the derived Panel border — not a literal black halo under a
+/// declared border that vanishes on the dark preset.
 pub(crate) fn menu_panel(scene: &mut Scene, t: Affine, theme: &Theme, panel: Rect) {
-    let c = &theme.tokens.colors;
-    // Soft shadow.
-    let shadow = RoundedRect::from_rect(panel.inset(2.0), f64::from(theme.tokens.radii.md) + 1.0);
+    let radius = f64::from(theme.tokens.radii.md);
+    shadow(scene, t, panel, radius, &theme.tokens.elevation.e3);
+    let shape = RoundedRect::from_rect(panel, radius);
     scene.fill(
         Fill::NonZero,
         t,
-        Color::from_rgba8(0, 0, 0, 90),
+        ui::chrome::panel_ground(theme),
         None,
-        &shadow,
+        &shape,
     );
-    let shape = RoundedRect::from_rect(panel, f64::from(theme.tokens.radii.md));
-    scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &shape);
-    scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
+    scene.stroke(
+        &Stroke::new(1.0),
+        t,
+        ui::chrome::panel_border(theme),
+        None,
+        &edge_outline(panel, radius),
+    );
+}
+
+/// The lift a chosen or hovered row takes on `ground` (HIG §9.3), derived
+/// against that ground. `chrome::selection_tier` measures its lift from
+/// `surfaces.base`; a row inside a menu or dialog sits on the Panel ground,
+/// which on the dark and high-contrast presets lies within 0.01 of that
+/// lift, so the chosen menu row was invisible there. Until
+/// `chrome::selection_tier_on(theme, state, ground)` is available, the row
+/// takes the ground's own registered hairline step as its lift (the full
+/// step when active, half of it on hover) and derives its edge and glow
+/// from the fill that results.
+pub(crate) fn row_tier_on(ground: Color, state: SelectionState) -> SelectionTier {
+    let lifted = state.active || state.pressed;
+    let step = edge_on(ground);
+    let fill = if lifted {
+        over(ground, step, step.components[3])
+    } else if state.hover {
+        over(ground, step, step.components[3] / 2.0)
+    } else {
+        Color::TRANSPARENT
+    };
+    SelectionTier {
+        fill,
+        border: lifted.then(|| edge_on(fill)),
+        inner_glow: lifted.then(|| Colors::hairline_on(fill, GLOW_ALPHA)),
+        scale: 1.0,
+    }
+}
+
+/// The selected list row's pill: inset `s2` from the pane sides and half an
+/// `s1` from the row band's top and bottom, so neighbouring rows' pills
+/// keep one `s1` between them (HIG §7: nothing touches).
+fn selection_pill(row: Rect, sp: &Spacing) -> Rect {
+    let half_gap = f64::from(sp.s1) / 2.0;
+    Rect::new(
+        row.x0 + f64::from(sp.s2),
+        row.y0 + half_gap,
+        row.x1 - f64::from(sp.s2),
+        row.y1 - half_gap,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4818,20 +4904,35 @@ fn menu_item(
     selected: bool,
 ) {
     let c = &theme.tokens.colors;
-    if hover {
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
-        scene.fill(Fill::NonZero, t, theme.accent_primary, None, &shape);
-    } else if selected {
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
+    // Hover and the chosen item are lifts (HIG §9.3) off the menu's Panel
+    // ground, on a pill inset half an `s1` from the row band so neighbouring
+    // rows keep a token gap.
+    let half_gap = f64::from(theme.tokens.spacing.s1) / 2.0;
+    let pill = Rect::new(rect.x0, rect.y0 + half_gap, rect.x1, rect.y1 - half_gap);
+    let radius = f64::from(theme.tokens.radii.sm);
+    let tier = row_tier_on(
+        ui::chrome::panel_ground(theme),
+        SelectionState::new(selected, hover, false),
+    );
+    if tier.fill.components[3] > 0.0 {
         scene.fill(
             Fill::NonZero,
             t,
-            theme.accent_primary.with_alpha_factor(0.16),
+            tier.fill,
             None,
-            &shape,
+            &RoundedRect::from_rect(pill, radius),
         );
+        if let Some(border) = tier.border {
+            scene.stroke(
+                &Stroke::new(1.0),
+                t,
+                border,
+                None,
+                &edge_outline(pill, radius),
+            );
+        }
     }
-    let col = if hover { Color::WHITE } else { c.text_primary };
+    let col = c.text_primary;
     tr.draw_text(
         scene,
         label,
@@ -4844,7 +4945,7 @@ fn menu_item(
 
 /// A non-hovered menu row that paints its label in `color` (used for the
 /// destructive "Delete" action in the context menu). The hovered state is
-/// drawn by the caller via the regular [`menu_item`] (white-on-accent).
+/// drawn by the caller via the regular [`menu_item`] (the hover lift).
 fn menu_item_colored(
     scene: &mut Scene,
     t: Affine,
@@ -8296,6 +8397,51 @@ impl ContactsApp {
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
+
+    /// Rule 1 of the 1× polish bar for the contact list: two neighbouring
+    /// rows' selection pills keep an `s1` between them, and a pill keeps `s2`
+    /// from the pane's sides — the geometry the audit cannot observe through
+    /// the app's semantics tree, asserted from the same helper the painter
+    /// uses.
+    #[test]
+    fn neighbouring_selection_pills_keep_a_token_gap() {
+        let sp = &Theme::dark().tokens.spacing;
+        let row_h = ContactRowMetrics::new(sp, 1.0).row_h;
+        let a = super::selection_pill(Rect::new(0.0, 0.0, 300.0, row_h), sp);
+        let b = super::selection_pill(Rect::new(0.0, row_h, 300.0, 2.0 * row_h), sp);
+        assert_eq!(b.y0 - a.y1, f64::from(sp.s1), "pill ↔ pill is one s1");
+        assert_eq!(a.x0, f64::from(sp.s2), "pill ↔ pane edge is one s2");
+        assert_eq!(300.0 - a.x1, f64::from(sp.s2));
+        assert!(a.height() >= row_h - f64::from(sp.s1));
+    }
+
+    /// The chosen and hovered row lifts on a Panel ground register as a
+    /// contrast step on every preset — the reason the menu rows do not use
+    /// `chrome::selection_tier`, whose lift lands within a hairline of the
+    /// dark and high-contrast Panel grounds.
+    #[test]
+    fn panel_row_lift_registers_on_every_preset() {
+        use ui::surface::edge_delta;
+        use ui::tokens::colors::HAIRLINE_MIN_DELTA;
+        let opaque = |c: Color| c.components[3] == 1.0;
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let ground = ui::chrome::panel_ground(&theme);
+            let active = super::row_tier_on(ground, SelectionState::active(true));
+            assert!(opaque(active.fill), "{}", theme.name);
+            assert!(
+                edge_delta(active.fill, ground) >= HAIRLINE_MIN_DELTA,
+                "{}: active menu row does not register on the panel",
+                theme.name
+            );
+            let border = active.border.expect("active rows carry an edge");
+            assert!(edge_delta(border, active.fill) >= HAIRLINE_MIN_DELTA, "{}", theme.name);
+            let hover = super::row_tier_on(ground, SelectionState::new(false, true, false));
+            assert!(opaque(hover.fill) && hover.border.is_none(), "{}", theme.name);
+            assert!(edge_delta(hover.fill, ground) > 0.0, "{}", theme.name);
+            let idle = super::row_tier_on(ground, SelectionState::default());
+            assert_eq!(idle.fill.components[3], 0.0, "{}", theme.name);
+        }
+    }
     use automerge::ROOT;
     use automerge::ReadDoc;
     use taffy::{AvailableSpace, Dimension, Size, Style};

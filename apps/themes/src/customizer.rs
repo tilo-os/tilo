@@ -20,6 +20,7 @@ use ui::LocalState;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::tokens::{Metrics, Spacing, TypeScale};
 use ui::widget::{Button, ColorPicker, Dropdown, Slider, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -30,28 +31,51 @@ use crate::draw;
 use crate::model::{self, FONTS, ThemeSpec, TokenId};
 
 /// Panel inset on every side — the toolkit's `s4` step.
-const PAD: f32 = 16.0;
-/// Vertical rhythm between the panel's controls. Deliberately off the token
-/// scale (between `s4` and `s6`): the sliders and the dropdown carry their
-/// labels 18 px above the control, so `s4` reads as one crowded stack while
-/// `s6` splits the panel into islands.
-const GAP: f32 = 22.0;
-/// Child-control heights, mirrored from the `ui` widgets, so the panel's
-/// intrinsic height can be computed for the narrow stacked/scrolling layout
-/// (where the panel can't claim `percent(1.0)`).
+const PAD: f32 = Spacing::BASE.s4;
+/// The 1× line box of a control's `sm` label — the one text metric the
+/// panel's vertical rhythm is built on, read from the toolkit's line-height
+/// formula rather than carried as a copy of `size × 1.25`.
+fn control_label_line_h() -> f32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a 1× line box of a 12 pt label is a small logical-pixel value"
+    )]
+    let line = ui::text_metrics::line_height_px(TypeScale::default().sm, 1.0) as f32;
+    line
+}
+/// Vertical rhythm between the panel's controls, stated as its relationship
+/// rather than a number: each control's label rides in the gap above it, so
+/// the gap is one `s1` from the previous control to the label's line box and
+/// one `s1` from the label to its own control (HIG §7b: label ↔ control is
+/// `s1`). Every control in the panel gets this same step.
+fn gap() -> f32 {
+    Spacing::BASE.s1 + control_label_line_h() + Spacing::BASE.s1
+}
+/// Child-control heights, named from the same metrics the `ui` widgets lay
+/// themselves out with, so the panel's intrinsic height (used by the narrow
+/// stacked/scrolling layout, where the panel can't claim `percent(1.0)`)
+/// matches what the controls actually take. A stale mirror here under-
+/// reserved the stack by 4 px and the column squeezed the font dropdown to
+/// 38 px beside 40 px action buttons.
 const PICKER_H: f32 = 220.0;
-const SLIDER_H: f32 = 30.0;
-const DROPDOWN_H: f32 = 40.0;
+/// `Slider` lays out on `metrics.min_pointer_target`.
+const SLIDER_H: f32 = Metrics::BASE.min_pointer_target;
+/// `Dropdown` lays out on `metrics.bar_height`.
+const DROPDOWN_H: f32 = Metrics::BASE.bar_height;
 /// The action buttons share the dropdown's control height, so the panel's
 /// last two rows never mix a 40 px chooser with shorter buttons.
-const ACTIONS_H: f32 = 40.0;
+const ACTIONS_H: f32 = DROPDOWN_H;
 
 /// The colour-token chip grid: a header (panel title, theme name and the
 /// "COLORS" label), the chips wrapped to the width the panel actually has,
 /// and the selected-token caption directly under the last chip row.
 const CHIP_SIZE: f64 = 28.0;
 /// Gap between chips — the `s2` step.
-const CHIP_GAP: f64 = 8.0;
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: f64::from is not const, and an f32 -> f64 widening is exact"
+)]
+const CHIP_GAP: f64 = Spacing::BASE.s2 as f64;
 /// Height of the header block above the first chip row.
 const CHIP_HEADER_H: f64 = 58.0;
 /// Air between the last chip row and the caption, and the caption's own line.
@@ -107,7 +131,7 @@ pub fn intrinsic_height_for_width_scaled(panel_width: f32, text_scale: f32) -> f
     let scale = text_scale.max(1.0);
     PAD * 2.0
         + chip_grid_height_scaled(panel_width - PAD * 2.0, scale)
-        + GAP * scale * 5.0
+        + gap() * scale * 5.0
         + PICKER_H
         + SLIDER_H * 2.0
         + DROPDOWN_H
@@ -115,8 +139,11 @@ pub fn intrinsic_height_for_width_scaled(panel_width: f32, text_scale: f32) -> f
 }
 
 /// Vertical offset (logical px, at 1×) of a control's label above its
-/// control — a `sm` line plus its `s1` caption gap.
-const CONTROL_LABEL_OFFSET: f64 = 18.0;
+/// control — the label's line box plus its `s1` caption gap, the same two
+/// terms [`gap`] is built from so the label always lands inside the gap.
+fn control_label_offset() -> f64 {
+    f64::from(control_label_line_h() + Spacing::BASE.s1)
+}
 
 /// Panic-free leaf/parent node construction for [`Widget::build_layout`].
 /// `TaffyTree::new_leaf` / `new_with_children` are typed `-> TaffyResult<_>`
@@ -436,7 +463,7 @@ impl Widget for Customizer {
                 // gap grows with the type.
                 gap: Size {
                     width: length(0.0_f32),
-                    height: length(GAP * theme.text_scale.max(1.0)),
+                    height: length(gap() * theme.text_scale.max(1.0)),
                 },
                 padding: taffy::Rect {
                     left: length(PAD),
@@ -513,14 +540,16 @@ impl Widget for Customizer {
         theme: &Theme,
         p: &PresenceCtx,
     ) {
-        // Panel background + left divider.
+        // Panel background + left divider. The divider is a hairline derived
+        // from the panel's own fill (HIG §9.5), so it separates the customizer
+        // from the preview on the dark preset where `border_standard` did not.
         draw::fill_rect(scene, t, self.rect, theme.bg_app);
         draw::line(
             scene,
             t,
-            Point::new(self.rect.x0, self.rect.y0),
-            Point::new(self.rect.x0, self.rect.y1),
-            theme.border_standard,
+            Point::new(self.rect.x0 + 0.5, self.rect.y0),
+            Point::new(self.rect.x0 + 0.5, self.rect.y1),
+            ui::surface::edge_on(theme.bg_app),
             1.0,
         );
 
@@ -761,7 +790,7 @@ impl Customizer {
         // Labels are the theme's `sm` step, one scaled label offset above
         // their control (the inter-control gap grows by the same factor).
         let label_size = Self::renderer_size(tr, theme.tokens.typography.scale.sm);
-        let label_offset = CONTROL_LABEL_OFFSET * self.scale();
+        let label_offset = control_label_offset() * self.scale();
         if let Some(spec) = &self.spec {
             draw::text(
                 tr,
@@ -1071,9 +1100,16 @@ impl Customizer {
 
 /// The same color swatch paint used by live customization and frozen library views.
 fn draw_token_chip(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, rgb: [u8;3], selected: bool) {
-    draw::fill_rrect(scene, t, rect, 6.0, model::color(rgb));
-    let ring = if selected { theme.accent_primary } else { theme.border_standard };
-    draw::stroke_rrect(scene, t, rect, 6.0, ring, if selected {2.5} else {1.0});
+    // The rest ring derives from the chip's own colour, so a chip that
+    // matches the panel ground (a dark theme's `base` on the dark app) still
+    // has a rim; the selected chip carries the accent ring instead.
+    let fill = model::color(rgb);
+    if selected {
+        draw::fill_rrect(scene, t, rect, 6.0, fill);
+        draw::stroke_rrect(scene, t, rect, 6.0, theme.accent_primary, 2.5);
+    } else {
+        ui::surface::card(scene, t, rect, 6.0, fill);
+    }
 }
 
 pub(crate) fn draw_snapshot_tokens(scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, spec: &ThemeSpec, rect: Rect) {

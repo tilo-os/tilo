@@ -385,12 +385,15 @@ impl Widget for Gallery {
         p: &PresenceCtx,
     ) {
         draw::fill_rect(scene, t, self.rect, theme.bg_app);
+        // The gallery's trailing divider is a hairline derived from its own
+        // fill (HIG §9.5); half a pixel inside the edge so the 1 px rule lands
+        // on one pixel column instead of straddling two.
         draw::line(
             scene,
             t,
-            Point::new(self.rect.x1, self.rect.y0),
-            Point::new(self.rect.x1, self.rect.y1),
-            theme.border_standard,
+            Point::new(self.rect.x1 - 0.5, self.rect.y0),
+            Point::new(self.rect.x1 - 0.5, self.rect.y1),
+            ui::surface::edge_on(theme.bg_app),
             1.0,
         );
         // No app-name wordmark: the OS titlebar shows "Themes". The gallery

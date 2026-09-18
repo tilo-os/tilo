@@ -124,6 +124,107 @@ fn the_transition_caption_keeps_the_clearance_every_other_row_has() {
     );
 }
 
+/// The gap between two rects that neighbour on the x axis, negative when they
+/// overlap.
+fn x_gap(left: Rect, right: Rect) -> f64 {
+    right.x0 - left.x1
+}
+
+#[test]
+fn the_topbar_commands_and_side_toggles_keep_one_sibling_step_at_every_width() {
+    for w in [390.0, 480.0, 768.0, 1280.0] {
+        let app = app_sized(w, 800.0);
+        let r = app.regions();
+        let mut row: Vec<(&str, Rect)> = [
+            ("menu", r.menu_btn),
+            ("project", r.project_btn),
+            ("inspector", r.inspector_btn),
+            ("import", r.import_btn),
+            ("split", r.split_btn),
+            ("export", r.export_btn),
+        ]
+        .into_iter()
+        .filter(|(_, rect)| rect.width() > 0.0)
+        .collect();
+        row.sort_by(|a, b| a.1.x0.total_cmp(&b.1.x0));
+        // The trailing cluster (inspector toggle, Import, Split, Export) is
+        // packed at exactly the sibling step; the leading controls keep at
+        // least that much from whatever follows them — the project button is
+        // width-bounded and may leave the middle of the bar empty, but never
+        // creeps closer than a step to the trailing cluster.
+        let trailing = ["inspector", "import", "split", "export"];
+        for pair in row.windows(2) {
+            let gap = x_gap(pair[0].1, pair[1].1);
+            assert!(
+                gap >= TOPBAR_GAP - 1e-6,
+                "{w}px: {} ↔ {} gap {gap}, want at least {TOPBAR_GAP}",
+                pair[0].0,
+                pair[1].0
+            );
+            if trailing.contains(&pair[0].0) && trailing.contains(&pair[1].0) {
+                assert_close(gap, TOPBAR_GAP, &format!("{w}px: {} ↔ {}", pair[0].0, pair[1].0));
+            }
+        }
+        assert!(TOPBAR_GAP >= S1, "the topbar step is on the scale");
+        let (first, last) = (row.first().unwrap().1, row.last().unwrap().1);
+        assert_close(first.x0 - r.topbar.x0, TOPBAR_EDGE, &format!("{w}px leading inset"));
+        assert_close(r.topbar.x1 - last.x1, TOPBAR_EDGE, &format!("{w}px trailing inset"));
+    }
+}
+
+#[test]
+fn every_track_head_clears_its_lane_and_its_neighbours_by_a_token_step() {
+    let app = app_sized(1280.0, 800.0);
+    let r = app.regions();
+    let lanes = app.lane_rects(&r);
+    assert!(lanes.len() >= 4, "the sample project has four lanes");
+    for pair in lanes.windows(2) {
+        assert_close(pair[1].2.y0 - pair[0].2.y1, S1, "lane ↔ lane");
+    }
+    for (_, kind, lane) in &lanes {
+        let head = app.track_head_rect(&r, lane);
+        assert_close(lane.x0 - head.x1, S1, "head ↔ lane stripe");
+        let h = layout::track_head(head);
+        assert!(
+            h.meter.y0 - h.kind.y1 >= S1,
+            "{kind:?}: kind line ↔ meter gap {}",
+            h.meter.y0 - h.kind.y1
+        );
+        assert!(
+            head.contains(h.solo.center()) && head.contains(h.meter.center()),
+            "{kind:?}: every band inside the head"
+        );
+    }
+    // The add-track footer sits an `S2` under the last lane, and its two
+    // buttons an `S2` apart.
+    let last = lanes.last().unwrap().2;
+    let buttons = app.add_track_buttons(&r);
+    assert_eq!(buttons.len(), 2, "both add-track buttons fit at 800px");
+    assert_close(buttons[0].1.y0 - last.y1, S2, "last lane ↔ add-track row");
+    assert_close(x_gap(buttons[0].1, buttons[1].1), S2, "+ Video ↔ + Audio");
+}
+
+#[test]
+fn the_bin_rows_and_the_row_controls_keep_token_gaps() {
+    let app = app_sized(1280.0, 800.0);
+    let r = app.regions();
+    let rows = app.bin_item_rects(&r);
+    assert!(rows.len() >= 2);
+    for pair in rows.windows(2) {
+        assert_close(pair[1].1.y0 - pair[0].1.y1, S2, "bin row ↔ bin row");
+    }
+    let row = Rect::new(0.0, 0.0, 276.0, 26.0);
+    let (name, note, rename, del) = marker_row_parts(row);
+    assert!(x_gap(name, note) >= S1, "marker name ↔ note button");
+    assert_close(x_gap(note, rename), S1, "marker note ↔ rename");
+    assert_close(x_gap(rename, del), S1, "marker rename ↔ delete");
+    let (key, up, down, slider, remove) = VideoEditorApp::effect_row_parts(row);
+    assert_close(x_gap(key, up), S1, "effect key ↔ up");
+    assert_close(x_gap(up, down), S1, "effect up ↔ down");
+    assert!(x_gap(down, slider) >= S1, "effect down ↔ slider");
+    assert_close(x_gap(slider, remove), S2, "effect slider ↔ remove");
+}
+
 #[test]
 fn the_topbar_is_inset_equally_at_both_edges_and_its_commands_share_one_width() {
     let app = app_sized(1280.0, 800.0);
