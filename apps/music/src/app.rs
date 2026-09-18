@@ -5262,9 +5262,11 @@ mod tests {
     }
 
     #[test]
-    fn default_startup_has_empty_library() {
-        // The live app (no `seed_sample_library` opt-in) must NOT fabricate a
-        // catalog: a fresh document seeds an empty library + playlists.
+    fn default_startup_adopts_only_the_host_document_not_a_relay_file() {
+        // Migration guarantee: the GUI never loaded the removed relay file.
+        // The live app receives its canonical document from the platform; with
+        // a fresh host document (and no `seed_sample_library` opt-in) it must
+        // not fabricate a catalog, a playlist, or an app-owned library store.
         let mut app = MusicApp::new();
         let mut doc = AutoCommit::new();
         app.ensure_seeded(&mut doc);
@@ -5282,8 +5284,8 @@ mod tests {
             app.pb.current.is_none(),
             "nothing playing on a fresh launch"
         );
-        // The document is still initialised (so persistence + sync work), just
-        // empty — a second launch adopts it without re-seeding.
+        // The platform document is still initialised, just empty; a later host
+        // sync can adopt shared state without re-seeding.
         assert!(
             doc::is_seeded(&doc),
             "the empty library still initialises the doc structure"
@@ -8320,21 +8322,29 @@ mod tests {
     // ---- 21. favourites sync via the CRDT document ------------------------
 
     #[test]
-    fn favourite_like_writes_to_synced_doc_and_converges() {
+    fn canonical_action_host_commit_converges_through_the_platform_document() {
         let (mut app, mut doc) = app_with_doc();
         assert!(!doc::load_library(&doc).is_liked("tk_g2"));
-        // Like via the normal action pipeline (what a click dispatches).
+        // Like via the normal action pipeline. This is the same ActionHost
+        // boundary used by pointer controls and Ctrl+K, not a Music-owned
+        // transport or a side-channel mutation.
         app.dispatch(Action::ToggleLike("tk_g2".into()), &mut doc);
         assert!(
             doc::load_library(&doc).is_liked("tk_g2"),
-            "the like is written to the app's synced Automerge document"
+            "the canonical action changed the host-owned app document"
         );
-        // It converges to another device's replica over the standard sync path.
+        assert!(
+            app.actions.take_committed().is_some(),
+            "ActionHost produced the committed canonical action that the platform records and replicates"
+        );
+        // Model the platform's document replication boundary with an exact
+        // Automerge message exchange. Music neither opens a socket nor mints a
+        // pairing token; it only reads/writes this canonical document.
         let mut peer = AutoCommit::new();
         crate::sync::converge(&mut doc, &mut peer);
         assert!(
             doc::load_library(&peer).is_liked("tk_g2"),
-            "the favourite syncs to another device via the CRDT"
+            "the committed canonical action reaches the peer document"
         );
     }
 

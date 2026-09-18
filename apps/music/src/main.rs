@@ -104,22 +104,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_probe(&query);
     }
 
-    // Headless relay mode: a home server runs the library document + sync
-    // transport with no GUI; clients sync to it. Live iroh transport is gated
-    // behind the `p2p` feature (the relay still runs on the loopback transport
-    // otherwise, demonstrating the seam). See `music::relay`.
-    if args.iter().any(|a| a == "--relay") {
-        let mut relay = music::relay::Relay::new();
-        println!(
-            "music: headless relay — {} tracks, live={}, ticket={}",
-            relay.track_count(),
-            relay.is_live(),
-            relay.ticket().as_deref().unwrap_or("<none>")
-        );
-        relay.run();
-        return Ok(());
-    }
-
     // Headless per-frame benchmark: render a view offscreen N times and report
     // the layout+draw cost distribution. Reproducible + display-free.
     if let Some(pos) = args.iter().position(|a| a == "--bench") {
@@ -135,7 +119,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // The ordinary GUI, screenshots, and headless driver share the standard
-    // lifecycle. Probe/relay/benchmark remain explicit command modes above:
+    // lifecycle. Probe/benchmark remain explicit command modes above:
     // they do not construct a GUI and therefore are not launch lifecycle.
     ui::launch::run(
         &LaunchSpec::new_with_args("dev.tilo.music", music::app_root_with_args)
