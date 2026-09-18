@@ -279,6 +279,14 @@ grep -Fq -- "-o -name 'libshout.so*'" "$repo/os/Containerfile" \
   && ok 'orphaned OpenSSL-linked Shoutcast package and payload are removed and audited' \
   || bad 'orphaned OpenSSL-linked Shoutcast package or payload is not removed and audited'
 
+if [ "$(grep -Fc -- "-o -name 'libevent_openssl.so*'" "$repo/os/Containerfile")" -eq 2 ] \
+  && grep -Fq -- "-o -name 'libevent_openssl.so*'" \
+       "$repo/os/usr/libexec/tilo-security-audit"; then
+  ok 'unused libevent OpenSSL adapter is removed and audited'
+else
+  bad 'unused libevent OpenSSL adapter is not removed and audited'
+fi
+
 grep -Fq 'tilo-crypto sign-module' "$repo/os/kernel/Containerfile" \
   && grep -Fq 'tilo-crypto verify-module' "$repo/os/kernel/Containerfile" \
   || bad 'kernel modules are not signed and verified by tilo-crypto'
