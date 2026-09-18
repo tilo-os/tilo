@@ -63,6 +63,8 @@ use ui::portal;
 
 mod block_layout;
 mod image_layout;
+mod layout_cache;
+mod proofing;
 mod text_runs;
 mod toolbar;
 
@@ -83,6 +85,8 @@ use image_layout::{
     paint_options as image_paint_options, paint_transform as image_paint_transform,
     wrap as image_wrap,
 };
+use layout_cache::{ShapeKeyInput, shape_key};
+use proofing::misspelled_spans;
 #[cfg(test)]
 use text_runs::block_runs;
 use text_runs::{
@@ -740,69 +744,6 @@ fn draw_squiggle(scene: &mut Scene, transform: Affine, x0: f64, x1: f64, y: f64)
         None,
         &path,
     );
-}
-
-/// Run the spell-checker over a block's text, returning the misspelled byte spans
-/// `(start, end)`. Skips the U+FFFC field/note placeholders (they are not words).
-///
-/// Spans only. This is called while drawing the paragraph the caret is in, which
-/// means on every keystroke, and a correction nobody has asked for is not worth
-/// searching the dictionary for. The right-click menu asks for one when it has
-/// a word to ask about — see `suggestions_for_word`.
-fn spell_spans(dict: &spellcheck::Dictionary, language: &str, text: &str) -> Vec<(usize, usize)> {
-    let mut spans = spellcheck::spans_for_language(language, text);
-    spans.retain(|&(start, end)| {
-        text.get(start..end)
-            .is_some_and(|word| !dict.contains(word))
-    });
-    spans
-}
-
-/// Hash everything that feeds into `RichTextLayout::shape` into a single `u64`.
-///
-/// Cache key for the per-block incremental layout cache: matching keys across
-/// frames mean `shape` would reproduce a byte-identical layout, so the previous
-/// `RichTextLayout` is reused verbatim. Inputs mirror `shape`'s arguments exactly,
-/// including **wrap width** (so a resize re-shapes); block-level ink is excluded
-/// since it applies at draw time (`Laid::ink`), not baked into the shaped buffer.
-#[derive(Clone, Copy)]
-struct ShapeKeyInput<'a> {
-    spans: &'a [RichSpan],
-    underlines: &'a [(usize, usize)],
-    strikes: &'a [(usize, usize)],
-    base_bold: bool,
-    size: f32,
-    wrap_w: f32,
-    align: TextAlign,
-    family: FontFamily,
-    line_height_mult: f32,
-}
-
-fn shape_key(input: &ShapeKeyInput<'_>) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    input.spans.len().hash(&mut h);
-    for s in input.spans {
-        s.text.hash(&mut h);
-        s.bold.hash(&mut h);
-        s.italic.hash(&mut h);
-        s.size.map(f32::to_bits).hash(&mut h);
-        s.family.map(|f| f as u8).hash(&mut h);
-        s.color.hash(&mut h);
-        // Highlight band + baseline shift change the shaped layout (the latter
-        // shapes super/subscript runs at a reduced size), so fold them in.
-        s.background.hash(&mut h);
-        (s.baseline as u8).hash(&mut h);
-    }
-    input.underlines.hash(&mut h);
-    input.strikes.hash(&mut h);
-    input.base_bold.hash(&mut h);
-    input.size.to_bits().hash(&mut h);
-    input.wrap_w.to_bits().hash(&mut h);
-    (input.align as u8).hash(&mut h);
-    (input.family as u8).hash(&mut h);
-    input.line_height_mult.to_bits().hash(&mut h);
-    h.finish()
 }
 
 /// A block laid out for the current frame; kept for click hit-testing. The
@@ -1993,7 +1934,7 @@ impl WordProcessorWidget {
         }
         let language = self.proofing.language.clone();
         let dict = self.dictionary();
-        let spans = spell_spans(dict, &language, text);
+        let spans = misspelled_spans(dict, &language, text);
         self.spell_cache
             .insert(id.to_string(), (text.to_string(), spans.clone()));
         spans
