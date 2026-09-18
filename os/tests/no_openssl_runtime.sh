@@ -35,6 +35,7 @@ development_trust="$repo/os/dev/development-trust.py"
 development_compile_container="$repo/os/Containerfile.development-compile"
 development_boot_fixture="$repo/os/tests/test_development_boot.py"
 development_signer_fixture="$repo/os/tests/development_signer.py"
+tls_registry_fixture="$repo/os/tests/tls_registry_fixture.py"
 if grep -Eq 'pkcs1v15::SigningKey|SigningKey::<Sha(256|512)>' "$crypto_source"; then
   bad 'Tilo-owned RSA signing regressed from ring to the timing-vulnerable RustCrypto operation'
 elif grep -Fq 'AuthenticodeSignature::new' "$crypto_source"; then
@@ -78,6 +79,7 @@ if rg -n -i '\b(openssl|sbsign)\b' \
     "$development_boot_fixture" "$development_signer_fixture" \
     "$repo/os/tests/test_development_trust.py" \
     "$repo/os/tests/development_source_registry.py" \
+    "$tls_registry_fixture" \
     "$repo/os/tests/test_rebind_development_trust.py" \
     "$repo/os/tests/test_complete_initramfs_rebind.py" >/dev/null; then
   bad 'development EFI/private-signing fixtures still invoke OpenSSL or sbsign'
