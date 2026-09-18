@@ -52,6 +52,36 @@ class SelectorTests(unittest.TestCase):
         self.assertNotIn("base", plan["selected"])
         self.assertEqual(plan["shard_count"], 1)
 
+    def test_design_only_has_explicit_empty_rust_matrix(self) -> None:
+        plan = ci_select.make_plan(self.metadata, self.root, ["docs/designs/ci.md"], 2)
+        self.assertFalse(plan["rust_required"])
+        self.assertEqual(plan["selected_count"], 0)
+        self.assertEqual(plan["shard_count"], 0)
+        self.assertEqual(plan["matrix"], {"include": []})
+        output = self.root / "outputs"
+        ci_select.emit_github(plan, output)
+        values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+        self.assertEqual(values["rust_required"], "false")
+        self.assertEqual(values["selected_count"], "0")
+
+    def test_design_exception_never_overrides_code_or_manual_full(self) -> None:
+        for changes, full in [
+            (["docs/designs/ci.md"], True),
+            (["docs/designs/ci.md", "leaf/src/lib.rs"], False),
+            (["docs/designs/ci.md", "Cargo.lock"], False),
+        ]:
+            with self.subTest(changes=changes, full=full):
+                plan = ci_select.make_plan(self.metadata, self.root, changes, 2, force_full=full)
+                self.assertTrue(plan["rust_required"])
+                self.assertIn("leaf", plan["selected"])
+
+    def test_unknown_docs_and_embedded_code_retain_contract_checks(self) -> None:
+        for path in ["docs/contracts.md", "docs/designs/fixture.rs", "docs/designs/../contract.md", "unknown-input"]:
+            with self.subTest(path=path):
+                plan = ci_select.make_plan(self.metadata, self.root, [path], 2)
+                self.assertTrue(plan["rust_required"])
+                self.assertTrue(ci_select.ALWAYS_PACKAGES.issubset(plan["selected"]))
+
     def test_build_input_forces_full_workspace(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["Cargo.lock"], 2)
         self.assertTrue(plan["full"])

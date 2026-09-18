@@ -136,6 +136,7 @@ jobs:
         id: plan
         shell: bash
         run: |
+          set -euo pipefail
           base='${{ github.event.pull_request.base.sha }}'
           selection_args=()
           if [ '${{ github.event_name }}' = workflow_dispatch ]; then
