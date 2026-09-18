@@ -9,10 +9,10 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Color;
 
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::ButtonFace;
 
 use crate::draw;
 use crate::model::{ChangeArea, FileChange, RepoModel};
@@ -48,8 +48,11 @@ const AUTHOR_FONT: f32 = 11.5;
 /// 54 input + 10 + 30 button (138 wide) + 12.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Metrics {
-    /// File row pitch.
+    /// File row height.
     pub row_h: f64,
+    /// Gap between neighbouring rows and under a section header (`s1`):
+    /// HIG §7 — nothing touches, even in a dense list.
+    pub row_gap: f64,
     /// Section header band.
     pub section_h: f64,
     /// "— nothing here —" band.
@@ -72,6 +75,7 @@ impl Default for Metrics {
     fn default() -> Self {
         Self {
             row_h: ROW_H,
+            row_gap: 4.0,
             section_h: SECTION_H,
             empty_hint_h: EMPTY_HINT_H,
             author_row_h: 22.0,
@@ -108,6 +112,7 @@ impl Metrics {
         let input_h = (2.0 * line(tr, 13.0, TextWeight::Regular) + 21.0).max(one.input_h);
         let button_h = (button_label_h + 2.0 * pad_y).max(one.button_h);
         let commit_pad = f64::from(theme.tokens.spacing.s3);
+        let row_gap = f64::from(theme.tokens.spacing.s1);
         let commit_box_h = (commit_pad
             + author_row_h
             + one.commit_gap
@@ -118,6 +123,7 @@ impl Metrics {
             .max(one.commit_box_h);
         Self {
             row_h,
+            row_gap,
             section_h,
             empty_hint_h,
             author_row_h,
@@ -314,7 +320,7 @@ impl ChangesColumn {
     ) -> ChangesDraw {
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, area, c.surfaces.raised);
-        draw::vline(scene, t, area.x1, area.y0, area.y1, c.border_standard);
+        draw::vline(scene, t, area.x1, area.y0, area.y1, draw::edge(c.surfaces.raised));
 
         let m = Metrics::measure(tr, theme);
         let list_area = Rect::new(area.x0, area.y0, area.x1, area.y1 - m.commit_box_h);
@@ -426,7 +432,7 @@ impl ChangesColumn {
     ) -> f64 {
         let mut y = Self::section_header(
             scene, tr, t, theme, area, title, files, y, is_staged, m, regions,
-        );
+        ) + m.row_gap;
 
         if files.is_empty() {
             let c = &theme.tokens.colors;
@@ -447,24 +453,30 @@ impl ChangesColumn {
         }
 
         for (i, f) in files.iter().enumerate() {
-            Self::section_row(
-                scene,
-                tr,
-                t,
-                theme,
-                area,
-                change_area,
-                selected,
-                y,
-                is_staged,
-                f,
-                i,
-                m,
-                regions,
-            );
-            y += m.row_h;
+            // Rows scrolled out of the list viewport are neither painted nor
+            // exposed as hit / semantic regions: the paint layer clips them,
+            // and a region under the pinned commit box would otherwise
+            // overlap the commit controls.
+            if y + m.row_h > area.y0 && y < area.y1 {
+                Self::section_row(
+                    scene,
+                    tr,
+                    t,
+                    theme,
+                    area,
+                    change_area,
+                    selected,
+                    y,
+                    is_staged,
+                    f,
+                    i,
+                    m,
+                    regions,
+                );
+            }
+            y += m.row_h + m.row_gap;
         }
-        y + 8.0
+        y + 8.0 - m.row_gap
     }
 
     /// The section header: title, count badge, and (when non-empty) the
@@ -522,7 +534,7 @@ impl ChangesColumn {
             &h.count,
             c.text_primary,
             c.lift(0.72),
-            None,
+            draw::PillEdge::Derived,
         );
 
         if let Some((label, lx)) = action_label.zip(h.action_x) {
@@ -668,10 +680,12 @@ impl ChangesColumn {
             );
         }
 
-        // Stage / unstage chevron button on the right.
+        // Stage / unstage chevron button on the right: a quiet face with its
+        // derived rest edge, the +/- glyph centred on its measured line in
+        // the semantic add/delete hue.
         let chev = layout.chevron;
         let brect = layout.chevron_rect;
-        draw::fill_round(scene, t, brect, 4.0, c.lift(0.72));
+        draw::card(scene, t, brect, 4.0, c.lift(0.72));
         let chw = f64::from(draw::mono_width(tr, chev, 14.0));
         let chev_y = draw::mono_centered_top(tr, chev, 14.0, brect.y0, brect.height());
         draw::mono(
@@ -688,14 +702,23 @@ impl ChangesColumn {
             brect.x0 + (brect.width() - chw) / 2.0,
             chev_y,
         );
+        // Regions are clamped to the list viewport: a row straddling the
+        // bottom edge must not reach under the pinned commit box.
         regions.push(HitRegion {
-            rect: brect,
+            rect: brect.intersect(area),
             hit: ChangesHit::ToggleStage(change_area, i),
         });
 
-        // Row select region (everything left of the chevron).
+        // Row select region (everything left of the chevron, an `s1` clear of
+        // it so the two targets never share pixels).
         regions.push(HitRegion {
-            rect: Rect::new(area.x0, y, brect.x0 - 2.0, y + row_h),
+            rect: Rect::new(
+                area.x0,
+                y,
+                brect.x0 - f64::from(theme.tokens.spacing.s1),
+                y + row_h,
+            )
+            .intersect(area),
             hit: ChangesHit::SelectFile(change_area, i),
         });
     }
@@ -721,7 +744,7 @@ impl ChangesColumn {
             box_rect.y0,
             box_rect.x0,
             box_rect.x1,
-            c.border_standard,
+            draw::edge(c.surfaces.raised),
         );
 
         let ay = box_rect.y0 + m.commit_pad;
@@ -835,7 +858,7 @@ impl ChangesColumn {
         };
         // 12 px Semibold label; the button keeps its 1× width unless the
         // label needs more.
-        let (lw, lh) = tr.measure_weighted(&label, 12.0, None, TextWeight::Semibold);
+        let (lw, _) = tr.measure_weighted(&label, 12.0, None, TextWeight::Semibold);
         let pad = m.commit_pad;
         let bw = m.button_w.max(f64::from(lw) + 2.0 * pad);
         let brect = Rect::new(
@@ -844,24 +867,19 @@ impl ChangesColumn {
             box_rect.x1 - pad,
             box_rect.y1 - pad,
         );
-        let bg = if enabled {
-            theme.accent_primary
-        } else {
-            c.lift(0.72)
-        };
-        let fg = if enabled { Color::WHITE } else { c.neutral[5] };
-        draw::fill_round(scene, t, brect, 6.0, bg);
-        draw::text_weighted(
+        // The shared face resolves the primary fill and the one opaque
+        // disabled look (rest edge included) instead of a hand-mixed pair.
+        draw::button(
             scene,
             tr,
             t,
-            &label,
-            12.0,
-            fg,
-            brect.x0 + (brect.width() - f64::from(lw)) / 2.0,
-            brect.y0 + (brect.height() - f64::from(lh)) / 2.0,
-            None,
-            TextWeight::Semibold,
+            theme,
+            &ButtonFace::new(brect, &label)
+                .primary()
+                .radius(6.0)
+                .text_size(12.0)
+                .weight(TextWeight::Semibold)
+                .disabled(!enabled),
         );
         if enabled {
             regions.push(HitRegion {
@@ -988,6 +1006,23 @@ mod tests {
         let inset = f64::from(theme.tokens.spacing.s1);
         assert!(layout.chevron_rect.y1 <= two.row_h - inset + 0.01);
         assert!(layout.chevron_rect.width() > CHEVRON_W);
+    }
+
+    /// HIG §7 "nothing touches": neighbouring file rows, and the first row
+    /// under its section header, keep an `s1` gap on every preset — the
+    /// list pitch is the row plus that gap, never the bare row.
+    #[test]
+    fn file_rows_keep_a_token_gap_on_every_preset() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let mut tr = TextRenderer::new();
+            let m = Metrics::measure(&mut tr, &theme);
+            let s1 = f64::from(theme.tokens.spacing.s1);
+            assert!(m.row_gap >= s1 && s1 >= 4.0, "{}: row gap {}", theme.name, m.row_gap);
+            // Two rows laid out at the section pitch never share a pixel row.
+            let first = Rect::new(0.0, 0.0, 320.0, m.row_h);
+            let second_top = m.row_h + m.row_gap;
+            assert!(second_top - first.y1 >= s1, "{}: rows touch", theme.name);
+        }
     }
 
     /// Title, badge and bulk action share a 320 px header band without

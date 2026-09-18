@@ -12,6 +12,7 @@ use vello::peniko::Color;
 
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::ButtonFace;
 
 use crate::diff::{TokenClass, tokenize};
 use crate::draw;
@@ -316,7 +317,7 @@ impl DiffView {
             DiffLineKind::Addition => draw::fill_rect(scene, t, row, draw::add_tint(theme)),
             DiffLineKind::Deletion => draw::fill_rect(scene, t, row, draw::del_tint(theme)),
             DiffLineKind::Hunk => {
-                draw::fill_rect(scene, t, row, c.surfaces.raised);
+                Self::hunk_band(scene, t, theme, row);
                 // Emit the hunk action button(s) on the first row of the
                 // hunk: always a stage/unstage toggle, plus a discard button
                 // on the worktree (unstaged) side.
@@ -492,7 +493,9 @@ impl DiffView {
             {
                 if line.kind == DiffLineKind::Deletion {
                     draw::fill_rect(scene, t, left, draw::del_tint(theme));
-                } else if line.kind == DiffLineKind::Hunk || line.kind == DiffLineKind::Meta {
+                } else if line.kind == DiffLineKind::Hunk {
+                    Self::hunk_band(scene, t, theme, left);
+                } else if line.kind == DiffLineKind::Meta {
                     draw::fill_rect(scene, t, left, c.surfaces.raised);
                 }
                 Self::draw_half(scene, tr, t, theme, line, viewport.x0, y, settings, true, m);
@@ -502,7 +505,9 @@ impl DiffView {
             {
                 if line.kind == DiffLineKind::Addition {
                     draw::fill_rect(scene, t, right, draw::add_tint(theme));
-                } else if line.kind == DiffLineKind::Hunk || line.kind == DiffLineKind::Meta {
+                } else if line.kind == DiffLineKind::Hunk {
+                    Self::hunk_band(scene, t, theme, right);
+                } else if line.kind == DiffLineKind::Meta {
                     draw::fill_rect(scene, t, right, c.surfaces.raised);
                 }
                 Self::draw_half(scene, tr, t, theme, line, mid, y, settings, false, m);
@@ -655,6 +660,17 @@ impl DiffView {
         }
     }
 
+    /// A hunk header row: the raised band closed top and bottom by its
+    /// derived hairline, so the band reads as a surface on the dark preset
+    /// instead of a raised fill blurring into the raised gutter (HIG §9.5).
+    fn hunk_band(scene: &mut Scene, t: Affine, theme: &Theme, row: Rect) {
+        let raised = theme.tokens.colors.surfaces.raised;
+        draw::fill_rect(scene, t, row, raised);
+        let edge = draw::edge(raised);
+        draw::hline(scene, t, row.y0 + 0.5, row.x0, row.x1, edge);
+        draw::hline(scene, t, row.y1 - 0.5, row.x0, row.x1, edge);
+    }
+
     /// Draw one hunk-action button whose right edge sits at `right_x`, and
     /// return its hit rect. Discard buttons read in the danger hue when hovered
     /// so the destructive action is visually distinct from stage/unstage.
@@ -671,36 +687,25 @@ impl DiffView {
         label: &str,
         hovered: bool,
     ) -> HunkButton {
-        let c = &theme.tokens.colors;
         // 11 px Medium label with 10 px of padding either side, inset 2 px
         // from the row's top and bottom (the button is as tall as its row).
         let size = 11.0f32;
-        let (tw, th) = tr.measure_weighted(label, size, None, TextWeight::Medium);
+        let (tw, _) = tr.measure_weighted(label, size, None, TextWeight::Medium);
         let tw = f64::from(tw);
         let bw = tw + 20.0;
         let bx = right_x - bw;
         let by = row.y0 + 2.0;
         let brect = Rect::new(bx, by, bx + bw, row.y1 - 2.0);
-        let accent = match action {
-            HunkAction::Toggle => theme.accent_primary,
-            HunkAction::Discard => c.semantic.danger,
+        // Quiet at rest (neutral face with its derived edge, or the danger
+        // outline for discard), filled in the action's hue under the pointer.
+        let face = ButtonFace::new(brect, label).radius(5.0).text_size(size);
+        let face = match (action, hovered) {
+            (HunkAction::Toggle, true) => face.primary(),
+            (HunkAction::Toggle, false) => face,
+            (HunkAction::Discard, true) => face.danger(),
+            (HunkAction::Discard, false) => face.danger_outline(),
         };
-        let bg = if hovered { accent } else { c.lift(0.72) };
-        let fg = if hovered { Color::WHITE } else { c.text_dim };
-        draw::fill_round(scene, t, brect, 5.0, bg);
-        draw::text_weighted(
-            scene,
-            tr,
-            t,
-            label,
-            size,
-            fg,
-            bx + (bw - tw) / 2.0,
-            // Centre on the measured line height, not the font size.
-            by + (brect.height() - f64::from(th)) / 2.0,
-            None,
-            TextWeight::Medium,
-        );
+        draw::button(scene, tr, t, theme, &face);
         HunkButton {
             hunk,
             action,

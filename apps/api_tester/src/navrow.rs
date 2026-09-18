@@ -209,10 +209,12 @@ impl Widget for NavRow {
 
         match &self.kind {
             NavKind::Divider => {
+                // The divider rules the raised rail it sits in; its colour is
+                // derived against that surface rather than declared.
                 let color = if self.is_focused {
                     theme.border_focus
                 } else {
-                    theme.tokens.colors.border_standard
+                    ui::surface::edge_on(theme.tokens.colors.surfaces.raised)
                 };
                 scene.fill(
                     Fill::NonZero,
