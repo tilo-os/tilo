@@ -1693,6 +1693,7 @@ impl DeviceFabricRuntime {
                 continue;
             }
             if !policy.permits_action(&envelope.action) {
+                network.revoke_queued_personal_action_authority(&envelope);
                 continue;
             }
             if crate::shell::remote_audio::handle_action(network, &envelope) {
@@ -2623,6 +2624,7 @@ impl DeviceFabricRuntime {
         request: &PendingIncomingMedia,
         failure: MediaHandoffFailure,
     ) {
+        Self::discard_incoming_media_transfer(network, request);
         let _ = network.send_personal_fabric_action_on_route(
             &request.route,
             PersonalFabricAction::MediaRejected {
@@ -2631,6 +2633,12 @@ impl DeviceFabricRuntime {
                 failure,
             },
         );
+    }
+
+    fn discard_incoming_media_transfer(network: &ShellNetwork, request: &PendingIncomingMedia) {
+        if let MediaSourceLocator::PersonalTransfer { transfer_id, .. } = &request.locator {
+            network.discard_personal_media_transfer(&request.source, *transfer_id);
+        }
     }
 
     fn retry_waiting_media(&mut self, network: &ShellNetwork) {
@@ -2656,6 +2664,7 @@ impl DeviceFabricRuntime {
             let Some(pending) = self.pending_incoming_media.remove(&request_id) else {
                 continue;
             };
+            Self::discard_incoming_media_transfer(network, &pending);
             if network
                 .send_personal_fabric_action_on_route(
                     &pending.route,
@@ -2673,6 +2682,7 @@ impl DeviceFabricRuntime {
             let Some(pending) = self.pending_incoming_media.remove(&accepted.request_id) else {
                 continue;
             };
+            Self::discard_incoming_media_transfer(network, &pending);
             let delivery = network.send_personal_fabric_action_on_route(
                 &pending.route,
                 PersonalFabricAction::MediaAccepted {
@@ -2724,6 +2734,7 @@ impl DeviceFabricRuntime {
     ) {
         for request in requests {
             let _ = crate::shell::mpris::cancel_resume_after_launch(request.request_id);
+            Self::discard_incoming_media_transfer(network, &request);
             if let Some(failure) = failure {
                 self.reject_incoming_media(network, &request, failure);
             }
