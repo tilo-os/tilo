@@ -272,9 +272,12 @@ else
 fi
 
 grep -Fq -- "-o -name 'libshout.so*'" "$repo/os/Containerfile" \
+  && grep -Fq 'rpm -e --nodeps libshout' "$repo/os/Containerfile" \
+  && grep -Fxq 'libshout' <(sed -n "/^forbidden_packages='/,/^'/p" \
+    "$repo/os/scripts/verify-runtime-crypto-packages.sh") \
   && grep -Fq -- "-o -name 'libshout.so*'" "$repo/os/usr/libexec/tilo-security-audit" \
-  && ok 'orphaned OpenSSL-linked Shoutcast library payload is removed and audited' \
-  || bad 'orphaned Shoutcast library remains executable after its plugin is removed'
+  && ok 'orphaned OpenSSL-linked Shoutcast package and payload are removed and audited' \
+  || bad 'orphaned OpenSSL-linked Shoutcast package or payload is not removed and audited'
 
 grep -Fq 'tilo-crypto sign-module' "$repo/os/kernel/Containerfile" \
   && grep -Fq 'tilo-crypto verify-module' "$repo/os/kernel/Containerfile" \
