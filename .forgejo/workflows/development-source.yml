@@ -62,6 +62,7 @@ on:
       - os/tests/test_sign_development_rootfs.py
       - os/tests/development_rootfs.py
       - os/tests/Containerfile.development-source
+      - crates/system/tilo-crypto/**
       - .forgejo/workflows/development-source.yml
 
 jobs:

@@ -8,9 +8,15 @@ conventions.
 Run these from the checkout on Linux (including WSL), using Python 3.11+:
 
 ```sh
+tools/run-repository-policy.sh
 python3 tools/dev.py check installer
 python3 tools/dev.py check app-packaging
 ```
+
+The repository-policy command is the same deterministic suite used by the
+fast-quality workflow. It checks live workflow triggers and timeouts in
+addition to running the policy unit tests, so testing a checker without
+auditing the current repository cannot produce a false-green result.
 
 The installer checks exercise target-mode logic, artifact materialization and the
 installer overlay. The app checks exercise selection, collection membership and
@@ -41,6 +47,17 @@ For an actual installer VM cycle with an already prepared medium, continue using
 `os/dev/test-installer-cycle.sh`; for the disposable Fedora desktop development
 session use `dist/dev/fedora44-vm-iterate.sh`. Baseline discovery and one-command
 artifact-backed VM orchestration remain planned work.
+
+For CI timing, use an explicit internal run ID from the Forgejo API:
+
+```sh
+python3 tools/ci_timing_report.py --repo qos/qos --run 22684 --output target/ci-timing.json
+```
+
+This uses your configured `fgj` authentication and reports queue time separately
+from run duration and the observed container pull-to-create interval. It does not
+sum parallel jobs into elapsed time or invent missing timestamps. Raw job logs and
+credentials are not written to the report; use `--input` for saved local fixtures.
 
 ## What the build needs
 
