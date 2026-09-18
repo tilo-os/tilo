@@ -236,6 +236,10 @@ pub struct TabBar {
     pub pending_max: Option<u64>,
     pub pending_search: Option<u64>,
     pub pending_new_tab: Option<()>,
+    /// One-shot selection edge produced by direct user interaction.  The
+    /// retained shell must not infer a click merely because model rebuilding
+    /// changed `active_id` between frames.
+    pending_activation: Option<u64>,
     /// `(tab_id, release_point)` when a drag is released outside this bar's rect,
     /// for a parent (e.g. `GroupRow`) to resolve the drop target.
     pub pending_detach: Option<(u64, Point)>,
@@ -323,6 +327,7 @@ impl TabBar {
             pending_max: None,
             pending_search: None,
             pending_new_tab: None,
+            pending_activation: None,
             pending_detach: None,
             drop_zone_target: None,
             drop_zone_animated_at: None,
@@ -1231,6 +1236,12 @@ impl TabBar {
         }
     }
 
+    /// Drain the tab selected by pointer, keyboard, or accessibility input.
+    /// Programmatic reconciliation deliberately does not populate this edge.
+    pub fn take_activation(&mut self) -> Option<u64> {
+        self.pending_activation.take()
+    }
+
     /// Move the selected tab within a focused tab list. The list itself is one
     /// Tab-stop; once it has focus, the standard tab-list keys choose among
     /// its pills. Returns `true` only for a key this widget consumed.
@@ -1259,6 +1270,7 @@ impl TabBar {
         };
         if let Some(tab) = self.tabs.get(target) {
             self.active_id = tab.id;
+            self.pending_activation = Some(tab.id);
         }
         true
     }
@@ -2273,6 +2285,7 @@ impl Widget for TabBar {
             return false;
         }
         self.active_id = id;
+        self.pending_activation = Some(id);
         true
     }
 
@@ -2908,6 +2921,7 @@ impl TabBar {
             // Guard against `tabs`/`tab_rects` desyncing mid-frame.
             if let Some(tab) = self.tabs.get(idx) {
                 self.active_id = tab.id;
+                self.pending_activation = Some(tab.id);
             }
             *handled = true;
         }
@@ -5066,6 +5080,8 @@ mod tests {
         Widget::set_focus(&mut b, true);
         assert!(b.handle_keyboard_navigation(&Key::Named(NamedKey::ArrowRight)));
         assert_eq!(b.active_id(), 2);
+        assert_eq!(b.take_activation(), Some(2));
+        assert_eq!(b.take_activation(), None, "activation is a one-shot edge");
         assert!(b.handle_keyboard_navigation(&Key::Named(NamedKey::End)));
         assert_eq!(b.active_id(), 3);
         assert!(b.handle_keyboard_navigation(&Key::Named(NamedKey::ArrowRight)));
@@ -5091,6 +5107,7 @@ mod tests {
             &automerge::ROOT,
         ));
         assert_eq!(b.active_id(), 3);
+        assert_eq!(b.take_activation(), Some(3));
         assert!(!Widget::perform_semantic_action(
             &mut b,
             "tab:999",
@@ -5098,6 +5115,25 @@ mod tests {
             &mut AutoCommit::new(),
             &automerge::ROOT,
         ));
+    }
+
+    #[test]
+    fn programmatic_selection_does_not_masquerade_as_user_activation() {
+        let mut b = bar();
+        b.set_active(3);
+        assert_eq!(b.active_id(), 3);
+        assert_eq!(
+            b.take_activation(),
+            None,
+            "model reconciliation must not steal desktop focus"
+        );
+        b.insert_tab(1, TabDescriptor::new(9, "New"));
+        assert_eq!(b.active_id(), 9);
+        assert_eq!(
+            b.take_activation(),
+            None,
+            "a programmatic insert is not a click"
+        );
     }
 
     /// The shape a window group imposes on its tab strip. `MAX_CONTENT` (used by
