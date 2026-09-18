@@ -15,7 +15,6 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use qdoc::document::MarkSpan;
 use qdoc::model::Region;
 use qdoc::snapshot::{AttrVal, BlockView, CommentView, NoteView};
 use ui::chrome::{self, LabelCue, ToolbarItem};
@@ -46,9 +45,10 @@ use crate::paint_context::PaintContext;
 use crate::recovery_banner::AUTOSAVE_EDIT_THRESHOLD;
 use crate::recovery_banner::{RecoveryBanner, RecoveryDecision, RecoveryPalette};
 use crate::review_overlay::{
-    COMMENT_HIGHLIGHT, DELETION_INK, DELETION_RGB, INSERTION_INK, INSERTION_RGB, ReviewAction,
-    ReviewOverlay,
+    COMMENT_HIGHLIGHT, DELETION_INK, INSERTION_INK, ReviewAction, ReviewOverlay,
 };
+#[cfg(test)]
+use crate::review_overlay::{DELETION_RGB, INSERTION_RGB};
 #[cfg(test)]
 use crate::ruler::RulerMarker;
 use crate::ruler::{Ruler, RulerColors, RulerEffect, RulerModel};
@@ -63,6 +63,7 @@ use ui::portal;
 
 mod block_layout;
 mod image_layout;
+mod text_runs;
 
 #[cfg(test)]
 use block_layout::LIST_MARKER_TEXT_GAP;
@@ -80,6 +81,13 @@ use image_layout::{
     floats as image_floats, free_position as image_free_position,
     paint_options as image_paint_options, paint_transform as image_paint_transform,
     wrap as image_wrap,
+};
+#[cfg(test)]
+use text_runs::block_runs;
+use text_runs::{
+    block_change_decos, block_change_ranges, block_comment_ranges, block_note_refs,
+    block_runs_markup, char_font_family, char_font_size, char_highlight, note_numbering, note_text,
+    parse_hex_rgb, running_head_runs, running_head_runs_editing,
 };
 
 /// Convert the model's `(block, start, end)` ranges into serializable
@@ -840,262 +848,10 @@ fn pack_toolbar_rows(
     rows
 }
 
-/// Whether char `i` of a block is covered by a boolean mark named `name`.
-fn char_has(i: usize, marks: &[MarkSpan], name: &str) -> bool {
-    marks
-        .iter()
-        .any(|m| m.name == name && i >= m.start && i < m.end)
-}
-
-fn parse_family(s: &str) -> FontFamily {
-    match s {
-        "serif" => FontFamily::Serif,
-        "mono" => FontFamily::Mono,
-        _ => FontFamily::Sans,
-    }
-}
-
-/// The font-size run mark covering char `i`, if any. The editor writes the
-/// `size` Int mark (the codec contract's character format); `fontSize` is the
-/// legacy name some imported (ODT/DOCX) documents still carry, so both resolve.
-fn char_font_size(i: usize, marks: &[MarkSpan]) -> Option<f32> {
-    marks
-        .iter()
-        .find(|m| (m.name == "size" || m.name == "fontSize") && i >= m.start && i < m.end)
-        .and_then(|m| m.value.as_int())
-        .map(num::f32_of_i64)
-}
-
-/// The font-family run mark covering char `i`, if any. The editor writes the
-/// `font` Str mark; `fontFamily` is the legacy imported-document name — both
-/// resolve so codec-imported runs keep their family.
-fn char_font_family(i: usize, marks: &[MarkSpan]) -> Option<FontFamily> {
-    marks
-        .iter()
-        .find(|m| (m.name == "font" || m.name == "fontFamily") && i >= m.start && i < m.end)
-        .and_then(|m| m.value.as_str())
-        .map(parse_family)
-}
-
-/// Link blue used for `link`-marked text.
-const LINK_RGB: [u8; 3] = [0x1a, 0x56, 0xc4];
-
-/// The text colour covering char `i`: a `link` mark → link blue, else a
-/// `color` mark's `#RRGGBB`.
-fn char_color(i: usize, marks: &[MarkSpan]) -> Option<[u8; 3]> {
-    if marks
-        .iter()
-        .any(|m| m.name == "link" && i >= m.start && i < m.end)
-    {
-        return Some(LINK_RGB);
-    }
-    marks
-        .iter()
-        .find(|m| m.name == "color" && i >= m.start && i < m.end)
-        .and_then(|m| m.value.as_str())
-        .and_then(parse_hex_rgb)
-}
-
-/// The highlight (background) colour covering char `i`: a `highlight` mark's
-/// `#RRGGBB`, if any. Maps to [`RichSpan::background`] (a band behind the run).
-fn char_highlight(i: usize, marks: &[MarkSpan]) -> Option<[u8; 3]> {
-    marks
-        .iter()
-        .find(|m| m.name == "highlight" && i >= m.start && i < m.end)
-        .and_then(|m| m.value.as_str())
-        .and_then(parse_hex_rgb)
-}
-
-/// The baseline shift covering char `i`: `super`/`sub` boolean run marks map to
-/// [`ui::richtext::BaselineShift`] (`super` wins if both are somehow present).
-fn char_baseline(i: usize, marks: &[MarkSpan]) -> ui::richtext::BaselineShift {
-    if char_has(i, marks, "super") {
-        ui::richtext::BaselineShift::Super
-    } else if char_has(i, marks, "sub") {
-        ui::richtext::BaselineShift::Sub
-    } else {
-        ui::richtext::BaselineShift::None
-    }
-}
-
-fn parse_hex_rgb(s: &str) -> Option<[u8; 3]> {
-    let h = s.strip_prefix('#').unwrap_or(s);
-    if h.len() != 6 || !h.is_ascii() {
-        return None;
-    }
-    // `h.len() == 6` alone doesn't rule out multi-byte UTF-8 (a 3-byte char
-    // plus 3 ASCII bytes also has `.len() == 6`); `is_ascii` above guarantees
-    // every byte offset below is a char boundary, so `.get` never misses.
-    Some([
-        u8::from_str_radix(h.get(0..2)?, 16).ok()?,
-        u8::from_str_radix(h.get(2..4)?, 16).ok()?,
-        u8::from_str_radix(h.get(4..6)?, 16).ok()?,
-    ])
-}
-
-/// A block's styled runs plus its underline and strikethrough byte ranges:
-/// `(runs, underline_ranges, strike_ranges)`.
-type BlockRuns = (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize, usize)>);
-
 /// A measured table row within [`WordProcessorWidget::paginate_blocks`]'s
 /// table-layout branch: `(row_height, cells)`, each cell as `(col,
 /// cell_height, block)`.
 type TableRow<'a> = (f64, Vec<(usize, f64, &'a BlockView)>);
-
-/// Split a block's text into styled runs (bold/italic/size/family) + underline
-/// and strikethrough byte ranges.
-fn block_runs(block: &BlockView) -> BlockRuns {
-    let chars: Vec<char> = block.text.chars().collect();
-    let len = chars.len();
-    // Run key: f32 size as bits so the tuple is comparable. Highlight (background)
-    // and super/subscript baseline join the key so a change in either splits runs.
-    let key = |i: usize| {
-        (
-            char_has(i, &block.marks, "strong"),
-            char_has(i, &block.marks, "em"),
-            char_font_size(i, &block.marks).map(f32::to_bits),
-            char_font_family(i, &block.marks),
-            char_color(i, &block.marks),
-            char_highlight(i, &block.marks),
-            char_baseline(i, &block.marks),
-        )
-    };
-    let mut runs = Vec::new();
-    let mut i = 0;
-    while i < len {
-        let k = key(i);
-        let mut j = i;
-        while j < len && key(j) == k {
-            j += 1;
-        }
-        let (bold, italic, size_bits, family, color, background, baseline) = k;
-        runs.push(RichSpan {
-            text: chars.get(i..j).unwrap_or(&[]).iter().collect(),
-            bold,
-            italic,
-            size: size_bits.map(f32::from_bits),
-            family,
-            color,
-            background,
-            baseline,
-        });
-        i = j;
-    }
-    if runs.is_empty() {
-        runs.push(RichSpan::new(""));
-    }
-    let deco = |name: &str| {
-        block
-            .marks
-            .iter()
-            .filter(|m| m.name == name)
-            .map(|m| {
-                (
-                    char_to_byte(&block.text, m.start),
-                    char_to_byte(&block.text, m.end),
-                )
-            })
-            .collect::<Vec<_>>()
-    };
-    // Links render underlined as well as blue.
-    let mut underlines = deco("underline");
-    underlines.extend(deco("link"));
-    (runs, underlines, deco("strike"))
-}
-
-/// Whether char `i` of a block is covered by a mark named `name` (an `ins`/`del`
-/// tracked-change mark, or a `comment` annotation mark).
-fn char_in_mark(i: usize, marks: &[MarkSpan], name: &str) -> bool {
-    marks
-        .iter()
-        .any(|m| m.name == name && i >= m.start && i < m.end)
-}
-
-/// Split a block's text into styled runs like [`block_runs`], additionally
-/// tinting `ins`/`del` tracked-change runs in the review colour (green/red).
-/// Underline/strike decorations are drawn separately in the body pass. Identical
-/// to [`block_runs`] when `show_markup` is false.
-fn block_runs_markup(block: &BlockView, show_markup: bool) -> BlockRuns {
-    if !show_markup {
-        return block_runs(block);
-    }
-    let chars: Vec<char> = block.text.chars().collect();
-    let len = chars.len();
-    // An `ins` run is green, a `del` run red.
-    let track_color = |i: usize| -> Option<[u8; 3]> {
-        if char_in_mark(i, &block.marks, qdoc::schema::MARK_INS) {
-            Some(INSERTION_RGB)
-        } else if char_in_mark(i, &block.marks, qdoc::schema::MARK_DEL) {
-            Some(DELETION_RGB)
-        } else {
-            None
-        }
-    };
-    // The run key now also folds in the tracked-change review colour, which
-    // overrides any explicit `color` mark over the same range (review colour
-    // wins for legibility).
-    let key = |i: usize| {
-        (
-            char_has(i, &block.marks, "strong"),
-            char_has(i, &block.marks, "em"),
-            char_font_size(i, &block.marks).map(f32::to_bits),
-            char_font_family(i, &block.marks),
-            track_color(i).or_else(|| char_color(i, &block.marks)),
-            char_highlight(i, &block.marks),
-            char_baseline(i, &block.marks),
-        )
-    };
-    let mut runs = Vec::new();
-    let mut i = 0;
-    while i < len {
-        let k = key(i);
-        let mut j = i;
-        while j < len && key(j) == k {
-            j += 1;
-        }
-        let (bold, italic, size_bits, family, color, background, baseline) = k;
-        runs.push(RichSpan {
-            text: chars.get(i..j).unwrap_or(&[]).iter().collect(),
-            bold,
-            italic,
-            size: size_bits.map(f32::from_bits),
-            family,
-            color,
-            background,
-            baseline,
-        });
-        i = j;
-    }
-    if runs.is_empty() {
-        runs.push(RichSpan::new(""));
-    }
-    let deco = |name: &str| {
-        block
-            .marks
-            .iter()
-            .filter(|m| m.name == name)
-            .map(|m| {
-                (
-                    char_to_byte(&block.text, m.start),
-                    char_to_byte(&block.text, m.end),
-                )
-            })
-            .collect::<Vec<_>>()
-    };
-    let mut underlines = deco("underline");
-    underlines.extend(deco("link"));
-    let strikes = deco("strike");
-    // NOTE: the `ins`/`del` review decorations (underline for ins, strike for
-    // del) are *not* added here — they are drawn in the body pass in the review
-    // colour (`draw_rich` paints these decorations in the block ink, which would
-    // mismatch the coloured glyphs). Keeping them out of the shaped layout also
-    // keeps `block_runs`'s underline/strike contract unchanged.
-    (runs, underlines, strikes)
-}
-
-/// The `(ins_ranges, del_ranges)` byte ranges in a block covered by an `ins`
-/// tracked-insertion mark and a `del` tracked-deletion mark respectively.
-type ChangeDecoRanges = (Vec<(usize, usize)>, Vec<(usize, usize)>);
 
 /// `prepare_pass2_inputs`'s `(multi_sel, note_nums, spell_by_block)` result:
 /// whether the selection spans multiple cells, footnote citation numbers
@@ -1106,226 +862,6 @@ type Pass2Inputs = (
     HashMap<String, usize>,
     HashMap<String, Vec<(usize, usize)>>,
 );
-
-/// The `(byte_start, byte_end)` ranges in a block covered by an `ins` tracked-
-/// insertion mark and a `del` tracked-deletion mark respectively. Used by the
-/// body draw pass to paint the review underline (ins) / strike (del).
-fn block_change_decos(b: &BlockView) -> ChangeDecoRanges {
-    let collect = |name: &str| {
-        b.marks
-            .iter()
-            .filter(|m| m.name == name && m.end > m.start)
-            .map(|m| (char_to_byte(&b.text, m.start), char_to_byte(&b.text, m.end)))
-            .collect::<Vec<_>>()
-    };
-    (
-        collect(qdoc::schema::MARK_INS),
-        collect(qdoc::schema::MARK_DEL),
-    )
-}
-
-/// Every tracked change anchored in a block, as `(byte_start, byte_end,
-/// change_id)` in source order — for both `ins` and `del` marks. The change id
-/// comes from the mark value (the key the `changes` container uses). Drives the
-/// right-margin Accept/Reject review cards (which need the id to act on).
-fn block_change_ranges(b: &BlockView) -> Vec<(usize, usize, String)> {
-    b.marks
-        .iter()
-        .filter(|m| {
-            (m.name == qdoc::schema::MARK_INS || m.name == qdoc::schema::MARK_DEL)
-                && m.end > m.start
-        })
-        .filter_map(|m| {
-            let id = m.value.as_str()?.to_string();
-            Some((
-                char_to_byte(&b.text, m.start),
-                char_to_byte(&b.text, m.end),
-                id,
-            ))
-        })
-        .collect()
-}
-
-/// Every `comment` annotation anchored in a block, as `(byte_start, byte_end,
-/// comment_id)` in source order. The body pass paints a pale highlight band over
-/// the range and a margin indicator at the start.
-fn block_comment_ranges(b: &BlockView) -> Vec<(usize, usize, String)> {
-    b.marks
-        .iter()
-        .filter(|m| m.name == qdoc::schema::MARK_COMMENT && m.end > m.start)
-        .filter_map(|m| {
-            let id = m.value.as_str()?.to_string();
-            Some((
-                char_to_byte(&b.text, m.start),
-                char_to_byte(&b.text, m.end),
-                id,
-            ))
-        })
-        .collect()
-}
-
-/// Whether char `i` of `b` is a `page-number` field placeholder (a U+FFFC
-/// covered by a `field` mark valued `page-number`).
-fn char_is_page_number_field(i: usize, marks: &[MarkSpan]) -> bool {
-    marks.iter().any(|m| {
-        m.name == qdoc::schema::MARK_FIELD
-            && i >= m.start
-            && i < m.end
-            && m.value.as_str() == Some(qdoc::schema::FIELD_PAGE_NUMBER)
-    })
-}
-
-/// Build the `RichSpan`s for a header/footer block with every `page-number`
-/// field placeholder substituted by `page_no` (the digits inherit the field
-/// char's run formatting). Underline/strike are dropped — running heads keep it
-/// simple — but bold/italic/size/family/colour per-run are preserved.
-fn running_head_runs(b: &BlockView, page_no: usize) -> Vec<RichSpan> {
-    let chars: Vec<char> = b.text.chars().collect();
-    let n = chars.len();
-    let key = |i: usize| {
-        (
-            char_has(i, &b.marks, "strong"),
-            char_has(i, &b.marks, "em"),
-            char_font_size(i, &b.marks).map(f32::to_bits),
-            char_font_family(i, &b.marks),
-            char_color(i, &b.marks),
-        )
-    };
-    // Coalesce runs by (formatting key, is-field): a field char always sits in
-    // its own run so the page number inherits exactly that char's formatting and
-    // never merges with adjacent literal text.
-    let run_key = |i: usize| (key(i), char_is_page_number_field(i, &b.marks));
-    let mut runs: Vec<RichSpan> = Vec::new();
-    let mut i = 0;
-    while i < n {
-        let rk = run_key(i);
-        let mut j = i;
-        while j < n && run_key(j) == rk {
-            j += 1;
-        }
-        let ((bold, italic, size_bits, family, color), is_field) = rk;
-        let text: String = if is_field {
-            // One run per field char (each is its own placeholder); emit the page
-            // number once per placeholder char so a literal repeat still works.
-            page_no.to_string().repeat(j - i)
-        } else {
-            chars.get(i..j).unwrap_or(&[]).iter().collect()
-        };
-        runs.push(RichSpan {
-            text,
-            bold,
-            italic,
-            size: size_bits.map(f32::from_bits),
-            family,
-            color,
-            background: None,
-            baseline: ui::richtext::BaselineShift::None,
-        });
-        i = j;
-    }
-    if runs.is_empty() {
-        runs.push(RichSpan::new(""));
-    }
-    runs
-}
-
-/// Like [`running_head_runs`] but for the band being *edited*: every char maps
-/// 1:1 to a caret offset; a `page-number` placeholder shows as `#`, not digits.
-fn running_head_runs_editing(b: &BlockView) -> Vec<RichSpan> {
-    let chars: Vec<char> = b.text.chars().collect();
-    let n = chars.len();
-    let key = |i: usize| {
-        (
-            char_has(i, &b.marks, "strong"),
-            char_has(i, &b.marks, "em"),
-            char_font_size(i, &b.marks).map(f32::to_bits),
-            char_font_family(i, &b.marks),
-            char_color(i, &b.marks),
-        )
-    };
-    let run_key = |i: usize| (key(i), char_is_page_number_field(i, &b.marks));
-    let mut runs: Vec<RichSpan> = Vec::new();
-    let mut i = 0;
-    while i < n {
-        let rk = run_key(i);
-        let mut j = i;
-        while j < n && run_key(j) == rk {
-            j += 1;
-        }
-        let ((bold, italic, size_bits, family, color), is_field) = rk;
-        // One glyph per char so offsets stay aligned; a field char shows as `#`.
-        let text: String = if is_field {
-            "#".repeat(j - i)
-        } else {
-            chars.get(i..j).unwrap_or(&[]).iter().collect()
-        };
-        runs.push(RichSpan {
-            text,
-            bold,
-            italic,
-            size: size_bits.map(f32::from_bits),
-            family,
-            color,
-            background: None,
-            baseline: ui::richtext::BaselineShift::None,
-        });
-        i = j;
-    }
-    if runs.is_empty() {
-        runs.push(RichSpan::new(""));
-    }
-    runs
-}
-
-/// The note ids referenced by char `i` of `b` via a `note-ref` mark (covering
-/// exactly the placeholder char), in source order. Usually 0 or 1 per char.
-fn char_note_ref(i: usize, marks: &[MarkSpan]) -> Option<&str> {
-    marks
-        .iter()
-        .find(|m| m.name == qdoc::schema::MARK_NOTE_REF && i >= m.start && i < m.end)
-        .and_then(|m| m.value.as_str())
-}
-
-/// Every `note-ref` marker in a block, as `(char_index, note_id)` in source
-/// order. The char index is the placeholder char (U+FFFC) the marker covers.
-fn block_note_refs(b: &BlockView) -> Vec<(usize, String)> {
-    let n = b.text.chars().count();
-    (0..n)
-        .filter_map(|i| char_note_ref(i, &b.marks).map(|id| (i, id.to_string())))
-        .collect()
-}
-
-/// Assign citation numbers (1, 2, 3, …) to notes in *document order* (first
-/// `note-ref` appearance), the authoritative order for both in-text + page list.
-fn note_numbering(blocks: &[BlockView]) -> HashMap<String, usize> {
-    let mut map = HashMap::new();
-    let mut next = 1usize;
-    for b in blocks {
-        for (_, id) in block_note_refs(b) {
-            map.entry(id).or_insert_with(|| {
-                let n = next;
-                next += 1;
-                n
-            });
-        }
-    }
-    map
-}
-
-/// Concatenate a note's body blocks into one display string (paragraphs joined by
-/// a space). Footnotes are usually a single short paragraph.
-fn note_text(note: &NoteView) -> String {
-    let mut parts: Vec<&str> = note
-        .blocks
-        .iter()
-        .map(|b| b.text.as_str())
-        .filter(|t| !t.is_empty())
-        .collect();
-    if parts.is_empty() {
-        parts.push("");
-    }
-    parts.join(" ")
-}
 
 /// Draw a wavy red spell-check underline from `x0` to `x1` at baseline `y`, in the
 /// given (already zoom-adjusted) transform. Approximated by short line segments
