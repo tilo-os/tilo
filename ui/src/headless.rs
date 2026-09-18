@@ -482,6 +482,10 @@ pub struct FrameHarness {
     /// survive a relayout, their taffy ids do not.
     focused: Option<NodeId>,
     focus_trap_active: bool,
+    active_input_instance: Option<crate::application::InstanceId>,
+    saved_instance_focus: HashMap<crate::application::InstanceId, crate::widget::layout::CompositionFocus>,
+    input_sequence: std::cell::Cell<u64>,
+    observed_input_owner: std::cell::RefCell<Option<String>>,
     focus_before_trap: Option<crate::widget::layout::CompositionFocus>,
     /// Identity the driver's commits and undos are attributed to. Mirrors
     /// [`crate::app::App`]'s `local_author` so a scenario exercises the same
@@ -905,6 +909,10 @@ impl FrameHarness {
             input_scale: 1.0,
             focused: None,
             focus_trap_active: false,
+            active_input_instance: None,
+            saved_instance_focus: HashMap::new(),
+            input_sequence: std::cell::Cell::new(0),
+            observed_input_owner: std::cell::RefCell::new(None),
             focus_before_trap: None,
             author: author(),
             action_registry: qos_actions::ActionRegistry::new(),
@@ -1548,7 +1556,9 @@ impl FrameHarness {
             self.focused = self.history.as_mut().and_then(|history| unsafe { history.restore_focus(&self.node_map, &self.bindings) });
         } else {
         let allowed: Vec<_> = self.node_map.keys().copied().filter(|&node| {
-            crate::history_mode::embedded::allows_focus(self.root.as_ref(), node, &self.taffy)
+            (self.focus_trap_active || self.history.as_ref().is_some_and(|history| history.captures_input())
+                || self.active_input_instance.is_none_or(|instance| self.bindings.binding_for(node).is_some_and(|binding| binding.instance_id == instance) && self.app_focus_eligible(node)))
+                && crate::history_mode::embedded::allows_focus(self.root.as_ref(), node, &self.taffy)
                 && self.history.as_ref().is_none_or(|history| !history.has_saved_focus() || history.owns_node(node, &self.taffy))
         }).collect();
         // An exact owner restored above outranks unrelated retained focus
@@ -1737,6 +1747,137 @@ impl FrameHarness {
         }
     }
 
+    /// Reject external activation while a modal owns input. Search acceptance
+    /// calls this only after its overlay has closed and its intent was taken.
+    pub fn check_app_activation(&self) -> Result<(), String> {
+        if self.root.modal_capture().is_some() || self.focus_trap_active
+            || self.caller_palette.palette.is_some() || self.caller_palette.pending.is_some()
+            || self.global_search_query().is_some()
+            || self.history.as_ref().is_some_and(|history| history.captures_input())
+            || crate::history_mode::embedded::keyboard_captured(self.root.as_ref(), self.focused, &self.taffy)
+        { Err("Finish the current dialog or command first".into()) } else { Ok(()) }
+    }
+
+    /// Remember a stable component/control identity, never a layout NodeId.
+    pub fn remember_app_focus(&mut self) {
+        if let Some(binding) = self.focused.and_then(|node| self.bindings.binding_for(node)) {
+            // SAFETY: these maps belong to this exclusively borrowed runner.
+            if let Some(focus) = unsafe { crate::widget::layout::CompositionFocus::capture(self.focused, &self.node_map, &self.bindings) } {
+                self.saved_instance_focus.insert(binding.instance_id, focus);
+            }
+        }
+    }
+
+    fn app_focus_eligible(&self, node: NodeId) -> bool {
+        self.taffy.style(node).is_ok_and(|style| style.display != taffy::Display::None)
+            && self.inspect_node(node, |widget| {
+                let rect = widget.get_rect();
+                widget.is_focusable() && widget.is_enabled() && rect.width() > 0.0 && rect.height() > 0.0
+                    && widget.accessibility().is_none_or(|access| !access.state.hidden && !access.state.disabled)
+            }).unwrap_or(false)
+    }
+
+    fn app_default_focus(&self, order: &[NodeId]) -> Option<NodeId> {
+        order.iter().copied().find(|&node| self.inspect_node(node, |widget| widget.is_default_keyboard_focus()).unwrap_or(false))
+            .or_else(|| order.first().copied())
+    }
+
+    /// Resolve focus only in the selected, live app instance. A missing control
+    /// is an authoritative no-owner result; layout cannot revive another app.
+    pub fn prepare_app_activation(&mut self, instance: crate::application::InstanceId) {
+        self.remember_app_focus();
+        // Clear an unfinished preedit in its original bound owner, without commit.
+        self.send(&WindowEvent::Ime(winit::event::Ime::Preedit(String::new(), None)));
+        self.modifiers = winit::event::Modifiers::default();
+        self.active_input_instance = Some(instance);
+        self.set_focused(None);
+    }
+
+    pub fn activate_app_focus(&mut self, instance: crate::application::InstanceId) {
+        let order: Vec<_> = self.focus_order().into_iter().filter(|&node|
+            self.bindings.binding_for(node).is_some_and(|binding| binding.instance_id == instance)
+                && self.app_focus_eligible(node)
+        ).collect();
+        self.active_input_instance = Some(instance);
+        let saved = self.saved_instance_focus.remove(&instance);
+        // SAFETY: restore resolves the captured stable identity in this live map.
+        let target = saved.as_ref().and_then(|saved| unsafe { saved.restore(&self.node_map, &self.bindings, Some(&order)) })
+            .or_else(|| self.app_default_focus(&order));
+        if target.is_none() {
+            let focused: Vec<_> = self.node_map.keys().copied().filter(|&node|
+                self.inspect_node(node, |widget| widget.is_focused()).unwrap_or(false)
+            ).collect();
+            for node in focused { let _ = self.mutate_node(node, |widget| widget.set_focus(false)); }
+        }
+        self.set_focused(target);
+        self.input_sequence.set(self.input_sequence.get().wrapping_add(1));
+        self.remember_app_focus();
+        self.relayout();
+    }
+
+    /// No-control shortcut routing stays inside the selected app and its
+    /// owning chrome. Never dispatch a text event or fall back to the root.
+    fn dispatch_scoped_shortcut(&mut self, event: &WindowEvent) {
+        let Some(instance) = self.active_input_instance else { return; };
+        let WindowEvent::KeyboardInput { event: key, .. } = event else { return; };
+        let modifiers = self.modifiers.state();
+        let command = modifiers.control_key() || modifiers.super_key() || modifiers.alt_key();
+        let nontext = matches!(&key.logical_key, Key::Named(named) if !matches!(named, NamedKey::Space | NamedKey::Enter));
+        if !command && !nontext { return; }
+        let scopes: Vec<_> = self.node_map.keys().copied().filter(|&node| {
+            self.bindings.binding_for(node).is_none_or(|binding| binding.instance_id == instance)
+                && self.inspect_node(node, |widget| widget.keyboard_input_scope() == Some(instance)
+                    && widget.is_enabled() && widget.get_rect().width() > 0.0 && widget.get_rect().height() > 0.0
+                    && widget.accessibility().is_none_or(|access| !access.state.hidden && !access.state.disabled)).unwrap_or(false)
+        }).collect();
+        // Prefer the owning chrome over its component child. Ambiguous sibling
+        // declarations fail closed instead of selecting by map iteration order.
+        let roots: Vec<_> = scopes.iter().copied().filter(|&node|
+            !scopes.iter().any(|&other| other != node && self.bindings.is_descendant(node, other))
+        ).collect();
+        let [target] = roots.as_slice() else { return; };
+        let target = *target;
+        let mut handled = false;
+        let mut focus = None;
+        // SAFETY: the exclusive runner owns the admitted tree and maps. This
+        // invokes only one live scoped subtree using its document provenance.
+        let _ = unsafe { crate::bound_dispatch::invoke_bound_node(
+            &self.bindings, &self.node_map, target, &mut self.state.doc, &self.state.root,
+            |widget, doc, path| widget.handle_event(event, self.input_scale, &self.modifiers,
+                doc, path, &mut handled, &mut focus, target, &self.taffy),
+        ) };
+        if let Some(focus) = focus.filter(|&node| self.bindings.is_descendant(node, target)
+            && self.app_focus_eligible(node)) { self.set_focused(Some(focus)); }
+        self.host_tick();
+        self.relayout();
+    }
+
+    /// Mount-local token for asynchronous input. Includes changes that do not
+    /// pass through explicit activation (pointer, semantics, modal, removal).
+    pub fn input_ownership_sequence(&self) -> u64 {
+        let owner = if self.global_search_query().is_some() { Some("system-search".into()) }
+            else if self.caller_palette.palette.is_some() { Some("caller-palette".into()) }
+            else { self.focused.and_then(|node| self.inspect_node(node, |widget| {
+                fn focused_semantics(node: &crate::a11y::AccessNode, keys: &mut Vec<String>) {
+                    if node.state.focused {
+                        if let Some(key) = node.action_target.as_ref().or(node.semantic_key.as_ref()).or(node.name.as_ref()) { keys.push(key.clone()); }
+                    }
+                    for child in &node.children { focused_semantics(child, keys); }
+                }
+                let semantics = widget.accessibility();
+                let control = widget.test_id().map(str::to_owned).or_else(|| semantics.as_ref().and_then(|a| a.semantic_key.clone())).unwrap_or_else(|| widget.name().to_owned());
+                let mut focused = Vec::new();
+                if let Some(semantics) = semantics { focused_semantics(&semantics, &mut focused); }
+                let control = format!("{control}:{focused:?}");
+                self.bindings.binding_for(node).map_or_else(|| control.clone(), |binding| format!("{}:{control}", binding.lifetime_id))
+            }).ok()) };
+        if *self.observed_input_owner.borrow() != owner {
+            *self.observed_input_owner.borrow_mut() = owner;
+            self.input_sequence.set(self.input_sequence.get().wrapping_add(1));
+        }
+        self.input_sequence.get()
+    }
+
     /// The taffy node holding keyboard focus, if any.
     pub fn focused(&self) -> Option<NodeId> {
         self.drain_component_wakes();
@@ -1756,6 +1897,14 @@ impl FrameHarness {
     /// the outgoing/incoming widgets exactly as
     /// [`crate::app::App::set_focused_node`] does.
     fn set_focused(&mut self, node: Option<NodeId>) {
+        if self.focused != node {
+            self.remember_app_focus();
+            self.input_sequence.set(self.input_sequence.get().wrapping_add(1));
+        }
+        if self.active_input_instance.is_some()
+            && let Some(binding) = node.and_then(|node| self.bindings.binding_for(node)) {
+            self.active_input_instance = Some(binding.instance_id);
+        }
         if unsafe { crate::history_mode::embedded::move_focus(self.root.as_mut(), node, self.focused, &self.node_map, &self.bindings, &self.taffy) } { self.focused = None; }
         let resumed_live = self.history.as_ref().is_some_and(|history| {
             !history.captures_input() && history.has_saved_focus()
@@ -2565,7 +2714,8 @@ impl FrameHarness {
                 if let Some(next) = next { self.set_focused(Some(next)); self.relayout(); }
                 return;
             }
-            if modal.is_none() && let Key::Character(character) = &key.logical_key {
+            if modal.is_none() && (self.active_input_instance.is_none() || self.focused.is_some())
+                && let Key::Character(character) = &key.logical_key {
                 let mods = self.modifiers.state();
                 if let Some(request) = crate::undo::shortcut(character,
                     self.platform.command_modifier_down(mods), mods.shift_key()) {
@@ -2624,6 +2774,12 @@ impl FrameHarness {
             self.root.set_interaction_environment(environment);
             self.invalidate_layout_tree();
             self.relayout();
+        }
+        if self.active_input_instance.is_some() && self.focused.is_none()
+            && matches!(event, WindowEvent::Ime(_) | WindowEvent::KeyboardInput { .. })
+            && self.root.modal_capture().is_none() && !history_input {
+            self.dispatch_scoped_shortcut(event);
+            return;
         }
         if let WindowEvent::Touch(touch) = event {
             let pointer_events = self.touch_pointer.events(touch);
@@ -4382,6 +4538,8 @@ mod tests {
     }
 
     impl Widget for ConsumingActivationControl {
+        fn is_default_keyboard_focus(&self) -> bool { true }
+
         fn sync(&mut self, _state: &mut automerge::AutoCommit, _path: &automerge::ObjId) {}
 
         fn build_layout(
@@ -5158,6 +5316,114 @@ mod tests {
             .expect("text input semantics");
         assert_eq!(semantics.value.as_deref(), Some("Ada"));
         assert!(semantics.state.focused);
+    }
+
+    #[test]
+    fn app_focus_prefers_declared_default_without_invoking_its_action() {
+        let activations = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut driver = Driver::new_with_controlled_inputs(State::new(),
+            Box::new(Column::new().push(Box::new(Button::new("toolbar", "Toolbar", None)))
+                .push(Box::new(ConsumingActivationControl { activations: activations.clone(), focused: false, rect: Rect::ZERO }))),
+            (400, 200), Theme::dark(), crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("fixture-user".into()));
+        let order = driver.focus_order();
+        assert_eq!(order.len(), 2);
+        let target = driver.app_default_focus(&order);
+        assert_eq!(target, order.get(1).copied());
+        driver.set_focused(target);
+        assert_eq!(activations.get(), 0);
+    }
+
+    #[test]
+    fn app_focus_eligibility_excludes_disabled_and_hidden_controls() {
+        let mut driver = Driver::new_with_controlled_inputs(State::new(),
+            Box::new(Column::new().push(Box::new(Button::new("enabled", "Enabled", None)))
+                .push(Box::new(Button::new("disabled", "Disabled", None).with_enabled(false)))),
+            (400, 200), Theme::dark(), crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("fixture-user".into()));
+        let enabled = driver.named_target_nodes()["enabled"];
+        let disabled = driver.named_target_nodes()["disabled"];
+        assert!(driver.app_focus_eligible(enabled));
+        assert!(!driver.app_focus_eligible(disabled));
+        let mut style = driver.taffy.style(enabled).unwrap().clone();
+        style.display = taffy::Display::None;
+        driver.taffy.set_style(enabled, style).unwrap();
+        assert!(!driver.app_focus_eligible(enabled));
+    }
+
+    #[test]
+    fn no_control_scope_preserves_group_shortcuts_without_background_input() {
+        use crate::widget::{AppKind, TabDescriptor, TileContent, WindowGroup, WindowWidth};
+        let group = |id| Box::new(WindowGroup::new(id, vec![(TabDescriptor::new(id, "No controls"),
+            TileContent::Stub { kind: AppKind::Settings, label: "Empty".into() })], id, WindowWidth::Normal));
+        let mut previous = group(41);
+        let mut destination = group(42);
+        let previous_ptr = std::ptr::from_mut(previous.as_mut());
+        let destination_ptr = std::ptr::from_mut(destination.as_mut());
+        let mut driver = Driver::new_with_controlled_inputs(State::new(),
+            Box::new(Column::new().push(Box::new(TextInput::local().with_id("background").with_initial_value("retained")))
+                .push(previous).push(destination)),
+            (800, 800), Theme::dark(), crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("fixture-user".into()));
+        driver.perform_named("background", &crate::a11y::Action::Focus).unwrap();
+        driver.type_text(" draft");
+        let value = driver.inspect_node(driver.named_target_nodes()["background"], |widget| widget.accessibility().unwrap().value).unwrap();
+        driver.prepare_app_activation(42);
+        driver.activate_app_focus(42);
+        assert!(driver.focused().is_none());
+        // A background app may retain a flag; it must not receive shortcut fallback.
+        let background = driver.named_target_nodes()["background"];
+        driver.mutate_node(background, |widget| widget.set_focus(true)).unwrap();
+        driver.set_modifiers(&["ctrl".into(), "shift".into()]);
+        driver.key("p");
+        // SAFETY: the boxed groups remain retained by driver; these reads end before its next call.
+        unsafe {
+            assert!((&*destination_ptr).bar_for_tests().is_pinned(42), "selected no-control group still supports Ctrl+Shift+P");
+            assert!(!(&*previous_ptr).bar_for_tests().is_pinned(41), "shortcut must not visit a previous group");
+        }
+        for modifier in ["ctrl", "super"] {
+            driver.set_modifiers(&[modifier.into()]);
+            driver.key("z");
+        }
+        driver.set_modifiers(&[]);
+        driver.type_text("must not leak");
+        driver.send_host_event(&WindowEvent::Ime(winit::event::Ime::Commit("nor IME".into())));
+        assert!(driver.focused().is_none());
+        assert_eq!(driver.inspect_node(driver.named_target_nodes()["background"], |widget| widget.accessibility().unwrap().value).unwrap(), value);
+    }
+
+    #[test]
+    fn app_activation_without_controls_keeps_an_authoritative_empty_scope() {
+        let input = TextInput::local().with_id("background").with_initial_value("unchanged");
+        let mut driver = Driver::new_with_controlled_inputs(State::new(), Box::new(input),
+            (400, 200), Theme::dark(), crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("fixture-user".into()));
+        driver.perform_named("background", &crate::a11y::Action::Focus).unwrap();
+        driver.prepare_app_activation(42);
+        driver.activate_app_focus(42);
+        assert!(driver.focused().is_none());
+        // A retained editor flag in another instance must never regain authority.
+        let node = driver.named_target_nodes()["background"];
+        driver.mutate_node(node, |widget| widget.set_focus(true)).unwrap();
+        driver.relayout();
+        assert!(driver.focused().is_none());
+        driver.send_host_event(&WindowEvent::Ime(winit::event::Ime::Commit("leak".into())));
+        assert_eq!(driver.inspection().root.semantics.unwrap().value.as_deref(), Some("unchanged"));
+    }
+
+    #[test]
+    fn input_ownership_token_changes_for_control_focus_but_not_passive_layout() {
+        let mut driver = Driver::new_with_controlled_inputs(State::new(),
+            Box::new(Column::new().push(Box::new(TextInput::local().with_id("first")))
+                .push(Box::new(TextInput::local().with_id("second")))),
+            (400, 200), Theme::dark(), crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("fixture-user".into()));
+        driver.perform_named("first", &crate::a11y::Action::Focus).unwrap();
+        let first = driver.input_ownership_sequence();
+        driver.relayout();
+        assert_eq!(driver.input_ownership_sequence(), first);
+        driver.perform_named("second", &crate::a11y::Action::Focus).unwrap();
+        assert_ne!(driver.input_ownership_sequence(), first);
     }
 
     #[test]

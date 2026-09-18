@@ -47,6 +47,7 @@ pub(crate) struct DesktopHandle {
     inbox: Rc<RefCell<Option<(Admission, ui::permissions::PermissionContext)>>>,
     pub navigation: Rc<RefCell<serde_json::Value>>,
     pub navigation_revision: Rc<std::cell::Cell<u64>>,
+    pub activation_sequence: Rc<std::cell::Cell<u64>>,
     pub navigation_command: Rc<RefCell<Option<crate::desktop_navigation::Command>>>,
     pub navigation_result: Rc<RefCell<Option<Result<Option<String>, String>>>>,
     pub(crate) generation: String,
@@ -60,6 +61,37 @@ impl DesktopHandle {
         // A pre-revocation admission must never restore a withdrawn read grant.
         self.inbox.borrow_mut().take();
     }
+    /// The single accepted-activation boundary shared by toolbar and Search.
+    pub fn navigate(&self, frame: &mut ui::headless::FrameHarness, command: crate::desktop_navigation::Command) -> Result<Option<String>, String> {
+        // Admit queued topology before validating an exact route.
+        frame.relayout();
+        let instance = match &command {
+            crate::desktop_navigation::Command::Select { route, .. } => {
+                frame.check_app_activation()?;
+                if command.generation() != self.generation { return Err("Stale desktop surface".into()); }
+                let (w, s, g, t) = route.ids()?;
+                if !self.tree.borrow().workspaces.iter().filter(|v| v.id == w)
+                    .flat_map(|w| &w.strips).filter(|v| v.id == s)
+                    .flat_map(|s| &s.window_groups).filter(|v| v.id == g)
+                    .flat_map(|g| &g.tabs).any(|v| v.id == t) {
+                    return Err("Application route unavailable".into());
+                }
+                Some(t)
+            }
+            _ => None,
+        };
+        if let Some(instance) = instance { frame.prepare_app_activation(instance); }
+        *self.navigation_result.borrow_mut() = None;
+        *self.navigation_command.borrow_mut() = Some(command);
+        frame.relayout();
+        let result = self.navigation_result.borrow_mut().take().ok_or("Desktop did not accept navigation")??;
+        if let Some(instance) = instance {
+            frame.activate_app_focus(instance);
+            self.activation_sequence.set(self.activation_sequence.get().wrapping_add(1));
+        }
+        Ok(result)
+    }
+
     pub fn admit(
         &self,
         state: &qos_peer_state::StatePeer,
@@ -260,7 +292,7 @@ impl DesktopRoot {
             session_requests: Rc::default(),
             inbox: Rc::default(),
             navigation: Rc::new(RefCell::new(serde_json::Value::Null)),
-            navigation_revision: Rc::default(), navigation_command: Rc::default(), navigation_result: Rc::default(),
+            navigation_revision: Rc::default(), activation_sequence: Rc::default(), navigation_command: Rc::default(), navigation_result: Rc::default(),
             generation: uuid::Uuid::new_v4().to_string(),
             search: Rc::default(),
             history_available: Rc::new(std::cell::Cell::new(true)),
@@ -2494,7 +2526,7 @@ mod tests {
     fn browser_semantic_route(frame: &ui::headless::FrameHarness, label: &str) -> (String, String) {
         fn find(node: &ui::headless::InspectionNode, label: &str) -> Option<(String, String)> {
             fn target(node: &ui::a11y::AccessNode, label: &str) -> Option<String> {
-                if node.name.as_deref() == Some(label) {
+                if node.name.as_deref() == Some(label) && node.action_target.is_some() {
                     return node.action_target.clone();
                 }
                 node.children.iter().find_map(|node| target(node, label))
@@ -3793,6 +3825,90 @@ mod tests {
         );
     }
     #[test]
+    fn explicit_selection_routes_ime_to_chat_and_restores_writer() {
+        let (root, handle, _) = fixture_with_topology(|tree| {
+            let strip = &mut tree.workspaces[0].strips[0];
+            let tabs = std::mem::take(&mut strip.window_groups[0].tabs);
+            strip.window_groups = tabs.into_iter().enumerate().map(|(index, tab)| WindowGroup {
+                id: 100 + index as u64, active_tab: tab.id, tabs: vec![tab],
+                width: WindowWidth::Normal, maximized: false,
+            }).collect();
+        });
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(), Box::new(root), (1800, 900), Theme::dark(),
+            ui::TextRenderer::new(), ui::permissions::UserId("author".into()),
+        );
+        frame.click_named("word_processor").unwrap();
+        frame.send_host_event(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit("retained draft".into())));
+        frame.key("ArrowLeft");
+        let writer_owner = frame.inspection().keyboard_focus_owner.unwrap();
+        let writer = handle.records.borrow().values().find(|r| r.app == "dev.qos.word-processor").unwrap().clone();
+        let writer_before = writer.store.read(&writer.checkout.id, |doc| doc.clone().save()).unwrap();
+        let (chat_owner, _) = browser_semantic_route(&frame, "Message composer");
+        let route = |label: &str| serde_json::from_value::<crate::desktop_navigation::Route>(
+            handle.navigation.borrow()["entries"].as_array().unwrap().iter().find(|entry| entry["label"] == label).unwrap()["route"].clone()
+        ).unwrap();
+        let chat = route("Chat");
+        let writer_route = route("Writer");
+        handle.navigate(&mut frame, crate::desktop_navigation::Command::Select {
+            generation: handle.generation.clone(), route: chat.clone(),
+        }).unwrap();
+        assert_eq!(frame.inspection().keyboard_focus_owner.as_deref(), Some(chat_owner.as_str()));
+        frame.send_host_event(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit("destination input".into())));
+        assert_eq!(writer.store.read(&writer.checkout.id, |doc| doc.clone().save()).unwrap(), writer_before);
+        assert!(frame.inspection_json().unwrap().contains("destination input"));
+        handle.navigate(&mut frame, crate::desktop_navigation::Command::Select {
+            generation: handle.generation.clone(), route: writer_route.clone(),
+        }).unwrap();
+        assert_eq!(frame.inspection().keyboard_focus_owner.as_deref(), Some(writer_owner.as_str()));
+        let sequence = frame.input_ownership_sequence();
+        let activation = handle.activation_sequence.get();
+        handle.navigate(&mut frame, crate::desktop_navigation::Command::Select {
+            generation: handle.generation.clone(), route: writer_route.clone(),
+        }).unwrap();
+        assert!(frame.input_ownership_sequence() > sequence);
+        assert_eq!(handle.activation_sequence.get(), activation + 1);
+        frame.send_host_event(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit("X".into())));
+        let writer_text = writer.store.read(&writer.checkout.id, |doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap()).unwrap();
+        assert!(writer_text.contains("retained drafXt"), "restored and reselected caret: {writer_text}");
+        let before = handle.navigation.borrow()["active"].clone();
+        let activation = handle.activation_sequence.get();
+        assert!(handle.navigate(&mut frame, crate::desktop_navigation::Command::Select {
+            generation: "stale".into(), route: chat.clone(),
+        }).is_err());
+        assert_eq!(handle.navigation.borrow()["active"], before);
+        assert_eq!(handle.activation_sequence.get(), activation);
+        assert_eq!(frame.inspection().keyboard_focus_owner.as_deref(), Some(writer_owner.as_str()));
+        handle.open_global_search(&mut frame, &handle.generation, "").unwrap();
+        assert!(handle.navigate(&mut frame, crate::desktop_navigation::Command::Select {
+            generation: handle.generation.clone(), route: chat.clone(),
+        }).is_err(), "Search remains a modal owner");
+        assert_eq!(handle.navigation.borrow()["active"], before);
+        frame.key("Escape");
+        handle.process_global_search(&mut frame).unwrap();
+        assert_eq!(frame.inspection().keyboard_focus_owner.as_deref(), Some(writer_owner.as_str()));
+        handle.navigate(&mut frame, crate::desktop_navigation::Command::Select {
+            generation: handle.generation.clone(), route: chat.clone(),
+        }).unwrap();
+        let writer_before_removal = writer.store.read(&writer.checkout.id, |doc| doc.clone().save()).unwrap();
+        let mut tree = handle.tree.borrow().clone();
+        tree.workspaces[0].strips[0].window_groups.retain(|group| group.id.to_string() != chat.group);
+        *handle.inbox.borrow_mut() = Some((Admission {
+            admitted_room: history_document(&tree),
+            source_heads: vec![[8; 32]], tree,
+            routes: BTreeMap::from([(writer_route.ids().unwrap().3, writer.checkout.id.as_str().into())]),
+            required: vec![], missing: vec![], unsupported: vec![], pending: 0,
+        }, handle.permissions.borrow().clone()));
+        frame.relayout();
+        assert!(frame.inspection().keyboard_focus_owner.is_none(), "removed target cannot resurrect Writer");
+        frame.send_host_event(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit("must not leak".into())));
+        assert_eq!(writer.store.read(&writer.checkout.id, |doc| doc.clone().save()).unwrap(), writer_before_removal);
+        assert!(handle.navigate(&mut frame, crate::desktop_navigation::Command::Select {
+            generation: handle.generation.clone(), route: chat,
+        }).is_err());
+    }
+
+    #[test]
     fn global_search_escape_preserves_selected_calculator_route_and_pan() {
         let (root, handle, _) = fixture_with_topology(|tree| {
             let strip = &mut tree.workspaces[0].strips[0];
@@ -3822,7 +3938,6 @@ mod tests {
         );
         frame.click_named("word_processor").unwrap();
         settle_external_navigation(root_ptr, &mut frame);
-        let writer_owner = frame.inspection().keyboard_focus_owner.unwrap();
         let before_heads = handle
             .records
             .borrow()
@@ -3868,8 +3983,8 @@ mod tests {
         assert!(pan > 0.0, "narrow desktop must have panned to Calculator");
         assert_eq!(
             frame.inspection().keyboard_focus_owner.as_deref(),
-            Some(writer_owner.as_str()),
-            "existing Select policy preserves the old editor owner without a new focus gesture"
+            Some(browser_semantic_route(&frame, "Calculator").0.as_str()),
+            "accepted selection must focus Calculator"
         );
 
         handle
@@ -3893,7 +4008,7 @@ mod tests {
         );
         assert_eq!(
             frame.inspection().keyboard_focus_owner.as_deref(),
-            Some(writer_owner.as_str())
+            Some(browser_semantic_route(&frame, "Calculator").0.as_str())
         );
         assert_eq!(
             handle

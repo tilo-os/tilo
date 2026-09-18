@@ -165,14 +165,7 @@ impl DesktopHandle {
             }
             Some(GlobalSearchIntent::SelectHostTarget { revision, target }) => {
                 let command = self.search.borrow().resolve(&revision, &target)?;
-                *self.navigation_result.borrow_mut() = None;
-                *self.navigation_command.borrow_mut() = Some(command);
-                frame.relayout();
-                let result = self
-                    .navigation_result
-                    .borrow_mut()
-                    .take()
-                    .ok_or("Desktop did not accept search navigation")?;
+                let result = self.navigate(frame, command);
                 self.sync_global_search(frame);
                 result.map(|_| ())
             }

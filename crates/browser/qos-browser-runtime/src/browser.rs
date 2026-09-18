@@ -1344,17 +1344,27 @@ pub fn desktop_navigation_revision(id: u64) -> Result<String, JsValue> {
     })
 }
 #[wasm_bindgen]
+pub fn desktop_input_ownership(id: u64) -> Result<String, JsValue> {
+    MOUNTS.with_borrow(|mounts| {
+        let mount = mounts.get(&id).ok_or_else(|| error("Desktop disposed"))?;
+        let desktop = mount.desktop.as_ref().ok_or_else(|| error("Desktop navigation unavailable"))?;
+        Ok(serde_json::json!({
+            "sequence": mount.frame.input_ownership_sequence().to_string(),
+            "activation": desktop.activation_sequence.get().to_string(),
+            "owner": mount.frame.inspection().keyboard_focus_owner,
+            "ime": mount.frame.frame_output().ime.map(|i| serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)})),
+        }).to_string())
+    })
+}
+
+#[wasm_bindgen]
 pub fn desktop_navigate(id: u64, command: &str) -> Result<Option<String>, JsValue> {
     let command=serde_json::from_str(command).map_err(error)?;
     MOUNTS.with_borrow_mut(|mounts| {
         let mount=mounts.get_mut(&id).ok_or_else(||error("Desktop disposed"))?;
         if mount.peer_suspended { return Err(error("Desktop unavailable while peer is suspended")); }
         let desktop=mount.desktop.clone().ok_or_else(||error("Desktop navigation unavailable"))?;
-        *desktop.navigation_result.borrow_mut()=None;
-        *desktop.navigation_command.borrow_mut()=Some(command);
-        mount.frame.relayout();
-        let result=desktop.navigation_result.borrow_mut().take().ok_or_else(||error("Desktop did not accept navigation"))?;
-        let invocation=result.map_err(error)?;
+        let invocation=desktop.navigate(&mut mount.frame, command).map_err(error)?;
         mount.pending=true; mount.window.request_redraw();
         Ok(invocation)
     })

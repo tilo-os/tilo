@@ -897,6 +897,17 @@ pub trait Widget {
     fn is_focusable(&self) -> bool {
         false
     }
+    /// Preferred control when its app is explicitly activated without a valid
+    /// saved control. Hosts still enforce visibility, enabled state and scope.
+    fn is_default_keyboard_focus(&self) -> bool { false }
+
+    /// Exact app instance whose non-text shortcuts this subtree owns when
+    /// activation has no control target. Unbound desktop chrome may declare
+    /// the active tab; component boundaries default to their captured owner.
+    fn keyboard_input_scope(&self) -> Option<crate::application::InstanceId> {
+        self.callback_binding().map(|binding| binding.instance_id)
+    }
+
     fn set_focus(&mut self, _focused: bool) {}
 
     /// An explicit runner focus request, after resolving the actual keyboard

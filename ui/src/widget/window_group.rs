@@ -1467,6 +1467,10 @@ impl WindowGroup {
 }
 
 impl Widget for WindowGroup {
+    fn keyboard_input_scope(&self) -> Option<crate::application::InstanceId> {
+        (!self.is_closing()).then(|| self.active_tab_id())
+    }
+
     fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> { self.active_host()?.primary_vertical_scroll() }
     fn apply_primary_vertical_scroll(&mut self, action: crate::widget::PrimaryScrollAction) -> crate::widget::PrimaryScrollResult {
         self.active_host_mut().map_or(crate::widget::PrimaryScrollResult::Unsupported, |host| host.apply_primary_vertical_scroll(action))
