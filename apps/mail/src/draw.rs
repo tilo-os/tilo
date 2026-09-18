@@ -2,10 +2,9 @@
 //!
 //! These are thin wrappers over the Vello scene plus the two mail-specific
 //! bits every pane needs: text elision to a pixel budget and the sender
-//! avatar. Avatars try a real remote image (a Gravatar keyed by the address)
-//! through the shared [`ui::ImageStore`]; until/unless one resolves they fall
-//! back to a coloured initials disc — a real, computed avatar, never a blank
-//! placeholder.
+//! avatar. Avatars try a remote image (a Gravatar keyed by the address)
+//! through the shared [`ui::ImageStore`]; until one resolves they fall back to
+//! a coloured initials disc.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};

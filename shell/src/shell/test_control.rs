@@ -776,7 +776,7 @@ fn state_dump<S: ControlState>(state: &S) -> (Response, Vec<PlannedAction>) {
     )
 }
 
-/// [`Command::Grant`]: grant a capability through the real authority check.
+/// [`Command::Grant`]: grant a capability through the authority check.
 fn grant<S: ControlState>(
     state: &S,
     subject: &str,
@@ -793,7 +793,7 @@ fn grant<S: ControlState>(
     )
 }
 
-/// [`Command::CheckAction`]: ask the real authority check whether `actor` may invoke the action.
+/// [`Command::CheckAction`]: ask the authority check whether `actor` may invoke the action.
 fn check_action<S: ControlState>(
     state: &S,
     actor: &str,

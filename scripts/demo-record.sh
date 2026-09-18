@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Record a three-pane 1920x1080 demo video of the tilo shell.
 #
-# Two sources, because they have genuinely different capabilities:
+# Two sources provide different capabilities:
 #
 #   --source composed  (default)  Three `shots --mode recording` streams at
 #       exactly 640x1080 each, hstacked to 1920x1080. Geometry is exact and

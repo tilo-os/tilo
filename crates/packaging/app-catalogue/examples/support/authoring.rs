@@ -4,7 +4,7 @@
 //! it to its contract. Lives under `examples/support/` (a dev-only
 //! dependency set) so the packer doesn't ship inside `tilo-catalogue`.
 //!
-//! The manifest decides real launch behaviour — `[sandbox.services]`
+//! The manifest decides launch behaviour — `[sandbox.services]`
 //! (which service descriptors the launcher hands the app; no `collab`
 //! entry means collaboration silently doesn't work), the runtime
 //! bundle, sandbox namespaces, the entrypoint binary. A registry
@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use pkg::pack::{SigningIdentity, pack};
 use pkg::{Manifest, MemoryBlobStore};
 
-/// Where the manifest that got packed came from, printed so a log says which app was actually published.
+/// Where the manifest that got packed came from, so a log identifies the published app.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManifestSource {
     /// Taken from the package the payload belongs to.
@@ -92,7 +92,7 @@ pub fn manifest_beside(payload_bin: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Pack `payload_bin` into a real, signed `.qpkg`.
+/// Pack `payload_bin` into a signed `.qpkg`.
 ///
 /// `manifest_path` overrides the search; `None` looks beside the
 /// payload via [`manifest_beside`] and synthesises only if that finds nothing.

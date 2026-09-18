@@ -62,8 +62,8 @@
 //! The UI drives it from a **worker thread** (see
 //! [`crate::installer_app`]), pumping each line back through the winit
 //! `EventLoopProxy` as a `ui::UserEvent::External`, so the event loop stays
-//! responsive and the status log animates live. [`stream_command`] is the
-//! reusable seam both the real backend and test stubs run through.
+//! responsive and the status log updates live. [`stream_command`] is the
+//! reusable seam shared by the backend and test stubs.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::process::CommandExt as _;
@@ -453,7 +453,7 @@ pub fn run_alongside_preflight<F: FnMut(String)>(
 /// the argv or a tty.
 ///
 /// Separated from [`run_install`] so tests can drive it with a stub
-/// command (e.g. `sh -c`) without the real backend present.
+/// command (e.g. `sh -c`) without the backend present.
 ///
 /// # Errors
 ///
@@ -548,7 +548,7 @@ pub fn stream_command<F: FnMut(String)>(
     Ok(status.success())
 }
 
-/// Run the real `tilo-install` backend for `disk` + `user` + `opts`, feeding
+/// Run the `tilo-install` backend for `disk` + `user` + `opts`, feeding
 /// `password` (and, when a disk passphrase is set, that secret as a second
 /// stdin line) and relaying every output line to `on_line`.
 ///

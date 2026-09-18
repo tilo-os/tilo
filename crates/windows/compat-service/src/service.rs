@@ -74,7 +74,7 @@ pub struct VmInventory {
 }
 
 /// The inspected, digest-bound package metadata passed to the singleton VM.
-/// It deliberately has neither a host path nor an installer command line.
+/// It contains neither a host path nor an installer command line.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VmInstallerInput {
     pub source_name: String,

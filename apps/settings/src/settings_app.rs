@@ -1104,8 +1104,8 @@ impl SettingsApp {
 
     /// Report a synchronously applied local setting through the same
     /// accepted/polled lifecycle used by longer device commands. The action is
-    /// never written to the CRDT: completion proves the local backend save or
-    /// system-service call actually succeeded.
+    /// never written to the CRDT: completion reports whether the local backend
+    /// save or system-service call succeeded.
     fn complete_immediate_local_operation(
         &mut self,
         type_id: &str,

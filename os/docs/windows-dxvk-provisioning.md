@@ -96,7 +96,7 @@ passed the portable generated Wine32 namespace in 30.23 seconds and Wine64 in
 and verifies that lease destruction still releases its lock; the independent
 shared-lease regression verifies that another launch continues to prevent an
 upgrade.
-Real Wine 11.0 initialization confirmed the expected `system.reg`, `user.reg`,
+Wine 11.0 initialization confirmed the expected `system.reg`, `user.reg`,
 and `userdef.reg` architecture headers for both modes.
 Controlled Wineboot tests confirmed that builtin-only selection ignored a native
 substitute in the initialized prefix, including one forged with a `Wine builtin
@@ -114,7 +114,7 @@ without the previous unavailable-working-directory warning. The descendant
 cleanup helper subsequently passed portable Wine32 in 30.55 seconds and Wine64
 in 50.26 seconds, also without that warning. These are end-to-end fresh-prefix
 console-test times, not isolated
-DXVK provisioning overhead measurements. Each test required a real Windows
+DXVK provisioning overhead measurements. Each test required a Windows
 file marker and retained the generated offline namespace and JIT syscall
 filter. These fixtures omit the executable Landlock shim on the WSL kernel;
 they do not establish full qOS-kernel sandbox acceptance.

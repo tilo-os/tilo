@@ -1,30 +1,14 @@
-//! The real decode backend: a GStreamer pipeline that prefers hardware.
-//!
-//! # What changed and why
-//!
-//! The previous pipeline was `playbin` with a video sink of
-//! `videoconvert ! appsink caps=video/x-raw,format=RGBA`. That caps filter is
-//! the expensive part: it *forces* every picture into system-memory RGBA, so a
-//! hardware decoder's GPU-resident output is dragged back across the bus and
-//! colour-converted on the CPU before anyone has said they want it. Scrubbing
-//! then issued a flushing `KEY_UNIT` seek per drawn frame and blipped the
-//! pipeline through `PLAYING` to force a frame out, which both landed on the
-//! nearest keyframe (up to a GOP away from the requested time) and fired a few
-//! milliseconds of audio each time.
-//!
-//! This backend instead:
+//! GStreamer decode backend. It:
 //!
 //! * ranks hardware decoders above software ones ([`crate::hw`]) and lets
-//!   `playbin3` autoplug, then **records the element that was actually
-//!   plugged** so hardware decode is an observation, not a claim;
+//!   `playbin3` autoplug, then records the selected element;
 //! * negotiates the best memory the consumer declared it can take —
 //!   `memory:DMABuf` first, then planar system memory, and only RGBA when the
 //!   consumer says that is all it can paint;
 //! * seeks with `ACCURATE` and reads the **preroll** sample while the pipeline
 //!   stays in `PAUSED`, so scrubbing lands on the requested frame and never
 //!   starts the audio sink;
-//! * runs real clock-driven playback when asked to play, rather than
-//!   simulating a playhead.
+//! * runs clock-driven playback when asked to play.
 
 use std::collections::VecDeque;
 use std::str::FromStr;
@@ -839,8 +823,7 @@ impl GstState {
         self.latest = Some(frame);
     }
 
-    /// Record the caps the sink negotiated — the proof of which memory the
-    /// frames actually arrive in.
+    /// Record the caps the sink negotiated, which describe the frame memory.
     fn record_caps(&self, sample: &gst::Sample) {
         if let Some(caps) = sample.caps()
             && let Ok(mut o) = self.observed.lock()
@@ -1282,8 +1265,8 @@ mod tests {
         // the sign as magnitude — what `stride as usize` does — turns -4096
         // into 18 446 744 073 709 547 520, which sails past a `stride < row`
         // check and then indexes billions of bytes off the end of the buffer.
-        // This repacker only walks rows forward, so the honest answer is that
-        // it cannot describe the frame.
+        // This repacker only walks rows forward, so it cannot describe the
+        // frame.
         assert_eq!(
             packed_row_geometry(64, 4, -256, 4096),
             None,

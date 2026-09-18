@@ -7,8 +7,7 @@
 //! so a consumer can render a buffering percentage.
 //!
 //! For a [`crate::Source::Workspace`] the reader is the FUSE mount, so
-//! prefetching is what pulls the content down on demand — the buffering
-//! percentage is genuine hydration progress, not a fake timer.
+//! prefetching pulls content down on demand and reports its progress.
 
 use std::collections::VecDeque;
 use std::io::Read;
@@ -95,7 +94,7 @@ impl PrefetchProgress {
         self.done.load(Ordering::Relaxed)
     }
 
-    /// Buffering percentage 0..=100. With a known total it is genuine progress;
+    /// Buffering percentage 0..=100. With a known total it is read progress;
     /// without one it reports 100 as soon as the read completes, else 0.
     pub fn percent(&self) -> u8 {
         match self.total {

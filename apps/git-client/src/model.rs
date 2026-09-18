@@ -7,9 +7,9 @@
 //! tags, stashes, remotes).
 //!
 //! The model is deliberately decoupled from `git2`: the [`crate::repo`]
-//! backend fills it from a real on-disk repository, and
+//! backend fills it from an on-disk repository, and
 //! [`RepoModel::sample`] fills it from a bundled fixture so the headless
-//! screenshot renders a populated, realistic state with no repository
+//! screenshot renders a populated state with no repository
 //! present. Nothing in this file performs IO.
 
 /// Where a changed file sits relative to the index.

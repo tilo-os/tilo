@@ -308,7 +308,7 @@ fn every_advertised_format_is_one_the_compositor_can_composite() {
         let fourcc = Fourcc::try_from(entry.fourcc)
             .unwrap_or_else(|_| panic!("advertised an unrecognised FourCC 0x{:08x}", entry.fourcc));
         // Single-plane RGBA under LINEAR is the whole importable set — see
-        // `foreign::validate_importable`, the gate a real client buffer passes.
+        // `foreign::validate_importable`, the gate a client buffer passes.
         assert!(
             matches!(
                 fourcc,

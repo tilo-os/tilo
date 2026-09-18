@@ -61,9 +61,8 @@ pub fn app_root() -> Box<dyn Widget> {
 pub fn app_root_for_shot(width: u32) -> Box<dyn Widget> {
     // Optional scenario for the capture (sidebar menu, narrow scroll, font
     // change), selected via the `TILO_THEMES_SHOT` env var so a single binary
-    // renders every review still. `live` captures the honest live default (the
-    // presets-only catalog, no fabricated custom theme); every other scenario
-    // uses the seeded demo catalog so the customizer shows real editing.
+    // renders every review still. `live` captures the presets-only catalog;
+    // every other scenario uses the seeded demo catalog.
     let scenario = std::env::var("TILO_THEMES_SHOT").unwrap_or_default();
     let mut app = if scenario == "live" {
         ThemesApp::new()

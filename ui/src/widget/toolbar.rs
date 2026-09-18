@@ -194,7 +194,7 @@ impl Toolbar {
             n = n.saturating_add(1);
         }
         // Collapsing everything leaves a toolbar that is only a `…` chip —
-        // honest for a genuinely tiny strip, but never collapse when the
+        // usable for a tiny strip, but never collapse when the
         // items would have fit without the chip's own reservation.
         self.visible_count = n.min(self.items.len().saturating_sub(1));
     }

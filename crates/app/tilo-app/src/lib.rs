@@ -1,23 +1,15 @@
-//! The complete Tilo application SDK.
+//! The Tilo application SDK. It re-exports the rendering toolkit and provides
+//! the stable boundary for resource, action, collaboration, history and
+//! accessibility contracts.
 //!
-//! This crate is deliberately a superset, not a restrictive wrapper around
-//! the rendering toolkit. Applications retain every layout, widget, canvas,
-//! native-view and custom-painting capability exported by `ui-core`; this is
-//! simply the stable application boundary where Tilo can require the resource,
-//! action, collaboration, history and accessibility contracts that turn a
-//! graphical process into an OS-native application.
-//!
-//! Application manifests normally rename this package to `ui`, so existing
-//! and generated source continues to use the concise `ui::...` vocabulary:
+//! Application manifests normally rename this package to `ui`:
 //!
 //! ```toml
 //! ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }
 //! ```
 //!
-//! Shell/framework internals may depend on the lower `ui` package directly.
-//! Ordinary applications should not: keeping this facade as capable as the
-//! core means choosing the native route costs no visual or compositional
-//! freedom, while giving tooling one machine-checkable dependency boundary.
+//! Shell and framework internals may depend on the lower `ui` package directly;
+//! ordinary applications should use this facade.
 
 pub use ui_core::*;
 

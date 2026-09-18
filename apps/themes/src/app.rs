@@ -124,9 +124,8 @@ pub struct ThemesApp {
     structure_dirty: bool,
 
     /// Framework-owned action dispatch: brackets the undo boundary, encodes and
-    /// dispatches each Themes action, and remembers the last one so an integration
-    /// test can prove a button built the same [`EncodedAction`] its Ctrl+K
-    /// [`ActionSpec`] does.
+    /// dispatches each Themes action, and remembers the last one for parity with
+    /// the Ctrl+K [`ActionSpec`].
     actions: ui::ActionHost,
 
     /// Theme id accepted through the canonical external-operation route. It is
@@ -160,7 +159,7 @@ struct ShotSeed {
     select: Option<String>,
     /// Open the sidebar actions menu on the selected row for a shot.
     menu: bool,
-    /// Scroll the narrow stack partway so the shot proves it scrolls.
+    /// Scroll the narrow stack partway for the screenshot.
     scroll: bool,
     /// When set, first-run seeding uses the demo catalog (presets + one
     /// editable custom theme) instead of the live presets-only default — for
@@ -262,7 +261,7 @@ impl ThemesApp {
     ///
     /// * `""`      — default: docked (wide) or the revealed overlay flap (narrow).
     /// * `"menu"`  — open the sidebar actions menu on the selected custom row.
-    /// * `"scroll"`— narrow, flap closed, scrolled partway to prove the stack scrolls.
+    /// * `"scroll"`— narrow, flap closed, scrolled partway.
     /// * `"font"`  — select a preset with a distinctive (monospace) font so the
     ///   preview specimen visibly renders in it.
     pub fn seed_shot(&mut self, width: f64, scenario: &str) {
@@ -525,10 +524,8 @@ impl ThemesApp {
         self.structure_dirty = true;
     }
 
-    /// The last action an affordance dispatched through [`Self::perform_action`],
-    /// so an integration test can prove a button built the byte-identical
-    /// [`EncodedAction`] its Ctrl+K [`ActionSpec`] exports. Rising state — it is
-    /// the most recent dispatch, not cleared on read.
+    /// The last action an affordance dispatched through [`Self::perform_action`].
+    /// Rising state: it is the most recent dispatch, not cleared on read.
     pub fn last_dispatched(&self) -> Option<&EncodedAction> {
         self.actions.last_dispatched()
     }

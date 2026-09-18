@@ -1,8 +1,8 @@
 //! Classifying a file by extension into a coarse category.
 //!
-//! Two jobs: decide **whether a real preview is worth attempting** (an image,
+//! Two jobs: decide **whether a rendered preview is available** (an image,
 //! PDF, ebook or video can be rendered; a `.zip` cannot), and give a client a
-//! stable category to draw an honest **type badge** for everything else. The
+//! stable category to draw a **type badge** for everything else. The
 //! badge is drawn by the UI in the current theme — this crate only classifies,
 //! it never bakes a colour or glyph in.
 
@@ -41,8 +41,8 @@ pub enum FileCategory {
 }
 
 impl FileCategory {
-    /// Whether the generator can produce a **real** rendered preview for this
-    /// category (as opposed to only a type badge). This is what the service
+    /// Whether the generator can produce a rendered preview for this category
+    /// (as opposed to only a type badge). This is what the service
     /// checks before it bothers reading and decoding the source bytes.
     pub fn has_preview(self) -> bool {
         matches!(

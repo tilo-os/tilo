@@ -549,7 +549,7 @@ impl ViewportState {
 
     /// Reduce an arrow-key press into a pan / zoom action. Returns `true` if
     /// the key was consumed. Mapping:
-    ///   * arrows → pan by [`DEFAULT_PAN_STEP`] in the obvious direction;
+    ///   * arrows → pan by [`DEFAULT_PAN_STEP`] in the corresponding direction;
     ///   * Ctrl+`+`/`=` → zoom in (centre); Ctrl+`-` → zoom out (centre);
     ///   * Ctrl+`0` → [`Self::reset_to_fit`].
     ///

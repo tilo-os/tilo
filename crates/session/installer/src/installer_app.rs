@@ -1,16 +1,14 @@
 //! [`InstallerApp`] — the root installer widget + wizard state machine.
 //!
-//! Structured like the greeter (the verified `ui`-app-under-cage
-//! template): a thin root widget owning a single composed child (a
+//! Structured like the greeter: a root widget owning a single composed child (a
 //! [`Card`]) and delegating the five `Widget` passes into it.
 //!
-//! IMPORTANT (focus): the App discovers focusable widgets by walking the
+//! Focus handling: the App discovers focusable widgets by walking the
 //! widget tree (`Widget::children`) in lock-step with the taffy tree.
 //! Any intermediate taffy node MUST have a matching widget in
 //! `children()`, or the recursion derails and inputs never enter
-//! `focusable_order` — breaking Tab / arrow navigation. That's why the
-//! card is a real [`Card`] widget (not a bare taffy node) and the
-//! two-button rows are real `ui::Row`s: the widget tree mirrors the
+//! `focusable_order` — breaking Tab / arrow navigation. The card is a
+//! [`Card`] widget and the two-button rows are `ui::Row`s, so the widget tree mirrors the
 //! taffy tree exactly.
 //!
 //! Keyboard-focus continuity across the per-step rebuild is handled by

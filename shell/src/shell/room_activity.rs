@@ -1913,7 +1913,7 @@ impl RoomActivityPane {
         self.install_rows(rows);
     }
 
-    /// Build each replay checkpoint from the real causal document state.
+    /// Build each replay checkpoint from the causal document state.
     /// Recent frames are bounded so a room with years of edits still opens
     /// immediately; every retained frame remains an exact Automerge fork.
     fn rebuild_replay_frames(

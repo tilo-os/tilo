@@ -18,12 +18,11 @@ use crate::format::CodecError;
 use std::io::{Cursor, Read};
 use zip::ZipArchive;
 
-/// Bounds applied when reading an untrusted office ZIP. Defaults are generous for
-/// real documents (comfortably fits a book-length `.docx` with embedded images)
-/// while turning a decompression bomb into a fast, bounded rejection.
+/// Bounds applied when reading an untrusted office ZIP. The defaults allow
+/// large documents while keeping decompression bounded.
 #[derive(Debug, Clone, Copy)]
 pub struct ZipLimits {
-    /// Maximum number of file entries — real packages have a few dozen; thousands is already pathological.
+    /// Maximum number of file entries.
     pub max_parts: usize,
     pub max_part_bytes: u64,
     pub max_total_bytes: u64,
@@ -71,7 +70,8 @@ pub fn read_zip_parts(
             continue;
         }
         // Fast path: reject on the entry's *declared* uncompressed size before inflating
-        // anything — an honest bomb is rejected here without allocating the payload.
+        // anything — an entry over the declared limit is rejected before the
+        // payload is allocated.
         let declared = f.size();
         if declared > limits.max_part_bytes {
             return Err(CodecError::Parse(format!(
@@ -129,8 +129,8 @@ fn is_xml_part(name: &str) -> bool {
 /// scanned case-insensitively. Only the head is examined — a DTD is legal solely
 /// in the prolog, so a match past a generous prefix can't be an active DTD.
 pub fn contains_dtd(bytes: &[u8]) -> bool {
-    // A DTD must appear before the root element; 64 KiB of prolog is far more
-    // than any real document uses, and caps the scan cost.
+    // A DTD must appear before the root element; scanning 64 KiB covers the
+    // prolog while bounding the scan cost.
     let head = bytes.get(..bytes.len().min(64 * 1024)).unwrap_or(bytes);
     contains_ci(head, b"<!doctype") || contains_ci(head, b"<!entity")
 }

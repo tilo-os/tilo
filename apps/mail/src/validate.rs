@@ -1,11 +1,10 @@
-//! Account **test-before-save**: before an account is persisted, its
-//! credentials are actually exercised — an IMAP login and an SMTP handshake —
-//! and the account is only saved if both succeed. A specific error is surfaced
-//! otherwise.
+//! Account **test-before-save**: before an account is persisted, the app
+//! performs an IMAP login and an SMTP handshake, and saves it only if both
+//! succeed. A specific error is surfaced otherwise.
 //!
 //! ## Injectable transport
 //! The check runs through the [`ProbeTransport`] trait, so the state machine is
-//! testable without a network: a mock returns canned success/failure. The real
+//! testable without a network: a mock returns canned success/failure. The
 //! network probe ([`LiveProbe`]) is compiled only under `live`. The default
 //! (offline) build uses [`OfflineProbe`], which reports success without opening
 //! a socket so `--shots` and the headless tests can still save an account.

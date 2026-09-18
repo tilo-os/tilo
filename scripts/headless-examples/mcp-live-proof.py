@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Drive a live compositor the way a language model does: over MCP.
 
-`action-api-demo.py` proves the socket. This proves the layer a model
-actually speaks to — `scripts/tilo-mcp-server.py` — against a real
-compositor, over real MCP stdio framing, with no fixture anywhere in the
-path.
+`action-api-demo.py` exercises the socket. This exercises the layer a model
+speaks to — `scripts/tilo-mcp-server.py` — against a compositor over MCP
+stdio framing, without fixtures.
 
 What it checks, in order:
 
@@ -15,7 +14,7 @@ What it checks, in order:
      nested beneath them. The full catalogue never lands in the model's
      initial context, and the tree follows the ownership apps already publish.
   4. `tilo_enumerate_actions` can still search the live surface explicitly.
-  5. `tilo_invoke_action` moves real state — read back with an
+  5. `tilo_invoke_action` moves state — read back with an
      independent `state_dump`, not from the tool's own reply.
   6. A refusal reaches the model as `isError: true` carrying the
      compositor's own code, rather than being smoothed into a success.

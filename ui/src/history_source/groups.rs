@@ -67,7 +67,7 @@ pub fn read_named_ranges(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<Nam
         let by = str_at(doc, &rec, "by");
         // `filter` above guarantees `ms > 0` by the time the cast below runs,
         // so the conversion never loses a sign; `checked_add` only guards
-        // the (unreachable for a real timestamp) case of overflowing
+        // the (unreachable for an out-of-range timestamp) case of overflowing
         // `SystemTime`'s own representation.
         let created = int_at(doc, &rec, "at")
             .filter(|ms| *ms > 0)
@@ -269,7 +269,7 @@ fn str_at_record(doc: &AutoCommit, record_id: &str, field: &str) -> Option<Strin
 /// True when every patch in `patches` lands inside the named-range map — used
 /// by the producer to keep naming out of the row list. An empty patch set is
 /// **not** a marker: a change that did nothing visible is still a change, and
-/// hiding it would be a different (and dishonest) behaviour.
+/// hiding it would be incorrect behaviour.
 pub fn is_group_marker(patches: &[automerge::Patch]) -> bool {
     !patches.is_empty()
         && patches.iter().all(|p| match p.path.first() {
@@ -523,7 +523,7 @@ mod tests {
         assert!(!patches.is_empty());
         assert!(is_group_marker(&patches), "got {patches:?}");
 
-        // A real edit is not a marker, even a small one.
+        // An edit is not a marker, even a small one.
         let before = doc.get_heads();
         doc.put(automerge::ROOT, "content", "hello there").unwrap();
         doc.commit();

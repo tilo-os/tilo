@@ -1,9 +1,9 @@
 //! The bundled offline sample library.
 //!
 //! Shipping a populated catalog means the `--shots` screenshot (and a
-//! first-run with no synced devices) shows a real, browsable library and a
-//! now-playing track instead of an empty shell. Every track carries a
-//! synthetic `yt_id`; the real streaming path ([`crate::backend`]) would
+//! first-run with no synced devices) shows a browsable library and a
+//! now-playing track. Every track carries a synthetic `yt_id`; the streaming
+//! path ([`crate::backend`]) would
 //! replace these with live YouTube-Music ids resolved from a search.
 
 use crate::model::{Album, Artist, Library, Playback, Playlist, RepeatMode, Track};

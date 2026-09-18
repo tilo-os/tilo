@@ -1,9 +1,9 @@
 name: CI / fast quality
 
 # Compilation-heavy warnings, Clippy, docs, and release-size gates run weekly.
-# This path stays intentionally cheap so it can run on every change.
+# This path runs on every change.
 on:
-  # Give every branch a cheap signal before it opens or updates a PR.
+  # Run on every branch before it opens or updates a PR.
   push: {}
   pull_request:
     branches: ["main"]

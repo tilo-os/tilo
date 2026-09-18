@@ -2557,7 +2557,7 @@ mod one_person_one_pointer_tests {
         assert!(!ctx.remote_cursors[0].painted_by_window());
     }
 
-    /// A pointer genuinely inside a window's content is still that window's
+    /// A pointer inside a window's content is still that window's
     /// to paint — the relay dialect and hosted backend have no overlay above
     /// them, so swallowing every scope would leave those peers invisible.
     #[test]

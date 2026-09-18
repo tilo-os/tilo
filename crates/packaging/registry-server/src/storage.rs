@@ -19,12 +19,12 @@
 //!         <urlencoded-pkg-id>.json   # entries removed from public visibility
 //! ```
 //!
-//! Writes go through atomic rename (`.tmp` → real path) so a
+//! Writes go through atomic rename (`.tmp` → target path) so a
 //! crash mid-write cannot leave a torn file.
 //!
 //! The store is read-locked with `tokio::sync::RwLock` at the
-//! server layer; this module deliberately owns no concurrency —
-//! it's a thin path/serde wrapper.
+//! server layer; this module owns no concurrency — it's a thin
+//! path/serde wrapper.
 
 use std::path::{Path, PathBuf};
 

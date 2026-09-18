@@ -1,16 +1,12 @@
-//! Hardware decoder discovery, ranking, and the record of what actually ran.
+//! Hardware decoder discovery, ranking, and reporting.
 //!
 //! Autoplugging picks a decoder by *rank*, and distributions do not agree on
-//! what a hardware decoder should be ranked. Fedora's `va` elements ship at
-//! `primary+1`; on other builds the same elements sit at `NONE` and never get
-//! chosen no matter how capable the GPU is. So rather than hoping, this module
-//! states a policy: raise every hardware decoder above the software ones, and
-//! then *observe and report* which element the pipeline actually plugged.
+//! what rank a hardware decoder should receive. This module raises hardware
+//! decoders above software ones according to policy and reports the element
+//! selected by the pipeline.
 //!
-//! Observation is the point. "Hardware decode is enabled" is not a claim this
-//! crate makes from configuration — [`HwReport`] is filled in from the element
-//! `GStreamer` instantiated, so a consumer (and a test) can assert on the real
-//! decoder by name.
+//! [`HwReport`] is filled from the element instantiated by `GStreamer`, rather
+//! than from configuration.
 //!
 //! `TILO_MEDIA_HWDEC` overrides the policy:
 //!
@@ -147,8 +143,7 @@ impl HwPolicy {
     }
 }
 
-/// What the pipeline actually did — filled in from the elements `GStreamer`
-/// instantiated, never from configuration.
+/// What the pipeline did, filled from the elements `GStreamer` instantiated.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HwReport {
     /// The video decoder element's name, e.g. `nvh264dec0`, `vah264dec0`,
@@ -156,7 +151,7 @@ pub struct HwReport {
     pub decoder_element: Option<String>,
     /// The decoder's family, classified from its name.
     pub decoder_kind: Option<DecoderKind>,
-    /// The caps the video sink negotiated, verbatim — the proof of which
+    /// The caps the video sink negotiated, verbatim, describing which
     /// memory the frames arrive in (`memory:DMABuf`, `memory:CUDAMemory`, or
     /// plain system memory).
     pub negotiated_caps: Option<String>,

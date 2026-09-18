@@ -2,7 +2,7 @@
 //!
 //! Starting a partitioning and encrypted-filesystem operation with an almost
 //! empty, actively discharging battery is avoidable risk.  This module keeps
-//! the decision deliberately narrow: desktops, VMs, unreadable firmware, and
+//! the decision narrow: desktops, VMs, unreadable firmware, and
 //! a charging laptop all proceed.  Only a definitive low-and-discharging
 //! reading asks the person to connect power before destructive work begins.
 

@@ -327,8 +327,8 @@ impl Session {
 }
 
 /// Give a fresh guest home the dotfiles that make a shell usable.
-/// Deliberately minimal and not a copy of the user's own: the home is
-/// write-isolated by default, and seeding from the real one would undo that.
+/// Minimal home contents for the guest. The home is write-isolated by default,
+/// so it is not seeded from the user's home directory.
 #[allow(
     clippy::literal_string_with_formatting_args,
     reason = "the `${VAR}` below is shell syntax in the .bashrc content, not a Rust format placeholder"

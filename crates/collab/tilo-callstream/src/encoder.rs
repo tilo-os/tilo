@@ -70,7 +70,7 @@ pub struct H264Encoder {
 
 impl H264Encoder {
     /// Builds an encoder targeting `width × height` at `fps` frames per second.
-    /// `fps` is advisory (rate-control bookkeeping); real cadence is enforced
+    /// `fps` is advisory (rate-control bookkeeping); cadence is enforced
     /// by the caller via wall-clock throttling in [`crate::throttle`].
     ///
     /// # Errors
@@ -84,7 +84,7 @@ impl H264Encoder {
     /// Constructs with an explicit target bitrate (bits per second).
     ///
     /// `enable_skip_frame = false` (openh264 defaults `true`) keeps the frame
-    /// budget honest — skip-frames on would drop frames under low-bitrate,
+    /// budget — skip-frames on would drop frames under low-bitrate,
     /// high-fps load and ship empty NALs the receiver can't decode. Drop
     /// policy belongs to the transport substrate ([`crate::stream`]).
     ///

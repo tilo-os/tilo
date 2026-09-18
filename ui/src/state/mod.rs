@@ -312,7 +312,7 @@ impl UndoLog {
     }
 
     /// Commit `doc`'s open transaction and push an entry bracketing it.
-    /// Returns `true` iff this actually committed a change (there were pending
+    /// Returns `true` iff this committed a change (there were pending
     /// ops). `false` means the transaction was empty — the caller can then skip
     /// any persistence / broadcast work, since the document is byte-identical to
     /// before. This is what lets an ephemeral, non-document interaction (a text
@@ -889,7 +889,7 @@ impl State {
 
     /// Commit the current transaction and push a change-based undo entry,
     /// attributing it to `author` so multi-user undo can isolate users. Returns
-    /// `true` iff a change was actually committed (see the [`UndoLog`] method).
+    /// `true` iff a change was committed (see the [`UndoLog`] method).
     pub fn commit_action_authored(
         &mut self,
         focused_node_idx: Option<usize>,
@@ -1964,7 +1964,7 @@ mod tests {
         assert!(state.can_undo_as(None));
     }
 
-    /// The status a widget receives describes the change that is really on the
+    /// The status a widget receives describes the change that is on the
     /// stack, through the same producer the history pane uses.
     #[test]
     fn undo_status_describes_the_action_on_the_stack() {

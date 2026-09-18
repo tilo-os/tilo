@@ -15,13 +15,13 @@
 # pre-release crypto stack in Cargo.lock, needs a container full of native
 # -devel packages, and takes tens of minutes — none of which belongs inside
 # rpmbuild. dist/rpm/build-rpm.sh runs the cargo build and hands the results
-# here as a tarball, and refuses to package anything it did not just build.
+# here as a tarball, and refuses to package anything it did not build.
 
 %global tilo_summary Tilo compositor as a Wayland session
 %{!?tilo_version:%global tilo_version 0.1.9}
 
 # The payload is already built and stripped; there is no source to extract
-# debug symbols from, and an empty -debuginfo subpackage would just fail the
+# debug symbols from, and an empty -debuginfo subpackage would fail the
 # build.
 %global debug_package %{nil}
 
@@ -259,7 +259,7 @@ test ! -e %{buildroot}%{_datadir}/dbus-1/services/org.freedesktop.impl.portal.de
 test ! -e %{buildroot}%{_userunitdir}/tilo-portal.service
 # Tilo Settings is launched from Quick Settings. A package that leaves its
 # system registry empty regresses that click into a "no longer installed"
-# notification, so prove the real app and signed runtime are present.
+# notification, so verify the app and signed runtime are present.
 test -s %{buildroot}%{_datadir}/tilo-apps/registry.toml
 grep -q '^id = "dev.tilo.settings"$' %{buildroot}%{_datadir}/tilo-apps/registry.toml
 grep -q '^payload_root = "/usr/lib/tilo-apps/' %{buildroot}%{_datadir}/tilo-apps/registry.toml

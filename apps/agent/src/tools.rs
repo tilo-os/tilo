@@ -1,27 +1,9 @@
 //! What the agent can be *asked*: named tools over the room's own surface.
 //!
-//! The decision — which exported operation answers an instruction — used to
-//! be made from a single flat list: every operation every open app exported,
-//! plus the editorial changes, plus one "open" entry per app that was not
-//! open, all pasted into one turn and the answer pinned to an enum of all of
-//! it, capped at a hundred and twenty.
-//!
-//! It worked, and the shape of it is what a run of failures had in common:
-//!
-//! * "What may be named" and "what fits in one message" were the **same
-//!   quantity**. Past the cap an operation could not be named at all, so a
-//!   folder of a thousand files spent the whole budget on renames and put
-//!   the rest of the room out of reach.
-//! * A prompted operation's own words were one clause of one line among a
-//!   hundred and twenty, and its own example went with them.
-//! * What an application says about a resource **with no operation on it**
-//!   was dropped entirely — a flat survey walks past a resource that
-//!   publishes a fact (a photograph's pixel size, say) but exports nothing.
-//!
-//! None of that is fixed by a longer list. What they share is that discovery
-//! was something the agent had to have been *handed*, whole, in advance of
-//! knowing what it was looking for. So this module makes it something the
-//! agent **asks for**:
+//! Discovery is queried through separate tools instead of a single flat list.
+//! This keeps the set of operations independent from response size, preserves
+//! operation details and examples, and includes resources that publish facts
+//! without actions. The agent asks for the scope it needs:
 //!
 //! | Tool | The question it answers |
 //! |---|---|

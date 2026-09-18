@@ -1,4 +1,4 @@
-//! The package-manager lifecycle, end to end, against the real binary.
+//! End-to-end package-manager lifecycle through the binary.
 //!
 //! install → list → verify → update → uninstall, plus the two things
 //! that make it a package manager rather than an unpacker: it knows
@@ -6,9 +6,8 @@
 //! publisher's files from the user's data.
 //!
 //! Every test drives `tilo-install` as a subprocess with `XDG_DATA_HOME`
-//! and `XDG_CONFIG_HOME` pointed at a tempdir, so nothing here touches
-//! the developer's real installs — and so what is asserted is the
-//! production code path, not a library call that resembles it.
+//! and `XDG_CONFIG_HOME` pointed at a tempdir, isolating the test data while
+//! exercising the command's install path.
 
 #![allow(
     clippy::unwrap_used,

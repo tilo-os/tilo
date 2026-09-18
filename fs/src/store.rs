@@ -42,7 +42,7 @@ const OWNED_TAG_MIGRATION_MARKER_CONTENTS: &[u8] = b"tilo-owned-blob-tags-v1\n";
 
 /// Persistent stores sweep unreferenced blobs periodically. Explicit eviction
 /// does not wait for this interval; callers observe the queue to learn when a
-/// sweep has actually removed every requested hash.
+/// sweep has removed every requested hash.
 pub const DEFAULT_BLOB_GC_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -4,8 +4,8 @@
 //! per strip — deciding where a new window lands, what a scoped search
 //! narrows to, and which tab takes the next keystroke. In a strip of
 //! non-overlapping windows there is no z-order to read focus from, so
-//! `ShellOverlayHost::mark_focused_group` derives it, running from
-//! `Widget::update` — the real per-frame path these tests drive:
+//! `ShellOverlayHost::mark_focused_group` derives it from `Widget::update`,
+//! the per-frame path these tests drive:
 //!
 //!   1. The group the tree names is the group that reports focus.
 //!   2. Exactly one group across every strip reports it.

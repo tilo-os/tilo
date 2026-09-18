@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Keep Tilo applications on the resource/action application model.
+"""Audit Tilo applications' resource/action model.
 
 Every graphical app must publish its current resources from the widget tree and
 describe its operations with ``ActionSpec``. The headless agent is the one
 application-model consumer: it surveys peer resources and invokes their action
-descriptors. This cheap source-boundary check makes a new bespoke command bus or
-an app with no OS-visible surface fail presubmit instead of silently forking the
-platform again. Source rules are a zero-tolerance boundary check; the runtime
-``--native-audit`` proves the live accessibility/resource/control inventory.
+descriptors. Source rules reject bespoke command buses and applications without
+an OS-visible surface; the runtime ``--native-audit`` verifies the live
+accessibility/resource/control inventory.
 """
 
 from __future__ import annotations
@@ -67,8 +66,8 @@ FRAMEWORK_RESOURCE_SEARCH_INSTALL = re.compile(
     r"providers\s*\.\s*push\s*\(\s*Box\s*::\s*new\s*\(\s*open_resources\s*\)"
 )
 # Exception keys are `apps/<app>/src/<file>.rs::ProviderType`. Keep this empty
-# by default: adding one is an explicit, reviewable acknowledgement that the
-# corpus is intrinsically tiny and inheriting the unbounded fallback is safe.
+# by default: adding one records that the corpus is bounded and the unbounded
+# fallback is safe for that provider.
 SEARCH_LIMIT_EXEMPTIONS: dict[str, str] = {}
 
 # Reviewed exceptions for providers that discard a durable tail before querying
@@ -79,9 +78,8 @@ TRUNCATING_SEARCH = re.compile(
     r"\.take\s*\(\s*DEFAULT_SEARCH_INDEX_LIMIT(?:\s*\.\s*saturating_sub\s*\([^)]*\))?\s*\)"
 )
 
-# These do not prove that a callback is wrong. They make the current, reviewed
-# amount of bypass-shaped code a hard ceiling, so new work must use the shared
-# action route or deliberately update the auditable baseline in review.
+# These limits record the reviewed amount of bypass-shaped code. New work must
+# use the shared action route or update the auditable baseline.
 RATCHETS = {
     "raw_on_click_closure": (
         re.compile(r"\.on_click\s*\(\s*(?:move\s*)?\|[^|]*\|", re.DOTALL),

@@ -193,7 +193,7 @@ impl SheetsDoc {
 
     /// Read the current sheet count without creating a malformed/missing
     /// workbook subtree. Action preflight uses this so refusing a stale or
-    /// hostile envelope is a genuinely side-effect-free operation.
+    /// hostile envelope has no side effects.
     pub fn sheet_count_readonly(doc: &AutoCommit) -> usize {
         let Ok(Some((Value::Object(ObjType::Map), wb))) = doc.get(&ROOT, "wb") else {
             return 0;

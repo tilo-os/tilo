@@ -20,7 +20,7 @@ pub const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
 
 /// A request that can cross the sandbox boundary. `SetApiKey` is only sent by
 /// Settings; a server also authenticates the launcher-provided app preamble.
-/// It is deliberately not serializable by caller-owned settings types.
+/// Caller-owned settings types cannot serialize it.
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "verb", rename_all = "snake_case")]
 pub enum Request {

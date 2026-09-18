@@ -2,11 +2,10 @@
 //! filesystem locations the import/export actions use.
 //!
 //! The whole calendar (projects / events / tasks and every item's
-//! rich-text notes) lives in one Automerge document. Persistence is just
-//! that document's `save()` bytes written atomically to a single file, so
-//! a user's events and notes survive a restart and two peers can still
-//! converge on the same bytes. There is **no** sample content here — a
-//! fresh machine loads nothing and starts empty.
+//! rich-text notes) lives in one Automerge document. The document's `save()`
+//! bytes are written atomically to a single file, so events and notes survive
+//! a restart and peers can converge on the same bytes. A fresh machine starts
+//! with an empty document.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -53,8 +52,8 @@ pub fn save(path: &Path, doc: &mut AutoCommit) -> io::Result<()> {
     atomic_file::write(path, &doc.save())
 }
 
-/// Directory the import/export actions read from and write to. A real
-/// calendar client opens a file picker; with none available here we use the
+/// Directory the import/export actions read from and write to. In place of a
+/// file picker, use the
 /// user's `Downloads` folder (overridable via `TILO_CALENDAR_IMPORT_DIR`),
 /// which is where downloaded `.ics` invites and exported files naturally
 /// live.

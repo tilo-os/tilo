@@ -1,11 +1,11 @@
-//! What the compositor actually puts on the wire.
+//! The globals the compositor advertises on the wire.
 //!
 //! A client cares which globals arrive in the registry, not which
-//! `*State::new` calls a constructor made — so this connects a **real**
-//! `wayland-client` to a **real** `wayland-server` display driven by the
-//! compositor's own `State`, and reads the registry the way GTK, Qt or SDL
-//! would. GTK refuses a Wayland display without `wl_data_device_manager`
-//! and silently falls back to a nonexistent X11 display with no logged
+//! `*State::new` calls a constructor made — so this connects a
+//! `wayland-client` to a `wayland-server` display driven by the compositor's
+//! `State`, and reads the registry the way GTK, Qt, or SDL would. GTK refuses
+//! a Wayland display without `wl_data_device_manager` and silently falls back
+//! to a nonexistent X11 display with no logged
 //! error, and Tilo's own toolkit never asks for it — so nothing in-tree
 //! noticed it was missing until the wire itself was observed.
 
@@ -132,8 +132,7 @@ fn every_interface_a_toolkit_requires_is_advertised() {
     );
 }
 
-/// Named separately because it is the one that was actually absent, and a
-/// specific failure message beats being one entry in a list.
+/// Keep this check separate so its failure identifies the clipboard global.
 #[test]
 fn the_clipboard_global_is_advertised() {
     let globals = advertised_globals();

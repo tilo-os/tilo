@@ -604,9 +604,8 @@ impl Model {
     }
 }
 
-/// Build a populated demo model anchored on `today` so the seeded
-/// screenshot always lands inside the visible month with a realistic
-/// spread of work, regardless of the real date.
+/// Build a populated demo model anchored on `today` so the seeded screenshot
+/// always lands inside the visible month with a spread of work.
 pub fn seed_demo(today: NaiveDate) -> Model {
     let pid_work = Uuid::new_v4();
     let pid_personal = Uuid::new_v4();

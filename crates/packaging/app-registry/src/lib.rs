@@ -1,6 +1,6 @@
 //! `app-registry` — the Tilo app registry protocol, end to end.
 //!
-//! This crate is the spine that makes "open an app from the store"
+//! This crate provides the protocol that makes "open an app from the store"
 //! fetch, verify, and cache a remote `.qpkg`. It sits between the
 //! packaging foundation ([`pkg`]: manifest, signing, verify) and the
 //! two consumers that drive it:

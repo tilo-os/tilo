@@ -167,7 +167,7 @@ impl HistoryGroup {
         self.name.is_none() && self.len() == 1 && self.children.is_empty()
     }
 
-    /// The line a reader scans: the user's name, or an honest description of
+    /// The line a reader scans: the user's name, or a derived description of
     /// what the range contains.
     ///
     /// The derived form never claims more than it counted. It says how many
@@ -322,7 +322,7 @@ struct Placed {
 ///   than dropping means neither user loses their name to a race.
 ///
 /// A named range whose first change is not in `entries` is skipped: the
-/// surface cannot honestly show a band whose contents it does not have.
+/// surface cannot show a band whose contents it does not have.
 pub fn group_entries(
     entries: &[HistoryEntry],
     named: &[NamedRange],
@@ -655,7 +655,7 @@ pub fn from_hex16(s: &str) -> Option<HistoryEntryId> {
         let hi = (*hi_b as char).to_digit(16)?;
         let lo = (*lo_b as char).to_digit(16)?;
         // Both digits are 0..=15, so the combined value is 0..=255 and always
-        // fits in a `u8`; `try_from` is the honest spelling of that fact.
+        // fits in a `u8`; `try_from` expresses that constraint.
         *slot = u8::try_from(hi.saturating_mul(16).saturating_add(lo)).ok()?;
     }
     Some(HistoryEntryId(out))

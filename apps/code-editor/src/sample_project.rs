@@ -1,6 +1,5 @@
 //! A bundled sample project. On first launch (and in `--shots` mode) the
-//! editor opens this so there's always real, multi-file, syntax-highlighted
-//! content to show — no empty-state screenshot.
+//! editor opens this to provide multi-file, syntax-highlighted content.
 //!
 //! The files are deliberately idiomatic small programs that exercise the
 //! highlighter across several languages: keywords, types, functions, strings,

@@ -1,4 +1,4 @@
-//! End-to-end proof of the registry protocol on the real code path:
+//! End-to-end registry protocol coverage:
 //! author a `.qpkg`, publish it to a self-hosted `file://` registry
 //! served by a live iroh node, then resolve → download → verify →
 //! install it on a fresh client — plus the fail-closed negatives.

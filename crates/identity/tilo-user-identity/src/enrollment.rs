@@ -362,7 +362,7 @@ mod tests {
         )
         .unwrap();
         // Replace the recorded issuer pubkey with the attacker's;
-        // the signature was made under the real issuer's key so it
+        // the signature was made under the issuer's key so it
         // won't verify under the attacker's.
         token.issuer_device_public_key = attacker.verifying_key().to_bytes();
         assert_eq!(

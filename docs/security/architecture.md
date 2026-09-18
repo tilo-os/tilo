@@ -15,7 +15,7 @@ and how tinkering works without ambient root ([tinkering.md](tinkering.md)).
 
 ## 1. The thesis
 
-Two sentences carry the whole design.
+The design has two governing principles.
 
 **The TPM is never the root of trust. It is a convenience for unattended unlock.**
 
@@ -23,11 +23,10 @@ The root is a person-scoped account key that is recoverable by construction. Dev
 authorised *by* the account, not the other way round. Everything else — disk unlock, login, peer
 identity, document authorship, filesystem access — derives from that one chain.
 
-This single decision produces the degradation story for free. On a machine without a TPM you
-authenticate more often; you do not hold weaker guarantees. Same hierarchy, same revocation, same
-peer identity, same access control. The hardware makes it *quiet*, not *safe*. A design where the
-hardware makes it safe is a design that bricks when the motherboard dies, and a mechanism that can
-permanently destroy access without a backstop is a denial-of-service against the owner.
+On a machine without a TPM, authentication occurs more often, but the guarantees remain the same:
+the same hierarchy, revocation, peer identity and access control apply. The hardware simplifies
+unlock; it is not the security root. A design that depends on the hardware for safety can lose
+access when the motherboard fails, so recovery must remain independent of the TPM.
 
 ---
 
@@ -63,9 +62,8 @@ routing metadata and wants content.
 - **Off-band capture.** Screenshots, photographs of the screen, OCR, accessibility-tree scraping.
 - **Firmware-level attackers on machines with firmware TPMs.** fTPM inherits firmware attack
   surface (the faulTPM voltage-fault class). A discrete TPM is better; we do not require one.
-- **Boot-time refusal of downgraded images.** See §4.4 — we can make a downgrade inert, not
-  unbootable. This is a real gap versus Android Verified Boot and we state it rather than paper
-  over it.
+- **Boot-time refusal of downgraded images.** See §4.4 — a downgrade can be made inert, not
+  unbootable. This remains a gap versus Android Verified Boot.
 
 ### 2.3 Trust tiers
 
@@ -97,8 +95,8 @@ account key            person-scoped, recoverable, never on a single device alon
 
 Created once, with the person, not with the machine. Held as a threshold key across the user's
 devices so that no single device holds it whole and losing one device does not lose the account.
-An offline recovery share is minted **at creation time**, never later — a backstop created after
-the fact is a backstop that does not exist for the people who need it most.
+An offline recovery share is minted **at creation time**. Creating it later would leave the account
+without recovery until then.
 
 The account key's only jobs: sign device certificates, and sign revocations.
 
@@ -143,7 +141,7 @@ have it. The TPM keyslot is a convenience; the recovery key is the guarantee.
 
 ### 3.6 The credential ladder
 
-**One secret in day-to-day use. Not two, and not one-plus-occasional-surprises.**
+**Day-to-day use must require one secret.**
 
 This is a hard requirement, not an aspiration, because a system that asks for a second credential
 "only sometimes" trains people to expect prompts — and a user who expects prompts is a user who
@@ -156,13 +154,13 @@ types their passphrase into whatever asks.
 | **Recovery key** | Account recovery, dead TPM, forgotten PIN | Never typed in normal operation |
 
 The PIN cascades rather than repeating. Entering it unseals the device key; the device key unlocks
-the disk, authorises the session, and unwraps the credential vault. One entry, one cascade — not
-the same secret demanded three times by three subsystems that don't know about each other.
+the disk, authorises the session, and unwraps the credential vault. The same secret is not
+requested separately by these subsystems.
 
 **Machines without a TPM type exactly one secret too.** It is a passphrase rather than a PIN,
 because without hardware throttling the secret itself must be strong enough to resist offline
-guessing. Same number of prompts, longer string. That is the honest shape of the degradation: it
-costs typing, not safety, and it does not cost a *second* prompt.
+guessing. The number of prompts stays the same, but the string is longer. This costs typing, not
+safety, and does not add a *second* prompt.
 
 **A short PIN is only safe if guess-throttling actually works.** The TPM's dictionary-attack
 lockout is what makes four digits defensible, and its reset authorisation must be set to a real
@@ -197,8 +195,7 @@ cascade built as "the PIN unlocks everything" would have to be dismantled to add
 ## 4. Boot chain
 
 Goal: a boot chain the owner can build and sign themselves, that remains attestable to third
-parties afterwards. Owner-buildable and attestable are usually traded against each other; the
-whole design here is arranged to avoid that trade.
+parties afterwards. The design supports both owner-built images and attestation.
 
 ### 4.1 Owner-enrolled Secure Boot
 
@@ -206,9 +203,9 @@ The system ships with tooling to generate the machine's own Platform Key and sig
 them alongside the retained Microsoft KEK (so firmware updates and signed option ROMs keep
 verifying), and sign the boot artifacts with the owner's key.
 
-This mirrors the one decision worth copying wholesale from GrapheneOS: attestation is over
-*whatever key the owner enrolled*, not over a vendor key. A self-built image stays fully
-attestable to collaborators who choose to trust its key.
+This follows GrapheneOS's model in which attestation covers *whatever key the owner enrolled*,
+not a vendor key. A self-built image remains attestable to collaborators who choose to trust its
+key.
 
 ### 4.2 Unified Kernel Image
 
@@ -218,25 +215,24 @@ protection, because the command line is inside the signature.
 
 The initramfs is required, not optional: unlocking an encrypted root needs early userspace.
 
-**Not yet reachable, and it is load-bearing.** This is the single dependency the rest of the boot
-chain rests on, and the deployment backend the system ships on today cannot produce it: a static
+**Dependency not yet available.** The deployment backend the system ships on today cannot produce
+it: a static
 unified image embeds a command line that must name the deployment it boots, and that name changes
 on every update. Getting there needs the content-addressed deployment backend described in §4.3,
 which upstream still marks experimental.
 
-Until it lands, two things in this document are aspirations rather than descriptions: a command line
-that cannot be edited, and a single measurement that transitively attests the root filesystem
-(§4.3). Generation-bound unlock is **not** on that list — see §4.4; it works today by a different
-route.
+Until it lands, the claims in this document about an uneditable command line and a single
+measurement that transitively attests the root filesystem (§4.3) describe target behavior.
+Generation-bound unlock is **not** on that list — see §4.4; it works today by a different route.
 
-**What the current backend actually signs, and why that is less than it sounds.** Signature
+**Current backend coverage.** Signature
 verification covers the kernel and the boot loader. It does not cover the initramfs, which is a
 plain archive the loader hands to the kernel *after* verification — and the initramfs is where the
 encrypted root gets unlocked. Anyone who can write the boot partition therefore runs code before
 the root is open, with secure boot enabled and every signature valid. The kernel command line sits
 beside it as an editable text file, so every hardening option can be stripped the same way.
 
-Stated plainly: on this backend, secure boot buys a **verified kernel, not a verified boot**. That
+On this backend, secure boot provides a **verified kernel, not a verified boot**. That
 is the strongest reason to reach a unified image, and it is a larger gap than the rollback question
 that first drew attention here.
 
@@ -247,10 +243,10 @@ metadata — modes, owners, xattrs, symlinks. The digest is baked into the UKI's
 therefore into the signature, and therefore into the boot measurements. Integrity is enforced
 continuously on the read path rather than checked once at boot.
 
-The consequence worth noting: because the root digest is on the sealed command line, a single
-measurement transitively attests the exact root filesystem.
+Because the root digest is on the sealed command line, a single measurement transitively attests
+the exact root filesystem.
 
-### 4.4 Rollback protection, and its honest limit
+### 4.4 Rollback protection and its limitations
 
 A TPM NV monotonic counter is incremented on each successful update. Unlock secrets are sealed to
 a policy requiring the counter to be at or above the current generation.
@@ -259,28 +255,24 @@ a policy requiring the counter to be at or above the current generation.
 demands the recovery key, not a running vulnerable system.
 
 This is weaker than Android Verified Boot, where the rollback index lives in tamper-evident storage
-consulted by the bootloader *before* execution. Our check happens after the bootloader has already
-run. We accept this and state it; we do not claim parity.
+consulted by the bootloader *before* execution. This check happens after the bootloader has
+already run, so it does not provide bootloader-level rollback protection.
 
-**Generation binding does not need the unified image.** An earlier reading of this design assumed
-it did — that the only register able to distinguish generations was the one a boot stub extends,
-and that without a unified image every generation would look alike. That was wrong, and the
-correction matters because it moves this mechanism from blocked to available.
+**Generation binding does not need the unified image.** The firmware measures every image it loads,
+and each generation deploys its own kernel. The register covering loaded images therefore differs
+per generation on the backend that ships today.
 
-The firmware measures every image it loads, and each generation deploys its own kernel. So the
-register covering loaded images already differs per generation, on the backend that ships today.
-The objection to using it — that it changes on every update — is only an objection to a *fixed*
-policy. A signed per-generation prediction is exactly the mechanism for a register that moves.
+The objection to using this register — that it changes on every update — applies only to a *fixed*
+policy. A signed per-generation prediction is the mechanism for a register that moves.
 
-**What no register gives you is the anti-rollback itself.** An old signed prediction stays valid
+**No register provides anti-rollback by itself.** An old signed prediction stays valid
 forever, so an attacker who restores an older signed kernel produces a measurement the TPM will
 honour. Refusing that needs monotonic state the attacker cannot wind back — the NV counter in this
-section — and standard enrollment tooling does not expose it. This is worth stating because
-measured boot is widely assumed to prevent downgrade on its own. It does not. It proves *what* ran,
-not that what ran is *current*.
+section — and standard enrollment tooling does not expose it. Measured boot proves *what* ran,
+not that what ran is *current*; refusing an old but validly signed image requires monotonic state.
 
-So: the mechanism is built and tested against an emulated TPM, and the measurement it needs is
-available now. What remains is wiring, not a blocked dependency.
+The mechanism is built and tested against an emulated TPM, and the required measurement is
+available now. The remaining work is wiring.
 
 ### 4.5 Security policy as a signed object
 
@@ -298,55 +290,49 @@ No `sudo`, no `pkexec`, no general-purpose escalation. Privileged operations are
 individually-authorised requests to a broker. The failure mode we are eliminating is the one where
 a single authorisation prompt converts into unrestricted, indefinite control of the machine.
 
-The thing to get right is that a locked-down system must not feel like it is fighting its owner.
-Android-style lockdown reads as *gimmicky* to anyone who wants to look inside their own computer,
-and an OS that makes tinkering feel adversarial has failed at something more important than the
-attack it prevented.
+The locked-down system must retain an owner-controlled path for inspection and modification
+without granting ambient root.
 
 Two commitments follow.
 
-**Unlocking does not destroy anything.** Reaching full control is a supported operation, not a
-punishment. Wiping user data to permit it — the Android bootloader model — protects the vendor's
-threat model at the owner's expense, and it makes the safe path the one where you never learn how
-your system works.
+**Unlocking does not destroy anything.** Reaching full control is a supported operation. Wiping
+user data to permit it would protect the vendor's threat model at the owner's expense.
 
-What unlocking costs instead is **attestability**. An unlocked machine says so: the state is
-recorded where the running system cannot forge it, and it appears in what the machine attests to its
-peers. You cannot unlock quietly, and you cannot unlock something you do not own. That preserves
-the property the wipe was protecting — an attacker with brief physical access gains nothing durable
-and invisible — while leaving the owner's data alone.
+Unlocking changes **attestability**. The state is recorded where the running system cannot forge it
+and appears in what the machine attests to its peers. Unlocking requires ownership and cannot be
+performed quietly, while the owner's data remains intact.
+Brief physical access must not let an attacker gain durable or invisible access
+through unlocking.
 
 Relocking is likewise supported, and returns the machine to a fully attestable state.
 
-**Most tinkering must not require unlocking at all.** If full control is the only way to install a
-package or read a log, then the granular capability system has failed and everyone will just unlock.
-The measure of success is that the unlock exists and is rarely reached: elevated operations are
-requested at the granularity actually needed, and a first-class environment exists for building,
-installing and experimenting that does not need host privilege at all.
+**Routine development must not require unlocking.** Elevated operations are requested at the
+granularity needed, and a first-class environment exists for building, installing and experimenting
+without host privilege.
 
-Two mechanisms serve those two needs, and keeping them apart is the whole design:
+Two mechanisms serve those two needs and remain separate:
 
-- **Work layers.** A namespace where you are uid 0, a real package manager works, and every change
+- **Work layers.** A namespace where you are uid 0, a package manager works, and every change
   lands in an overlay that can be inspected, kept, or discarded. No privilege is granted, the host
   filesystem is never mounted, and a wrecked layer cannot survive a reboot. This is where nearly all
   tinkering should happen.
 - **Capability leases.** Individual verbs, granted per session with an argument constraint and a
   duration. The invariant that makes them safe is that **no capability grants code execution as
   root**: a verb takes a unit name or a signed module name, never a command. This is exactly where
-  the conventional escalation helper fails — one that can run an arbitrary program collapses its own
-  granularity back to full root.
+  a conventional escalation helper that runs an arbitrary program removes this constraint.
 
 **A writable system directory is not a capability.** It is the one operation that unavoidably grants
 arbitrary root code execution, because a session that can write the system tree can leave a binary
-that the *next* boot executes outside any namespace. Transience is not integrity. So it is not
-leasable at any granularity — it is the unlock described above, with everything that entails: an
+that the *next* boot executes outside any namespace. A temporary write does not preserve integrity,
+so this operation is not leasable at any granularity. It is the unlock described above, with
+everything that entails: an
 explicit act, recorded where the running system cannot forge it, visible in what the machine attests,
 and reversible by relocking. It must also clone a pristine rollback target first, so the way back is
 guaranteed rather than hoped for.
 
-The distinction to hold onto: *wanting a package manager must never put someone on the path that
-weakens the system.* Conflating those two is the common mistake, and it is why the convenient
-existing answer — unlocking the whole system directory for the rest of the boot — is the wrong one.
+Wanting a package manager must not put someone on the path that weakens the system. Unlocking the
+whole system directory for the rest of the boot does so and is therefore reserved for explicit
+owner-authorized unlocking.
 
 ### 4.7 Without a TPM
 
@@ -367,31 +353,30 @@ Verifying them separately tells you *which* component was subverted, not that th
 contained. The argument for component isolation as a security boundary belongs to a system with an
 actual boundary there — a microkernel — and Linux is not that system.
 
-The real reasons, stated honestly so nobody later mistakes this for defence in depth:
+The reasons for separate components are:
 
 - **Attack surface by omission.** A machine with no Nvidia hardware should not carry Nvidia drivers.
-  Code that was never installed cannot be exploited, and that is a genuine reduction — just a
-  different mechanism from isolation.
+  Code that was never installed cannot be exploited, which reduces attack surface without
+  providing isolation.
 - **Install size**, for the same reason.
 - **Low-level components need a distribution channel anyway.** Firmware, out-of-tree modules and
   kernel variants have to reach machines somehow, signed and verifiable. A component format is that
   channel, and inventing a second mechanism later would be worse.
-- **It leaves room for a boundary that does not exist yet.** If a future kernel offers real
+- **It leaves room for a boundary that does not exist yet.** If a future kernel offers
   intra-kernel confinement, a system that already ships components separately can use it. One that
   ships a single blob cannot without re-architecting.
 
-This is close to conventional package management with signing and verification done properly, and
-that resemblance is fine — but it should be recognised, so the design does not drift into
-re-solving problems package managers already solved badly.
+This resembles signed package management; the design should retain those established functions
+instead of duplicating them.
 
 ---
 
 ## 5. Runtime hardening
 
-Principle: **full-strength protection where the bugs live, zero cost where they don't.** Most of
-the system is Rust, which does not produce the bug classes that heavyweight allocator hardening
-catches. Spending a uniform performance tax across the whole image to protect code that is already
-memory-safe is the wrong trade.
+Principle: use stronger protection in processes that parse untrusted bytes and avoid unnecessary
+overhead elsewhere. Most of the system is Rust, which does not produce the bug classes that
+heavyweight allocator hardening catches. Applying that overhead across the whole image would be
+an unnecessary tradeoff.
 
 There is no memory-tagging option on x86_64 and there will not be one for years. The design does
 not assume one.
@@ -422,9 +407,8 @@ Address, memory, and thread sanitizers; allocator hardening at maximum with ever
 ### The constraint that must not be "hardened" later
 
 The sandbox depends on unprivileged user namespaces. Disabling them is a standard hardening
-recommendation and would break the entire application model. The correct response is to constrain
-what a namespace can do from the inside, never to remove the ability to create one. This is
-written down so that nobody later improves the system into a broken one.
+recommendation and would break the application model. Hardening must therefore constrain namespace
+operations rather than disable namespace creation.
 
 ---
 
@@ -449,11 +433,11 @@ the only thing standing between an app and a capability it never declared.
 no network", "no such file" are states every application handles correctly, because they occur
 naturally.
 
-We own the filesystem, so this is nearly free: a sandbox sees a *filtered view* in which granted
+We own the filesystem, so a sandbox sees a *filtered view* in which granted
 subtrees exist and everything else does not appear in a directory listing at all. An app that
-enumerates the workspace sees what it was granted. Not a permission error — just less.
+enumerates the workspace sees only what it was granted.
 
-Network denial is an empty network namespace, so connections fail as genuinely unreachable rather
+Network denial is an empty network namespace, so connections fail as unreachable rather
 than hanging until timeout. **This must cover device-local addresses too**: an app denied the
 network must not reach local services as a bypass.
 
@@ -472,7 +456,7 @@ An app may be granted read participation in a shared document while being struct
 author changes. Per-object write consent is unusable in practice; a clean read-only capability is
 both simpler and more useful — for viewers, previews, and untrusted embeds.
 
-### 6.5 Two capabilities with no prior art
+### 6.5 Two additional capabilities
 
 **Peer capability.** "May this app publish and subscribe on the collaboration mesh, and to which
 peer identities?" A peer identity is a first-class capability object, granted per workspace like a
@@ -480,14 +464,14 @@ file.
 
 **Remote input injection.** A remote peer injecting input is functionally a second local user with
 no local presence. It is a per-session capability, individually revocable, continuously and
-visibly indicated, and never a workspace-level grant that persists silently. This is the one place
-in the design with nothing to copy, and it deserves the most care.
+visibly indicated, and never a workspace-level grant that persists silently. This capability
+requires particular care because it has no local-user equivalent.
 
 ---
 
 ## 7. Collaboration authority
 
-Two checks with distinct jobs. Collapsing them loses something either way.
+The two checks protect distinct boundaries.
 
 ### 7.1 Admission — guards the door
 
@@ -500,8 +484,9 @@ space is pinned on first contact and cannot be silently re-pinned, so sending so
 invitation is never a way to re-point them at an attacker.
 
 Inbound changes are validated **before** they are merged, against a copy, and a batch that fails is
-refused whole. A check that runs after the merge has already happened is not a check. Partial
-application is worse than refusal, because it advances state past changes that were never accepted.
+refused whole. Validation after merging cannot prevent an invalid change from advancing state.
+Partial application is worse than refusal because it advances state past changes that were never
+accepted.
 
 ### 7.2 Authorship — guards the content
 
@@ -522,22 +507,20 @@ The hop check gates the *connection*. The operation check gates the *change*. A 
 hop check by being an admitted peer; the operations it carries still verify independently against
 their authors. Neither is redundant.
 
-The risk is drift — someone later making one authoritative and hollowing out the other. The
-mitigation is one shared decision point and a test that pins the boundary, so the two cannot
-silently converge.
+The two checks must remain separate. A shared decision point and a boundary test enforce that
+separation.
 
 ### 7.4 Confidentiality from the relay
 
 Content is encrypted to the group; routing metadata stays clear so a relay can do its job without
-reading anything. The group key rotates on **every** membership change — most importantly on
-removal, which is the case that matters and the one that is easy to leave for later.
+reading anything. The group key rotates on **every** membership change, including removal.
 
 ---
 
 ## 8. Attestation between people
 
-Everyone builds attestation so a device can prove itself to a vendor. The interesting version here
-is the opposite: **prove yourself to your collaborators, with no central service.**
+Attestation can prove a device to a vendor or to collaborators. Tilo uses the latter without a
+central service: **prove yourself to your collaborators.**
 
 Before accepting remote input or buffer streaming, a peer may demand proof of what the other
 machine is running. The attestation key is bound to the peer's network identity, so the machine
@@ -554,13 +537,11 @@ Policy is tiered by what a peer is willing to prove:
 | Attested, pinned image | Edit |
 | Attested, pinned image, explicit grant | Inject input |
 
-**Verifiers pin what the owner enrolled, not what we sign.** Self-built images stay fully
-attestable to collaborators who chose to trust them. This is the property nearly every verified-boot
-system throws away, and keeping it is the point.
+**Verifiers pin what the owner enrolled, not what the distributor signs.** Self-built images remain
+attestable to collaborators who choose to trust their key.
 
-**"Unattested" is a first-class state, not a failure.** A machine with no TPM participates, with
-fewer privileges. The moment unattested peers cannot federate, the TPM has silently become
-mandatory.
+**"Unattested" is a first-class state, not a failure.** A machine with no TPM participates with
+fewer privileges. Unattested peers remain able to federate, so the TPM is optional.
 
 ### The structural shortfall
 
@@ -596,13 +577,12 @@ right now. Continuous enforcement comes from the sealed root, not from attestati
 
 ### What is verified, and what is only built
 
-Distinguishing these is the point of the section above, so the split is recorded plainly rather
-than left for a reader to infer.
+The split is recorded explicitly:
 
 **Verified by execution:** the identity spine, with a ceremony-minted key proven to sign for its own
 recorded public key; the runtime hardening set, each mechanism checked in the binary or the running
 kernel rather than assumed from a build flag; permission denial being indistinguishable from
-absence, including an adversarial errno-comparison test that caught a real leak; the rollback
+absence, including an adversarial errno-comparison test that caught a leak; the rollback
 mechanism against an emulated TPM, including a header-restore attack performed rather than argued;
 and startup resilience, proven by reproducing the abort against the previous code.
 
@@ -611,5 +591,5 @@ machines without a TPM, and owner-enrolled secure boot have not run on a machine
 The tooling refuses to act when its preconditions are absent, which is the right failure mode, but
 a refusal that has never been exercised end to end is a claim like any other.
 
-The asymmetry is worth stating because it is the opposite of the usual one: the parts furthest from
-the hardware are the parts we have actually proven.
+The current evidence covers the components furthest from the hardware; the boot chain remains
+unbooted.

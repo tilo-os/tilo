@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """Two Tilo sessions, one room, and an edit made inside a **sandbox**.
 
-`two-shell-app-collab.py` starts two real compositors and proves an edit
+`two-shell-app-collab.py` starts two compositors and checks that an edit
 crosses between them — but it launches its apps as ordinary child
 processes pointed at the legacy JSON socket. A real app is not launched
 that way. It is launched by `tilo-launcher` into a bwrap sandbox, and it
 reaches the broker through one descriptor the launcher hands it. That is
 a different code path end to end, and it is the one the product runs.
 
-So this harness goes the other way round: same two compositors, same
-signed invite, same room — and then two *packaged* processes, launched
-by the real launcher into real sandboxes, one in each session. One
+This harness uses the other path: the same two compositors, signed invite
+and room, then two *packaged* processes launched by `tilo-launcher` into
+bwrap sandboxes, one in each session. One
 authors an Automerge document and publishes it; the other waits on its
 op stream and prints what it loaded. If the text the first one wrote
 comes out of the second one's log, an edit made in a sandbox on one

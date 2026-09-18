@@ -72,7 +72,7 @@ impl LibraryPhoto {
         parts.join(" · ")
     }
 
-    /// A short, human-first provenance line for a gallery card. The details
+    /// A short provenance line for a gallery card. The details
     /// sheet retains every field and its labels; a shelf should let a person
     /// distinguish photographs before it starts truncating at "People:".
     #[must_use]

@@ -3,7 +3,7 @@
 //! `SurfaceTracker::on_commit_with_path_detection` returns a
 //! [`CapturePath`] tag reflecting whether the incoming `wl_buffer` took
 //! the zero-copy DMABUF path or the SHM readback fallback. Rather than
-//! spinning up a real `wl_display` and DMABUF-capable client (needs a
+//! spinning up a `wl_display` and DMABUF-capable client (needs a
 //! working DRM device and compositor bring-up), this drives the counter
 //! through the tracker's test-only deposit hook — the same seam
 //! `State::commit`'s production wiring calls into.

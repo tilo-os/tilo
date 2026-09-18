@@ -6,11 +6,11 @@
 //! an argv vector suitable for greetd's `StartSession { cmd, env }`.
 //!
 //! `Name` is the label the greeter shows. The internal `DesktopNames=` id
-//! is deliberately not read for display: it is a machine-facing contract
+//! is not read for display: it is a machine-facing contract
 //! with the portal (`UseIn=tilo`), not something to put in front of
 //! someone logging in.
 //!
-//! This is deliberately a *minimal* desktop-entry parser: we only need
+//! This is a *minimal* desktop-entry parser: it reads
 //! `Name` and `Exec` from the `[Desktop Entry]` group, and the session
 //! files we ship are simple (no `%`-field codes, no quoting). It ignores
 //! localized `Name[xx]=` keys and keeps the first unlocalized `Name=`.

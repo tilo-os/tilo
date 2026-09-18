@@ -8,8 +8,7 @@
 # emits one. This reads the JSON diagnostics instead and keeps only those whose
 # source file is inside this repository.
 #
-# clippy's lints are not this gate's business; tools/clippy-ratchet.sh owns
-# those, and they are far too numerous to fail on yet.
+# Clippy lints are handled separately by tools/clippy-ratchet.sh.
 
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)

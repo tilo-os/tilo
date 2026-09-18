@@ -25,7 +25,7 @@ TILO_CFS_REG_HOST="localhost:$TILO_CFS_REG_PORT"
 TILO_CFS_REG_GUEST="10.0.2.2:$TILO_CFS_REG_PORT"
 TILO_CFS_REPO="${TILO_CFS_REPO:-tilo-composefs}"
 
-# The same digest-pinned Fedora bootc base the real Tilo image builds FROM.
+# The same digest-pinned Fedora bootc base the desktop image builds FROM.
 TILO_CFS_BASE_REF="${TILO_CFS_BASE_REF:-}"
 if [ -z "$TILO_CFS_BASE_REF" ]; then
   # shellcheck source=/dev/null
@@ -33,7 +33,7 @@ if [ -z "$TILO_CFS_BASE_REF" ]; then
   TILO_CFS_BASE_REF="$BASE_REF"
 fi
 
-# The same digest-pinned frozen RPM snapshot the real image installs from.
+# The same digest-pinned frozen RPM snapshot the desktop image installs from.
 TILO_CFS_RPMS_REF="${TILO_CFS_RPMS_REF:-}"
 if [ -z "$TILO_CFS_RPMS_REF" ]; then
   # shellcheck source=/dev/null

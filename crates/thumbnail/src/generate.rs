@@ -1,10 +1,8 @@
 //! Producing a small RGBA preview for a file, by category.
 //!
-//! Every path converges on [`image`]'s decode + `Triangle` downscale — the same
-//! idiom `ui::image_store`, `ebook::epub` and `slides::assets` each grew their
-//! own copy of, unified here. Rich decoders (PDF, video) live in sibling modules
-//! behind feature flags; this module owns the always-on, pure-Rust paths (raster
-//! images and EPUB covers) plus the shared encode/decode helpers.
+//! Rich decoders (PDF, video) live in sibling modules behind feature flags;
+//! this module owns the always-on, pure-Rust paths (raster images and EPUB
+//! covers) plus shared encode/decode helpers.
 
 use std::io::{Cursor, Read};
 use std::path::Path;
@@ -22,7 +20,7 @@ pub struct RgbaThumb {
 }
 
 impl RgbaThumb {
-    /// Sanity: the buffer length matches the declared dimensions.
+    /// Whether the buffer length matches the declared dimensions.
     pub fn is_valid(&self) -> bool {
         self.width > 0
             && self.height > 0
@@ -117,10 +115,8 @@ pub fn epub_cover_thumb(bytes: &[u8], max_edge: u32) -> Option<RgbaThumb> {
 
 /// Common tail: cap the longest edge (only ever shrinking) and flatten to RGBA.
 ///
-/// The `u32 as f32`/`f32 as u32` round-trip below is exact enough for any
-/// real image: dimensions here never come close to f32's 2^24 exact-integer
-/// range, and `.max(1)` after the truncating cast keeps the result positive
-/// even though the cast itself can't (a ratio of two positive values) go negative.
+/// The `u32`/`f32` conversions are used for the scale calculation. The output
+/// dimensions are clamped to at least one pixel after conversion.
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,

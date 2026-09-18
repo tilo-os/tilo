@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Drive caret focus through real legacy Linux applications.
+"""Drive caret focus through legacy Linux applications.
 
 This is deliberately a process-level test.  Each case boots a fresh Tilo
 headless compositor, launches an application built with a different desktop
 toolkit, and uses the compositor's developer-only control socket for input.
 The assertion is semantic: text typed after the pointer leaves the app must
-still be selected and copied by that app through the real Wayland clipboard.
+still be selected and copied through the Wayland clipboard.
 """
 
 from __future__ import annotations

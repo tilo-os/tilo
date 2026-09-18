@@ -13,7 +13,7 @@ path = "src/lib.rs"
 # plus the `org.bluez.Agent1` pairing agent BlueZ calls back into to display
 # or confirm a passkey.
 #
-# This is deliberately not a `bluetoothctl` wrapper. A pairing agent is a
+# This uses D-Bus directly rather than `bluetoothctl`. A pairing agent is a
 # D-Bus object the daemon invokes methods on — there is no CLI shape for
 # "BlueZ asks us a question and blocks on the answer", so the whole pairing
 # flow has to speak the bus directly.

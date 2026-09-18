@@ -11,7 +11,7 @@ for package in "$@"; do
 done
 # Package lanes deliberately install build dependencies without weak deps, so
 # install the recommended software Vulkan ICD explicitly before exercising the
-# display-free compositor. Real Fedora desktops normally already carry a GPU
+# display-free compositor. Fedora desktops normally already carry a GPU
 # ICD; the isolated package userspace must still prove the fallback path.
 dnf install -y "$@" file mesa-vulkan-drivers
 "$repo_root/dist/verify-payload.sh" /

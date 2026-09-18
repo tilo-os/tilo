@@ -276,11 +276,11 @@ The format-host picks up the change via inotify — no restart needed.
 ## Canonical bytes
 
 The "canonical CRDT bytes" contract is central. For qdoc-backed formats,
-the canonical form IS the `automerge::save()` output of a
+the canonical form is the `automerge::save()` output of a
 `qdoc::Document`. The host round-trips those bytes opaquely; the editor
 and FS reload them via `qdoc::Document::load` to get a live CRDT back.
 Providers for non-qdoc content models will have their own canonical
-form; the interface just says "bytes" and stays out of the way.
+form; the interface represents each canonical form as bytes.
 
 ## Resource limits
 

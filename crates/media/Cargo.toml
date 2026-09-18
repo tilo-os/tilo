@@ -7,14 +7,12 @@ license.workspace = true
 
 [features]
 default = []
-# Real GStreamer decode: `playbin` diverts video through
-# `videoconvert ! appsink(RGBA)` for decoded frames and routes audio to a real
-# system sink (`autoaudiosink`) — the audible + visible path. Off by default so
-# hermetic builds, `--shots` and CI need no gstreamer-1.0 dev stack, no codecs
-# and no media pipeline; the synthesized-frame fallback keeps those green.
+# GStreamer decode: `playbin` diverts video through
+# `videoconvert ! appsink(RGBA)` and routes audio to `autoaudiosink`. Off by
+# default so hermetic builds, `--shots`, and CI do not require GStreamer.
 # Enable on a host that has the gstreamer stack: `--features decode`.
 decode = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
-# Lets `encode` consult the real GStreamer registry when picking an encoder.
+# Lets `encode` consult the GStreamer registry when picking an encoder.
 # The preference order and the bitrate-unit table in `encode` are pure and
 # always compiled; this feature is only what allows the crate to *look* at
 # which elements are installed, rather than assume. A consumer that encodes
@@ -44,7 +42,7 @@ tracing.workspace = true
 serde_json.workspace = true
 url.workspace = true
 
-# Real decode stack — only linked under `--features decode`. Same pins as
+# Decode stack — only linked under `--features decode`. Same pins as
 # `apps/tube` / `apps/camera` so no second gstreamer copy resolves.
 #
 # `v1_24` is required, not cosmetic: `VideoInfoDmaDrm` (which parses a

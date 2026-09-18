@@ -11,10 +11,10 @@
 //! * **Branches & Remotes** — cards for branches, tags, stashes and
 //!   remotes, with fetch / pull / push actions and ahead/behind tracking.
 //!
-//! The live binary reads a real repository through [`repo`] (libgit2 via
+//! The live binary reads a repository through [`repo`] (libgit2 via
 //! `git2`). When no repository is reachable — notably the headless
-//! `--shots` renderer — it falls back to a bundled, realistic [`sample`]
-//! so the screenshot shows a fully populated state offline. All rendering
+//! `--shots` renderer — it falls back to a bundled [`sample`] so the screenshot
+//! shows a populated state offline. All rendering
 //! is theme-driven; durable UI preferences live in the CRDT via
 //! [`settings`].
 //!
@@ -24,13 +24,9 @@
 //! [`actions::GitClientAction`] so the shell's Ctrl+K palette and the on-screen
 //! controls dispatch one and the same action. See [`actions`] for the split.
 
-// An app runs as its own sandboxed process, so an integer that wraps here
-// costs one app rather than the desktop, and proving every layout sum cannot
-// overflow is a tax a third-party app author would pay too. The lints that
-// produce a *crash* stay denied — indexing_slicing, string_slice,
-// unwrap_used, expect_used, panic — because a panicking app is a bad app
-// whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
-// full set: a fault there takes the session, or every app with it.
+// Apps run in isolated processes, so app-local arithmetic checks are relaxed.
+// Panic-producing lints remain denied; shared crates retain the full lint set
+// because a fault there can affect the session or every app.
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,

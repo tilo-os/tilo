@@ -274,7 +274,7 @@ mod tests {
         assert_eq!(name_from_uri_list(b"# only a comment\r\n"), None);
     }
 
-    /// A drag the compositor owns knows the real name, and should use it.
+    /// A drag the compositor owns knows the file name, and should use it.
     #[test]
     fn paths_are_named_by_their_file_name() {
         assert_eq!(

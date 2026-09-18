@@ -1,5 +1,4 @@
-//! The workspace-directory CRDT — the "always-present core" the
-//! design describes.
+//! The workspace-directory CRDT.
 //!
 //! Every user device holds a full copy of this small Automerge
 //! document. It carries:
@@ -8,9 +7,8 @@
 //! - Per-workspace member-device set — which of the user's devices
 //!   replicate the workspace.
 //! - Host assignments — which device(s) act as the always-on host
-//!   for a given workspace (plural, per the design: multiple hosts
-//!   are just more replicas, sharding = different hosts on
-//!   different workspaces).
+//!   for a given workspace. Multiple hosts are replicas; hosts can
+//!   serve different workspaces.
 //! - Per-device pin state — a pinned workspace is held fully
 //!   offline on that device.
 //! - The revocation list (kept alongside the directory for the same
@@ -30,9 +28,6 @@
 //! Failed checks return `Err(DirectoryError::*)` and DO NOT merge —
 //! the caller is expected to log + drop.
 //!
-//! The directory is intentionally small (~1 KB per workspace, at
-//! most a few tens of workspaces per user) so that projecting it
-//! everywhere is cheap.
 
 use std::collections::HashMap;
 

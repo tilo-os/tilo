@@ -1,5 +1,5 @@
-//! Spawns the tilo shell headless, embeds a real terminal and a real
-//! file-explorer and browser in tabs, and asserts their `AppWidget` metadata reaches
+//! Spawns the tilo shell headless, embeds a terminal, file-explorer, and
+//! browser in tabs, and asserts their `AppWidget` metadata reaches
 //! the live `Shell::workspace_tree()`. Also drives them through an
 //! abbreviated render pipeline and asserts visible content: a non-empty
 //! first terminal grid line once the PTY delivers bytes, and at least one
@@ -62,7 +62,7 @@ fn default_workspace_hosts_terminal_files_and_real_browser_widget() {
 
 #[test]
 fn terminal_tab_emits_a_prompt_within_10_seconds() {
-    // A real interactive PTY with an explicit startup environment. No operator
+    // An interactive PTY with an explicit startup environment. No operator
     // login/rc files are read; the shell emits its normal interactive prompt.
     let directory = tempfile::tempdir().expect("terminal working directory");
     let mut command = terminal::CommandBuilder::new("/bin/sh");

@@ -1,4 +1,4 @@
-//! Clipboard backends — how a `ui` process actually reaches the selection.
+//! Clipboard backends — how a `ui` process accesses the selection.
 //!
 //! [`crate::text_selection`]'s four verbs resolve to one of three backends:
 //! a host-installed one (the compositor hosts several apps in-process and
@@ -77,7 +77,7 @@ pub trait ClipboardBackend: Send + Sync {
     fn text(&self, target: ClipboardTarget) -> Option<String>;
 
     /// Offer an RGBA8 image on the clipboard. Optional: the default refuses,
-    /// which is honest for backends that only carry text.
+    /// which is appropriate for backends that only carry text.
     fn set_image(&self, width: usize, height: usize, rgba: &[u8]) -> bool {
         let _ = (width, height, rgba);
         false
@@ -920,7 +920,7 @@ impl ClipboardBackend for WaylandClipboard {
     fn text(&self, target: ClipboardTarget) -> Option<String> {
         // An explicit paste must never substitute an older cached selection.
         // The protocol read runs on its worker; this call waits only for the
-        // small interaction budget, then honestly reports no text.
+        // small interaction budget, then reports no text.
         self.refresh_external_text(target).flatten()
     }
 
@@ -1078,7 +1078,7 @@ mod tests {
     use std::sync::Mutex;
 
     /// A backend that records what it was asked to do, so the resolution order
-    /// in `text_selection` can be asserted against the real trait rather than
+    /// in `text_selection` can be asserted against the trait rather than
     /// against a reimplementation of it.
     #[derive(Default)]
     struct RecordingBackend {

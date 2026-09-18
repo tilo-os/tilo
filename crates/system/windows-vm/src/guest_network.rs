@@ -56,7 +56,7 @@ pub enum GuestNetworkError {
     PolicyUnavailable,
 }
 
-/// A real, token-authenticated CONNECT relay for one materialized lease.
+/// A token-authenticated CONNECT relay for one materialized lease.
 ///
 /// It intentionally supports no SOCKS, UDP, BIND, or direct guest route. The
 /// guest-side proxy translates normal HTTP proxy traffic to CONNECT, so the

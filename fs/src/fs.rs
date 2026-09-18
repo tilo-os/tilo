@@ -5,7 +5,7 @@
 //! The access decision lives in [`crate::acl`]; this module decides how
 //! a denial *looks*. It looks like nothing: a path outside the view is
 //! `ENOENT` with no `readdir` entry; a path in the view but not writable
-//! is `EROFS`; a path in the view and readable is the real thing.
+//! is `EROFS`; a path in the view and readable is served normally.
 //!
 //! `EACCES` is never returned for a policy decision — it's the errno
 //! most software handles by aborting, while "no such file" and
@@ -16,7 +16,7 @@
 //! is a signal; a directory's `nlink` is computed from the filtered
 //! listing, never the real tree, so it can't announce hidden subdirectories.
 //!
-//! ## Where the illusion has an edge, and why it is not reachable
+//! ## Edge cases covered by the capability model
 //!
 //! Creating a name that already exists but is outside the view answers
 //! `EROFS` rather than creating it — the alternative is writing over
@@ -259,7 +259,7 @@ pub struct QuickFS {
             (collab_types::ContentHash, collab_types::FilePropertiesV1),
         >,
     >,
-    /// The workspace ACL and the identity it is evaluated as — the real
+    /// The workspace ACL and the identity it is evaluated as — the authoritative
     /// access-control check. `None` keeps Unix-veneer-only behaviour;
     /// `Some` checks every open/read/write against the ACL as that identity.
     /// One field so an ACL can never be attached without the identity it
@@ -2939,7 +2939,7 @@ impl QuickFS {
         }
         // Outside the view, or in it but not readable (an ancestor
         // directory the app may walk but not read as content). Either way
-        // the honest answer is that there is nothing here.
+        // The result is ENOENT.
         Err(ENOENT)
     }
 
@@ -3164,7 +3164,7 @@ impl QuickFS {
     }
 
     /// Current full content of an inode: the in-flight buffer if any, else
-    /// the hydrated blob. `Ok(empty)` only for a genuinely empty/hashless
+    /// the hydrated blob. `Ok(empty)` only for an empty/hashless
     /// file; a hydration failure is `Err` so a write never seeds from empty
     /// and silently truncates a not-yet-local file.
     fn read_full_blocking(&self, ino: u64) -> io::Result<Vec<u8>> {
@@ -3172,7 +3172,7 @@ impl QuickFS {
             return Ok(buf.clone());
         }
         // Documents seed from their current serialized form (so a partial /
-        // append write modifies the real content rather than an empty buffer).
+        // append write modifies the current content rather than an empty buffer).
         if self.is_document(ino) {
             return self
                 .document_export(ino)
@@ -5606,8 +5606,8 @@ mod availability_control_tests {
                 .unwrap()
                 .set_content_revision(child, &first_revision, 2)
         );
-        // This is the same wake issued after a local namespace publish. It
-        // must not wait for the deliberately slow repair scan.
+        // Issue the same wake used after a local namespace publish. It must not
+        // wait for the deliberately slow repair scan.
         fs.wake_pinned_hydration();
         // No peer is configured yet. The worker records an actionable error
         // and a durable backoff rather than spinning or claiming success.
@@ -6141,7 +6141,7 @@ mod thumb_tests {
         let dir = tempfile::tempdir().unwrap();
         let (namespace, store, fs) = fixture(dir.path().join("thumbs")).await;
 
-        // A real image file whose content is local to the host.
+        // An image file whose content is local to the host.
         let png = solid_png(600, 400, [40, 130, 220]);
         let mh = store.write_content(&png).await.unwrap().unwrap();
         let ino = {
@@ -6161,7 +6161,7 @@ mod thumb_tests {
                 .is_none()
         );
 
-        // The metadata path returns a real, sized PNG preview.
+        // The metadata path returns a sized PNG preview.
         let thumb = fs.thumbnail_for(ino).expect("host generates a preview");
         let decoded = thumbnail::decode_png(&thumb).expect("it is a valid PNG");
         assert!(decoded.is_valid());
@@ -6176,7 +6176,7 @@ mod thumb_tests {
         );
 
         // The thumbnail's blob hash is now on the node (so it gossips), and the
-        // blob is a real content blob in the store peers can hydrate.
+        // blob is a content blob in the store that peers can hydrate.
         let tbh = namespace
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -6283,7 +6283,7 @@ mod thumb_tests {
         };
 
         // A brand-new mount (fresh store, content NOT local) over the same
-        // thumb cache still serves the preview — proof it came from the
+        // thumb cache still serves the preview, confirming it came from the
         // persistent cache, not a re-decode.
         let (namespace2, store2, fs2) = fixture(dir.path().join("thumbs")).await;
         // Same content hash → same cache key. Register the node without the bytes.
@@ -6348,7 +6348,7 @@ mod thumb_tests {
         let dir = tempfile::tempdir().unwrap();
         let (namespace, store, fs) = fixture(dir.path().join("thumbs")).await;
 
-        // The real (small) thumbnail a host generated, present as a content blob
+        // The small thumbnail a host generated, present as a content blob
         // (as it would be after hydrating the tiny blob from the host).
         let preview = thumbnail::encode_png(
             &thumbnail::image_thumb(&solid_png(256, 256, [90, 200, 120]), 256).unwrap(),
@@ -7934,7 +7934,7 @@ mod record_publisher_integration_tests {
         );
         assert!(namespace_path.exists());
 
-        // A real reopen reconstructs both signed record projections from the
+        // Reopening reconstructs both signed record projections from the
         // atomic namespace snapshot and treats the same request as an exact
         // replay, without another version or sibling.
         drop(fs);

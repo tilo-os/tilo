@@ -1,10 +1,8 @@
-//! `guard`, `scan` and `quarantine` — and what they honestly are.
+//! `guard`, `scan` and `quarantine`.
 //!
-//! The reference runtime backs these with a resident daemon that carries
-//! signatures. Tilo has no such thing, and this module does not pretend to
-//! one — it reports and acts on facts the runtime actually knows:
+//! This module reports and acts on facts the runtime can establish:
 //!
-//! - `guard status` — the enforcement really in place right now, read back
+//! - `guard status` — the enforcement in place right now, read back
 //!   from the kernel and the session, not the configuration that asked for
 //!   it. A Landlock ruleset that only partially applied says so.
 //! - `scan <path>` — everything establishable about a path (base side, rpm
@@ -14,8 +12,8 @@
 //!   executable bits cleared, list it, restore it; nothing is quarantined
 //!   automatically, because nothing here is entitled to that judgement.
 //!
-//! Stating the limit is the feature: a `scan` that returned "clean" from a
-//! runtime with no signatures would be worse than no `scan` at all.
+//! A `scan` reports established properties and does not infer safety from
+//! the absence of a matching condition.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -112,16 +110,16 @@ pub fn restrict_self(rw: &[PathBuf], ro: &[PathBuf]) -> LandlockOutcome {
     }
 }
 
-/// Ask the kernel whether the Landlock ruleset is really in force, by
+/// Ask the kernel whether the Landlock ruleset is in force, by
 /// trying something it forbids. [`restrict_self`] gives the guest's root
 /// read-only access, so creating an entry at `/` is refused when the
 /// ruleset applied and succeeds when it did not; either way the probe
 /// leaves nothing behind.
 ///
-/// Deliberately a probe, not a read of `/proc/self/status`: not every
+/// A probe, rather than a read of `/proc/self/status`: not every
 /// kernel reports Landlock there, and a status line that says "installed"
 /// because the code path ran is exactly the check that passes when it
-/// can't see.
+/// cannot detect kernels that omit enforcement.
 pub fn landlock_probe() -> LandlockOutcome {
     let probe = Path::new("/").join(format!(".ush-landlock-probe-{}", std::process::id()));
     match std::fs::create_dir(&probe) {
@@ -132,17 +130,15 @@ pub fn landlock_probe() -> LandlockOutcome {
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
             LandlockOutcome::FullyEnforced
         }
-        // A read-only or otherwise unusual root cannot tell the two apart, and
-        // saying so is better than picking the flattering answer.
+        // A read-only or otherwise unusual root cannot distinguish the two
+        // outcomes.
         Err(_) => LandlockOutcome::Errored,
     }
 }
 
 /// What `scan` found. Every field is something the runtime established, and
-/// there is deliberately no "verdict".
-// Seven independently-established facts about the path, not a mode select —
-// each bool answers one thing `scan` checked, and the report's whole point
-// is to keep them separate rather than collapse them into a verdict.
+/// there is no "verdict".
+// Each bool records one independently established fact about the path.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is one independently-established scan fact, not a state machine"
@@ -356,8 +352,7 @@ mod tests {
         assert!(report.notes.iter().any(|n| n.contains("not present")));
     }
 
-    /// The honesty requirement, asserted rather than documented: every report
-    /// carries the limit.
+    /// Every report carries a note describing unchecked conditions.
     #[test]
     fn every_report_states_that_nothing_was_checked_against_a_database() {
         let dir = tempfile::tempdir().unwrap();

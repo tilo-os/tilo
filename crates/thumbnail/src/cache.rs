@@ -1,11 +1,9 @@
 //! A content-addressed thumbnail cache: disk (survives restart) + memory LRU.
 //!
-//! The key is `(content hash, target edge)` — the same BLAKE3 the rest of Tilo
-//! addresses content by. Because it is keyed by *content*, a thumbnail is
-//! invalidated for free when the file changes (the file's hash changes, so the
-//! key changes), and shared for free when the same bytes appear under two paths
-//! or on two peers. Stored as PNG on disk under the cache directory, fronted by
-//! a bounded `moka` LRU so a hot grid never re-reads the disk.
+//! The key is `(content hash, target edge)`, using the same BLAKE3 content
+//! address as the rest of Tilo. A changed file gets a new key, while identical
+//! content can share a thumbnail across paths and peers. PNGs are stored on
+//! disk and fronted by a bounded `moka` LRU.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -38,10 +36,9 @@ impl ThumbKey {
 
     /// A cheap identity key for a local file that has no precomputed content
     /// hash: BLAKE3 over `path + mtime + size`. Hashing the full bytes on the
-    /// request thread would be the very jank the off-thread service exists to
-    /// avoid; a `(path, mtime, size)` tuple still changes whenever the file's
-    /// content changes, so the cache invalidates correctly on edit. Collab-FS
-    /// files should use [`ThumbKey::of_hash`] instead for true content dedup.
+    /// request thread would block the caller; a `(path, mtime, size)` tuple
+    /// still changes when the file's content changes. Collab-FS files should
+    /// use [`ThumbKey::of_hash`] for content deduplication.
     pub fn of_path_meta(path: &Path, mtime_ms: u64, size: u64, edge: u32) -> Self {
         let mut hasher = blake3::Hasher::new();
         hasher.update(path.as_os_str().as_encoded_bytes());

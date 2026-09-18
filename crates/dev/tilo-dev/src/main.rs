@@ -1303,14 +1303,9 @@ const RESPONSIVE_AUDIT_VIEWPORTS: [(&str, (u32, u32)); 4] = [
     ("desktop", (1920, 1080)),
 ];
 
-/// Reject a renderer that merely creates PNG files without painting the app.
-///
-/// A screenshot may legitimately have a large flat background, so this is a
-/// deliberately loose sanity gate rather than a visual-diff replacement. A
-/// frame fails only when one exact colour occupies more than 99.9% of its
-/// pixels; that catches empty/first-frame captures while allowing deliberately
-/// sparse, centred empty states. Dimensions are checked too, so a stale image
-/// cannot satisfy a different viewport case.
+/// Reject empty or stale responsive captures while allowing sparse empty states.
+/// A frame fails when one exact colour occupies more than 99.9% of its pixels;
+/// dimensions are checked against the expected viewport as well.
 fn validate_responsive_pngs(mode_root: &Path) -> Result<()> {
     for (viewport_name, expected) in RESPONSIVE_AUDIT_VIEWPORTS {
         let suffix = format!("-{viewport_name}.png");

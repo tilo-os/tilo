@@ -7,8 +7,8 @@
 //! The pure pieces — PKCE generation (SHA-256 + base64url), the authorization
 //! URL builder, and the token-response parser — are dependency-free and always
 //! built, so they are unit-tested in every configuration (no network, no
-//! `live` feature). The `authorization_url` a real browser would open and the
-//! `code_verifier` an exchange would send are produced here for real.
+//! `live` feature). The `authorization_url` a browser would open and the
+//! `code_verifier` an exchange would send are produced here.
 //!
 //! ## What needs the network (`live`)
 //! [`exchange_code`] performs the actual HTTPS POST to the provider's token

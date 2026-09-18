@@ -89,7 +89,9 @@ pub const COMMENT_REPLY_BLOCKS: &str = "blocks"; // Map<block_id, block> (reply 
 /// without changing the schema genesis while making resolve win over a reply
 /// authored on a divergent replica.
 pub const COMMENT_TOMBSTONE_PREFIX: &str = "~resolved:";
-/// The inline mark anchoring a comment to a text range `[start, end)`, valued with the comment id (a `Str`); unlike `note-ref`, spans real text rather than a placeholder character.
+/// The inline mark anchoring a comment to a text range `[start, end)`, valued
+/// with the comment id (a `Str`); unlike `note-ref`, it spans text rather than
+/// a placeholder character.
 pub const MARK_COMMENT: &str = "comment"; // Str — the anchored comment id
 
 // Tracked changes / revision marks: a `changes` root map of `Map<change_id, change>`, each a

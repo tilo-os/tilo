@@ -2,14 +2,14 @@
 //!
 //! [`runs`](crate::history_source::runs) records *what* the instruction did;
 //! [`revert`](crate::history_source::revert) undoes one such reference inside
-//! one document. This is the piece between them: the coordination, and the
-//! honesty about what it managed.
+//! one document. This is the piece between them: coordination and reporting
+//! which steps were completed.
 //!
 //! A run undone while one of its apps is closed leaves a report that no longer
 //! mentions a photo and a photo that is still cropped — and from inside either
 //! app that looks finished. So any unreachable step refuses the whole run
 //! ([`unreachable_steps`], then [`refuse_run`]), nothing is written, and the
-//! refusal names the apps, which is something a person can act on.
+//! refusal names the affected apps.
 //!
 //! The one partial allowed is within a step, where slots somebody edited after
 //! the run are kept rather than overwritten. It is never silent:

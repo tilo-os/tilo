@@ -36,7 +36,7 @@ struct TestClockFile {
 /// Install the daemon's explicit test clock override.
 ///
 /// The initial value is validated before installation so a bad launch fails
-/// rather than briefly running with the real clock.  Subsequent read failures
+/// rather than briefly running with the system clock.  Subsequent read failures
 /// fail closed through [`unix_now_ms`].
 ///
 /// # Errors

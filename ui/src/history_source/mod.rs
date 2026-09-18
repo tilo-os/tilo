@@ -71,8 +71,8 @@ pub use seen::HistorySeenFrontier;
 
 /// The structural path materialises one snapshot per version, so cost is
 /// linear in versions and document size; 200 is well past what a scrubber
-/// track can resolve into distinct ticks at any realistic width. Raise it
-/// with [`HistorySource::with_max_entries`] when a caller genuinely wants
+/// track can resolve into distinct ticks at common widths. Raise it with
+/// [`HistorySource::with_max_entries`] when a caller needs
 /// the whole chain.
 pub const DEFAULT_MAX_ENTRIES: usize = 200;
 
@@ -257,7 +257,7 @@ pub fn entry_id_from_hash(change_hash_hex: &str) -> HistoryEntryId {
 }
 
 /// `time_ms` is `0` for a change committed without a timestamp. The epoch is
-/// the honest rendering of "we don't know when this happened": it sorts
+/// the rendering of "we don't know when this happened": it sorts
 /// oldest rather than being quietly filed under today.
 fn timestamp_from_ms(time_ms: i64) -> SystemTime {
     if time_ms <= 0 {

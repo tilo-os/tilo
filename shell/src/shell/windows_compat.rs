@@ -347,7 +347,7 @@ fn spawn_entry_registry_refresh(
     })
 }
 
-/// Start the real session broker. Failure is fail-closed: the optional
+/// Start the session broker. Failure is fail-closed: the optional
 /// application service remains absent and Windows Manager shows repair state.
 ///
 /// # Errors

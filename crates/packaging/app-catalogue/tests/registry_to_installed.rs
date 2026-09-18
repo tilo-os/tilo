@@ -1,11 +1,11 @@
-//! The whole path, on real code: a signed `.qpkg` published to a real
+//! End-to-end registry-to-install coverage: a signed `.qpkg` published to an
 //! HTTP registry, listed as available, fetched, verified by
 //! `tilo-install`, and present in the registry the desktop enumerates
 //! installed apps from.
 //!
-//! Nothing here is mocked: real socket, real signed package, real
-//! `tilo-install` child process. The assertion that matters:
-//! `launcher::registry` (the compositor's own reader) returns the app.
+//! The test uses a socket, signed package, and `tilo-install` child process;
+//! the final assertion is that `launcher::registry` (the compositor's own
+//! reader) returns the app.
 
 #![allow(
     clippy::unwrap_used,
@@ -32,7 +32,7 @@ use registry_types::{
 };
 
 /// The .qpkg-authoring the local test registry does, shared verbatim
-/// so tests hold the served package to its real contract.
+/// so tests use the same manifest contract as the served package.
 #[path = "../examples/support/authoring.rs"]
 mod authoring;
 
@@ -46,8 +46,8 @@ fn env_lock() -> MutexGuard<'static, ()> {
 }
 
 /// Locate the `tilo-install` binary this workspace builds. A missing
-/// binary **fails** the test rather than skipping it — a check that
-/// can't reach its subject proves nothing, and a silent skip would read as a pass.
+/// binary **fails** the test rather than skipping it; without the binary the
+/// installation path cannot be exercised.
 fn tilo_install_bin() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let root = manifest_dir
@@ -164,7 +164,7 @@ fn signed_snapshot_json(entry: RegistryEntry, owner: &SigningKey) -> String {
     serde_json::to_string(&snapshot).unwrap()
 }
 
-/// A minimal real HTTP server: GET /entries returns the catalogue JSON, GET /<name>.qpkg returns the package bytes.
+/// A minimal HTTP server: GET /entries returns the catalogue JSON, GET /<name>.qpkg returns the package bytes.
 struct Registry {
     port: u16,
     _thread: std::thread::JoinHandle<()>,
@@ -276,7 +276,7 @@ fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
     let url = format!("http://127.0.0.1:{planned_port}/sheets.qpkg");
     let entry = signed_entry(PACKAGE_ID, &url, &qpkg);
     let entries_json = signed_snapshot_json(entry, &owner);
-    // Bind for real; if the planned port was taken, fall back to whatever we get and rewrite the URL.
+    // Bind the server; if the planned port was taken, fall back to whatever we get and rewrite the URL.
     let registry = Registry::start(entries_json, qpkg.clone());
     let registry = if registry.port == planned_port {
         registry
@@ -337,7 +337,7 @@ fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
         "the scratch install root must start empty"
     );
 
-    // 3. Install it through the real installer.
+    // 3. Install it through the installer.
     let installed = app_catalogue::install::install(PACKAGE_ID)
         .unwrap_or_else(|e| panic!("install must succeed: {}", e.user_message()));
     assert_eq!(installed.package_id, PACKAGE_ID);
@@ -484,7 +484,7 @@ type = "gui"
     root
 }
 
-/// Serve `qpkg` under `package_id` and install it with the real installer, returning what the desktop's own reader then sees.
+/// Serve `qpkg` under `package_id` and install it with the installer, returning what the desktop's own reader then sees.
 fn publish_and_install(
     package_id: &str,
     qpkg: Vec<u8>,
@@ -614,7 +614,7 @@ fn an_app_installed_from_a_registry_keeps_the_services_it_declared() {
 
 /// A payload that is not part of a package still installs (the local
 /// registry accepts --payload /bin/true), but is published as
-/// declaring no services rather than silently passing for a real package.
+/// declaring no services rather than silently passing for a package.
 #[test]
 fn a_payload_with_no_manifest_is_published_as_declaring_no_services() {
     let bare = tempfile::tempdir().unwrap();

@@ -93,7 +93,7 @@ pub enum RemoteAction {
 }
 
 /// Sink the owner's compositor exposes to receive remote-input events;
-/// `State::apply_remote_input` for the real path, [`RecordingSink`] in tests.
+/// `State::apply_remote_input` in production and [`RecordingSink`] in tests.
 pub trait RemoteInputSink {
     /// Apply a remote-input event to the owner's seat, scoped to `surface` on
     /// behalf of `peer` — implementations own keymap translation and ignoring surfaces they no longer own.
@@ -368,11 +368,11 @@ mod tests {
         }
     }
 
-    /// Wires the real production egress path through a
+    /// Wires the production egress path through a
     /// [`crate::network::surface_tracker::SurfaceTracker`]: a deposited
     /// frame is drained via `take_latest`, H.264-decoded, and
     /// PSNR-compared against the input (floor: 35 dB). `deposit_for_test` is
-    /// `#[cfg(test)]`-gated since production bytes arrive via a real shm `wl_buffer`.
+    /// `#[cfg(test)]`-gated since production bytes arrive via a shm `wl_buffer`.
     #[test]
     fn shared_foreign_surface_round_trips_rgba() {
         use crate::network::decoder::H264Decoder;

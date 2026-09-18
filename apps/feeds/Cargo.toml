@@ -29,7 +29,7 @@ winit.workspace = true
 taffy.workspace = true
 
 # --- Feed reading stack ---------------------------------------------------
-# Real RSS/Atom/JSON-feed parsing; pure-Rust TLS so we don't drag in a
+# RSS/Atom/JSON-feed parsing; pure-Rust TLS avoids a
 # system OpenSSL build dep inside the distrobox.
 feed-rs = "2.4"
 reqwest = { workspace = true, features = ["rustls-tls", "gzip", "brotli"] }

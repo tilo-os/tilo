@@ -6,7 +6,7 @@ over a Unix-domain socket. Builtin codecs (markdown, odt, docx, …) ship the
 same Rust source as guest crates; third-party codecs install through the same
 registry mechanism.
 
-## Pinned versions (chosen mid-2026)
+## Pinned versions
 
 | Dep        | Version | Why                                                       |
 | ---------- | ------- | --------------------------------------------------------- |

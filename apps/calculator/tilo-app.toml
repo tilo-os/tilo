@@ -1,7 +1,6 @@
 # Calculator — Tilo application manifest.
 #
-# The strictest profile in the fleet: no file, no socket, no exec.
-# Everything past the GUI baseline is denied.
+# No file, socket, or exec access is granted beyond the GUI baseline.
 #
 
 

@@ -34,8 +34,8 @@
 set -euo pipefail
 
 REPO="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
-# The profile decides what a viewer waits through, so the default is an
-# optimised one. A `debug` word processor is 449 MB against 24 MB built
+# The profile determines the package size, so the default is an optimised
+# one. A `debug` word processor is 449 MB against 24 MB built
 # here, and the packaging then spends its time moving and BLAKE3-hashing
 # eighteen times the bytes it needs to: measured keystroke-to-first-frame
 # is ~1.9 s optimised and 6.7-21 s debug, for the same mechanism.
@@ -44,7 +44,7 @@ REPO="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 # profile — it resolves tilo-install and tilo-launcher beside its own binary
 # — and `target/demo/shell` is the one that keeps the TILO_TEST_CONTROL
 # socket a `--release` build deliberately omits. For every package built
-# here `demo` IS the release configuration; it overrides one thing,
+# here `demo` is the release configuration; it overrides one thing,
 # `debug-assertions` for `shell`.
 PROFILE="${TILO_DEMO_PROFILE:-demo}"
 BIN="$REPO/target/$PROFILE"

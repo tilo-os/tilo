@@ -7,8 +7,8 @@ Files was showing up in its own tab as `app`, and the word processor as
 toolkit app used to announce when it had no package id, and
 `word-processor` is a package id's last segment printed raw.
 
-So this launches both apps through the real palette, into a real
-sandbox, and reads the tab titles the compositor built — plus the
+This launches both apps through the palette, into a sandbox, and reads
+the tab titles the compositor built — plus the
 wayland app-id each client actually announced, because that is where
 the failure came from and asserting only on the label would not say
 which half was fixed.
@@ -23,9 +23,8 @@ Usage
 
     cargo build -p shell -p launcher
 
-Runs against the machine's own app store
-(`~/.local/share/tilo-apps`) — those are the packages the demo opens, and
-a synthesised fixture would prove nothing about them.
+Runs against the machine's app store (`~/.local/share/tilo-apps`), which
+contains the packages under test.
 
 Exits non-zero if any claim fails.
 """

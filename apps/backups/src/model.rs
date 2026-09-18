@@ -1,14 +1,14 @@
 //! Pure data model for the Backups app.
 //!
-//! The *catalog* (sources, snapshots, destinations) represents the ground
-//! truth that, in the live app, comes from the local checksummed repository.
+//! The *catalog* (sources, snapshots, destinations) comes from the local
+//! checksummed repository in the live app.
 //! Future providers can project btrfs or remote repositories here too. For the
-//! offline `--shots` build (and as the demo seed) we synthesise a realistic
-//! week of activity in [`Catalog::sample`].
+//! offline `--shots` build (and as the demo seed) we synthesise a week of
+//! activity in [`Catalog::sample`].
 //!
 //! User-editable / collaborative state — which view is open, which source &
 //! snapshot are selected, whether the restore sheet is up, and the retention
-//! policy — lives in the Automerge document (see `doc.rs`), NOT here.
+//! policy — lives in the Automerge document (see `doc.rs`), rather than here.
 
 /// The four top-level screens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

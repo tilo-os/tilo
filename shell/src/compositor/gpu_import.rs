@@ -13,7 +13,7 @@
 //!                 ─► RGBA8 bytes ─► ForeignFrameStore ─► vello ImageBrush
 //! ```
 //!
-//! A real dmabuf import (CPU never copies the client's memory; GPU does detiling/format
+//! A dmabuf import (CPU never copies the client's memory; GPU does detiling/format
 //! conversion; one readback per *commit*, not per paint). Zero-copy to vello isn't feasible —
 //! `peniko::ImageBrush` takes a byte blob and the paint target's wgpu context differs from this
 //! importer's GL context (possibly a different GPU) — so the readback keeps the seam at "bytes".

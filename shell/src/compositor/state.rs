@@ -508,7 +508,7 @@ pub struct State {
     personal_fabric_input: PersonalFabricInputHolders,
     /// Every live client surface, keyed by the stable collaboration id.
     /// Native output bookkeeping uses this to emit `wl_surface.enter`, and
-    /// remote pointer motion uses it to resolve the real focus surface.
+    /// remote pointer motion uses it to resolve the focused surface.
     pub surface_handles: HashMap<SurfaceId, WlSurface>,
     /// Active share sessions keyed by their target `SurfaceId`.
     ///
@@ -1236,7 +1236,7 @@ impl State {
             .filter(|id| self.output_sizes.contains_key(id))
             .or_else(|| self.output_sizes.keys().min_by_key(|id| id.0).copied());
         let Some(output) = output else {
-            // Keep the ordinary tab when there is genuinely no output yet;
+            // Keep the ordinary tab when there is no output yet;
             // `app_id_changed` will be called again only on a client change,
             // so an eventual output update promotes through fullscreen.
             self.pending_presentation_outputs
@@ -1660,7 +1660,7 @@ impl State {
     ///
     /// `false` when no session is registered or the tracker slot is empty
     /// (damage-only commit); `true` when the deposit was accepted and the
-    /// encode tick ran — NOT a guarantee a frame was emitted. Split out so integration tests can drive the tick path without a real `WlSurface`.
+    /// encode tick ran — NOT a guarantee a frame was emitted. Split out so integration tests can drive the tick path without a `WlSurface`.
     pub fn tick_share_session_for_surface(&mut self, surface_id: SurfaceId) -> bool {
         let Some(session) = self.active_sessions.get(&surface_id).cloned() else {
             return false;
@@ -1677,7 +1677,7 @@ impl State {
                 }
                 // Encoder actually consumed the DMABUF. Only *now* do we bump
                 // the tracker's `dmabuf_direct_count` — the metric reflects
-                // real zero-copy, not "DMABUF-shaped but rejected and fell back to SHM".
+                // zero-copy, not "DMABUF-shaped but rejected and fell back to SHM".
                 self.surface_tracker.note_capture_path(
                     surface_id,
                     crate::compositor::surface_readback::CapturePath::DmabufDirect,
@@ -1881,7 +1881,7 @@ impl State {
     }
 
     /// Inject a single `org.freedesktop.impl.portal.RemoteDesktop`
-    /// [`RemoteAction`] into the real seat, targeting whatever surface holds seat focus.
+    /// [`RemoteAction`] into the seat, targeting whatever surface holds seat focus.
     ///
     /// The *local-app* counterpart to [`Self::apply_remote_input`]
     /// (peer-sync, gated by the share registry). `RemoteDesktop` consent is
@@ -2229,7 +2229,7 @@ impl State {
 // `RemoteInputSink` impl: receives the gated events from
 // `ShareRegistry::route_to`.
 //
-// Pointer drives the real smithay `Seat<Self>` via `PointerHandle::motion`/
+// Pointer drives the smithay `Seat<Self>` via `PointerHandle::motion`/
 // `button`, matching `network::wayland::WaylandServer::handle_input`.
 //
 // Keyboard: `InputEvent::Key { keysym, pressed, modifiers }` fires
@@ -2321,7 +2321,7 @@ impl RemoteInputSink for State {
             }
             InputEvent::PointerLeave { surface: _ } => {
                 // Leaving ends pointer attribution only. In particular, do
-                // not release keys or deactivate text-input-v3: real apps
+                // not release keys or deactivate text-input-v3: apps
                 // keep their caret after the pointer moves elsewhere.
                 let _ = self.remote_seats.seat_mut(peer).pointer_leave();
             }
@@ -3467,7 +3467,7 @@ impl XdgShellHandler for State {
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
         // Clients call `set_app_id` *after* `get_toplevel` fires
         // `new_toplevel`, so the tab was adopted with a synthetic
-        // `anon-<surface_id>` placeholder. Re-read the now-populated app-id and rewrite the tab in-place so the chrome (and the integration test) see the real one.
+        // `anon-<surface_id>` placeholder. Re-read the now-populated app-id and rewrite the tab in-place so the chrome (and the integration test) see the populated one.
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         let new_app_id = wl_compositor::with_states(surface.wl_surface(), |states| {
             states

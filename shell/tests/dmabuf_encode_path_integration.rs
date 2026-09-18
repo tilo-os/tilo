@@ -1,8 +1,8 @@
 //! End-to-end integration test for the DMABUF-direct encode path:
 //! verifies `FrameInput::DmabufFd` reaches the VA-API backend with plane/
 //! stride/modifier/fourcc metadata intact, that `av_hwframe_map` is
-//! actually called (not a silent CPU-upload fallback), and that
-//! `dmabuf_direct_count` reflects a real zero-copy transit.
+//! called instead of falling back to a CPU upload, and that
+//! `dmabuf_direct_count` reflects zero-copy transit.
 //!
 //! `#[ignore]`d by default; self-skips when `VaApiBackend::probe()`
 //! reports unavailable — no `/dev/dri/renderD*` (typical on CI), no
@@ -19,7 +19,7 @@
 //! fd — most VA-API drivers refuse it at `av_hwframe_map`, surfacing as
 //! `EncoderError::EncodeFailed { detail: "dmabuf-direct not supported
 //! ..." }`. Asserting that marker text is the primary value here: it is
-//! what keeps the compositor's SHM fallback firing. Real DRM-PRIME
+//! what keeps the compositor's SHM fallback firing. DRM-PRIME
 //! testing lives in the flatpak_share_e2e VM path.
 
 #![cfg(feature = "vaapi")]
@@ -138,7 +138,7 @@ fn dmabuf_direct_encode_path_end_to_end() {
             );
 
             // `tick_share_session_for_surface` is what bumps `dmabuf_direct_count`
-            // in production; go through it so the increment is asserted on the real
+            // in production; go through it so the increment is asserted on the
             // path.
             let mut tracker = SurfaceTracker::new();
             tracker.note_capture_path(42, CapturePath::DmabufDirect);

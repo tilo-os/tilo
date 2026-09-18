@@ -7,8 +7,8 @@
 //!    directly, so the viewer shows the document exactly as authored (fonts,
 //!    figures, vector art and all). Bitmaps are cached per page + zoom bucket
 //!    so scrolling and panning never re-rasterise. The raster backend also
-//!    extracts a real **text layer** ([`crate::text_layer`]) per page from
-//!    pdfium, so search finds genuine hits and text can be selected, and it can
+//!    extracts a **text layer** ([`crate::text_layer`]) per page from
+//!    pdfium, so search finds text hits and text can be selected, and it can
 //!    **flatten** the reader's annotations + signatures back onto the pages and
 //!    save a valid `.pdf` reopenable in any viewer.
 //!  * **Text** — when no native library is available, the page text is
@@ -1069,8 +1069,8 @@ impl RasterBackend {
     }
 
     /// The number of content objects on displayed page `display_idx` in the
-    /// backing pdfium document. Used by the save-back round-trip test to prove
-    /// flattened markup lands as real page content.
+    /// backing pdfium document. Used by the save-back round-trip test to check
+    /// that flattened markup lands as page content.
     pub fn page_object_count(&self, display_idx: usize) -> Option<usize> {
         let slot = self.slot(display_idx)?;
         let page = self
