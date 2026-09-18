@@ -7543,8 +7543,12 @@ impl PhotosApp {
         // Compact library navigation is photo-first. Collections remain
         // canonical/searchable, while their dense chip rail moves out of the
         // small viewport instead of pushing the first date below the fold.
-        let album_h = if desktop_library && !self.library_albums.is_empty() {
-            38.0
+        let album_h = if desktop_library {
+            // Album creation/editing shares this secondary collection rail;
+            // reserving it even for an empty library keeps those controls out
+            // of the primary destination masthead and avoids first-use layout
+            // shifts when the first album appears.
+            52.0
         } else {
             0.0
         };
@@ -7683,7 +7687,16 @@ impl PhotosApp {
         } else {
             compact_header.controls.y0
         };
-        let density_x = bounds.x1 - f64::from(PAD) - 96.0;
+        let density_x = if desktop_library {
+            bounds.x1 - f64::from(PAD) - 96.0
+        } else if large_text {
+            compact_header.controls.x1 + 8.0
+        } else {
+            // Keep the two density controls immediately before Select on a
+            // compact masthead. They previously occupied the exact same rect
+            // and painted a second control underneath it.
+            compact_header.controls.x0 - 104.0
+        };
         for (hit, rect, enabled) in [
             (
                 TimelineHit::ZoomOut,
@@ -7762,7 +7775,7 @@ impl PhotosApp {
                 .max(1)
                 .div_ceil(COLLECTION_PAGE_SIZE);
             let album_chip_limit =
-                bounds.x1 - f64::from(PAD) - if album_pages > 1 { 308.0 } else { 0.0 };
+                bounds.x1 - f64::from(PAD) - 232.0 - if album_pages > 1 { 308.0 } else { 0.0 };
             for (album_id, label) in albums {
                 let width = if large_text {
                     (label.chars().count() as f64 * 13.0 + 22.0).clamp(64.0, 190.0)
@@ -9038,14 +9051,14 @@ impl PhotosApp {
 
         if !self.selection_mode {
             // The normal desktop masthead has intentional empty room between
-            // its library identity and album management. On compact layouts
-            // this short, named control follows the heading rather than
-            // replacing a destructive card affordance.
+            // its destination tabs and the right-edge density controls. On
+            // compact layouts this short, named control follows the heading
+            // rather than replacing a destructive card affordance.
             let rect = if desktop_library {
                 Rect::new(
-                    masthead.x1 - 500.0,
+                    masthead.x1 - 216.0,
                     masthead.y0 + 16.0,
-                    masthead.x1 - 388.0,
+                    masthead.x1 - 104.0,
                     masthead.y1 - 16.0,
                 )
             } else {
@@ -9472,45 +9485,13 @@ impl PhotosApp {
         // action; it does not occupy a permanent New/Edit row in front of
         // every first photo.
         if !self.album_editor
-            && theme.text_scale <= 1.25
-            && self.canvas_rect.width() < LIBRARY_DESKTOP_MASTHEAD_MIN_W
+            && (theme.text_scale > 1.25
+                || self.canvas_rect.width() < LIBRARY_DESKTOP_MASTHEAD_MIN_W)
         {
             return;
         }
         if self.album_editor && theme.text_scale > 1.25 {
             self.draw_large_text_album_editor(scene, transform, text_renderer, theme, presence);
-            return;
-        }
-        // At enlarged text, keep album management visible rather than making
-        // a core workflow search/agent-only. Its dedicated row is part of
-        // `CompactHeaderGeometry`, so it cannot collide with the collection
-        // rail above or the date heading below.
-        if !self.album_editor && theme.text_scale > 1.25 {
-            let bounds = self.canvas_rect;
-            let row =
-                compact_library_header_geometry(bounds, true, !self.library_albums.is_empty())
-                    .album_actions;
-            let button_w = (row.width() - 8.0) * 0.5;
-            let new = Rect::new(row.x0, row.y0, row.x0 + button_w, row.y1);
-            let edit = Rect::new(new.x1 + 8.0, row.y0, row.x1, row.y1);
-            for (hit, rect, enabled) in [
-                (AlbumEditorHit::New, new, true),
-                (AlbumEditorHit::Edit, edit, self.active_album.is_some()),
-            ] {
-                if let Some((_, button)) = self
-                    .library_album_buttons
-                    .iter_mut()
-                    .find(|(candidate, _)| *candidate == hit)
-                {
-                    button.set_enabled(enabled);
-                    button.apply_layout_external(rect);
-                    button.draw(scene, transform, text_renderer, theme, presence);
-                }
-                if enabled {
-                    self.album_editor_hits.push((hit, rect));
-                }
-            }
-            self.album_editor_rect = Rect::new(new.x0, new.y0, edit.x1, edit.y1);
             return;
         }
         let bounds = self.canvas_rect;
@@ -9551,16 +9532,17 @@ impl PhotosApp {
             && theme.text_scale <= 1.25
             && bounds.width() >= LIBRARY_DESKTOP_MASTHEAD_MIN_W;
         let panel = if desktop_header_actions {
-            // The normal wide masthead already reserves its right side for
-            // destination, selection and density controls. Album management
-            // belongs beside the title, where it remains discoverable without
-            // painting over those independent actions.
-            Rect::new(
-                bounds.x0 + 132.0,
-                bounds.y0 + 10.0,
-                bounds.x0 + 366.0,
-                bounds.y0 + 54.0,
-            )
+            // Album management belongs to the album rail, not between the
+            // Library title and its first-class destination tabs. When the
+            // rail is paged, leave its shared pager the rightmost lane.
+            let album_pages = self
+                .library_albums
+                .len()
+                .max(1)
+                .div_ceil(COLLECTION_PAGE_SIZE);
+            let pager_reserve = if album_pages > 1 { 300.0 } else { 0.0 };
+            let right = bounds.x1 - f64::from(PAD) - pager_reserve;
+            Rect::new(right - 226.0, bounds.y0 + 72.0, right, bounds.y0 + 116.0)
         } else {
             Rect::new(
                 if narrow {
@@ -14241,7 +14223,7 @@ mod tests {
     }
 
     #[test]
-    fn enlarged_library_keeps_density_navigation_without_metadata_chips() {
+    fn enlarged_library_keeps_photos_first_with_density_navigation() {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
@@ -14274,15 +14256,15 @@ mod tests {
         );
 
         assert!(app.metadata_filter_cards.is_empty());
-        let new_album = app
-            .album_editor_hits
-            .iter()
-            .find_map(|(hit, rect)| (*hit == AlbumEditorHit::New).then_some(*rect))
-            .expect("200% library exposes New album");
-        let header = compact_library_header_geometry(app.canvas_rect, true, false);
         assert!(
-            new_album.y1 <= header.timeline_y,
-            "New album must finish before the timeline begins: {new_album:?} / {header:?}"
+            app.album_editor_hits.is_empty(),
+            "200% keeps album management out of the photo-first masthead"
+        );
+        assert!(
+            app.library_cards
+                .first()
+                .is_some_and(|(_, rect, _)| rect.y0 < app.canvas_rect.y1),
+            "the first photograph must remain above the fold at 200%"
         );
         let semantics = app.accessibility_tree();
         let children = &semantics.children[1].children;
@@ -14544,6 +14526,68 @@ mod tests {
                 && rect.y0 >= app.canvas_rect.y0
                 && rect.y1 <= app.canvas_rect.y1
         }));
+    }
+
+    #[test]
+    fn library_masthead_controls_never_paint_through_each_other() {
+        fn overlaps(left: Rect, right: Rect) -> bool {
+            left.x0 < right.x1 && left.x1 > right.x0 && left.y0 < right.y1 && left.y1 > right.y0
+        }
+
+        let mut app = PhotosApp::new();
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/header.png", 40, 20));
+        let photo_id = photo.id.clone();
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos: vec![photo],
+                albums: vec![Album {
+                    id: "photos.album:header".into(),
+                    name: "Header".into(),
+                    photo_ids: vec![photo_id],
+                }],
+            },
+        );
+        app.show_library();
+        app.sync(&mut doc, &ROOT);
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        let theme = Theme::dark();
+        let presence = PresenceCtx::empty();
+
+        app.canvas_rect = Rect::new(0.0, 0.0, 1_280.0, 800.0);
+        app.draw_library(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+        app.draw_album_editor(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+        let mut desktop_controls: Vec<Rect> =
+            app.places_hits.iter().map(|(_, rect)| *rect).collect();
+        desktop_controls.extend(app.selection_hits.iter().map(|(_, rect)| *rect));
+        desktop_controls.extend(app.timeline_density_hits.iter().map(|(_, rect)| *rect));
+        desktop_controls.extend(app.album_editor_hits.iter().map(|(_, rect)| *rect));
+        for (index, rect) in desktop_controls.iter().enumerate() {
+            assert!(
+                desktop_controls
+                    .iter()
+                    .skip(index + 1)
+                    .all(|other| !overlaps(*rect, *other)),
+                "desktop masthead controls overlap: {rect:?}"
+            );
+        }
+
+        app.canvas_rect = Rect::new(0.0, 0.0, 390.0, 760.0);
+        app.draw_library(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+        let select = app
+            .selection_hits
+            .iter()
+            .find_map(|(hit, rect)| (*hit == SelectionHit::Start).then_some(*rect))
+            .expect("compact library keeps Select visible");
+        assert!(
+            app.timeline_density_hits
+                .iter()
+                .all(|(_, density)| !overlaps(select, *density)),
+            "compact density controls must not paint underneath Select"
+        );
     }
 
     #[test]
