@@ -48,6 +48,14 @@ pub enum UnpackError {
 /// This is separate from [`unpack`] so registries can reject amplification
 /// before publishing or approving a bundle, without creating a temporary
 /// destination directory.
+///
+/// # Errors
+///
+/// Returns [`UnpackError::TooManyPayloadEntries`] or
+/// [`UnpackError::PayloadTooLarge`] when an application exceeds its
+/// materialization budget, [`UnpackError::MissingPayloadBlob`] when a
+/// collection entry has no stored bytes, or [`UnpackError::Store`] when the
+/// backing store cannot be read.
 pub fn validate_materialized_payload<S: BlobStore>(
     manifest: &Manifest,
     collection: &Collection,
@@ -67,9 +75,7 @@ pub fn validate_materialized_payload<S: BlobStore>(
         let bytes = store
             .get(hash)?
             .ok_or_else(|| UnpackError::MissingPayloadBlob(hash.to_hex(), rel_path.clone()))?;
-        materialized = materialized
-            .checked_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
-            .unwrap_or(u64::MAX);
+        materialized = materialized.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
         if materialized > crate::MAX_APP_UNPACKED_BYTES {
             return Err(UnpackError::PayloadTooLarge {
                 found: materialized,
