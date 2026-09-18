@@ -161,15 +161,15 @@ pub enum PersistError {
         /// Number of directory entries referencing the inode.
         links: u64,
     },
-    /// A shared device key was created by neither root nor the reading account.
-    #[error("device key {path} is owned by uid {owner}; expected root or uid {reader}")]
+    /// A secret key inode is not owned by the authority expected for that key.
+    #[error("secret key {path} is owned by uid {owner}; expected {expected}")]
     InsecureOwner {
         /// Key path whose opened inode has an unexpected owner.
         path: String,
         /// Owner reported by the opened inode.
         owner: u32,
-        /// Effective uid of the reader.
-        reader: u32,
+        /// Human-readable ownership rule for this key class.
+        expected: String,
     },
     /// An Ed25519 key file was not 32 bytes.
     #[error("expected 32-byte Ed25519 key, got {0} bytes")]
@@ -259,7 +259,21 @@ pub fn write_public_key(path: &Path, pubkey: &[u8; 32]) -> io::Result<()> {
 /// cannot be read, or [`PersistError::WrongKeyLength`] if it is not
 /// exactly 32 bytes.
 pub fn read_signing_key(path: &Path) -> Result<SigningKey, PersistError> {
-    signing_key_from_file(path, 0o077, false)
+    signing_key_from_file(path, 0o077, SecretOwner::Any)
+}
+
+/// Read a user/root signing key owned by the invoking account.
+///
+/// This is the correct boundary for offline signing commands: they require no
+/// privilege, and accepting another account's mode-0600 inode would let a
+/// writable parent directory silently substitute the signing authority.
+///
+/// # Errors
+///
+/// Applies [`read_signing_key`]'s checks and additionally returns
+/// [`PersistError::InsecureOwner`] when the opened inode is not caller-owned.
+pub fn read_owned_signing_key(path: &Path) -> Result<SigningKey, PersistError> {
+    signing_key_from_file(path, 0o077, SecretOwner::Reader)
 }
 
 /// The length check and expansion shared by every secret-key reader.
@@ -268,7 +282,7 @@ pub fn read_signing_key(path: &Path) -> Result<SigningKey, PersistError> {
 fn signing_key_from_file(
     path: &Path,
     forbidden_mode: u32,
-    require_device_owner: bool,
+    owner_policy: SecretOwner,
 ) -> Result<SigningKey, PersistError> {
     protect_secret_process()?;
     let mut options = fs::OpenOptions::new();
@@ -293,18 +307,22 @@ fn signing_key_from_file(
     {
         use std::os::unix::fs::MetadataExt;
         reject_metadata_mode(path, &metadata, forbidden_mode)?;
-        if require_device_owner {
+        if owner_policy != SecretOwner::Any {
             // The installed key is provisioned by root and then shared
             // read-only with the device-identity group. Custom/test stores may
             // be owned by the caller, but a third account may never substitute
             // the signing identity merely by matching its mode.
             // SAFETY: geteuid takes no arguments and has no failure mode.
             let reader = unsafe { libc::geteuid() };
-            if !device_key_owner_is_accepted(metadata.uid(), reader) {
+            if !secret_key_owner_is_accepted(owner_policy, metadata.uid(), reader) {
                 return Err(PersistError::InsecureOwner {
                     path: path.display().to_string(),
                     owner: metadata.uid(),
-                    reader,
+                    expected: match owner_policy {
+                        SecretOwner::Any => unreachable!(),
+                        SecretOwner::Reader => format!("uid {reader}"),
+                        SecretOwner::RootOrReader => format!("root or uid {reader}"),
+                    },
                 });
             }
         }
@@ -328,9 +346,20 @@ fn signing_key_from_file(
     Ok(SigningKey::from_bytes(&seed))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SecretOwner {
+    Any,
+    Reader,
+    RootOrReader,
+}
+
 #[cfg(unix)]
-fn device_key_owner_is_accepted(owner: u32, reader: u32) -> bool {
-    owner == 0 || owner == reader
+fn secret_key_owner_is_accepted(policy: SecretOwner, owner: u32, reader: u32) -> bool {
+    match policy {
+        SecretOwner::Any => true,
+        SecretOwner::Reader => owner == reader,
+        SecretOwner::RootOrReader => owner == 0 || owner == reader,
+    }
 }
 
 /// Write a 32-byte Ed25519 signing key to disk with mode 0600.
@@ -376,7 +405,7 @@ pub const DEVICE_KEY_MODE: u32 = 0o640;
 /// [`PersistError::Io`] if it cannot be read, or
 /// [`PersistError::WrongKeyLength`] if it is not exactly 32 bytes.
 pub fn read_device_key(path: &Path) -> Result<SigningKey, PersistError> {
-    signing_key_from_file(path, 0o007, true)
+    signing_key_from_file(path, 0o007, SecretOwner::RootOrReader)
 }
 
 /// Read the former group-owned key during its one-time privileged migration.
@@ -389,7 +418,7 @@ pub fn read_device_key(path: &Path) -> Result<SigningKey, PersistError> {
 /// Applies the same bounded no-follow, regular-file, mode, link-count, and
 /// length checks as [`read_device_key`], except for the historical owner rule.
 pub fn read_legacy_device_key(path: &Path) -> Result<SigningKey, PersistError> {
-    signing_key_from_file(path, 0o007, false)
+    signing_key_from_file(path, 0o007, SecretOwner::Any)
 }
 
 /// Write the device key with [`DEVICE_KEY_MODE`], atomically.
@@ -793,10 +822,29 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn device_key_owner_accepts_only_root_or_the_reader() {
-        assert!(device_key_owner_is_accepted(0, 1000));
-        assert!(device_key_owner_is_accepted(1000, 1000));
-        assert!(!device_key_owner_is_accepted(1001, 1000));
+    fn secret_key_owner_policies_are_distinct() {
+        assert!(secret_key_owner_is_accepted(SecretOwner::Any, 1001, 1000));
+        assert!(secret_key_owner_is_accepted(
+            SecretOwner::Reader,
+            1000,
+            1000
+        ));
+        assert!(!secret_key_owner_is_accepted(SecretOwner::Reader, 0, 1000));
+        assert!(secret_key_owner_is_accepted(
+            SecretOwner::RootOrReader,
+            0,
+            1000
+        ));
+        assert!(secret_key_owner_is_accepted(
+            SecretOwner::RootOrReader,
+            1000,
+            1000
+        ));
+        assert!(!secret_key_owner_is_accepted(
+            SecretOwner::RootOrReader,
+            1001,
+            1000
+        ));
     }
 
     #[test]
