@@ -90,14 +90,43 @@ pub fn open_group_address(name: &str) -> ActionAddress {
     ActionAddress::new(group_resource_id(name), "open")
 }
 
+/// The one typed external operation for exporting exactly one contact.  Both
+/// the resource catalogue and the contextual UI encode this value before it
+/// reaches the shared operation handler.
+pub fn export_contact_operation(id: ContactId) -> ContactsOperation {
+    ContactsOperation::ExportContactVcard {
+        id: id.to_string(),
+        path: None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContactsOperation {
-    Open { id: String },
-    OpenGroup { name: String },
-    ImportVcard { path: Option<String> },
-    ExportAllVcard { path: Option<String> },
-    KeepImportConflict { token: String },
-    ImportConflictAsNew { token: String },
+    Open {
+        id: String,
+    },
+    OpenGroup {
+        name: String,
+    },
+    ImportVcard {
+        path: Option<String>,
+    },
+    ExportAllVcard {
+        path: Option<String>,
+    },
+    /// Open the export workflow with exactly one current contact selected.
+    /// The optional legacy path is deliberately rejected by the app: file
+    /// access always goes through the system portal.
+    ExportContactVcard {
+        id: String,
+        path: Option<String>,
+    },
+    KeepImportConflict {
+        token: String,
+    },
+    ImportConflictAsNew {
+        token: String,
+    },
 }
 
 #[cfg(test)]
@@ -115,6 +144,45 @@ mod file_action_tests {
             ExecutionMode::Background { .. }
         ));
         assert_eq!(spec.contract.result, ResultSpec::Job);
+    }
+
+    #[test]
+    fn exports_are_sensitive_confirmed_background_jobs_not_deletes() {
+        let spec = file_operation("export-all-vcard", "Export all contacts", true);
+        assert_eq!(spec.contract.risk, tilo_actions::RiskLevel::Sensitive);
+        assert_eq!(
+            spec.contract.confirmation,
+            tilo_actions::ConfirmationPolicy::Confirm
+        );
+        assert_eq!(
+            spec.contract.execution,
+            ExecutionMode::Background { cancellable: false }
+        );
+        assert_eq!(spec.contract.result, ResultSpec::Job);
+        assert!(spec.contract.validate_declaration().is_empty());
+    }
+
+    #[test]
+    fn contact_export_only_starts_the_sensitive_export_flow() {
+        let operation = ContactsOperation::ExportContactVcard {
+            id: uuid::Uuid::nil().to_string(),
+            path: None,
+        };
+        let spec = contact_operation(
+            "export-contact",
+            "Export contact",
+            OperationKind::Effect,
+            &operation,
+        )
+        .expect("contact export has a typed operation");
+        assert_eq!(spec.contract.risk, tilo_actions::RiskLevel::Sensitive);
+        assert_eq!(
+            spec.contract.confirmation,
+            tilo_actions::ConfirmationPolicy::Confirm
+        );
+        assert_eq!(spec.contract.execution, ExecutionMode::Immediate);
+        assert_eq!(spec.contract.result, ResultSpec::None);
+        assert!(spec.contract.validate_declaration().is_empty());
     }
 }
 
@@ -135,8 +203,40 @@ fn contact_operation(
         // return. The app has no durable job handle or cancellation channel,
         // so advertising a cancellable background lifecycle would be false.
         ContactsOperation::ImportVcard { .. } => Some(spec),
-        ContactsOperation::ExportAllVcard { .. }
-        | ContactsOperation::ImportConflictAsNew { .. } => Some(spec.destructive()),
+        ContactsOperation::ExportAllVcard { .. } => Some(spec.with_contract(export_contract())),
+        ContactsOperation::ExportContactVcard { .. } => {
+            Some(spec.with_contract(export_flow_contract()))
+        }
+        ContactsOperation::ImportConflictAsNew { .. } => Some(spec.destructive()),
+    }
+}
+
+/// Writing a vCard is privacy-sensitive, not destructive: it leaves the
+/// Contacts document unchanged while disclosing a copy through a
+/// user-mediated portal.
+fn export_contract() -> ActionContract {
+    ActionContract {
+        risk: tilo_actions::RiskLevel::Sensitive,
+        confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+        // The system picker cannot be cancelled by the app after it is open;
+        // cancellation settles through the invocation lifecycle instead.
+        execution: ExecutionMode::Background { cancellable: false },
+        result: ResultSpec::Job,
+        ..ActionContract::default()
+    }
+}
+
+/// A single-contact resource first opens a version-and-destination workflow.
+/// That is a completed, confirmation-gated UI transition, not yet a portal
+/// job. Once the person confirms a version, the mediated file write follows
+/// the same sensitive background job contract as book export.
+fn export_flow_contract() -> ActionContract {
+    ActionContract {
+        risk: tilo_actions::RiskLevel::Sensitive,
+        confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+        execution: ExecutionMode::Immediate,
+        result: ResultSpec::None,
+        ..ActionContract::default()
     }
 }
 
@@ -163,23 +263,19 @@ fn file_operation(id: &str, label: &str, export: bool) -> ActionSpec {
             )
         },
     )
-    .with_contract(ActionContract {
-        risk: if export {
-            tilo_actions::RiskLevel::Destructive
-        } else {
-            tilo_actions::RiskLevel::Low
-        },
-        confirmation: if export {
-            tilo_actions::ConfirmationPolicy::Confirm
-        } else {
-            tilo_actions::ConfirmationPolicy::None
-        },
-        // The host picker has no cancellation API. The app can stop waiting
-        // for an outcome, but cannot close the native dialog or interrupt an
-        // already-started read/write; advertising cancellation would be false.
-        execution: ExecutionMode::Background { cancellable: false },
-        result: ResultSpec::Job,
-        ..ActionContract::default()
+    .with_contract(if export {
+        export_contract()
+    } else {
+        ActionContract {
+            risk: tilo_actions::RiskLevel::Low,
+            confirmation: tilo_actions::ConfirmationPolicy::None,
+            // The host picker has no cancellation API. The app can stop waiting
+            // for an outcome, but cannot close the native dialog or interrupt an
+            // already-started read/write; advertising cancellation would be false.
+            execution: ExecutionMode::Background { cancellable: false },
+            result: ResultSpec::Job,
+            ..ActionContract::default()
+        }
     })
 }
 
@@ -1043,7 +1139,7 @@ fn book_resource(ctx: &ContactsResourceCtx) -> Resource {
 /// Resource and action catalogue for one stable contact identity. Kept
 /// independent of the open-resource page so a search result can resolve a
 /// contact that is not among the current 64 palette rows.
-pub fn contact_resource(contact: &Contact) -> Resource {
+pub fn contact_resource(contact: &Contact, export_busy: bool) -> Resource {
     let id = contact.id.to_string();
     let mut child = Resource::new(
         contact_resource_id(contact.id),
@@ -1110,6 +1206,23 @@ pub fn contact_resource(contact: &Contact) -> Resource {
         &set_favorite_action(id.clone(), !contact.favorite),
     ));
 
+    // Export is a privacy-sensitive effect, but it still belongs to this
+    // contact resource rather than only to the book-level export-all action.
+    // The app opens the same version/portal workflow as the row context menu;
+    // no unmediated filesystem path is ever accepted.
+    let export = export_contact_operation(contact.id);
+    if let Some(mut spec) = contact_operation(
+        "export-contact",
+        "Export contact",
+        OperationKind::Effect,
+        &export,
+    ) {
+        if export_busy {
+            spec = spec.unavailable("already_running", "A contact export is already in progress");
+        }
+        child = child.with_action(spec);
+    }
+
     // Delete.
     child = child.with_action(
         immediate_spec("delete", "Delete contact", &delete_contact_action(id)).destructive(),
@@ -1167,7 +1280,7 @@ pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Re
         root = root.with_child(group_resource(group));
     }
     for contact in ctx.contacts.iter().take(MAX_CONTEXT_CONTACT_RESOURCES) {
-        root = root.with_child(contact_resource(contact));
+        root = root.with_child(contact_resource(contact, ctx.export_busy));
     }
 
     vec![root]
@@ -1238,7 +1351,7 @@ pub fn resolve_resource(ctx: &ContactsResourceCtx, id: &str) -> Option<Resource>
     ctx.contacts
         .iter()
         .find(|contact| contact.id == contact_id)
-        .map(contact_resource)
+        .map(|contact| contact_resource(contact, ctx.export_busy))
 }
 
 impl ResourceProvider for crate::app::ContactsApp {
@@ -1298,7 +1411,7 @@ mod tests {
 
     /// Ctrl+K on Contacts yields the tree: the book with a "New contact" action
     /// and a `contacts.contact` child per record exporting rename / add-to-group
-    /// / favourite / delete. Drives the real resource hook.
+    /// / favourite / export / delete. Drives the real resource hook.
     #[test]
     fn ctrl_k_publishes_the_contacts_tree() {
         let (app, doc) = seeded();
@@ -1318,6 +1431,7 @@ mod tests {
         assert!(actions.contains(&"edit"), "{actions:?}");
         assert!(actions.contains(&"add-to-group"), "{actions:?}");
         assert!(actions.contains(&"favorite"), "{actions:?}");
+        assert!(actions.contains(&"export-contact"), "{actions:?}");
         assert!(actions.contains(&"delete"), "{actions:?}");
 
         let group = book
@@ -1340,6 +1454,7 @@ mod tests {
             .collect();
         assert!(flat.contains(&"New contact"), "{flat:?}");
         assert!(flat.contains(&"Delete contact"), "{flat:?}");
+        assert!(flat.contains(&"Export contact"), "{flat:?}");
         assert!(flat.contains(&"Rename contact"), "{flat:?}");
 
         let mut palette = ui::ActionPalette::new();
@@ -1470,7 +1585,7 @@ mod tests {
     fn typed_field_patch_action_covers_the_complete_contact_form() {
         let (_app, mut doc) = seeded();
         let contact = first_contact(&doc);
-        let resource = contact_resource(&contact);
+        let resource = contact_resource(&contact, false);
         let spec = resource
             .actions
             .iter()
@@ -1910,6 +2025,32 @@ mod tests {
         assert_eq!(
             from_spec.payload, from_builder.payload,
             "one source of truth for favourite"
+        );
+
+        // Per-contact export is a typed resource operation, not an
+        // unmodelled context-menu side effect.  The portal path stays absent
+        // from the payload and the action is confirmation-labelled because it
+        // can disclose contact data outside the address book.
+        let export_spec = contact
+            .actions
+            .iter()
+            .find(|action| action.id == "export-contact")
+            .expect("contact exports its individual vCard operation");
+        assert!(matches!(
+            export_spec.contract.risk,
+            tilo_actions::RiskLevel::Sensitive
+        ));
+        assert_eq!(export_spec.contract.execution, ExecutionMode::Immediate);
+        assert_eq!(export_spec.contract.result, ResultSpec::None);
+        let export: ContactsOperation =
+            serde_json::from_slice(&immediate_encode(export_spec).payload)
+                .expect("export operation payload is typed");
+        assert_eq!(
+            export,
+            ContactsOperation::ExportContactVcard {
+                id: id.to_string(),
+                path: None,
+            }
         );
 
         // Rename: prompted spec == patch builder for the renamed record.

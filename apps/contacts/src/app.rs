@@ -710,6 +710,19 @@ enum ContextAction {
 }
 
 impl ContextAction {
+    /// Stable action component used by the semantic menu.  This is kept
+    /// separate from the display label because the favourite label changes
+    /// with state while an assistive client needs an address that remains
+    /// stable for the lifetime of this one popup.
+    fn id(self) -> &'static str {
+        match self {
+            ContextAction::Edit => "edit",
+            ContextAction::Favorite => "favorite",
+            ContextAction::Export => "export",
+            ContextAction::Delete => "delete",
+        }
+    }
+
     /// The user-facing label. The Favorite entry reads "Add to favorites" or
     /// "Remove from favorites" depending on the contact's current state.
     fn label(self, is_favorite: bool) -> &'static str {
@@ -735,6 +748,13 @@ const CONTEXT_ACTIONS: &[ContextAction] = &[
     ContextAction::Export,
     ContextAction::Delete,
 ];
+
+/// Stable target for one item in a contact's transient context menu.  The
+/// menu itself is presentation state, but its actions are the same canonical
+/// edit/favourite/delete/export paths exposed elsewhere in the app.
+fn context_action_target(id: ContactId, action: ContextAction) -> String {
+    format!("contacts.context:{id}:{}", action.id())
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TypeTarget {
@@ -1642,7 +1662,7 @@ impl ContactsApp {
                 .collect(),
             contact_count: self.store.contacts.len(),
             import_busy: self.import_rx.is_some() || self.import_parse_rx.is_some(),
-            export_busy: self.export_rx.is_some(),
+            export_busy: self.export_dialog.is_open() || self.export_rx.is_some(),
             import_conflicts: self
                 .import_conflicts
                 .iter()
@@ -1672,7 +1692,7 @@ impl ContactsApp {
             groups: Vec::new(),
             contact_count: self.store.contacts.len(),
             import_busy: self.import_rx.is_some() || self.import_parse_rx.is_some(),
-            export_busy: self.export_rx.is_some(),
+            export_busy: self.export_dialog.is_open() || self.export_rx.is_some(),
             import_conflicts: Vec::new(),
         };
         if id == "contacts.book" {
@@ -2291,6 +2311,48 @@ impl ContactsApp {
         self.pending_export = Some((ids, version));
         self.export_rx = Some(contacts_export_request(EXPORT_FILE_NAME).send());
         true
+    }
+
+    /// Start the version-selection workflow for one canonical contact
+    /// resource.  This is intentionally the only path behind both the
+    /// contact resource's `export-contact` operation and the row context
+    /// menu: a stale/busy check therefore has identical behavior for agents,
+    /// keyboard, assistive technology, and pointer input.
+    fn open_contact_export(&mut self, id: ContactId) -> Result<(), String> {
+        if self.store.get(id).is_none() {
+            return Err("contact no longer exists".into());
+        }
+        if self.export_dialog.is_open()
+            || self.export_rx.is_some()
+            || self.resource_invocation.is_some()
+        {
+            return Err("a contact export is already in progress".into());
+        }
+        self.export_dialog.open([id]);
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Serialize the same canonical operation published by the contact
+    /// resource, then route it through the normal decoder/validator.  The
+    /// context-menu affordance intentionally does not call
+    /// [`Self::open_contact_export`] directly: this keeps pointer, keyboard,
+    /// AT-SPI and agent activation on one typed operation boundary.
+    fn invoke_contact_export_operation(
+        &mut self,
+        state: &AutoCommit,
+        id: ContactId,
+    ) -> Result<bool, String> {
+        let operation = crate::actions::export_contact_operation(id);
+        let payload = serde_json::to_vec(&operation)
+            .map_err(|error| format!("couldn't encode contact export: {error}"))?;
+        self.invoke_resource_operation(
+            tilo_actions::OperationKind::Effect,
+            crate::actions::CONTACTS_OPERATION_TYPE,
+            &payload,
+            state,
+            &automerge::ROOT,
+        )
     }
 
     /// Write the chosen `ids` out as a `.vcf` of `version` to `path`, reporting
@@ -5248,6 +5310,38 @@ impl ContactsApp {
             .with_children(children)
     }
 
+    /// The visual row menu is also a real menu to AT-SPI/AccessKit.  This is
+    /// important even though Edit, Favourite, and Delete have other routes:
+    /// Exporting one selected contact is intentionally contextual, and a
+    /// screen-reader user must not need a mouse to reach it.  The target ids
+    /// resolve back to the same implementation used by pointer and keyboard
+    /// activation below.
+    fn accessibility_context_menu(&self, id: ContactId, anchor: Rect) -> AccessNode {
+        let (panel, rows) = self.popup_menu_geometry(anchor, CONTEXT_ACTIONS.len(), 200.0);
+        let favorite = self.store.get(id).is_some_and(|contact| contact.favorite);
+        let children = CONTEXT_ACTIONS
+            .iter()
+            .zip(rows)
+            .enumerate()
+            .map(|(index, (action, bounds))| {
+                AccessNode::new(Role::MenuItem)
+                    .with_name(action.label(favorite))
+                    .with_action_target(context_action_target(id, *action))
+                    .with_bounds(bounds)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.popup_focus == index),
+                    )
+            })
+            .collect();
+        AccessNode::new(Role::Menu)
+            .with_name("Contact actions")
+            .with_hashed_key(("contacts.context-menu", id))
+            .with_bounds(panel)
+            .with_children(children)
+    }
+
     fn accessibility_calendar(
         &self,
         id: ContactId,
@@ -5408,6 +5502,7 @@ impl Widget for ContactsApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.text_scale = f64::from(theme.text_scale);
+        self.export_dialog.set_text_scale(theme.text_scale);
         // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
         // cannot actually return `Err` for a fresh leaf (see the
         // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
@@ -5624,6 +5719,20 @@ impl Widget for ContactsApp {
             }
             (
                 tilo_actions::OperationKind::Effect,
+                crate::actions::ContactsOperation::ExportContactVcard { id, path },
+            ) => {
+                if path.is_some() {
+                    return Err(
+                        "direct filesystem paths are not accepted; use the system file picker"
+                            .into(),
+                    );
+                }
+                let id =
+                    uuid::Uuid::parse_str(&id).map_err(|_| "invalid contact id".to_string())?;
+                self.open_contact_export(id)?;
+            }
+            (
+                tilo_actions::OperationKind::Effect,
                 crate::actions::ContactsOperation::KeepImportConflict { token },
             ) => {
                 if !self
@@ -5705,6 +5814,20 @@ impl Widget for ContactsApp {
                     return Err("contact export could not be started".into());
                 }
                 Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            crate::actions::ContactsOperation::ExportContactVcard { .. } => {
+                // Decode/validate and open the exact same export dialog as a
+                // context-menu activation. This operation completes once the
+                // flow is shown; a portal job begins only after the person
+                // chooses a vCard version and destination in that flow.
+                self.invoke_resource_operation(kind, type_id, payload, doc, path)
+                    .map(|handled| {
+                        handled.then(|| {
+                            ui::widget::ResourceOperationStart::Completed(
+                                tilo_actions::ActionOutput::default(),
+                            )
+                        })
+                    })
             }
             crate::actions::ContactsOperation::Open { .. }
             | crate::actions::ContactsOperation::OpenGroup { .. }
@@ -5999,6 +6122,7 @@ impl Widget for ContactsApp {
                             .with_state(
                                 AccessState::new()
                                     .focusable(true)
+                                    .context_menu(true)
                                     .selected(self.selected == Some(*id)),
                             )
                             .with_bounds(*bounds)
@@ -6100,6 +6224,9 @@ impl Widget for ContactsApp {
             Some(Popup::GroupFilter { anchor }) => {
                 children.push(self.accessibility_group_menu(anchor));
             }
+            Some(Popup::ContextMenu { target, anchor }) => {
+                children.push(self.accessibility_context_menu(target, anchor));
+            }
             Some(Popup::Calendar {
                 year,
                 month,
@@ -6131,6 +6258,44 @@ impl Widget for ContactsApp {
         _path: &ObjId,
     ) -> bool {
         use ui::a11y::Action;
+
+        // List rows are hand-painted, but their standard AT-SPI context-menu
+        // action opens precisely the same menu as a secondary pointer click.
+        // This gives keyboard and screen-reader users access to the
+        // per-contact export workflow instead of treating it as mouse-only.
+        if matches!(action, Action::ShowContextMenu)
+            && let Some(raw) = target.strip_prefix("contacts.select:")
+            && let Ok(id) = raw.parse::<ContactId>()
+            && let Some((_, row)) = self.list_rows.iter().find(|(row_id, _)| *row_id == id)
+        {
+            self.selected = Some(id);
+            self.open_popup(Popup::ContextMenu {
+                target: id,
+                anchor: Rect::new(row.x0 + 40.0, row.center().y, row.x0 + 40.0, row.center().y),
+            });
+            self.dirty = true;
+            return true;
+        }
+
+        // Menu items are exposed independently of the list row, with stable
+        // targets.  Only honor them while their matching transient menu is
+        // still open, preventing a stale assistive request from operating on
+        // a contact after the user has dismissed or retargeted the menu.
+        if matches!(action, Action::Activate)
+            && let Some(Popup::ContextMenu {
+                target: menu_target,
+                ..
+            }) = self.popup.as_ref()
+            && let Some(context_action) = CONTEXT_ACTIONS
+                .iter()
+                .copied()
+                .find(|candidate| target == context_action_target(*menu_target, *candidate))
+        {
+            let menu_target = *menu_target;
+            self.popup = None;
+            self.execute_context_action(state, menu_target, context_action);
+            return true;
+        }
 
         if matches!(action, Action::Activate)
             && let Some(conflict) = self.import_conflicts.first()
@@ -7553,6 +7718,19 @@ impl ContactsApp {
         let Some(action) = CONTEXT_ACTIONS.get(i).copied() else {
             return;
         };
+        self.execute_context_action(state, target, action);
+    }
+
+    /// Execute the single source of truth behind context-menu activation.
+    /// Pointer, keyboard and assistive activation must not slowly drift into
+    /// three subtly different implementations (especially for destructive
+    /// Delete and the per-contact Export selection).
+    fn execute_context_action(
+        &mut self,
+        state: &mut AutoCommit,
+        target: ContactId,
+        action: ContextAction,
+    ) {
         match action {
             ContextAction::Edit => {
                 if let Some(c) = self.store.get(target).cloned() {
@@ -7569,17 +7747,16 @@ impl ContactsApp {
                 self.relayout = true;
             }
             ContextAction::Export => {
-                // Open the export dialog pre-ticked with just this
-                // contact.
-                let mut set = std::collections::HashSet::new();
-                set.insert(target);
-                self.export_dialog.open(set);
+                if let Err(error) = self.invoke_contact_export_operation(state, target) {
+                    self.show_toast(format!("Couldn't export contact: {error}"));
+                }
             }
             ContextAction::Delete => {
                 self.selected = Some(target);
                 self.confirm_delete = Some(target);
             }
         }
+        self.dirty = true;
     }
 
     /// Calendar popup interaction: prev/next month, pick a day into the
@@ -8194,25 +8371,7 @@ impl ContactsApp {
                 let Some(action) = CONTEXT_ACTIONS.get(self.popup_focus).copied() else {
                     return;
                 };
-                match action {
-                    ContextAction::Edit => {
-                        if let Some(contact) = self.store.get(target).cloned() {
-                            self.selected = Some(target);
-                            self.begin_edit(contact, false);
-                        }
-                    }
-                    ContextAction::Favorite => {
-                        self.toggle_favorite(state, target);
-                        self.relayout = true;
-                    }
-                    ContextAction::Export => {
-                        self.export_dialog.open([target]);
-                    }
-                    ContextAction::Delete => {
-                        self.selected = Some(target);
-                        self.confirm_delete = Some(target);
-                    }
-                }
+                self.execute_context_action(state, target, action);
             }
             Popup::Calendar {
                 year,
