@@ -6868,114 +6868,136 @@ impl FileExplorerWidget {
         folder
     }
 
+    fn append_nearby_receiver_resources(&self, folder: &mut Resource) {
+        for transfer in self.nearby_send.transfers() {
+            if let Some(resource) = self.nearby_receiver_resource(transfer) {
+                folder.children.push(resource);
+            }
+        }
+    }
+
     #[allow(
         clippy::expect_used,
         reason = "nearby payloads contain only fixed tuples of serializable opaque handles"
     )]
-    fn append_nearby_receiver_resources(&self, folder: &mut Resource) {
+    fn nearby_receiver_resource(
+        &self,
+        transfer: &ui::collaboration::NearbyTransferStatus,
+    ) -> Option<Resource> {
+        use ui::collaboration::NearbyTransferPhase;
+
+        let mut resource = Resource::new(
+            format!(
+                "nearby-transfer:{}",
+                nearby_action_locator("transfer", transfer.handle.as_bytes())
+            ),
+            "files.nearby-transfer",
+            transfer.name.clone(),
+        );
+        self.append_nearby_decision_actions(&mut resource, transfer);
+        if transfer.phase == NearbyTransferPhase::Failed {
+            resource.actions.push(
+                ActionSpec::operation(
+                    "retry",
+                    t("files-nearby-retry"),
+                    OperationKind::Effect,
+                    "files.nearby-retry",
+                    &transfer.handle,
+                )
+                .expect("nearby retry payload is serializable")
+                .with_contract(ActionContract {
+                    permission: PermissionRequirement::Read,
+                    retry: RetryPolicy::AtMostOnce,
+                    ..ActionContract::default()
+                }),
+            );
+        }
+        if matches!(
+            transfer.phase,
+            NearbyTransferPhase::Queued | NearbyTransferPhase::Transferring
+        ) {
+            resource.actions.push(
+                ActionSpec::operation(
+                    "cancel",
+                    t("files-nearby-cancelled"),
+                    OperationKind::Effect,
+                    "files.nearby-cancel",
+                    &transfer.handle,
+                )
+                .expect("nearby cancel payload is serializable")
+                .with_contract(ActionContract {
+                    permission: PermissionRequirement::Write,
+                    retry: RetryPolicy::AtMostOnce,
+                    ..ActionContract::default()
+                }),
+            );
+        }
+        (!resource.actions.is_empty()).then_some(resource)
+    }
+
+    #[allow(
+        clippy::expect_used,
+        reason = "nearby payloads contain only fixed tuples of serializable opaque handles"
+    )]
+    fn append_nearby_decision_actions(
+        &self,
+        resource: &mut Resource,
+        transfer: &ui::collaboration::NearbyTransferStatus,
+    ) {
         use ui::collaboration::{NearbyTransferDirection, NearbyTransferPhase};
 
-        for transfer in self.nearby_send.transfers() {
-            let mut resource = Resource::new(
-                format!(
-                    "nearby-transfer:{}",
-                    nearby_action_locator("transfer", transfer.handle.as_bytes())
-                ),
-                "files.nearby-transfer",
-                transfer.name.clone(),
-            );
-            if transfer.direction == NearbyTransferDirection::Receiving
-                && matches!(
-                    transfer.phase,
-                    NearbyTransferPhase::AwaitingConsent | NearbyTransferPhase::AwaitingDestination
-                )
-            {
-                for destination in self.nearby_send.destinations() {
-                    resource.actions.push(
-                        ActionSpec::operation(
-                            format!(
-                                "accept-{}",
-                                nearby_action_locator("destination", destination.handle.as_bytes())
-                            ),
-                            t_args(
-                                "files-nearby-save-to-destination",
-                                &[arg("destination", destination.label.clone())],
-                            ),
-                            OperationKind::Effect,
-                            "files.nearby-decide",
-                            &(transfer.handle, Some(destination.handle), false),
-                        )
-                        .expect("nearby accept payload is serializable")
-                        .with_contract(ActionContract {
-                            permission: PermissionRequirement::Write,
-                            risk: RiskLevel::Privileged,
-                            confirmation: ConfirmationPolicy::Confirm,
-                            retry: RetryPolicy::AtMostOnce,
-                            ..ActionContract::default()
-                        }),
-                    );
-                }
-                resource.actions.push(
-                    ActionSpec::operation(
-                        "decline",
-                        t("files-nearby-declined"),
-                        OperationKind::Effect,
-                        "files.nearby-decide",
-                        &(
-                            transfer.handle,
-                            None::<ui::collaboration::NearbyDestinationHandle>,
-                            false,
-                        ),
-                    )
-                    .expect("nearby decline payload is serializable")
-                    .with_contract(ActionContract {
-                        permission: PermissionRequirement::Write,
-                        retry: RetryPolicy::AtMostOnce,
-                        ..ActionContract::default()
-                    }),
-                );
-            }
-            if transfer.phase == NearbyTransferPhase::Failed {
-                resource.actions.push(
-                    ActionSpec::operation(
-                        "retry",
-                        t("files-nearby-retry"),
-                        OperationKind::Effect,
-                        "files.nearby-retry",
-                        &transfer.handle,
-                    )
-                    .expect("nearby retry payload is serializable")
-                    .with_contract(ActionContract {
-                        permission: PermissionRequirement::Read,
-                        retry: RetryPolicy::AtMostOnce,
-                        ..ActionContract::default()
-                    }),
-                );
-            }
-            if matches!(
+        if transfer.direction != NearbyTransferDirection::Receiving
+            || !matches!(
                 transfer.phase,
-                NearbyTransferPhase::Queued | NearbyTransferPhase::Transferring
-            ) {
-                resource.actions.push(
-                    ActionSpec::operation(
-                        "cancel",
-                        t("files-nearby-cancelled"),
-                        OperationKind::Effect,
-                        "files.nearby-cancel",
-                        &transfer.handle,
-                    )
-                    .expect("nearby cancel payload is serializable")
-                    .with_contract(ActionContract {
-                        permission: PermissionRequirement::Write,
-                        retry: RetryPolicy::AtMostOnce,
-                        ..ActionContract::default()
-                    }),
-                );
-            }
-            if !resource.actions.is_empty() {
-                folder.children.push(resource);
-            }
+                NearbyTransferPhase::AwaitingConsent | NearbyTransferPhase::AwaitingDestination
+            )
+        {
+            return;
         }
+        for destination in self.nearby_send.destinations() {
+            resource.actions.push(
+                ActionSpec::operation(
+                    format!(
+                        "accept-{}",
+                        nearby_action_locator("destination", destination.handle.as_bytes())
+                    ),
+                    t_args(
+                        "files-nearby-save-to-destination",
+                        &[arg("destination", destination.label.clone())],
+                    ),
+                    OperationKind::Effect,
+                    "files.nearby-decide",
+                    &(transfer.handle, Some(destination.handle), false),
+                )
+                .expect("nearby accept payload is serializable")
+                .with_contract(ActionContract {
+                    permission: PermissionRequirement::Write,
+                    risk: RiskLevel::Privileged,
+                    confirmation: ConfirmationPolicy::Confirm,
+                    retry: RetryPolicy::AtMostOnce,
+                    ..ActionContract::default()
+                }),
+            );
+        }
+        resource.actions.push(
+            ActionSpec::operation(
+                "decline",
+                t("files-nearby-declined"),
+                OperationKind::Effect,
+                "files.nearby-decide",
+                &(
+                    transfer.handle,
+                    None::<ui::collaboration::NearbyDestinationHandle>,
+                    false,
+                ),
+            )
+            .expect("nearby decline payload is serializable")
+            .with_contract(ActionContract {
+                permission: PermissionRequirement::Write,
+                retry: RetryPolicy::AtMostOnce,
+                ..ActionContract::default()
+            }),
+        );
     }
 
     fn folder_resource_base(&self) -> Resource {
