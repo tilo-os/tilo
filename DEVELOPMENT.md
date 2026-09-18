@@ -63,7 +63,7 @@ Use the pinned Rust MSVC toolchain, Visual Studio C++ build tools for the host
 architecture, and the Cap'n Proto compiler (`capnp.exe` on `PATH`). The native
 ARM64 toolkit, Calculator, Notes, Calendar, Contacts, Sheets, Slides, Weather and
 Scratchpad, Files, Word Processor, Terminal, PDF Viewer, Books, Clocks, Image Editor,
-Photos, Hex Editor, Code Editor, API Tester and Diff and Merge have been built
+Photos, Hex Editor, Code Editor, API Tester, Diff and Merge and Snippets have been built
 and run on Windows.
 Other apps are still being ported; a workspace-wide build currently includes
 Linux services and is not a Windows
@@ -283,6 +283,17 @@ suite exercises the resource Send operation against a real loopback HTTP server.
 ```powershell
 cargo test --locked -p api-tester --all-targets
 ./tools/install-windows-apps.ps1 -Apps api-tester
+```
+
+Snippets uses the shared multiline code editor for snippet bodies. Editing,
+IME input and the resource's `edit-body` action update the same CRDT text;
+indentation and trailing newlines survive restart. Ctrl+Z uses the host's
+document undo. The variable-fill dialog exposes each field and its Copy/Cancel
+actions through the same semantic interface used by Windows accessibility.
+
+```powershell
+cargo test --locked -p snippets --all-targets
+./tools/install-windows-apps.ps1 -Apps snippets
 ```
 
 Unchanged shared fonts are preserved during installation, so a running Tilo app
