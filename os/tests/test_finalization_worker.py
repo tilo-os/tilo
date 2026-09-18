@@ -98,6 +98,26 @@ class WorkerContract(unittest.TestCase):
             ['docker', 'rm', '--force', 'a' * 64], ['docker', 'volume', 'rm', 'owned-work'],
             ['docker', 'volume', 'rm', 'owned-storage']])
 
+    def test_success_requires_matching_exported_publication_receipts(self):
+        request = {'publish_repository': 'code.sandbox.example/qos/tilo-development',
+                   'new_target': 'code.sandbox.example/qos/tilo-development:next'}
+        binding = hashlib.sha256(json.dumps(request, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        published = {'schema': 1, 'request_sha256': binding, 'stage': 'published',
+                     'image_id': 'sha256:' + 'a' * 64, 'config_digest': 'sha256:' + 'a' * 64,
+                     'manifest_digest': 'sha256:' + 'b' * 64,
+                     'published_reference': request['publish_repository'] + '@sha256:' + 'b' * 64,
+                     'target_update_ref': request['new_target']}
+        result = {**published, 'publication_required': False}
+        complete = {'result.json': result, '08-published.json': published}
+        worker.require_published_exports(complete, request)
+        for incomplete in ({}, {'result.json': result}, {'08-published.json': published},
+                           {**complete, 'result.json': []},
+                           {**complete, 'result.json': {**result, 'publication_required': True}},
+                           {**complete, '08-published.json': {**published, 'request_sha256': '0' * 64}},
+                           {**complete, 'result.json': {**result, 'image_id': 'sha256:' + 'c' * 64}}):
+            with self.assertRaises(ValueError):
+                worker.require_published_exports(incomplete, request)
+
 
 if __name__ == '__main__':
     unittest.main()
