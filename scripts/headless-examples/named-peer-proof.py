@@ -455,8 +455,8 @@ def main() -> int:
     ]
     app_sources = [
         REPO / "apps" / "word-processor" / "src" / "widget.rs",
-        REPO / "ui" / "src" / "presence" / "mod.rs",
-        REPO / "ui" / "src" / "app.rs",
+        REPO / "crates" / "sdk" / "ui-core" / "src" / "presence" / "mod.rs",
+        REPO / "crates" / "sdk" / "ui-core" / "src" / "app.rs",
     ]
     stale = [s for s in (freshness(SHELL, shell_sources),
                          freshness(WORD_PROCESSOR, app_sources)) if s]

@@ -79,7 +79,7 @@ UNDER_TEST = (
     "shell/src/compositor/tab_binding.rs",
     "shell/src/compositor/frame.rs",
     "shell/src/shell/launcher.rs",
-    "ui/src/widget/tile_host.rs",
+    "crates/sdk/ui-core/src/widget/tile_host.rs",
 )
 
 

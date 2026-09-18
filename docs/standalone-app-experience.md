@@ -80,7 +80,7 @@ picker backend rather than copied into Windows.
 ## Shared implementation boundaries
 
 1. **App-owned services presentation.** Both native launch paths in
-   `ui/src/launch.rs` should install the same shared services controller. Use
+   `crates/sdk/ui-core/src/launch.rs` should install the same shared services controller. Use
    existing themed/accessibility-aware buttons and modal surfaces inside app
    content, beneath native decorations. Preserve compositor embedding and
    immersive modes. Search, History and Share must also be host-owned semantic
@@ -189,13 +189,13 @@ must not be described as runtime-verified macOS behavior on a Windows machine.
 
 ## Source map
 
-- `ui/src/launch.rs`: component and legacy standalone native construction.
-- `ui/src/app.rs`: action palette, admitted dispatch, focused undo/history routing.
-- `ui/src/application.rs`: explicit HostContext identity/authority/record inputs.
-- `ui/src/bound_dispatch.rs`: focused component and record-bound callbacks.
-- `ui/src/record.rs`: RecordSet, RecordStore and record-owned history.
-- `ui/src/history_source/` and `ui/src/widget/activity_timeline.rs`: shared history.
-- `ui/src/collaboration.rs`, `crates/runtime/runtime-collab/` and
+- `crates/sdk/ui-core/src/launch.rs`: component and legacy standalone native construction.
+- `crates/sdk/ui-core/src/app.rs`: action palette, admitted dispatch, focused undo/history routing.
+- `crates/sdk/ui-core/src/application.rs`: explicit HostContext identity/authority/record inputs.
+- `crates/sdk/ui-core/src/bound_dispatch.rs`: focused component and record-bound callbacks.
+- `crates/sdk/ui-core/src/record.rs`: RecordSet, RecordStore and record-owned history.
+- `crates/sdk/ui-core/src/history_source/` and `crates/sdk/ui-core/src/widget/activity_timeline.rs`: shared history.
+- `crates/sdk/ui-core/src/collaboration.rs`, `crates/runtime/runtime-collab/` and
   `crates/runtime/runtime-portal/`: existing service client and transport boundary.
 - `shell/src/compositor/macos.rs`, `shell/src/compositor/hosted.rs` and
   `shell/src/shell/overlay_host/mod.rs`: current host implementations and room policy.

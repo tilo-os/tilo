@@ -11,7 +11,7 @@ spec.loader.exec_module(fc)
 
 class CatalogTest(unittest.TestCase):
     def test_reviewed_payload_and_product_staging(self):
-        source = ROOT / "ui/assets/fonts"
+        source = ROOT / "crates/sdk/ui-core/assets/fonts"
         self.assertEqual(fc.verify(source, "fixtures"), (16, 44697512))
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / "fonts"
@@ -25,7 +25,7 @@ class CatalogTest(unittest.TestCase):
     def test_corruption_is_not_substituted(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / "fonts"
-            fc.stage(ROOT / "ui/assets/fonts", dest, "product")
+            fc.stage(ROOT / "crates/sdk/ui-core/assets/fonts", dest, "product")
             target = dest / "NotoSansMath-Regular.ttf"
             data = bytearray(target.read_bytes())
             data[-1] ^= 1

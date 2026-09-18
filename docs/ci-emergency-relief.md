@@ -28,12 +28,14 @@ health guarantee.
 | Infrastructure `a30e1c8` | Adds one exclusive on-prem `runner-quality` slot, with a 2 CPU / 4 GiB Docker-in-Docker workload envelope; general/heavy jobs cannot use its reserved capacity. |
 | Infrastructure `ffbd0a1` | Adds completed-cleanup tolerance and live-runner deletion guards, retained in later images. These guards do not prove the cause of historical runner loss. |
 | Infrastructure `3e2e8ba` | Deploys repository-scoped full-builder seed clones with broker image `48a5bf...`. Actual repository 23 snapshot cloning is proven; its first observed job used a public image, so this is not private-builder cache-hit evidence. |
-| Infrastructure `a970175` | Deploys current broker `c80bd455...` with both AX41 v2 seeds. Both replicas Ready with zero restarts at acceptance. Normal repository 23 control and lint jobs received isolated snapshot clones and created their pinned containers without a pull event; timings below. |
+| Infrastructure `a970175` | Deploys broker `c80bd455...` with both AX41 v2 seeds. Both replicas Ready with zero restarts at acceptance. Normal repository 23 control and lint jobs received isolated snapshot clones and created their pinned containers without a pull event; timings below. |
+| Infrastructure `64d2359` | Broker `ef490a74...` disables unrelated generic pre-pull only after verifying qOS repository scope. Global reserve, readiness and lifecycle behavior remain. Both replicas Ready with zero restarts; 316 installed-runtime tests passed. |
+| Infrastructure `021fb14` | Current broker `8d313aa7...` adds priority 1000 with `preemptionPolicy: Never` only for actual disk-heavy demand, not speculative reserves. Both replicas Ready; 326 installed-runtime tests passed. EKS bootstrap persistence follows in `d1fdf88`. |
 
 Broker image:
 
 ```text
-code.sandbox.example/podestaai/sandbox-broker@sha256:c80bd455e9959e48d1a06d14f26a823402a34eee79d050a3ae939ef425225fc7
+code.sandbox.example/podestaai/sandbox-broker@sha256:8d313aa76ff57f9589defbad60e6817278547d2a6a84b204799d342349b0b0a4
 ```
 
 The broker runs as Deployment `sandbox-broker` in namespace `sandbox-broker`.
@@ -43,12 +45,27 @@ five-second intervals. Startup-probe recovery is healthy independently of the
 performance patch. The `c568...` image patched a source-tree copy, while the running
 broker imported its implementation from `site-packages`; the intended performance
 guard therefore did **not** take effect. Infrastructure `506195f` replaces that
-image with the imported-module correction. The current `a970175` deployment
+image with the imported-module correction. The current `021fb14` deployment
 retains that correction, the exclusive quality lane, and `ffbd0a1` cleanup guards
 that tolerate completed resources and protect live runners. Green probes and
 source changes alone do not prove end-to-end improvement; the production
 measurement below is the evidence for the fast-quality path. No Forgejo server
 Deployment was changed by these coalescer/broker rollouts.
+
+The existing manual OS request 9331 received a fresh disk-demand worker at
+23:29:52 UTC with priority 1000 and preemption disabled. At 23:32 it was still
+Pending without a node: priority does not create capacity or evict active work.
+Do not reproduce the attempted pending-pod replacement procedure: with the
+original Job's `backoffLimit: 0`, deleting even an unstarted adopted pod exhausted
+the Job. No active build was interrupted; normal broker reconciliation created
+the fresh prioritized worker after the exhausted Job was cleaned up.
+
+Separate security jobs 83674 and 83681 lost cloud workers. Forgejo's existing
+zombie-task reaper marked them failed at 23:28:57 UTC; each security job was then
+rerun once, preserving its compiled sibling jobs. The underlying host/runtime
+failure remains under investigation. Likewise, AWS workers without snapshot
+seeds still pull the full builder: the on-prem warm measurements below do not
+establish fast cloud startup.
 
 ## What stays protected
 
@@ -176,6 +193,12 @@ is now successful; the complete check run is not claimed green. The linked UI ru
 `6d221fd91261761bfbadbc36b3ff30f901857a9c`. Cloud/ARM cold startup remains outside this proof.
 The separate generic full-builder pilot 22744 measured a **236.876-second cold
 pull**; do not represent these two lean-image hits as eliminating that path.
+
+The later `64d2359` rollout preserves the historical `c80bd455...` cache acceptance
+above. A naturally created cold ARM repository 23 worker at 23:03:43 UTC had
+`CI_WARM=false` and no snapshot in its manifest and was still awaiting scheduling
+at observation. This establishes requested cold-worker configuration, not executed
+ARM startup, cache behavior or runtime performance.
 
 The separate storage recovery task reports expansion/cleanup without a Forgejo
 restart. This is an operator report, not a retained-space or sustained-write

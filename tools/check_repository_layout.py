@@ -23,9 +23,12 @@ RETIRED_SOURCE_ROOTS = {
     "crates/app/": "crates/sdk/",
     "crates/format/": "crates/doc/",
     "crates/identity/": "crates/collab/",
+    "crates/packaging/hello/": "examples/packaging/hello/",
+    "crates/packaging/notes-cli/": "examples/packaging/notes-cli/",
     "crates/system/windows-vm/": "crates/windows/windows-vm/",
     "fs/": "crates/system/fs/",
     "plan/": "docs/architecture/",
+    "ui/": "crates/sdk/ui-core/",
 }
 
 

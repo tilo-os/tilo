@@ -85,6 +85,23 @@ struct MetadataIndexEntry {
     count: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct OcrAnalysisComponent {
+    text: String,
+    provenance: crate::model::AnalysisProvenance,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct VisionAnalysisComponent {
+    description: String,
+    objects: Vec<String>,
+    pets: Vec<String>,
+    provenance: crate::model::AnalysisProvenance,
+}
+
+const PHOTO_ANALYSIS_OCR_KEY: &str = "photo_analysis_ocr";
+const PHOTO_ANALYSIS_VISION_KEY: &str = "photo_analysis_vision";
+
 /// Structured library projection. The former `library` JSON scalar is read
 /// only long enough to migrate old documents; all new library writes use
 /// independently mergeable maps and lists below this key.
@@ -433,6 +450,8 @@ impl PhotosDoc {
                 let library = Self::structured_library_at(doc, root).unwrap_or_default();
                 Self::sync_metadata_index(doc, root, &library);
             }
+            let _ = Self::map_or_make(doc, root, PHOTO_ANALYSIS_OCR_KEY);
+            let _ = Self::map_or_make(doc, root, PHOTO_ANALYSIS_VISION_KEY);
             if Self::get_str(doc, "library").is_some() {
                 let _ = doc.delete(&ROOT, "library");
             }
@@ -458,6 +477,8 @@ impl PhotosDoc {
         let _ = Self::map_or_make(doc, &root, "photo_tags");
         let _ = Self::map_or_make(doc, &root, "photo_captured_at");
         let _ = Self::map_or_make(doc, &root, "photo_analysis");
+        let _ = Self::map_or_make(doc, &root, PHOTO_ANALYSIS_OCR_KEY);
+        let _ = Self::map_or_make(doc, &root, PHOTO_ANALYSIS_VISION_KEY);
         let _ = Self::map_or_make(doc, &root, "photo_location");
         let _ = Self::map_or_make(doc, &root, "albums");
         let _ = Self::map_or_make(doc, &root, "removed_photos");
@@ -639,6 +660,19 @@ impl PhotosDoc {
         }
     }
 
+    fn maps_at(doc: &AutoCommit, parent: &ObjId, key: &str) -> Vec<ObjId> {
+        doc.get_all(parent, key)
+            .map(|values| {
+                values
+                    .into_iter()
+                    .filter_map(|(value, id)| {
+                        matches!(value, Value::Object(ObjType::Map)).then_some(id)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     fn ordered_keys(doc: &AutoCommit, map: &ObjId, order: Vec<String>) -> Vec<String> {
         let mut ids = order;
         let mut seen: std::collections::HashSet<_> = ids.iter().cloned().collect();
@@ -737,11 +771,7 @@ impl PhotosDoc {
                     .next()
                     .flatten()
             }),
-            analysis: field("photo_analysis").and_then(|map| {
-                Self::conflicting_at::<ImageAnalysis>(doc, &map, id)
-                    .into_iter()
-                    .next()
-            }),
+            analysis: Self::read_analysis_components(doc, root, id),
             location: field("photo_location").and_then(|map| {
                 Self::conflicting_at::<Option<PhotoLocation>>(doc, &map, id)
                     .into_iter()
@@ -749,6 +779,122 @@ impl PhotosDoc {
                     .flatten()
             }),
         })
+    }
+
+    fn ocr_component(analysis: &ImageAnalysis) -> Option<OcrAnalysisComponent> {
+        let provenance = analysis
+            .ocr_provenance
+            .clone()
+            .or_else(|| (!analysis.ocr_text.is_empty()).then(|| analysis.provenance.clone()))?;
+        Some(OcrAnalysisComponent {
+            text: analysis.ocr_text.clone(),
+            provenance,
+        })
+    }
+
+    fn vision_component(analysis: &ImageAnalysis) -> Option<VisionAnalysisComponent> {
+        let provenance = analysis.vision_provenance.clone().or_else(|| {
+            (!analysis.description.is_empty()
+                || !analysis.objects.is_empty()
+                || !analysis.pets.is_empty())
+            .then(|| analysis.provenance.clone())
+        })?;
+        Some(VisionAnalysisComponent {
+            description: analysis.description.clone(),
+            objects: analysis.objects.clone(),
+            pets: analysis.pets.clone(),
+            provenance,
+        })
+    }
+
+    fn deterministic<T: serde::Serialize>(values: Vec<T>) -> Option<T> {
+        values.into_iter().max_by(|left, right| {
+            serde_json::to_string(left)
+                .unwrap_or_default()
+                .cmp(&serde_json::to_string(right).unwrap_or_default())
+        })
+    }
+
+    fn component_value<T>(doc: &AutoCommit, maps: Vec<ObjId>, id: &str) -> Option<Option<T>>
+    where
+        T: serde::de::DeserializeOwned + serde::Serialize,
+    {
+        let values = maps
+            .iter()
+            .flat_map(|map| Self::conflicting_at::<Option<T>>(doc, map, id))
+            .collect::<Vec<_>>();
+        if values.is_empty() {
+            None
+        } else if values.iter().any(Option::is_none) {
+            // An explicit removal wins a concurrent stale analyzer for the
+            // same component. Privacy deletion must not depend on actor id.
+            Some(None)
+        } else {
+            Some(Self::deterministic(values.into_iter().flatten().collect()))
+        }
+    }
+
+    fn read_analysis_components(doc: &AutoCommit, root: &ObjId, id: &str) -> Option<ImageAnalysis> {
+        let legacy = Self::map_at(doc, root, "photo_analysis")
+            .map(|map| Self::conflicting_at::<ImageAnalysis>(doc, &map, id))
+            .unwrap_or_default();
+        let mut analysis = Self::deterministic(legacy.clone()).unwrap_or_default();
+
+        let legacy_ocr = Self::deterministic(
+            legacy
+                .iter()
+                .filter_map(Self::ocr_component)
+                .collect::<Vec<_>>(),
+        );
+        let legacy_vision = Self::deterministic(
+            legacy
+                .iter()
+                .filter_map(Self::vision_component)
+                .collect::<Vec<_>>(),
+        );
+        let ocr_state = Self::component_value::<OcrAnalysisComponent>(
+            doc,
+            Self::maps_at(doc, root, PHOTO_ANALYSIS_OCR_KEY),
+            id,
+        );
+        let vision_state = Self::component_value::<VisionAnalysisComponent>(
+            doc,
+            Self::maps_at(doc, root, PHOTO_ANALYSIS_VISION_KEY),
+            id,
+        );
+        let ocr = ocr_state.clone().unwrap_or(legacy_ocr);
+        let vision = vision_state.clone().unwrap_or(legacy_vision);
+
+        analysis.ocr_text.clear();
+        analysis.description.clear();
+        analysis.objects.clear();
+        analysis.pets.clear();
+        analysis.ocr_provenance = None;
+        analysis.vision_provenance = None;
+        if let Some(component) = ocr {
+            analysis.ocr_text = component.text;
+            analysis.ocr_provenance = Some(component.provenance);
+        }
+        if let Some(component) = vision {
+            analysis.description = component.description;
+            analysis.objects = component.objects;
+            analysis.pets = component.pets;
+            analysis.vision_provenance = Some(component.provenance);
+        }
+        analysis.provenance = analysis
+            .vision_provenance
+            .clone()
+            .or_else(|| analysis.ocr_provenance.clone())
+            .unwrap_or_else(|| analysis.provenance.clone());
+
+        let explicit_clear = matches!(ocr_state, Some(None))
+            && matches!(vision_state, Some(None))
+            && analysis.people.is_empty();
+        (!explicit_clear
+            && (!analysis.is_empty()
+                || analysis.ocr_provenance.is_some()
+                || analysis.vision_provenance.is_some()))
+        .then_some(analysis)
     }
 
     fn read_album(doc: &AutoCommit, albums: &ObjId, id: &str) -> Option<crate::model::Album> {
@@ -844,6 +990,13 @@ impl PhotosDoc {
         let Some(photo_analysis) = Self::map_or_make(doc, root, "photo_analysis") else {
             return;
         };
+        let Some(photo_analysis_ocr) = Self::map_or_make(doc, root, PHOTO_ANALYSIS_OCR_KEY) else {
+            return;
+        };
+        let Some(photo_analysis_vision) = Self::map_or_make(doc, root, PHOTO_ANALYSIS_VISION_KEY)
+        else {
+            return;
+        };
         let Some(photo_location) = Self::map_or_make(doc, root, "photo_location") else {
             return;
         };
@@ -878,6 +1031,8 @@ impl PhotosDoc {
                     &photo_tags,
                     &photo_captured_at,
                     &photo_analysis,
+                    &photo_analysis_ocr,
+                    &photo_analysis_vision,
                     &photo_location,
                     None,
                     photo,
@@ -914,6 +1069,8 @@ impl PhotosDoc {
                 &photo_tags,
                 &photo_captured_at,
                 &photo_analysis,
+                &photo_analysis_ocr,
+                &photo_analysis_vision,
                 &photo_location,
                 old,
                 photo,
@@ -1081,6 +1238,8 @@ impl PhotosDoc {
         tags: &ObjId,
         captured: &ObjId,
         analysis: &ObjId,
+        analysis_ocr: &ObjId,
+        analysis_vision: &ObjId,
         location: &ObjId,
         old: Option<&LibraryPhoto>,
         photo: &LibraryPhoto,
@@ -1108,6 +1267,18 @@ impl PhotosDoc {
             }
             if photo.analysis.is_some() {
                 Self::write_json_at(doc, analysis, &photo.id, &photo.analysis);
+                Self::write_json_at(
+                    doc,
+                    analysis_ocr,
+                    &photo.id,
+                    &photo.analysis.as_ref().and_then(Self::ocr_component),
+                );
+                Self::write_json_at(
+                    doc,
+                    analysis_vision,
+                    &photo.id,
+                    &photo.analysis.as_ref().and_then(Self::vision_component),
+                );
             }
             if photo.location.is_some() {
                 Self::write_json_at(doc, location, &photo.id, &photo.location);
@@ -1131,6 +1302,20 @@ impl PhotosDoc {
         }
         if old.and_then(|value| value.analysis.as_ref()) != photo.analysis.as_ref() {
             Self::write_json_at(doc, analysis, &photo.id, &photo.analysis);
+        }
+        let old_ocr = old
+            .and_then(|value| value.analysis.as_ref())
+            .and_then(Self::ocr_component);
+        let next_ocr = photo.analysis.as_ref().and_then(Self::ocr_component);
+        if old_ocr != next_ocr {
+            Self::write_json_at(doc, analysis_ocr, &photo.id, &next_ocr);
+        }
+        let old_vision = old
+            .and_then(|value| value.analysis.as_ref())
+            .and_then(Self::vision_component);
+        let next_vision = photo.analysis.as_ref().and_then(Self::vision_component);
+        if old_vision != next_vision {
+            Self::write_json_at(doc, analysis_vision, &photo.id, &next_vision);
         }
         if old.and_then(|value| value.location.as_ref()) != photo.location.as_ref() {
             Self::write_json_at(doc, location, &photo.id, &photo.location);
@@ -1527,6 +1712,82 @@ mod tests {
         let item = merged.photo(&item_id).expect("photo");
         assert!(item.favorite);
         assert_eq!(item.folder.as_deref(), Some("Travel"));
+    }
+
+    #[test]
+    fn concurrent_ocr_and_vision_components_converge_in_either_merge_order() {
+        let item = photo("concurrent-analysis");
+        let item_id = item.id.clone();
+        let content = item.image.content.clone().unwrap();
+        let mut base = replica(1);
+        PhotosDoc::set_library(
+            &mut base,
+            &PhotoLibrary {
+                photos: vec![item],
+                ..Default::default()
+            },
+        );
+        let mut ocr = copy(&mut base);
+        ocr.set_actor(automerge::ActorId::from([2; 16].as_slice()));
+        let mut vision = copy(&mut base);
+        vision.set_actor(automerge::ActorId::from([3; 16].as_slice()));
+
+        let ocr_provenance = crate::model::AnalysisProvenance {
+            source: "local-ocr".into(),
+            engine: "tilo-ocr".into(),
+            language: "eng".into(),
+            content: content.clone(),
+            scope: "shared".into(),
+            ..Default::default()
+        };
+        let mut library = PhotosDoc::library(&ocr);
+        library.photo_mut(&item_id).unwrap().analysis = Some(ImageAnalysis {
+            ocr_text: "concurrent receipt".into(),
+            provenance: ocr_provenance.clone(),
+            ocr_provenance: Some(ocr_provenance),
+            ..Default::default()
+        });
+        PhotosDoc::set_library(&mut ocr, &library);
+
+        let vision_provenance = crate::model::AnalysisProvenance {
+            source: "local-vision".into(),
+            engine: "tilo-vision".into(),
+            model_id: "signed-model".into(),
+            model_revision: "a".repeat(64),
+            content,
+            scope: "shared".into(),
+            ..Default::default()
+        };
+        let mut library = PhotosDoc::library(&vision);
+        library.photo_mut(&item_id).unwrap().analysis = Some(ImageAnalysis {
+            description: "A bicycle beside a lake".into(),
+            objects: vec!["bicycle".into()],
+            provenance: vision_provenance.clone(),
+            vision_provenance: Some(vision_provenance),
+            ..Default::default()
+        });
+        PhotosDoc::set_library(&mut vision, &library);
+
+        let mut left = copy(&mut ocr);
+        let mut right_for_left = copy(&mut vision);
+        let left_result = merge(&mut left, &mut right_for_left);
+        let mut right = copy(&mut vision);
+        let mut left_for_right = copy(&mut ocr);
+        let right_result = merge(&mut right, &mut left_for_right);
+        for result in [left_result, right_result] {
+            let analysis = result.photo(&item_id).unwrap().analysis.as_ref().unwrap();
+            assert_eq!(analysis.ocr_text, "concurrent receipt");
+            assert_eq!(analysis.description, "A bicycle beside a lake");
+            assert_eq!(analysis.objects, ["bicycle"]);
+            assert_eq!(
+                analysis.ocr_provenance.as_ref().unwrap().source,
+                "local-ocr"
+            );
+            assert_eq!(
+                analysis.vision_provenance.as_ref().unwrap().source,
+                "local-vision"
+            );
+        }
     }
 
     #[test]

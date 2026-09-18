@@ -19,7 +19,7 @@ use std::{
 
 use pollster::FutureExt;
 use vello::peniko::Color;
-// `ui::gpu`'s context, not `vello::util`'s: this device is shared with every other client on the machine, so it needs the same memory hint — see the header of `ui/src/gpu.rs`.
+// `ui::gpu`'s context, not `vello::util`'s: this device is shared with every other client on the machine, so it needs the same memory hint — see the header of `crates/sdk/ui-core/src/gpu.rs`.
 use ui::gpu::RenderContext;
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene, wgpu};
 

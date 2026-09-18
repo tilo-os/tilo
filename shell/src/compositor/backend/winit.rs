@@ -17,7 +17,7 @@ use std::time::Duration;
 use vello::peniko::Color;
 // `ui::gpu`'s context, not `vello::util`'s — this window shares an
 // integrated GPU with every other Tilo process and needs the same memory
-// hint (see `ui/src/gpu.rs`).
+// hint (see `crates/sdk/ui-core/src/gpu.rs`).
 use ui::gpu::RenderContext;
 use vello::util::RenderSurface;
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene, wgpu};

@@ -21,6 +21,8 @@ SPEC.loader.exec_module(CANARY)
 
 def step_script(workflow, name):
     step = workflow.split(f'- name: {name}\n', 1)[1]
+    if step.split('        run: ', 1)[1].splitlines()[0] != '|':
+        return step.split('        run: ', 1)[1].splitlines()[0]
     lines = step.split('        run: |\n', 1)[1].splitlines()
     body = []
     for line in lines:
@@ -36,7 +38,8 @@ class BuilderCandidates(unittest.TestCase):
             output = Path(directory) / 'outputs'
             result = subprocess.run(
                 ['bash', '-c', step_script(CHECK, 'Resolve the CI builder before starting job containers')],
-                env={**os.environ, 'REQUESTED_BUILDER': requested, 'GITHUB_OUTPUT': str(output)},
+                env={**os.environ, 'REQUESTED_BUILDER': requested, 'GITHUB_OUTPUT': str(output), 'REGISTRY_TOKEN': ''},
+                cwd=ROOT,
                 text=True, capture_output=True,
             )
             return result, output.read_text() if output.exists() else ''
@@ -54,10 +57,10 @@ class BuilderCandidates(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(output, '')
 
-    def test_ordinary_checks_keep_the_shared_default(self):
+    def test_ordinary_checks_require_authenticated_resolution(self):
         result, output = self.resolve('')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output, 'image=code.sandbox.example/qos/tilo-builder:latest\n')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(output, '')
 
     def publication_tags(self, ref):
         with tempfile.TemporaryDirectory() as directory:
@@ -121,13 +124,23 @@ class BuilderCandidates(unittest.TestCase):
         self.assertIn('needs: [build, images, cache-cold, cache-warm]', BUILD)
         self.assertIn('runner: runner-arm64', BUILD)
         self.assertIn('name: builder-index-${{ github.sha }}', BUILD)
+        # Native acceptance consumers must honor the resolved builder override.
+        # Selection only reads Cargo metadata and uses the qualified lean image.
+        security_job = CHECK.split('  security:\n', 1)[1].split('\n  affected:\n', 1)[0]
+        select_job = CHECK.split('  select:\n', 1)[1].split('\n  security:\n', 1)[0]
+        self.assertIn('image: ${{ needs.builder.outputs.image }}', security_job)
+        self.assertRegex(select_job, r'image: code\.podesta\.ai/qos/ci-fast@sha256:[0-9a-f]{64}\n')
+        qualified_image = next(line.strip() for line in
+                               (ROOT / '.forgejo/workflows/lint.yml').read_text().splitlines()
+                               if line.strip().startswith('image: '))
+        self.assertIn(qualified_image, select_job)
+        self.assertIn('runs-on: runner-quality', select_job)
+        self.assertIn('run: ./scripts/check-workspace-complete.sh', select_job)
+        self.assertIn('run: python3 tools/check_repository_layout.py', select_job)
+        self.assertIn('python3 tools/ci_select.py --base "$base" --shards 2', select_job)
         self.assertIn('  select:\n    needs: builder', CHECK)
         self.assertIn('  security:\n    needs: builder', CHECK)
-        select_job = CHECK.split('  select:\n', 1)[1].split('\n  security:\n', 1)[0]
-        self.assertIn('image: code.sandbox.example/qos/ci-fast@sha256:', select_job)
         self.assertNotIn('needs.builder.outputs.image', select_job)
-        security_job = CHECK.split('  security:\n', 1)[1].split('\n  affected:\n', 1)[0]
-        self.assertIn('image: ${{ needs.builder.outputs.image }}', security_job)
         affected_job = CHECK.split('  affected:\n', 1)[1].split('\n  checks:\n', 1)[0]
         self.assertIn('    needs: [builder, select]', affected_job)
         self.assertIn('image: ${{ needs.builder.outputs.image }}', affected_job)
