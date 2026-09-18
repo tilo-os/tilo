@@ -278,6 +278,12 @@ Both controls are optional: installed apps use DXC and parallel initialization
 without environment configuration. To measure startup,
 set `TILO_STARTUP_METRICS_PATH` to a writable JSON filename before launching an
 app; it records font setup, GPU initialization, and the first presented frame.
+The same variable works with `--headless-drive`: the launcher flushes metrics
+before its explicit process exit, including failed actions. Headless events
+separate harness setup, actions, output and persistence. These measure the
+production headless path, not native window creation or time to first visible
+content; use an isolated app data directory when benchmarking startup so a test
+does not load or modify personal documents.
 Close an installed app before updating its executable. Application documents
 remain in their normal user data locations; the installer does not move them.
 The installer also checks both Windows' application catalog and `Get-StartApps`
@@ -659,6 +665,14 @@ requests retain their latest intent while it runs. Stopping cancels delivery
 without waiting for native initialization. Playback errors remain explicit,
 and handoff readiness requires decoded audio rather than a requested URI.
 The same lifecycle is used on every supported platform.
+
+Music can open an audio path or `file:` URI passed on the command line. Its
+empty Home view and `music.library/open-file` action use the shared native
+picker; remote callers cannot supply a raw filesystem path through that action.
+The current local source and resume position live in the device profile, outside
+the collaborative library. Local files are not advertised as cross-device
+handoffs or uploaded into the shared catalogue. Picker cancellation, decoder
+failure and confirmed playback have distinct operation results.
 
 ### If you build in a container (optional)
 
