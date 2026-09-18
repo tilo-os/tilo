@@ -185,6 +185,47 @@ fn accessibility_reader_contains_visible_text_and_actionable_chrome() {
 }
 
 #[test]
+fn reader_progress_slider_seeks_accessibly_and_persists_continuous_position() {
+    let mut app = app_with_sample();
+    let mut doc = AutoCommit::new();
+    let chapter = app.library[0].chapters[0].clone();
+    Arc::make_mut(&mut Arc::make_mut(&mut app.library)[0]).chapters = (0..4)
+        .map(|index| crate::model::Chapter {
+            title: format!("Part {}", index + 1),
+            href: format!("part-{}.xhtml", index + 1),
+            blocks: chapter.blocks.clone(),
+        })
+        .collect();
+    frame(&mut app, &mut doc, 1000.0, 720.0);
+
+    app.dispatch(Action::SetMode(ReadMode::Continuous), &mut doc);
+    frame(&mut app, &mut doc, 1000.0, 720.0);
+    let id = app.book_id();
+    let before = BooksDoc::read_progress(&doc, &id).fraction;
+    assert!(wheel(&mut app, &mut doc, -3.0));
+    assert!(BooksDoc::read_progress(&doc, &id).fraction > before);
+
+    let tree = Widget::accessibility(&app).expect("Books semantic root");
+    let slider = find_semantic_target(&tree, "books.reader.progress").expect("progress slider");
+    assert_eq!(slider.role, Role::Slider);
+    assert!(
+        slider
+            .value
+            .as_deref()
+            .is_some_and(|value| value.ends_with('%'))
+    );
+    assert!(Widget::perform_semantic_action(
+        &mut app,
+        "books.reader.progress",
+        &A11yAction::SetValue("75%".into()),
+        &mut doc,
+        &automerge::ROOT,
+    ));
+    assert_eq!(app.chapter, 3);
+    assert!((BooksDoc::read_progress(&doc, &id).fraction - 0.75).abs() < 0.01);
+}
+
+#[test]
 fn accessibility_quick_settings_is_modal_and_numeric_controls_are_live() {
     let mut app = app_with_sample();
     let mut doc = AutoCommit::new();

@@ -50,7 +50,10 @@ use ui::gesture::{DragSelect, Granularity};
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{EditOutcome, EditableLabel, FlapState, SplitLayout, Toggle, ToggleFace, Widget};
+use ui::widget::{
+    EditOutcome, EditableLabel, FlapState, Slider, SliderFace, SplitLayout, Toggle, ToggleFace,
+    Widget,
+};
 
 use crate::color_picker::{ColorEdit, ColorPicker, PickTarget, PickerPress};
 use crate::comment_overlay::{
@@ -594,6 +597,7 @@ enum Action {
     Back,
     PrevPage,
     NextPage,
+    SeekProgress,
     GotoChapter(usize),
     ToggleToc,
     ToggleNotes,
@@ -976,7 +980,11 @@ pub struct BooksApp {
     shelf_annos: HashMap<String, usize>,
     /// Last-opened timestamp per book (for the "recently opened" shelf sort).
     shelf_opened: HashMap<String, u64>,
-    last_persisted: Option<(usize, usize)>,
+    last_persisted: Option<(usize, usize, u16)>,
+    reading_progress: f32,
+    progress_slider_track: Rect,
+    progress_dragging: bool,
+    pending_seek_fraction: Option<f32>,
     cur_page_count: usize,
     seeded: bool,
     /// Sample-content mode: only the hermetic `--shots`/test path sets this.
@@ -1194,6 +1202,10 @@ impl BooksApp {
             shelf_annos: HashMap::new(),
             shelf_opened: HashMap::new(),
             last_persisted: None,
+            reading_progress: 0.0,
+            progress_slider_track: Rect::ZERO,
+            progress_dragging: false,
+            pending_seek_fraction: None,
             cur_page_count: 1,
             seeded: false,
             demo: false,
@@ -1539,7 +1551,7 @@ impl BooksApp {
                     self.chapter = 27;
                     // Keep the staged chapter from being replaced by the
                     // sample book's persisted position during first sync.
-                    self.last_persisted = Some((self.chapter, self.page));
+                    self.last_persisted = Some((self.chapter, self.page, 0));
                     self.toc_scroll_to_active = true;
                 }
             }
@@ -2005,15 +2017,18 @@ impl BooksApp {
         if self.view != View::Reader {
             return;
         }
-        if self.last_persisted == Some((self.chapter, self.page)) {
+        let fraction = self.current_progress_fraction();
+        let key = (
+            self.chapter,
+            self.page,
+            (fraction * 10_000.0).round() as u16,
+        );
+        if self.last_persisted == Some(key) {
             return;
         }
         let Some(book) = self.library.get(self.book_idx) else {
             return;
         };
-        let nchap = book.chapters.len().max(1) as f32;
-        let in_ch = (self.page as f32 + 1.0) / self.cur_page_count.max(1) as f32;
-        let fraction = ((self.chapter as f32 + in_ch) / nchap).clamp(0.0, 1.0);
         let id = book.id.clone();
         self.perform_action(
             doc,
@@ -2028,7 +2043,97 @@ impl BooksApp {
                 },
             ),
         );
-        self.last_persisted = Some((self.chapter, self.page));
+        self.last_persisted = Some(key);
+    }
+
+    fn current_progress_fraction(&self) -> f32 {
+        let chapters = self.num_chapters().max(1) as f32;
+        if let Some(within) = self.pending_seek_fraction {
+            return ((self.chapter as f32 + within) / chapters).clamp(0.0, 1.0);
+        }
+        let within = if self.settings.mode.is_continuous() {
+            let (total, viewport) = self.flow_extent;
+            if total > 0.0 {
+                ((self.scroll_y + viewport) / total).clamp(0.0, 1.0) as f32
+            } else {
+                0.0
+            }
+        } else {
+            (self.page as f32 + self.settings.mode.page_stride() as f32)
+                / self.cur_page_count.max(1) as f32
+        };
+        ((self.chapter as f32 + within.clamp(0.0, 1.0)) / chapters).clamp(0.0, 1.0)
+    }
+
+    fn on_seek_progress(&mut self, fraction: f32) {
+        let fraction = fraction.clamp(0.0, 1.0);
+        let chapter_count = self.num_chapters();
+        if chapter_count == 0 {
+            return;
+        }
+        let position = fraction * chapter_count as f32;
+        self.chapter = (position.floor() as usize).min(chapter_count - 1);
+        self.page = 0;
+        self.scroll_y = 0.0;
+        self.pending_seek_fraction = Some(if fraction >= 1.0 {
+            1.0
+        } else {
+            position.fract()
+        });
+        self.pending_last_page = false;
+        self.pending_jump_block = None;
+        self.pending_scroll_end = false;
+        self.clear_selection();
+        self.composing = None;
+        self.note_composer.close();
+        self.comment_overlay.close();
+        self.layout = None;
+        self.toc_scroll_to_active = true;
+        self.reading_progress = fraction;
+    }
+
+    fn resolve_pending_seek_fraction(
+        &mut self,
+        layout: &ChapterLayout,
+        mode: ReadMode,
+        geom: &ReaderPageGeometry,
+    ) {
+        let Some(within) = self.pending_seek_fraction.take() else {
+            return;
+        };
+        if mode.is_continuous() {
+            self.scroll_y = (f64::from(layout.total_height) - f64::from(geom.content_h)).max(0.0)
+                * f64::from(within);
+        } else {
+            let count = layout.page_count().max(1);
+            let page = ((within * count as f32).floor() as usize).min(count - 1);
+            self.page = page - page % mode.page_stride();
+        }
+    }
+
+    fn progress_fraction_at(&self, point: Point) -> f32 {
+        if self.progress_slider_track.width() <= 0.0 {
+            return self.reading_progress;
+        }
+        ((point.x - self.progress_slider_track.x0) / self.progress_slider_track.width())
+            .clamp(0.0, 1.0) as f32
+    }
+
+    fn accessible_progress_value(value: &str) -> Option<f32> {
+        let value = value
+            .trim()
+            .trim_end_matches('%')
+            .trim()
+            .parse::<f32>()
+            .ok()?;
+        value.is_finite().then(|| {
+            if value.abs() > 1.0 {
+                value / 100.0
+            } else {
+                value
+            }
+            .clamp(0.0, 1.0)
+        })
     }
 
     /// Move the continuous-scroll offset by `delta` px, rolling into the
@@ -2433,6 +2538,7 @@ impl BooksApp {
             Action::Back => self.on_back(),
             Action::NextPage => self.on_next_page(),
             Action::PrevPage => self.on_prev_page(),
+            Action::SeekProgress => self.on_seek_progress(self.progress_fraction_at(self.cursor)),
             Action::SetMode(mode) => self.on_set_mode(mode, doc),
             Action::GotoChapter(c) => self.on_goto_chapter(c),
             Action::ToggleToc => self.on_toggle_toc(),
@@ -4033,6 +4139,7 @@ impl BooksApp {
             Action::Back => "reader.back".into(),
             Action::PrevPage => "reader.previous-page".into(),
             Action::NextPage => "reader.next-page".into(),
+            Action::SeekProgress => "reader.progress".into(),
             Action::GotoChapter(index) => format!("reader.chapter:{index}"),
             Action::ToggleToc => "reader.contents".into(),
             Action::ToggleNotes => "reader.annotations".into(),
@@ -4118,6 +4225,10 @@ impl BooksApp {
             Action::Back | Action::CloseSettings => "Back to library".into(),
             Action::PrevPage => "Previous page".into(),
             Action::NextPage => "Next page".into(),
+            Action::SeekProgress => format!(
+                "Reading progress: {}%",
+                (self.reading_progress * 100.0).round() as u8
+            ),
             Action::GotoChapter(index) => self
                 .open_book()
                 .and_then(|book| book.chapters.get(*index))
@@ -4258,6 +4369,7 @@ impl BooksApp {
             .is_some_and(|target| self.semantic_focus.as_deref() == Some(&target));
         let base = AccessState::new().focusable(true).focused(focused);
         match action {
+            Action::SeekProgress => (Role::Slider, base),
             Action::ToggleToc => (
                 Role::ToggleButton,
                 base.checked(self.toc_flap.is_open(self.toc_layout())),
@@ -5210,13 +5322,22 @@ impl Widget for BooksApp {
                     return None;
                 }
                 let (role, state) = self.semantic_role_state(&hit.action);
-                Some(
-                    AccessNode::new(role)
-                        .with_name(self.semantic_label(&hit.action))
-                        .with_state(state)
-                        .with_bounds(hit.rect)
-                        .with_action_target(target),
-                )
+                let node = AccessNode::new(role)
+                    .with_name(self.semantic_label(&hit.action))
+                    .with_state(state)
+                    .with_bounds(hit.rect)
+                    .with_action_target(target);
+                Some(if matches!(hit.action, Action::SeekProgress) {
+                    node.with_value(format!(
+                        "{}%",
+                        (self.reading_progress * 100.0).round() as u8
+                    ))
+                    .with_description(
+                        "Drag or use left and right arrow keys to move through the book",
+                    )
+                } else {
+                    node
+                })
             })
             .collect::<Vec<_>>();
         controls.reverse();
@@ -5317,6 +5438,27 @@ impl Widget for BooksApp {
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
+        if target == "books.reader.progress" {
+            self.semantic_focus = Some(target.to_string());
+            let value = match action {
+                A11yAction::Increment => Some(self.reading_progress + 0.05),
+                A11yAction::Decrement => Some(self.reading_progress - 0.05),
+                A11yAction::SetValue(value) => Self::accessible_progress_value(value),
+                A11yAction::Focus | A11yAction::ScrollIntoView => {
+                    self.dirty = true;
+                    return true;
+                }
+                _ => None,
+            };
+            let Some(value) = value else {
+                return false;
+            };
+            self.on_seek_progress(value);
+            self.refresh_from_doc(doc);
+            self.persist_progress(doc);
+            self.dirty = true;
+            return true;
+        }
         if let Some(shelf_action) = ShelfControls::semantic_action(target) {
             self.semantic_focus = Some(target.to_string());
             self.dirty = true;
@@ -5647,6 +5789,11 @@ impl BooksApp {
         self.cursor = p;
         self.reading_settings.set_cursor(p);
         self.dirty = true; // hover feedback
+        if self.progress_dragging {
+            self.on_seek_progress(self.progress_fraction_at(p));
+            *handled = true;
+            return;
+        }
         // Margin-marker drag: a release past the threshold
         // re-anchors the highlight (vs a plain tap → comments).
         if self.mouse_down
@@ -5796,6 +5943,17 @@ impl BooksApp {
         self.dragging_sel = false;
         self.press_pos = self.cursor;
 
+        if matches!(
+            top.as_ref().map(|hit| &hit.action),
+            Some(Action::SeekProgress)
+        ) {
+            self.progress_dragging = true;
+            self.on_seek_progress(self.progress_fraction_at(self.cursor));
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
+
         // A press on a highlight's margin marker begins a re-anchor
         // drag, taking priority over text selection. A press that
         // doesn't move opens the highlight's comments on release instead.
@@ -5930,6 +6088,14 @@ impl BooksApp {
 
     fn handle_left_release(&mut self, doc: &mut AutoCommit, handled: &mut bool) {
         self.mouse_down = false;
+        if self.progress_dragging {
+            self.progress_dragging = false;
+            self.persist_progress(doc);
+            self.refresh_from_doc(doc);
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
         // A margin-marker release resolves the drag: a real move
         // re-anchors the highlight; a plain tap opens its comments.
         if let Some(md) = self.marker_drag.take() {
@@ -6199,7 +6365,34 @@ impl BooksApp {
         matches!(key, Key::Named(NamedKey::Escape)) && self.finish_composing(doc)
     }
 
+    fn handle_progress_slider_key(&mut self, key: &Key, doc: &mut AutoCommit) -> bool {
+        if self.semantic_focus.as_deref() != Some("books.reader.progress") {
+            return false;
+        }
+        let target = match key {
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowDown) => {
+                Some(self.reading_progress - 0.05)
+            }
+            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowUp) => {
+                Some(self.reading_progress + 0.05)
+            }
+            Key::Named(NamedKey::Home) => Some(0.0),
+            Key::Named(NamedKey::End) => Some(1.0),
+            _ => None,
+        };
+        if let Some(target) = target {
+            self.on_seek_progress(target);
+            self.persist_progress(doc);
+            true
+        } else {
+            false
+        }
+    }
+
     fn handle_reader_key(&mut self, key: &Key, mods: ModifiersState, doc: &mut AutoCommit) -> bool {
+        if self.handle_progress_slider_key(key, doc) {
+            return true;
+        }
         match key {
             // Shift extends the selection by a character (Ctrl+Shift by a word);
             // otherwise the arrows turn pages.
@@ -7647,9 +7840,7 @@ struct ReaderPageGeometry {
 }
 
 struct ReaderChromeView<'a> {
-    palette: &'a ReaderPalette,
     geometry: &'a ReaderPageGeometry,
-    mode: ReadMode,
     chapter_count: usize,
     selection_anchor: SelAnchor,
 }
@@ -7806,6 +7997,7 @@ impl BooksApp {
             &base_family,
             font_mult,
         );
+        self.resolve_pending_seek_fraction(&layout, mode, &geom);
         self.cur_page_count = layout.page_count();
         self.resolve_reader_page_index(&layout, mode, &geom);
 
@@ -7858,9 +8050,7 @@ impl BooksApp {
             annos,
             layout,
             &ReaderChromeView {
-                palette: &palette,
                 geometry: &geom,
-                mode,
                 chapter_count: nchap,
                 selection_anchor: sel_anchor,
             },
@@ -7948,31 +8138,25 @@ impl BooksApp {
         view: &ReaderChromeView<'_>,
     ) {
         let t = ctx.transform;
-        let palette = view.palette;
         let geom = view.geometry;
-        let mode = view.mode;
         let nchap = view.chapter_count;
         let sel_anchor = view.selection_anchor;
         // ---- page footer -------------------------------------------------
-        // The page stays clean: only a thin book-progress bar spanning the full
-        // page width. The page/chapter locators live in the bottom chrome bar.
-        let frac = if nchap > 0 {
-            let in_ch = if mode.is_continuous() {
-                (self.scroll_y as f32 + geom.content_h) / layout.total_height.max(1.0)
-            } else {
-                (self.page as f32 + mode.page_stride() as f32) / layout.page_count() as f32
-            };
-            ((self.chapter as f32 + in_ch.min(1.0)) / nchap as f32).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let pbar = Rect::new(
+        let frac = self.current_progress_fraction();
+        self.reading_progress = frac;
+        let slider_rect = Rect::new(
             geom.full_content_x,
-            geom.paper_y + geom.paper_h - 16.0,
+            geom.paper_y + geom.paper_h - 30.0,
             geom.full_content_x + f64::from(geom.full_content_w),
-            geom.paper_y + geom.paper_h - 13.0,
+            geom.paper_y + geom.paper_h - 6.0,
         );
-        paint::progress(ctx.scene, t, pbar, frac, palette.rule, palette.accent);
+        let face = SliderFace::new(slider_rect, f64::from(frac))
+            .hovered(slider_rect.contains(self.cursor))
+            .dragging(self.progress_dragging)
+            .focused(self.semantic_focus.as_deref() == Some("books.reader.progress"));
+        self.progress_slider_track = face.track_rect();
+        Slider::paint(ctx.scene, t, ctx.theme, &face);
+        self.push_hit(slider_rect, Action::SeekProgress);
 
         // restore the layout cache (key drives reuse next frame)
         self.layout = Some(layout);
