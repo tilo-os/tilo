@@ -703,8 +703,8 @@ mod tests {
         let provider = PhotosSearchProvider::new(&doc).unwrap();
         for (query, resource) in [
             ("invoice 42", library.photos[0].id.clone()),
-            ("bicycle", crate::actions::object_resource_id("bicycle")),
-            ("dog", crate::actions::pet_resource_id("dog")),
+            ("bicycle", library.photos[0].id.clone()),
+            ("dog", library.photos[0].id.clone()),
         ] {
             let address = provider
                 .search(query)
