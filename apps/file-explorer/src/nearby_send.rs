@@ -160,6 +160,17 @@ impl NearbySendState {
         &self.snapshot.targets
     }
 
+    /// Path-free, broker-issued transfer projections used to publish the
+    /// same receiver decisions through Files' semantic action door.
+    pub fn transfers(&self) -> &[NearbyTransferStatus] {
+        &self.snapshot.transfers
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_snapshot_for_test(&mut self, snapshot: NearbyTransferSnapshot) {
+        self.snapshot = snapshot;
+    }
+
     pub fn take_requests(&mut self) -> Vec<CollabRequest> {
         self.requests.drain(..).collect()
     }
