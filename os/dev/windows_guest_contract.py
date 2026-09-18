@@ -76,7 +76,7 @@ def rpm_inventory(repo):
     for path in sorted(Path(repo).glob("*.rpm")):
         if path.is_symlink() or not path.is_file():
             raise ValueError(f"RPM must be a regular, non-symlink file: {path.name}")
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+~-]*\.(x86_64|i686|noarch)\.rpm", path.name):
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+~^-]*\.(x86_64|i686|noarch)\.rpm", path.name):
             raise ValueError(f"unexpected guest RPM filename/architecture: {path.name}")
         if path.stat().st_size == 0:
             raise ValueError(f"empty RPM: {path.name}")
