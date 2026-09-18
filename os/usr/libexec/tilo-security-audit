@@ -325,6 +325,13 @@ secureboot_public_file_safe() {
 secureboot_artifact_present() {
   [ -e "$1" ] || [ -L "$1" ]
 }
+secureboot_enrollment_boot_marker_safe() {
+  local path="$1" metadata
+  [ -f "$path" ] && [ ! -L "$path" ] || return 1
+  metadata="$(stat -c '%u:%a:%h:%s' "$path" 2>/dev/null)" || return 1
+  [ "$metadata" = 0:600:1:37 ] \
+    && grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' "$path"
+}
 secureboot_esl_matches_certificate() {
   secureboot_public_file_safe "$1" \
     && secureboot_public_file_safe "$2" \
@@ -407,6 +414,18 @@ if [ "$pk_present" -eq 1 ] || [ "$kek_present" -eq 1 ]; then
     note "Secure Boot PK/KEK enrollment authority remains online; retire it after verified enrollment and offline backup"
   else
     warn "Secure Boot PK/KEK retirement state is incomplete, unsafe, or ambiguous"
+  fi
+  enrollment_boot_marker=/var/lib/tilo/secureboot/enrollment-boot-id
+  if secureboot_artifact_present "$enrollment_boot_marker"; then
+    if ! secureboot_enrollment_boot_marker_safe "$enrollment_boot_marker"; then
+      warn "Secure Boot enrollment boot identity is unsafe or malformed"
+    elif [ "$(cat "$enrollment_boot_marker")" = "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)" ]; then
+      note "Secure Boot enrollment occurred this boot; reboot before retiring PK/KEK"
+    elif [ "$sb:$setup" = 1:0 ]; then
+      ok "Secure Boot enrollment crossed a verified reboot boundary"
+    else
+      note "Secure Boot enrollment crossed a reboot, but firmware enforcement is not active"
+    fi
   fi
 elif [ "$retired_present" -eq 1 ]; then
   if secureboot_private_file_safe /var/lib/tilo/secureboot/enrollment-keys-retired \

@@ -429,6 +429,15 @@ if PATH="$work/bin:$PATH" TILO_SB_KEYDIR="$captured" TILO_SB_BOOT="$work/boot" \
   exit 1
 fi
 printf '33333333-3333-3333-3333-333333333333\n' >"$TILO_SB_BOOT_ID_FILE"
+ln "$captured/enrollment-boot-id" "$work/enrollment-boot-id-hardlink"
+if PATH="$work/bin:$PATH" TILO_SB_KEYDIR="$captured" TILO_SB_BOOT="$work/boot" \
+  TILO_SB_ESP="$work/boot" TILO_SB_EFIVARS="$efivars" \
+  TILO_TEST_FIRMWARE_DIR="$firmware" \
+  "$repo/os/usr/libexec/tilo-secureboot" retire-enrollment-keys --yes >/dev/null 2>&1; then
+  echo 'Secure Boot key retirement accepted aliased enrollment reboot evidence' >&2
+  exit 1
+fi
+rm "$work/enrollment-boot-id-hardlink"
 
 bad_firmware="$work/bad-firmware"
 bad_efivars="$work/bad-efivars"
