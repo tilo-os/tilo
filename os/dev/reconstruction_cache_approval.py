@@ -4,7 +4,9 @@ No registry, payload import, timestamp write, or compiler operation occurs here.
 The caller reads each independent input through its exact-byte pinning reader.
 """
 import json
+from pathlib import Path
 import re
+import tempfile
 import types
 
 SOURCE = '4583a44c4056c67cfd1ebc4f1e02c7fa4aff3ffc'
@@ -26,35 +28,34 @@ def reproduce_extensions(api, checkpoints, required, resume, material, inputs):
     legacy_union = dict(union)
     native = types.SimpleNamespace(REQUIRED=required, tools=types.SimpleNamespace(
         sha=sha, canonical=canonical, strict_json=json.loads))
-    class SourceBlob:
-        # The producer reads UTF-8 Linux source. Reproduce that from the already
-        # checked Git blobs without Windows locale/newline transformations.
-        def __init__(self, path):
-            self.path = str(path)
-        def __truediv__(self, component):
-            return SourceBlob(self.path.rstrip('/') + '/' + component)
-        def read_text(self):
-            suffix = self.path.removeprefix(str(material['source_root']).rstrip('/') + '/')
-            require(suffix in ('os/Containerfile', 'os/dev/build-image.sh'), 'unexpected source blob access')
-            return material['recipe' if suffix == 'os/Containerfile' else 'driver'].decode('utf-8')
-    validator = types.FunctionType(resume.validate_reconstructed_metadata.__code__,
-        dict(resume.validate_reconstructed_metadata.__globals__, Path=SourceBlob))
-    for checkpoint in newer:
-        receipt = checkpoint['receipt']
-        require(re.fullmatch(r'code\.podesta\.ai/qos/tilo-development-partial-native-aarch64@sha256:[0-9a-f]{64}',
-                             receipt['reference']) and re.fullmatch('sha256:[0-9a-f]{64}', receipt['config_digest']),
-                'partial immutable identity differs')
-        # Reuse the independently pinned producer's depth-one source/recipe
-        # derivation validator; actual payload verification remains the consumer.
-        validator(native, receipt,
-            inputs['partial_metadata'][checkpoint['receipt_sha256']], partial,
-            checkpoint['receipt_sha256'], material['source_root'], legacy, legacy_union)
-        for name, record in receipt['inventory'].items():
-            require(name in set(required) | {'browser'} and set(record) == {'size', 'sha256'}
-                    and type(record['size']) is int and 0 < record['size'] <= 4 * 1024**3
-                    and re.fullmatch('[0-9a-f]{64}', record['sha256']), 'partial inventory differs')
-            require(name not in union or union[name] == record, 'overlapping partial inventory differs')
-            union[name] = record
+    with tempfile.TemporaryDirectory(prefix='tilo-approval-source-') as temporary:
+        source = Path(temporary)
+        (source / 'os/dev').mkdir(parents=True)
+        for name, key in (('os/Containerfile', 'recipe'), ('os/dev/build-image.sh', 'driver')):
+            path = source / name
+            path.write_bytes(material[key])
+            try:
+                text = path.read_text()
+            except UnicodeError as error:
+                raise ValueError('source decoding differs; run Python with -X utf8') from error
+            require(text == material[key].decode('utf-8'),
+                    'source decoding differs; run Python with -X utf8')
+        for checkpoint in newer:
+            receipt = checkpoint['receipt']
+            require(re.fullmatch(r'code\.podesta\.ai/qos/tilo-development-partial-native-aarch64@sha256:[0-9a-f]{64}',
+                                 receipt['reference']) and re.fullmatch('sha256:[0-9a-f]{64}', receipt['config_digest']),
+                    'partial immutable identity differs')
+            # Execute the unchanged independently pinned validator against two
+            # exact Git blobs. Actual payload verification remains the consumer.
+            resume.validate_reconstructed_metadata(native, receipt,
+                inputs['partial_metadata'][checkpoint['receipt_sha256']], partial,
+                checkpoint['receipt_sha256'], source, legacy, legacy_union)
+            for name, record in receipt['inventory'].items():
+                require(name in set(required) | {'browser'} and set(record) == {'size', 'sha256'}
+                        and type(record['size']) is int and 0 < record['size'] <= 4 * 1024**3
+                        and re.fullmatch('[0-9a-f]{64}', record['sha256']), 'partial inventory differs')
+                require(name not in union or union[name] == record, 'overlapping partial inventory differs')
+                union[name] = record
 
     cache_sha, cache = inputs['thin_admission']
     _, receipt = inputs['thin_receipt']

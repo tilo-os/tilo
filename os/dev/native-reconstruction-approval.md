@@ -72,6 +72,10 @@ reviewed restore-helper hash and approval identities. The exact runtime JSON
 serialization is hashed independently. A self-consistent remote reconstruction
 hash cannot approve changed runtime counts or unsupported freshness claims.
 
+Run this offline tool with `python -X utf8` on Windows. Two temporary files
+contain the exact Git source blobs for the unchanged producer validator; the
+tool checks their decoded text before invoking it and removes them afterward.
+
 The tool does not import an image or verify its ELF inventory. Successful offline
 approval still requires the assembly consumer's registry and complete-inventory
 verification. No future artifact is approved by preparing this invocation.
