@@ -758,7 +758,18 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
         .or_else(|| {
             let chrome = fb.chrome();
             let tree = chrome.tree();
-            active_foreign_surface(&tree).filter(|id| state.client_input.surfaces.contains_key(id))
+            active_foreign_surface(&tree).filter(|id| {
+                // Do not grant a tiled tab keyboard focus before its xdg
+                // surface has a buffer. Keeping the focus cache empty until
+                // that map transition also makes the first post-commit
+                // reconciliation issue the enter rather than treating it as
+                // an idempotent no-op. This is intentionally a protocol-map
+                // check, not the visual `presented` gate: a client which is
+                // still resizing from an old buffer needs input to answer its
+                // configure.
+                state.client_input.surfaces.contains_key(id)
+                    && crate::compositor::foreign::store().is_mapped(*id)
+            })
         });
     state.set_client_keyboard_focus(gate_keyboard_focus(candidate, captured));
 }
