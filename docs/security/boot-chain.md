@@ -218,9 +218,10 @@ sets in `os/scripts/verify-runtime-crypto-packages.sh` and fails when any new
 consumer appears; the verifier itself is deleted before the image is sealed.
 Tilo-owned ELF outputs are independently rejected for either ABI, and Tilo-owned
 TLS and signing remain Rust-native. The sealed root also deletes OpenSSL's
-optional legacy-provider DSO and loadable ENGINE modules. Foundational Fedora
-consumers retain only the built-in provider surface they require; the recurring
-security audit fails if either optional module class reappears.
+optional legacy-provider DSO and loadable ENGINE modules, plus GStreamer's
+OpenSSL-backed DTLS plugin (Tilo has no WebRTC/DTLS/SRTP media path).
+Foundational Fedora consumers retain only the built-in provider surface they
+require; the recurring security audit fails if any removed module reappears.
 
 The immutable host also excludes the Git CLI and NetworkManager's OpenVPN
 plugin. Both add avoidable OpenSSL-linked client stacks: Tilo's sandboxed Git
