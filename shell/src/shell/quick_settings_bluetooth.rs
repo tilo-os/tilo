@@ -11,7 +11,10 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
 use crate::shell::quick_settings::BtDevice;
-use crate::shell::quick_settings_drill_in::{DrillInList, DrillInOutcome};
+use crate::shell::quick_settings_drill_in::{
+    CONTROL_INSET, DrillInList, DrillInOutcome, GLYPH, STATUS_DOT, trailing_dot_center,
+    trailing_status_glyph,
+};
 
 #[derive(Default)]
 pub struct QuickSettingsBluetoothPane {
@@ -80,12 +83,9 @@ impl QuickSettingsBluetoothPane {
                 colors.text_primary,
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
-            let battery = Rect::new(
-                row.x1 - 64.0,
-                row.y0 + (row.height() - 18.0) / 2.0,
-                row.x1 - 42.0,
-                row.y0 + f64::midpoint(row.height(), 18.0),
-            );
+            // The battery glyph takes the trailing status slot, centred on
+            // the row's centre line, one related step before the dot.
+            let battery = trailing_status_glyph(*row, CONTROL_INSET, GLYPH);
             let battery_color = if device.battery > 50 {
                 colors.semantic.success
             } else if device.battery > 20 {
@@ -107,7 +107,7 @@ impl QuickSettingsBluetoothPane {
                     transform,
                     colors.accent[5],
                     None,
-                    &Circle::new(Point::new(row.x1 - 14.0, row.center().y), 5.0),
+                    &Circle::new(trailing_dot_center(*row, CONTROL_INSET), STATUS_DOT / 2.0),
                 );
             }
         }
