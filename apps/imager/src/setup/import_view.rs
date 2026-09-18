@@ -15,7 +15,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::typography::TextRole;
-use ui::widget::{Button, Card, Column, Container, Row, Scrollable, Spacer, Text, Widget};
+use ui::widget::{Button, Card, Column, Container, Row, Scrollable, Text, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
@@ -30,6 +30,9 @@ use super::migration_worker::{
     MigrationJob, MigrationWorker, WorkerEvent, WorkerOutcome, durable_copy_available,
 };
 use super::view::system_folder_reason;
+// Page rhythm (HIG §7b): the crate's steps and the shared page sections.
+use super::{page, stack};
+use crate::rhythm::px::{GROUP, PAGE_GUTTER, RELATED, SCROLLBAR_GUTTER, SIBLING};
 
 static NEXT_OPERATION: AtomicU64 = AtomicU64::new(0);
 
@@ -1335,14 +1338,18 @@ impl ImportApp {
     fn operation_card(&self, index: usize, operation: &OperationRecord) -> Card {
         let (summary, mut details) = operation_text(operation);
         self.page_details(index, operation, &mut details);
-        let mut body = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(
-                Text::new(&summary).with_id(format!("import.operation.{index}.summary")),
-            ));
+        let mut body = stack().push(Box::new(
+            Text::new(&summary).with_id(format!("import.operation.{index}.summary")),
+        ));
+        // The card's commands form one action row rather than a stack of
+        // one-button lines, and the row follows the expanded details: the
+        // toggle, the issue paging and the copy action act on that list, so
+        // they come after it in reading and Tab order.
+        let mut actions = Row::new();
+        let mut has_actions = false;
+        let mut details_text = None;
         if !details.is_empty() {
-            body = body.push(Box::new(self.button(
+            actions = actions.push(Box::new(self.button(
                 &format!("import.operation.{index}.toggle-details"),
                 if self.expanded_details.contains(&index) {
                     "Hide details"
@@ -1351,10 +1358,10 @@ impl ImportApp {
                 },
                 ImportCommand::ToggleDetails(index),
             )));
+            has_actions = true;
             if self.expanded_details.contains(&index) {
-                body = body.push(Box::new(
-                    Text::new(&details).with_id(format!("import.operation.{index}.details")),
-                ));
+                details_text =
+                    Some(Text::new(&details).with_id(format!("import.operation.{index}.details")));
                 if operation.issue_count() > 8 {
                     let label = if self.detail_request.is_some() {
                         "Loading issues…"
@@ -1367,7 +1374,7 @@ impl ImportApp {
                     } else {
                         "Next issue page"
                     };
-                    body = body.push(Box::new(
+                    actions = actions.push(Box::new(
                         self.button(
                             &format!("import.operation.{index}.next-issues"),
                             label,
@@ -1378,44 +1385,50 @@ impl ImportApp {
                 }
             }
         }
-        match operation.state() {
-            OperationState::AwaitingReview => {
-                body = body.push(Box::new(
-                    self.button(
-                        &format!("import.operation.{index}.start"),
-                        "Start copy",
-                        ImportCommand::Start(index),
-                    )
-                    .primary()
-                    .with_enabled(self.worker.is_none() && durable_copy_available().is_ok()),
-                ));
-            }
+        let state_action = match operation.state() {
+            OperationState::AwaitingReview => Some(
+                self.button(
+                    &format!("import.operation.{index}.start"),
+                    "Start copy",
+                    ImportCommand::Start(index),
+                )
+                .primary()
+                .with_enabled(self.worker.is_none() && durable_copy_available().is_ok()),
+            ),
             OperationState::Running
                 if self
                     .worker
                     .as_ref()
                     .is_some_and(|(active, _)| *active == index) =>
             {
-                body = body.push(Box::new(self.button(
+                Some(self.button(
                     &format!("import.operation.{index}.cancel"),
                     "Stop copy",
                     ImportCommand::Cancel,
-                )));
+                ))
             }
             OperationState::Interrupted
             | OperationState::Cancelled
             | OperationState::Incomplete
-            | OperationState::Failed => {
-                body = body.push(Box::new(
-                    self.button(
-                        &format!("import.operation.{index}.retry"),
-                        "Continue copy",
-                        ImportCommand::Retry(index),
-                    )
-                    .with_enabled(self.worker.is_none() && operation.retry_job().is_ok()),
-                ));
-            }
-            OperationState::Ready | OperationState::Running | OperationState::Complete => {}
+            | OperationState::Failed => Some(
+                self.button(
+                    &format!("import.operation.{index}.retry"),
+                    "Continue copy",
+                    ImportCommand::Retry(index),
+                )
+                .with_enabled(self.worker.is_none() && operation.retry_job().is_ok()),
+            ),
+            OperationState::Ready | OperationState::Running | OperationState::Complete => None,
+        };
+        if let Some(action) = state_action {
+            actions = actions.push(Box::new(action));
+            has_actions = true;
+        }
+        if let Some(text) = details_text {
+            body = body.push(Box::new(text));
+        }
+        if has_actions {
+            body = body.push(Box::new(actions));
         }
         Card::titled(
             format!(
@@ -1480,6 +1493,9 @@ impl ImportApp {
                 .with_enabled(self.gate_request.is_none()),
             ));
         }
+        // Each saved folder is a block of this card separated by space, not
+        // a second edged card inside the first (HIG §7).
+        let mut folders = stack().with_gap(GROUP);
         for (index, f) in c.folders.iter().enumerate() {
             let source = f.source().map_or_else(|e| e, |p| p.display().to_string());
             let destination = f.destination().map_or_else(
@@ -1533,7 +1549,10 @@ impl ImportApp {
             if can_review && f.mode == ChoiceMode::Copy {
                 row = self.continued_review_controls(row, index);
             }
-            body = body.push(Box::new(Card::new(Box::new(row))));
+            folders = folders.push(Box::new(row));
+        }
+        if !c.folders.is_empty() {
+            body = body.push(Box::new(folders));
         }
         // The card's two closing commands share one action row.
         body = body.push(Box::new(
@@ -1560,9 +1579,8 @@ impl ImportApp {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let mut body = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
+        let header = stack()
+            .with_gap(RELATED)
             .push(Box::new(
                 Text::new("Add folders to qOS")
                     .with_role(TextRole::Title)
@@ -1571,6 +1589,11 @@ impl ImportApp {
             .push(Box::new(Text::new(
                 "Choose a folder and where to copy it. qOS checks each copied file and keeps your originals. Folder sync is not available yet.",
             ).dimmed()));
+        // Each group of the page — the unavailable notice, the saved Desktop
+        // choices, the imports under their heading, the copy form — sits a
+        // `GROUP` after the previous one; cards inside a group keep the
+        // sibling step.
+        let mut body = page(header);
         if let Err(error) = durable_copy_available() {
             body = body.push(Box::new(Card::titled(
                 "Folder copying unavailable",
@@ -1583,7 +1606,7 @@ impl ImportApp {
         if self.operations.iter().enumerate().any(|(index, op)| {
             op.state() != OperationState::AwaitingReview || self.continued_index(index).is_none()
         }) {
-            body = body.push(Box::new(
+            let mut imports = stack().push(Box::new(
                 Text::new("Imports")
                     .with_role(TextRole::Heading)
                     .with_heading_level(2),
@@ -1594,14 +1617,15 @@ impl ImportApp {
                 {
                     continue;
                 }
-                body = body.push(Box::new(self.operation_card(index, operation)));
+                imports = imports.push(Box::new(self.operation_card(index, operation)));
             }
+            body = body.push(Box::new(imports));
         }
         body = body.push(Box::new(self.selection_card()));
         let content = Scrollable::new_vertical()
             .fill_parent_height()
             .always_visible()
-            .with_content_gutter(14.0)
+            .with_content_gutter(SCROLLBAR_GUTTER)
             .with_child(Box::new(body));
         let status = Card::new(Box::new(Text::new(&self.status).with_live(
             if self.status_is_error {
@@ -1614,12 +1638,11 @@ impl ImportApp {
             Container::new().filling().with_child(Box::new(
                 Column::new()
                     .with_no_padding()
-                    .with_horizontal_padding(24.0, 24.0)
-                    .with_vertical_padding(18.0)
-                    .with_gap(12.0)
+                    .with_horizontal_padding(PAGE_GUTTER, PAGE_GUTTER)
+                    .with_vertical_padding(PAGE_GUTTER)
+                    .with_gap(SIBLING)
                     .push(Box::new(content))
-                    .push(Box::new(status))
-                    .push(Box::new(Row::new().no_wrap().push(Box::new(Spacer::new())))),
+                    .push(Box::new(status)),
             )),
         )
     }
@@ -2510,5 +2533,41 @@ mod tests {
         let complete = ImportApp::for_shot("import-complete");
         assert_eq!(complete.operations[0].state(), OperationState::Complete);
         assert!(complete.operations[0].verified_bytes() > 0);
+    }
+
+    /// The expanded issue list precedes the commands that act on it — the
+    /// details toggle, the issue paging, the copy action — in reading and Tab
+    /// order (the accessibility tree and `collect_focusable` both walk the
+    /// widget tree in child order), and the three share one action row.
+    #[test]
+    fn expanded_details_precede_the_operation_commands() {
+        let pages = ImportApp::for_shot("import-issue-pages");
+        assert!(pages.expanded_details.contains(&0));
+        let card = pages.operation_card(0, &pages.operations[0]);
+        fn ids(widget: &dyn Widget, out: &mut Vec<String>) {
+            if let Some(id) = widget.test_id() {
+                out.push(id.to_string());
+            }
+            for child in widget.children() {
+                ids(child, out);
+            }
+        }
+        let mut order = Vec::new();
+        ids(&card, &mut order);
+        let position = |id: &str| {
+            order
+                .iter()
+                .position(|x| x == id)
+                .unwrap_or_else(|| panic!("{id} missing from {order:?}"))
+        };
+        let summary = position("import.operation.0.summary");
+        let details = position("import.operation.0.details");
+        let toggle = position("import.operation.0.toggle-details");
+        let next = position("import.operation.0.next-issues");
+        let retry = position("import.operation.0.retry");
+        assert!(
+            summary < details && details < toggle && toggle < next && next < retry,
+            "{order:?}"
+        );
     }
 }
