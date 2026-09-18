@@ -179,3 +179,219 @@ async fn compute_session_routes_and_replays_unacknowledged_status() {
         }
     ));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn compute_session_replays_offline_exact_cancel_until_ack() {
+    let user = TestUser::fresh("compute cancel owner");
+    let relay_device = user.enrol("relay", DeviceCapabilities::host());
+    let relay_key = relay_device.device_pubkey();
+    let requester = user.enrol("requester", DeviceCapabilities::primary());
+    let requester_key = requester.device_pubkey();
+    let worker = user.enrol("worker", DeviceCapabilities::host());
+    let worker_key = worker.device_pubkey();
+    let worker_cert = worker.cert.clone();
+    let worker_keypair = worker.sk.clone();
+    let relay = spawn_relay(&user, relay_device, &[88], &[requester_key, worker_key]).await;
+    let relay_address = relay.relay.node_addr();
+
+    let mut worker_client = ComputeClient::connect(
+        client_endpoint().await,
+        relay_address.clone(),
+        user.user_pk,
+        Some(relay_key),
+        worker.cert,
+        worker.sk,
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    worker_client.attach(88).await.unwrap();
+    assert!(matches!(
+        worker_client.receive().await.unwrap().envelope,
+        ComputeEnvelope::Ready {
+            workspace_id: 88,
+            pending: 0
+        }
+    ));
+    let issued_at_ms = now_ms();
+    worker_client
+        .send(&ComputeEnvelope::Advertise {
+            workspace_id: 88,
+            advertisement: ComputeWorkerAdvertisement {
+                version: 1,
+                worker: worker_key,
+                workspace_id: 88,
+                apps: BTreeSet::from(["org.tilo.render".into()]),
+                gpu: false,
+                assignment_capacity: 1,
+                active_assignments: 0,
+                power: PowerAvailability::External,
+                energy_saver: false,
+                issued_at_ms,
+                expires_at_ms: issued_at_ms.saturating_add(30_000),
+            },
+        })
+        .await
+        .unwrap();
+
+    let mut requester_client = ComputeClient::connect(
+        client_endpoint().await,
+        relay_address.clone(),
+        user.user_pk,
+        Some(relay_key),
+        requester.cert,
+        requester.sk,
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    requester_client.attach(88).await.unwrap();
+    assert!(matches!(
+        requester_client.receive().await.unwrap().envelope,
+        ComputeEnvelope::Ready { pending: 0, .. }
+    ));
+    let specification = ComputeJobSpec {
+        version: 1,
+        job_id: [18; 16],
+        requester: requester_key,
+        worker: worker_key,
+        workspace_id: 88,
+        app_id: "org.tilo.render".into(),
+        package_digest: [17; 32],
+        entrypoint: "render".into(),
+        arguments: Vec::new(),
+        inputs: Vec::new(),
+        limits: ComputeResourceLimits {
+            cpu_time_ms: 5_000,
+            memory_bytes: 32 * 1024 * 1024,
+            output_bytes: 1024,
+            gpu: false,
+        },
+        issued_at_ms,
+        expires_at_ms: issued_at_ms.saturating_add(30_000),
+    };
+    requester_client.submit(&specification).await.unwrap();
+    let request_delivery = tokio::time::timeout(Duration::from_secs(2), worker_client.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        &request_delivery.envelope,
+        ComputeEnvelope::Request { spec } if spec == &specification
+    ));
+    worker_client.acknowledge(&request_delivery).await.unwrap();
+    worker_client.send(&ComputeEnvelope::Ping).await.unwrap();
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(2), worker_client.receive())
+            .await
+            .unwrap()
+            .unwrap()
+            .envelope,
+        ComputeEnvelope::Pong
+    ));
+    drop(worker_client);
+
+    let binding = ComputeJobBinding {
+        workspace_id: 88,
+        job_id: specification.job_id,
+        requester: requester_key,
+        worker: worker_key,
+    };
+    requester_client.cancel(&binding).await.unwrap();
+    requester_client.send(&ComputeEnvelope::Ping).await.unwrap();
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(2), requester_client.receive())
+            .await
+            .unwrap()
+            .unwrap()
+            .envelope,
+        ComputeEnvelope::Pong
+    ));
+
+    let mut first_reconnect = ComputeClient::connect(
+        client_endpoint().await,
+        relay_address.clone(),
+        user.user_pk,
+        Some(relay_key),
+        worker_cert.clone(),
+        worker_keypair.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    first_reconnect.attach(88).await.unwrap();
+    let first_cancel = tokio::time::timeout(Duration::from_secs(2), first_reconnect.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        &first_cancel.envelope,
+        ComputeEnvelope::Cancel { binding: delivered } if delivered == &binding
+    ));
+    let durable_sequence = first_cancel.sequence.expect("cancel must be durable");
+    drop(first_reconnect);
+
+    let mut second_reconnect = ComputeClient::connect(
+        client_endpoint().await,
+        relay_address.clone(),
+        user.user_pk,
+        Some(relay_key),
+        worker_cert.clone(),
+        worker_keypair.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    second_reconnect.attach(88).await.unwrap();
+    let replay = tokio::time::timeout(Duration::from_secs(2), second_reconnect.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(replay.sequence, Some(durable_sequence));
+    assert!(matches!(
+        &replay.envelope,
+        ComputeEnvelope::Cancel { binding: delivered } if delivered == &binding
+    ));
+    second_reconnect.acknowledge(&replay).await.unwrap();
+    assert!(matches!(
+        second_reconnect.receive().await.unwrap().envelope,
+        ComputeEnvelope::Ready {
+            workspace_id: 88,
+            pending: 1
+        }
+    ));
+    second_reconnect.send(&ComputeEnvelope::Ping).await.unwrap();
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(2), second_reconnect.receive())
+            .await
+            .unwrap()
+            .unwrap()
+            .envelope,
+        ComputeEnvelope::Pong
+    ));
+    drop(second_reconnect);
+
+    let mut after_ack = ComputeClient::connect(
+        client_endpoint().await,
+        relay_address,
+        user.user_pk,
+        Some(relay_key),
+        worker_cert,
+        worker_keypair,
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    after_ack.attach(88).await.unwrap();
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(2), after_ack.receive())
+            .await
+            .unwrap()
+            .unwrap()
+            .envelope,
+        ComputeEnvelope::Ready {
+            workspace_id: 88,
+            pending: 0
+        }
+    ));
+}
