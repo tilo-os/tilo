@@ -15,6 +15,10 @@ SOURCE = '33e83f64cde9df4ee65ff47a708f125d932256da'
 RECIPE = '8308652298b8fb5b00f0fbacba9c5dcb796b1b628f6b296e2663e5a829f4ceb2'
 KSRC = '/work/rpmbuild/BUILD/kernel-7.2.5-build/kernel-7.2.5/linux-7.2.5-200.fc44.aarch64'
 CERT_OUTPUTS = {'signing_key.x509', 'x509_certificate_list', 'x509_revocation_list', 'blacklist_hash_list'}
+ROOT_KERNEL_OUTPUTS = {'vmlinux', 'vmlinux.o', 'vmlinux.a', 'vmlinux.unstripped',
+                       'vmlinux.symvers', 'vmlinux.map', 'vmlinux.btf', 'vmlinux.btf.o'}
+ARM_BOOT_OUTPUTS = {'Image', 'Image.gz', 'Image.lz4', 'Image.lzma', 'Image.lzo',
+                    'Image.zst', 'Image.bz2', 'vmlinuz.efi', 'image.fit'}
 
 def require(ok, message):
     if not ok: raise ValueError(message)
@@ -35,18 +39,24 @@ def relative(value):
     require(value and not p.is_absolute() and '..' not in p.parts and str(p)==value, 'noncanonical relative path')
     return p
 
+def generated_output(rel):
+    """Classify build products by their Kbuild location, not source basenames."""
+    path=PurePosixPath(rel);name=path.name
+    return (name.endswith(('.a','.ko','.mod','.mod.c','.mod.o')) or
+            name in ('System.map','Module.symvers','modules.order','modules.builtin','modules.builtin.modinfo') or
+            (path.parent==PurePosixPath('.') and (name in ROOT_KERNEL_OUTPUTS or
+                name.startswith(('.tmp_vmlinux','.tmp_kallsyms')))) or
+            (path.parent==PurePosixPath('arch/arm64/boot') and name in ARM_BOOT_OUTPUTS) or
+            (path.parent==PurePosixPath('certs') and (name.endswith('.o') or name in CERT_OUTPUTS)))
+
+
 def invalidations(root, active):
     """Keep leaf objects; discard aggregates, cert outputs and active products."""
     removed=set(active)
     for path in root.rglob('*'):
         if not path.is_file() or path.is_symlink(): continue
         rel=path.relative_to(root).as_posix(); name=path.name
-        if (name.endswith(('.a','.ko','.mod','.mod.c','.mod.o')) or
-            name in ('System.map','Module.symvers','modules.order','modules.builtin','modules.builtin.modinfo') or
-            name.startswith(('vmlinux','.tmp_vmlinux','.tmp_kallsyms')) or
-            rel.startswith('arch/arm64/boot/Image') or
-            rel in ('arch/arm64/boot/vmlinuz.efi', 'arch/arm64/boot/image.fit') or
-            (rel.startswith('certs/') and (name.endswith('.o') or name in CERT_OUTPUTS))):
+        if generated_output(rel):
             removed.add(rel)
         if name.endswith('.cmd'):
             require(path.stat().st_size<=4*1024**2, 'command record bound')
@@ -56,6 +66,13 @@ def invalidations(root, active):
             if re.search(r'(?m)^(?:savedcmd|cmd)_.*:=.*(?:\b(?:ld|ld\.lld|ar|llvm-ar)\b|\s-r\s)',text):
                 target=path.with_name(name[1:-4]).relative_to(root).as_posix()
                 removed.update((rel,target))
+    for value in removed:
+        # Catch a bad explicit admission or command-output mapping before deleting
+        # anything. Generated module C is the sole source-looking output admitted.
+        p=relative(value)
+        require(not (p.suffix in ('.h','.c','.S','.s','.rs','.dts','.dtsi') and
+                     not p.name.endswith('.mod.c')) and p.name not in ('Makefile','Kbuild','Kconfig'),
+                'invalidation targets source input: '+value)
     for value in list(removed):
         p=relative(value); removed.update((str(p.parent/('.'+p.name+'.cmd')),str(p.parent/('.'+p.name+'.d'))))
     for value in sorted(removed):

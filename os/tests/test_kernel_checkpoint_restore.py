@@ -198,4 +198,33 @@ class Restoration(unittest.TestCase):
    self.assertIn('arch/arm64/boot/vmlinuz.efi',removed)
    self.assertIn('arch/arm64/boot/image.fit',removed)
    self.assertEqual(list(boot.iterdir()),[])
+ def test_kernel_linker_source_inputs_survive_output_invalidation(self):
+  sources=('include/asm-generic/vmlinux.lds.h','arch/arm64/kernel/vmlinux.lds.S',
+           'arch/x86/kernel/vmlinux.lds.S','tools/lib/bpf/vmlinux.h',
+           'scripts/vmlinux.lds.h','arch/arm64/boot/Image.source',
+           'vmlinux.lds.S')
+  outputs=('vmlinux','vmlinux.o','.tmp_vmlinux.kallsyms1',
+           'arch/arm64/boot/Image','arch/arm64/boot/Image.gz','certs/system_certificates.o')
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d)
+   for name in sources+outputs:
+    path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(name)
+   removed=m.invalidations(root,[])
+   for name in sources:
+    self.assertEqual((root/name).read_text(),name)
+    self.assertNotIn(name,removed)
+   for name in outputs:self.assertFalse((root/name).exists())
+ def test_source_input_invalidation_fails_before_any_delete(self):
+  for source in ('include/asm-generic/vmlinux.lds.h','arch/arm64/kernel/vmlinux.lds.S','Makefile'):
+   with self.subTest(source=source),tempfile.TemporaryDirectory() as d:
+    root=Path(d);path=root/source;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('source')
+    (root/'vmlinux').write_text('output')
+    with self.assertRaisesRegex(ValueError,'source input'):m.invalidations(root,[source])
+    self.assertTrue((root/'vmlinux').exists());self.assertEqual(path.read_text(),'source')
+ def test_command_derived_source_header_is_rejected(self):
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d);(root/'vmlinux.lds.h').write_text('source')
+   (root/'.vmlinux.lds.h.cmd').write_text('savedcmd_vmlinux.lds.h := ld -r input.o -o vmlinux.lds.h')
+   with self.assertRaisesRegex(ValueError,'source input'):m.invalidations(root,[])
+   self.assertTrue((root/'vmlinux.lds.h').exists())
 if __name__=='__main__':unittest.main()
