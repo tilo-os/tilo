@@ -49,7 +49,8 @@ pub(crate) struct DesktopHandle {
     pub navigation_revision: Rc<std::cell::Cell<u64>>,
     pub navigation_command: Rc<RefCell<Option<crate::desktop_navigation::Command>>>,
     pub navigation_result: Rc<RefCell<Option<Result<Option<String>, String>>>>,
-    generation: String,
+    pub(crate) generation: String,
+    pub search: Rc<RefCell<crate::system_search::SearchState>>,
 
 }
 impl DesktopHandle {
@@ -247,6 +248,7 @@ impl DesktopRoot {
             navigation: Rc::new(RefCell::new(serde_json::Value::Null)),
             navigation_revision: Rc::default(), navigation_command: Rc::default(), navigation_result: Rc::default(),
             generation: uuid::Uuid::new_v4().to_string(),
+            search: Rc::default(),
         };
         let chrome_intents: Rc<RefCell<Vec<qos_desktop::chrome::ChromeIntent>>> = Rc::default();
         let chrome = Rc::new(ChromeSource {
@@ -260,12 +262,7 @@ impl DesktopRoot {
         let views =
             Rc::new(InstanceViewStore::portable(storage.clone(), room).map_err(|e| e.to_string())?);
         let mut catalog = ApplicationCatalog::new();
-        for definition in [
-            word_processor::definition(),
-            chat::definition(),
-            notes::definition(),
-            calculator::definition(),
-        ] {
+        for definition in desktop::definitions() {
             catalog.register(definition).map_err(|e| e.to_string())?;
         }
         let mut resolver = ApplicationCatalogTileResolver {
@@ -412,6 +409,7 @@ impl DesktopRoot {
     fn refresh_navigation(&self, topology: bool) {
         use serde_json::json;
         let active = self.active_route();
+        self.handle.search.borrow_mut().refresh(&self.handle.generation,&self.source_heads,&self.handle.tree.borrow(),&self.resolver.host.routes,active.as_ref());
         let mut snapshot = self.handle.navigation.borrow_mut();
         let mut changed = false;
         if topology || snapshot.is_null() {
@@ -419,8 +417,8 @@ impl DesktopRoot {
             let entries: Vec<_> = tree.workspaces.iter().flat_map(|w| w.strips.iter().flat_map(move |s| s.window_groups.iter().flat_map(move |g| g.tabs.iter().map(move |t| json!({"route":{"workspace":w.id.0.to_string(),"strip":s.id.0.to_string(),"group":g.id.to_string(),"tab":t.id.to_string()},"label":t.title,"stripLabel":s.name,"workspaceLabel":w.name}))))).collect();
             let workspaces: Vec<_> = tree.workspaces.iter().map(|w| json!({"id":w.id.0.to_string(),"label":w.name,"room":w.room.to_string(),"owner":w.owner,"strips":w.strips.iter().map(|s| json!({"id":s.id.0.to_string(),"label":s.name})).collect::<Vec<_>>()})).collect();
             let group = active.as_ref().and_then(|r| r.ids().ok()).and_then(|(_,s,g,_)| tree.workspaces.iter().flat_map(|w| &w.strips).find(|v|v.id==s)?.window_groups.iter().find(|v|v.id==g));
-            let applications = [word_processor::definition(), chat::definition(), notes::definition(), calculator::definition()].iter().map(|d|json!({"id":d.app_id,"label":d.title})).collect::<Vec<_>>();
-            let next = json!({"version":1,"generation":self.handle.generation,"entries":entries,"workspaces":workspaces,"applications":applications,"activeWorkspace":tree.active.0.to_string(),"activeStrip":tree.active_workspace().and_then(|w| tree.active_strip.get(&w.id).copied().or_else(||w.strips.first().map(|s|s.id))).map(|s|s.0.to_string()),"active":active,"widthPermille":group.map(|g|g.width.permille()),"maximized":group.is_some_and(|g|g.maximized),"capabilities":{"select":true,"width":true,"maximize":true,"strips":true,"commands":true,"close":true},"history":snapshot.get("history").cloned().unwrap_or(serde_json::Value::Null),"scroll":snapshot.get("scroll").cloned().unwrap_or(serde_json::Value::Null),"desktopPan":snapshot.get("desktopPan").cloned().unwrap_or(serde_json::Value::Null)});
+            let applications = desktop::definitions().iter().map(|d|json!({"id":d.app_id,"label":d.title})).collect::<Vec<_>>();
+            let next = json!({"version":1,"generation":self.handle.generation,"entries":entries,"workspaces":workspaces,"applications":applications,"activeWorkspace":tree.active.0.to_string(),"activeStrip":tree.active_workspace().and_then(|w| tree.active_strip.get(&w.id).copied().or_else(||w.strips.first().map(|s|s.id))).map(|s|s.0.to_string()),"active":active,"widthPermille":group.map(|g|g.width.permille()),"maximized":group.is_some_and(|g|g.maximized),"capabilities":{"select":true,"width":true,"maximize":true,"strips":true,"commands":true,"globalSearch":true,"close":true},"history":snapshot.get("history").cloned().unwrap_or(serde_json::Value::Null),"scroll":snapshot.get("scroll").cloned().unwrap_or(serde_json::Value::Null),"desktopPan":snapshot.get("desktopPan").cloned().unwrap_or(serde_json::Value::Null)});
             if *snapshot != next { *snapshot = next; changed = true; }
         }
         let scroll = active.as_ref().and_then(|r| {
@@ -629,7 +627,8 @@ impl Widget for DesktopRoot {
         let strip = tree.active_strip.get(&workspace.id).and_then(|id| workspace.strips.iter().find(|s| s.id == *id)).or_else(|| workspace.strips.first());
         if let Some(strip) = strip {
             let active_group = tree.active_group.get(&strip.id).and_then(|id| strip.window_groups.iter().find(|g| g.id == *id)).or_else(|| strip.window_groups.first());
-            for (app, label) in [("dev.qos.word-processor", "Writer"), ("dev.qos.notes", "Notes"), ("dev.qos.chat", "Chat"), ("dev.qos.calculator", "Calculator")] {
+            for definition in desktop::definitions() {
+                let (app,label)=(definition.app_id,definition.title);
                 add(format!("open-{app}"), format!("Open {label}"), DesktopCommand::OpenTab { app: app.into(), placement: TabPlacement::NewGroup { strip: strip.id.0, after: active_group.map(|g| g.id) } });
             }
             if let Some(group) = active_group {
@@ -655,7 +654,8 @@ impl Widget for DesktopRoot {
                 }
             }
         } else {
-            for (app, label) in [("dev.qos.word-processor", "Writer"), ("dev.qos.notes", "Notes"), ("dev.qos.chat", "Chat"), ("dev.qos.calculator", "Calculator")] {
+            for definition in desktop::definitions() {
+                let (app,label)=(definition.app_id,definition.title);
                 add(format!("open-{app}"), format!("Open {label}"), DesktopCommand::OpenTab { app: app.into(), placement: TabPlacement::EmptyWorkspace });
             }
         }
@@ -2492,6 +2492,304 @@ mod tests {
         assert!(
             !tree.active_group.contains_key(&StripId(2)),
             "outgoing selection must not steal focus"
+        );
+    }
+    #[test]
+    fn global_search_real_catalog_launch_uses_bound_queue() {
+        let (root, handle, _) = fixture();
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::state::State::new(),
+            Box::new(root),
+            (1000, 700),
+            Theme::dark(),
+            ui::TextRenderer::new(),
+            ui::permissions::UserId("author".into()),
+        );
+        handle.sync_global_search(&mut frame);
+        let data = handle.search.borrow().data.clone();
+        assert_eq!(
+            data.applications
+                .iter()
+                .map(|a| a.app_id.as_str())
+                .collect::<Vec<_>>(),
+            desktop::definitions()
+                .iter()
+                .map(|d| d.app_id)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(data.tabs.len(), 4);
+        assert_eq!(
+            handle.navigation.borrow()["capabilities"]["globalSearch"],
+            true
+        );
+        let before = serde_json::to_value(&handle.tree.borrow().workspaces).unwrap();
+        let record_heads = handle
+            .records
+            .borrow()
+            .values()
+            .map(|record| {
+                record
+                    .store
+                    .with(&record.checkout.id, |doc| doc.get_heads())
+            })
+            .collect::<Vec<_>>();
+        handle
+            .open_global_search(&mut frame, &handle.generation, "Writer")
+            .unwrap();
+        assert_eq!(
+            frame.global_search_scope(),
+            Some(ui::search::system::SearchScope::All)
+        );
+        let node = frame.inspection().root.semantics.unwrap();
+        let target = node.children[1].children[0]
+            .action_target
+            .as_deref()
+            .unwrap();
+        frame
+            .perform_semantic_named("system-search", Some(target), &ui::a11y::Action::Activate)
+            .unwrap();
+        assert!(handle.session_requests.borrow().is_empty());
+        handle.process_global_search(&mut frame).unwrap();
+        let requests = handle.session_requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].1.source.heads, vec![[7; 32]]);
+        assert!(
+            matches!(&requests[0].1.command,qos_desktop::session_commands::DesktopCommand::OpenTab{app,..} if app=="dev.qos.word-processor")
+        );
+        assert_eq!(
+            serde_json::to_value(&handle.tree.borrow().workspaces).unwrap(),
+            before
+        );
+        assert_eq!(
+            handle
+                .records
+                .borrow()
+                .values()
+                .map(|record| record
+                    .store
+                    .with(&record.checkout.id, |doc| doc.get_heads()))
+                .collect::<Vec<_>>(),
+            record_heads
+        );
+        assert!(handle.open_global_search(&mut frame, "stale", "").is_err());
+    }
+
+    #[test]
+    fn global_search_real_notes_and_chat_body_hits_select_exact_admitted_tab() {
+        use notes::{doc::NotesDoc, model::PageMeta};
+        let (root, handle, _) = fixture_with_topology(|tree| {
+            let strip = &mut tree.workspaces[0].strips[0];
+            let tabs = std::mem::take(&mut strip.window_groups[0].tabs);
+            strip.window_groups = tabs
+                .into_iter()
+                .enumerate()
+                .map(|(i, tab)| WindowGroup {
+                    id: 100 + i as u64,
+                    active_tab: tab.id,
+                    tabs: vec![tab],
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                })
+                .collect();
+        });
+        for record in handle.records.borrow().values() {
+            record.store.with(&record.checkout.id, |doc| {
+                if record.app == "dev.qos.notes" {
+                    let page = uuid::Uuid::new_v4();
+                    NotesDoc::upsert_page_meta(
+                        doc,
+                        &PageMeta {
+                            id: page,
+                            title: "Ordinary notebook page".into(),
+                            parent: None,
+                            order: 0,
+                        },
+                    );
+                    NotesDoc::apply_block_ops(
+                        doc,
+                        page,
+                        &[ui::widget::BlockEditOp::Insert {
+                            block_id: uuid::Uuid::new_v4().to_string(),
+                            after: None,
+                            kind: "paragraph".into(),
+                            text: "quasar-notes-body-only".into(),
+                        }],
+                    )
+                    .unwrap();
+                    notes::notebook::validate(doc).unwrap();
+                } else if record.app == "dev.qos.chat" {
+                    chat::doc::ChatDoc::push_message(
+                        doc,
+                        "c_general",
+                        chat::doc::NewMessage {
+                            author: "author".into(),
+                            ts: 1,
+                            text: "nebula-chat-body-only".into(),
+                            ..Default::default()
+                        },
+                    );
+                }
+            });
+        }
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(),
+            Box::new(root),
+            (1100, 700),
+            Theme::dark(),
+            ui::TextRenderer::new(),
+            ui::permissions::UserId("author".into()),
+        );
+        for (app, query) in [
+            ("dev.qos.notes", "quasar-notes-body-only"),
+            ("dev.qos.chat", "nebula-chat-body-only"),
+        ] {
+            handle
+                .open_global_search(&mut frame, &handle.generation, query)
+                .unwrap();
+            let data = handle.search.borrow().data.clone();
+            let expected = data.tabs.iter().find(|tab| tab.app_id == app).unwrap();
+            assert!(!expected.title.contains(query));
+            let node = frame.inspection().root.semantics.unwrap();
+            let results = &node.children[1].children;
+            assert!(
+                !results.is_empty(),
+                "no real provider body hit for {app}: {}",
+                frame.inspection_json().unwrap()
+            );
+            let target = results[0].action_target.as_deref().unwrap();
+            frame
+                .perform_semantic_named("system-search", Some(target), &ui::a11y::Action::Activate)
+                .unwrap();
+            handle.process_global_search(&mut frame).unwrap();
+            assert_eq!(
+                handle.navigation.borrow()["active"]["tab"],
+                expected.instance_id.to_string()
+            );
+            assert!(handle.session_requests.borrow().is_empty());
+        }
+        handle
+            .open_global_search(&mut frame, &handle.generation, "nebula-chat-body-only")
+            .unwrap();
+        let old_target = frame.inspection().root.semantics.unwrap().children[1].children[0]
+            .action_target
+            .clone()
+            .unwrap();
+        *handle.permissions.borrow_mut() = ui::permissions::PermissionContext::from_capabilities(
+            ui::permissions::Actor::person(None, "outsider"),
+            vec![],
+        );
+        frame.relayout();
+        assert!(
+            frame
+                .perform_semantic_named(
+                    "system-search",
+                    Some(&old_target),
+                    &ui::a11y::Action::Activate
+                )
+                .is_err()
+        );
+        assert!(frame.take_global_search_intent().is_none());
+    }
+
+    #[test]
+    fn global_search_refresh_revokes_exact_routes_and_stale_semantics() {
+        let (root, handle, _) = fixture();
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(),
+            Box::new(root),
+            (1000, 700),
+            Theme::dark(),
+            ui::TextRenderer::new(),
+            ui::permissions::UserId("author".into()),
+        );
+        handle
+            .open_global_search(&mut frame, &handle.generation, "Notes")
+            .unwrap();
+        let old = handle.search.borrow().data.clone();
+        let tab = old
+            .tabs
+            .iter()
+            .find(|t| t.app_id == "dev.qos.notes")
+            .unwrap();
+        let row = frame.inspection().root.semantics.unwrap().children[1].children[0]
+            .action_target
+            .clone()
+            .unwrap();
+        let mut tree = handle.tree.borrow().clone();
+        for w in &mut tree.workspaces {
+            for s in &mut w.strips {
+                for g in &mut s.window_groups {
+                    g.tabs.retain(|t| t.id != tab.instance_id);
+                }
+            }
+        }
+        let routes = BTreeMap::from([(
+            old.tabs
+                .iter()
+                .find(|t| t.app_id == "dev.qos.word-processor")
+                .unwrap()
+                .instance_id,
+            "tab:1".into(),
+        )]);
+        *handle.inbox.borrow_mut() = Some((
+            Admission {
+                source_heads: vec![[8; 32]],
+                tree,
+                routes,
+                required: vec![],
+                missing: vec![],
+                unsupported: vec![],
+                pending: 0,
+            },
+            handle.permissions.borrow().clone(),
+        ));
+        frame.relayout();
+        handle.sync_global_search(&mut frame);
+        assert!(
+            !handle
+                .search
+                .borrow()
+                .data
+                .tabs
+                .iter()
+                .any(|t| t.instance_id == tab.instance_id)
+        );
+        assert!(
+            handle
+                .search
+                .borrow()
+                .resolve(&old.revision, &tab.target)
+                .is_err()
+        );
+        let current = handle.search.borrow().data.revision.clone();
+        assert!(
+            handle
+                .search
+                .borrow()
+                .resolve(&current, &tab.target)
+                .is_err()
+        );
+        assert!(
+            frame
+                .perform_semantic_named("system-search", Some(&row), &ui::a11y::Action::Activate)
+                .is_err()
+        );
+        assert!(handle.session_requests.borrow().is_empty());
+        handle
+            .open_global_search(
+                &mut frame,
+                &handle.generation,
+                &"é".repeat(ui::search::MAX_SEARCH_QUERY_SCALARS),
+            )
+            .unwrap();
+        assert!(
+            handle
+                .open_global_search(
+                    &mut frame,
+                    &handle.generation,
+                    &"x".repeat(ui::search::MAX_SEARCH_QUERY_SCALARS + 1)
+                )
+                .is_err()
         );
     }
 }

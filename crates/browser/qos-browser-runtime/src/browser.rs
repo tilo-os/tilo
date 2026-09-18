@@ -455,6 +455,7 @@ fn begin_desktop(event_loop:&ActiveEventLoop,id:u64,canvas:web_sys::HtmlCanvasEl
     let mut frame=FrameHarness::new_with_controlled_inputs(ui::state::State::new(),Box::new(root),((size.width as f64/dpr).max(1.0) as u32,(size.height as f64/dpr).max(1.0) as u32),ui::Theme::dark(),ui::TextRenderer::with_font_system(system),UserId(config.author));
     frame.set_input_scale(dpr).map_err(error)?;
     frame.set_platform_conventions(ui::platform::PlatformConventions::new(if config.mac{ui::platform::Platform::MacOs}else{ui::platform::Platform::Linux}));
+    desktop.sync_global_search(&mut frame);
     let images=std::mem::take(&mut *desktop.images.borrow_mut());
     let mount=Mount{peer_suspended:false,peer:Some(peer),desktop:Some(desktop),record:None,window:window.clone(),canvas,frame,storage,gpu:None,pending:true,viewport:ViewportState::new(Viewport{width:size.width,height:size.height,dpr}),hidden:false,generation:1,frames:0,status:status.clone(),writes:HashMap::new(),images,error:None};
     MOUNTS.with_borrow_mut(|mounts|mounts.insert(id,mount));emit(&status,serde_json::json!({"phase":"gpu-pending","id":id}));initialize_gpu(id,1,window);Ok(())
@@ -531,7 +532,7 @@ impl Mount {
     fn owned_records(&self)->Vec<crate::desktop_host::OwnedRecord>{
         if let Some(desktop)=&self.desktop {desktop.records.borrow().values().cloned().collect()}else{self.record.iter().cloned().collect()}
     }
-    fn collect_desktop(&mut self){if let Some(desktop)=&self.desktop{self.images.extend(std::mem::take(&mut *desktop.images.borrow_mut()));}}
+    fn collect_desktop(&mut self){if let Some(desktop)=&self.desktop{self.images.extend(std::mem::take(&mut *desktop.images.borrow_mut()));desktop.sync_global_search(&mut self.frame);}}
 
     // ResizeObserver/Winit remains the sole source of viewport notifications.
     // Reading the pair again at redraw also covers scale/size event ordering and
@@ -603,6 +604,9 @@ impl Mount {
         // Poll only after applying the new viewport. This avoids an old-size
         // layout merely to discover work, followed by a second resize layout.
         self.frame.poll_frame().map_err(|e| e.to_string())?;
+        if let Some(desktop)=&self.desktop {
+            if let Err(error)=desktop.process_global_search(&mut self.frame) {desktop.errors.borrow_mut().push(error);}
+        }
         let frame = self.frame.frame_output();
         let mut physical = vello::Scene::new();
         physical.append(frame.scene, Some(ui::scale::composite_transform(viewport.dpr)));
@@ -1184,5 +1188,17 @@ pub fn desktop_command_search(id: u64, generation: &str, query: &str) -> Result<
         if query.len()>512 { return Err(error("Search is too long")); }
         mount.frame.open_caller_search(query).map_err(error)?;
         mount.pending=true; mount.window.request_redraw(); Ok(())
+    })
+}
+
+/// Full system search; the caller-only commands opener remains separate.
+#[wasm_bindgen]
+pub fn desktop_global_search(id:u64,generation:&str,query:&str)->Result<(),JsValue> {
+    MOUNTS.with_borrow_mut(|mounts| {
+        let mount=mounts.get_mut(&id).ok_or_else(||error("Desktop disposed"))?;
+        if mount.peer_suspended {return Err(error("Desktop suspended"));}
+        let desktop=mount.desktop.as_ref().ok_or_else(||error("Desktop search unavailable"))?;
+        desktop.open_global_search(&mut mount.frame,generation,query).map_err(error)?;
+        mount.pending=true;mount.window.request_redraw();Ok(())
     })
 }

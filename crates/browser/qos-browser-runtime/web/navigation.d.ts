@@ -18,7 +18,7 @@ export interface DesktopNavigationSnapshot {
 }
 export type DesktopScrollAction = {kind: "line" | "page"; value: -1 | 1} | {kind: "absolute"; value: number} | {kind: "start" | "end"};
 export type DesktopNavigationCommand = {generation: string} & (
-  {kind: "global-search"} |
+  {kind: "global-search"; query?: string} |
   {kind: "pan"; workspace: string; strip: string; offset: number} |
   {kind: "history"; route: DesktopRoute; target: string} |
   {kind: "close"; route: DesktopRoute} |

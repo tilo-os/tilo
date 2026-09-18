@@ -4,7 +4,7 @@ import {bindDesktopCommands} from './desktop-command-bridge.mjs';
 import {commitPeerBatches} from './peer-persistence.mjs';
 import {createAssetRecovery,retryableMemo} from './asset-recovery.mjs';
 import init,* as runtime from './pkg/qos_browser_runtime.js';
-import {MountRegistry,beforeInputRoute,createKeyboardForwarder,keyboardRoute,modifierSnapshot,semanticKeyboardRoute,wheelPixels} from './host-core.mjs';
+import {MountRegistry,beforeInputRoute,createKeyboardForwarder,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,routeGlobalSearchShortcut,wheelPixels} from './host-core.mjs';
 import {acquireStorage} from './storage.mjs';
 import {semanticBridge} from './semantics.mjs';
 import {settleComponentClose,recoverableClose} from './close-recovery.mjs';
@@ -174,7 +174,7 @@ export async function mountDesktop(target,options={}) {
     }
     const dispatchKey=(type,event)=>canvas.dispatchEvent(new KeyboardEvent(type,event));
     const hiddenKeys=createKeyboardForwarder({route:keyboardRoute,mac:config.mac,dispatch:dispatchKey,clearModifiers,report:()=>report({lastInput:'keyboard'})});
-    semanticKeys=createKeyboardForwarder({route:(...args)=>lastState?.semantics?.root?.widget==='ActionPalette'?keyboardRoute(...args):semanticKeyboardRoute(...args),mac:config.mac,dispatch:dispatchKey,publishModifiers,clearModifiers,report:()=>report({lastInput:'keyboard'})});
+    semanticKeys=createKeyboardForwarder({route:(...args)=>overlayKeyboardRoute(lastState?.semantics?.root?.widget,...args),mac:config.mac,dispatch:dispatchKey,publishModifiers,clearModifiers,report:()=>report({lastInput:'keyboard'})});
     const hiddenKeyOwner={};
     const dispatchCanvasKey=key=>{canvas.dispatchEvent(new KeyboardEvent('keydown',{key}));canvas.dispatchEvent(new KeyboardEvent('keyup',{key}));};
     on(editor,'keydown',event=>{
@@ -199,7 +199,14 @@ export async function mountDesktop(target,options={}) {
     if(options.actionsV1)actionPalette=bindActionPalette({actions:options.actionsV1,publish:rows=>{if(active())runtime.caller_actions(id,JSON.stringify(rows));},report});
     if(options.actionsV1)desktopCommands=bindDesktopCommands({actions:options.actionsV1,peek:()=>{if(!active())return null;const raw=runtime.pending_desktop_command(id);return raw?JSON.parse(raw):null;},ack:invocation=>{if(active())runtime.acknowledge_desktop_command(id,invocation);},report});
     if(runtime.desktop_navigation_snapshot && runtime.desktop_navigation_snapshot(id)) {
-      navigation=createDesktopNavigation({active,snapshot:()=>runtime.desktop_navigation_snapshot(id),revision:()=>runtime.desktop_navigation_revision(id),dispatch:command=>runtime.desktop_navigate(id,command),search:(generation,query)=>runtime.desktop_command_search(id,generation,query),awaitTerminal:desktopCommands?invocation=>desktopCommands.waitForTerminal(invocation):undefined});
+      navigation=createDesktopNavigation({active,snapshot:()=>runtime.desktop_navigation_snapshot(id),revision:()=>runtime.desktop_navigation_revision(id),dispatch:command=>runtime.desktop_navigate(id,command),search:(generation,query)=>runtime.desktop_command_search(id,generation,query),globalSearch:runtime.desktop_global_search?(generation,query)=>runtime.desktop_global_search(id,generation,query):undefined,focusSearch:()=>canvas.focus({preventScroll:true}),awaitTerminal:desktopCommands?invocation=>desktopCommands.waitForTerminal(invocation):undefined});
+      // Cloud's toolbar is a sibling of the renderer in its Desktop section.
+      // Scope the listener to that mounted desktop; other page editors stay native.
+      const shortcutScope=target.closest('section[aria-label="Desktop"]')??target;
+      on(shortcutScope,'keydown',event=>{
+        if(!active()||(!surface.contains(event.target)&&event.target.closest?.('input,textarea,[contenteditable="true"],[role="textbox"]')))return;
+        routeGlobalSearchShortcut(event,composing,()=>navigation.openGlobalSearch());
+      },{capture:true});
       options.onNavigation?.(navigation.controller);
     }
     return {navigation: navigation?.controller,retryAsset,cleanup:async()=>{registry.remove(token);await cleanup();},flush:()=>{persistenceFailed=false;return persist();},

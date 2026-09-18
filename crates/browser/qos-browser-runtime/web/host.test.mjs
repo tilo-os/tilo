@@ -174,3 +174,21 @@ test('semantic Enter and Shift Enter reach the application while modified and co
     for(const extra of [{ctrlKey:true},{altKey:true},{metaKey:true},{isComposing:true}])assert.equal(hostCore.semanticKeyboardRoute({key:'Enter',...extra},false,mac),'native');
   }
 });
+
+test('global shortcut accepts Option and Meta on macOS and other platforms only after open succeeds',()=>{
+ assert.equal(typeof hostCore.routeGlobalSearchShortcut,'function');
+ for(const mac of [true,false])for(const modifier of ['altKey','metaKey']){
+  const events=[];const event={key:' ',code:'Space',[modifier]:true,preventDefault(){events.push('prevent');},stopImmediatePropagation(){events.push('stop');}};
+  assert.equal(hostCore.routeGlobalSearchShortcut(event,false,()=>{events.push('open');},mac),true);
+  assert.deepEqual(events,['open','prevent','stop']);
+  for(const extra of [{repeat:true},{isComposing:true},{ctrlKey:true},{shiftKey:true},{altKey:true,metaKey:true},{defaultPrevented:true}]){
+   events.length=0;assert.equal(hostCore.routeGlobalSearchShortcut({...event,...extra},false,()=>events.push('open'),mac),false);assert.deepEqual(events,[]);
+  }
+  events.length=0;assert.equal(hostCore.routeGlobalSearchShortcut(event,true,()=>events.push('open'),mac),false);
+  assert.equal(hostCore.routeGlobalSearchShortcut(event,false,()=>{throw Error('blocked');},mac),false);assert.deepEqual(events,[]);
+ }
+ assert.equal(hostCore.overlayKeyboardRoute('SystemSearch',{key:'ArrowDown'},false,true),'forward');
+ assert.equal(hostCore.overlayKeyboardRoute('SystemSearch',{key:'Enter'},false,true),'forward');
+ assert.equal(hostCore.overlayKeyboardRoute('Document',{key:'ArrowDown'},false,true),'native');
+ assert.equal(hostCore.overlayKeyboardRoute('Document',{key:'k',metaKey:true},false,true),'forward');
+});

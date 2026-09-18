@@ -1,12 +1,13 @@
 /** Mount-owned projection: no DOM lookup, transport mutation or polling timer. */
-export function createDesktopNavigation({snapshot,revision,dispatch,search,awaitTerminal,active}) {
- const parse=()=>{const next=JSON.parse(snapshot());next.capabilities={...next.capabilities,close:Boolean(awaitTerminal&&next.capabilities?.close)};return next;};
+export function createDesktopNavigation({snapshot,revision,dispatch,search,globalSearch,focusSearch=()=>{},awaitTerminal,active}) {
+ const parse=()=>{const next=JSON.parse(snapshot());next.capabilities={...next.capabilities,close:Boolean(awaitTerminal&&next.capabilities?.close),globalSearch:Boolean(globalSearch&&next.capabilities?.globalSearch)};return next;};
  const sameRoute=(a,b)=>a?.workspace===b?.workspace&&a?.strip===b?.strip&&a?.group===b?.group&&a?.tab===b?.tab;
  const routeKey=route=>JSON.stringify([route?.workspace,route?.strip,route?.group,route?.tab]);
  let closed=false, serial=revision(), value=parse(), listeners=new Set(), pendingCloses=new Map();
  function check(){if(closed)throw Error('Desktop navigation disposed');if(!active())throw Error('Desktop navigation unavailable');}
  function settleCloses(){for(const [key,pending] of pendingCloses){if(!pending.terminal)continue;const present=Array.isArray(value.entries)?value.entries.some(entry=>sameRoute(entry.route,pending.route)):sameRoute(value.active,pending.route);if(!present){pendingCloses.delete(key);pending.resolve();}}}
  function refresh(){if(closed||!active())return;const next=revision();if(next===serial)return;serial=next;value=parse();settleCloses();for(const listener of [...listeners])listener(value);}
+ function openGlobalSearch(generation,query=""){check();refresh();generation??=value.generation;if(generation!==value.generation)throw Error("Stale desktop surface");if(!value.capabilities?.globalSearch||!globalSearch)throw Error("Global search unavailable");globalSearch(generation,query);focusSearch();refresh();}
  const controller={version:1,
   getSnapshot(){check();return value;},
   subscribe(listener){check();listeners.add(listener);return()=>listeners.delete(listener);},
@@ -21,9 +22,9 @@ export function createDesktopNavigation({snapshot,revision,dispatch,search,await
      }catch(error){pendingCloses.delete(key);reject(error);}
      refresh();return promise;
     }
-    if(command.kind==='commands'){if(!search)throw Error('Command search unavailable');search(command.generation,command.query);}else dispatch(JSON.stringify(command));refresh();return Promise.resolve();
+    if(command.kind==='global-search'){openGlobalSearch(command.generation,command.query??'');}else if(command.kind==='commands'){if(!search)throw Error('Command search unavailable');search(command.generation,command.query);}else dispatch(JSON.stringify(command));refresh();return Promise.resolve();
    }catch(error){return Promise.reject(error);}
   },
  };
- return {controller,refresh,close(){closed=true;listeners.clear();for(const pending of pendingCloses.values())pending.reject(Error('Desktop navigation disposed'));pendingCloses.clear();}};
+ return {controller,refresh,openGlobalSearch,close(){closed=true;listeners.clear();for(const pending of pendingCloses.values())pending.reject(Error('Desktop navigation disposed'));pendingCloses.clear();}};
 }

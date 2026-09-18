@@ -6,14 +6,11 @@ use std::collections::BTreeMap;
 use ui::application::ApplicationDefinition;
 use ui::record::{RecordCheckout, RecordId};
 
+pub(crate) fn definitions() -> [&'static ApplicationDefinition; 4] {
+    [word_processor::definition(), chat::definition(), notes::definition(), calculator::definition()]
+}
 pub(crate) fn definition(app: &str) -> Option<&'static ApplicationDefinition> {
-    match app {
-        "dev.qos.word-processor" => Some(word_processor::definition()),
-        "dev.qos.chat" => Some(chat::definition()),
-        "dev.qos.notes" => Some(notes::definition()),
-        "dev.qos.calculator" => Some(calculator::definition()),
-        _ => None,
-    }
+    definitions().into_iter().find(|definition| definition.app_id == app)
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Requirement {

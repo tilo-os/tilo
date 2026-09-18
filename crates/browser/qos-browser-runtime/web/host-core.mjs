@@ -105,3 +105,15 @@ export function transactionComplete(transaction) {
     transaction.addEventListener('error',() => reject(transaction.error ?? Error('IndexedDB transaction failed')),{once:true});
   });
 }
+
+/** Consume the chord only once the mounted desktop has accepted Search. */
+export function routeGlobalSearchShortcut(event,composing,open) {
+  if(event.defaultPrevented||event.repeat||composing||event.isComposing||event.ctrlKey||event.shiftKey)return false;
+  if(event.key!==' '&&event.code!=='Space')return false;
+  if(Boolean(event.altKey)===Boolean(event.metaKey))return false;
+  try{open();}catch{return false;}
+  event.preventDefault();event.stopImmediatePropagation();return true;
+}
+export function overlayKeyboardRoute(widget,...args) {
+  return widget==='ActionPalette'||widget==='SystemSearch'?keyboardRoute(...args):semanticKeyboardRoute(...args);
+}

@@ -63,3 +63,33 @@ test('close correlation survives route switches and disposes every remaining rou
  raw={...raw,active:c,entries:[{route:c}]};revision++;nav.refresh();await closeB;assert.equal(bSettled,true);
  const closeC=nav.controller.dispatch({kind:'close',generation:'surface',route:c});nav.close();await assert.rejects(closeC,/disposed/);
 });
+
+test('global search has its own capability, opener, and accepted focus handoff', async()=>{
+ let raw={generation:'live',capabilities:{globalSearch:true}},live=true,events=[];
+ const nav=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>JSON.stringify(raw),active:()=>live,
+  dispatch:()=>events.push('navigation'),search:(...args)=>events.push(['commands',...args]),
+  globalSearch:(...args)=>{events.push(['global',...args]);if(args[1]==='blocked')throw Error('modal');},focusSearch:()=>events.push('focus')});
+ await nav.controller.dispatch({kind:'global-search',generation:'live'});
+ assert.deepEqual(events,[['global','live',''],'focus']);events=[];
+ await nav.controller.dispatch({kind:'commands',generation:'live',query:'insert'});
+ assert.deepEqual(events,[['commands','live','insert']]);events=[];
+ await assert.rejects(nav.controller.dispatch({kind:'global-search',generation:'old'}),/Stale/);
+ await assert.rejects(nav.controller.dispatch({kind:'global-search',generation:'live',query:'blocked'}),/modal/);
+ assert.deepEqual(events,[['global','live','blocked']]);events=[];
+ raw.capabilities.globalSearch=false;nav.refresh();
+ await assert.rejects(nav.controller.dispatch({kind:'global-search',generation:'live'}),/unavailable/);
+ live=false;await assert.rejects(nav.controller.dispatch({kind:'global-search',generation:'live'}),/unavailable/);
+ live=true;nav.close();await assert.rejects(nav.controller.dispatch({kind:'global-search',generation:'live'}),/disposed/);
+ assert.deepEqual(events,[]);
+});
+
+test('global capability requires a supplied opener and shortcut shares toolbar generation checks',async()=>{
+ const missing=createDesktopNavigation({snapshot:()=>JSON.stringify({generation:'g',capabilities:{globalSearch:true}}),revision:()=>1,active:()=>true,dispatch(){throw Error('wrong path');}});
+ assert.equal(missing.controller.getSnapshot().capabilities.globalSearch,false);
+ await assert.rejects(missing.controller.dispatch({kind:'global-search',generation:'g'}),/unavailable/);
+ let generation='one',calls=[];
+ const nav=createDesktopNavigation({snapshot:()=>JSON.stringify({generation,capabilities:{globalSearch:true}}),revision:()=>generation,active:()=>true,globalSearch:(...args)=>calls.push(args),focusSearch:()=>calls.push('focus')});
+ nav.openGlobalSearch();assert.deepEqual(calls,[['one',''],'focus']);
+ generation='two';assert.throws(()=>nav.openGlobalSearch('one'),/Stale/);
+ nav.openGlobalSearch();assert.deepEqual(calls.at(-2),['two','']);
+});
