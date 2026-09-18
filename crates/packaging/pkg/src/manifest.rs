@@ -28,6 +28,11 @@ pub struct Manifest {
     /// the manifest, so a release cannot silently weaken its fidelity.
     #[serde(default)]
     pub continuity: ContinuityContract,
+    /// Signed external accessibility acceptance evidence. This is deliberately
+    /// package metadata rather than a source-only test list: the installed
+    /// image gate must drive the exact manifest/payload pair that was packed.
+    #[serde(default, skip_serializing_if = "Accessibility::is_empty")]
+    pub accessibility: Accessibility,
     /// `[sandbox]` block — the security profile applied at load.
     pub sandbox: Sandbox,
     /// `[entrypoint]` block — what to launch. Required for `app`; optional/unset for other kinds.
@@ -41,6 +46,33 @@ pub struct Manifest {
     /// shim. Only meaningful when the entrypoint is `cli` or `both`.
     #[serde(default)]
     pub cli: Option<Cli>,
+}
+
+/// Optional accessibility acceptance data for an application package.
+///
+/// The generic installed-image client consumes the AT-SPI scenario directly
+/// from this signed manifest. It is not a complete user-journey declaration:
+/// it is deliberately limited to a safe action and a named, observable result.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Accessibility {
+    #[serde(default)]
+    pub atspi_acceptance: Option<AtspiAcceptance>,
+}
+
+impl Accessibility {
+    fn is_empty(&self) -> bool {
+        self.atspi_acceptance.is_none()
+    }
+}
+
+/// One external AT-SPI acceptance scenario, executed against the installed
+/// payload's real accessibility bus provider.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AtspiAcceptance {
+    pub root: String,
+    pub required: Vec<String>,
+    pub action: String,
+    pub after_action: Vec<String>,
 }
 
 /// `[package]` — the identifying metadata.
@@ -858,6 +890,48 @@ impl Manifest {
     /// Returns [`ManifestParseError::Encode`] if serialisation fails.
     pub fn to_toml_string(&self) -> Result<String, ManifestParseError> {
         toml::to_string_pretty(self).map_err(ManifestParseError::Encode)
+    }
+}
+
+#[cfg(test)]
+mod accessibility_tests {
+    use super::*;
+
+    #[test]
+    fn atspi_acceptance_survives_the_signed_manifest_round_trip() {
+        let source = r#"
+[package]
+id = "dev.tilo.example"
+version = "0.1.0"
+kind = "app"
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[sandbox]
+namespaces = []
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[entrypoint]
+bin = "bin/example"
+type = "gui"
+
+[accessibility.atspi_acceptance]
+root = "Example"
+required = ["Open"]
+action = "Open"
+after_action = ["Close"]
+"#;
+        let manifest = Manifest::from_toml_str(source).unwrap();
+        let encoded = manifest.to_toml_string().unwrap();
+        let recovered = Manifest::from_toml_str(&encoded).unwrap();
+        assert_eq!(recovered.accessibility, manifest.accessibility);
+        assert!(encoded.contains("[accessibility.atspi_acceptance]"));
     }
 }
 

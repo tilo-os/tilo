@@ -16,6 +16,9 @@ on:
       - "shell/**"
       - "ui/**"
       - "apps/file-explorer/tests/atspi_smoke.sh"
+      - "apps/file-explorer/tilo-app.toml"
+      - "apps/settings/tilo-app.toml"
+      - "tools/atspi_external_client.py"
       - "tools/check_atspi_endpoint_contract.py"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -30,6 +33,9 @@ on:
       - "shell/**"
       - "ui/**"
       - "apps/file-explorer/tests/atspi_smoke.sh"
+      - "apps/file-explorer/tilo-app.toml"
+      - "apps/settings/tilo-app.toml"
+      - "tools/atspi_external_client.py"
       - "tools/check_atspi_endpoint_contract.py"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -913,6 +919,10 @@ jobs:
 
           ./os/dev/vm.sh ssh /usr/libexec/tilo/projection-boot-check.sh
           ./os/dev/vm.sh ssh /usr/libexec/tilo/collaborative-files-image-contract.sh runtime
+          # Drive the signed Settings and Files payloads as an independent
+          # AT-SPI client. Per-app evidence comes from their installed manifest;
+          # this is distinct from the compositor and Files-depth smokes below.
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh desktop
 
           # Lock is compositor-owned too, and historically fell outside the
