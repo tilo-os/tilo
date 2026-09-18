@@ -52,8 +52,13 @@ class CoalesceTests(unittest.TestCase):
 
     def test_keep_latest_per_workflow(self):
         keep, cancel = ci.plan([run(1), run(3), run(2, workflow_id="lint.yml"), run(4, status="running")])
-        self.assertEqual(keep, {"release-apps.yml": 3, "lint.yml": 2})
+        self.assertEqual(keep, {"release-apps.yml": 3})
         self.assertEqual([(r["id"], replacement) for r, replacement in cancel], [(1, 3)])
+
+    def test_every_check_and_lint_preserved(self):
+        for workflow in ("check.yml", "lint.yml"):
+            keep, cancel = ci.plan([run(1, workflow_id=workflow), run(2, workflow_id=workflow)])
+            self.assertEqual((keep, cancel), ({}, []))
 
     def test_dry_run_does_not_mutate(self):
         api = Fake()
@@ -91,6 +96,16 @@ class CoalesceTests(unittest.TestCase):
         api.call = lambda endpoint: {"workflow_runs": [run(i) for i in range(1, 31)]}
         with self.assertRaises(ValueError):
             api.collect(1)
+
+    def test_ignored_page_size_fails_closed(self):
+        api = ci.Forgejo("https://example.test/api/v1", "fixture", "qos/qos", 3)
+        def response(endpoint):
+            self.assertIn("limit=30", endpoint)
+            self.assertIn("page=1", endpoint)
+            return {"workflow_runs": [run(i) for i in range(1, 32)]}
+        api.call = response
+        with self.assertRaises(ValueError):
+            api.collect(30)
 
     def test_missing_jobs_fails_closed(self):
         api = Fake()
