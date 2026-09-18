@@ -11,6 +11,7 @@
 //!   * `--open PATH`     — stage a file for the captured frame (else a
 //!     synthesized demo clip is shown).
 
+#![cfg_attr(windows, windows_subsystem = "windows")]
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
 // overflow is a tax a third-party app author would pay too. The lints that
@@ -122,7 +123,23 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         LaunchError::Operation("video-player screenshot handler called without --shots".into())
     })?;
     let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-    let mut app = video_player::PlayerApp::for_shot(requested_path(args), args.scenario.as_deref());
+    let open = requested_path(args);
+    let require_decoded_frame = open.is_some()
+        && !matches!(
+            args.scenario.as_deref(),
+            Some("empty" | "error" | "native-error" | "loading")
+        );
+    let mut app = video_player::PlayerApp::for_shot(open, args.scenario.as_deref());
+    if require_decoded_frame
+        && !app
+            .player()
+            .engine()
+            .is_some_and(media::MediaEngine::is_real_decode)
+    {
+        return Err(LaunchError::Operation(
+            "A real video capture requires the GStreamer decoder and runtime".into(),
+        ));
+    }
     // Real decode prerolls asynchronously; pump until its first picture is
     // ready. The synthesized fallback produces one on the first pass.
     let mut warm = ui::State::new();
@@ -133,6 +150,11 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    if require_decoded_frame && !app.has_media_frame() {
+        return Err(LaunchError::Operation(
+            "The video decoder did not produce a frame for the requested file".into(),
+        ));
     }
     render_shot_to_png(Box::new(app), viewport, args.text_scale, out)
         .map_err(|error| LaunchError::Operation(error.to_string()))
