@@ -488,7 +488,16 @@ fn collect_parts(children: &[Value], out: &mut Vec<TargetPartition>, is_system: 
 /// ISO, the ISO-9660 volume label read straight from the file. Returns `None`
 /// if the path does not exist or cannot be read.
 pub fn inspect_source(path: &Path) -> Option<Source> {
-    let mut file = std::fs::File::open(path).ok()?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // A selected path may be a FIFO (or replaced with one). Reach the
+        // held-file type check without waiting for a writer to open it.
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let mut file = options.open(path).ok()?;
     let meta = file.metadata().ok()?;
     if !meta.is_file() {
         return None;
@@ -782,6 +791,59 @@ mod tests {
         let src = inspect_source(f.path()).expect("inspect");
         assert_eq!(src.kind, SourceKind::IsoFile);
         assert!(!src.installable);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inspect_source_rejects_fifo_without_waiting_for_a_writer() {
+        use std::os::unix::ffi::OsStrExt;
+        use std::time::{Duration, Instant};
+
+        const CHILD_FIFO: &str = "QOS_IMAGER_TEST_INSPECTION_FIFO";
+        if let Some(path) = std::env::var_os(CHILD_FIFO) {
+            assert!(inspect_source(Path::new(&path)).is_none());
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let fifo = root.path().join("selected.img");
+        let native = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: the path is NUL-terminated and remains live through the call.
+        assert_eq!(unsafe { libc::mkfifo(native.as_ptr(), 0o600) }, 0);
+
+        // Isolate a regressed blocking open in a test subprocess, so timeout
+        // cleanup can always kill and reap it before removing the private FIFO.
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "probe::tests::inspect_source_rejects_fifo_without_waiting_for_a_writer",
+            ])
+            .env(CHILD_FIFO, &fifo)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                _ => break None,
+            }
+        };
+        if status.is_none() {
+            let _ = child.kill();
+            child.wait().unwrap();
+        }
+        assert!(
+            status.is_some(),
+            "source inspection blocked on a FIFO with no writer"
+        );
+        assert!(
+            status.unwrap().success(),
+            "FIFO inspection must reject the source"
+        );
     }
 
     #[test]
