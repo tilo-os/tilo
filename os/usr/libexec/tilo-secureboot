@@ -319,9 +319,14 @@ enrollment_boot_marker_is_safe() {
 }
 
 current_boot_id() {
-  local source="${TILO_SB_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}" value
-  value="$(cat "$source" 2>/dev/null)" \
-    || die "cannot read the kernel boot identity"
+  local value
+  if [ -n "${TILO_SB_BOOT_ID_FILE:-}" ]; then
+    value="$(cat "$TILO_SB_BOOT_ID_FILE" 2>/dev/null)" \
+      || die "cannot read the kernel boot identity"
+  else
+    value="$(systemd-id128 boot 2>/dev/null)" \
+      || die "cannot obtain the kernel boot identity"
+  fi
   printf '%s\n' "$value" \
     | grep -E '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' \
     || die "kernel boot identity is malformed"
