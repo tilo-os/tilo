@@ -51,7 +51,9 @@ fn long_list(both: bool) -> Box<dyn Widget> {
             // width exceeds the viewport and the horizontal bar appears.
             let mut r = Row::new();
             for c in 0..10 {
-                r = r.push(Box::new(Text::new(&format!("r{i:02}c{c}: tilo-fs.service"))));
+                r = r.push(Box::new(Text::new(&format!(
+                    "r{i:02}c{c}: tilo-fs.service"
+                ))));
             }
             col = col.push(Box::new(r));
         } else {
