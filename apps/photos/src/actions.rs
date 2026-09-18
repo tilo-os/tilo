@@ -56,6 +56,10 @@ pub const IMAGE_KIND: &str = "photos.image";
 /// Membership itself is shared document state; opening this resource is a
 /// device-local view, just like opening an album or a metadata label.
 pub const FAVORITES_KIND: &str = "photos.favorites";
+/// The durable collection of collaborative albums. Individual albums remain
+/// independently addressable children, while this stable root lets search,
+/// accessibility and agents open album browsing itself.
+pub const ALBUMS_KIND: &str = "photos.albums";
 /// A derived collection of the explicitly shared photo locations.
 pub const PLACES_KIND: &str = "photos.places";
 /// The complete chronological browse surface. It is distinct from the
@@ -145,6 +149,8 @@ pub enum PhotosOperation {
     /// rather than a hidden in-app filter, so search, agents, history and a
     /// collaborator can all name the same collection.
     ViewFavorites,
+    /// Open the album collection without changing names or membership.
+    ViewAlbums,
     /// Open the offline-first places browser. This changes only local
     /// presentation; it does not disclose a coordinate to a map provider.
     ViewPlaces,
@@ -247,6 +253,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
             | PhotosOperation::ViewTimeline { .. }
             | PhotosOperation::ViewPeople
             | PhotosOperation::ViewFavorites
+            | PhotosOperation::ViewAlbums
             | PhotosOperation::ViewPlaces
             | PhotosOperation::ViewPlace { .. }
             | PhotosOperation::ViewAlbum { .. }
@@ -267,6 +274,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         | PhotosOperation::ViewTimeline { .. }
         | PhotosOperation::ViewPeople
         | PhotosOperation::ViewFavorites
+        | PhotosOperation::ViewAlbums
         | PhotosOperation::ViewPlaces
         | PhotosOperation::ViewPlace { .. }
         | PhotosOperation::ViewAlbum { .. }
@@ -365,6 +373,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         | PhotosOperation::ViewTimeline { .. }
         | PhotosOperation::ViewPeople
         | PhotosOperation::ViewFavorites
+        | PhotosOperation::ViewAlbums
         | PhotosOperation::ViewPlaces
         | PhotosOperation::ViewPlace { .. }
         | PhotosOperation::ViewAlbum { .. }
@@ -1396,6 +1405,9 @@ impl ResourceProvider for PhotosResources {
                     .count(),
             ));
         }
+        if id == "photos.albums" {
+            return Some(albums_resource(&PhotosDoc::library(doc)));
+        }
         if id == "photos.places" {
             return Some(places_resource(&PhotosDoc::library(doc)));
         }
@@ -1521,14 +1533,12 @@ fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
     root = root.with_child(favorites_resource(
         library.photos.iter().filter(|photo| photo.favorite).count(),
     ));
+    root = root.with_child(albums_resource(&library));
     root = root.with_child(places_resource(&library));
     root = root.with_child(people_root_resource(&library));
     root = root.with_child(timeline_resource(&library));
     for photo in library.photos.iter().take(LIBRARY_CONTEXT_LIMIT) {
         root = root.with_child(photo_resource(photo));
-    }
-    for album in library.albums.iter().take(ALBUM_CONTEXT_LIMIT) {
-        root = root.with_child(album_resource(album));
     }
     let (folders, people, tags, objects, pets) = metadata_label_counts(&library);
     for (folder, count) in folders.into_iter().take(FOLDER_CONTEXT_LIMIT) {
@@ -1805,6 +1815,34 @@ pub(crate) fn favorites_resource(count: usize) -> Resource {
     if let Some(spec) = operation("open", "View favorites", &PhotosOperation::ViewFavorites) {
         resource = resource.with_action(
             spec.with_description("Show photographs marked as favorites in the shared library"),
+        );
+    }
+    resource
+}
+
+/// The canonical album collection. Its contextual children are deliberately
+/// bounded; every album still resolves by stable id through `resource`, and
+/// the search catalogue retains compact seeds for the complete collection.
+pub(crate) fn albums_resource(library: &crate::model::PhotoLibrary) -> Resource {
+    let mut resource = albums_resource_from_count(library.albums.len());
+    for album in library.albums.iter().take(ALBUM_CONTEXT_LIMIT) {
+        resource = resource.with_child(album_resource(album));
+    }
+    resource
+}
+
+pub(crate) fn albums_resource_from_count(count: usize) -> Resource {
+    let count_label = if count == 1 {
+        "1 album".to_owned()
+    } else {
+        format!("{count} albums")
+    };
+    let mut resource = Resource::new("photos.albums", ALBUMS_KIND, "Albums").with_child(
+        Resource::new("photos.albums#count", "photos.count", count_label),
+    );
+    if let Some(spec) = operation("open", "View albums", &PhotosOperation::ViewAlbums) {
+        resource = resource.with_action(
+            spec.with_description("Browse and manage the shared library's durable albums"),
         );
     }
     resource
@@ -3472,6 +3510,69 @@ mod tests {
                 .actions
                 .iter()
                 .any(|action| action.id == "import")
+        );
+    }
+
+    #[test]
+    fn albums_are_a_canonical_bounded_collection_with_exact_child_resolution() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let mut library = crate::model::PhotoLibrary::default();
+        for index in 0..(ALBUM_CONTEXT_LIMIT + 7) {
+            library.albums.push(Album {
+                id: format!("photos.album:{index}"),
+                name: format!("Album {index}"),
+                photo_ids: Vec::new(),
+            });
+        }
+        let late_id = library.albums.last().unwrap().id.clone();
+        PhotosDoc::set_library(&mut doc, &library);
+
+        let albums = PhotosResources
+            .resource(&doc, "photos.albums")
+            .expect("the album collection is independently addressable");
+        assert_eq!(albums.kind, ALBUMS_KIND);
+        assert_eq!(
+            albums
+                .children
+                .iter()
+                .filter(|child| child.kind == "photos.album")
+                .count(),
+            ALBUM_CONTEXT_LIMIT
+        );
+        assert!(albums.children.iter().any(|child| {
+            child.id.0 == "photos.albums#count"
+                && child.label == format!("{} albums", library.albums.len())
+        }));
+        let open = albums
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .expect("the collection exposes canonical navigation");
+        let tilo_actions::ActionInput::Immediate(encoded) = &open.input else {
+            panic!("album browsing is a presentation operation");
+        };
+        assert_eq!(
+            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(PhotosOperation::ViewAlbums)
+        );
+
+        let root = PhotosResources.resources(&doc).pop().unwrap();
+        assert!(
+            root.children
+                .iter()
+                .any(|child| child.id.0 == "photos.albums")
+        );
+        assert!(
+            root.children
+                .iter()
+                .all(|child| child.kind != "photos.album"),
+            "albums belong beneath their collection instead of duplicating the root namespace"
+        );
+        assert_eq!(
+            PhotosResources.resource(&doc, &late_id).unwrap().id.0,
+            late_id,
+            "albums beyond contextual enumeration remain exactly addressable"
         );
     }
 

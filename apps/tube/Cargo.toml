@@ -16,7 +16,7 @@ path = "src/main.rs"
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
-ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Shared streaming and playback layer. The watch-page `VideoPlayer` uses the
 # same `media::MediaEngine` as the local player and editor preview.
 media = { path = "../../crates/media/core" }

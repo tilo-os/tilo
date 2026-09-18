@@ -13,8 +13,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'windows-app-names.ps1')
+. (Join-Path $PSScriptRoot 'windows-install-path.ps1')
 if (-not $IsWindows) { throw 'Run this installer from PowerShell on Windows.' }
 if ($Apps.Count -eq 0) { throw 'Select at least one application.' }
+$installDirectory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Tilo/Applications'
+$menuDirectory = Join-Path ([Environment]::GetFolderPath('Programs')) 'Tilo'
+Assert-TiloPublicInstallDirectory $installDirectory
+Assert-TiloPublicInstallDirectory $menuDirectory
 $repository = Split-Path -Parent $PSScriptRoot
 $applications = $Apps | Select-Object -Unique
 $buildArguments = @('build', '--locked', '--profile', $Profile, '--jobs', $Jobs, '--message-format=json-render-diagnostics')
@@ -65,8 +70,6 @@ if ('clocks' -in $applications) {
     if ($hostExitCode -ne 0 -or -not $hostHelper) { throw 'Could not build Windows notification registration helper.' }
 }
 
-$installDirectory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Tilo/Applications'
-$menuDirectory = Join-Path ([Environment]::GetFolderPath('Programs')) 'Tilo'
 New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
 New-Item -ItemType Directory -Path $menuDirectory -Force | Out-Null
 $fontDirectory = Join-Path $installDirectory 'fonts'

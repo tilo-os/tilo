@@ -238,7 +238,15 @@ The installer verifies the real Windows Start catalog and reports an error if
 Windows has not indexed the shortcut, even when the executable was copied.
 
 Install the currently verified native apps into your Windows user profile, with
-Start menu entries under **Tilo**:
+Start menu entries under **Tilo**. Run the installer from an ordinary,
+unpackaged PowerShell session: packaged terminals or agents can redirect
+AppData writes into their private package cache. Such files look installed
+inside that process but are invisible to Explorer. Check the actual executable
+and shortcut paths from outside the packaged process before diagnosing a stale
+Start catalog; restarting Explorer cannot expose private package files.
+Before building, the installer creates and immediately removes a temporary
+probe in each destination and checks its physical path. Redirected package
+cache writes fail this check; merely resolving the directory is insufficient.
 
 ```powershell
 ./tools/install-windows-apps.ps1
@@ -274,9 +282,9 @@ Close an installed app before updating its executable. Application documents
 remain in their normal user data locations; the installer does not move them.
 The installer also checks both Windows' application catalog and `Get-StartApps`
 against the installed executable paths and intended app names. A shortcut on disk alone is insufficient:
-Explorer can retain a stale catalog. If this check fails after copying succeeds,
-restart Windows Explorer when no file operations are running, or sign out and
-back in, then run `./tools/check-windows-start-apps.ps1 -Apps hex-editor` (substitute
+First rule out redirected AppData writes as described above. If the real files
+exist, investigate Explorer's catalog, then run
+`./tools/check-windows-start-apps.ps1 -Apps hex-editor` (substitute
 the affected package names). The installer does not restart the desktop shell.
 
 Private identity files and local account-vault keys use the shared `private-fs`
@@ -627,6 +635,30 @@ system-memory formats such as NV12. Unix DMA-BUF remains Unix-only; this does no
 establish Windows hardware decoding, zero-copy presentation or audio-device
 routing. GStreamer DLLs and codec plugins must also be available when running an
 app; this development setup is not a standalone installer runtime bundle.
+
+The installer bundles a shared, manifest-verified runtime for Music and Video
+Player. Check installed apps from an ordinary, unpackaged PowerShell session:
+
+```powershell
+./tools/test-windows-installed-media.ps1
+./tools/test-windows-gstreamer.ps1 -RuntimeDirectory "$env:LOCALAPPDATA/Tilo/Applications" -MediaPath ./apps/video-player/tests/fixtures/h264-aac.mp4
+```
+
+The first check rejects package-private installation paths, uses isolated
+profiles and a system-only `PATH`, and opens no visible windows. It runs Music's
+CPU widget benchmark and decodes the local H.264/AAC fixture in Video Player
+into an offscreen PNG. Its output directory retains stdout, stderr, the PNG and
+JSON results. Reported durations cover the entire test process, not time to the
+first visible frame. The second check verifies runtime hashes, plugin origins
+and decoding to completion; it needs `llvm-readobj.exe` on `PATH`. Neither
+check proves audible output or Windows hardware decoding.
+
+Music constructs its empty UI without initializing GStreamer. Loading a source
+starts one background initializer; track replacement, pause, volume and seek
+requests retain their latest intent while it runs. Stopping cancels delivery
+without waiting for native initialization. Playback errors remain explicit,
+and handoff readiness requires decoded audio rather than a requested URI.
+The same lifecycle is used on every supported platform.
 
 ### If you build in a container (optional)
 
