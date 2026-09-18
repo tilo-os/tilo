@@ -64,6 +64,10 @@ on:
         description: Optional immutable application source; controller remains this workflow commit
         required: false
         type: string
+      helpers_revision:
+        description: Optional independently reviewed compatible controller commit; requires explicit source_revision
+        required: false
+        type: string
       reconstructed_native_receipt:
         description: Explicit development reconstruction receipt; excludes legacy native receipt
         required: false
@@ -125,6 +129,7 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: '1'
           SOURCE_REVISION: ${{ inputs.source_revision }}
+          HELPERS_REVISION: ${{ inputs.helpers_revision }}
           RECONSTRUCTED_NATIVE_RECEIPT: ${{ inputs.reconstructed_native_receipt }}
           RECONSTRUCTED_NATIVE_SHA256: ${{ inputs.reconstructed_native_sha256 }}
           APPROVED_RECONSTRUCTION_SHA256: ${{ inputs.approved_reconstruction_sha256 }}
@@ -150,6 +155,7 @@ jobs:
           python3 os/tests/test_development_compile.py
           python3 os/tests/test_compile_retention.py
           python3 os/tests/test_native_builder_artifact.py
+          python3 os/tests/test_compile_tools_source.py
           if [ "$COMPILE_MODE" != cache-only ]; then
             bash os/tests/app_store.sh
           fi
@@ -159,6 +165,10 @@ jobs:
           revision = e['SOURCE_REVISION'] or e['GITHUB_SHA']
           if not re.fullmatch('[0-9a-f]{40}', revision):
               raise ValueError('application source must be an immutable commit')
+          if e['HELPERS_REVISION'] and (not e['SOURCE_REVISION'] or not re.fullmatch('[0-9a-f]{40}', e['HELPERS_REVISION'])):
+              raise ValueError('helper selection requires independent source and helper commits')
+          if e['RECONSTRUCTED_NATIVE_RECEIPT'] and not e['HELPERS_REVISION']:
+              raise ValueError('reconstructed frozen-source assembly requires explicitly reviewed compatible helpers')
           s = importlib.util.spec_from_file_location('compile', 'os/dev/compile-development-os.py')
           m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
           m.validate_inputs(e['WPE_CANDIDATE'], e['TEST_GENERATION'], revision, e['GITHUB_REF'],
@@ -192,6 +202,16 @@ jobs:
           ref: ${{ inputs.source_revision }}
           token: ${{ secrets.REGISTRY_TOKEN }}
           persist-credentials: false
+      # The workflow checkout remains the orchestrator. Only the independently
+      # selected controller enters /work/repo and executes application helpers.
+      - name: Checkout independently pinned compatible helpers
+        if: inputs.helpers_revision != ''
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: helper-controller
+          ref: ${{ inputs.helpers_revision }}
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          persist-credentials: false
       - name: Authenticate input pulls
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
@@ -203,6 +223,7 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: '1'
           SOURCE_REVISION: ${{ inputs.source_revision }}
+          HELPERS_REVISION: ${{ inputs.helpers_revision }}
           RECONSTRUCTED_NATIVE_RECEIPT: ${{ inputs.reconstructed_native_receipt }}
           RECONSTRUCTED_NATIVE_SHA256: ${{ inputs.reconstructed_native_sha256 }}
           APPROVED_RECONSTRUCTION_SHA256: ${{ inputs.approved_reconstruction_sha256 }}
@@ -276,7 +297,23 @@ jobs:
           module.stage_cache_credentials(sys.argv[1])
           PY
           cp "$(command -v cosign)" "$context/cosign"
-          cp os/Containerfile.development-compile "$context/Containerfile"
+          execution_controller=.
+          execution_revision="$GITHUB_SHA"
+          if [ -n "$HELPERS_REVISION" ]; then
+            execution_controller=../helper-controller
+            execution_revision="$HELPERS_REVISION"
+          fi
+          tools_source_args=()
+          if [ -n "$SOURCE_REVISION" ]; then
+            tools_source_args=(--source ../application-source --source-revision "$SOURCE_REVISION")
+          fi
+          # Tools must match the application helpers actually executed. Frozen
+          # source4583 still needs OpenSSL/sbsigntools; newer controller recipes
+          # may intentionally omit them for a different helper implementation.
+          python3 os/dev/stage-compile-tools-recipe.py \
+            --controller "$execution_controller" --controller-revision "$execution_revision" \
+            "${tools_source_args[@]}" --output "$context/Containerfile" \
+            --receipt "$evidence/tools-source.json"
           docker build --file "$context/Containerfile" --tag "$name:tools" \
             --build-arg "BUILDER_REF=$BUILDER_CANDIDATE" "$context"
           expected_platform=linux/amd64
@@ -294,7 +331,7 @@ jobs:
           application_revision="$GITHUB_SHA"
           if [ -n "$SOURCE_REVISION" ]; then
             application_revision="$SOURCE_REVISION"
-            source_args=(--source-dir /work/source --controller-revision "$GITHUB_SHA")
+            source_args=(--source-dir /work/source --controller-revision "$execution_revision")
             # The authenticated checkout action prepared a sibling checkout;
             # source remains outside the clean controller and its Docker copy.
             test "$(git -C ../application-source rev-parse HEAD)" = "$SOURCE_REVISION"
@@ -330,7 +367,7 @@ jobs:
               "${native_receipt_args[@]}" \
               "${source_args[@]}" \
               --revision "$application_revision" --branch "$GITHUB_REF"
-          docker cp . "$name:/work/repo"
+          docker cp "$execution_controller/." "$name:/work/repo"
           if [ -n "$SOURCE_REVISION" ]; then docker cp ../application-source "$name:/work/source"; fi
           docker cp "$context/wpe-stage.json" "$name:/work/wpe-stage.json"
           docker cp "$context/wpe-adoption.json" "$name:/work/wpe-adoption.json"
