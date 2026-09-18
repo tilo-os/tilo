@@ -2393,10 +2393,12 @@ impl WordProcessorWidget {
             state,
             &crate::actions::paste_fragment_action(
                 self.inner.region_kind(),
-                &start.block,
-                start.offset,
-                &end.block,
-                end.offset,
+                crate::actions::SelectionTarget {
+                    start_block: start.block.clone(),
+                    start: start.offset,
+                    end_block: end.block.clone(),
+                    end: end.offset,
+                },
                 blocks,
                 adopt_first_style,
             ),
