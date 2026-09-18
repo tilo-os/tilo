@@ -491,6 +491,23 @@ pub fn rsa_public_key_info(public_key_pem: &str) -> Result<(u32, String), String
     Ok((key.n().bits(), hex::encode(Sha256::digest(der.as_bytes()))))
 }
 
+/// Validate a P-256 SubjectPublicKeyInfo PEM and return its canonical DER
+/// SHA-256 identity.
+pub fn p256_public_key_sha256(public_key_pem: &str) -> Result<String, String> {
+    use p256::{
+        ecdsa::VerifyingKey,
+        pkcs8::{DecodePublicKey, EncodePublicKey},
+    };
+    use sha2::{Digest as _, Sha256};
+
+    let key = VerifyingKey::from_public_key_pem(public_key_pem)
+        .map_err(|_| "invalid P-256 SubjectPublicKeyInfo")?;
+    let der = key
+        .to_public_key_der()
+        .map_err(|_| "cannot canonicalize P-256 public key")?;
+    Ok(hex::encode(Sha256::digest(der.as_bytes())))
+}
+
 /// Append a Linux kernel PKCS#7 module signature made with RSA/SHA-512.
 ///
 /// The envelope intentionally omits certificates, content, and signed
@@ -1275,6 +1292,22 @@ mod tests {
             sign_rsa_sha256(&generated.private_key_pem, b"measured image").expect("sign message");
         verify_rsa_sha256(&public, b"measured image", &signature).expect("verify signature");
         assert!(verify_rsa_sha256(&public, b"tampered image", &signature).is_err());
+    }
+
+    #[test]
+    fn p256_public_identity_validates_curve_point_and_is_stable() {
+        use p256::pkcs8::{EncodePublicKey as _, LineEnding};
+        let signing = p256::ecdsa::SigningKey::from_slice(&[7_u8; 32]).expect("P-256 key");
+        let public = signing
+            .verifying_key()
+            .to_public_key_pem(LineEnding::LF)
+            .expect("public PEM");
+        let identity = p256_public_key_sha256(&public).expect("P-256 identity");
+        assert_eq!(identity.len(), 64);
+        assert!(
+            p256_public_key_sha256("-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n")
+                .is_err()
+        );
     }
 
     #[test]
