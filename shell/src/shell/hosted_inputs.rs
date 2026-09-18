@@ -188,6 +188,7 @@ impl HostedTileInputs {
 
     /// Release launch data once its tab leaves any workspace, without rereading files.
     /// Returns whether persisted references changed.
+    #[cfg(target_os = "macos")]
     pub(crate) fn prune_documents(&self, tree: &mut super::state::WorkspaceTree) -> bool {
         if tree.native_document_tabs.is_empty() && self.documents.borrow().is_empty() {
             return false;
