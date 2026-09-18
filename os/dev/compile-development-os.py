@@ -779,6 +779,8 @@ def main(argv=None):
             adopted, adoption_raw = adopted_wpe_receipt(args.wpe_adoption_receipt, args.wpe_adoption_sha256, args.architecture)
         else:
             stage = completed_wpe_receipt(args.wpe_stage_receipt, args.wpe, args.architecture)
+    if source_compatibility is not None:
+        native_source_compatibility.verify_selected_wpe(source_compatibility, adoption_raw or b'', args.wpe_adoption_sha256)
     os.umask(0o077)
     PRIVATE.mkdir(mode=0o700)
     EVIDENCE.mkdir(mode=0o755)
