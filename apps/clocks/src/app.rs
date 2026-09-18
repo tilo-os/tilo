@@ -878,16 +878,16 @@ fn surface(
         mode.get(),
     )
     .with_flexible_width()
-    .with_style(ui::widget::toggle_group::SegmentedStyle::Underline)
+    .with_style(ui::widget::toggle_group::SegmentedStyle::Pill)
     .with_id("clocks.mode")
     .on_view("clocks.mode.select", move |i| select.set(i));
     let nav = Row::new()
         .push(Box::new(Spacer::new()))
         .push(Box::new(
             Container::new()
-                .with_no_padding()
+                .with_background()
+                .with_padding(8.0)
                 .with_max_width(760.0)
-                .filling()
                 .with_child(Box::new(nav)),
         ))
         .push(Box::new(Spacer::new()));
@@ -1322,6 +1322,38 @@ mod tests {
     use std::collections::BTreeSet;
     use std::time::Duration;
     use ui::{State, headless::FrameHarness, theme::Theme};
+
+    #[test]
+    fn shared_mode_switcher_keeps_full_touch_targets_on_compact_windows() {
+        fn find_toggle(node: &ui::headless::InspectionNode) -> Option<[f64; 4]> {
+            if node.widget == "ToggleGroup" {
+                return Some(node.rect);
+            }
+            node.children.iter().find_map(find_toggle)
+        }
+
+        for width in [360_u32, 520_u32] {
+            let harness = FrameHarness::new(
+                State::new(),
+                Box::new(ClocksApp::scenario("timers")),
+                (width, 820),
+            );
+            let [x, _y, nav_width, nav_height] =
+                find_toggle(&harness.inspection().root).expect("shared segmented navigation");
+            assert!(
+                nav_height >= 44.0,
+                "tab targets became too short: {nav_height}"
+            );
+            assert!(x >= 0.0 && x + nav_width <= f64::from(width));
+
+            for label in ["World", "Alarms", "Timers", "Stopwatch"] {
+                assert!(
+                    harness.a11y_node_named(label).is_some(),
+                    "{label} must remain independently discoverable"
+                );
+            }
+        }
+    }
 
     #[test]
     fn countdown_progress_visualizes_time_remaining() {
