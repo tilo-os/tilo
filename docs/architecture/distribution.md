@@ -20,8 +20,8 @@ answer.
 This document defines the three pipes, the single trust model underneath them,
 and the user-facing verbs.
 
-It builds directly on `plan/rooms.md` (rooms, records, references) and
-`plan/security.md` (the workspace as the security boundary). Where it extends
+It builds directly on `docs/architecture/rooms.md` (rooms, records, references) and
+`docs/architecture/security.md` (the workspace as the security boundary). Where it extends
 them it says so; where it answers a question they left open it says that too.
 
 ## What is wrong today
@@ -82,7 +82,7 @@ An application is a package. So is a codec, a theme, a font, an input method, a
 configuration layer, the runtime bundle, and the OS image — all of them change
 the machine's behaviour, so all of them are signed, content-addressed,
 versioned, and replaced wholesale. An article is a record. So is a book, a
-playlist, a route, a spreadsheet and a file; `plan/rooms.md` already establishes
+playlist, a route, a spreadsheet and a file; `docs/architecture/rooms.md` already establishes
 that a file is simply a record whose identity is a path.
 
 Packages and records get different substrates because they have opposite
@@ -143,7 +143,7 @@ So the verb is **Add**, and it behaves like one:
 - **An update can never widen authority.** See §5. This is the property that
   makes silent updating safe enough to be the default.
 
-Per-room data confinement (`plan/rooms.md`) is what makes removal honest: an
+Per-room data confinement (`docs/architecture/rooms.md`) is what makes removal honest: an
 app's writable directory is `<data home>/tilo-rooms/<room>/<package>`, so there
 is exactly one place per room to delete, and no application anywhere else on
 disk.
@@ -327,7 +327,7 @@ microphone", and it is the one nobody currently gets to see.
 
 ### 6. The Profile: settings are a document you can also read
 
-`plan/rooms.md` names two categories of state and gives one of them a home:
+`docs/architecture/rooms.md` names two categories of state and gives one of them a home:
 content records are room-scoped, while *person and device settings* — identity,
 appearance, input, credentials — follow the person or the machine. This is where
 those live.
@@ -399,7 +399,7 @@ being degraded.
 
 ### 7. Records leave the machine
 
-`plan/rooms.md` settles the mechanics inside a machine: a record exists once,
+`docs/architecture/rooms.md` settles the mechanics inside a machine: a record exists once,
 rooms hold **references** rather than copies, and the reference is what grants
 access. Sharing and publishing are that same mechanic, extended past the edge of
 one person's rooms.
@@ -431,7 +431,7 @@ imply otherwise.
 deliberately out of scope. It is a large, largely unsolved design with weak
 guarantees available to it, and nothing else here depends on it. Search inside
 your own reach (your rooms, your subscriptions, your catalogues) is
-`plan/search.md`'s question and is unaffected.
+`docs/architecture/search.md`'s question and is unaffected.
 
 **Record types are declared by packages and published.** This answers the
 question `rooms.md` left open. A type declaration is itself a published thing:

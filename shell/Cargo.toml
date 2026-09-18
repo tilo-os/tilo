@@ -302,7 +302,7 @@ smithay = { version = "0.7", default-features = false, features = [
 # latest 0.5.x to track upstream sock_filter / TargetArch shape (x86_64,
 # aarch64, riscv64). Linux-only crate — sandbox callers gate at runtime.
 seccompiler.workspace = true
-# Landlock per-capability in-kernel FS/net enforcement (`plan/security.md`
+# Landlock per-capability in-kernel FS/net enforcement (`docs/architecture/security.md`
 # §7.1). Applied by the `__sandbox-exec` launcher shim AFTER bwrap sets up
 # the namespace, so it layers on top of bwrap + seccomp + netns. Linux-only;
 # best-effort at runtime (degrades silently on kernels without Landlock).

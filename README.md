@@ -94,8 +94,7 @@ The required application-facing resource/action contract is documented in
 ## Where to read first
 
 - [`docs/getting-started.md`](docs/getting-started.md) — choose a VM, Linux desktop session, or complete-system install
-- [`docs/architecture.md`](docs/architecture.md) — component overview
-- [`plan/`](plan/) — design intent for the compositor, collaboration, security, distribution
+- [`docs/architecture/`](docs/architecture/) — product model, component overview, and design intent
 - [`DEVELOPMENT.md`](DEVELOPMENT.md) — build environment and running Tilo on your own machine
 - [`crates/README.md`](crates/README.md) — workspace domains, developer tools, and build boundaries
 - [`AGENTS.md`](AGENTS.md) — what agents working in this repository are told
