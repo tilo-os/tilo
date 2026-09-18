@@ -198,6 +198,7 @@ mod tests {
                 caller: PortalCaller::new(WorkspaceId(1), "app"),
                 title: title.to_string(),
                 save: false,
+                directory: false,
                 multiple: false,
                 accept_label: None,
                 current_name: None,

@@ -99,6 +99,8 @@ pub struct FilePickerRequest {
     pub title: String,
     /// `true` for `SaveFile` / `SaveFiles` flows, `false` for `OpenFile`; affects the action-button label ("Save" vs "Open").
     pub save: bool,
+    /// `true` when `OpenFile` asks the user to choose directories.
+    pub directory: bool,
     /// `true` when the app asked for `OpenFiles` — the user may return more than one path.
     pub multiple: bool,
     /// The app's preferred label for the confirm button ("Import").
@@ -116,6 +118,7 @@ impl FilePickerRequest {
         match self.accept_label.as_deref() {
             Some(l) if !l.trim().is_empty() => l,
             _ if self.save => "Save",
+            _ if self.directory => "Choose folder",
             _ => "Open",
         }
     }
@@ -160,6 +163,7 @@ impl FilePickerSpawnerHandle {
             caller: opts.caller,
             title: opts.title,
             save: opts.save,
+            directory: opts.directory,
             multiple: opts.multiple,
             accept_label: opts.accept_label,
             current_name: opts.current_name,
@@ -178,6 +182,7 @@ pub struct FilePickerOptions {
     pub caller: PortalCaller,
     pub title: String,
     pub save: bool,
+    pub directory: bool,
     pub multiple: bool,
     pub accept_label: Option<String>,
     pub current_name: Option<String>,
@@ -190,6 +195,7 @@ impl FilePickerOptions {
             caller,
             title: title.into(),
             save,
+            directory: false,
             multiple: false,
             accept_label: None,
             current_name: None,
@@ -200,6 +206,12 @@ impl FilePickerOptions {
     #[must_use]
     pub fn multiple(mut self, multiple: bool) -> Self {
         self.multiple = multiple;
+        self
+    }
+
+    #[must_use]
+    pub fn directory(mut self, directory: bool) -> Self {
+        self.directory = directory;
         self
     }
 
@@ -289,6 +301,19 @@ mod tests {
     use crate::shell::state::WorkspaceId;
     use std::path::PathBuf;
 
+    #[derive(Default)]
+    struct CapturingSpawner {
+        seen: Mutex<Option<(bool, bool, Option<String>)>>,
+    }
+
+    impl FilePickerSpawner for CapturingSpawner {
+        fn spawn(&self, req: FilePickerRequest) {
+            *self.seen.lock().unwrap() =
+                Some((req.directory, req.multiple, req.accept_label.clone()));
+            let _ = req.reply.send(None);
+        }
+    }
+
     #[tokio::test]
     async fn null_spawner_resolves_to_none() {
         let h = FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel()));
@@ -322,6 +347,52 @@ mod tests {
         assert!(!seen[0].2);
         assert_eq!(seen[1].1, "Save as");
         assert!(seen[1].2);
+    }
+
+    #[tokio::test]
+    async fn request_with_propagates_directory_multiple_and_label() {
+        let capture = Arc::new(CapturingSpawner::default());
+        let h = FilePickerSpawnerHandle::new(capture.clone());
+        let caller = PortalCaller::new(WorkspaceId(5), "org.example");
+        let out = h
+            .request_with(
+                FilePickerOptions::new(caller, "Choose", false)
+                    .directory(true)
+                    .multiple(true)
+                    .accept_label(Some("Attach folder".into())),
+            )
+            .await
+            .expect("oneshot");
+
+        assert!(out.is_none());
+        assert_eq!(
+            *capture.seen.lock().unwrap(),
+            Some((true, true, Some("Attach folder".into())))
+        );
+    }
+
+    #[test]
+    fn directory_defaults_false_and_uses_its_own_default_label() {
+        let options = FilePickerOptions::new(
+            PortalCaller::new(WorkspaceId(6), "org.example"),
+            "Open",
+            false,
+        );
+        assert!(!options.directory);
+
+        let (tx, _rx) = oneshot::channel();
+        let req = FilePickerRequest {
+            caller: options.caller,
+            title: options.title,
+            save: false,
+            directory: true,
+            multiple: false,
+            accept_label: None,
+            current_name: None,
+            filters: Vec::new(),
+            reply: tx,
+        };
+        assert_eq!(req.confirm_label(), "Choose folder");
     }
 
     #[test]
@@ -364,6 +435,7 @@ mod tests {
             caller: PortalCaller::new(WorkspaceId(1), "app"),
             title: "t".into(),
             save: false,
+            directory: false,
             multiple: false,
             accept_label: Some("Import".into()),
             current_name: None,
@@ -380,6 +452,7 @@ mod tests {
             caller: PortalCaller::new(WorkspaceId(1), "app"),
             title: "t".into(),
             save: true,
+            directory: false,
             multiple: false,
             accept_label: Some("   ".into()),
             current_name: None,

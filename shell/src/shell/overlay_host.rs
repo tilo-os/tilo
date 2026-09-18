@@ -24438,6 +24438,7 @@ mod tests {
             caller: crate::portal::PortalCaller::new(workspace, "org.qos.audit"),
             title: "Save document".to_string(),
             save: true,
+            directory: false,
             multiple: false,
             accept_label: None,
             current_name: Some("before".to_string()),
