@@ -76,7 +76,7 @@ fn hash_file(
     Ok((digest.finalize().into(), size))
 }
 impl ConnectionStore {
-    fn operation(&self, id: OperationId) -> Result<format::Operation, StoreError> {
+    pub(super) fn operation(&self, id: OperationId) -> Result<format::Operation, StoreError> {
         match self.row(&format::key(1, id.connection.0, id.serial))? {
             Some(Row::Operation(operation)) => Ok(operation),
             _ => Err(StoreError::Corrupt),
@@ -224,7 +224,7 @@ impl ConnectionStore {
                 | StoreError::RecoverySpace
                 | StoreError::IdentityChanged)
         ) {
-            self.poisoned = true;
+            self.poison_native();
         }
         result
     }
@@ -424,7 +424,7 @@ impl ConnectionStore {
             next: rows.next,
         })
     }
-    fn table_page(
+    pub(super) fn table_page(
         &self,
         id: ConnectionId,
         table: u8,
@@ -458,7 +458,7 @@ impl ConnectionStore {
             if !key.starts_with(&prefix) || after.as_ref().is_some_and(|after| &key <= after) {
                 continue;
             }
-            if matches!(&row, Row::Operation(operation) if operation.stage >= 4) {
+            if matches!(&row, Row::Operation(operation) if matches!(operation.stage, 4 | 5)) {
                 continue;
             }
             if entries.len() == limit {
@@ -519,6 +519,10 @@ fn requires(operation: &format::Operation, side: u8) -> bool {
         }
 }
 impl ConnectionStore {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Publication checks retain the same recovery guards through all exact required-version joins."
+    )]
     pub(super) fn reduce_outcome(
         &self,
         id: [u8; 16],
@@ -550,9 +554,34 @@ impl ConnectionStore {
             }
             operation.stage = 3;
         } else {
-            if operation.stage != 1 || operation.decision == 0 {
+            if !matches!(operation.stage, 1 | 6) || operation.decision == 0 {
                 return Err(StoreError::RecoveryRequired);
             }
+            let mut latest_native: Option<format::NativeRegistration> = None;
+            for row in self.rows()? {
+                if let Row::NativeRegistration(registration) = row? {
+                    if registration.connection == operation.connection
+                        && registration.serial == operation.serial
+                        && latest_native
+                            .as_ref()
+                            .is_none_or(|old| old.attempt < registration.attempt)
+                    {
+                        latest_native = Some(registration);
+                    }
+                }
+            }
+            let native_intent = latest_native
+                .as_ref()
+                .map(|registration| {
+                    super::super::transaction::native::descriptor::decode(
+                        registration
+                            .intent
+                            .as_ref()
+                            .ok_or(StoreError::RecoveryRequired)?,
+                    )
+                    .map_err(|_| StoreError::Corrupt)
+                })
+                .transpose()?;
             for side in [0, 1] {
                 if requires(&operation, side) {
                     let mut found = false;
@@ -563,6 +592,44 @@ impl ConnectionStore {
                         }))? && entry.side == side
                             && entry.state == 1
                         {
+                            if let Some(intent) = &native_intent {
+                                use super::super::transaction::native::descriptor as d;
+                                let mut key = format::key(6, entry.connection, entry.serial);
+                                key.extend(entry.slot.to_be_bytes());
+                                let Some(Row::NativeRecoveryFact(bound)) = self.row(&key)? else {
+                                    continue;
+                                };
+                                let fact = d::RecoveryFact::decode(&bound.fact)
+                                    .map_err(|_| StoreError::Corrupt)?;
+                                let displaced =
+                                    d::decode(&bound.displaced).map_err(|_| StoreError::Corrupt)?;
+                                let d::Body::Intent(body) = &intent.body else {
+                                    return Err(StoreError::Corrupt);
+                                };
+                                let d::State::Regular {
+                                    object, content, ..
+                                } = body
+                                    .expected
+                                    .get(usize::from(side))
+                                    .ok_or(StoreError::Corrupt)?
+                                else {
+                                    return Err(StoreError::Corrupt);
+                                };
+                                if fact.intent != intent.digest
+                                    || fact.side != side
+                                    || &fact.object != object
+                                    || &fact.content != content
+                                    || !matches!(
+                                        displaced.body,
+                                        d::Body::Displaced(d::Displaced {
+                                            matches_expected: true,
+                                            ..
+                                        })
+                                    )
+                                {
+                                    continue;
+                                }
+                            }
                             recovery_checks.verify(self, &entry)?;
                             found = true;
                         }
@@ -751,5 +818,302 @@ impl RecoveryChecks {
         #[cfg(not(windows))]
         drop(reader);
         Ok(())
+    }
+}
+
+impl ConnectionStore {
+    pub(super) fn reduce_native_bound(
+        &self,
+        fact: &format::NativeRecoveryFact,
+        expected: u64,
+        fence: u64,
+    ) -> Result<Vec<Row>, StoreError> {
+        use super::super::transaction::native::descriptor as d;
+        fact.validate()?;
+        let mut connection = self.connection(ConnectionId(fact.connection))?;
+        if connection.lifecycle != 0 || connection.fence != fence {
+            return Err(StoreError::Disconnected);
+        }
+        if connection.revision != expected || connection.pending != Some(fact.serial) {
+            return Err(StoreError::StaleRevision);
+        }
+        let id = RecoveryId {
+            operation: OperationId {
+                connection: ConnectionId(fact.connection),
+                serial: fact.serial,
+            },
+            slot: fact.slot,
+        };
+        let mut operation = self.operation(id.operation)?;
+        let Some(Row::Recovery(recovery)) = self.row(&recovery_key(id))? else {
+            return Err(StoreError::Corrupt);
+        };
+        let mut registration_key = format::key(5, fact.connection, fact.serial);
+        registration_key.extend(fact.attempt.to_be_bytes());
+        let Some(Row::NativeRegistration(registration)) = self.row(&registration_key)? else {
+            return Err(StoreError::Corrupt);
+        };
+        let intent = d::decode(registration.intent.as_ref().ok_or(StoreError::Corrupt)?)
+            .map_err(|_| StoreError::Corrupt)?;
+        let stage = registration
+            .stage
+            .as_ref()
+            .map(|bytes| d::decode(bytes))
+            .transpose()
+            .map_err(|_| StoreError::Corrupt)?;
+        let displaced = d::decode(&fact.displaced).map_err(|_| StoreError::Corrupt)?;
+        displaced
+            .joined(&intent, stage.as_ref(), None)
+            .map_err(|_| StoreError::Corrupt)?;
+        let bound = d::RecoveryFact::decode(&fact.fact).map_err(|_| StoreError::Corrupt)?;
+        let d::Body::Displaced(displaced) = displaced.body else {
+            return Err(StoreError::Corrupt);
+        };
+        let d::Body::Intent(intent_body) = intent.body else {
+            return Err(StoreError::Corrupt);
+        };
+        let Some(format::State::File {
+            sha256,
+            bytes,
+            executable,
+        }) = recovery.content
+        else {
+            return Err(StoreError::Corrupt);
+        };
+        if recovery.state != 1
+            || bound.intent != intent.digest
+            || bound.side != recovery.side
+            || bound.role != 0
+            || Some(&bound.endpoint) != intent_body.endpoints.get(usize::from(bound.side))
+            || bound.object != displaced.object
+            || bound.side != displaced.side
+            || displaced.barriers != 3
+            || bound.content
+                != (d::Content {
+                    digest: sha256,
+                    length: bytes,
+                    executable,
+                })
+            || bound.artifact != artifact_view(recovery.object.as_ref().ok_or(StoreError::Corrupt)?)
+        {
+            return Err(StoreError::Corrupt);
+        }
+        if self.row(&fact.key())?.is_some() {
+            return Err(StoreError::StaleRevision);
+        }
+        connection.revision = format::next(connection.revision)?;
+        operation.revision = connection.revision;
+        Ok(vec![
+            Row::Connection(connection),
+            Row::Operation(operation),
+            Row::NativeRecoveryFact(fact.clone()),
+        ])
+    }
+}
+
+fn artifact_view(
+    value: &format::ObjectIdentity,
+) -> super::super::transaction::native::descriptor::Artifact {
+    use super::super::transaction::native::descriptor::Artifact;
+    let mut endpoint = [0; 64];
+    endpoint[..32].copy_from_slice(&value.root.volume);
+    endpoint[32..].copy_from_slice(&value.root.root);
+    let mut identity = [0; 24];
+    let platform = match value.file_id {
+        format::FileIdentity::Unix(inode) => {
+            identity[..8].copy_from_slice(&inode.to_le_bytes());
+            0
+        }
+        format::FileIdentity::Windows(id) => {
+            identity[..8].copy_from_slice(&id.volume_serial.to_le_bytes());
+            identity[8..].copy_from_slice(&id.file_id);
+            1
+        }
+    };
+    Artifact {
+        endpoint,
+        platform,
+        identity,
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl ConnectionStore {
+    pub(in super::super) fn reserve_native_recovery(
+        &mut self,
+        live: &mut super::LiveOperation,
+        side: Side,
+        reason: RecoveryReason,
+    ) -> Result<RecoveryReservation, StoreError> {
+        self.check_native(live)?;
+        let next = format::next(live.revision())?;
+        let reservation = self.reserve_recovery(
+            &self.ack(live.id()),
+            side,
+            live.intent().path.clone(),
+            reason,
+        )?;
+        live.revision = next;
+        Ok(reservation)
+    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Guarded copy, independent reread, barriers and two durable acknowledgements must remain in order."
+    )]
+    pub(in super::super) fn preserve_native(
+        &mut self,
+        live: &mut super::LiveOperation,
+        reservation: RecoveryReservation,
+        source: &mut super::super::transaction::native::NativeRecoveryReader<'_, '_>,
+        flag: &AtomicBool,
+    ) -> Result<DurableAck<super::BoundRecovery>, StoreError> {
+        self.guard()?;
+        self.check_native(live)?;
+        source.validate_for(live)?;
+        let RecoveryReservation { id, session, fence } = reservation;
+        if !Arc::ptr_eq(&session, &self.session)
+            || id.operation != live.id()
+            || fence != live.fence()
+        {
+            return Err(StoreError::StaleRevision);
+        }
+        let result = (|| {
+            let mut entry = match self.row(&recovery_key(id))? {
+                Some(Row::Recovery(entry)) if entry.state == 0 => entry,
+                _ => return Err(StoreError::StaleRevision),
+            };
+            let expected = source.content().clone();
+            let parent = object_directory(self, id, true)?;
+            let object_name = name(id);
+            let mut target = storage::open_file(&parent, &object_name, true)?;
+            let target_identity = storage::regular(&target)?;
+            let mut buffer = vec![0; 256 * 1024];
+            let mut offset = 0_u64;
+            let mut copied = Sha256::new();
+            loop {
+                cancelled(flag)?;
+                let count = source.read_chunk(offset, &mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                offset = offset
+                    .checked_add(count as u64)
+                    .ok_or(StoreError::LimitExceeded)?;
+                if offset > expected.length {
+                    return Err(StoreError::RecoveryRequired);
+                }
+                let bytes = buffer.get(..count).ok_or(StoreError::Corrupt)?;
+                target.write_all(bytes)?;
+                copied.update(bytes);
+            }
+            if offset != expected.length || <[u8; 32]>::from(copied.finalize()) != expected.digest {
+                return Err(StoreError::RecoveryRequired);
+            }
+            source.validate()?;
+            storage::sync_file(&target)?;
+            storage::validate_file(&parent, &object_name, &target, &target_identity)?;
+            let mut reread = storage::reread_file(&parent, &object_name)?;
+            let reread_identity = storage::regular(&reread)?;
+            if storage::file_identity(&reread_identity) != storage::file_identity(&target_identity)
+            {
+                return Err(StoreError::IdentityChanged);
+            }
+            let mut digest = Sha256::new();
+            let mut verified = 0_u64;
+            loop {
+                cancelled(flag)?;
+                source.charge_store_read(buffer.len() as u64)?;
+                let count = reread.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                verified = verified
+                    .checked_add(count as u64)
+                    .ok_or(StoreError::LimitExceeded)?;
+                if verified > expected.length {
+                    return Err(StoreError::RecoveryRequired);
+                }
+                digest.update(buffer.get(..count).ok_or(StoreError::Corrupt)?);
+            }
+            if verified != expected.length
+                || <[u8; 32]>::from(digest.finalize()) != expected.digest
+                || !storage::same_snapshot(&reread_identity, &storage::regular(&reread)?)
+            {
+                return Err(StoreError::RecoveryRequired);
+            }
+            storage::validate_file(&parent, &object_name, &target, &target_identity)?;
+            storage::validate_recovery_reader(&parent, &object_name, &reread, &reread_identity)?;
+            storage::sync_directory(&parent)?;
+            source.validate()?;
+            cancelled(flag)?;
+            self.check_native(live)?;
+            entry.state = 1;
+            entry.content = Some(format::State::File {
+                sha256: expected.digest,
+                bytes: expected.length,
+                executable: expected.executable,
+            });
+            entry.object = Some(format::ObjectIdentity {
+                root: self.storage.identity.clone(),
+                file_id: storage::file_identity(&reread_identity),
+            });
+            let (attempt, fact, displaced) = source.fact(
+                id,
+                artifact_view(entry.object.as_ref().ok_or(StoreError::Corrupt)?),
+            )?;
+            if fact.side != entry.side {
+                return Err(StoreError::Corrupt);
+            }
+            let next = format::next(live.revision())?;
+            self.append(Change::Bytes {
+                entry,
+                expected: live.revision(),
+                fence,
+            })?;
+            live.revision = next;
+            #[cfg(test)]
+            super::run_after_native_bytes();
+            // A late break retains the durable Bytes artifact, but cannot mint a
+            // bound live acknowledgement or replacement authority.
+            source.validate()?;
+            cancelled(flag)?;
+            self.check_native(live)?;
+            let next = format::next(live.revision())?;
+            self.append(Change::NativeBound {
+                fact: format::NativeRecoveryFact {
+                    connection: id.operation.connection.0,
+                    serial: id.operation.serial,
+                    slot: id.slot,
+                    attempt,
+                    fact: fact.encode().map_err(|_| StoreError::Corrupt)?,
+                    displaced,
+                },
+                expected: live.revision(),
+                fence,
+            })?;
+            live.revision = next;
+            source.validate()?;
+            self.check_native(live)?;
+            cancelled(flag)?;
+            let proof = super::BoundRecovery {
+                fact,
+                preserved: PreservedObject { id, file: reread },
+                parent,
+                lifetime: live.lifetime().clone(),
+                epoch: source.epoch(),
+                metadata: reread_identity,
+            };
+            proof.validate(live, source.epoch())?;
+            Ok(self.ack(proof))
+        })();
+        if matches!(
+            result,
+            Err(StoreError::Persistence(_)
+                | StoreError::RecoverySpace
+                | StoreError::IdentityChanged)
+        ) {
+            self.poison_native();
+        }
+        result
     }
 }

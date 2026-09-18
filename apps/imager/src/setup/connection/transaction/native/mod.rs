@@ -1,6 +1,38 @@
 //! Native evidence stays private, move-only and process-local.
+pub(in crate::setup::connection) mod descriptor;
 #[cfg(target_os = "linux")]
 pub(super) mod linux;
+
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) fn namespace_nonce() -> std::io::Result<[u8; 16]> {
+    linux::random_id()
+}
+
+// These live proofs have no public constructors, serialization or cloning.
+// Only the descendant Linux producer can fill their retained native evidence.
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) struct NativePrepared<'a, 'e> {
+    epoch: &'a mut linux::NativeEpoch<'e>,
+    namespace: &'a linux::PrivateNamespace,
+    staged: Option<&'a linux::StagedFile>,
+}
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) struct NativeRecoveryReader<'a, 'e> {
+    epoch: &'a mut linux::NativeEpoch<'e>,
+    namespace: &'a linux::PrivateNamespace,
+    displaced: &'a linux::RelocatedObject,
+    guard: &'a linux::StableFileGuard,
+    admission: super::StepAdmission,
+    content: descriptor::Content,
+}
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) struct SealedDisplacement {
+    displaced: linux::RelocatedObject,
+    guard: linux::StableFileGuard,
+    recovery:
+        crate::setup::connection::store::DurableAck<crate::setup::connection::store::BoundRecovery>,
+    lifetime: std::sync::Weak<()>,
+}
 
 // Shared wire validation is deliberately std-only so its adversarial traces run
 // on the development host as well as in the real Linux transport.
@@ -229,4 +261,91 @@ mod tests {
         state.next = u64::MAX;
         assert!(state.request(Code::Check).is_err());
     }
+}
+
+// Shared by native copying and Connected observation so neither can reset the
+// same operation's aggregate read budget by opening another reader.
+pub(in crate::setup::connection) struct OperationReads {
+    used: std::sync::atomic::AtomicU64,
+}
+impl OperationReads {
+    pub(in crate::setup::connection) fn new() -> Self {
+        Self {
+            used: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+}
+struct ReadBudget {
+    reads: std::sync::Arc<OperationReads>,
+    deadline: std::time::Instant,
+}
+impl ReadBudget {
+    fn for_operation(reads: &std::sync::Arc<OperationReads>, deadline: std::time::Instant) -> Self {
+        Self {
+            reads: std::sync::Arc::clone(reads),
+            deadline,
+        }
+    }
+    fn charge(&self, count: u64) -> Result<(), ()> {
+        if std::time::Instant::now() >= self.deadline {
+            return Err(());
+        }
+        self.reads
+            .used
+            .fetch_update(
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+                |used| {
+                    used.checked_add(count)
+                        .filter(|next| *next <= 1024 * 1024 * 1024)
+                },
+            )
+            .map(|_| ())
+            .map_err(|_| ())
+    }
+}
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+    #[test]
+    fn new_epoch_keeps_the_same_operation_read_allowance() {
+        let reads = std::sync::Arc::new(OperationReads::new());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let first = ReadBudget::for_operation(&reads, deadline);
+        assert!(first.charge(1024 * 1024 * 1024).is_ok());
+        drop(first);
+        let resumed = ReadBudget::for_operation(&reads, deadline);
+        assert!(resumed.charge(1).is_err());
+    }
+    #[test]
+    fn aggregate_reads_cannot_reset_the_limit_or_outlive_the_deadline() {
+        let budget = std::sync::Arc::new(ReadBudget {
+            reads: std::sync::Arc::new(OperationReads::new()),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+        });
+        let second_reader = std::sync::Arc::clone(&budget);
+        assert!(budget.charge(1024 * 1024 * 1024 - 1).is_ok());
+        assert!(second_reader.charge(1).is_ok());
+        assert!(budget.charge(1).is_err());
+        assert!(second_reader.charge(u64::MAX).is_err());
+        assert_eq!(
+            budget.reads.used.load(std::sync::atomic::Ordering::Relaxed),
+            1024 * 1024 * 1024
+        );
+        let expired = ReadBudget {
+            reads: std::sync::Arc::new(OperationReads::new()),
+            deadline: std::time::Instant::now(),
+        };
+        assert!(expired.charge(0).is_err());
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) struct NativeOwnedNames {
+    records: Vec<crate::setup::connection::store::NativeNamespaceRecord>,
+    root: linux::ObjectId,
+    endpoint: [u8; 64],
+    budget: std::sync::Arc<ReadBudget>,
+    epoch_lifetime: std::sync::Weak<()>,
+    store_lifetime: std::sync::Weak<()>,
 }
