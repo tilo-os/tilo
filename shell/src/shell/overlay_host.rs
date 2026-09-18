@@ -1413,7 +1413,7 @@ pub struct DeviceFabricView {
     pub calibration_proposals: Vec<crate::shell::spatial_calibration::CalibrationProposal>,
     pub revertible_calibrations: Vec<crate::shell::personal_continuity::DeviceId>,
     pub tethering: Vec<crate::shell::personal_tethering_runtime::TetheringStatusView>,
-    pub remote_capture: crate::shell::remote_capture_runtime::RemoteCaptureView,
+    pub(crate) remote_capture: crate::shell::remote_capture_runtime::RemoteCaptureView,
     pub display_mirror_consents: Vec<crate::shell::device_fabric_runtime::DisplayMirrorConsentView>,
     pub display_mirrors: Vec<crate::shell::device_fabric_runtime::DisplayMirrorStatusView>,
     pub display_mirror_available: bool,
