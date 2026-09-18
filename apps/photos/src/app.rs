@@ -129,7 +129,11 @@ pub fn timeline_column_count(width: f64, density: u8, large_text: bool) -> usize
         4
     };
     let density = usize::from(density.min(4));
-    let maximum = if large_text {
+    let maximum = if large_text || width < LIBRARY_TWO_COLUMN_MAX_W {
+        // A phone and compact tablet need real card footers, not a density
+        // mode that turns the timeline into horizontally clipped glyphs.
+        // Pinch/zoom still adjusts the spaciousness of the same one/two
+        // columns through row geometry and preserves the scroll anchor.
         2
     } else if width >= 1_440.0 {
         6
@@ -5011,16 +5015,11 @@ impl PhotosApp {
                 self.library_page_hits.push((forward, enabled, rect));
             }
         }
-        // On a phone the album-management actions sit beneath the chips, not
-        // over the final row of photographs. Reserve their compact strip in
-        // the grid geometry so a short library cannot make controls look
-        // attached to (or hide) an unrelated picture.
-        let compact_album_actions_h =
-            if !self.album_editor && !large_text && bounds.width() < LIBRARY_TWO_COLUMN_MAX_W {
-                54.0
-            } else {
-                0.0
-            };
+        // Compact album actions now occupy the header's title lane (and the
+        // enlarged-text variant has its own measured row). Do not preserve
+        // the old beneath-the-chips reservation: it was an invisible 54px
+        // gutter that made a one-day timeline look prematurely finished.
+        let compact_album_actions_h = 0.0;
         let filter_h = if desktop_library || large_text {
             0.0
         } else {
@@ -5160,7 +5159,11 @@ impl PhotosApp {
                 // focus, or selection rather than consuming every tile.
                 32.0
             } else {
-                76.0
+                // Compact cards show a filename, one concise provenance
+                // line, and three independent 44px actions. Give those
+                // separate vertical lanes; the former 76px footer made the
+                // metadata baseline collide with Details/Delete/Favorite.
+                106.0
             };
         let rows = ((bounds.y1 - top - f64::from(PAD)).max(0.0) / (card_h + gap)).floor() as usize;
         // The index speaks in chronological *rows*, the exact continuous
@@ -5206,6 +5209,7 @@ impl PhotosApp {
             top - (self.timeline_scroll_row - self.timeline_scroll_row.floor()) * (card_h + gap);
         let mut timeline_column = columns;
         let mut previous_day = String::new();
+        let mut painted_items = 0usize;
         for item in self.library_items.iter().take(visible) {
             let id = &item.id;
             let name = &item.name;
@@ -5223,15 +5227,23 @@ impl PhotosApp {
                     break;
                 }
                 timeline_y = group_top;
+                let day_label = timeline_date_label(&item.captured_at);
+                let index_hint = if self.timeline_index_metrics.overflows() {
+                    "Jump by date →"
+                } else {
+                    "One-day view"
+                };
+                let hint_width = if large_text { 138.0 } else { 112.0 };
+                let hint_x = bounds.x1 - f64::from(PAD) - hint_width - 18.0;
                 let day_rule = Rect::new(
                     bounds.x0 + f64::from(PAD),
                     timeline_y + 24.0,
-                    bounds.x1 - f64::from(PAD),
+                    hint_x - 8.0,
                     timeline_y + 25.0,
                 );
                 text_renderer.draw_text_weighted(
                     scene,
-                    &item.captured_at,
+                    &day_label,
                     if large_text { 15.0 } else { 13.0 },
                     theme.text_primary,
                     transform * Affine::translate((day_rule.x0, timeline_y + 4.0)),
@@ -5243,7 +5255,16 @@ impl PhotosApp {
                     transform,
                     theme.border_standard,
                     None,
-                    &Rect::new(day_rule.x0 + 136.0, day_rule.y0, day_rule.x1, day_rule.y1),
+                    &Rect::new(day_rule.x0 + 148.0, day_rule.y0, day_rule.x1, day_rule.y1),
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    index_hint,
+                    if large_text { 13.0 } else { 11.0 },
+                    theme.text_dim,
+                    transform * Affine::translate((hint_x, timeline_y + 5.0)),
+                    Some(hint_width as f32),
+                    TextWeight::Medium,
                 );
                 timeline_y += 34.0;
                 timeline_column = 0;
@@ -5486,10 +5507,92 @@ impl PhotosApp {
                 );
             }
             self.library_cards.push((id.clone(), card, favorite));
+            painted_items += 1;
             timeline_column += 1;
             if timeline_column == columns {
                 timeline_y += card_h + gap;
                 timeline_column = 0;
+            }
+        }
+        // Never leave a short final viewport looking like a failed virtual
+        // list. The continuation/end card is derived from the actual next
+        // record and bounded materialisation window — no inferred memories,
+        // locations, or dates are fabricated here.
+        let remaining = self.library_items.len().saturating_sub(painted_items);
+        let can_summarise = remaining > 0
+            || (self.timeline_index_markers.len() == 1
+                && self.library_items.len() == self.library_total
+                && self.library_items.len() < visible
+                && timeline_column == 0);
+        if can_summarise {
+            let summary_y = timeline_y
+                + if timeline_column == 0 {
+                    2.0
+                } else {
+                    card_h + gap + 2.0
+                };
+            let summary_bottom = (summary_y + 122.0).min(bounds.y1 - f64::from(PAD));
+            if summary_bottom - summary_y >= 82.0 {
+                let summary = Rect::new(
+                    bounds.x0 + f64::from(PAD),
+                    summary_y,
+                    bounds.x1 - f64::from(PAD),
+                    summary_bottom,
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.surfaces.raised,
+                    None,
+                    &summary,
+                );
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    transform,
+                    theme.border_standard,
+                    None,
+                    &summary,
+                );
+                let (title, body) = if let Some(next) = self.library_items.get(painted_items) {
+                    let remaining_total = self.library_total.saturating_sub(painted_items);
+                    let count = if remaining_total == 1 {
+                        "1 photo remains".to_owned()
+                    } else {
+                        format!("{remaining_total} photos remain")
+                    };
+                    (
+                        format!("Continue to {}", timeline_date_label(&next.captured_at)),
+                        format!("{count} · Scroll, drag the date index, or choose a date marker."),
+                    )
+                } else if self.library_total == 1 {
+                    (
+                        "This day is complete · 1 photo shown".to_owned(),
+                        "Use + / −, pinch, or Ctrl + wheel to change timeline density.".to_owned(),
+                    )
+                } else {
+                    (
+                        format!("This day is complete · {} photos shown", self.library_total),
+                        "Use + / −, pinch, or Ctrl + wheel to change timeline density.".to_owned(),
+                    )
+                };
+                text_renderer.draw_text_weighted(
+                    scene,
+                    &title,
+                    if large_text { 15.0 } else { 13.0 },
+                    theme.text_primary,
+                    transform * Affine::translate((summary.x0 + 14.0, summary.y0 + 15.0)),
+                    Some((summary.width() - 28.0) as f32),
+                    TextWeight::Medium,
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    &body,
+                    if large_text { 13.0 } else { 11.0 },
+                    theme.text_dim,
+                    transform * Affine::translate((summary.x0 + 14.0, summary.y0 + 43.0)),
+                    Some((summary.width() - 28.0) as f32),
+                    TextWeight::Regular,
+                );
             }
         }
         scene.pop_layer();
@@ -6434,20 +6537,37 @@ impl PhotosApp {
         } else {
             bounds.y0 + 10.0
         };
-        let panel = Rect::new(
-            if narrow {
-                bounds.x0 + 8.0
-            } else {
-                bounds.x1 - panel_w - 12.0
-            },
-            panel_y,
-            if narrow {
-                bounds.x1 - 8.0
-            } else {
-                bounds.x1 - 12.0
-            },
-            panel_y + panel_h,
-        );
+        let desktop_header_actions = !self.album_editor
+            && !narrow
+            && theme.text_scale <= 1.25
+            && bounds.width() >= LIBRARY_TWO_COLUMN_MAX_W;
+        let panel = if desktop_header_actions {
+            // The normal wide masthead already reserves its right side for
+            // destination, selection and density controls. Album management
+            // belongs beside the title, where it remains discoverable without
+            // painting over those independent actions.
+            Rect::new(
+                bounds.x0 + 132.0,
+                bounds.y0 + 10.0,
+                bounds.x0 + 366.0,
+                bounds.y0 + 54.0,
+            )
+        } else {
+            Rect::new(
+                if narrow {
+                    bounds.x0 + 8.0
+                } else {
+                    bounds.x1 - panel_w - 12.0
+                },
+                panel_y,
+                if narrow {
+                    bounds.x1 - 8.0
+                } else {
+                    bounds.x1 - 12.0
+                },
+                panel_y + panel_h,
+            )
+        };
         self.album_editor_rect = panel;
         if !self.album_editor {
             let new = Rect::new(panel.x0, panel.y0, panel.x0 + 110.0, panel.y0 + 44.0);
@@ -7516,11 +7636,44 @@ fn decode_key(open: &OpenImage) -> String {
     )
 }
 
-/// Turn the portable capture value into a calm timeline heading without
-/// parsing it into the viewer's timezone.  A collaborator who only supplied
-/// a date sees exactly that date, and an ISO timestamp naturally groups with
-/// its calendar day.
+/// Turn the portable capture value into a calm timeline label without parsing
+/// it into the viewer's timezone. A collaborator who only supplied a date
+/// sees exactly that date; an ISO timestamp naturally groups with its day.
+/// The stored value remains untouched for ordering, search, and resources.
 fn timeline_date_label(captured_at: &str) -> String {
+    let day = capture_day(captured_at);
+    let Some((year, rest)) = day.split_once('-') else {
+        return day;
+    };
+    let Some((month, day_of_month)) = rest.split_once('-') else {
+        return day;
+    };
+    let month = match month {
+        "01" => "Jan",
+        "02" => "Feb",
+        "03" => "Mar",
+        "04" => "Apr",
+        "05" => "May",
+        "06" => "Jun",
+        "07" => "Jul",
+        "08" => "Aug",
+        "09" => "Sep",
+        "10" => "Oct",
+        "11" => "Nov",
+        "12" => "Dec",
+        _ => return day,
+    };
+    if day_of_month.len() == 2 && day_of_month.bytes().all(|byte| byte.is_ascii_digit()) {
+        format!("{month} {day_of_month}, {year}")
+    } else {
+        day
+    }
+}
+
+/// Preserve a capture day as the timeline's chronological identity. Display
+/// formatting must never become the sort/group key: doing so would collapse
+/// every "Jun" from different years into one ambiguous bucket.
+fn capture_day(captured_at: &str) -> String {
     captured_at
         .split_whitespace()
         .next()
@@ -7554,7 +7707,7 @@ fn timeline_index_markers(items: &[LibraryItem], columns: usize) -> Vec<DateInde
         let row = index / columns;
         markers.push(DateIndexMarker::new(
             format!("{}:{}", item.captured_at, row),
-            item.captured_at.clone(),
+            timeline_date_label(&item.captured_at),
             index as f64 / denominator,
             kind,
         ));
@@ -8169,7 +8322,7 @@ impl Widget for PhotosApp {
                 captured_at: photo
                     .captured_at
                     .as_deref()
-                    .map_or_else(|| "Undated".to_owned(), timeline_date_label),
+                    .map_or_else(|| "Undated".to_owned(), capture_day),
             })
             .collect();
         // A timeline reads newest-first.  The id tie-breaker makes peers with
@@ -9502,7 +9655,8 @@ mod tests {
 
     #[test]
     fn timeline_geometry_keeps_200_percent_text_legible_and_density_bounded() {
-        assert_eq!(timeline_column_count(390.0, 4, false), 5);
+        assert_eq!(timeline_column_count(390.0, 4, false), 2);
+        assert_eq!(timeline_column_count(620.0, 4, false), 2);
         assert_eq!(timeline_column_count(390.0, 4, true), 1);
         assert_eq!(timeline_column_count(1_440.0, 0, false), 4);
         assert_eq!(timeline_column_count(1_440.0, 4, false), 6);
@@ -9588,6 +9742,17 @@ mod tests {
         assert_eq!(markers[0].kind, DateIndexMarkerKind::Major);
         assert_eq!(markers[1].kind, DateIndexMarkerKind::Major);
         assert!(markers[0].position < markers[1].position);
+        assert_eq!(markers[0].label, "Feb 03, 2026");
+        assert_eq!(markers[1].label, "Dec 31, 2025");
+    }
+
+    #[test]
+    fn date_index_labels_keep_non_iso_values_honest() {
+        assert_eq!(timeline_date_label("2026-09-18"), "Sep 18, 2026");
+        assert_eq!(timeline_date_label("Undated"), "Undated");
+        assert_eq!(timeline_date_label("2026-13-01"), "2026-13-01");
+        assert_eq!(capture_day("2026-09-18 08:14"), "2026-09-18");
+        assert_eq!(capture_day("Jun 2026"), "Jun");
     }
 
     #[test]
