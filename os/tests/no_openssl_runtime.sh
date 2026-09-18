@@ -75,15 +75,16 @@ elif grep -Eq 'dnf .*install.*(openssl|sbsigntools)' "$development_compile_conta
 else
   ok 'retained development trust tooling uses only Rust-native crypto'
 fi
-if rg -n -i '\b(openssl|sbsign)\b' \
+if rg -n -i '\b(openssl|sbsign|sbverify)\b' \
     "$development_boot_fixture" "$development_signer_fixture" \
     "$repo/os/tests/test_development_trust.py" \
     "$repo/os/tests/development_source_registry.py" \
     "$tls_registry_fixture" \
     "$repo/os/tests/development_rootfs.py" \
+    "$repo/os/tests/Containerfile.development-source" \
     "$repo/os/tests/test_rebind_development_trust.py" \
     "$repo/os/tests/test_complete_initramfs_rebind.py" >/dev/null; then
-  bad 'development EFI/private-signing fixtures still invoke OpenSSL or sbsign'
+  bad 'development EFI/private-signing fixtures still invoke OpenSSL or sbsigntools'
 else
   ok 'development EFI/private-signing fixtures use Rust-native crypto'
 fi
