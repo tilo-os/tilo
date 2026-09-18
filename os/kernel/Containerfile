@@ -77,14 +77,23 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # Compile the Rust-native signer on the selected native architecture. The
 # compiler and crate dependencies are frozen by RPMS_REF and Cargo.lock; this
 # avoids smuggling an x86-only CI builder into an ARM64 kernel build.
-COPY os/kernel/tilo-crypto.Cargo.toml /work/tilo-crypto/Cargo.toml
-COPY os/kernel/tilo-crypto.Cargo.lock /work/tilo-crypto/Cargo.lock
+COPY Cargo.toml Cargo.lock /work/workspace/
+COPY crates/system/tilo-crypto/Cargo.toml /work/crypto-member.toml
+COPY os/kernel/project-crate.py /work/project-crate.py
 COPY crates/system/tilo-crypto/src /work/tilo-crypto/src
 # bootc keeps /root as a symlink into an unpopulated /var. Cargo's registry
 # and lock files need a real writable build directory, independent of HOME.
 ENV CARGO_HOME=/work/cargo-home
-RUN cd /work/tilo-crypto \
-    && RUSTC_WRAPPER= cargo build --release --locked \
+# Prune workspace-wide optional feature edges in the private lock copy, then
+# prove every version/checksum/edge still comes from the unchanged root lock.
+RUN python3 /work/project-crate.py --workspace /work/workspace/Cargo.toml \
+        --member /work/crypto-member.toml --lockfile /work/workspace/Cargo.lock \
+        --output /work/tilo-crypto \
+    && cd /work/tilo-crypto \
+    && cargo fetch \
+    && python3 /work/project-crate.py --lockfile /work/workspace/Cargo.lock \
+        --verify-lock /work/tilo-crypto/Cargo.lock \
+    && RUSTC_WRAPPER= cargo build --release --frozen \
     && strip target/release/tilo-crypto \
     && install -m 0755 target/release/tilo-crypto /usr/local/bin/tilo-crypto \
     && rm -rf target
