@@ -218,9 +218,12 @@ impl HistoryPreview for CalculatorPreview {
     fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         scene.fill(Fill::NonZero, t, theme.bg_primary, None, &self.bounds);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1., t, &self.bounds);
-        let x = self.bounds.x0 + 16.;
+        // One rhythm: the panel gutter is `s4`, recorded rows step by `s3`.
+        let pad = f64::from(theme.tokens.spacing.s4);
+        let row_gap = f64::from(theme.tokens.spacing.s3);
+        let x = self.bounds.x0 + pad;
         let page = self.view.page.as_deref().unwrap_or("calculations");
-        let mut y = self.bounds.y0 + 16.
+        let mut y = self.bounds.y0 + pad
             - if page == "calculations" {
                 self.view.scroll.1
             } else {
@@ -235,19 +238,22 @@ impl HistoryPreview for CalculatorPreview {
                     18.,
                     theme.tokens.colors.text_dim,
                     t * Affine::translate((x, y)),
-                    Some((self.bounds.width() - 32.) as f32),
+                    Some((self.bounds.width() - 2. * pad) as f32),
                 );
             }
+            // The live drawer's row height (`keypad::draw_recorded_row` seats a
+            // 13 px expression line over an 18 px result line in it).
+            let row_h = 70.;
             for entry in &self.model.history {
                 crate::keypad::draw_recorded_row(
                     scene,
                     t,
                     tr,
                     theme,
-                    Rect::new(x, y, self.bounds.x1 - 16., y + 70.),
+                    Rect::new(x, y, self.bounds.x1 - pad, y + row_h),
                     entry,
                 );
-                y += 82.;
+                y += row_h + row_gap;
             }
         } else {
             let selected = page
@@ -270,7 +276,7 @@ impl HistoryPreview for CalculatorPreview {
                         )
                     });
                     field.set_text_scale(theme.text_scale);
-                    field.set_rect(Rect::new(x, y, self.bounds.x1 - 16., y + 80.), tr);
+                    field.set_rect(Rect::new(x, y, self.bounds.x1 - pad, y + 80.), tr);
                     let offset = field.scroll_offset();
                     field.scroll_by(self.view.scroll.0 - offset.0, self.view.scroll.1 - offset.1);
                     self.view.scroll = field.scroll_offset();
@@ -292,8 +298,8 @@ impl HistoryPreview for CalculatorPreview {
                     let area = Rect::new(
                         x,
                         y,
-                        self.bounds.x1 - 16.,
-                        (self.bounds.y1 - 16.).max(y + 120.),
+                        self.bounds.x1 - pad,
+                        (self.bounds.y1 - pad).max(y + 120.),
                     );
                     let mut model = self.model.clone();
                     if kind == "2d" {
