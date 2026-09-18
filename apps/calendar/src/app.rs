@@ -1630,12 +1630,12 @@ impl CalendarApp {
     /// from an agent or screen-reader invocation of the same resource action.
     fn invoke_local_calendar_effect(
         &mut self,
-        operation: crate::actions::CalendarOperation,
+        operation: &crate::actions::CalendarOperation,
         doc: &AutoCommit,
     ) -> Result<(), String> {
         let encoded = tilo_actions::EncodedAction::encode_operation(
             crate::actions::CALENDAR_OPERATION_TYPE,
-            &operation,
+            operation,
         )
         .map_err(|error| error.to_string())?;
         #[cfg(test)]
@@ -3499,7 +3499,7 @@ impl CalendarApp {
             }
             Action::SetCalendarVisible { id, visible } => {
                 if let Err(error) = self.invoke_local_calendar_effect(
-                    crate::actions::CalendarOperation::SetCalendarVisible { id, visible },
+                    &crate::actions::CalendarOperation::SetCalendarVisible { id, visible },
                     doc,
                 ) {
                     self.status = Some(error);
