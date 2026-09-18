@@ -66,6 +66,25 @@ else
   fail=1
 fi
 
+if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$kernel_workflow" \
+   && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$kernel_workflow" \
+   && grep -Fq 'needs: signing-preflight' "$kernel_workflow"; then
+  printf 'ok    release kernel compilation starts only after KMS identity preflight\n'
+else
+  printf 'release kernel compilation can start before its signing authority is identity-bound\n' >&2
+  fail=1
+fi
+
+relay_workflow="$workflows/tilo-relay.yaml"
+if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$relay_workflow" \
+   && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$relay_workflow" \
+   && grep -Fq 'needs: signing-preflight' "$relay_workflow"; then
+  printf 'ok    release relay build starts only after KMS identity preflight\n'
+else
+  printf 'release relay build can start before its signing authority is identity-bound\n' >&2
+  fail=1
+fi
+
 if [ "$(grep -Fc '"os/tests/secureboot_vm_*"' "$kernel_workflow")" -eq 2 ] \
    && grep -Fq -- '--target secureboot-probe-inputs' "$kernel_workflow" \
    && grep -Fq 'bash os/tests/secureboot_vm_probe.sh' "$kernel_workflow" \
