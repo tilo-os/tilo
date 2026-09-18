@@ -2706,10 +2706,13 @@ impl Widget for TubeApp {
                     video_id: id.clone(),
                     liked: !self.model.is_liked(id),
                 }),
-                Action::ToggleSubscribe(id) => Some(crate::actions::TubeAction::SetSubscription {
-                    channel_id: id.clone(),
-                    subscribed: !self.model.is_subscribed(id),
-                }),
+                Action::ToggleSubscribe(id) => {
+                    let subscription_id = self.model.subscription_key(id).unwrap_or(id).to_string();
+                    Some(crate::actions::TubeAction::SetSubscription {
+                        channel_id: subscription_id,
+                        subscribed: !self.model.is_subscribed(id),
+                    })
+                }
                 Action::ToggleSetting(setting) => {
                     let enabled = match setting {
                         SettingFlag::SponsorBlock => !self.model.settings.sponsorblock_enabled,
