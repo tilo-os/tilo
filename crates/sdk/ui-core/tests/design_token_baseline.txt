@@ -27,7 +27,7 @@
 #                      that: use Colors::lift() and Colors::hairline_on(), which
 #                      take the measurement.
 #
-# Format: <path relative to ui/> <pattern> <count>
+# Format: <path relative to crates/sdk/ui-core/> <pattern> <count>
 src/app.rs literal_color 1
 src/app.rs white_or_black 0
 # fill_scrim's soft-light source: black is the `Cb²` identity the two-stage

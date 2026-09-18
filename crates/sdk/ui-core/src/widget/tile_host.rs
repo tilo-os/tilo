@@ -107,7 +107,7 @@ fn ambient_shadow_sprite() -> &'static Image {
     SPRITE.get_or_init(|| build_shadow_sprite(0, 0, 0))
 }
 
-/// Tinted with the theme's own focus colour (`ui/HIG.md` §9.4) — never
+/// Tinted with the theme's own focus colour (`crates/sdk/ui-core/HIG.md` §9.4) — never
 /// hard-code it, high-contrast's focus colour is nothing like a violet
 /// glow. Cached per RGB triple rather than rebuilt each frame: baking one
 /// is a 256x256 pass over 65k pixels, and a session visits few themes.

@@ -4,7 +4,7 @@
 //! together in one pass (no live compositor; plain crate APIs only).
 //!
 //! Complements the per-widget unit tests in `tests/shell_chrome_test.rs`,
-//! `ui/src/widget/tabs.rs`, and `src/shell/notes_app.rs`.
+//! `crates/sdk/ui-core/src/widget/tabs.rs`, and `src/shell/notes_app.rs`.
 
 #![allow(
     clippy::unwrap_used,

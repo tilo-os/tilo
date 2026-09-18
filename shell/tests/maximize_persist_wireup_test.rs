@@ -170,7 +170,7 @@ fn shell_tick_writes_maximize_click_through_to_persisted_state() {
 
     // Prime the same pending slot the per-tab Maximize2 press arm writes to.
     // The bar rect math is pinned by unit tests in
-    // `ui/src/widget/window_group.rs::tests`; this pins the writeback from
+    // `crates/sdk/ui-core/src/widget/window_group.rs::tests`; this pins the writeback from
     // drained widget state to the chrome's `WorkspaceTree`.
     {
         let g = host
