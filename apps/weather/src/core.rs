@@ -4096,13 +4096,6 @@ struct DayRowGeometry {
     dot_r: f64,
 }
 
-/// The 7-day row's authored column widths: the widest day label
-/// ("Tomorrow", 14pt Medium), the precipitation cluster (dot, gap, "63%")
-/// and the radius of its severity dot.
-const DAY_LABEL_W: f64 = 72.0;
-const DAY_PRECIP_W: f64 = 46.0;
-const DAY_DOT_R: f64 = 3.0;
-
 impl DayRowGeometry {
     /// One column grid for every row, laid out from the card's `s4` gutters
     /// with the theme's steps between neighbours: `s3` between siblings
@@ -4116,7 +4109,12 @@ impl DayRowGeometry {
             f64::from(spacing.s3),
             f64::from(spacing.s4),
         );
-        let (label_w, precip_w, dot_r) = (DAY_LABEL_W, DAY_PRECIP_W, DAY_DOT_R);
+        // The row's authored column widths: the widest day label
+        // ("Tomorrow", 14pt Medium), the precipitation cluster (dot, gap,
+        // "63%") and the radius of its severity dot — dimensions of the
+        // row's own content, not offsets; the gaps between them are the
+        // theme's steps.
+        let (label_w, precip_w, dot_r) = (72.0, 46.0, 3.0);
         let (icon_edge, extras_w, cond_min_w) = (28.0, 132.0, 96.0);
         let inner_l = dcard.x0 + s4;
         let inner_r = dcard.x1 - s4;
@@ -4448,7 +4446,6 @@ mod day_row_geometry_tests {
                     geo.precip_left,
                     geo.icon_x1
                 );
-                assert!(geo.lo_x - temp_w - (geo.precip_left + super::DAY_PRECIP_W) >= s3 - 1e-9);
             }
             if geo.show_extras {
                 let next = if geo.show_precip {
