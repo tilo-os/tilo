@@ -5,6 +5,12 @@ Applies to the [continuous build roadmap](continuous-build-release-platform.md) 
 
 ## Decision
 
+The [development feedback-loop update](development-feedback-loop.md) shifts the
+first qualification toward assembly, artifact handling and test-worker lifecycle.
+The small Rust/Bazel probe measures build-cache semantics; it is not evidence that
+compiler selection is currently the largest performance lever. Reuse the existing
+retained-rootfs and targeted-test helpers before starting a broad migration.
+
 Retain Forgejo Actions as the provisional execution platform. Dependency-based packaging is a build-graph requirement that Actions does not itself implement. Decide the build-graph owner now, before committing to a homegrown planner/cache engine or a fleet-wide YAML refactor. There is no demonstrated requirement to replace Forgejo merely because the product matrix is large; equally, retaining Forgejo must not be treated as deciding the build architecture.
 
 Keep product selection, packaging entry points, artifact manifests, compatibility rules and promotion verification in versioned, locally callable code. Workflows should execute these contracts on the appropriate runners. Keep compiler/container caches and durable artifacts outside workflow-local storage.

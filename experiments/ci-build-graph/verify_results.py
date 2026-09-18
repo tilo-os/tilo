@@ -34,7 +34,12 @@ def main():
     assert model["latest-pending"]["peak_pending"] == 1
     assert model["latest-pending"]["builds_completed"] == 8
     assert model["latest-pending"]["latest_revision_ready_at"] == 96
-    print("Recorded planner, cache, invalidation and queue-model assertions passed.")
+    assembly = read("assembly-inputs.json")["results"]
+    for arch, cases in assembly.items():
+        assert cases["baseline"]["roots_sha256"] == cases["config_copy_only"]["roots_sha256"]
+        assert cases["baseline"]["recipe_text_sha256"] != cases["config_copy_only"]["recipe_text_sha256"]
+        assert (cases["baseline"]["roots_sha256"] == cases["arm64_package_input"]["roots_sha256"]) == (arch == "x86_64")
+    print("Recorded planner, cache, invalidation, RPM-input and queue-model assertions passed.")
 
 
 if __name__ == "__main__":

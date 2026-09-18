@@ -1,0 +1,39 @@
+{
+  "scope": "production direct-RPM-root extraction only; not full snapshot equivalence",
+  "results": {
+    "x86_64": {
+      "baseline": {
+        "recipe_text_sha256": "e89704e6e7003065fbeb75d6269e6bbe1556fed9d43e9645e3b14097d3d0b226",
+        "root_count": 174,
+        "roots_sha256": "fc1df80adcbe6b917842307aeeb8b91f1641784c1d3e536ca73c5659fe29f575"
+      },
+      "config_copy_only": {
+        "recipe_text_sha256": "5e4f124cb237c808622bfa1fd688de2d6b3c84ce3f99bc84ab743f5fd7020d35",
+        "root_count": 174,
+        "roots_sha256": "fc1df80adcbe6b917842307aeeb8b91f1641784c1d3e536ca73c5659fe29f575"
+      },
+      "arm64_package_input": {
+        "recipe_text_sha256": "9e8936097cf482cdb6464d96cbebb5d3fb70c5beee68e14e79274d96ef22d672",
+        "root_count": 174,
+        "roots_sha256": "fc1df80adcbe6b917842307aeeb8b91f1641784c1d3e536ca73c5659fe29f575"
+      }
+    },
+    "aarch64": {
+      "baseline": {
+        "recipe_text_sha256": "e89704e6e7003065fbeb75d6269e6bbe1556fed9d43e9645e3b14097d3d0b226",
+        "root_count": 184,
+        "roots_sha256": "0833c2744721485dbb4fa9760710828fcd7793a2879a87472178736916d5e8fd"
+      },
+      "config_copy_only": {
+        "recipe_text_sha256": "5e4f124cb237c808622bfa1fd688de2d6b3c84ce3f99bc84ab743f5fd7020d35",
+        "root_count": 184,
+        "roots_sha256": "0833c2744721485dbb4fa9760710828fcd7793a2879a87472178736916d5e8fd"
+      },
+      "arm64_package_input": {
+        "recipe_text_sha256": "9e8936097cf482cdb6464d96cbebb5d3fb70c5beee68e14e79274d96ef22d672",
+        "root_count": 185,
+        "roots_sha256": "18dcf7d23f0f23b64e81a35021041c3714bb2d28fe3486e8ec62be80e56a4996"
+      }
+    }
+  }
+}

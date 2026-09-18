@@ -1,5 +1,11 @@
 # Continuous builds and the path to production
 
+Priority update from the ARM64 development transcript:
+[make one change cheap to test](development-feedback-loop.md). Retaining a usable
+baseline, reducing assembly/test setup and consolidating existing helpers are the
+first developer-experience slice. Compiler-cache experiments alone do not establish
+the dominant end-to-end bottleneck.
+
 Follow-up evidence: [isolated build-graph experiments](ci-build-graph-experiments.md).
 The small Linux probe informs cache design; full target/platform qualification
 and production workflow activation remain separate steps below.
@@ -245,7 +251,14 @@ This stages the engineering, not the final non-macOS scope. Track every required
 | 4. Rehearsed fast release | Independent versioned products, final signing verification, immutable release manifests, idempotent staging and promotion, package-index tracking | Release a prepared app, desktop, setup and OS candidate without rebuilding satisfied nodes; inject failure/retry and verify no partial channel |
 | 5. Preview to production | Migration/update/rollback and hardware matrix, support policy, staged rollouts, recovery/security drills, key lifecycle, release SLO ownership | Named supported targets pass complete evidence policy; rollback/forward recovery and outage drills demonstrated |
 
-Highest-priority first implementation slice: fix/verify app artifact handoff, pin build inputs, define the full target catalog with macOS disabled, and measure one app/runtime cohort, desktop distro family, setup host and OS composition from cold through reuse. Implement this alongside the PR trigger split, not after a long production-hardening project.
+Highest-priority first implementation slice: retain a verified development baseline,
+trace warm assembly through a useful test result, and expose targeted installer/
+desktop iteration through existing helpers. In parallel, fix/verify app artifact
+handoff, pin build inputs, inventory the full target catalog with macOS disabled,
+and split expensive PR triggers. The build-graph/scheduler qualification informs
+broader infrastructure investment; it must not block these bounded improvements
+to the existing development path. Follow with representative app/runtime, distro,
+setup and OS reuse measurements.
 
 Evaluate a representative Bazel/rules_rust build slice and narrower Nix component boundaries now, before investing in a custom input/dependency engine. Defer any wholesale migration until that comparison passes correctness and cost tests. Also defer speculative merge batching, a bespoke distributed compiler service and stable cross-platform runtime ABI redesign without demonstrated need. Existing Cargo/Forgejo/registry infrastructure remains the baseline, not a foregone architecture decision.
 

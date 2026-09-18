@@ -6,6 +6,13 @@ changes, registry publication, branch-protection changes or OS builds.
 
 ## Decision after this spike
 
+Subsequent user evidence changes the implementation priority: see the
+[development feedback-loop update](development-feedback-loop.md). Assembly and
+test setup can dominate even when compilation is reused. A follow-up temporary
+recipe experiment confirms configuration-only COPY changes leave the production
+extractor's RPM root sets unchanged on both architectures; an ARM64 package marker
+changes only ARM64 selection. Results are in `results/assembly-inputs.json`.
+
 Keep Forgejo Actions as the executor while improving the build and packaging
 boundaries. Dependency-aware packaging alone is not a reason to migrate CI.
 The repo already has useful reverse-dependency selection; the release workflow and

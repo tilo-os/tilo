@@ -52,6 +52,9 @@ Verified SHA-256:
 - `summarize.py`: removes huge input inventories from Bazel execution logs, retaining
   target labels, cache outcomes and execution status.
 - `queue_model.py`: hypothetical arrival/service trace; no network or CI dispatch.
+- `assembly_inputs_probe.py`: production RPM-root extraction on temporary recipe
+  variants. Config-only COPY preserves both architecture root sets; ARM64 package
+  markers affect only ARM64. This does not model the full snapshot identity.
 - `results/`: successful complete run (local run6), sccache run3 and the model output.
   Earlier harness attempts exposed packaging a sandbox symlink rather than binary
   contents; fixed with tar dereferencing, then rerun with extraction/execution checks.
