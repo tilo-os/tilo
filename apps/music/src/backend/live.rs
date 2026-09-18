@@ -17,8 +17,8 @@
 //!   `PoToken`** (see [`crate::backend::potoken`]).
 //!
 //! Search and metadata stay pure Rust through rustypipe. Stream resolution
-//! prefers the independently packaged `yt-dlp` helper when available, then
-//! falls back to rustypipe's direct player response.
+//! first queries the keyless Android VR InnerTube client directly, then falls
+//! back to rustypipe's direct player response.
 
 #![cfg(feature = "live")]
 
@@ -512,12 +512,12 @@ impl MusicBackend for RustyPipeBackend {
     fn resolve_audio(&self, video_id: &str) -> ResolveOutcome {
         // Prefer the independent full-track resolver before asking InnerTube's
         // player endpoint. YouTube can reject rustypipe's iOS/TV player client
-        // while yt-dlp's android_vr client still works; resolving the fallback
+        // while the Android VR client still works; resolving the fallback
         // first used to turn that recoverable condition into a hard failure.
-        // A yt-dlp URL is already fully rangeable, so it needs no truncating
+        // An Android VR URL is already fully rangeable, so it needs no truncating
         // direct-stream fallback.
-        if let Some(full) = crate::backend::ytdlp::resolve_full_audio(video_id) {
-            tracing::info!(target: "music::resolve", itag = full.itag, "using yt-dlp full-track URL (whole song streams)");
+        if let Some(full) = crate::backend::android_vr::resolve_full_audio(video_id) {
+            tracing::info!(target: "music::resolve", itag = full.itag, "using Rust-native Android VR full-track URL");
             return Ok(full);
         }
 
