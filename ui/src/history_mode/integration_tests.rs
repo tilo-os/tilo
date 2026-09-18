@@ -198,6 +198,33 @@ fn review_driver() -> Driver {
         .unwrap();
     driver
 }
+
+#[test]
+fn managed_review_dialog_drains_and_returns_to_retained_preview() {
+    let mut driver = review_driver();
+    assert!(driver.targets().contains_key("history-preview"));
+    assert!(
+        !driver.frame_output().needs_redraw,
+        "selected preview stayed dirty after draw"
+    );
+
+    driver.click_named("history-restore").unwrap();
+    assert!(driver.inspection_json().unwrap().contains("Restore version"));
+    assert!(
+        !driver.frame_output().needs_redraw,
+        "review dialog stayed dirty after draw"
+    );
+    assert!(!driver.poll_frame().unwrap());
+
+    driver.key("Escape");
+    assert!(driver.targets().contains_key("history-preview"));
+    assert!(driver.inspection_json().unwrap().contains("Notebook: old"));
+    assert!(
+        !driver.frame_output().needs_redraw,
+        "retained preview was not current after closing review"
+    );
+    assert!(!driver.poll_frame().unwrap());
+}
 fn grant(
     actor: &str,
     scope: crate::permissions::Scope,

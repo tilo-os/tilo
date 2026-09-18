@@ -14,6 +14,7 @@ pub(crate) struct Navigation {
     pending_focus: Option<(StripId, GroupId)>,
     pressed_group: Option<(StripId, GroupId)>,
     cursor: Option<Point>,
+    manual_pan: Option<(StripId, GroupId)>,
 }
 
 /// Geometry excludes the current pan and animated positions. Text edits and
@@ -39,6 +40,7 @@ impl DesktopSurface {
         }
         // A retained caret is not a new gesture merely because chrome rebuilt.
         self.navigation.pending_focus = previous.navigation.pending_focus;
+        self.navigation.manual_pan = previous.navigation.manual_pan;
         self.navigation.framed = std::mem::take(&mut previous.navigation.framed);
         if self.navigation.active_strip != previous.navigation.active_strip {
             if let Some(strip) = self.navigation.active_strip {
@@ -99,6 +101,33 @@ impl DesktopSurface {
         }
     }
 
+    /// Pan the actual retained row without reframing the selected window on
+    /// the following layout. A later explicit selection still reveals it.
+    pub fn pan_desktop(&mut self, strip: StripId, offset: f64) -> Option<bool> {
+        if self.navigation.active_strip != Some(strip) || !offset.is_finite() {
+            return None;
+        }
+        let row = self.row_mut(strip)?;
+        if row.groups.iter().any(|group| group.maximized) {
+            return Some(false);
+        }
+        let moved = row.pan_to(offset);
+        if let Some(group) = self.navigation.groups.get(&strip).copied()
+            && let Some(key) = self.navigation_key(strip, group)
+        {
+            self.navigation.framed.insert(strip, key);
+            self.navigation.manual_pan = Some((strip, group));
+        }
+        Some(moved)
+    }
+
+    /// An explicit app selection reveals even an already-selected app after
+    /// manual panning. Clearing only this strip leaves retained peers intact.
+    pub fn reveal_on_next_layout(&mut self, strip: StripId) {
+        self.navigation.manual_pan = None;
+        self.navigation.framed.remove(&strip);
+    }
+
     fn navigation_key(&self, strip: StripId, group: GroupId) -> Option<FrameKey> {
         let row = self.row(strip)?;
         if row.get_rect().width() <= 0.0
@@ -154,6 +183,10 @@ impl DesktopSurface {
             let Some(key) = self.navigation_key(strip, group) else {
                 continue;
             };
+            if self.navigation.manual_pan == Some((strip, group)) {
+                self.navigation.framed.insert(strip, key);
+                continue;
+            }
             if self.navigation.framed.get(&strip) == Some(&key) {
                 continue;
             }

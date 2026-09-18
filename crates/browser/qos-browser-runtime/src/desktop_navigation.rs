@@ -17,12 +17,13 @@ pub(crate) enum Command {
     History { generation: String, route: Route, target: String },
     Select { generation: String, route: Route },
     Strip { generation: String, workspace: String, strip: String },
+    Pan { generation: String, workspace: String, strip: String, offset: f64 },
     Width { generation: String, route: Route, permille: u16 },
     Maximize { generation: String, route: Route, maximized: bool },
     Scroll { generation: String, region: String, action: ScrollAction },
 }
 impl Command {
-    pub fn generation(&self) -> &str { match self { Self::History {generation,..}|Self::Select {generation,..}|Self::Strip{generation,..}|Self::Width{generation,..}|Self::Maximize{generation,..}|Self::Scroll{generation,..} => generation } }
+    pub fn generation(&self) -> &str { match self { Self::Pan {generation,..}|Self::History {generation,..}|Self::Select {generation,..}|Self::Strip{generation,..}|Self::Width{generation,..}|Self::Maximize{generation,..}|Self::Scroll{generation,..} => generation } }
 }
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "kebab-case", deny_unknown_fields)]

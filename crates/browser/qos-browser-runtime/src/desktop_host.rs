@@ -420,7 +420,7 @@ impl DesktopRoot {
             let workspaces: Vec<_> = tree.workspaces.iter().map(|w| json!({"id":w.id.0.to_string(),"label":w.name,"room":w.room.to_string(),"owner":w.owner,"strips":w.strips.iter().map(|s| json!({"id":s.id.0.to_string(),"label":s.name})).collect::<Vec<_>>()})).collect();
             let group = active.as_ref().and_then(|r| r.ids().ok()).and_then(|(_,s,g,_)| tree.workspaces.iter().flat_map(|w| &w.strips).find(|v|v.id==s)?.window_groups.iter().find(|v|v.id==g));
             let applications = [word_processor::definition(), chat::definition(), notes::definition(), calculator::definition()].iter().map(|d|json!({"id":d.app_id,"label":d.title})).collect::<Vec<_>>();
-            let next = json!({"version":1,"generation":self.handle.generation,"entries":entries,"workspaces":workspaces,"applications":applications,"activeWorkspace":tree.active.0.to_string(),"activeStrip":tree.active_workspace().and_then(|w| tree.active_strip.get(&w.id).copied().or_else(||w.strips.first().map(|s|s.id))).map(|s|s.0.to_string()),"active":active,"widthPermille":group.map(|g|g.width.permille()),"maximized":group.is_some_and(|g|g.maximized),"capabilities":{"select":true,"width":true,"maximize":true,"strips":true,"commands":true},"history":snapshot.get("history").cloned().unwrap_or(serde_json::Value::Null),"scroll":snapshot.get("scroll").cloned().unwrap_or(serde_json::Value::Null)});
+            let next = json!({"version":1,"generation":self.handle.generation,"entries":entries,"workspaces":workspaces,"applications":applications,"activeWorkspace":tree.active.0.to_string(),"activeStrip":tree.active_workspace().and_then(|w| tree.active_strip.get(&w.id).copied().or_else(||w.strips.first().map(|s|s.id))).map(|s|s.0.to_string()),"active":active,"widthPermille":group.map(|g|g.width.permille()),"maximized":group.is_some_and(|g|g.maximized),"capabilities":{"select":true,"width":true,"maximize":true,"strips":true,"commands":true},"history":snapshot.get("history").cloned().unwrap_or(serde_json::Value::Null),"scroll":snapshot.get("scroll").cloned().unwrap_or(serde_json::Value::Null),"desktopPan":snapshot.get("desktopPan").cloned().unwrap_or(serde_json::Value::Null)});
             if *snapshot != next { *snapshot = next; changed = true; }
         }
         let scroll = active.as_ref().and_then(|r| {
@@ -432,6 +432,18 @@ impl DesktopRoot {
             Some(json!({"region":format!("{}/{}/{}/{}/{}/{}/{}",self.handle.generation,r.workspace,r.strip,r.group,r.tab,owner,region.key),"offset":m.offset.clamp(0.0,m.max_scroll()),"viewport":m.viewport,"content":m.content,"max":m.max_scroll()}))
         }).unwrap_or(serde_json::Value::Null);
         if snapshot["scroll"] != scroll { snapshot["scroll"] = scroll; changed = true; }
+        let pan = {
+            let tree = self.handle.tree.borrow();
+            tree.active_workspace().and_then(|w| {
+                let strip = tree.active_strip.get(&w.id).copied().or_else(|| w.strips.first().map(|s| s.id))?;
+                let row = self.surface.row(strip)?;
+                let viewport = row.get_rect().width();
+                let maximized = row.groups.iter().any(|g| g.maximized);
+                let max = if maximized { 0.0 } else { row.max_scroll_x() };
+                Some(json!({"workspace":w.id.0.to_string(),"strip":strip.0.to_string(),"offset":if maximized {0.0} else {row.scroll_x().clamp(0.0,max)},"viewport":viewport,"content":if maximized {viewport} else {row.content_width()},"max":max}))
+            }).unwrap_or(serde_json::Value::Null)
+        };
+        if snapshot["desktopPan"] != pan { snapshot["desktopPan"] = pan; changed = true; }
         let history = self.history_target().map(|target| json!({"target":target})).unwrap_or(serde_json::Value::Null);
         if snapshot["history"] != history { snapshot["history"] = history; changed = true; }
         if changed { self.handle.navigation_revision.set(self.handle.navigation_revision.get().wrapping_add(1)); }
@@ -439,6 +451,14 @@ impl DesktopRoot {
     fn navigate(&mut self, command: crate::desktop_navigation::Command) -> Result<bool, String> {
         use crate::desktop_navigation::Command;
         if command.generation() != self.handle.generation { return Err("Stale desktop surface".into()); }
+        if let Command::Pan {workspace,strip,offset,..} = command {
+            if !offset.is_finite() { return Err("Invalid pan offset".into()); }
+            let tree = self.handle.tree.borrow();
+            let w = tree.active_workspace().filter(|w| w.id.0.to_string() == workspace).ok_or("Workspace is no longer active")?;
+            let active = tree.active_strip.get(&w.id).copied().or_else(|| w.strips.first().map(|s| s.id)).filter(|s| s.0.to_string() == strip).ok_or("Strip is no longer active")?;
+            drop(tree);
+            return self.surface.pan_desktop(active, offset).map(|_|false).ok_or_else(||"Desktop pan unavailable".into());
+        }
         if let Command::History {route,target,..} = command {
             if self.active_route().as_ref() != Some(&route) || self.history_target().as_ref() != Some(&target) { return Err("Document history target is no longer active".into()); }
             let (_,s,g,t) = route.ids()?;
@@ -471,6 +491,7 @@ impl DesktopRoot {
         if !tree.workspaces.iter().filter(|v|v.id==w).flat_map(|w|&w.strips).filter(|v|v.id==s).flat_map(|s|&s.window_groups).filter(|v|v.id==g).flat_map(|g|&g.tabs).any(|v|v.id==t) { return Err("Application route unavailable".into()); }
         match command {
             Command::Select{..}=>{
+                self.surface.reveal_on_next_layout(s);
                 if let Some(strip)=tree.workspaces.iter_mut().find(|v|v.id==w).and_then(|w|w.strips.iter_mut().find(|v|v.id==s)) {
                     if strip.window_groups.iter().any(|group| group.maximized) {
                         for group in &mut strip.window_groups { group.maximized = group.id == g; }
@@ -478,7 +499,12 @@ impl DesktopRoot {
                 }
                 Self::local(&mut tree,LocalViewIntent::Workspace(w)); Self::local(&mut tree,LocalViewIntent::Tab{group:g,tab:t});
             },
-            Command::Width{permille,..}=>{ if !(100..=1000).contains(&permille) {return Err("Width must be between 10% and 100%".into());} Self::local(&mut tree,LocalViewIntent::Width{group:g,width:WindowWidth::Fraction(permille)}); },
+            Command::Width{permille,..}=>{
+                if !(100..=1000).contains(&permille) {return Err("Width must be between 10% and 100%".into());}
+                self.surface.reveal_on_next_layout(s);
+                Self::local(&mut tree,LocalViewIntent::Maximized{group:g,maximized:false});
+                Self::local(&mut tree,LocalViewIntent::Width{group:g,width:WindowWidth::Fraction(permille)});
+            },
             Command::Maximize{maximized,..}=>Self::local(&mut tree,LocalViewIntent::Maximized{group:g,maximized}),
             _=>unreachable!(),
         }
@@ -743,7 +769,9 @@ impl Widget for DesktopRoot {
 mod tests {
     use automerge::transaction::Transactable;
     use super::*;
-    fn fixture() -> (DesktopRoot, DesktopHandle, PortableStorage) {
+    fn fixture_with_topology(
+        configure: impl FnOnce(&mut WorkspaceTree),
+    ) -> (DesktopRoot, DesktopHandle, PortableStorage) {
         let cache = PortableStorage::new("desktop-host-test", "device").unwrap();
         let mut owners = RecordOwners::portable(cache.clone());
         let mut tree = WorkspaceTree::default();
@@ -809,6 +837,7 @@ mod tests {
         }];
         tree.active = workspace.id;
         tree.workspaces.push(workspace);
+        configure(&mut tree);
         let permissions = ui::permissions::PermissionContext::from_capabilities(
             ui::permissions::Actor::person(Some(ui::permissions::Role::Owner), "author"),
             vec![],
@@ -839,6 +868,248 @@ mod tests {
             handle.errors.borrow()
         );
         (root, handle, cache)
+    }
+
+    fn fixture() -> (DesktopRoot, DesktopHandle, PortableStorage) {
+        fixture_with_topology(|_| {})
+    }
+
+    fn assert_external_frame_idle(frame: &mut ui::headless::FrameHarness, context: &str) {
+        let output = frame.frame_output();
+        assert!(
+            !output.needs_redraw,
+            "{context}: settled presentation stayed dirty"
+        );
+        assert!(
+            !output.needs_animation_frame,
+            "{context}: settled presentation kept animating"
+        );
+        assert!(
+            output
+                .next_wake_deadline
+                .is_none_or(|deadline| deadline > ui::clock::Instant::now()),
+            "{context}: settled presentation retained a due wake deadline"
+        );
+        assert!(
+            !frame.poll_frame().unwrap(),
+            "{context}: idle poll produced another scene"
+        );
+    }
+
+    fn settle_external_navigation(
+        root: *mut DesktopRoot,
+        frame: &mut ui::headless::FrameHarness,
+    ) {
+        // Initial group framing is a legitimate finite animation. Advance its
+        // real clock seam, then run the ordinary frame pipeline once more.
+        let settled_at = ui::clock::Instant::now() + ui::clock::Duration::from_secs(1);
+        // SAFETY: `frame` retains this boxed root and no harness method runs
+        // while the temporary exclusive references are alive.
+        unsafe {
+            let strips = (&*root).surface.strip_ids();
+            for strip in strips {
+                (&mut *root)
+                    .surface
+                    .row_mut(strip)
+                    .unwrap()
+                    .tick_snap_at(settled_at);
+            }
+        }
+        frame.relayout();
+    }
+
+    fn settle_notes_status_bubble(frame: &mut ui::headless::FrameHarness) {
+        assert!(
+            frame.frame_output().needs_animation_frame,
+            "selecting Notes must preserve its finite visible status animation"
+        );
+        std::thread::sleep(
+            ui::status_bubble::DEFAULT_LINGER + ui::clock::Duration::from_millis(10),
+        );
+        frame.relayout();
+    }
+
+    #[test]
+    fn external_ordinary_inactive_notes_renders_when_selected_without_redraw_loop() {
+        let (root, handle, _) = fixture_with_topology(|topology| {
+            let groups = &mut topology.workspaces[0].strips[0].window_groups;
+            let chat = groups[0].tabs.remove(1);
+            let calculator = groups[0].tabs.pop().unwrap();
+            assert_eq!(calculator.id, (5 << 48) | 13);
+            groups.push(WindowGroup {
+                id: 4,
+                active_tab: chat.id,
+                tabs: vec![chat],
+                width: WindowWidth::Normal,
+                maximized: false,
+            });
+            topology.active_strip.insert(topology.active, StripId(2));
+            topology.active_group.insert(StripId(2), 3);
+        });
+        let routes = root.resolver.host.routes.clone();
+        let mut root = Box::new(root);
+        let root_ptr = std::ptr::from_mut(root.as_mut());
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(),
+            root,
+            (1280, 720),
+            ui::Theme::dark(),
+            ui::TextRenderer::new(),
+            ui::permissions::UserId("author".into()),
+        );
+        settle_external_navigation(root_ptr, &mut frame);
+
+        let initial = frame.inspection_json().unwrap();
+        assert!(initial.contains("WordProcessor"), "Writer must be presented");
+        assert!(initial.contains("ChatApp"), "Chat must be presented");
+        assert!(
+            !initial.contains("NotesApp"),
+            "inactive Notes must stay retained off-screen"
+        );
+        assert!(
+            frame
+                .resources()
+                .iter()
+                .any(|resource| resource.kind == "notes.notebook"),
+            "inactive Notes must retain its resource owner"
+        );
+        assert_external_frame_idle(&mut frame, "Writer/Chat with inactive Notes");
+
+        *handle.navigation_command.borrow_mut() = Some(crate::desktop_navigation::Command::Select {
+            generation: handle.generation.clone(),
+            route: crate::desktop_navigation::Route {
+                workspace: "1".into(),
+                strip: "2".into(),
+                group: "3".into(),
+                tab: ((5_u64 << 48) | 12).to_string(),
+            },
+        });
+        frame.relayout();
+        settle_external_navigation(root_ptr, &mut frame);
+        assert!(handle.navigation_result.borrow_mut().take().unwrap().is_ok());
+        assert!(
+            frame.inspection_json().unwrap().contains("NotesApp"),
+            "selecting retained Notes must present its real checked widget"
+        );
+        settle_notes_status_bubble(&mut frame);
+        assert_external_frame_idle(&mut frame, "selected Notes");
+
+        let refreshed = handle.tree.borrow().clone();
+        *handle.inbox.borrow_mut() = Some((
+            Admission {
+                source_heads: vec![[8; 32]],
+                tree: refreshed,
+                routes,
+                required: vec![],
+                missing: vec![],
+                unsupported: vec![],
+                pending: 0,
+            },
+            handle.permissions.borrow().clone(),
+        ));
+        assert!(
+            frame.frame_output().needs_redraw,
+            "an admitted remote snapshot must still wake the real root"
+        );
+        assert!(
+            frame.poll_frame().unwrap(),
+            "remote admission must produce a frame"
+        );
+        assert_external_frame_idle(&mut frame, "reconciled remote snapshot");
+    }
+
+    #[test]
+    fn external_hidden_notes_strip_renders_when_selected_without_redraw_loop() {
+        let (root, handle, _) = fixture_with_topology(|topology| {
+            let notes = topology.workspaces[0].strips[0].window_groups[0]
+                .tabs
+                .remove(2);
+            topology.workspaces[0].strips.push(Strip {
+                id: StripId(9),
+                name: "Notes strip".into(),
+                window_groups: vec![WindowGroup {
+                    id: 90,
+                    active_tab: notes.id,
+                    tabs: vec![notes],
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                }],
+            });
+            topology.active_strip.insert(topology.active, StripId(2));
+        });
+        let mut root = Box::new(root);
+        let root_ptr = std::ptr::from_mut(root.as_mut());
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(),
+            root,
+            (1280, 720),
+            ui::Theme::dark(),
+            ui::TextRenderer::new(),
+            ui::permissions::UserId("author".into()),
+        );
+        settle_external_navigation(root_ptr, &mut frame);
+
+        assert!(
+            !frame.inspection_json().unwrap().contains("NotesApp"),
+            "the retained hidden strip must not be in the presentation tree"
+        );
+        assert_external_frame_idle(&mut frame, "hidden Notes strip");
+
+        let hidden_title = "Hidden update";
+        frame
+            .invoke_bound_action(
+                &ui::bound_dispatch::BoundActionAddress {
+                    instance_id: (5 << 48) | 12,
+                    address: qos_actions::ActionAddress::new("notes.notebook", "new-page"),
+                },
+                serde_json::json!({"value": hidden_title})
+                    .as_object()
+                    .unwrap(),
+            )
+            .unwrap();
+        frame.relayout();
+        assert!(
+            !frame.inspection_json().unwrap().contains("NotesApp"),
+            "updating the retained owner must not present its hidden strip"
+        );
+        let notes_record = handle
+            .records
+            .borrow()
+            .values()
+            .find(|record| record.app == notes::definition().app_id)
+            .unwrap()
+            .clone();
+        assert!(
+            notes_record
+                .store
+                .read(&notes_record.checkout.id, |doc| {
+                    notes::notebook::project(doc, None)
+                        .unwrap()
+                        .pages()
+                        .iter()
+                        .any(|page| page.title == hidden_title)
+                })
+                .unwrap(),
+            "the real retained Notes record must accept the update while hidden"
+        );
+
+        *handle.navigation_command.borrow_mut() = Some(crate::desktop_navigation::Command::Strip {
+            generation: handle.generation.clone(),
+            workspace: "1".into(),
+            strip: "9".into(),
+        });
+        frame.relayout();
+        settle_external_navigation(root_ptr, &mut frame);
+        assert!(handle.navigation_result.borrow_mut().take().unwrap().is_ok());
+        assert!(
+            frame.inspection_json().unwrap().contains("NotesApp"),
+            "selecting the retained strip must present its real checked widget"
+        );
+        frame
+            .expect(&ui::headless::SemanticExpectation::named("note_title").value(hidden_title))
+            .unwrap();
+        settle_notes_status_bubble(&mut frame);
+        assert_external_frame_idle(&mut frame, "selected Notes strip");
     }
 
     #[test]
@@ -873,25 +1144,382 @@ mod tests {
     fn external_width_and_maximize_are_local_and_reject_stale_routes() {
         use crate::desktop_navigation::{Command, Route};
         let (root, handle, _) = fixture();
-        let mut frame=ui::headless::FrameHarness::new_with_controlled_inputs(ui::State::new(),Box::new(root),(1000,600),ui::Theme::dark(),ui::TextRenderer::new(),ui::permissions::UserId("author".into()));
+        let mut root = Box::new(root);
+        let root_ptr = std::ptr::from_mut(root.as_mut());
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(),
+            root,
+            (1000, 600),
+            ui::Theme::dark(),
+            ui::TextRenderer::new(),
+            ui::permissions::UserId("author".into()),
+        );
         frame.poll_frame().unwrap();
-        let route: Route=serde_json::from_value(handle.navigation.borrow()["active"].clone()).unwrap();
-        let heads=handle.records.borrow().values().map(|r|r.store.read(&r.checkout.id,|doc|doc.base_heads().to_vec()).unwrap()).collect::<Vec<_>>();
-        for command in [Command::Width{generation:handle.generation.clone(),route:route.clone(),permille:667},Command::Maximize{generation:handle.generation.clone(),route:route.clone(),maximized:true},Command::Maximize{generation:handle.generation.clone(),route:route.clone(),maximized:false}] {
-            *handle.navigation_command.borrow_mut()=Some(command);frame.relayout();frame.poll_frame().unwrap();
-            assert!(handle.navigation_result.borrow_mut().take().unwrap().is_ok());
-            assert_eq!(handle.navigation.borrow()["widthPermille"],667);
+        let route: Route =
+            serde_json::from_value(handle.navigation.borrow()["active"].clone()).unwrap();
+        let heads = handle
+            .records
+            .borrow()
+            .values()
+            .map(|r| {
+                r.store
+                    .read(&r.checkout.id, |doc| doc.base_heads().to_vec())
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        // SAFETY: `frame` owns this root for the test lifetime and no harness
+        // call overlaps these temporary shared references.
+        let host = unsafe {
+            std::ptr::from_ref(
+                (&*root_ptr).surface.row(StripId(2)).unwrap().groups[0]
+                    .active_host()
+                    .unwrap(),
+            )
+        };
+        for permille in [333, 500, 667, 1000] {
+            *handle.navigation_command.borrow_mut() = Some(Command::Maximize {
+                generation: handle.generation.clone(),
+                route: route.clone(),
+                maximized: true,
+            });
+            frame.relayout();
+            frame.poll_frame().unwrap();
+            assert!(
+                handle
+                    .navigation_result
+                    .borrow_mut()
+                    .take()
+                    .unwrap()
+                    .is_ok()
+            );
+            assert_eq!(handle.navigation.borrow()["maximized"], true);
+            assert_eq!(handle.navigation.borrow()["desktopPan"]["max"], 0.0);
+            assert_eq!(handle.navigation.borrow()["desktopPan"]["offset"], 0.0);
+            *handle.navigation_command.borrow_mut() = Some(Command::Width {
+                generation: handle.generation.clone(),
+                route: route.clone(),
+                permille,
+            });
+            frame.relayout();
+            frame.poll_frame().unwrap();
+            assert!(
+                handle
+                    .navigation_result
+                    .borrow_mut()
+                    .take()
+                    .unwrap()
+                    .is_ok()
+            );
+            assert_eq!(handle.navigation.borrow()["widthPermille"], permille);
+            assert_eq!(handle.navigation.borrow()["maximized"], false);
         }
-        assert_eq!(handle.navigation.borrow()["maximized"],false);
-        let mut stale=route.clone();stale.tab="0".into();
-        for command in [Command::Width{generation:handle.generation.clone(),route:stale,permille:333},Command::Maximize{generation:"disposed-mount".into(),route,maximized:true}] {
-            *handle.navigation_command.borrow_mut()=Some(command);frame.relayout();frame.poll_frame().unwrap();
-            assert!(handle.navigation_result.borrow_mut().take().unwrap().is_err());
+        *handle.navigation_command.borrow_mut() = Some(Command::Maximize {
+            generation: handle.generation.clone(),
+            route: route.clone(),
+            maximized: true,
+        });
+        frame.relayout();
+        frame.poll_frame().unwrap();
+        assert!(
+            handle
+                .navigation_result
+                .borrow_mut()
+                .take()
+                .unwrap()
+                .is_ok()
+        );
+        for command in [
+            Command::Width {
+                generation: handle.generation.clone(),
+                route: route.clone(),
+                permille: 99,
+            },
+            Command::Width {
+                generation: handle.generation.clone(),
+                route: Route {
+                    tab: "0".into(),
+                    ..route.clone()
+                },
+                permille: 333,
+            },
+            Command::Width {
+                generation: "disposed-mount".into(),
+                route: route.clone(),
+                permille: 333,
+            },
+        ] {
+            *handle.navigation_command.borrow_mut() = Some(command);
+            frame.relayout();
+            frame.poll_frame().unwrap();
+            assert!(
+                handle
+                    .navigation_result
+                    .borrow_mut()
+                    .take()
+                    .unwrap()
+                    .is_err()
+            );
+            assert_eq!(handle.navigation.borrow()["widthPermille"], 1000);
+            assert_eq!(handle.navigation.borrow()["maximized"], true);
         }
-        assert_eq!(handle.navigation.borrow()["widthPermille"],667);
-        assert_eq!(handle.navigation.borrow()["maximized"],false);
+        *handle.navigation_command.borrow_mut() = Some(Command::Maximize {
+            generation: handle.generation.clone(),
+            route: route.clone(),
+            maximized: false,
+        });
+        frame.relayout();
+        frame.poll_frame().unwrap();
+        assert!(
+            handle
+                .navigation_result
+                .borrow_mut()
+                .take()
+                .unwrap()
+                .is_ok()
+        );
+        let mut stale = route.clone();
+        stale.tab = "0".into();
+        for command in [
+            Command::Maximize {
+                generation: handle.generation.clone(),
+                route: stale,
+                maximized: true,
+            },
+            Command::Maximize {
+                generation: "disposed-mount".into(),
+                route: route.clone(),
+                maximized: true,
+            },
+        ] {
+            *handle.navigation_command.borrow_mut() = Some(command);
+            frame.relayout();
+            frame.poll_frame().unwrap();
+            assert!(
+                handle
+                    .navigation_result
+                    .borrow_mut()
+                    .take()
+                    .unwrap()
+                    .is_err()
+            );
+        }
+        assert_eq!(
+            handle.navigation.borrow()["active"],
+            serde_json::to_value(&route).unwrap()
+        );
+        assert!(frame.inspection_json().unwrap().contains("WordProcessor"));
+        // SAFETY: same stable frame-owned root as above.
+        assert_eq!(host, unsafe {
+            std::ptr::from_ref(
+                (&*root_ptr).surface.row(StripId(2)).unwrap().groups[0]
+                    .active_host()
+                    .unwrap(),
+            )
+        });
+        assert_eq!(handle.navigation.borrow()["widthPermille"], 1000);
+        assert_eq!(handle.navigation.borrow()["maximized"], false);
         assert!(handle.session_requests.borrow().is_empty());
-        assert_eq!(heads,handle.records.borrow().values().map(|r|r.store.read(&r.checkout.id,|doc|doc.base_heads().to_vec()).unwrap()).collect::<Vec<_>>());
+        assert_eq!(
+            heads,
+            handle
+                .records
+                .borrow()
+                .values()
+                .map(|r| r
+                    .store
+                    .read(&r.checkout.id, |doc| doc.base_heads().to_vec())
+                    .unwrap())
+                .collect::<Vec<_>>()
+        );
+    }
+    #[test]
+    fn external_horizontal_pan_moves_real_groups_and_rejects_stale_targets() {
+        use crate::desktop_navigation::{Command, Route};
+        let (root, handle, _) = fixture_with_topology(|tree| {
+            let strip = &mut tree.workspaces[0].strips[0];
+            let tabs = std::mem::take(&mut strip.window_groups[0].tabs);
+            strip.window_groups = tabs
+                .into_iter()
+                .enumerate()
+                .map(|(index, tab)| WindowGroup {
+                    id: 3 + index as u64,
+                    active_tab: tab.id,
+                    tabs: vec![tab],
+                    width: WindowWidth::Fraction(667),
+                    maximized: false,
+                })
+                .collect();
+            tree.active_group.insert(strip.id, 3);
+        });
+        let mut root = Box::new(root);
+        let root_ptr = std::ptr::from_mut(root.as_mut());
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(),
+            root,
+            (1000, 420),
+            ui::Theme::dark(),
+            ui::TextRenderer::new(),
+            ui::permissions::UserId("author".into()),
+        );
+        frame.poll_frame().unwrap();
+        settle_external_navigation(root_ptr, &mut frame);
+        let first = handle.navigation.borrow().clone();
+        let pan = &first["desktopPan"];
+        let max = pan["max"].as_f64().unwrap();
+        assert!(max > 0.0, "four real groups must overflow the viewport");
+        let before = unsafe {
+            (&*root_ptr)
+                .surface
+                .row(StripId(2))
+                .unwrap()
+                .groups
+                .iter()
+                .map(|g| (g.id, g.get_rect()))
+                .collect::<Vec<_>>()
+        };
+        let content = pan["content"].clone();
+        let vertical = first["scroll"].clone();
+        let heads = handle
+            .records
+            .borrow()
+            .values()
+            .map(|r| {
+                r.store
+                    .read(&r.checkout.id, |doc| doc.base_heads().to_vec())
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let pan_to = |offset| Command::Pan {
+            generation: handle.generation.clone(),
+            workspace: "1".into(),
+            strip: "2".into(),
+            offset,
+        };
+        *handle.navigation_command.borrow_mut() = Some(pan_to(max));
+        frame.relayout();
+        frame.poll_frame().unwrap();
+        assert!(
+            handle
+                .navigation_result
+                .borrow_mut()
+                .take()
+                .unwrap()
+                .is_ok()
+        );
+        let at_end = handle.navigation.borrow().clone();
+        assert_eq!(at_end["desktopPan"]["offset"], at_end["desktopPan"]["max"]);
+        assert_eq!(at_end["desktopPan"]["content"], content);
+        assert_eq!(at_end["scroll"], vertical);
+        let after = unsafe {
+            (&*root_ptr)
+                .surface
+                .row(StripId(2))
+                .unwrap()
+                .groups
+                .iter()
+                .map(|g| (g.id, g.get_rect()))
+                .collect::<Vec<_>>()
+        };
+        for ((before_id, before_rect), (after_id, after_rect)) in before.iter().zip(&after) {
+            assert_eq!(before_id, after_id);
+            assert_eq!(before_rect.width(), after_rect.width());
+            assert_eq!(before_rect.height(), after_rect.height());
+            assert!(after_rect.x0 < before_rect.x0);
+        }
+        for command in [
+            Command::Pan {
+                generation: handle.generation.clone(),
+                workspace: "1".into(),
+                strip: "9".into(),
+                offset: 0.0,
+            },
+            Command::Pan {
+                generation: "disposed-mount".into(),
+                workspace: "1".into(),
+                strip: "2".into(),
+                offset: 0.0,
+            },
+            pan_to(f64::NAN),
+        ] {
+            *handle.navigation_command.borrow_mut() = Some(command);
+            frame.relayout();
+            frame.poll_frame().unwrap();
+            assert!(
+                handle
+                    .navigation_result
+                    .borrow_mut()
+                    .take()
+                    .unwrap()
+                    .is_err()
+            );
+            assert_eq!(handle.navigation.borrow()["desktopPan"]["offset"], max);
+        }
+        frame.resize((1200, 420)).unwrap();
+        let resized = handle.navigation.borrow()["desktopPan"].clone();
+        let resized_offset = resized["offset"].as_f64().unwrap();
+        assert!(
+            resized_offset > 0.0 && resized_offset <= resized["max"].as_f64().unwrap(),
+            "resize keeps manual pan bounded without reframing the selected app"
+        );
+        let selected_route = first["active"].clone();
+        *handle.navigation_command.borrow_mut() = Some(Command::Select {
+            generation: handle.generation.clone(),
+            route: serde_json::from_value(selected_route).unwrap(),
+        });
+        frame.relayout();
+        frame.poll_frame().unwrap();
+        settle_external_navigation(root_ptr, &mut frame);
+        assert!(
+            handle.navigation.borrow()["desktopPan"]["offset"]
+                .as_f64()
+                .unwrap()
+                < max,
+            "reselecting the same app must reveal it after manual pan"
+        );
+        let chat = handle.navigation.borrow()["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["label"] == "Chat")
+            .unwrap()["route"]
+            .clone();
+        *handle.navigation_command.borrow_mut() = Some(Command::Select {
+            generation: handle.generation.clone(),
+            route: serde_json::from_value::<Route>(chat.clone()).unwrap(),
+        });
+        frame.relayout();
+        frame.poll_frame().unwrap();
+        assert!(
+            handle
+                .navigation_result
+                .borrow_mut()
+                .take()
+                .unwrap()
+                .is_ok()
+        );
+        assert_eq!(handle.navigation.borrow()["active"], chat);
+        settle_external_navigation(root_ptr, &mut frame);
+        let row = unsafe { (&*root_ptr).surface.row(StripId(2)).unwrap() };
+        let selected = row.groups.iter().find(|g| g.id == 4).unwrap().get_rect();
+        assert!(
+            selected.x0 >= row.get_rect().x0 - 1.0 && selected.x1 <= row.get_rect().x1 + 1.0,
+            "selection must reframe its exact group"
+        );
+        assert_eq!(
+            heads,
+            handle
+                .records
+                .borrow()
+                .values()
+                .map(|r| r
+                    .store
+                    .read(&r.checkout.id, |doc| doc.base_heads().to_vec())
+                    .unwrap())
+                .collect::<Vec<_>>()
+        );
+        assert!(handle.session_requests.borrow().is_empty());
+        // All four app leaves are visible here; whole-frame idle is covered by
+        // the separately queued PreviewCanvas regression work.
     }
     #[test]
     fn external_history_opens_retained_framework_without_changing_heads() {
