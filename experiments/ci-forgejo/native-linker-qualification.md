@@ -78,3 +78,33 @@ BIND_NOW and RW/non-executable GNU_STACK. Seven guard/argument tests passed,
 including Fedora's actual `aarch64-redhat-linux` GCC tuple, cross-target refusal,
 thread bounds and forwarding of filenames containing spaces and hardening flags.
 The x86 forwarding test is synthetic, not native x86 qualification.
+
+## Exact current builder x86 qualification
+
+The later single live native pilot passed: run 22858, job 83925, task 75270,
+source `176094e38` on `codex/ci-native-linker`. It ran in current builder
+`code.podesta.ai/qos/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a`
+and installed mold only in the disposable job container. Package:
+`mold-2.40.4-1.fc42.x86_64`; Rust 1.97.1; GCC 15.2.1. The actual wrapper passed
+dev and thinLTO runtime, RELRO, BIND_NOW, PIE, non-executable stack and x86 SHSTK
+assertions. Dev whole-compile/link was 0.23 s / 114312 KiB; thinLTO was 1.65 s /
+186344 KiB. These remain tiny smoke figures, not representative link benchmarks.
+The dev binary declares libc, libgcc_s and the ELF loader as dependencies;
+thinLTO declares libc and libgcc_s. This is not a full package dependency audit.
+Filtered logs and terminal API metadata are in `results/native-mold-20260919/`.
+
+The pilot's original source branch was based on the earlier experiment tree.
+The candidate builder was subsequently recreated from freshly fetched main
+`b21444813`, applying only mold-owned changes, on `codex/ci-mold-builder`.
+Its 14 existing builder-policy tests and seven wrapper tests pass. The candidate
+uses the unchanged `build-builder-image.yml` signing and native cache acceptance
+pipeline; no pipeline dispatch or image publication has happened yet.
+
+The new mold install is a separate final RUN and records package NEVRA inside
+`/usr/local/share/tilo-builder/mold-nevra.txt`; the signed immutable candidate
+image supplies the package identity boundary. Earlier instruction cache keys
+are unchanged. Registry cache misses or upstream Fedora base changes can still
+cause expensive rebuilding. The normal candidate pipeline has nine jobs,
+including two native builds and cold/warm atomic-file cache canaries on both
+architectures; it publishes candidate tags only for this branch. Shared aliases
+and default linker selection remain unchanged.

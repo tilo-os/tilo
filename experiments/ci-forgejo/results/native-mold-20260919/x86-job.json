@@ -1,0 +1,15 @@
+{
+  "id": 83925,
+  "run_id": 22858,
+  "attempt": 1,
+  "handle": "f249e590-2c28-4ed8-b993-88fb71a50752",
+  "repo_id": 23,
+  "owner_id": 11,
+  "name": "x86-mold",
+  "needs": null,
+  "runs_on": [
+    "runner"
+  ],
+  "task_id": 75270,
+  "status": "success"
+}
