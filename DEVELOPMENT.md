@@ -139,7 +139,11 @@ Private identity files and local account-vault keys use the shared `private-fs`
 crate. On Windows, files are created with a protected, current-user-only DACL;
 reads validate the opened file's owner, access rules and reparse status. Existing
 keys with public access are rejected rather than silently replaced. Concurrent
-vault creators publish one complete key without overwriting the winner.
+vault creators publish one complete key without overwriting the winner. The
+shared Accounts vault records failed loads and refuses writes until access is
+restored and the vault reopened. It also revalidates existing ciphertext before
+saving and refuses to generate a replacement key for an existing vault. The
+Passwords UI exposes recovery errors to both sighted and assistive users.
 
 ```powershell
 cargo test --locked -p private-fs -p tilo-user-identity -p accounts --lib

@@ -601,6 +601,9 @@ impl PasswordsSurface {
 
     fn refresh(&mut self) {
         if let Some(model) = &self.model {
+            if model.recovery_error().is_some() {
+                self.status = "Vault unavailable. Restore key or storage access, then restart Passwords before saving.".into();
+            }
             self.health = model.health();
             self.app_grants = model.app_grants();
             self.items = model
@@ -5110,6 +5113,9 @@ impl Widget for PasswordsSurface {
             }
         }
 
+        if !self.status.is_empty() {
+            children.push(AccessNode::new(Role::StaticText).with_name(&self.status));
+        }
         let mut root = AccessNode::new(Role::Window)
             .with_name("Passwords")
             .with_children(children);
@@ -5849,6 +5855,18 @@ mod tests {
         assert_eq!(
             PasswordsSurface::unescape_custom_value(&escaped).unwrap(),
             "first\nsecond\\third"
+        );
+    }
+
+    #[test]
+    fn storage_status_is_available_to_assistive_clients() {
+        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+        app.status = "Vault unavailable; recovery required".into();
+        let tree = app.accessibility().unwrap();
+        assert!(
+            tree.children
+                .iter()
+                .any(|node| { node.name.as_deref() == Some(app.status.as_str()) })
         );
     }
 
