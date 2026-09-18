@@ -1252,7 +1252,7 @@ fn failed_receipt_callback_and_cancelled_reprepare_do_not_leave_success() {
 /// Real-file common-protocol fixture. Freshness is minted only by create_new;
 /// this models provider policy, not Linux security, locking or publication.
 #[cfg(unix)]
-struct FreshDisk<'a> {
+pub(in crate::setup) struct FreshDisk<'a> {
     disk: DiskProvider,
     selected: &'a SelectedManifest,
     index: usize,
@@ -1264,7 +1264,32 @@ struct FreshDisk<'a> {
 }
 #[cfg(unix)]
 impl<'a> FreshDisk<'a> {
-    fn create(root: &Path, selected: &'a SelectedManifest, index: usize) -> (Self, File) {
+    pub(in crate::setup) fn reopen(
+        root: &Path,
+        selected: &'a SelectedManifest,
+        index: usize,
+        own: Ownership,
+    ) -> (Self, File) {
+        let (disk, file) = DiskProvider::reopen(root, own);
+        (
+            Self {
+                disk,
+                selected,
+                index,
+                fresh: None,
+                poisoned: false,
+                scanned: false,
+                prepared: false,
+                cancel_during_publish: None,
+            },
+            file,
+        )
+    }
+    pub(in crate::setup) fn create(
+        root: &Path,
+        selected: &'a SelectedManifest,
+        index: usize,
+    ) -> (Self, File) {
         let (disk, file) = DiskProvider::new(root);
         let fresh = Some(disk.ownership());
         (
