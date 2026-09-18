@@ -13,7 +13,7 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 
-use calloop::ping::Ping;
+use smithay_client_toolkit::reexports::calloop::ping::Ping;
 use ui::accesskit::{
     ActionHandler, ActionRequest, ActivationHandler, DeactivationHandler, Rect, TreeUpdate,
 };
