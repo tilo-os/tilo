@@ -145,13 +145,22 @@ class Cache(unittest.TestCase):
         extended=launcher.driver_argv('d'*40,hashes)
         self.assertEqual(extended[:-3],normal)
         self.assertEqual(extended[-3:],['--resume-thin-cache-approval','/work/thin-cache-approval.json','e'*64])
+        hashes[launcher.ADMISSION+'_SHA256']='f'*64
+        for label in launcher.EXTRA_PARTIALS:hashes[label+'_SHA256']='a'*64
+        combined=launcher.driver_argv('d'*40,hashes)
+        self.assertEqual(combined.count('--resume-checkpoint'),4)
+        self.assertIn('--resume-thin-cache-approval',combined)
+        self.assertIn('--resume-reconstructed-partial-admission',combined)
         with tempfile.TemporaryDirectory() as d:
             args=SimpleNamespace(resume_checkpoint=[('checkpoint.json','b'*64)],
-                resume_thin_cache_approval=['/work/thin-cache-approval.json','e'*64])
+                resume_thin_cache_approval=['/work/thin-cache-approval.json','e'*64],
+                resume_reconstructed_partial_admission=['/work/reconstructed-partial-admission.json','f'*64])
             commands=[]
             with patch.object(compiler,'PRIVATE',Path(d)),patch.object(compiler,'run',lambda *a,**kw:commands.append(a)),patch.dict(os.environ,{'GITHUB_RUN_ID':'1','GITHUB_RUN_ATTEMPT':'1'}):
                 compiler.resume_selected_native(args,{'fixture':True},{'fixture':'environment'})
-            self.assertEqual(list(commands[0][-3:]),['--thin-cache-approval','/work/thin-cache-approval.json','e'*64])
+            index=commands[0].index('--thin-cache-approval')
+            self.assertEqual(list(commands[0][index:index+3]),['--thin-cache-approval','/work/thin-cache-approval.json','e'*64])
+            self.assertEqual(list(commands[0][-3:]),['--reconstructed-partial-admission','/work/reconstructed-partial-admission.json','f'*64])
 
 
 if __name__=='__main__':unittest.main()
