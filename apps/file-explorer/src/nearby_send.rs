@@ -87,7 +87,12 @@ impl NearbySendState {
         );
     }
 
-    pub fn send(&mut self, path: &Path, target: NearbyTargetHandle) {
+    /// Queue an exact Unix path for the shell-owned transfer service.
+    ///
+    /// # Errors
+    /// Other hosts cannot represent local paths in this Unix service protocol.
+    #[cfg(unix)]
+    pub fn send(&mut self, path: &Path, target: NearbyTargetHandle) -> Result<(), String> {
         use std::os::unix::ffi::OsStrExt as _;
         self.queue(
             NearbyTransferCommand::Send {
@@ -96,6 +101,16 @@ impl NearbySendState {
             },
             Pending::Send,
         );
+        Ok(())
+    }
+
+    /// Native Windows paths cannot be sent to the Unix-only file authority.
+    ///
+    /// # Errors
+    /// Returns the host's unavailable-service error without queuing a request.
+    #[cfg(not(unix))]
+    pub fn send(&mut self, _path: &Path, _target: NearbyTargetHandle) -> Result<(), String> {
+        Err(crate::i18n::t("files-share-not-available"))
     }
 
     pub fn decide(
@@ -377,13 +392,16 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn non_utf8_source_path_stays_exact_in_send_command() {
         use std::ffi::OsString;
         use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 
         let path = std::path::PathBuf::from(OsString::from_vec(vec![b'/', b'a', 0xff]));
         let mut state = NearbySendState::default();
-        state.send(&path, NearbyTargetHandle::from_issued_bytes([9; 16]));
+        state
+            .send(&path, NearbyTargetHandle::from_issued_bytes([9; 16]))
+            .unwrap();
         let request = state.take_requests().pop().expect("send request");
         let CollabRequest::NearbyTransferCommand { command, .. } = request else {
             panic!("wrong request");
@@ -392,6 +410,22 @@ mod tests {
             panic!("wrong command");
         };
         assert_eq!(source_path, path.as_os_str().as_bytes());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn native_windows_source_is_rejected_without_queuing_unix_path_bytes() {
+        let mut state = NearbySendState::default();
+        assert!(
+            state
+                .send(
+                    Path::new(r"C:\Users\owner\Documents\report.txt"),
+                    NearbyTargetHandle::from_issued_bytes([9; 16]),
+                )
+                .is_err()
+        );
+        assert!(state.take_requests().is_empty());
+        assert!(state.pending.is_empty());
     }
 
     #[test]

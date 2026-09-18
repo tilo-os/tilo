@@ -967,7 +967,10 @@ impl NotesApp {
         }
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
+            #[cfg(unix)]
             let result = runtime_portal_xdg::OpenUri::open(&url).map_err(|error| error.to_string());
+            #[cfg(not(unix))]
+            let result = ui::widget::try_open_external_url(&url).map_err(|error| error.to_string());
             let _ = tx.send(result);
         });
         self.external_link_opens.push(rx);
@@ -4573,6 +4576,33 @@ mod tests {
         assert_eq!(backlinks[0].source_title, "Project index");
         assert_eq!(backlinks[0].target, target);
         assert_eq!(backlinks[0].excerpt, "Welcome");
+    }
+
+    #[test]
+    fn external_link_outcomes_are_drained_and_failures_are_visible() {
+        for (outcome, failed) in [
+            (Some(Ok(())), false),
+            (Some(Err("host refused the link".to_string())), true),
+            (None, true),
+        ] {
+            let (mut app, _state, _tmp, _) = app_seeded_into_doc();
+            let (sender, receiver) = std::sync::mpsc::channel();
+            app.external_link_opens.push(receiver);
+            app.drain_external_link_opens();
+            assert_eq!(app.external_link_opens.len(), 1);
+            if let Some(outcome) = outcome {
+                sender.send(outcome).unwrap();
+            }
+            drop(sender);
+            app.drain_external_link_opens();
+            assert!(app.external_link_opens.is_empty());
+            assert_eq!(
+                app.transfer_toasts
+                    .iter()
+                    .any(|toast| { toast.kind == ui::widget::toast::ToastKind::Error }),
+                failed,
+            );
+        }
     }
 
     #[test]
