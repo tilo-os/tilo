@@ -583,6 +583,29 @@ for required in \
 done
 [ "$fail" -ne 0 ] || ok 'TPM rollback hardening has device-scoped privileges'
 
+rollback_confirm_unit="$repo/os/usr/lib/systemd/system/tilo-rollback-confirm.service"
+for required in \
+  'NoNewPrivileges=yes' \
+  'ProtectSystem=strict' \
+  'PrivateNetwork=yes' \
+  'ProtectProc=invisible' \
+  'CapabilityBoundingSet=' \
+  'AmbientCapabilities=' \
+  'DevicePolicy=closed' \
+  'DeviceAllow=block-* rw' \
+  'DeviceAllow=/dev/mapper/control rw' \
+  'DeviceAllow=/dev/tpmrm0 rw' \
+  'DeviceAllow=/dev/tpm0 rw' \
+  'ReadWritePaths=/var/lib/tilo/rollback /run/tilo-rollback' \
+  'SystemCallFilter=@system-service'; do
+  grep -Fqx "$required" "$rollback_confirm_unit" \
+    || bad "rollback-confirmation sandbox is missing: $required"
+done
+if grep -Fqx 'ProcSubset=pid' "$rollback_confirm_unit"; then
+  bad 'rollback confirmation cannot read the measured generation from /proc/cmdline'
+fi
+[ "$fail" -ne 0 ] || ok 'rollback confirmation is confined to TPM and LUKS state'
+
 if grep -Fq 'bounded_command::run_prepared(' "$rollback_exec" \
    && ! grep -Eq '\.output\(\)|wait_with_output\(' "$rollback_exec"; then
   ok 'TPM and cryptsetup rollback helpers have bounded subprocess execution'
