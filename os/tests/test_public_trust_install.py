@@ -12,6 +12,9 @@ import test_development_trust as fixtures
 spec = importlib.util.spec_from_file_location('install_public_trust', Path(__file__).resolve().parents[1] / 'dev/install-public-trust.py')
 installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
+# The installer loads its own copy of development-trust.py. Keep it on the
+# same locally built helper selected by the shared fixture suite.
+installer.trust.CRYPTO = fixtures.trust.CRYPTO
 
 class InstallTests(fixtures.PublicBundleTests):
     def setUp(self):
