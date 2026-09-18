@@ -87,6 +87,7 @@ for required in \
   CONFIG_PSTORE=n \
   CONFIG_BINFMT_MISC=n \
   CONFIG_ATM=n \
+  CONFIG_ATALK=n \
   CONFIG_CAN=n \
   CONFIG_CAIF=n \
   CONFIG_HAMRADIO=n \
@@ -99,6 +100,7 @@ for required in \
   CONFIG_LAPB=n \
   CONFIG_L2TP=n \
   CONFIG_MCTP=n \
+  CONFIG_MISDN=n \
   CONFIG_MPLS=n \
   CONFIG_NET_NSH=n \
   CONFIG_NFC=n \
