@@ -59,7 +59,7 @@ use crate::model::{
     AccountConfig, Addr, Attachment, ComposeFormat, Draft, Folder, Message, MessageId,
 };
 use crate::pane::{Pane, Role};
-use crate::state::{CtxAction, Intent, MailState, Shared};
+use crate::state::{BulkAction, CtxAction, Intent, MailState, Shared};
 use crate::util::format_absolute;
 
 /// Width (logical px) at/above which the shell is wide (docked sidebar +
@@ -479,6 +479,27 @@ impl MailApp {
             self.shared.borrow_mut().preview_message(id);
             self.process_intents();
         }
+        self.dirty = true;
+    }
+
+    /// Show the local multi-message triage state with a small, deliberate
+    /// selection. This exercises the extra header row, selected-row treatment,
+    /// and bulk controls without putting synthetic mail on the live path.
+    pub fn prime_bulk_shot(&mut self) {
+        let ids: Vec<MessageId> = self
+            .shared
+            .borrow()
+            .list_rows()
+            .into_iter()
+            .map(|(id, _)| id)
+            .take(2)
+            .collect();
+        let mut state = self.shared.borrow_mut();
+        state.set_bulk_selecting(true);
+        for id in ids {
+            state.toggle_bulk_selection(id);
+        }
+        drop(state);
         self.dirty = true;
     }
 
@@ -3192,6 +3213,10 @@ impl MailApp {
         doc: &AutoCommit,
     ) -> Result<bool, String> {
         match operation {
+            crate::actions::MailOperation::ComposeNew => {
+                self.shared.borrow_mut().push_intent(Intent::Compose);
+                self.process_intents();
+            }
             crate::actions::MailOperation::RevealFolder { folder } => {
                 let Some(folder) = Folder::from_key(&folder) else {
                     return Err("folder no longer exists".into());
@@ -3226,6 +3251,30 @@ impl MailApp {
                 }
                 self.shared.borrow_mut().status =
                     Some("Previewing without changing this message’s read state".into());
+                self.process_intents();
+            }
+            operation @ (crate::actions::MailOperation::Reply { .. }
+            | crate::actions::MailOperation::ReplyAll { .. }
+            | crate::actions::MailOperation::Forward { .. }) => {
+                let (raw_id, kind) = match operation {
+                    crate::actions::MailOperation::Reply { id } => (id, CtxAction::Reply),
+                    crate::actions::MailOperation::ReplyAll { id } => (id, CtxAction::ReplyAll),
+                    crate::actions::MailOperation::Forward { id } => (id, CtxAction::Forward),
+                    _ => unreachable!("only composition operations reach this arm"),
+                };
+                let id = raw_id
+                    .parse::<MessageId>()
+                    .map_err(|_| "invalid message id")?;
+                if self.shared.borrow().mailbox.get(id).is_none() {
+                    return Err("message is no longer loaded".into());
+                }
+                let intent = match kind {
+                    CtxAction::Reply => Intent::Reply(id),
+                    CtxAction::ReplyAll => Intent::ReplyAll(id),
+                    CtxAction::Forward => Intent::Forward(id),
+                    _ => unreachable!("only composition actions produce a compose intent"),
+                };
+                self.shared.borrow_mut().push_intent(intent);
                 self.process_intents();
             }
             crate::actions::MailOperation::RevealDraft => {
@@ -3491,26 +3540,69 @@ impl MailApp {
                     .with_optional_value((!snippet.is_empty()).then_some(snippet))
                     .with_action_target(format!("mail.message:{id}"))
                     .with_position(index + 1, total)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .selected(state.selected == Some(*id)),
-                    );
+                    .with_state(AccessState::new().focusable(true).selected(
+                        if state.bulk_selecting {
+                            state.bulk_selection.contains(id)
+                        } else {
+                            state.selected == Some(*id)
+                        },
+                    ));
                 if *thread_len > 1 {
                     node = node
                         .with_description(format!("{thread_len} messages in this conversation"));
                 }
                 Some(node)
             })
-            .collect();
+            .collect::<Vec<_>>();
         let name = if state.search.trim().is_empty() {
             format!("{} messages", state.folder.title())
         } else {
             format!("Search results in {}", state.folder.title())
         };
+        let mut children = vec![
+            AccessNode::new(Role::Button)
+                .with_name(if state.bulk_selecting {
+                    "Done selecting messages"
+                } else {
+                    "Select messages for bulk actions"
+                })
+                .with_action_target("mail.bulk:toggle")
+                .with_state(AccessState::new().focusable(true)),
+        ];
+        if state.bulk_selecting {
+            let selected = state.selected_bulk_ids().len();
+            let enabled = selected > 0;
+            children.push(
+                AccessNode::new(Role::Toolbar)
+                    .with_name(format!("{selected} selected"))
+                    .with_children(
+                        [
+                            ("Select all visible messages", "select-all"),
+                            ("Archive selected messages", "archive"),
+                            ("Move selected messages to Trash", "delete"),
+                            ("Delete selected trashed messages permanently", "purge"),
+                            ("Mark selected messages read", "read"),
+                            ("Mark selected messages unread", "unread"),
+                        ]
+                        .into_iter()
+                        .map(|(name, action)| {
+                            AccessNode::new(Role::Button)
+                                .with_name(name)
+                                .with_action_target(format!("mail.bulk:{action}"))
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(true)
+                                        .disabled(!enabled && action != "select-all"),
+                                )
+                        })
+                        .collect(),
+                    ),
+            );
+        }
+        children.extend(messages);
         let mut list = AccessNode::new(Role::List)
             .with_name(name)
-            .with_children(messages);
+            .with_children(children);
         if total == 0 {
             list = list.with_description(if state.search.trim().is_empty() {
                 format!("No messages in {}", state.folder.title())
@@ -4150,6 +4242,9 @@ impl Widget for MailApp {
         if let Some(raw) = target.strip_prefix("mail.folder:") {
             return self.perform_folder_semantic_action(raw, action, state);
         }
+        if let Some(raw) = target.strip_prefix("mail.bulk:") {
+            return self.perform_bulk_semantic_action(raw, action, state);
+        }
 
         let Some(raw) = target.strip_prefix("mail.message:") else {
             return false;
@@ -4459,6 +4554,12 @@ impl MailApp {
         if !mail.list_rows().iter().any(|(row_id, _)| *row_id == id) {
             return false;
         }
+        if mail.bulk_selecting {
+            let selected = mail.toggle_bulk_selection(id);
+            drop(mail);
+            self.process_intents();
+            return selected;
+        }
         let is_draft = mail
             .mailbox
             .get(id)
@@ -4470,6 +4571,82 @@ impl MailApp {
         }
         drop(mail);
         self.process_intents();
+        true
+    }
+
+    /// Assistive technology reaches the exact same local selection and
+    /// canonical bulk-action boundary as the header controls and shortcuts.
+    fn perform_bulk_semantic_action(
+        &mut self,
+        raw: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+    ) -> bool {
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        let mut mail = self.shared.borrow_mut();
+        match raw {
+            "toggle" => {
+                let selecting = mail.bulk_selecting;
+                mail.set_bulk_selecting(!selecting);
+            }
+            "select-all" if mail.bulk_selecting => mail.select_all_visible(),
+            "archive" if mail.bulk_selecting => {
+                let affected = mail.apply_bulk_action(state, BulkAction::Archive);
+                if affected == 0 {
+                    return false;
+                }
+                mail.status = Some(format!(
+                    "Archived {affected} message{}",
+                    if affected == 1 { "" } else { "s" }
+                ));
+            }
+            "delete" if mail.bulk_selecting => {
+                let affected = mail.apply_bulk_action(state, BulkAction::Delete);
+                if affected == 0 {
+                    return false;
+                }
+                mail.status = Some(format!(
+                    "Moved {affected} message{} to Trash",
+                    if affected == 1 { "" } else { "s" }
+                ));
+            }
+            "purge" if mail.bulk_selecting => {
+                let affected = mail.apply_bulk_action(state, BulkAction::Purge);
+                if affected == 0 {
+                    return false;
+                }
+                mail.status = Some(format!(
+                    "Permanently deleted {affected} trashed message{}",
+                    if affected == 1 { "" } else { "s" }
+                ));
+            }
+            "read" if mail.bulk_selecting => {
+                let affected = mail.apply_bulk_action(state, BulkAction::MarkRead);
+                if affected == 0 {
+                    return false;
+                }
+                mail.status = Some(format!(
+                    "Marked {affected} message{} read",
+                    if affected == 1 { "" } else { "s" }
+                ));
+            }
+            "unread" if mail.bulk_selecting => {
+                let affected = mail.apply_bulk_action(state, BulkAction::MarkUnread);
+                if affected == 0 {
+                    return false;
+                }
+                mail.status = Some(format!(
+                    "Marked {affected} message{} unread",
+                    if affected == 1 { "" } else { "s" }
+                ));
+            }
+            _ => return false,
+        }
+        drop(mail);
+        self.process_intents();
+        self.dirty = true;
         true
     }
 
@@ -4634,7 +4811,26 @@ impl MailApp {
         // this is the final safety net for commands addressed to the shell.
         let plain = !command && !modifiers.state().alt_key();
         let selected = self.shared.borrow().selected;
+        let bulk_selecting = self.shared.borrow().bulk_selecting;
+        // Ctrl/Cmd+A belongs to a text editor whenever one has focus. Compose
+        // is already a modal first-responder, and this extra list-context guard
+        // prevents the shell shortcut from ever turning a reader/detail page
+        // into a hidden selection operation on narrow layouts.
+        let list_context = !self.shared.borrow().narrow || self.nav.pane() == NavPane::Overview;
         match logical_key {
+            Key::Named(NamedKey::Escape) if bulk_selecting => {
+                self.shared.borrow_mut().set_bulk_selecting(false);
+                *handled = true;
+            }
+            Key::Character(ch) if plain && ch.eq_ignore_ascii_case("x") => {
+                let selecting = self.shared.borrow().bulk_selecting;
+                self.shared.borrow_mut().set_bulk_selecting(!selecting);
+                *handled = true;
+            }
+            Key::Character(ch) if command && ch.eq_ignore_ascii_case("a") && list_context => {
+                self.shared.borrow_mut().select_all_visible();
+                *handled = true;
+            }
             Key::Character(ch) if plain && ch.eq_ignore_ascii_case("c") => {
                 self.compose.open_blank();
                 *handled = true;
@@ -4659,7 +4855,20 @@ impl MailApp {
                 *handled = true;
             }
             Key::Character(ch) if plain && ch.eq_ignore_ascii_case("e") => {
-                if let Some(id) = selected {
+                if bulk_selecting {
+                    let affected = self
+                        .shared
+                        .borrow_mut()
+                        .apply_bulk_action(state, BulkAction::Archive);
+                    if affected > 0 {
+                        self.shared.borrow_mut().status = Some(format!(
+                            "Archived {affected} message{}",
+                            if affected == 1 { "" } else { "s" }
+                        ));
+                    }
+                    self.process_intents();
+                    *handled = true;
+                } else if let Some(id) = selected {
                     self.shared
                         .borrow_mut()
                         .apply_message_action(state, id, CtxAction::Archive);
@@ -4667,8 +4876,37 @@ impl MailApp {
                     *handled = true;
                 }
             }
+            Key::Named(NamedKey::Delete | NamedKey::Backspace)
+                if plain && modifiers.state().shift_key() && bulk_selecting =>
+            {
+                let affected = self
+                    .shared
+                    .borrow_mut()
+                    .apply_bulk_action(state, BulkAction::Purge);
+                if affected > 0 {
+                    self.shared.borrow_mut().status = Some(format!(
+                        "Permanently deleted {affected} trashed message{}",
+                        if affected == 1 { "" } else { "s" }
+                    ));
+                }
+                self.process_intents();
+                *handled = true;
+            }
             Key::Named(NamedKey::Delete | NamedKey::Backspace) if plain => {
-                if let Some(id) = selected {
+                if bulk_selecting {
+                    let affected = self
+                        .shared
+                        .borrow_mut()
+                        .apply_bulk_action(state, BulkAction::Delete);
+                    if affected > 0 {
+                        self.shared.borrow_mut().status = Some(format!(
+                            "Moved {affected} message{} to Trash",
+                            if affected == 1 { "" } else { "s" }
+                        ));
+                    }
+                    self.process_intents();
+                    *handled = true;
+                } else if let Some(id) = selected {
                     self.shared
                         .borrow_mut()
                         .apply_message_action(state, id, CtxAction::Delete);
@@ -4692,7 +4930,19 @@ impl MailApp {
                 }
             }
             Key::Character(ch) if plain && ch.eq_ignore_ascii_case("u") => {
-                if let Some(id) = selected {
+                if bulk_selecting {
+                    let affected = self
+                        .shared
+                        .borrow_mut()
+                        .apply_bulk_action(state, BulkAction::MarkUnread);
+                    if affected > 0 {
+                        self.shared.borrow_mut().status = Some(format!(
+                            "Marked {affected} message{} unread",
+                            if affected == 1 { "" } else { "s" }
+                        ));
+                    }
+                    *handled = true;
+                } else if let Some(id) = selected {
                     self.shared.borrow_mut().set_read(state, id, false);
                     *handled = true;
                 }
@@ -4993,7 +5243,11 @@ mod tests {
             .children
             .iter()
             .find(|node| node.role == A11yRole::List)
-            .and_then(|list| list.children.first())
+            .and_then(|list| {
+                list.children
+                    .iter()
+                    .find(|node| node.role == A11yRole::ListItem)
+            })
             .and_then(|row| row.action_target.clone())
             .expect("visible message row has a stable activation target");
 
@@ -5480,6 +5734,60 @@ mod tests {
                 .as_deref()
                 .is_some_and(|text| text.contains("without changing its read state")),
             "assistive technology receives the same explicit preview distinction"
+        );
+    }
+
+    #[test]
+    fn resource_compose_actions_open_the_same_private_composer_without_mutating_mail() {
+        let (mut app, mut doc) = app();
+        let message = {
+            let mail = app.shared.borrow();
+            mail.mailbox
+                .messages_in(Folder::Inbox)
+                .first()
+                .copied()
+                .cloned()
+                .expect("sample contains an inbox message")
+        };
+        let heads_before = doc.get_heads();
+
+        let compose = serde_json::to_vec(&crate::actions::MailOperation::ComposeNew).unwrap();
+        assert!(
+            app.invoke_resource_operation(
+                tilo_actions::OperationKind::View,
+                crate::actions::MAIL_OPERATION_TYPE,
+                &compose,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        assert!(
+            app.compose.open,
+            "mailbox Compose opens the normal composer"
+        );
+        app.compose.close();
+
+        let reply = serde_json::to_vec(&crate::actions::MailOperation::Reply {
+            id: message.id.to_string(),
+        })
+        .unwrap();
+        assert!(
+            app.invoke_resource_operation(
+                tilo_actions::OperationKind::View,
+                crate::actions::MAIL_OPERATION_TYPE,
+                &reply,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        assert!(app.compose.open, "message Reply opens the normal composer");
+        assert_eq!(app.compose.to_draft().to, message.from.rfc5322());
+        assert_eq!(
+            doc.get_heads(),
+            heads_before,
+            "an unsaved compose buffer remains local presentation state"
         );
     }
 
