@@ -12,9 +12,9 @@
 //! a healthy player answers in under a millisecond, an unhealthy one costs
 //! one dropped OSD instead of a frozen desktop.
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::{LazyLock, Mutex, mpsc};
+use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use media::handoff::{HandoffSource, PlaybackReport, PlaybackSession};
@@ -43,14 +43,114 @@ const RESUME_DEADLINE: Duration = Duration::from_secs(10);
 const RESUME_POLL: Duration = Duration::from_millis(100);
 const RESUME_TOLERANCE_US: i64 = 500_000;
 const MAX_PENDING_RESUMES: usize = 16;
+const MAX_CANCELLED_RESUMES: usize = MAX_PENDING_RESUMES * 4;
+const CANCELLED_RESUME_TTL: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 struct ResumeState {
-    pending: BTreeSet<[u8; 16]>,
+    pending: BTreeMap<[u8; 16], Arc<Mutex<bool>>>,
     accepted: VecDeque<[u8; 16]>,
+    cancelled: BTreeMap<[u8; 16], Instant>,
 }
 
 static RESUMES: LazyLock<Mutex<ResumeState>> = LazyLock::new(|| Mutex::new(ResumeState::default()));
+
+#[derive(Clone)]
+struct ResumeAuthority {
+    request_id: [u8; 16],
+    gate: Arc<Mutex<bool>>,
+}
+
+impl ResumeAuthority {
+    fn is_active(&self) -> bool {
+        self.gate.lock().is_ok_and(|active| *active)
+    }
+
+    fn mutate<T>(&self, operation: impl FnOnce() -> T) -> Option<T> {
+        let active = self.gate.lock().ok()?;
+        (*active).then(operation)
+    }
+
+    fn revoke(&self) {
+        match self.gate.lock() {
+            Ok(mut active) => *active = false,
+            Err(poisoned) => *poisoned.into_inner() = false,
+        }
+    }
+}
+
+impl ResumeState {
+    fn prune_cancelled(&mut self, now: Instant) {
+        self.cancelled.retain(|_, cancelled| {
+            now.checked_duration_since(*cancelled)
+                .is_none_or(|elapsed| elapsed < CANCELLED_RESUME_TTL)
+        });
+        while self.cancelled.len() > MAX_CANCELLED_RESUMES {
+            let Some(oldest) = self
+                .cancelled
+                .iter()
+                .min_by_key(|(_, cancelled)| *cancelled)
+                .map(|(request_id, _)| *request_id)
+            else {
+                break;
+            };
+            self.cancelled.remove(&oldest);
+        }
+    }
+
+    fn begin(&mut self, request_id: [u8; 16], now: Instant) -> Option<ResumeAuthority> {
+        self.prune_cancelled(now);
+        if self.pending.len() >= MAX_PENDING_RESUMES
+            || self.pending.contains_key(&request_id)
+            || self.cancelled.contains_key(&request_id)
+        {
+            return None;
+        }
+        let gate = Arc::new(Mutex::new(true));
+        self.pending.insert(request_id, Arc::clone(&gate));
+        Some(ResumeAuthority { request_id, gate })
+    }
+
+    fn cancel(&mut self, request_id: [u8; 16], now: Instant) -> bool {
+        self.prune_cancelled(now);
+        let pending = self.pending.remove(&request_id);
+        if let Some(gate) = pending.as_ref() {
+            ResumeAuthority {
+                request_id,
+                gate: Arc::clone(gate),
+            }
+            .revoke();
+        }
+        let accepted = self.accepted.iter().any(|accepted| accepted == &request_id);
+        self.accepted.retain(|accepted| accepted != &request_id);
+        self.cancelled.insert(request_id, now);
+        self.prune_cancelled(now);
+        pending.is_some() || accepted
+    }
+
+    fn finish(&mut self, authority: &ResumeAuthority, accepted: bool) {
+        let still_authorized = self
+            .pending
+            .get(&authority.request_id)
+            .is_some_and(|gate| Arc::ptr_eq(gate, &authority.gate))
+            && authority.is_active();
+        self.pending.remove(&authority.request_id);
+        if accepted
+            && still_authorized
+            && !self.cancelled.contains_key(&authority.request_id)
+            && !self.accepted.contains(&authority.request_id)
+        {
+            if self.accepted.len() >= MAX_PENDING_RESUMES {
+                self.accepted.pop_front();
+            }
+            self.accepted.push_back(authority.request_id);
+        }
+    }
+
+    fn take_accepted(&mut self) -> Vec<[u8; 16]> {
+        self.accepted.drain(..).collect()
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ResumeSource {
@@ -131,43 +231,51 @@ pub fn resume_after_launch(request: ResumeRequest) -> bool {
     let Ok(mut resumes) = RESUMES.lock() else {
         return false;
     };
-    if resumes.pending.len() >= MAX_PENDING_RESUMES || !resumes.pending.insert(request.request_id) {
+    let Some(authority) = resumes.begin(request.request_id, Instant::now()) else {
         return false;
-    }
+    };
     let request_id = request.request_id;
     if std::thread::Builder::new()
         .name("tilo-mpris-resume".to_string())
         .spawn(move || {
-            let accepted = run_resume(&request);
+            let accepted = run_resume(&request, &authority);
             if let Ok(mut resumes) = RESUMES.lock() {
-                resumes.pending.remove(&request.request_id);
-                if accepted && !resumes.accepted.contains(&request.request_id) {
-                    if resumes.accepted.len() >= MAX_PENDING_RESUMES {
-                        resumes.accepted.pop_front();
-                    }
-                    resumes.accepted.push_back(request.request_id);
-                }
+                resumes.finish(&authority, accepted);
             }
         })
         .is_err()
     {
-        resumes.pending.remove(&request_id);
+        resumes.cancel(request_id, Instant::now());
         return false;
     }
     true
+}
+
+/// Revoke one exact destination resume request.
+///
+/// The tombstone is deliberately short-lived and bounded: it closes the race
+/// with a worker that has not started yet without turning request ids into
+/// durable history. A cancelled worker cannot issue another MPRIS mutation or
+/// publish a late acceptance.
+pub(crate) fn cancel_resume_after_launch(request_id: [u8; 16]) -> bool {
+    if request_id == [0; 16] {
+        return false;
+    }
+    RESUMES
+        .lock()
+        .is_ok_and(|mut resumes| resumes.cancel(request_id, Instant::now()))
 }
 
 /// Drain handoffs whose destination player demonstrably reached the requested
 /// state. The fabric runtime turns these into acknowledgements; failed or
 /// unsupported resumes never appear here.
 pub fn take_accepted_handoff_requests() -> Vec<[u8; 16]> {
-    RESUMES.lock().map_or_else(
-        |_| Vec::new(),
-        |mut resumes| resumes.accepted.drain(..).collect(),
-    )
+    RESUMES
+        .lock()
+        .map_or_else(|_| Vec::new(), |mut resumes| resumes.take_accepted())
 }
 
-fn run_resume(request: &ResumeRequest) -> bool {
+fn run_resume(request: &ResumeRequest, authority: &ResumeAuthority) -> bool {
     let Some(expected_uri) = resume_uri(&request.source) else {
         return false;
     };
@@ -177,7 +285,13 @@ fn run_resume(request: &ResumeRequest) -> bool {
     let started = Instant::now();
     let mut opened = BTreeSet::new();
     while started.elapsed() < RESUME_DEADLINE {
+        if !authority.is_active() {
+            return false;
+        }
         for bus_name in verified_player_names(&connection, &request.package_id) {
+            if !authority.is_active() {
+                return false;
+            }
             let Ok(player) = zbus::blocking::Proxy::new(
                 &connection,
                 bus_name.as_str(),
@@ -187,14 +301,17 @@ fn run_resume(request: &ResumeRequest) -> bool {
                 continue;
             };
             if player_reports_uri(&player, &expected_uri) {
-                if drive_and_verify_player(&player, request.position_ms, request.playing) {
-                    return started.elapsed() <= RESUME_DEADLINE;
+                if drive_and_verify_player(&player, request.position_ms, request.playing, authority)
+                {
+                    return authority.is_active() && started.elapsed() <= RESUME_DEADLINE;
                 }
             } else if opened.insert(bus_name.clone()) {
-                let _ = open_uri_if_supported(&connection, &bus_name, &expected_uri);
+                let _ = open_uri_if_supported(&connection, &bus_name, &expected_uri, authority);
             }
         }
-        std::thread::sleep(RESUME_POLL);
+        if authority.is_active() {
+            std::thread::sleep(RESUME_POLL);
+        }
     }
     false
 }
@@ -234,7 +351,11 @@ fn drive_and_verify_player(
     player: &zbus::blocking::Proxy<'_>,
     position_ms: u64,
     playing: bool,
+    authority: &ResumeAuthority,
 ) -> bool {
+    if !authority.is_active() {
+        return false;
+    }
     let target_us = i64::try_from(position_ms.saturating_mul(1_000)).unwrap_or(i64::MAX);
     let can_seek = player.get_property::<bool>("CanSeek").unwrap_or(false);
     let current_us = player.get_property::<i64>("Position").unwrap_or(-1);
@@ -243,14 +364,23 @@ fn drive_and_verify_player(
     }
     match required_seek(current_us, target_us, can_seek) {
         SeekDecision::Satisfied => {}
-        SeekDecision::Offset(offset) if player.call_method("Seek", &(offset,)).is_ok() => {}
+        SeekDecision::Offset(offset)
+            if authority
+                .mutate(|| player.call_method("Seek", &(offset,)))
+                .is_some_and(|result| result.is_ok()) => {}
         SeekDecision::Offset(_) | SeekDecision::Impossible => return false,
     }
     let method = if playing { "Play" } else { "Pause" };
-    if player.call_method(method, &()).is_err() {
+    if !authority
+        .mutate(|| player.call_method(method, &()))
+        .is_some_and(|result| result.is_ok())
+    {
         return false;
     }
     for _ in 0..5 {
+        if !authority.is_active() {
+            return false;
+        }
         let status_matches = player
             .get_property::<String>("PlaybackStatus")
             .is_ok_and(|status| status == if playing { "Playing" } else { "Paused" });
@@ -290,6 +420,7 @@ fn open_uri_if_supported(
     connection: &zbus::blocking::Connection,
     bus_name: &str,
     uri: &str,
+    authority: &ResumeAuthority,
 ) -> bool {
     let Ok(root) = zbus::blocking::Proxy::new(connection, bus_name, MPRIS_PATH, ROOT_IFACE) else {
         return false;
@@ -301,7 +432,9 @@ fn open_uri_if_supported(
     {
         return false;
     }
-    root.call_method("OpenUri", &(uri,)).is_ok()
+    authority
+        .mutate(|| root.call_method("OpenUri", &(uri,)))
+        .is_some_and(|result| result.is_ok())
 }
 
 fn resume_uri(source: &ResumeSource) -> Option<String> {
@@ -895,6 +1028,96 @@ mod tests {
             SeekDecision::Impossible
         );
         assert_eq!(required_seek(-1, 4_000_000, true), SeekDecision::Impossible);
+    }
+
+    #[test]
+    fn cancelled_resume_cannot_start_or_publish_a_late_acceptance() {
+        let request_id = [21; 16];
+        let now = Instant::now();
+        let mut resumes = ResumeState::default();
+
+        assert!(!resumes.cancel(request_id, now));
+        assert!(resumes.begin(request_id, now).is_none());
+        assert!(resumes.take_accepted().is_empty());
+    }
+
+    #[test]
+    fn cancellation_after_worker_launch_blocks_every_later_mutation() {
+        let request_id = [22; 16];
+        let now = Instant::now();
+        let mut resumes = ResumeState::default();
+        let authority = resumes.begin(request_id, now).unwrap();
+        let mut mutations = Vec::new();
+
+        assert_eq!(authority.mutate(|| mutations.push("open-uri")), Some(()));
+        assert!(resumes.cancel(request_id, now));
+        assert_eq!(authority.mutate(|| mutations.push("seek")), None);
+        assert_eq!(authority.mutate(|| mutations.push("play")), None);
+        resumes.finish(&authority, true);
+
+        assert_eq!(mutations, ["open-uri"]);
+        assert!(resumes.take_accepted().is_empty());
+    }
+
+    #[test]
+    fn cancellation_is_linearized_after_an_in_flight_mutation() {
+        let request_id = [24; 16];
+        let now = Instant::now();
+        let resumes = Arc::new(Mutex::new(ResumeState::default()));
+        let authority = resumes.lock().unwrap().begin(request_id, now).unwrap();
+        let mutation_authority = authority.clone();
+        let (mutation_started_tx, mutation_started_rx) = mpsc::channel();
+        let (release_mutation_tx, release_mutation_rx) = mpsc::channel();
+        let mutation = std::thread::spawn(move || {
+            mutation_authority.mutate(|| {
+                mutation_started_tx.send(()).unwrap();
+                release_mutation_rx.recv().unwrap();
+            })
+        });
+        mutation_started_rx.recv().unwrap();
+
+        let cancel_resumes = Arc::clone(&resumes);
+        let (cancel_started_tx, cancel_started_rx) = mpsc::channel();
+        let (cancelled_tx, cancelled_rx) = mpsc::channel();
+        let cancellation = std::thread::spawn(move || {
+            cancel_started_tx.send(()).unwrap();
+            let cancelled = cancel_resumes.lock().unwrap().cancel(request_id, now);
+            cancelled_tx.send(cancelled).unwrap();
+        });
+        cancel_started_rx.recv().unwrap();
+        assert!(
+            cancelled_rx
+                .recv_timeout(Duration::from_millis(20))
+                .is_err(),
+            "cancel must wait for the already-started mutation to leave its gate"
+        );
+
+        release_mutation_tx.send(()).unwrap();
+        assert_eq!(mutation.join().unwrap(), Some(()));
+        assert!(cancelled_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+        cancellation.join().unwrap();
+        assert_eq!(authority.mutate(|| panic!("late mutation ran")), None);
+        resumes.lock().unwrap().finish(&authority, true);
+        assert!(resumes.lock().unwrap().take_accepted().is_empty());
+    }
+
+    #[test]
+    fn cancellation_retracts_completion_and_tombstones_are_bounded() {
+        let request_id = [23; 16];
+        let now = Instant::now();
+        let mut resumes = ResumeState::default();
+        let authority = resumes.begin(request_id, now).unwrap();
+        resumes.finish(&authority, true);
+        assert!(resumes.cancel(request_id, now));
+        assert!(resumes.take_accepted().is_empty());
+
+        for index in 0..=MAX_CANCELLED_RESUMES {
+            let mut id = [0; 16];
+            id[..8].copy_from_slice(&u64::try_from(index).unwrap().to_be_bytes());
+            id[15] = 1;
+            let _ = resumes.cancel(id, now);
+        }
+        assert_eq!(resumes.cancelled.len(), MAX_CANCELLED_RESUMES);
     }
 
     #[test]
