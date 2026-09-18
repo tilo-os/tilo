@@ -388,11 +388,13 @@ mod personal_fabric_input_holder_tests {
         let first = DeviceId::new("first").unwrap();
         let second = DeviceId::new("second").unwrap();
         let mut held = PersonalFabricInputHolders::default();
+        assert!(held.key_transition(&first, 30, true));
         assert!(held.key_transition(&first, 42, true));
         assert!(!held.key_transition(&second, 42, true));
         assert!(held.button_transition(&first, 0x110, true));
-        assert_eq!(held.release_controller(&first), (Vec::new(), vec![0x110]));
-        assert_eq!(held.release_controller(&second), (vec![42], Vec::new()));
+        assert!(held.button_transition(&second, 0x111, true));
+        assert_eq!(held.release_controller(&first), (vec![30], vec![0x110]));
+        assert_eq!(held.release_controller(&second), (vec![42], vec![0x111]));
     }
 }
 
