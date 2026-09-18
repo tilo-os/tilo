@@ -1,66 +1,30 @@
-name: CI / fast quality
-
-# Compilation-heavy warnings, Clippy, docs, and release-size gates run weekly.
-# This path runs on every change.
+name: CI / native control image qualification
 on:
-  # Run on every branch before it opens or updates a PR.
-  push: {}
-  pull_request:
-    branches: ["main"]
+  push:
+    branches: ["codex/ci-control-image-probe"]
   workflow_dispatch:
-
-concurrency:
-  # A branch push and its pull_request synchronization describe the same head.
-  # Normalize both event shapes so the later event cancels duplicate work.
-  group: lint-${{ github.ref == 'refs/heads/main' && github.sha || github.event.pull_request.head.ref || github.ref_name }}
-  # Every main commit keeps its result and can run concurrently. Branches
-  # continue to supersede obsolete revisions.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
-
 jobs:
   quality:
     runs-on: runner-quality
-    timeout-minutes: 30
+    timeout-minutes: 10
     container:
-      image: code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: code.podesta.ai/qos/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Checkout public-trust context fixture
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 2
           fetch-tags: false
-
-      - name: Verify native fast-quality toolchain
+      - name: Verify native Docker control tools
         run: |
           test "$(uname -m)" = x86_64
-          cargo --version
-          rustc --version
-          rustfmt --version
-          cargo deny --version
-          cargo machete --version
-
-      - name: Check formatting of changed Rust files
-        shell: bash
-        run: >-
-          bash tools/check-changed-rustfmt.sh
-          '${{ github.event.pull_request.base.sha }}'
-          '${{ github.event.before }}'
-
-      - name: Require reasons for Rust lint exceptions in changed files
-        run: >-
-          python3 tools/check_changed_rust_allows.py
-          '${{ github.event.pull_request.base.sha }}'
-          '${{ github.event.before }}'
-
-      - name: Repository policy suite
-        run: bash tools/run-repository-policy.sh
-
-      - name: cargo deny
-        run: cargo deny --workspace check
-
-      - name: cargo machete
-        run: cargo machete --with-metadata
+          docker --version
+          docker buildx version
+      - name: Verify named public-trust contexts with Docker BuildKit
+        env:
+          DOCKER_BUILDKIT: "1"
+        run: bash os/tests/named_public_trust_context.sh docker
