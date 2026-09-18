@@ -542,6 +542,7 @@ pub fn model() -> TubeModel {
         queue: Vec::new(),
         history_owner: "profile:local".into(),
         history: vec!["vid_black_holes".into(), "vid_donut".into()],
+        history_recovery_notice: None,
         settings,
         route: Route::Home,
         search_query: String::new(),

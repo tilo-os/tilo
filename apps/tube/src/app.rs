@@ -282,6 +282,11 @@ impl TubeApp {
         let mut model = crate::sample::model();
         model.history_owner = resolve_history_owner();
         let history_store = OwnerHistoryStore::open(&model.history_owner);
+        if history_store.recovery_disabled() {
+            model.history_recovery_notice = Some(
+                "Watch history couldn't be opened. The existing local file was preserved; new history will not save. Restore or replace it in Tube's local data folder, then restart.".into(),
+            );
+        }
         Self {
             model,
             actions: ui::ActionHost::new(),
@@ -767,8 +772,17 @@ impl TubeApp {
         reason = "a by-value canonical action makes every caller construct one immutable dispatch payload"
     )]
     fn dispatch_history_action(&mut self, action: OwnerHistoryAction) -> bool {
-        self.history_store
-            .dispatch(&mut self.history_actions, &action)
+        let applied = self
+            .history_store
+            .dispatch(&mut self.history_actions, &action);
+        if !applied {
+            self.model.history_recovery_notice = Some(if self.history_store.recovery_disabled() {
+                "Watch history couldn't be opened. The existing local file was preserved; new history will not save. Restore or replace it in Tube's local data folder, then restart.".into()
+            } else {
+                "Watch history could not be saved locally. Your shared library was not changed; retry after checking local storage.".into()
+            });
+        }
+        applied
     }
 
     /// `--shots` builder: start on an EMPTY Home in its loading state, so a still
@@ -3317,6 +3331,29 @@ mod tests {
                 .get(&automerge::ROOT, "owner_history")
                 .unwrap()
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn history_store_recovery_is_visible_without_exposing_a_path() {
+        let (mut app, doc) = fresh();
+        app.history_store = OwnerHistoryStore::recovery_disabled_for_test();
+        app.model.history.clear();
+        app.apply(
+            Action::OpenVideo("vid_donut".into()),
+            &doc,
+            &automerge::ROOT,
+        );
+        let notice = app
+            .model
+            .history_recovery_notice
+            .as_deref()
+            .expect("history recovery banner");
+        assert!(notice.contains("existing local file was preserved"));
+        assert!(!notice.contains('/'));
+        assert!(
+            app.model.history.is_empty(),
+            "failed local writes do not claim history changed"
         );
     }
 
