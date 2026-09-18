@@ -15,8 +15,9 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
 use crate::auth::{self, AuthenticatedPeer, Hello, HelloAck, HelloAck2};
+use crate::compute::ComputeJobSpec;
 use crate::compute_transport::{
-    COMPUTE_ALPN, ComputeEnvelope, ComputeRouteOutcome, ComputeTransportError,
+    COMPUTE_ALPN, ComputeEnvelope, ComputeJobBinding, ComputeRouteOutcome, ComputeTransportError,
     MAX_COMPUTE_FRAME_BYTES,
 };
 use crate::daemon::{read_frame, write_frame};
@@ -422,6 +423,7 @@ async fn write_compute(
 /// Mutable authenticated client for the dedicated personal-compute stream.
 pub struct ComputeClient {
     relay_peer: AuthenticatedPeer,
+    own_device: [u8; 32],
     send: SendStream,
     receive: RecvStream,
     connection: Connection,
@@ -468,6 +470,7 @@ impl ComputeClient {
             .map_err(|error| ComputeSessionError::Connection(error.to_string()))?;
         let mut nonce = [0; 32];
         rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+        let own_device = own_cert.device_public_key;
         let hello = Hello {
             cert: own_cert,
             client_nonce: nonce,
@@ -491,6 +494,7 @@ impl ComputeClient {
         write_frame(&mut send, &postcard::to_allocvec(&final_ack)?).await?;
         Ok(Self {
             relay_peer,
+            own_device,
             send,
             receive,
             connection,
@@ -576,6 +580,40 @@ impl ComputeClient {
     /// Returns an error when the attach frame cannot be written.
     pub async fn attach(&mut self, workspace_id: u64) -> Result<(), ComputeSessionError> {
         self.send(&ComputeEnvelope::Attach { workspace_id }).await
+    }
+
+    /// Submit a job whose requester is this exact certified device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a spoofed requester or when the request frame
+    /// cannot be written.
+    pub async fn submit(&mut self, spec: &ComputeJobSpec) -> Result<(), ComputeSessionError> {
+        if spec.requester != self.own_device {
+            return Err(ComputeSessionError::Protocol(
+                "compute request does not belong to this certified client".into(),
+            ));
+        }
+        self.send(&ComputeEnvelope::Request { spec: spec.clone() })
+            .await
+    }
+
+    /// Cancel one exact job route owned by this certified requester.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a spoofed requester or when the cancellation
+    /// frame cannot be written.
+    pub async fn cancel(&mut self, binding: &ComputeJobBinding) -> Result<(), ComputeSessionError> {
+        if binding.requester != self.own_device {
+            return Err(ComputeSessionError::Protocol(
+                "compute cancellation does not belong to this certified client".into(),
+            ));
+        }
+        self.send(&ComputeEnvelope::Cancel {
+            binding: binding.clone(),
+        })
+        .await
     }
 }
 
