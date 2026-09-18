@@ -170,6 +170,7 @@ fn media_handoff_waits_for_its_synced_resource() {
 
 #[test]
 #[cfg(feature = "audio")]
+#[serial_test::serial(audio_backend)]
 fn media_handoff_waits_for_decoder_but_preserves_paused_preroll() {
     let (mut app, _) = app_with_doc();
     let title = format!("handoff-init-{}", uuid::Uuid::new_v4());
