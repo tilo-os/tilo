@@ -74,7 +74,7 @@ def main():
                 '--target-ref', target, '--image-root', str(image_root))
             (context / 'Containerfile').write_text(
                 f'FROM {BASE}\n'
-                'RUN dnf -y install python3 openssl sbsigntools systemd-boot-unsigned && dnf clean all\n'
+                'RUN dnf -y install python3 systemd-boot-unsigned && dnf clean all\n'
                 'COPY rootfs/ /\n'
                 f'LABEL org.opencontainers.image.revision={REVISION}\n')
             iidfile = root / 'raw.iid'
@@ -167,7 +167,7 @@ def main():
             images.append(sealed)
             produce(['--rootfs-id', sealed], error='unsealed rootfs stage')
             versions = podman('run', '--rm', '--pull=never', '--network=none', '--entrypoint', '/usr/bin/rpm',
-                             signed, '-q', 'python3', 'openssl', 'sbsigntools', 'systemd-boot-unsigned')
+                             signed, '-q', 'python3', 'systemd-boot-unsigned')
             print(json.dumps({'result': 'pass', 'proof': 'minimal native pre-seal producer and stage reuse only',
                               'storage': 'explicit private VFS store shared by every producer stage',
                               'architecture': architecture, 'package_versions': versions.splitlines(),

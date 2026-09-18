@@ -80,6 +80,7 @@ if rg -n -i '\b(openssl|sbsign)\b' \
     "$repo/os/tests/test_development_trust.py" \
     "$repo/os/tests/development_source_registry.py" \
     "$tls_registry_fixture" \
+    "$repo/os/tests/development_rootfs.py" \
     "$repo/os/tests/test_rebind_development_trust.py" \
     "$repo/os/tests/test_complete_initramfs_rebind.py" >/dev/null; then
   bad 'development EFI/private-signing fixtures still invoke OpenSSL or sbsign'
