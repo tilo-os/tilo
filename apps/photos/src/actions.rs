@@ -87,6 +87,10 @@ pub enum PhotosOperation {
     /// Reveal the Photos-owned browsing and management surface without
     /// opening a chooser or mutating the shared library.
     ViewLibrary,
+    /// Open Photos' People collection and device-local review surface.
+    ViewPeople,
+    /// Open the signed local-model manager for face recognition.
+    ManagePeopleRecognition,
     /// Show the durable favourites collection without changing any shared
     /// favourite marker. This is intentionally its own addressable resource,
     /// rather than a hidden in-app filter, so search, agents, history and a
@@ -178,6 +182,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         op,
         PhotosOperation::View
             | PhotosOperation::ViewLibrary
+            | PhotosOperation::ViewPeople
             | PhotosOperation::ViewFavorites
             | PhotosOperation::ViewPlaces
             | PhotosOperation::ViewPlace { .. }
@@ -195,6 +200,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
     let tags = match op {
         PhotosOperation::View
         | PhotosOperation::ViewLibrary
+        | PhotosOperation::ViewPeople
         | PhotosOperation::ViewFavorites
         | PhotosOperation::ViewPlaces
         | PhotosOperation::ViewPlace { .. }
@@ -220,6 +226,12 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
             "privacy-sensitive".into(),
             "local-analysis".into(),
             "explicit-share".into(),
+        ],
+        PhotosOperation::ManagePeopleRecognition => vec![
+            "device-local".into(),
+            "privacy-sensitive".into(),
+            "signed-model".into(),
+            "settings-route".into(),
         ],
     };
     let contract = if kind == OperationKind::View {
@@ -249,6 +261,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
     Some(match op {
         PhotosOperation::View
         | PhotosOperation::ViewLibrary
+        | PhotosOperation::ViewPeople
         | PhotosOperation::ViewFavorites
         | PhotosOperation::ViewPlaces
         | PhotosOperation::ViewPlace { .. }
@@ -265,6 +278,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         | PhotosOperation::ImportCameraMedia { .. }
         | PhotosOperation::AnalyzeText { .. }
         | PhotosOperation::AnalyzeImage { .. } => spec.retry_policy(RetryPolicy::AtMostOnce),
+        PhotosOperation::ManagePeopleRecognition => spec.retry_policy(RetryPolicy::Idempotent),
     })
 }
 
@@ -1091,6 +1105,9 @@ impl ResourceProvider for PhotosResources {
         if id == "photos.places" {
             return Some(places_resource(&PhotosDoc::library(doc)));
         }
+        if id == "photos.people" {
+            return Some(people_root_resource(&PhotosDoc::library(doc)));
+        }
         if let Some(photo) = PhotosDoc::photo(doc, id) {
             return Some(photo_resource(&photo));
         }
@@ -1205,6 +1222,7 @@ fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
         library.photos.iter().filter(|photo| photo.favorite).count(),
     ));
     root = root.with_child(places_resource(&library));
+    root = root.with_child(people_root_resource(&library));
     for photo in library.photos.iter().take(LIBRARY_CONTEXT_LIMIT) {
         root = root.with_child(photo_resource(photo));
     }
@@ -1258,6 +1276,33 @@ pub(crate) fn favorites_resource(count: usize) -> Resource {
         resource = resource.with_action(
             spec.with_description("Show photographs marked as favorites in the shared library"),
         );
+    }
+    resource
+}
+
+/// First-class People collection derived only from explicitly approved,
+/// collaborative labels. Private face proposals never enter this resource.
+pub(crate) fn people_root_resource(library: &crate::model::PhotoLibrary) -> Resource {
+    let count = crate::people::approved_people(library).len();
+    let mut resource =
+        Resource::new("photos.people", "photos.people", "People").with_child(Resource::new(
+            "photos.people#approved-count",
+            "photos.count",
+            format!("{count} approved people"),
+        ));
+    if let Some(spec) = operation("open", "Open People", &PhotosOperation::ViewPeople) {
+        resource = resource.with_action(
+            spec.with_description("Review local suggestions and browse approved people"),
+        );
+    }
+    if let Some(spec) = operation(
+        "manage-recognition",
+        "Manage local recognition model",
+        &PhotosOperation::ManagePeopleRecognition,
+    ) {
+        resource = resource.with_action(spec.with_description(
+            "Install or manage a signed local face-recognition model in Settings",
+        ));
     }
     resource
 }
