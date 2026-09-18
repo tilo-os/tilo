@@ -45,7 +45,7 @@ use vello::peniko::ImageData as PenikoImage;
 /// view; below it the places list becomes an overlay drawer *over* the file
 /// view, summoned by the hamburger chip. The file list is the content either
 /// way — the places list is navigation, so it never takes the window from it
-/// (`ui/HIG.md` §1a).
+/// (`crates/sdk/ui-core/HIG.md` §1a).
 const BODY_BREAKPOINT_PX: f64 = 640.0;
 /// Space kept clear at the bottom of the file viewport for the transient
 /// item/status pill. The pill includes its hover shadow, so this is larger
@@ -927,7 +927,7 @@ impl FileExplorerWidget {
     }
 
     /// The entries currently shown. (There is no in-app search field — search
-    /// is OS-owned per `ui/HIG.md` §5 — so this is the sorted directory
+    /// is OS-owned per `crates/sdk/ui-core/HIG.md` §5 — so this is the sorted directory
     /// listing as-is.)
     pub fn displayed_entries(&self) -> Vec<Entry> {
         self.entries.clone()

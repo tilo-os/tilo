@@ -1,6 +1,6 @@
 //! The shared vocabulary the OS's own chrome is drawn from.
 //!
-//! Shell chrome does not invent appearance (`ui/HIG.md` §9): it selects a
+//! Shell chrome does not invent appearance (`crates/sdk/ui-core/HIG.md` §9): it selects a
 //! **role**, which resolves to tokens in [`crate::tokens`]. [`Colors::lift`]
 //! and [`Colors::hairline_on`] measure their move against the ground by
 //! relative luminance, so they behave on dark, light and high-contrast

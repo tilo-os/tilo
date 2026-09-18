@@ -52,7 +52,7 @@ Single Cargo workspace, no submodules. Prefer explicit paths over `git add -A`.
 
 - `shell/` — Wayland compositor (`smithay` + `vello`/`wgpu` + Iroh): workspaces, strips,
   sandboxing, collaboration. Also the `tilo-control` CLI and the `shots` renderer.
-- `ui/` — the toolkit: retained-mode, CRDT-native. `wgpu`+`vello` (render), `taffy` (layout),
+- `crates/sdk/ui-core/` — the internal toolkit behind `tilo-app`: retained-mode, CRDT-native. `wgpu`+`vello` (render), `taffy` (layout),
   `cosmic-text` (text), `automerge` (state), `winit` (windowing), `fluent` (i18n).
 - `crates/system/fs/` — FUSE3 + Iroh, mounted at `/var/workspace`, cache at `/var/cache/tilo-fs`.
 - `apps/` — ~40 app crates built on `ui`.
@@ -90,7 +90,7 @@ Full image: `./os/build.sh`; boot it with `./os/test-vm.sh`. VM login `quickuser
 
 ### `ui` — five passes per frame
 
-Every widget implements `Widget` (`ui/src/widget/mod.rs`):
+Every widget implements `Widget` (`crates/sdk/ui-core/src/widget/mod.rs`):
 
 1. `sync(state, path)` — pull visual state from the Automerge document
 2. `build_layout(taffy, theme, node_map)` — build the Taffy tree; self-sizing widgets
@@ -106,7 +106,7 @@ There is no message-passing layer. Consequences:
 - Undo/redo snapshot the whole document (`State::commit_action`). Widgets mark undo points
   with `needs_commit()`/`on_commit()` and restore ephemeral state (caret, selection) via
   `get_state`/`set_state`.
-- Focus is 2D and directional — `App::focusable_order` in `ui/src/app.rs`, not tab order.
+- Focus is 2D and directional — `App::focusable_order` in `crates/sdk/ui-core/src/app.rs`, not tab order.
 - **Theming is OS-controlled.** Read every colour and spacing value from the `Theme` passed
   to `draw`; never hard-code. Same for strings: pass `fluent` keys, never literals.
 - **Never hand-roll a text input, button, dialog or control.** Extend the shared widget — it
@@ -223,7 +223,7 @@ path rather than a tautological helper.
 ## Where to read first
 
 `docs/architecture/{README,overview,collaboration,compositor,security}.md`,
-`docs/headless-testing.md`, and `ui/HIG.md` before non-trivial changes in
+`docs/headless-testing.md`, and `crates/sdk/ui-core/HIG.md` before non-trivial changes in
 those subsystems. `DEVELOPMENT.md` for the build environment.
 
 ## CI

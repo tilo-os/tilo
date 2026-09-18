@@ -569,7 +569,7 @@ pub struct A11ySettings {
     /// [`Theme::high_contrast`]: crate::theme::Theme::high_contrast
     pub high_contrast: bool,
     /// Animations jump to their end state instead of easing. Consulted by
-    /// `ui/src/animation` and the magnifier pan.
+    /// `crates/sdk/ui-core/src/animation` and the magnifier pan.
     pub reduce_motion: bool,
     /// Lets apps/shell enable extra narration hooks and keep idle frames
     /// flowing for live regions.
