@@ -68,6 +68,7 @@ pub fn main() {
                 "html_mail",
                 "search",
                 "preview",
+                "bulk",
                 "loading",
                 "empty",
                 "offline",
