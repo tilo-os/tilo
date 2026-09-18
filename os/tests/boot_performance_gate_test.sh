@@ -280,6 +280,10 @@ if grep -Fq 'systemctl --global enable tilo-app-host.service' "$repo/os/Containe
   exit 1
 fi
 grep -Fq 'systemctl --global enable tilo-app-host.socket' "$repo/os/Containerfile"
+if grep -Eq '^[[:space:]]+greetd-tuigreet([[:space:]\\]|$)' "$repo/os/Containerfile"; then
+  echo 'unused text greeter remains installed beside the graphical greeter' >&2
+  exit 1
+fi
 app_host_socket="$repo/os/usr/lib/systemd/user/tilo-app-host.socket"
 app_host_service="$repo/os/usr/lib/systemd/user/tilo-app-host.service"
 cmp -s "$app_host_service" "$repo/crates/packaging/app-host/systemd/tilo-app-host.service" || {
