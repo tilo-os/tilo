@@ -1,10 +1,10 @@
-//! Exercise the blocking Bluetooth surface against the real adapter.
+//! Exercise the blocking Bluetooth surface against a local adapter.
 //!
 //! ```text
 //! cargo run -p os-actions --example bt_surface
 //! ```
 //!
-//! A tool rather than a test, so it can insist on real hardware instead of
+//! A tool rather than a test, so it can require hardware instead of
 //! skipping when there is none. Every step that cannot observe its subject
 //! exits non-zero.
 //!

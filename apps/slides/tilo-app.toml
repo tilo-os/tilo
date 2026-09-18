@@ -1,7 +1,7 @@
 # Slides — Tilo application manifest.
 #
 # Decks live in the CRDT; export and open go through the host
-# file-chooser portal, so the standing grant is just the document
+# file-chooser portal, so the standing grant is limited to the document
 # root.
 #
 

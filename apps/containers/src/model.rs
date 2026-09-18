@@ -312,7 +312,7 @@ impl Engine {
 // Sample data (for --shots and as a graceful offline fallback)
 // =====================================================================
 
-/// A realistic populated engine snapshot used when no live podman socket
+/// A populated engine snapshot used when no live podman socket
 /// is reachable (notably the headless `--shots` renderer). Mirrors what a
 /// developer machine running a small web stack would show.
 pub fn sample_engine() -> Engine {

@@ -80,7 +80,7 @@ fn tree_with_grants(entries: Vec<(&str, Vec<Capability>)>) -> WorkspaceTree {
     let mut ws = Workspace::new(id, "perm-test");
     // Revoking is an administrator's act, and `Workspace::new` leaves a room
     // ownerless — install the identity the chrome acts as, so the click
-    // exercises the real authority check.
+    // exercises the authority check.
     ws.set_owner(shell::shell::state::local_user_id_for_room(&ws.room));
     for (app_id, caps) in entries {
         // Seed through the production granting path — `grants()` is a *derived*
@@ -254,7 +254,7 @@ fn clicking_the_permissions_pill_switches_to_it() {
     assert_eq!(chrome.borrow().ws_settings_tab, WsTab::Permissions);
 }
 
-// Rendering the real capability list
+// Rendering the capability list
 
 #[test]
 fn permissions_tab_renders_zero_revoke_rects_when_no_grants() {

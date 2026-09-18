@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Drive the shell through its action surface, with nothing rendered.
 
-This is the end-to-end proof behind `actions_enumerate` / `actions_invoke`:
-a live compositor, the production provider registry, and no synthetic
-input at any point. Unit tests cover the dispatcher's contracts against a
-fixture; this covers the thing a fixture cannot — that a real session
-exports a real surface and that invoking an address really moves state.
+This exercises `actions_enumerate` / `actions_invoke` against a live
+compositor and the production provider registry, without synthetic input.
+Unit tests cover dispatcher contracts against a fixture; this checks the
+live action surface and state changes.
 
 Usage:
   ./action-api-demo.py [/tmp/tilo-action-api.sock]
@@ -15,7 +14,7 @@ What it proves, in order:
   1. A live session exports a non-empty action surface.
   2. Enumeration is side-effect free — chrome state is byte-identical
      before and after enumerating.
-  3. Invoking an address by `(provider, id)` changes real chrome state,
+  3. Invoking an address by `(provider, id)` changes chrome state,
      with no click and no keystroke.
   4. An address that does not exist is refused with `unknown_action`
      rather than silently doing nothing.

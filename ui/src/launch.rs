@@ -2,7 +2,7 @@
 //!
 //! Ordinary apps provide their live and screenshot roots; this module owns
 //! common argument validation, persistence, headless driving, offscreen
-//! rendering, logging, and live startup. Apps with genuinely different
+//! rendering, logging, and live startup. Apps with different
 //! lifecycles can continue to use the lower-level APIs directly.
 
 use std::fmt;

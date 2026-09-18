@@ -207,7 +207,7 @@ impl FileFilter {
 
     /// Match files by shell glob, e.g. `*.png`.
     /// The globs this filter offers, so an app can assert that its chooser
-    /// advertises everything it can actually open — a filter narrower than
+    /// advertises everything it can open — a filter narrower than
     /// the reader behind it hides a user's file with no way to discover the
     /// app would have taken it.
     #[must_use]
@@ -393,19 +393,12 @@ impl PickRequest {
     }
 }
 
-/// Set once a test suite has declared that no real chooser may open.
+/// Set when tests must prevent a chooser from opening.
 static SUPPRESSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Stop this process ever opening a real file chooser; every request answers
-/// `Cancelled` immediately instead.
-///
-/// A test that exercises "the app asked for a chooser" must not actually put a
-/// dialog on the user's screen. Running one app's suite opened four real
-/// pickers — an import, an open-project, a save-as and an export destination —
-/// because the tests pressed the real shortcuts and the request reached D-Bus.
-/// That is worse than noisy: a suite that grabs the desktop is one people stop
-/// running, and on a machine with no portal it would block a worker thread on
-/// a round-trip nobody is there to answer.
+/// Stop this process opening a file chooser; every request answers `Cancelled`
+/// immediately instead. Tests use this to verify request handling without
+/// opening a dialog on the user's screen or waiting for a portal response.
 ///
 /// Idempotent and process-wide. [`set_suppressed`] can lift it, which exists so
 /// this module's own tests can cover both sides of the switch without one
@@ -585,13 +578,13 @@ fn open_regular_file(path: &Path) -> std::io::Result<File> {
 
 /// Build a channel and immediately deliver `outcome` on it, so a headless test
 /// (and the `--shots` scenarios) can exercise the exact per-frame drain path
-/// the real portal worker feeds — without opening a host dialog. Returns the
+/// the portal worker feeds — without opening a host dialog. Returns the
 /// receiver the app installs, mirroring [`PickRequest::send`]'s contract.
 pub fn inject_for_test(outcome: PortalOutcome) -> PortalChannel {
     let (tx, rx) = std::sync::mpsc::channel();
     // `rx` is still alive right here, so the send cannot fail; ignoring the
-    // result rather than panicking costs nothing on the one path that
-    // matters (it always succeeds) and degrades gracefully if it ever
+    // result rather than panicking is safe on this path (it always succeeds)
+    // and degrades gracefully if it ever
     // doesn't.
     let _ = tx.send(outcome);
     rx
@@ -1082,14 +1075,9 @@ mod tests {
         );
     }
 
-    /// A suite must never put a real chooser on the person's screen.
-    ///
-    /// This is not hypothetical: running one app's tests opened **four** real
-    /// dialogs — import, open-project, save-as and export destination —
-    /// because the tests pressed the real shortcuts and the request went all
-    /// the way to D-Bus. Assert on the seam that stops it, and assert it
-    /// answers rather than hangs: a request that never resolves would leave
-    /// the app waiting on a dialog nobody can see.
+    /// Prevent a chooser from opening during the test. Assert that the
+    /// suppression seam answers immediately rather than leaving the app waiting
+    /// for a dialog.
     #[test]
     #[serial_test::serial(portal_suppression)]
     fn suppression_answers_without_ever_opening_a_chooser() {

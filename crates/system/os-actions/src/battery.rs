@@ -1,6 +1,6 @@
 //! Read-only battery diagnostics from the kernel power-supply class.
 //!
-//! Battery health is deliberately observational here.  Vendor charge-limit
+//! Battery health is observational here.  Vendor charge-limit
 //! files are not written by the desktop process: their names and semantics
 //! differ between drivers, and granting a GUI arbitrary sysfs writes would be
 //! a privilege boundary disguised as a setting.
@@ -198,7 +198,7 @@ impl BatteryInfo {
     }
 }
 
-/// Discover the real hardware contract.  Standard power-supply attributes
+/// Discover the hardware contract.  Standard power-supply attributes
 /// win; vendor paths are used only when the kernel has not normalized the
 /// feature already.  `sys_root` is injectable so every backend is tested
 /// without touching the host.

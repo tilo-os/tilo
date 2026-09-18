@@ -12,7 +12,7 @@
 //! to avoid a circular workspace dep) and drive the built
 //! `tilo-install` binary via `std::process::Command` with
 //! `XDG_CONFIG_HOME` / `XDG_DATA_HOME` pointed at per-test
-//! tempdirs so the tests never touch the developer's real config.
+//! tempdirs so the tests use isolated configuration.
 
 #![allow(
     clippy::unwrap_used,

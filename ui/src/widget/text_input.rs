@@ -117,7 +117,7 @@ fn is_autocorrect_boundary(character: char) -> bool {
 
 const FONT_SIZE: f32 = 16.0;
 /// Caret centres against this band, not `FONT_SIZE`, to line up with where
-/// cosmic-text actually draws the glyphs.
+/// cosmic-text draws the glyphs.
 const LINE_HEIGHT_RATIO: f32 = 1.25;
 /// 400 ms matches the GTK / Qt default.
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
@@ -6334,7 +6334,7 @@ mod tests {
         );
     }
 
-    /// Proves the dim hint actually paints, not just that the flag is set.
+    /// Checks that the dim hint paints.
     #[test]
     fn placeholder_emits_glyphs_when_shown() {
         let theme = Theme::dark();

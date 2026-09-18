@@ -1,4 +1,4 @@
-//! Decoded pictures in whatever memory the decoder actually produced them in.
+//! Decoded pictures in the memory negotiated with the decoder.
 //!
 //! [`crate::VideoFrame`] is the crate's long-standing surface: tightly packed
 //! RGBA8 in system memory, which every existing consumer paints directly. It
@@ -6,8 +6,7 @@
 //! asking for RGBA drags a GPU-resident picture back through system memory and
 //! a colour conversion before anyone has said they need it.
 //!
-//! [`Frame`] is the honest one. It carries the picture in the form the
-//! pipeline negotiated:
+//! [`Frame`] carries the picture in the form the pipeline negotiated:
 //!
 //! * [`FramePayload::Dmabuf`] — still in GPU memory, described by fds and a
 //!   DRM modifier. Zero copies so far; the GPU importer takes it from here.
@@ -169,15 +168,10 @@ impl Frame {
     }
 }
 
-/// How much each chroma channel contributes to each output channel — the
-/// inverse of the RGB→YCbCr matrix a set of luma coefficients defines.
+/// How much each chroma channel contributes to each output channel, the
+/// inverse of the RGB→YCbCr matrix defined by the luma coefficients.
 ///
-/// Cb is the blue-difference chroma channel and Cr the red-difference one, so
-/// each field reads as "this much of that". They live in a struct rather than
-/// in four locals because the four names *should* be near-identical: the
-/// symmetry is what makes the matrix checkable against the standard at a
-/// glance, and prising the names apart to make them look different would cost
-/// exactly that.
+/// Cb is the blue-difference chroma channel and Cr the red-difference one.
 #[derive(Clone, Copy, Debug)]
 struct ChromaMatrix {
     red_from_cr: f32,

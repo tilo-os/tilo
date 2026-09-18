@@ -111,7 +111,7 @@ python3 /test.py --runtime /runtime --rootfs /rootfs \
   --proton /proton --output-dir /results
 ```
 
-The direct mode validates the actual Proton console runner inside sniper on
+The direct mode validates the Proton console runner inside sniper on
 ARM. It supplies UMU's non-Steam identity (`UMU_ID=umu-0`) directly. The
 separate offline mode below also exercises the UMU entry point. Neither mode
 validates game graphics, physical GPU drivers, or the complete qOS capsule
@@ -179,7 +179,7 @@ duplicates all source descriptors above its reserved child slots before
 mapping the directory, seccomp, and runtime-lock descriptors.
 
 On 2026-09-16, all 49 compatibility-service tests passed. The separately run
-real Bubblewrap regression checked that the private lock is initially empty,
+Bubblewrap regression checked that the private lock is initially empty,
 accepts a write, and leaves its read-only source unchanged, both with and
 without the production seccomp filter. Plan tests also verify read-only
 platform mounts, lock overlay ordering, fixed offline provisioning variables,

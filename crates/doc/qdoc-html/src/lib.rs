@@ -1,12 +1,11 @@
-//! `qdoc-html` — render a [`qdoc::DocSnapshot`] to clean, semantic HTML.
+//! `qdoc-html` — render a [`qdoc::DocSnapshot`] to semantic HTML.
 //!
-//! Takes the materialized, read-only document view and emits
-//! well-formed, semantic HTML5 — headings as `<h1>`…`<h6>`, paragraphs
+//! Takes the materialized, read-only document view and emits HTML5: headings
+//! as `<h1>`…`<h6>`, paragraphs
 //! as `<p>`, quotes as `<blockquote>`, lists as nested `<ul>`/`<ol>`,
 //! tables as `<table>`, images as inline `data:` URIs. Inline marks
 //! (strong/em/underline/strike/link/color/…) apply over the correct
-//! text ranges. This crate only exposes [`render_html`]; wiring it into
-//! an editor's export/preview action is a separate task.
+//! text ranges. The public entry point is [`render_html`].
 //!
 //! ## Escaping & safety
 //!

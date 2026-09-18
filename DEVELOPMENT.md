@@ -364,28 +364,21 @@ Then log out and pick **"Tilo (my build)"**. Every iteration after that is
 `cargo build -p shell --features dev-session`, log out, log back in — the config
 file keeps pointing at the same path.
 
-`--features dev-session` is not optional and not a formality. It is the only
-thing that stamps a marker into the binary, and `/usr/libexec/tilo-session-dev`
-refuses to start anything that lacks one; a `--release` build never carries it
-whatever features it is given. Before it execs, the entry also requires that the
-config file, the target binary, and every directory above each of them are owned
-by you or root and writable by nobody else. All of that is fatal, never a
-fallback to the installed compositor: silently testing the wrong binary is worse
-than failing to start. `dist/session/tests/dev-session-refusals.sh` drives each
-refusal.
+`--features dev-session` adds the marker required by `/usr/libexec/tilo-session-dev`.
+Release builds omit this marker even with the feature enabled. The config file,
+target binary and their parent directories must be owned by you or root and
+writable by nobody else. Failed checks abort startup without falling back to
+the installed compositor. `dist/session/tests/dev-session-refusals.sh` tests
+these checks.
 
-None of this exists in the production path. `/usr/libexec/tilo-session` hard-codes
-`/usr/bin/tilo-shell` and reads no config, and the developer entry ships in a
-subpackage precisely so "this machine can start a login session from a binary in
-someone's home directory" is a visible `rpm -q` fact rather than a property every
-installation has.
+The production wrapper, `/usr/libexec/tilo-session`, always starts
+`/usr/bin/tilo-shell`. Install the separate `tilo-session-devel` package to
+enable login sessions from local builds.
 
 ### What a stock host does not give you
 
-The compositor starts on a plain Bazzite host with none of the Tilo system
-furniture present — no `/var/workspace`, `/etc/tilo`, `/var/lib/tilo` or
-`/usr/share/tilo-apps` — and says so rather than failing. Two warnings are worth
-knowing about:
+The compositor starts on a Bazzite host without `/var/workspace`, `/etc/tilo`,
+`/var/lib/tilo` or `/usr/share/tilo-apps`, with these limitations:
 
 - **No `ush` runtime**, so the terminal falls back to `$SHELL` unconfined. That
   works interactively and fails inside an app sandbox.
@@ -400,34 +393,27 @@ knowing about:
 - **`shell/src/config.rs`'s `load_config` is dead code** — nothing calls it, and
   it looks for `/etc/tilo-desktop/desktop.toml` while the image ships
   `/etc/tilo/desktop.toml`. So `desktop.toml` configures nothing today, on a host
-  or on the image. The host package does not ship one rather than pretend
-  otherwise.
+  or on the image. The host package omits this file.
 
 `/var/workspace` is a FUSE mount `fs.service` makes on the Tilo image; there is
 no such unit here, so the permission UI will talk about a path that is not
 mounted.
 
-The app list is *not* empty, though: alongside Tilo packages the shell scans the
-ordinary XDG entry directories — `$XDG_DATA_HOME/applications`, each
+Alongside Tilo packages, the shell scans `$XDG_DATA_HOME/applications`, each
 `$XDG_DATA_DIRS` entry's `applications`, and both Flatpak export directories
-(`crates/system/desktop-entry/src/scan.rs`). On this host that is 108 system
-entries plus 97 Flatpak ones, so host-installed apps and Flatpaks show up
-without a Tilo registry existing at all.
+(`crates/system/desktop-entry/src/scan.rs`). Host-installed apps and Flatpaks
+are available without a Tilo registry.
 
-The one that used to be a trap is fixed by installing the package: the
-compositor spawns `/usr/libexec/tilo-unlock-helper` to verify an unlock, and with
-no helper at that path `verifier_from_env` falls closed — you could lock the
-session and never get back in. The package installs the helper at exactly that
-path together with `/etc/pam.d/tilo-unlock`, and the helper reaches PAM on a
-stock host:
+Unlocking requires `/usr/libexec/tilo-unlock-helper` and `/etc/pam.d/tilo-unlock`,
+both installed by the package. Without the helper, unlock attempts fail.
+Check PAM access with:
 
 ```console
 $ printf 'not-the-password\n' | /usr/libexec/tilo-unlock-helper "$USER"; echo $?
 1     # 1 = PAM ran and denied it. 2 would mean the check could not run at all.
 ```
 
-Do not try to paper over a missing helper with `TILO_UNLOCK_HELPER`. It is a
-developer-build variable now: a release binary does not read it, along with
+Release builds ignore `TILO_UNLOCK_HELPER`,
 `TILO_LOCK_TEST_PASSWORD`, `TILO_TEST_CONTROL`, `TILO_TEST_STATE_DUMP` and
 `TILO_LAUNCHER_BIN`. On a systemd desktop the session environment comes from
 `~/.config/environment.d/`, so an installed binary that honoured those would let

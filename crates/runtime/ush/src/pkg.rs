@@ -1,32 +1,12 @@
 //! `pkg` — packages, in a layer rather than on the host.
 //!
-//! # Where packages come from, and why
+//! Package operations run inside the guest so scriptlets see the read-only
+//! base and the writable layer together. Installing directly into a layer
+//! would omit the base's shell, libraries, and rpm state; unpacking archives
+//! would omit dependency solving and removal metadata. A separate container
+//! per layer would duplicate the package universe and update state.
 //!
-//! **`dnf`, running inside the guest, installing into `/`.** The guest's `/usr`
-//! is an overlay whose upper is the user's layer, so "into `/`" *is* "into the
-//! layer" — the host's filesystem is on the read-only side of the mount and
-//! cannot be reached however the transaction is spelled. The rpm database the
-//! guest sees is the layer's seeded copy of the base's
-//! ([`crate::layer::STATE_SEED_DIRS`]), so the solver starts from the image's
-//! installed set: `pkg install htop` downloads htop and not glibc.
-//!
-//! Three alternatives were tried or considered, and rejected:
-//!
-//! - **`dnf --installroot=<layer>` on the host.** Installs the right files,
-//!   but an installroot holding only the delta has no `/bin/sh`, `ldconfig`
-//!   or `/usr/lib/rpm`, so every scriptlet fails. Measured on Fedora 44:
-//!   `ldconfig` errors, `man-db`'s file trigger exits 127, and `dnf` reports
-//!   the transaction failed while leaving the files behind. Running it
-//!   inside the guest fixes this for free — the guest *is* the base plus
-//!   the layer, so every scriptlet finds what it expects.
-//! - **`rpm2cpio` into the layer.** No dependency solving, no scriptlets, no
-//!   database — works only for packages that need none of those, and there
-//!   is no honest answer to `pkg remove`.
-//! - **A container image per layer.** Correct and heavy: a second package
-//!   universe, a second update cadence, gigabytes where the delta is
-//!   kilobytes.
-//!
-//! # The one thing the guest cannot do
+//! # The guest cannot modify
 //!
 //! It cannot *modify* a file from the base — owned by host uid 0, unmapped
 //! in the guest's namespace, so overlayfs can't copy it up. A layer can
@@ -203,11 +183,11 @@ pub struct Inspection {
     pub risks: Vec<String>,
 }
 
-/// Inspect an installed package with rpm. The "risk" read is deliberately
+/// Inspect an installed package with rpm. The "risk" read is
 /// mechanical and says what it looked at: setuid/setgid files, root
 /// install-time scriptlets, boot-start services, anything outside a
 /// layer's normal paths — not a malware verdict; see [`crate::guard`] for
-/// the same honesty applied to `scan`.
+/// the corresponding `scan` behavior.
 pub fn inspect(name: &str) -> Inspection {
     let mut out = Inspection {
         nevra: nevra(name),

@@ -1,14 +1,7 @@
 #!/usr/bin/env bash
 # Render every app's offscreen `--shots` frame into one labelled contact grid.
-#
-# This is the whole-fleet overview: one PNG showing what all ~44 apps actually
-# look like at a given commit, which is far faster to scan for regressions
-# (blank window, broken layout, unreadable text) than opening them one by one.
-#
-# Distinct from `scripts/app-contact-sheet.py`, which composes shots taken
-# through the *compositor sweep* and reports which clients produced a frame.
-# This one drives each app binary's own `--shots` path directly, so it needs no
-# compositor and no display.
+# Drives app binaries directly; unlike `app-contact-sheet.py`, it needs no
+# compositor or display.
 #
 # Requires ImageMagick (`magick`, `montage`).
 #
@@ -88,9 +81,8 @@ declare -A NO_WINDOW=(
 
 APPS=$(printf '%s\n' "${!NAME[@]}" | sort)
 
-# A hardcoded list silently stops covering the fleet the moment an app is
-# added — the same drift that once dropped 37 crates out of the build. Name
-# anything on disk that this grid would neither shoot nor deliberately skip.
+# A hardcoded list stops covering the fleet when an app is added. Name anything
+# on disk that this grid would neither shoot nor deliberately skip.
 if [ -d apps ]; then
   unlabelled=""
   for d in apps/*/; do
@@ -135,8 +127,8 @@ for a in $APPS; do
     > "$SHOTS/$a.log" 2>&1
   if [ ! -s "$raw" ]; then
     missing="$missing $a(noshot)"
-    # Surface the tail of whatever it said, so a real failure is diagnosable
-    # from this run rather than needing the app re-run by hand.
+    # Surface the tail of its output so the failure is diagnosable from this
+    # run without rerunning the app by hand.
     if [ -s "$SHOTS/$a.log" ]; then
       echo "  $a produced no frame; its last output was:" >&2
       sed 's/\x1b\[[0-9;]*m//g' "$SHOTS/$a.log" | tail -3 | sed 's/^/    /' >&2

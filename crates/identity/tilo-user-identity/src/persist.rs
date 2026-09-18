@@ -14,8 +14,8 @@
 //!     └── certs/          # one certificate per user identity trusted by this device
 //! ```
 //!
-//! All files are raw byte blobs; the on-disk format is deliberately
-//! simple so it can be inspected with `hexdump` and does not depend
+//! All files are raw byte blobs; the on-disk format stays simple so it
+//! can be inspected with `hexdump` and does not depend
 //! on `serde_json` at boot.
 //!
 //! Secret files must not be reachable by users who are not entitled to
@@ -358,11 +358,9 @@ pub fn write_device_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
 
 /// Whether [`load_or_create_device_key`] found a key or minted one.
 ///
-/// Callers care about the difference: minting is a first-boot event
-/// that invalidates nothing, whereas *silently* minting when a key was
-/// expected means the device just lost its identity. That second case
-/// is why this function never generates over an unreadable file — see
-/// the doc there.
+/// Minting is a first-boot event that invalidates nothing. Generating a
+/// replacement when a key was expected would change the device identity;
+/// this function therefore never generates over an unreadable file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceKeyOutcome {
     /// An existing key was read from disk.
@@ -378,14 +376,11 @@ pub enum DeviceKeyOutcome {
 /// author, and the filesystem access subject. There is
 /// exactly one per device and no subsystem mints its own.
 ///
-/// **A key file that exists but cannot be read is an error, never a
-/// reason to generate.** Overwriting it would make identity loss
-/// indistinguishable from first boot: the device would come back with
-/// a new name, every grant written against the old one would be dead,
-/// and nothing would have reported a problem. A wrong mode, a
-/// truncated file, or an I/O failure all surface as
-/// [`PersistError`] so an operator can decide whether to restore a
-/// backup or deliberately re-enrol.
+/// A key file that exists but cannot be read is an error. Replacing it would
+/// change the device identity and invalidate grants written against the old
+/// key without reporting the cause. A wrong mode, truncated file, or I/O
+/// failure returns [`PersistError`] so an operator can restore a backup or
+/// re-enrol the device.
 ///
 /// # Errors
 ///

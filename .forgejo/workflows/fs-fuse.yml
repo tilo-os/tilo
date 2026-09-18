@@ -96,7 +96,7 @@ jobs:
       - name: Enforce graphical-session and verified-identity lifecycle
         run: bash os/tests/tilo-session-lifecycle.sh
 
-      # Uses two real `tilo-enroll` processes over the LAN UDP path, then dials
+      # Uses two `tilo-enroll` processes over the LAN UDP path, then dials
       # the transferred home-peer registration after the approving process has
       # exited. Keep this on the privileged/FUSE runner: it is the closest CI
       # analogue of the image's host networking and ownership boundary.
@@ -167,7 +167,7 @@ jobs:
           cargo test --locked -p fs --test performance_gate -- --nocapture --test-threads=1
 
   # File Explorer's full UI/library harness links the entire toolkit. Building
-  # it after the relay, shell, and real-FUSE harnesses filled the privileged
+  # it after the relay, shell, and FUSE harnesses filled the privileged
   # runner's container overlay, then an ordinary tempfile write failed with
   # ENOSPC at test 213/213. Give this non-FUSE suite a fresh container instead
   # of deleting an incomplete subset of Cargo artifacts in the live mount job.

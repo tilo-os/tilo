@@ -21,7 +21,7 @@ The three `generated_arm_*_landlock_executes_windows_console` tests retain the
 entire generated production plan, including the launcher shim, descriptor
 handoff, private namespaces, environment, Wine's qOS JIT seccomp filter and
 Proton's existing nested-runtime policy. They require Landlock ABI >= 5 and a
-file actually written by Windows inside the retained capsule prefix. Exact
+file written by Windows inside the retained capsule prefix. Exact
 test names are checked before execution, preventing an empty test selection
 from appearing successful. Each console case has a 600-second deadline.
 
@@ -55,7 +55,7 @@ with two TCG vCPUs and 4 GiB RAM. Its executable SHA-256 is
 
 | Run directory under the install-preparation workspace | Result |
 | --- | --- |
-| `kernel-arm-capsule-transport-03` | Signed module loading, read-only 9p, RAM overlay, native execution and actual fully enforced launcher shim passed. |
+| `kernel-arm-capsule-transport-03` | Signed module loading, read-only 9p, RAM overlay, native execution and fully enforced launcher shim passed. |
 | `kernel-arm-capsule-console-04` | Wine64 reached fully enforced Landlock, then failed with a glibc `sysmalloc` assertion and exit 139. Wine32 and Proton were not reached. |
 | `kernel-arm-capsule-namespace-diagnostic-01` | Identical copied binaries and generated namespace reproduced the same assertion without the Landlock shim. |
 | `kernel-arm-capsule-fex-diagnostic-01` | Direct FEX guest `true` passed; guest `getconf _NPROCESSORS_ONLN` returned 2 and passed. |
@@ -65,7 +65,7 @@ with two TCG vCPUs and 4 GiB RAM. Its executable SHA-256 is
 
 The newer emulator came from the existing native libvirt runtime image
 `bb391b2cad8818d2e92a84357d0a45c0b432c21cccf060f40cf3439013fa1132`.
-Its actual QEMU executable SHA-256 is
+Its QEMU executable SHA-256 is
 `2c8f9b5fc52a151cf77e97792fea0401718309788dd4c8af29f21a28834ba79e`.
 It ran through that image's dynamic loader and libraries from an owned mounted
 view; neither emulator image was copied. Both image views were released.
@@ -338,7 +338,7 @@ The earlier `-01` attempt selected the short-lived launcher and reported
 
 The first captured signal has `si_code=1` (`ILL_ILLOPC`) and fault address/native
 PC `0x80006a62f7f0`, inside anonymous executable JIT memory
-`0x80006a584000..0x80006b583000`. Its actual instruction word is `0xfffffc40`
+`0x80006a584000..0x80006b583000`. Its instruction word is `0xfffffc40`
 (bytes `40 fc ff ff`), an undefined native instruction. The following sequence
 was read directly from that process:
 
@@ -382,5 +382,5 @@ Every run retains `inputs.json`, `qemu-command.json`, `serial.log` and
 `result.json`. Inputs include kernel/module hashes and executable identities.
 Diagnostic modes (`namespace-diagnostic`, `fex-diagnostic`, `wine-diagnostic`)
 always report `accepted: false`; `diagnostic_passed` records their separate
-outcome. Only all three real Landlock console cases passing may establish the
+outcome. Only all three Landlock console cases passing may establish the
 console capsule result.

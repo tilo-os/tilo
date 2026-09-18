@@ -30,7 +30,7 @@ launcher = { path = "../../crates/packaging/launcher" }
 desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/desktop-entry" }
 # The one capability vocabulary the compositor persists. Depending on this
 # lightweight *types* crate (not the compositor) lets the Permissions pane
-# deserialise the real per-workspace grants the shell writes to
+# deserialise the per-workspace grants the shell writes to
 # ~/.config/tilo/state.json and render them read-only, instead of a hand-mirrored
 # copy that could drift from the enforced shape.
 collab-types = { path = "../../crates/collab/collab-types" }
@@ -49,7 +49,7 @@ runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 tilo-user-identity = { path = "../../crates/identity/tilo-user-identity" }
 runtime-fs = { path = "../../crates/runtime/runtime-fs" }
 # Device role, workspace residency and server relay policy use the same types
-# the real tilo-relay daemon loads; Settings never keeps a shadow sync model.
+# the tilo-relay daemon loads; Settings never keeps a shadow sync model.
 tilo-relay = { path = "../../crates/hosting/tilo-relay" }
 tilo-bluez = { path = "../../crates/system/tilo-bluez" }
 runtime-portal-xdg = { path = "../../crates/runtime/runtime-portal-xdg" }
@@ -64,7 +64,7 @@ agent-provider-config = { path = "../../crates/agent/provider-config" }
 # key; no vault file or provider network capability is linked into the app.
 tilo-model-gateway = { path = "../../crates/agent/model-gateway" }
 # The audio graph client: enumerate the PipeWire/WirePlumber node graph and
-# route per-application streams. The Sound pane drives real audio routing
+# route per-application streams. The Sound pane drives audio routing
 # through it (default features only — no gstreamer decode stack pulled in).
 media = { path = "../../crates/media" }
 # Trait passes (`sync`, `build_layout`, `handle_event`) mention these crates
@@ -93,12 +93,12 @@ uuid.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 rcgen.workspace = true
-# The persistence tests read the shared account store + vault back to prove
+# The persistence tests read the shared account store + vault back to verify
 # the pane wrote through them.
 accounts = { path = "../../crates/system/accounts" }
 # The accounts→Mail loop test drives the Settings add flow, then loads the
-# account back through Mail's own reader to prove Mail actually consumes what
-# Settings persisted (end-to-end across the shared store, not a mock).
+# account back through Mail's own reader to verify Mail consumes what
+# Settings persisted across the shared store.
 mail = { path = "../mail" }
 
 [[test]]

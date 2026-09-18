@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Keep Tilo's public collaboration vocabulary stable.
+"""Audit Tilo's public collaboration vocabulary.
 
 Protocol and implementation types may continue to use ``room`` and ``peer``.
 Ordinary shell copy uses Workspace, People, Collaborator and Participant. This
-small source audit covers the shell modules that own public collaboration copy;
-it deliberately stops at each file's test module so assertion prose remains
-free to describe implementation details.
+The audit covers the shell modules that own public collaboration copy and
+stops at each file's test module so assertion prose may describe implementation
+details.
 """
 
 from __future__ import annotations

@@ -6,7 +6,7 @@
 //! data model is the same either way: a `Vec<LyricsLine>` whose timestamps are
 //! `None` for plain lyrics.
 //!
-//! ## Real vs. gated
+//! ## Bundled and live lyrics
 //! A small **bundled** library of sample lyrics ([`bundled`]) is always
 //! compiled so the `--shots` screenshot and the offline first-run show a
 //! populated, highlightable lyrics view with zero network. The **live** fetch

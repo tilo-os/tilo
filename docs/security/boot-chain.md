@@ -51,7 +51,7 @@ attestable machine, whether the image came from CI or from a laptop.
 `/usr/libexec/tilo-secureboot` implements this. Nothing about it runs during the
 image build or automatically on a running machine.
 
-### The order, which is the whole safety story
+### Enrollment order
 
 Enrolling keys before anything signs the kernel produces a machine whose firmware
 refuses its own boot artefacts. `tilo-secureboot enroll` therefore refuses unless
@@ -333,18 +333,17 @@ Evidence from bootc 1.15.2 as shipped, rather than from upstream's roadmap:
 - `bootc upgrade` has no composefs flag, consistent with the backend being
   recorded at install time and detected afterwards.
 
-So it is a real implementation with a complete-looking lifecycle, not a stub. What
-that evidence cannot tell you is whether upstream considers it stable, and the
+The implementation includes the lifecycle above. This evidence cannot establish
+whether upstream considers it stable, and the
 switch is not additive: it replaces the root filesystem model with a
 content-addressed, fs-verity-backed one, so it cannot be trialled on the side of
 an existing install. It also changes what `--allow-missing-verity` has to be set
 to depending on the filesystem underneath.
 
-My view: it is the only path to a signature-covered initramfs and command line on
-this stack, the UKI work should be planned against it rather than against
-anything bolted onto ostree, and it needs its own verified-boot campaign with the
-recovery path proven before anything depends on it. What it should **not** do is
-block generation-bound unlock, because PCR 4 gives that today.
+It is the only path to a signature-covered initramfs and command line on this
+stack. UKI work should target this backend and include a verified-boot campaign
+with the recovery path proven before anything depends on it. It should not block
+generation-bound unlock, because PCR 4 provides that today.
 
 ## Building the UKI
 
@@ -361,7 +360,7 @@ rootfs ──▶ split ──▶ uki ──▶ final
 
 The order is forced. bootc refuses to seal a rootfs that still carries
 `vmlinuz`/`initramfs.img` under `/usr/lib/modules/<kver>`, and the digest ukify
-seals has to be the digest of what will actually be mounted — so the split comes
+seals has to be the digest of what will be mounted — so the split comes
 first and nothing may be added to the rootfs afterwards. `/boot` is the one tree
 excluded from the digest, which is what lets the UKI live inside the image it
 describes.
@@ -607,7 +606,7 @@ for clearing the owner's keys, importing a new certificate, or enabling Secure
 Boot. Those controls, confirmation screens, and even support for appending a
 certificate from the ESP vary by firmware.
 
-That leaves two genuinely secure product choices:
+That leaves two secure product choices:
 
 1. **Keep owner-first trust.** Installation uses a strong LUKS passphrase. A
    later guided ceremony may generate the owner keys in the encrypted target,

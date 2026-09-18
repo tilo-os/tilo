@@ -38,16 +38,16 @@ use crate::model::{
 use crate::net::{self, Transfer};
 use crate::throughput;
 
-/// One real byte-counter reading of a connected tunnel, timestamped so a
-/// rate can be derived from consecutive samples. Ephemeral live telemetry —
-/// never persisted to the CRDT, never fabricated.
+/// One byte-counter reading of a connected tunnel, timestamped so a rate can
+/// be derived from consecutive samples. Ephemeral live telemetry; it is not
+/// persisted to the CRDT.
 #[derive(Clone, Copy, Debug)]
 struct RateSample {
     at: Instant,
     xfer: Transfer,
 }
 
-/// Rolling window of real transfer readings for one tunnel.
+/// Rolling window of transfer readings for one tunnel.
 #[derive(Default)]
 struct TransferHistory {
     samples: Vec<RateSample>,
@@ -74,8 +74,7 @@ impl TransferHistory {
     }
 
     /// Per-interval download/upload rate series in bytes/sec, one point per
-    /// consecutive pair of readings. Empty until at least two real samples
-    /// exist — we never invent a curve.
+    /// consecutive pair of readings. Empty until at least two samples exist.
     fn rate_series(&self) -> (Vec<f64>, Vec<f64>) {
         let mut down = Vec::new();
         let mut up = Vec::new();
@@ -435,8 +434,8 @@ impl Default for VpnApp {
 }
 
 impl VpnApp {
-    /// The live app: starts empty. Only the user's real, persisted tunnels
-    /// (held in the shared document) appear — no fabricated fleet.
+    /// The live app starts empty. Only the user's persisted tunnels (held in
+    /// the shared document) appear.
     pub fn new() -> Self {
         let mut app = Self::build(Vault::default(), false);
         app.pending_tool_intent = os_actions::tool_intent_from_env();
@@ -444,8 +443,8 @@ impl VpnApp {
     }
 
     /// The hermetic `--shots` / demo build: seeded with a sample fleet so the
-    /// screenshot is populated offline. This is the ONLY place sample tunnels
-    /// come from — the live app never fabricates connections.
+    /// screenshot is populated offline. This is the only place sample tunnels
+    /// come from; the live app does not seed connections.
     pub fn new_demo() -> Self {
         Self::build(sample_vault(), true)
     }
@@ -536,8 +535,8 @@ impl VpnApp {
     }
 
     /// Pull the vault from the CRDT. On first run, publish the connections we
-    /// were built with — the user's real saved tunnels, or (demo build) the
-    /// sample. An empty live vault publishes nothing, so the app stays honest.
+    /// were built with — the user's saved tunnels, or (demo build) the sample.
+    /// An empty live vault publishes nothing.
     fn refresh(&mut self, doc: &mut AutoCommit) {
         if !self.seeded {
             if VpnDoc::is_empty(doc) && !self.vault.connections.is_empty() {
@@ -570,7 +569,7 @@ impl VpnApp {
         self.vault.selected = self.local_selected;
     }
 
-    /// Reconcile each tunnel's stored status against the REAL kernel/process
+    /// Reconcile each tunnel's stored status against the kernel/process
     /// state (`ip link` for `WireGuard`, `pgrep` for `OpenVPN`). The stored toggle
     /// never overrides reality: a tunnel that dropped out-of-band flips back to
     /// Disconnected, and one brought up elsewhere shows Connected. Disabled
@@ -615,10 +614,9 @@ impl VpnApp {
         }
     }
 
-    /// Poll REAL byte counters for every connected tunnel and fold them into
-    /// the ephemeral throughput history. No sample is ever synthesized: if the
-    /// kernel has no counter for the interface, nothing is recorded. Disabled
-    /// in hermetic tests and only runs for tunnels reporting Connected.
+    /// Poll byte counters for every connected tunnel and fold them into the
+    /// ephemeral throughput history. A missing interface counter is skipped.
+    /// Disabled in hermetic tests and only runs for tunnels reporting Connected.
     fn sample_throughput(&mut self) {
         if !config::exec_allowed() || self.demo_mode {
             return;
@@ -808,9 +806,9 @@ impl VpnApp {
     }
 
     /// Apply the pending action (after the user confirms). State is changed
-    /// **only if the real command actually succeeded** — the UI never claims
-    /// a tunnel is connected on the strength of an optimistic guess. With
-    /// `NetworkManager` remains the source of truth shared with quick settings.
+    /// **only if the command succeeded** — the UI never claims a tunnel is
+    /// connected on the strength of an optimistic guess. `NetworkManager`
+    /// remains the source of truth shared with quick settings.
     fn confirm_pending(&mut self, doc: &mut AutoCommit) {
         let Some(p) = self.pending.take() else { return };
         match p {
@@ -923,7 +921,7 @@ impl VpnApp {
     }
 
     /// Drain an in-flight import. When the user picked a file we read it,
-    /// parse the real WireGuard/OpenVPN config into a [`Connection`], and add
+    /// parse the WireGuard/OpenVPN config into a [`Connection`], and add
     /// it to the vault. Returns true if anything changed.
     #[allow(
         clippy::too_many_lines,
@@ -2227,9 +2225,8 @@ impl VpnApp {
         let content = lay.content;
         let details = self.local_details.get(&c.id);
 
-        // Real throughput, read from the kernel (`wg show transfer` / sysfs)
-        // for this tunnel. `None`/empty until at least two real samples exist;
-        // no value is ever synthesized.
+        // Throughput from the kernel (`wg show transfer` / sysfs) for this
+        // tunnel. `None`/empty until at least two samples exist.
         let hist = self.throughput.get(&c.id);
         let (down_series, up_series) = hist.map(TransferHistory::rate_series).unwrap_or_default();
         let has_rate = hist.is_some_and(TransferHistory::has_rate) && c.is_connected();
@@ -2384,9 +2381,8 @@ impl VpnApp {
         latest: Option<Transfer>,
         c: &Connection,
     ) -> Rect {
-        // Throughput panel — plots the REAL measured rate series. When there
-        // is no live data yet the plot stays empty with an honest note; the
-        // app never draws a synthesized waveform.
+        // Throughput panel — plots the measured rate series. When there is no
+        // live data yet the plot stays empty with a note.
         let chart = Rect::new(
             content.x0,
             content.y0 + tiles_h + 16.0,

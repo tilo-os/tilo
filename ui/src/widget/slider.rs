@@ -372,7 +372,7 @@ impl Slider {
             &RoundedRect::from_rect(active, 3.0),
         );
 
-        // Knob — radius scales with state so hover/press are obvious even
+        // Knob — radius scales with state so hover/press are distinct even
         // before you read the colours.
         let knob_radius = face.knob_radius();
         let knob_center = Point::new(active.x1, face.rect.center().y);

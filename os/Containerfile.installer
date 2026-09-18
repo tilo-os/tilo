@@ -1,10 +1,8 @@
-# Tilo CUSTOM installer image.
+# Tilo custom installer image.
 #
 # Layered on top of the already-built Tilo Desktop image (localhost/tilo:latest),
-# this adds the Tilo-branded graphical installer and the OS plumbing that makes a
-# live medium self-install the booted image to a target disk. This is the only
-# installer path; the Anaconda ISO it used to sit beside was scaffolding from
-# before this existed and has been removed.
+# this adds the graphical installer and the OS plumbing that makes a live medium
+# self-install the booted image to a target disk.
 #
 # build-custom-installer.sh assembles an exact rootfs overlay as the context.
 ARG TILO_BASE_IMAGE=localhost/tilo:latest

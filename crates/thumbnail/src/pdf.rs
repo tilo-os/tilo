@@ -2,8 +2,8 @@
 //!
 //! pdfium's `FPDF_InitLibrary` must run once per process and its default
 //! marshalling takes a never-released global lock on that first init, so a
-//! *second* `Pdfium` deadlocks. We bind once behind a `OnceLock` and leak the
-//! handle (it lives the whole process), exactly as `apps/pdf-viewer` does, and
+//! second `Pdfium` deadlocks. We bind once behind a `OnceLock` and leak the
+//! handle for the process lifetime, and
 //! serialise every render behind a global `Mutex` because the shared handle is
 //! `!Sync` and thumbnail workers are multi-threaded. When no `libpdfium` is on
 //! the host the binding fails and we return `None` — the caller draws a badge.
@@ -68,7 +68,7 @@ fn find_pdfium() -> Option<Box<dyn PdfiumLibraryBindings>> {
 }
 
 /// Whether a pdfium library is available on this host (so a caller can decide
-/// up front whether PDF previews are real or badge-only).
+/// up front whether PDF previews are available or badge-only).
 pub fn available() -> bool {
     shared_pdfium().is_some()
 }
@@ -84,8 +84,6 @@ pub fn pdf_thumb(pdf: &[u8], max_edge: u32) -> Option<RgbaThumb> {
     let config =
         PdfRenderConfig::new().set_target_width(Pixels::try_from(max_edge).unwrap_or(Pixels::MAX));
     let bitmap = page.render_with_config(&config).ok()?;
-    // `.max(0)` already rules out the sign `.try_from` would otherwise catch;
-    // `.unwrap_or(0)` just keeps the fallback consistent with that proof.
     let w = u32::try_from(bitmap.width().max(0)).unwrap_or(0);
     let h = u32::try_from(bitmap.height().max(0)).unwrap_or(0);
     let rgba = bitmap.as_rgba_bytes();

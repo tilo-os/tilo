@@ -54,9 +54,7 @@ pub fn bucket_ms_for_fps(fps: f64) -> u64 {
     if fps <= 0.0 || !fps.is_finite() {
         return 1;
     }
-    // `fps` is finite and positive here, so the quotient is a non-negative
-    // finite real. Clamping before the cast is what makes the conversion
-    // exact: nothing that survives the clamp can truncate or lose a sign.
+    // `fps` is finite and positive here. Clamp before converting to `u64`.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -79,9 +77,8 @@ pub fn bucket_of(time_ms: u64, bucket_ms: u64) -> u64 {
 
 /// Roughly how much memory a frame holds, for the byte budget.
 ///
-/// A dmabuf's bytes live on the GPU rather than in this process, but they are
-/// just as finite — and the decoder's buffer pool is smaller than system RAM —
-/// so it is charged its full picture size rather than treated as free.
+/// A dmabuf's bytes live on the GPU rather than in this process, but they count
+/// against the decoder's buffer pool, so charge the full picture size.
 pub fn frame_cost_bytes(frame: &Frame) -> usize {
     match &frame.payload {
         FramePayload::Rgba(b) => b.len(),

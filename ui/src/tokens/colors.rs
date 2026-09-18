@@ -768,7 +768,7 @@ impl Colors {
     }
 
     /// The colour of the film a glass surface is made of. **Not white** —
-    /// `surface_white_*` only works over a dark ground. Real glass takes its
+    /// `surface_white_*` only works over a dark ground. Glass takes its
     /// colour from what it's made of, so the film is the theme's raised
     /// tier carried one derived step further ([`GLASS_FILM_LIFT`]), opaque
     /// (alpha belongs to the state painting it, not the material).

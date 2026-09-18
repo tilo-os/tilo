@@ -7,11 +7,11 @@
 //!   bundled sample when the network is unreachable.
 //! - `--shots PATH`: render one offscreen frame to a PNG and exit (headless
 //!   screenshot; identical passes to the live app). Always offline/hermetic.
-//! - `--probe [Q]`: construct the real backend, run a live `YouTube` search for
+//! - `--probe [Q]`: construct the live backend, run a `YouTube` search for
 //!   `Q` (default "rust programming") + trending, print what came back, and
-//!   exit. Proof that live fetch works; requires `--features live`.
-//! - `--probe-trending`: prove the Home/Trending feed — `YouTube`'s retired
-//!   dedicated endpoint failing for real, then the composed real "popular"
+//!   exit. Requires `--features live`.
+//! - `--probe-trending`: show the Home/Trending feed — `YouTube`'s retired
+//!   dedicated endpoint failing, then the composed "popular"
 //!   feed (view-count-sorted search).
 //! - `--probe-engine [ID]`: resolve a stream and decode moving frames through
 //!   the same shared [`media::MediaEngine`] used by the watch page. The former
@@ -80,15 +80,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
 
-    // `--probe-trending` — prove the real Home/Trending feed: show the dedicated
-    // endpoint's real error and the composed real popular feed it falls back to.
+    // `--probe-trending` — show the dedicated endpoint's error and the composed
+    // popular feed it falls back to.
     if args.iter().any(|a| a == "--probe-trending") {
         return run_probe_trending();
     }
 
-    // `--probe-engine [id]` — prove REAL playback through the shared media engine
-    // (the exact production path): resolve a stream, open a `media::MediaEngine`,
-    // and decode a sequence of frames, printing engine events + motion evidence.
+    // `--probe-engine [id]` — exercise playback through the shared media engine:
+    // resolve a stream, open a `media::MediaEngine`, and decode a sequence of
+    // frames, printing engine events and checksums.
     if let Some(id) = parse_flag_id(&args, "--probe-engine", "aqz-KE-bpKQ") {
         return run_probe_engine(&id);
     }
@@ -102,15 +102,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // `--live-shots <dir> [query]` — render REAL offscreen stills: a search page
-    // with real YouTube results + fetched thumbnails, and a watch page with a
-    // real frame decoded through the media engine from a rangeable proxy stream.
-    // Everything is live data + real decode; requires `--features "live media"`.
+    // `--live-shots <dir> [query]` — render offscreen stills from live data:
+    // search results with fetched thumbnails and a decoded watch frame.
+    // Requires `--features "live media"`.
     if let Some((dir, query)) = parse_live_shots_arg(&args) {
         return run_live_shots(&dir, &query);
     }
 
-    // `--probe-ytdlp [query]` — prove the yt-dlp extractor: search + video +
+    // `--probe-ytdlp [query]` — exercise the yt-dlp extractor: search + video +
     // channel (with avatar/banner urls). Requires `--features live`.
     if let Some(query) = parse_opt_query(&args, "--probe-ytdlp", "blender open movie") {
         return run_probe_ytdlp(&query);
@@ -118,13 +117,13 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // `--probe-avatars [query]` — diagnose the creator-avatar pipeline: what
     // channel id/name/avatar yt-dlp vs rustypipe report for the same search, the
-    // by-id fold match rate, and whether a per-channel fetch actually returns +
+    // by-id fold match rate, and whether a per-channel fetch returns +
     // decodes an avatar. Requires `--features live`.
     if let Some(query) = parse_opt_query(&args, "--probe-avatars", "blender open movie") {
         return run_probe_avatars(&query);
     }
 
-    // `--probe [query]` — prove the live backend actually fetches real data.
+    // `--probe [query]` — run a live backend query.
     if let Some(query) = parse_probe_arg(&args) {
         return run_probe(&query);
     }
@@ -260,11 +259,11 @@ fn parse_flag_id(args: &[String], flag: &str, default: &str) -> Option<String> {
     None
 }
 
-/// `--probe-engine [id]`: prove real playback through the shared `media::MediaEngine`
+/// `--probe-engine [id]`: exercise playback through the shared `media::MediaEngine`
 /// — the exact path the watch page streams through. Resolves a directly-playable
 /// stream (direct extractor first, then the rangeable Invidious proxy), opens the
-/// engine, plays, and decodes a sequence of frames; prints engine events + a
-/// per-frame checksum proving motion. Exits non-zero if no frame decodes.
+/// engine, plays, and decodes a sequence of frames; prints engine events and a
+/// per-frame checksum. Exits non-zero if no frame decodes.
 #[cfg(all(feature = "live", feature = "media"))]
 #[allow(
     clippy::exit,
@@ -406,9 +405,8 @@ fn parse_opt_query(args: &[String], flag: &str, default: &str) -> Option<String>
     None
 }
 
-/// `--probe-trending`: prove the Home/Trending feed is real. Shows `YouTube`'s
-/// dedicated trending endpoint failing for real, then the composed popular feed
-/// (view-count-sorted search) that replaces it — with real titles.
+/// `--probe-trending`: show `YouTube`'s dedicated trending endpoint failing,
+/// then the composed popular feed (view-count-sorted search) that replaces it.
 #[cfg(feature = "live")]
 #[allow(
     clippy::exit,
@@ -592,17 +590,17 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
         }
     }
 
-    // ---- Real search / home / playlist pages with real thumbnails + avatars ----
+    // ---- Search / home / playlist pages with thumbnails + avatars ----
     //
-    // Use rustypipe's search: it returns videos (with real creator avatars),
+    // Use rustypipe's search: it returns videos (with creator avatars),
     // playlists AND creator rows in one call — exactly the enrichment the live
-    // app folds into the yt-dlp results, so these stills prove real avatars,
-    // the Video·Playlist·Creator filter and playlists end to end.
+    // app folds into the yt-dlp results, so these stills cover avatars, the
+    // Video·Playlist·Creator filter, and playlists end to end.
     let rp = tube::backend::live::RustyPipeBackend::new()
         .map_err(|e| format!("rustypipe backend: {e}"))?;
 
     // Prewarm every thumbnail + avatar into one shared store so both the search
-    // and home stills paint real images.
+    // and home stills paint fetched images.
     let prewarm = |store: &ui::ImageStore, urls: &[String]| {
         for u in urls {
             if !u.is_empty() {
@@ -1161,8 +1159,8 @@ fn run_probe_avatars(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// The real proof: construct the live backend, hit `YouTube`, print what came
-/// back. Compiled to do real work only under `--features live`.
+/// Construct the live backend, query `YouTube`, and print the response.
+/// Compiled only under `--features live`.
 #[cfg(feature = "live")]
 #[allow(
     clippy::exit,

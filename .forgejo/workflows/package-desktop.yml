@@ -118,7 +118,7 @@ jobs:
           arm64_runner=runner-large-arm64
           # menci's cross-build image deliberately declares an amd64 OCI
           # config around an ARM rootfs. Keep it for the x86/QEMU fallback,
-          # but give native runners a genuinely arm64-declared image.
+          # but give native runners an arm64-declared image.
           amd64_targets="arch|docker.io/menci/archlinuxarm@sha256:dbb3df8941d78f13e4277cec63beeac61096b474864974cfeff64efebd1aa81c|"$'\n'"$common_targets"
           arm64_targets="arch|docker.io/gomasy/archlinuxarm@sha256:2b73dc79eaf9b816d0e41345258766ac3cb6bb2b407125d9f5b31cf94e177488|"$'\n'"$common_targets"
           release_arches=amd64

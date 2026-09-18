@@ -3,33 +3,29 @@
 //! volume/mute, switch the default device, and diff two enumerations to react
 //! to hotplug.
 //!
-//! ## Why a CLI-tool client, not a `libpipewire` binding
+//! ## Implementation
 //!
 //! Enumeration reads `pw-dump` (the graph as JSON), routing writes the
 //! `WirePlumber` `target.object` metadata via `pw-metadata`, and per-node
 //! volume/mute + the default device go through `wpctl`. Every one of those is
-//! the *native* `PipeWire` path — the same protocol a graphical mixer speaks —
-//! but reached through the daemon's own command-line tools rather than by
-//! linking `libpipewire-0.3`. That keeps a hermetic build (and the compositor's
-//! distrobox, which has no `PipeWire` dev stack) able to compile this crate with
-//! nothing but the Rust toolchain; the tools are needed only at *runtime*, on a
-//! host that actually has a graph to drive. On a machine with no `PipeWire` the
-//! enumerator returns an empty graph — never a fabricated device or stream.
+//! the native `PipeWire` path, reached through the daemon's command-line tools
+//! rather than by linking `libpipewire-0.3`. This keeps the crate buildable
+//! without PipeWire development headers; the tools are needed at runtime. On a
+//! machine with no `PipeWire`, the enumerator returns an empty graph.
 //!
 //! ## The routing mechanism
 //!
 //! `WirePlumber` exposes "moving streams" as metadata on the `default` metadata
 //! store: setting the key `target.object` on a stream node's id to a target
 //! device's `object.serial` relinks the stream to that device; deleting the key
-//! returns the stream to following the default device. This is exactly what
+//! returns the stream to following the default device. This is what
 //! `linking.allow-moving-streams` gates, and what the settings pane drives so
 //! the music app can play to the headphones while the browser stays on the
 //! speakers.
 //!
-//! The parsing, command construction, and hotplug diff are pure functions,
-//! unit-tested against a captured real `pw-dump` fixture and asserted argument
-//! vectors; the shelling-out [`RealGraphControl`] / [`RealEnumerator`] are the
-//! thin production impls exercised live on a host with a running daemon.
+//! Parsing, command construction, and hotplug diff are pure functions. The
+//! shelling-out [`RealGraphControl`] and [`RealEnumerator`] implementations
+//! invoke the command-line tools.
 
 use std::process::Command;
 use std::sync::Arc;
@@ -61,7 +57,7 @@ pub struct AudioDevice {
     /// channel-test controls must not appear unless this is at least two.
     pub channels: usize,
     /// Active Bluetooth codec when the `PipeWire` `BlueZ` node advertises it.
-    /// Informational: codec selection is exposed only through real profiles.
+    /// Informational: codec selection is exposed only through available profiles.
     pub codec: Option<String>,
 }
 
@@ -100,7 +96,7 @@ pub struct AudioStream {
     pub playback: bool,
     /// The device node id this stream is currently linked to, if any — a
     /// playback stream's sink, or a capture stream's source. Derived from the
-    /// graph's `Link` objects, so it reflects where audio is *actually* going.
+    /// graph's `Link` objects.
     pub target_id: Option<u32>,
     pub volume: Option<f32>,
     pub muted: Option<bool>,

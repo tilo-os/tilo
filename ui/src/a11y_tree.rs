@@ -20,7 +20,7 @@
 //! the app's [`resources()`](crate::widget::Widget::resources) forest from
 //! the Tilo [action model](tilo_actions) contributes
 //! [`SemanticActionKind::App`] affordances carrying the exact
-//! [`EncodedAction`](tilo_actions::EncodedAction) a real click would send —
+//! [`EncodedAction`](tilo_actions::EncodedAction) the click action sends —
 //! so invoking one by name drives the same replayable action through the
 //! one audited dispatch path, letting an assistive client operate the tree,
 //! not just read it.

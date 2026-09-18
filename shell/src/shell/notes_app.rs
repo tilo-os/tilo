@@ -959,8 +959,8 @@ mod tests {
         (doc, tile_root)
     }
 
-    /// Runs the real `Widget::draw`, not a stand-in — nothing is rasterised,
-    /// only the geometry it resolves matters here.
+    /// Runs `Widget::draw`; nothing is rasterised, only the geometry it
+    /// resolves matters here.
     fn draw_tile(app: &mut NotesApp, rect: Rect) {
         app.rect = rect;
         let theme = Theme::dark();

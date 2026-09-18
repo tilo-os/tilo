@@ -9,8 +9,8 @@
 //!
 //! Implementations: [`MemoryBlobStore`] (tests/CLI pack flow, slices),
 //! [`DiskBlobStore`] (files at `<dir>/<blake3-hex>`, `pread()`), and
-//! [`CountingStore`] (wraps any store, counts calls — tests prove
-//! partial reads don't over-fetch). A real iroh-blobs adapter is out
+//! [`CountingStore`] (wraps any store, counts calls — tests verify
+//! partial reads don't over-fetch). An iroh-blobs adapter is out
 //! of scope; its async/back-pressure semantics belong in a separate crate.
 
 use std::collections::BTreeMap;
@@ -246,7 +246,7 @@ impl BlobStore for DiskBlobStore {
     }
 }
 
-/// A wrapping store that counts every call; tests use it to prove the mount only fetches what was requested.
+/// A wrapping store that counts every call; tests use it to verify the mount only fetches what was requested.
 #[derive(Debug, Clone)]
 pub struct CountingStore<S: BlobStore> {
     inner: S,

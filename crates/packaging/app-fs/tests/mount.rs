@@ -2,11 +2,11 @@
 //!
 //! Fast, always-run tests exercise the FUSE handler code path through
 //! the crate's public helpers (`TiloAppFs::ino_of`, `blob_at`,
-//! `cache().read()`) without a real kernel mount, proving the
+//! `cache().read()`) without a kernel mount, verifying the
 //! "page-fault streaming" contract through the same page cache the
 //! FUSE `read` handler uses.
 //!
-//! `#[ignore]`d real-mount tests spin up a real FUSE3 session via
+//! `#[ignore]`d mount tests spin up a FUSE3 session via
 //! `Mount::spawn`, cat a file with `std::fs`, and check the bytes; they
 //! need `/dev/fuse` + `fusermount3` and are skipped in constrained CI
 //! (`cargo test -p app-fs -- --include-ignored` locally).

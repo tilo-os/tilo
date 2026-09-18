@@ -213,7 +213,7 @@ impl IdentityRecord {
     }
 }
 
-/// The shell wires the real disk-backed impl; tests use
+/// The shell wires the disk-backed implementation; tests use
 /// [`MemoryIdentityStore`] to avoid touching `~/.config`.
 pub trait IdentityStore: Send + Sync {
     /// # Errors
@@ -268,7 +268,7 @@ pub struct PairingPayload {
     pub initiator_pk: String,
     /// Postcard-encoded `EnrolmentRound1`, hex for ASCII-safe JSON.
     pub initiator_dkg_round1: String,
-    /// Independently reachable shell broker. Empty means pairing is honestly
+    /// Independently reachable shell broker. Empty means pairing is
     /// unavailable outside an injected test transport.
     #[serde(default)]
     pub broker_endpoint: String,
@@ -2693,7 +2693,7 @@ impl IdentityFlow {
             // A newly created 1-of-1 identity has no threshold recovery
             // share. Older builds routed it through RecoveryShare with words
             // derived from its public key; those words were non-secret and
-            // could not recover anything. Finish creation instead. The real
+            // could not recover anything. Finish creation instead. The
             // RecoveryShare screens remain available to the explicit
             // multi-device ceremony once DKG has produced a genuine share.
             (IdentityFlowScreen::CreateIdentity, ScreenOutcome::Advance) => {
@@ -3377,7 +3377,7 @@ mod tests {
     /// secret the ceremony wrote to disk must sign for the public key
     /// written next to it. Loads the way every consumer does — expand
     /// the stored bytes with `SigningKey::from_bytes` — asserting the
-    /// real on-disk contract, not an in-process handle.
+    /// on-disk contract, rather than an in-process handle.
     #[test]
     fn ceremony_minted_record_signs_for_its_own_recorded_public_key() {
         use ed25519_dalek::{Signer, Verifier, VerifyingKey};

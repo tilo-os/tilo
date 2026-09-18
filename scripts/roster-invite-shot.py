@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Photograph the top bar before and after a real peer joins by invite.
+"""Photograph the top bar before and after a peer joins by invite.
 
 Two live compositor sessions. The host mints a signed invite through its
 own command palette; the guest accepts it through its own. Nothing seeds
@@ -21,8 +21,8 @@ which room a peer is in from the first room-scoped presence frame that
 peer publishes. A session publishes its pointer with nothing open, so
 that frame arrives on the join rather than waiting for an app.
 
-`--with-presence` adds the other half: the same acquisition with a real
-application in the room. It launches an app in each session, walks the
+`--with-presence` adds the same acquisition with an application in the
+room. It launches an app in each session, walks the
 guest's pointer inside its window, and photographs the host's bar
 holding a *named* peer whose cursor is somewhere a person put it.
 

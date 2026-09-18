@@ -158,7 +158,7 @@ impl PdfApp {
         let tools_end = tx - gap;
 
         // Swatches sit just right of the tools, but only when the annotate
-        // tools are active and there is genuinely room for them.
+        // tools are active and there is enough room for them.
         let annotate = matches!(self.tool, Tool::Highlight | Tool::Ink | Tool::Note);
         let sw = 16.0;
         let sgap = 8.0;
@@ -1107,7 +1107,7 @@ impl PdfApp {
             &canvas,
         );
 
-        // No document open: a calm empty surface, never fabricated content.
+        // No document open: a calm empty surface.
         if !self.has_document {
             self.draw_empty_state(scene, base, tr, theme, canvas);
             return;

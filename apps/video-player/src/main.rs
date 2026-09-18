@@ -8,7 +8,7 @@
 //!
 //! Optional flags for `--shots`:
 //!   * `--viewport WxH`  — render at a custom size (default 1280x800).
-//!   * `--open PATH`     — stage a real file for the captured frame (else a
+//!   * `--open PATH`     — stage a file for the captured frame (else a
 //!     synthesized demo clip is shown).
 
 // An app runs as its own sandboxed process, so an integer that wraps here

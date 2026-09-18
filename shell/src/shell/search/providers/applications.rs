@@ -1512,7 +1512,7 @@ mod tests {
     /// A launch that cannot start must reach both audiences: a notification
     /// for the screen, and a refusal for the caller that invoked the row by
     /// address — without it, a script is told the app opened and waits for
-    /// a window that never arrives. Drives the real `on_open` closure.
+    /// a window that never arrives. Drives the `on_open` closure.
     #[test]
     fn a_failed_launch_notifies_the_user_and_refuses_the_caller() {
         use crate::shell::search::action_api::ActionError;
@@ -1713,7 +1713,7 @@ mod tests {
     }
 
     /// Must say so in the same words an installed app's launch uses, not
-    /// fail silently. Drives the real `on_open` closure.
+    /// fail silently. Drives the `on_open` closure.
     #[test]
     #[serial_test::serial(launch_events)]
     fn activating_with_no_workspace_reports_it_the_same_way() {

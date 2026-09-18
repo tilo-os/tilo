@@ -298,10 +298,8 @@ It is what unlocks the disk when:
   `tilo-rollback enroll` reports this by name rather than letting it surface as an
   unexplained failure to unseal).
 
-That last one is worth stating plainly, because it is circular by construction:
-the dictionary-attack reset authorisation lives on the encrypted root, so a
+The dictionary-attack reset authorisation lives on the encrypted root, so a
 locked-out TPM cannot be reset until the disk is open, and opening it needs the
-recovery key. That is the design working as intended — the TPM keyslot is the
-convenience, the recovery key is the guarantee — but it means a user who discards
-the recovery key and then forgets their PIN has lost the data, and nothing in this
-subsystem can change that.
+recovery key. The TPM keyslot provides convenience; the recovery key is the
+independent recovery path. A user who discards the recovery key and then forgets
+their PIN has lost the data, and nothing in this subsystem can change that.

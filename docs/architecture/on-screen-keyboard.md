@@ -9,7 +9,7 @@ owns the service lifecycle, protocol authority, placement, and visibility.
 
 The compositor exposes `text-input-v3` on the normal Wayland display. That is
 safe for applications: Smithay associates each text-input object with the
-seat's actually focused surface, so a client can only describe its own focused
+seat's focused surface, so a client can only describe its own focused
 field.
 
 `input-method-v2` and `virtual-keyboard-v1` are different: either can inject

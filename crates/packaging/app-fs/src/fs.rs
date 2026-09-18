@@ -238,7 +238,7 @@ impl<S: BlobStore + 'static> TiloAppFs<S> {
 
     /// The (hash, size) for a file inode; `None` for directories or
     /// unknown inodes. Test-only — exercises the same cache path as the
-    /// FUSE `read` handler without a real kernel mount.
+    /// FUSE `read` handler without a kernel mount.
     pub fn blob_at(&self, ino: u64) -> Option<([u8; 32], u64)> {
         match self.entries.get(index_of(ino)?)? {
             Entry::Blob { hash, size } => Some((*hash, *size)),

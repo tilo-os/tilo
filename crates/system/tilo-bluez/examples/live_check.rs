@@ -1,7 +1,7 @@
 //! Live check against the running `bluetoothd` on this machine.
 //!
-//! This is a tool, not a test: it is deliberately outside the test suite so
-//! it can insist on observing real hardware instead of skipping when the bus
+//! This is a tool, not a test: it runs outside the test suite so it can
+//! require an adapter instead of skipping when the bus
 //! is absent. Every failure — no system bus, no adapter, an agent `BlueZ`
 //! refuses to register, a decline that does not come back as a decline —
 //! exits non-zero.
@@ -12,7 +12,7 @@
 //! cargo run -p tilo-bluez --example live_check -- --pair AA:BB:CC:DD:EE:FF
 //! ```
 //!
-//! `--pair` runs the real pairing flow and answers the agent from the
+//! `--pair` runs the pairing flow and answers the agent from the
 //! terminal, which is what a compositor prompt does with a pointer.
 //!
 //! # Why part of this runs as root
@@ -165,7 +165,7 @@ async fn list_devices(client: &BluezClient) -> Result<Vec<DeviceInfo>, String> {
     Ok(devices)
 }
 
-/// Step 3: register the pairing agent with the real daemon as the default,
+/// Step 3: register the pairing agent with the daemon as the default,
 /// so pairings started from anywhere route to it.
 async fn register_default_agent(
     client: &BluezClient,
@@ -306,7 +306,7 @@ async fn timeout_round_trip(client: &BluezClient) -> Result<AgentRegistration, S
     Ok(reg3)
 }
 
-/// Step 8: real discovery, if `--scan` was given.
+/// Step 8: discovery, if `--scan` was given.
 async fn run_scan(
     client: &BluezClient,
     adapter: &AdapterInfo,
@@ -357,7 +357,7 @@ async fn run_scan(
     Ok(())
 }
 
-/// Step 9: real pairing, if `--pair ADDR` was given. Answers the agent from
+/// Step 9: pairing, if `--pair ADDR` was given. Answers the agent from
 /// the terminal, which is what a compositor prompt does with a pointer.
 async fn run_pairing(
     client: &BluezClient,

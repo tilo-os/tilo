@@ -1,6 +1,6 @@
 //! Device-mesh policy and placement.
 //!
-//! This module is deliberately an orchestration layer over the existing Tilo
+//! This module is an orchestration layer over the existing Tilo
 //! transports:
 //!
 //! - workspace/app records continue to replicate as signed collaboration ops;

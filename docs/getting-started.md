@@ -4,8 +4,8 @@ Tilo can be used in three ways. Pick the least invasive route that answers your
 question; a virtual machine is the right first stop for most people.
 
 The website's download page is the authority for current public availability.
-At the time this guide was added, the targets below pass the release build and
-install matrices, but the first public Imager, installer image, and Linux
+At the time of writing, the targets below pass the release build and install
+matrices, but the first public Imager, installer image, and Linux
 package registries have not been promoted. Do not substitute unsigned CI
 artifacts or guess a release URL.
 
@@ -116,7 +116,7 @@ an existing recovery copy. If this is your first device, Tilo makes clear that
 the recovery copy is the only way to recover that identity after losing the
 machine. Store it separately before continuing.
 
-The optional tour teaches the real navigation model:
+The optional tour teaches the navigation model:
 
 1. **Move** through a horizontal strip of windows.
 2. **Arrange** strips inside workspaces.

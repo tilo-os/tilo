@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Export and integrity-check the reviewable histories behind the vendored forks.
+# Export and integrity-check the recorded histories behind the vendored forks.
 
 set -euo pipefail
 

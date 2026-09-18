@@ -5,9 +5,8 @@
 //! whatever you like with the base image's own package manager, and then decide
 //! afterwards whether the result was worth keeping.
 //!
-//! The load-bearing property is that the overlay upper directory *is* the diff.
-//! Nothing is snapshotted and no change journal is maintained: to answer "what
-//! did that install actually do to me" you walk the upper directory and compare
+//! The overlay upper directory *is* the diff. Nothing is snapshotted and no
+//! change journal is maintained: to see what an install changed, walk the upper directory and compare
 //! each entry against the base. Deletions are visible as overlayfs whiteouts,
 //! so even removals are recoverable by deleting the whiteout.
 //!

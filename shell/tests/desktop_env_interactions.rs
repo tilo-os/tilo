@@ -1,11 +1,10 @@
 //! End-to-end coverage for desktop-environment window management —
 //! window-group resize and reorder, strip travel, and drag-file-to-open —
-//! driven through the real [`ShellOverlayHost`] event/state path.
+//! driven through the [`ShellOverlayHost`] event/state path.
 //!
 //! Harness mirrors `cross_strip_drag.rs`: build a tree, hand it to
-//! [`build_tilo_overlay_host_with_chrome`], run a real layout pass, then
-//! drive real winit events plus the per-frame harvest hooks
-//! `Widget::update` runs in production.
+//! [`build_tilo_overlay_host_with_chrome`], run a layout pass, then drive
+//! winit events and the per-frame harvest hooks used by `Widget::update`.
 
 #![allow(
     clippy::unwrap_used,
@@ -513,7 +512,7 @@ fn open_reorder_close_then_revision_reconstructs_the_same_layout() {
     );
     let layout = lay_out_host(&mut host);
 
-    // Drag the first group to the end through the real pointer path.
+    // Drag the first group to the end through the pointer path.
     let grab = group_grab_point(&mut host, strip_id, 0);
     let last_center_x = host
         .group_at_for_tests(strip_id, 2)
@@ -617,7 +616,7 @@ fn tab_search_chip_opens_palette_scoped_to_that_app() {
     );
 }
 
-/// Clicking a tab's Expand chip must go *genuinely* full screen: sidebar
+/// Clicking a tab's Expand chip must go full screen: sidebar
 /// wheel and top bar both get out of the way, and the promoted group
 /// covers the whole output.
 #[test]
@@ -631,7 +630,7 @@ fn expand_takes_the_group_genuinely_fullscreen() {
         "nothing holds the output at boot",
     );
 
-    // The real production path, not a test-only intent publisher.
+    // Route through the event path used by the compositor.
     let layout = reveal_tab_chips(&mut host, &layout, strip_id);
     let chip = {
         let g = host
@@ -1119,7 +1118,7 @@ fn dropping_a_code_file_opens_the_editor_in_the_active_workspace() {
         tree.workspaces[0].strips[0].window_groups[0].tabs.len()
     };
 
-    // Drop a `.ts` file through the real `WindowEvent::DroppedFile` entry.
+    // Drop a `.ts` file through the `WindowEvent::DroppedFile` entry.
     let tab_id = chrome
         .borrow_mut()
         .handle_file_drop(std::path::Path::new("/some/where/component.ts"))

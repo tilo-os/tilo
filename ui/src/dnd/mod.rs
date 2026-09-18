@@ -136,7 +136,7 @@ fn percent_encode_path(path: &str) -> String {
 /// The mime type to offer a file's bytes under, from its extension.
 ///
 /// `None` when the extension says nothing — the drag then carries only a
-/// URI list, which is the honest answer rather than claiming
+/// URI list, rather than claiming
 /// `application/octet-stream` content a receiver would have to sniff.
 pub fn mime_for_path(path: &Path) -> Option<&'static str> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
@@ -161,7 +161,7 @@ pub fn mime_for_path(path: &Path) -> Option<&'static str> {
 ///
 /// A single file is offered as both its own content type and a URI list;
 /// several are offered as a URI list alone, since one pipe can't carry
-/// several files' bytes. Returns whether a drag was actually started.
+/// several files' bytes. Returns whether a drag started.
 pub fn start_file_drag(paths: &[PathBuf]) -> bool {
     if paths.is_empty() {
         return false;

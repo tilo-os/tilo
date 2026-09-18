@@ -2,7 +2,7 @@
 //!
 //! A [`Source`] is a codec-agnostic reference to playable media. It resolves to
 //! a `GStreamer` URI for the decode backend, and to a plain byte reader for the
-//! prefetch path. Crucially a [`Source::Workspace`] path points **through** the
+//! prefetch path. A [`Source::Workspace`] path points **through** the
 //! P2P FUSE mount at `/var/workspace` — reading it pulls the bytes down on
 //! demand (projection-first, hydration-on-read), so a consumer must never
 //! assume the bytes are already local just because the path resolves.
@@ -11,7 +11,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Root of the Tilo P2P FUSE filesystem. A [`Source::Workspace`] path is
-/// resolved against this (or `$TILO_WORKSPACE_ROOT` when set, for tests / dev).
+/// resolved against this (or `$TILO_WORKSPACE_ROOT` when set for tests and development).
 pub const WORKSPACE_ROOT: &str = "/var/workspace";
 
 /// A reference to playable media. Unified across the local disk, the P2P FUSE
@@ -34,7 +34,7 @@ pub enum Source {
 
 impl Source {
     /// The FUSE mount root, honouring the `$TILO_WORKSPACE_ROOT` override so a
-    /// test / dev host without a real mount can point at a scratch directory.
+    /// test or development host without a mount can point at a scratch directory.
     pub fn workspace_root() -> PathBuf {
         std::env::var_os("TILO_WORKSPACE_ROOT")
             .map_or_else(|| PathBuf::from(WORKSPACE_ROOT), PathBuf::from)

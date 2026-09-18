@@ -2663,8 +2663,8 @@ impl DrmRuntime {
         }
         self.reconcile_display_transaction();
         // The same atomic settings write may carry a topology/mode change.
-        // Re-probe first so a requested advertised mode is genuinely
-        // modeset; then publish arrangement/scale even when the connector
+        // Re-probe first so a requested advertised mode is modeset; then
+        // publish arrangement/scale even when the connector
         // set itself did not change.
         self.dispatch.rescan_outputs("display settings changed");
         self.dispatch.relayout_outputs();

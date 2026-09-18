@@ -1,4 +1,4 @@
-//! What a sandboxed app's environment actually contains.
+//! The environment visible to a sandboxed app.
 //!
 //! The app's environment is meant to be a closed set — a list of
 //! variables the launcher puts there, beside the binds that make each
@@ -6,16 +6,15 @@
 //! child whatever the parent was carrying, the compositor's own
 //! environment.
 //!
-//! These tests start the real thing under `bwrap`, through the same
-//! `run_with_captured` path the launcher uses, and read the answer out
-//! of the process's own `environ` after `exec`. **They deliberately do
+//! These tests start the app under `bwrap`, through the same
+//! `run_with_captured` path the launcher uses, and read the result from the
+//! process's own `environ` after `exec`. **They do
 //! not assert on the argv** — a `--setenv` spliced ahead of
 //! `--clearenv` leaves the intention intact and the environment full.
 //! The environment the process has is the boundary.
 //!
-//! Not `#[ignore]`d, for the reason `room_confinement.rs` gives: bwrap
-//! is how a Tilo app runs at all, so a machine that can't run these
-//! can't run the product.
+//! These tests are not `#[ignore]`d because bwrap is required to run a Tilo
+//! app; a machine that cannot run them cannot run a Tilo app.
 
 #![allow(
     clippy::unwrap_used,
@@ -39,9 +38,8 @@ const PACKAGE: &str = "dev.tilo.envtest";
 /// sandbox can only mean one thing: it walked in from the parent.
 const MARKER: &str = "TILO_ENV_LEAK_MARKER";
 
-/// Stand-ins for the compositor's own wiring: the privileged clipboard
-/// socket, the local collaboration broker, and the user's identity
-/// file — real names an app genuinely must not be handed.
+/// Stand-ins for compositor wiring that an app must not receive: the
+/// privileged clipboard socket, collaboration broker, and user identity file.
 const SESSION_PRIVATE: &[(&str, &str)] = &[
     ("TILO_WAYLAND_PRIVILEGED", "wayland-priv-9"),
     ("QUICK_COLLAB_SOCK", "/run/user/1000/tilo-collab.sock"),

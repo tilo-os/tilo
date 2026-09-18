@@ -30,7 +30,7 @@ pub struct Session {
     _lock: File,
 }
 
-/// Prepare the real shell; invalid stored state is never replaced by a new tree.
+/// Prepare the shell; invalid stored state is never replaced by a new tree.
 /// # Errors
 /// Returns invalid directory, session lock, state, record-store or construction errors.
 pub fn prepare(options: &Options) -> Result<Session, Error> {

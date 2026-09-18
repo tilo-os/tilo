@@ -79,7 +79,7 @@ pub fn is_enabled() -> bool {
 /// cache lookups.
 ///
 /// Returns the number of glyph runs emitted across every buffer —
-/// tests assert `> 0` to prove shaping actually happened rather than
+/// tests assert `> 0` to verify shaping emitted glyph runs rather than
 /// silently no-op'ing on a stripped fallback font set.
 pub fn shape_canonical_strings(fs: &mut FontSystem) -> usize {
     // 14pt at 1.4x line-height; larger sizes reuse the same shaped runs

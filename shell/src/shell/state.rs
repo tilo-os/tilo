@@ -1034,7 +1034,7 @@ struct ReplicatedStrip {
 }
 
 /// Write `value` at `key` only when the document does not already say
-/// it, so a document accumulates a change per real change rather than
+/// it, so a document accumulates a change per changed value rather than
 /// one per export — otherwise each sync round manufactures ops out of
 /// untouched state and two peers exporting to each other never fall
 /// quiet.
@@ -2418,7 +2418,7 @@ pub struct WorkspaceTree {
     pub room_peer_identities:
         HashMap<RoomId, std::collections::BTreeMap<String, GovernedPeerIdentity>>,
     /// Mirror of each room's record index (record id → kind), pushed by
-    /// [`Self::set_room_records`] — a plain-data copy since the real
+    /// [`Self::set_room_records`] — a plain-data copy since the
     /// index lives behind an `Rc<RefCell<_>>` peer-sync's
     /// `Arc<RwLock<_>>` can't reach. Not persisted.
     #[serde(skip, default)]
@@ -3925,7 +3925,7 @@ impl WorkspaceTree {
     /// document and dropped when absent.
     ///
     /// `active_tab` is never read from the document: it stays put unless
-    /// genuinely gone, and a group arriving from a peer opens on its
+    /// gone, and a group arriving from a peer opens on its
     /// first tab. Vanishing strips take their `active_strip`/
     /// `active_group` with them so resolvers fall back rather than point
     /// at nothing.
@@ -9198,7 +9198,7 @@ mod automerge_foundation_tests {
     /// The bytes a guest puts on the wire when it does not honour the
     /// join: in `room`, but its own state still says it governs, so its
     /// projection carries its own owner and grants. Built by driving
-    /// the guest's real projection/export path, not by hand.
+    /// the guest's projection/export path, not by hand.
     fn governance_claim_from(user: &str, room: RoomId) -> Vec<Vec<u8>> {
         let mut guest = WorkspaceTree::default();
         let guest_ws = guest.append_empty_workspace("Mine");

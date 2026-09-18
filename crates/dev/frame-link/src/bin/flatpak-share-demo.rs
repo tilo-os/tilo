@@ -11,10 +11,9 @@
 //! encode the composite via a second `H264Encoder` and write the Annex-B
 //! stream through `ffmpeg -f h264 -i - -c copy out.mp4`.
 //!
-//! Nothing is mocked — the encoder and decoder are the same code paths
-//! the compositor runs in production; the only synthetic piece is the
-//! shim, the *point* of the demo. A `tracing`-subscriber accumulates
-//! per-span duration and dumps a profile summary to
+//! The encoder and decoder are the same code paths used by the compositor;
+//! the shim supplies the synthetic network conditions. A `tracing` subscriber
+//! accumulates per-span duration and dumps a profile summary to
 //! `target/latency-profile.txt`.
 //!
 //! ## CLI

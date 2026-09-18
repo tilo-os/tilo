@@ -490,7 +490,7 @@ pub struct QueryArgs<'a> {
 /// fraction of `[0.0, 1.0]`-scale `f32`. Provider score scales are
 /// small (files top out at 120, apps at 100 — see `max_score`'s doc),
 /// well under `f32`'s 24-bit mantissa, so the precision this cast could
-/// otherwise lose cannot happen for a real provider.
+/// otherwise lose cannot happen for a supported provider.
 #[allow(
     clippy::cast_precision_loss,
     reason = "provider score scales are small integers (<=120 by convention); exact precision isn't needed for a 0..1 strength ratio"
@@ -1458,8 +1458,8 @@ mod tests {
         );
     }
 
-    /// Driven through the **real** applications provider against a real
-    /// installed-app registry on disk, not the fakes above.
+    /// Driven through the applications provider against an installed-app
+    /// registry on disk rather than the fixtures above.
     #[test]
     #[serial_test::serial]
     fn typing_an_installed_apps_name_offers_the_app_first() {

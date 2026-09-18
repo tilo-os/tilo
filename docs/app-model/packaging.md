@@ -53,7 +53,7 @@ type = "gui"
 
 | Field       | Required | Notes                                                                                            |
 | ----------- | -------- | ------------------------------------------------------------------------------------------------ |
-| `identity`  | yes      | `ed25519:<64-hex>` — the publisher's Ed25519 public key. When `tilo-pkg pack` generates a fresh keypair (no `--identity`), it overwrites whatever was here with the real key. |
+| `identity`  | yes      | `ed25519:<64-hex>` — the publisher's Ed25519 public key. When `tilo-pkg pack` generates a fresh keypair (no `--identity`), it overwrites whatever was here with the generated public key. |
 | `signature` | no       | Hex-encoded 64-byte signature. Empty at author time; filled by `tilo-pkg pack` / `tilo-pkg sign`.  |
 
 #### `[trust]`
@@ -208,8 +208,8 @@ schemes = ["web+notes"]
 
 ### On-disk layout
 
-A `.qpkg` is a plain (uncompressed) tar. Actual contents of the hello-world
-qpkg produced below:
+A `.qpkg` is a plain (uncompressed) tar. Contents of the example hello-world
+package:
 
 ```
 $ tar tvf /tmp/tilo-hello-demo/tilo-hello.qpkg
@@ -237,7 +237,7 @@ $ tar tvf /tmp/tilo-hello-demo/tilo-hello.qpkg
 
 Uncompressed on purpose: each blob is already content-addressed and (in
 deployed Tilo) lives in an `iroh-blobs` store with chunk-level dedup. Adding
-gzip over that just wastes CPU.
+gzip over that adds CPU cost without improving deduplication.
 
 The `PackageId` is `blake3(signed-root-bytes)`. It is the `qpkg:<hex>` URL
 you see in `tilo-pkg inspect`.
@@ -271,7 +271,7 @@ tilo-pkg pack --manifest <toml> --payload <dir> --output <qpkg> [--identity <jso
 - Signs the signed root with that identity.
 - Writes the `.qpkg`.
 
-Actual run against the demo project:
+Example run against the demo project:
 
 ```
 $ tilo-pkg pack \
@@ -383,4 +383,4 @@ The `PackageId` is derived entirely from the signed root, so a re-sign
 default, so identity re-use with a fresh key each pack changes the ID).
 
 Next: [`sandbox.md`](./sandbox.md) explains what each `[sandbox.*]` block
-actually enables at launch.
+enables at launch.

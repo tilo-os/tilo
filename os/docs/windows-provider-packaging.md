@@ -11,10 +11,10 @@ Set `FEX_PAYLOAD_REF` and `WINDOWS_GUEST_REF` to published OCI references of the
 form `registry/repository@sha256:<64 hexadecimal digits>` before running
 `os/dev/build-image.sh`. The script checks these before asset downloads. Direct
 Containerfile builds also require `QOS_WINDOWS_ARCH=aarch64`; the selected
-stage and final runtime installation verify the actual native architecture.
+stage and final runtime installation verify the native architecture.
 The x86 guest input is selected as `linux/amd64` and never executed on ARM.
 
-No production references are invented or supplied in this repository yet.
+No production references are supplied in this repository yet.
 The FEX producer is `os/Containerfile.fex-payload`. The guest producer is
 `os/Containerfile.windows-guest`; its complete RPM snapshot must include the
 paired qOS traditional Wine packages described in [Wine RPM packaging](wine-rpm-packaging.md).

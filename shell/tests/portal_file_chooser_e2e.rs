@@ -1,13 +1,12 @@
 //! End-to-end: an app asks the portal for a file, a human clicks through
-//! the dialog, and the app reads the bytes. Nothing is mocked past the
-//! point where mocking would hide the bug this exists to prevent — D-Bus
+//! the dialog, and the app reads the bytes. The exercise covers the D-Bus
 //! (`FileChooserBackend` over a socket-pair), the queue
 //! (`FilePickerQueue`), the pump (`ShellOverlayHost::pump_file_picker`),
-//! the widget (clicks hit-test the rect `ui::widget::FilePicker` computed)
-//! and the files are all the production article.
+//! the widget (clicks hit-test the rect `ui::widget::FilePicker` computed),
+//! and the file reads.
 //!
-//! Not a real frame loop: the D-Bus call parks on a oneshot, so the test
-//! spawns it and turns the pump by hand, as the compositor's tick would.
+//! The D-Bus call parks on a oneshot, so the test spawns it and turns the
+//! pump by hand, as the compositor's tick would.
 
 #![allow(
     clippy::unwrap_used,
@@ -182,7 +181,7 @@ fn layout(host: &mut ShellOverlayHost, w: f32, h: f32) {
     host.apply_layout(&taffy, node, vello::kurbo::Point::ZERO);
 }
 
-/// The host explicitly scopes the real dialog to this isolated user directory.
+/// The host explicitly scopes the dialog to this isolated user directory.
 /// The requesting app receives neither the root nor a grant until the user picks.
 fn user_dir() -> tempfile::TempDir {
     tempfile::tempdir().expect("isolated picker root")

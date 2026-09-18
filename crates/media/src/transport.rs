@@ -10,7 +10,7 @@
 //! all the collaborative-playback timing logic, so they are unit-tested without
 //! any decode, socket, or clock.
 //!
-//! Wiring the state onto a real CRDT is kept behind the [`TransportSync`] trait
+//! Wiring the state onto an Automerge document is kept behind the [`TransportSync`] trait
 //! so a purely local player never pays for automerge. [`CrdtTransport`] is the
 //! automerge-backed implementation; [`LocalTransport`] is the no-op one.
 

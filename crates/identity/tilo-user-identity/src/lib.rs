@@ -54,8 +54,7 @@
 //!   (loading `/var/lib/tilo/user-identity/*`) belongs in `shell/` or
 //!   `os/`, not here.
 //! - No key recovery / paper share. `threshold-identity` already
-//!   solves that; this crate is deliberately single-key so the wire
-//!   shape stays simple.
+//!   solves that; this crate is single-key so the wire shape stays simple.
 //! - No transport. Peers exchange enrollment tokens out-of-band
 //!   (QR code, LAN mdns, typed string); this crate serialises the
 //!   token and validates it, but does not send it.

@@ -162,7 +162,7 @@ impl CapabilityFile {
     }
 }
 
-/// Build the ACL for one identity from a capability list. `now: None` ⇒ every check reads the live clock, so a time-limited capability actually lapses.
+/// Build the ACL for one identity from a capability list. `now: None` ⇒ every check reads the live clock, so a time-limited capability expires.
 fn build(identity: IdentityKey, caps: &[CapOverride], principals: &[Principal]) -> WorkspaceAcl {
     WorkspaceAcl::from_capabilities(identity, caps, principals, None)
 }

@@ -2,7 +2,7 @@
 # Build the headless Tilo host-mode bootc image.
 #
 # Mirrors os/build.sh but uses Containerfile.host — no compositor,
-# no session, just the relay daemon + fs + a first-boot enrollment
+# no session: the relay daemon, fs, and first-boot enrollment
 # service. Output goes to os/output-host/qcow2/disk.qcow2.
 #
 # Usage:

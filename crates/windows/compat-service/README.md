@@ -6,7 +6,7 @@ boundary contracts. It currently provides:
 - deterministic catalogue resolution;
 - persistent isolated Wine/UMU capsule state and registered-program lookup;
 - a fixed Bubblewrap, Landlock, network-gate, Wayland, and GPU plan;
-- a real no-shell Bubblewrap executor with the Tilo seccomp baseline for Wine;
+- a no-shell Bubblewrap executor with the Tilo seccomp baseline for Wine;
 - a trait boundary to the singleton `windows-vm` appliance;
 - explainable status DTOs for the Windows Apps UI;
 - a per-launch PipeWire/Pulse proxy: playback is always tunnelled to the

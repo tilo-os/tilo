@@ -270,7 +270,7 @@ trap cleanup EXIT
 # fails inside the composefs pull with "Opening stream '': Creating new
 # splitstream reader: Invalid splitstream content type". The same image pulled
 # over HTTP installs. So a local registry is started and the image published to
-# it; this is a genuine new requirement of dropping bib, not a preference.
+# it; this is a new requirement of dropping bib.
 REG=""; SRC_REF=""; RUNREF="$IMAGE"; TLS_ARGS=()
 start_registry() {
   local want="${TILO_DISK_REG_PORT:-5000}" port

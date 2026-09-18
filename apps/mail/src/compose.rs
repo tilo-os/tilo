@@ -1,7 +1,7 @@
 //! The Compose window — a **movable, resizable, focus-capturing** floating
 //! panel for writing a message.
 //!
-//! ## Focus capture (the headline fix)
+//! ## Focus capture
 //! `ui`'s `App` has no modal/overlay focus-trap and `ModalDialog`'s "blocking"
 //! is only partially implemented, so a naive overlay lets clicks fall through
 //! to whatever is painted behind it, and embedded `TextInput`s never register a
@@ -23,9 +23,8 @@
 //! ## Detach (Tilo pop-out)
 //! [`DockState`] models two placements: `Docked` (centred in-app modal) and
 //! `Detached` (parked beside the app content, simulating a separate window).
-//! Both are movable + resizable. The Pop-out button toggles between them, so it
-//! performs a real, visible placement change. **True OS-window detach** — a real
-//! second top-level surface beside the app — needs the Tilo compositor's
+//! Both are movable + resizable. The Pop-out button toggles between them. A
+//! second top-level surface beside the app needs the Tilo compositor's
 //! window-group / multi-window support (`shell`), which is not available through
 //! the single-window `ui::App`; when that lands, a detached draft is handed back
 //! via [`ComposeWindow::reattach`].

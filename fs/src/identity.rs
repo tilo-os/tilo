@@ -344,7 +344,8 @@ mod tests {
         assert_eq!(first.secret.public(), second.secret.public());
     }
 
-    /// The bound endpoint's node id is the device public key, proven through the real bind path, not just key arithmetic.
+    /// The bound endpoint's node id is the device public key, verified through
+    /// the endpoint binding path.
     #[tokio::test]
     async fn bound_endpoint_is_named_by_the_device_key() {
         let tmp = tempfile::tempdir().unwrap();

@@ -15,8 +15,8 @@
 //! collaboration cluster is keyed on, so two launches of one app into
 //! two rooms get two directories, neither able to name the other's.
 //!
-//! A launch with no room gets the [`PERSONAL_ROOM`] — a real room, not
-//! a bypass: one directory like any other, unreachable from a workspace.
+//! A launch with no room gets the [`PERSONAL_ROOM`]: one directory like any
+//! other, unreachable from a workspace.
 
 use std::io;
 use std::path::{Path, PathBuf};

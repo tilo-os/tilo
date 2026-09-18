@@ -14,9 +14,8 @@
 //! copy was drained and deleted. The lagging peer advertises its heads
 //! (`SyncRequest`); the host replies with the missing changes
 //! (`SyncResponse`) computed against that materialized doc; the peer
-//! applies them and converges — asserted on genuine Automerge documents
-//! (identical `get_heads()`), on the real `Relay` / `RelayClient` path,
-//! no mocks of the host.
+//! applies them and converges — asserted on Automerge documents (identical
+//! `get_heads()`) through the `Relay` / `RelayClient` path.
 
 #![allow(
     clippy::unwrap_used,

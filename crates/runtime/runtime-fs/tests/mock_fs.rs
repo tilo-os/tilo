@@ -1,11 +1,11 @@
-//! Integration test: end-to-end RPC round-trip over a real Unix socket
-//! against a hand-rolled fake `WorkspaceFs` server.
+//! Integration test: end-to-end RPC round-trip over a Unix socket
+//! against an in-memory `WorkspaceFs` server.
 //!
-//! Covers the `UnixCapnpClient` plumbing (the same path a real app takes),
+//! Covers the `UnixCapnpClient` plumbing used by apps,
 //! the generated `WorkspaceFs` schema, and the idiomatic `FsClient`
 //! wrappers (`open`, `list`, `stat`, `FileHandle::write_at`/`read_all`).
 //!
-//! The fake backend is an in-memory map; directories are inferred from
+//! The backend is an in-memory map; directories are inferred from
 //! path prefixes rather than represented explicitly, so the test only
 //! exercises write→read on files and a single list.
 

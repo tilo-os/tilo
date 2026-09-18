@@ -2,7 +2,7 @@
 //! no network, so the app must look fully alive from a cold start — this
 //! module hands back a populated [`TubeModel`] the moment the app boots.
 //!
-//! Live fetch (Invidious / `SponsorBlock` / `DeArrow`) folds real data on top
+//! Live fetch (Invidious / `SponsorBlock` / `DeArrow`) folds fetched data on top
 //! of this once the user interacts; see `api.rs` + `app::TubeApp::pump`.
 
 use crate::model::{Category, Channel, Comment, Route, Segment, Settings, TubeModel, Video};

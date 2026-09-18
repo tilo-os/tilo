@@ -1,12 +1,12 @@
-//! Integration test: end-to-end RPC round-trip over a real Unix socket
-//! against a hand-rolled fake `CollabService` server.
+//! Integration test: end-to-end RPC round-trip over a Unix socket
+//! against an in-memory `CollabService` server.
 //!
 //! Exercises the `UnixCapnpClient` plumbing through `runtime-portal`, the
 //! generated `CollabService` schema, and the idiomatic
 //! `CollabClient::join_channel` / `ChannelHandle::send` / `subscribe` /
 //! `OpStream::read` wrappers.
 //!
-//! The fake broker: any `channel_id` joins and gets one `ChannelHandle`;
+//! The broker: any `channel_id` joins and gets one `ChannelHandle`;
 //! `send` stores the op in a `Vec<Vec<u8>>`; `subscribe` yields the stored
 //! ops in order, and further reads after exhaustion block forever
 //! (unexercised here).

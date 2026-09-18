@@ -10,10 +10,10 @@
 //! screen or personal viewing trail.
 //!
 //! The live (online) app starts with an EMPTY catalogue and populates only
-//! from real results (yt-dlp / rustypipe / trending) — it never presents the
-//! bundled [`sample`] as real data. That sample exists solely for the
-//! hermetic `--shots`/demo review path (and tests), where a cold screenshot
-//! needs to be fully populated. Live fetch (`api`) runs on a worker thread
+//! from live results (yt-dlp / rustypipe / trending). The bundled [`sample`]
+//! exists solely for the hermetic `--shots`/demo review path (and tests), where
+//! a cold screenshot needs to be fully populated. Live fetch (`api`) runs on a
+//! worker thread
 //! that spawns on launch (online) or on the first real interaction.
 
 // An app runs as its own sandboxed process, so an integer that wraps here

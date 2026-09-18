@@ -6,7 +6,7 @@
 //! `&mut AutoCommit` — so on its own it can neither ask *"is there anything to
 //! undo?"* nor *do* it. That is why apps shipped a shortcut hint instead of an
 //! Undo button: not because nobody wanted one, but because a widget had no way
-//! to render one honestly or to make it work.
+//! to render one or make it work.
 //!
 //! This module is the missing channel, and it is deliberately two one-way
 //! halves rather than a handle onto the whole `State`:
@@ -91,7 +91,7 @@ impl UndoStatus {
     }
 
     /// The sentence an assistive technology should hear as the control's
-    /// *description*: what the verb would actually do, or the honest reason it
+    /// *description*: what the verb would do, or the reason it
     /// is unavailable.
     ///
     /// `"Nothing to undo"` when unavailable — never a description of an action
@@ -306,7 +306,7 @@ pub(crate) unsafe fn record_dispatched_action_bound(
 ///
 /// A change graph has no total order over heads, so "earliest" is asked of the
 /// document rather than guessed: the bracket with the most changes after it is
-/// the one furthest back. The single-bracket case — every real tick — skips the
+/// the one furthest back. The single-bracket case — every tick — skips the
 /// question entirely.
 fn earliest_bracket(
     state: &mut crate::state::State,

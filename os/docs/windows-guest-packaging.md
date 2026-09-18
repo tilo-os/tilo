@@ -84,7 +84,7 @@ DNF cache locations are harmless and deduplicated by verified content.
 The ARM provider requires the separate traditional Wine pair. Its locally built
 RPMs are unsigned; a digest-pinned artifact alone does not satisfy DNF package
 signature checking. For development, `development-wine-repository.py sign`
-checks the pinned pair's package bytes, actual RPM identities and payload digests,
+checks the pinned pair's package bytes, RPM identities and payload digests,
 then signs copies with a fresh development-only GPG key. The private key lives
 in a temporary mode-0700 directory outside the exported artifact and is destroyed
 on success or failure. The original pair remains unchanged.
@@ -115,7 +115,7 @@ public trust records. The guest preserves those records for audit. These are
 development signing identities, not release trust or execution acceptance.
 
 After installation, the build executes the guest's native x86-64 Python standard
-library import check and actual `localedef` generation of `en_US.UTF-8`. It then
+library import check and `localedef` generation of `en_US.UTF-8`. It then
 runs `validate-windows-guest.py`. That gate requires both Wine/server ELF widths,
 Python, locale helpers and sources, both graphics loader/driver widths, and
 D3D8/D3D9/D3D10Core/D3D11/DXGI DXVK DLLs as correctly matched PE32 and PE32+ files.
@@ -150,7 +150,7 @@ as the guest runtime.
 The native ARM resolver was exercised against Fedora 44 metadata using the
 declared roots, an empty installroot and `--assumeno`: DNF resolved 885 packages
 (approximately 1 GiB compressed). This proves dependency resolution, not an
-offline installation. The real pinned DXVK archive was imported separately:
+offline installation. The pinned DXVK archive was imported separately:
 all ten DLL headers passed (five per architecture), with its 1,074-byte license
 preserved. The 31 contract, payload and importer tests passed on Linux.
 

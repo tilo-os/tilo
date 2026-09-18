@@ -1,14 +1,10 @@
 //! What the room's apps currently have open, and what may be done to it.
 //!
-//! The agent used to work from a written-down list of four things it knew how
-//! to ask the word processor for — checkable, but a list, and one with
-//! exactly one app in it. This module replaces the list with a question: an
-//! app on the Tilo action model publishes a [`Resource`] tree and the
+//! An app on the Tilo action model publishes a [`Resource`] tree and the
 //! operations each resource exports (`docs/action-model-recipe.md`), and
 //! [`tilo_actions::door`] turns a live tree into inert, stably-addressed
-//! descriptors the agent can perform. So the agent does not need to know
-//! what an app can do — it asks, every time, and gets back whatever the app
-//! is publishing at that moment.
+//! descriptors the agent can perform. The agent queries that tree each time,
+//! so it receives the operations the app currently publishes.
 //!
 //! ## What the agent supplies, and what it must not
 //!
@@ -20,8 +16,7 @@
 //!
 //! Everything else comes from the app: the resource ids, the action ids, the
 //! labels a person would see, whether an operation takes text, and the
-//! encoded action itself. The agent never mints any of it, which is what
-//! keeps "discovered" from meaning "guessed".
+//! encoded action itself. The agent never mints any of it.
 //!
 //! ## Addresses
 //!
@@ -215,9 +210,9 @@ pub struct AppContract {
 
 /// What one operation left behind for the next one.
 ///
-/// Carrying a result forward means the second operation is handed the first
-/// one's actual outcome, or nothing at all, rather than re-deriving what it
-/// *hopes* happened by reading the document again.
+/// Carrying a result forward means the second operation receives the first
+/// one's outcome, or nothing at all, rather than re-deriving it by reading the
+/// document again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Product {
     /// Bytes, in this machine's blob store, addressed by their content hash.

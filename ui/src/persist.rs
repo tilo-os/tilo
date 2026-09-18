@@ -148,7 +148,7 @@ fn finish(mut store: DocStore) -> (State, Autosave) {
     let mut doc = store.load_or_new();
     // A document written by a newer build is not opened, and the empty
     // stand-in must never reach disk — with autosave on, the first edit
-    // (or the exit flush) would save it over the real document. The store
+    // (or the exit flush) would save it over the existing document. The store
     // also refuses the write itself; the disabled writer is what stops
     // the app logging an error on every keystroke to earn that guarantee.
     if let Some(reason) = store.refusal() {
@@ -167,8 +167,8 @@ fn finish(mut store: DocStore) -> (State, Autosave) {
     (State::from_doc(doc), autosave)
 }
 
-/// The degraded path: an empty document and a writer that is honest about
-/// being switched off. [`Autosave::is_enabled`] returns `false` and
+/// The degraded path: an empty document and a disabled writer.
+/// [`Autosave::is_enabled`] returns `false` and
 /// [`Autosave::last_error`] carries the reason, so nothing downstream can
 /// mistake this for a working store.
 fn in_memory_fallback() -> (State, Autosave) {

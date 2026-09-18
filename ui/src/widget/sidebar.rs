@@ -665,7 +665,7 @@ impl SidebarDrawer {
 
         // Soft elevation shadow along the edge of the scrim that abuts the
         // drawer, so it reads as floating above the content rather than merely
-        // dimming it. Stepped thin bands fake a gradient with decaying alpha —
+        // dimming it. Stepped thin bands approximate a gradient with decaying alpha —
         // `ui` has no gradient primitive, so this stays in plain fills.
         let sr = self.scrim_rect;
         let steps = 6usize;

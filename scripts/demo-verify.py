@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
-"""Read a recorded demo back — the pixels, not the assertions.
+"""Read a recorded demo back from its pixels.
 
 `scripts/yc-demo.py --record` writes a run directory and composes
-`tilo-demo.mp4` from it. Everything in that run is a claim until someone
-looks at the frames, and a claim that passes every byte-level check can
-still be a peer's caret hovering over an empty page. This script is the
-looking: it finds where each beat lives in the finished video and cuts
-the frames out of it so they can be read.
+`tilo-demo.mp4` from it. This script finds where each beat lives in the
+finished video and extracts the corresponding frames for inspection.
 
 It changes nothing and it re-derives everything from artifacts:
 
   track.txt      which source frame is on screen, and for how long
   frames/*.png   the frames themselves, and their capture times
   captions/*.txt every string the band draws, verbatim
-  tilo-demo.mp4   what actually shipped
+  tilo-demo.mp4   the final video
 
 The transcript supplies the clock. Run the recorder through a stamper so
 each line carries the wall-clock second it was printed:

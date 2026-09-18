@@ -27,7 +27,7 @@ pub fn bytes(n: u64) -> String {
 }
 
 /// Format a byte count with **base-1000 SI decimal units** (`B`, `kB`, `MB`,
-/// `GB`, `TB`, …), for the rare caller that genuinely reports a decimal
+/// `GB`, `TB`, …), for callers that report a decimal
 /// quantity. Most callers want [`bytes`].
 ///
 /// ```

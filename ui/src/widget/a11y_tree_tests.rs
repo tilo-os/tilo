@@ -360,8 +360,8 @@ use std::sync::{Arc, Mutex};
 use tts::{NullSpeaker, Speaker, Utterance};
 
 /// A speaker that records what the reader pushes through it, for readback.
-/// `Arc<Mutex<_>>` rather than `Rc<RefCell<_>>` so `Rec` is genuinely
-/// `Send` (the [`Speaker`] trait requires it) with no `unsafe impl`.
+/// `Arc<Mutex<_>>` rather than `Rc<RefCell<_>>` so `Rec` implements `Send`, as
+/// required by the [`Speaker`] trait, without an `unsafe impl`.
 #[derive(Clone, Default)]
 struct Rec(Arc<Mutex<NullSpeaker>>);
 impl Speaker for Rec {

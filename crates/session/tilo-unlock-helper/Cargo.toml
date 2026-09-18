@@ -11,8 +11,8 @@ name = "tilo-unlock-helper"
 path = "src/main.rs"
 
 [dependencies]
-# Only libc — for dlopen/dlsym/malloc/strdup. We deliberately do NOT link
-# libpam at build time (no `-lpam`, no pam-devel needed): the module is
+# libc provides dlopen/dlsym/malloc/strdup. libpam is loaded at runtime
+# rather than linked at build time (no `-lpam` or pam-devel is needed): the module is
 # loaded at runtime with dlopen("libpam.so.0"), which is always present on
 # a PAM system. This keeps the helper buildable on hosts without pam-devel
 # and keeps the OS image's compile-time deps unchanged.

@@ -2,15 +2,14 @@
 //!
 //! # Why one crate
 //!
-//! Twenty-two places in this tree wrote a file by the same three-step dance — write a temp
-//! file, rename it over the target — and eighteen omitted the step that makes it work.
+//! Writing a temp file and renaming it over the target is insufficient without
+//! syncing the file and containing directory.
 //!
 //! `rename(2)` is atomic with respect to the *directory entry*: a reader sees either the old
 //! file or the new one, never a half-written one — but it says nothing about whether the new
 //! file's **contents** reached disk. Without an `fsync` on the temp file before the rename, a
 //! power loss can leave the directory entry pointing at a file whose data blocks were never
-//! written: the empty-or-garbage file the temp dance was meant to prevent, reached through a
-//! narrower but still real window.
+//! written.
 //!
 //! [`write`] does all four steps: write the temp file, `fsync` it, rename, and `fsync` the
 //! containing directory so the rename itself is durable.

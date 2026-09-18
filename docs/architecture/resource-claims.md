@@ -36,7 +36,7 @@ cache, re-reads the installed registry and manifest, and verifies that the
 selected package still makes the relevant claim. A claim string is never sent
 to a shell, interpreted as an executable, or split into arguments.
 
-Only applications with a real startup ingestion path may claim a resource.
+Only applications with a startup ingestion path may claim a resource.
 The browser currently claims `http` and `https` and consumes the launched URI.
 Mail and Calendar keep their existing file-format claims but do not claim
 `mailto` or `webcal` until their startup paths can safely populate a composer or

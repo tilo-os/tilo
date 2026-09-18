@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Configure and report the optional remote Rust compiler cache.
 #
-# The builder image carries sccache, but CI deliberately remains correct while
-# an updated image is rolling out or the cache service is unavailable. This
-# script is the single place that controls that fail-open behaviour.
+# The builder image carries sccache, but CI must continue when an updated image
+# is rolling out or the cache service is unavailable. This script controls the
+# fail-open behavior.
 set -euo pipefail
 
 mode="${1:?usage: ci-sccache.sh <prepare|prepare-shell|report>}"

@@ -1,6 +1,6 @@
 # Maps — Tilo application manifest.
 #
-# One of the few apps whose egress IS enumerable, so it gets a real
+# The app's egress is enumerable, so it gets an explicit
 # allowlist instead of `host`: OSM tiles, Nominatim geocoding,
 # Overpass POI queries, OSRM routing and Transitous transit. The tile
 # cache is the app's own directory, so it needs nothing beyond the

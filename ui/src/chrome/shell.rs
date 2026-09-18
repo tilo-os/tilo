@@ -616,7 +616,7 @@ pub fn scrim_maps(value: u8, strength: f32, theme: &Theme) -> u8 {
         / 255.0;
     let hue = theme.tokens.colors.surfaces.scrim.to_rgba8();
     // The scrim hue is a near-neutral by construction, so its own relative
-    // luminance is the honest stand-in for "the grey it adds".
+    // luminance is the proxy for "the grey it adds".
     let hue_grey =
         (0.2126 * f64::from(hue.r) + 0.7152 * f64::from(hue.g) + 0.0722 * f64::from(hue.b)) / 255.0;
     let out = toned * (1.0 - level) + hue_grey * level;

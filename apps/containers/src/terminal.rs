@@ -1,8 +1,7 @@
-//! Spawning the Tilo terminal app to run a real command.
+//! Spawning the Tilo terminal app to run a command.
 //!
-//! "Enter distrobox" (and the container Terminal tab's "Attach shell") must
-//! open a **real** terminal session, not a faux console. The standard Tilo
-//! terminal is the `terminal` app, which spawns the program named by the
+//! "Enter distrobox" (and the container Terminal tab's "Attach shell") opens
+//! the standard Tilo `terminal` app, which spawns the program named by the
 //! `SHELL` environment variable in a PTY (see `apps/terminal`,
 //! `TerminalBackend::new`). The terminal treats `SHELL` as a bare program
 //! path with no arguments, so to run `distrobox enter <box>` we:
@@ -12,8 +11,7 @@
 //!      the command finishes), and
 //!   2. spawn the `terminal` binary with `SHELL` pointed at that launcher.
 //!
-//! This wires a genuine terminal emulator into the box without touching the
-//! terminal submodule. The argv/command assembly is split into pure helpers
+//! The argv/command assembly is split into pure helpers
 //! ([`distrobox_enter_command`], [`terminal_binary`], [`build_launcher`]) so
 //! the wiring is unit-testable headlessly.
 

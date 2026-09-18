@@ -11,8 +11,8 @@
 //! 3. For SDR->HDR, [`map_sdr_pixel_to_pq_bt2020`] (the CPU mirror of
 //!    `hdr_output_encode.wgsl`) performs the encode.
 //!
-//! Plus the real receive-side call site in [`PeerView::new_for_stream`].
-//! Headless, deterministic maths — no GPU or HDR panel. A real DRM
+//! It also covers the receive-side call site in [`PeerView::new_for_stream`].
+//! Headless, deterministic maths — no GPU or HDR panel. A DRM
 //! connector scanning out `Rgba16Float` is the documented hardware-only gap.
 
 #![allow(
@@ -134,7 +134,7 @@ fn hdr_surface_quadrants() {
     );
 }
 
-/// The real receive-side call site: a plain SDR (H.264) stream never runs
+/// The receive-side call site: a plain SDR (H.264) stream never runs
 /// through the CPU HDR->SDR tone-mapper on either output (both leave
 /// `hdr_tonemap` disabled), without the `hdr-decode` feature.
 #[test]

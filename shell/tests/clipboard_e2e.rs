@@ -1,6 +1,6 @@
-//! End-to-end clipboard, primary selection and drag-and-drop, against a real
-//! Tilo compositor with real Wayland clients — no mocks, no in-process
-//! `State`, no `arboard`. Each client connects to a `UnixStream` inside the
+//! End-to-end clipboard, primary selection, and drag-and-drop against the
+//! Tilo compositor with Wayland clients. Each client connects to a
+//! `UnixStream` inside the
 //! compositor's private runtime dir, never `Connection::connect_to_env()` or
 //! `WAYLAND_DISPLAY`.
 //!
@@ -173,7 +173,7 @@ impl Compositor {
         let mut fixture_tree = shell::shell::state::WorkspaceTree::bootstrap_demo();
         // An untouched bootstrap demo is deliberately recognised as legacy
         // sample data and migrated to a clean first-boot tree on load. This
-        // suite genuinely needs the hosted Files tab, so mark the persisted
+        // suite requires the hosted Files tab, so mark the persisted
         // tree as test-owned instead of accidentally exercising that cleanup.
         fixture_tree.workspaces[0].name = "Clipboard test desktop".into();
         shell::shell::persist::save_tree_to(&fixture_tree, &state_path)
@@ -306,7 +306,7 @@ impl Compositor {
         command
             .env("XDG_RUNTIME_DIR", runtime_dir)
             // Point every XDG dir at the throwaway runtime dir so the test neither
-            // reads nor writes the developer's real desktop, and each run starts from
+            // reads nor writes the developer's desktop, and each run starts from
             // the same known tree.
             .env("XDG_CONFIG_HOME", runtime_dir.join("config"))
             .env("XDG_DATA_HOME", runtime_dir.join("data"))
@@ -719,7 +719,7 @@ struct ClientState {
     /// protocol client must make decisions from this map, not from the
     /// compositor's preferred locale or from the test process environment.
     keyboard_keymap: Option<String>,
-    /// Raw evdev transitions observed on the real Wayland socket. These are
+    /// Raw evdev transitions observed on the Wayland socket. These are
     /// deliberately captured before toolkit translation, allowing the test to
     /// prove that a held modifier/release pair reaches a foreign client.
     keyboard_events: Vec<(u32, bool)>,
@@ -733,7 +733,7 @@ struct ClientState {
     /// Set after the seat advertised touch and this client issued
     /// `wl_seat.get_touch`; injection tests wait for this protocol precondition.
     touch_bound: bool,
-    /// Exact `wl_touch` events observed on the real client connection.
+    /// Exact `wl_touch` events observed on the client connection.
     touch_events: Vec<TouchTrace>,
     /// Pointer traffic observed after the test clears setup noise.
     pointer_events: Vec<&'static str>,
@@ -1177,11 +1177,10 @@ fn image_clipboard_from_in_process_chrome_offers_png_and_keeps_text() {
     assert_eq!(client.read_clipboard(None), "caption survives image copy");
 }
 
-/// A real `wl_touch` client sees the partial two-contact stream, then exactly
+/// A `wl_touch` client sees the partial two-contact stream, then exactly
 /// the protocol cancellation boundary when a third direct contact transfers
-/// ownership to the shell. This reaches the actual native Wayland seat; the
-/// headless input adapter reuses DRM's ownership arena rather than faking a
-/// client trace.
+/// ownership to the shell. This reaches the native Wayland seat; the headless
+/// input adapter reuses DRM's ownership arena.
 #[test]
 fn third_direct_touch_contact_cancels_the_real_wayland_touch_client_without_leaks() {
     let compositor = Compositor::start();
@@ -2384,8 +2383,8 @@ fn generic_x11_client_relays_compositor_token_through_private_satellite() {
     );
 }
 
-/// This is deliberately a real client-to-compositor exercise, not a unit
-/// test of `KeyboardSettings`: Tilo must serialize the selected German keymap
+/// This is a client-to-compositor exercise, not a unit test of
+/// `KeyboardSettings`: Tilo must serialize the selected German keymap
 /// onto the Wayland seat and forward complete press/release/modifier streams
 /// to a focused foreign client. Electron and Xwayland both consume this same
 /// seat contract.
@@ -2533,7 +2532,7 @@ fn real_wayland_client_gets_de_nodeadkeys_symbols_modifiers_and_repeat_contract(
 }
 
 /// Print Screen is compositor-owned, including its release. This drives the
-/// developer socket through the real input ledger rather than only asking the
+/// developer socket through the input ledger rather than only asking the
 /// overlay host to open Capture Studio: a client must lose focus while capture
 /// is active, never see a stray Print release, and regain a clean keyboard
 /// stream after Capture Studio closes.
@@ -2619,7 +2618,7 @@ fn power_menu_lock_enters_tilo_session_and_cuts_off_client_input() {
     // Keyboard-navigate its visible action row to Power and open it. Focus
     // starts with no hidden selection, followed by Edit, Settings, Privacy,
     // Notifications, Clipboard, Devices and Power;
-    // the next Enter activates the default Lock row in the real modal.
+    // the next Enter activates the default Lock row in the modal.
     compositor.modifiers(false, false, false, true);
     compositor.key("q");
     compositor.modifiers(false, false, false, false);
@@ -3425,7 +3424,7 @@ fn files_tab_is_active(compositor: &Compositor) -> bool {
     active
 }
 
-/// Narrow the demo group with the real seam-drag gesture so a client stays
+/// Narrow the demo group with the seam-drag gesture so a client stays
 /// visible while the Files tab is focused (the demo group is laid out at
 /// full output width). Split out of the drag-and-drop tests below to keep
 /// each one short.
@@ -3539,7 +3538,7 @@ fn release_and_wait_for_drop(compositor: &Compositor, target: &mut TestClient) {
 
 /// Drag a file out of the hosted file manager (a widget inside the
 /// compositor, not a client) and drop it on a client's window. Runs
-/// through the real input path; the compositor promotes the in-process
+/// through the input path; the compositor promotes the in-process
 /// drag to a server-side `wl_data_device` drag the moment the pointer
 /// reaches the client, which then gets enter, an offer carrying both the
 /// path list and the file's own bytes, and the drop.
@@ -3633,7 +3632,7 @@ fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// Spawn the real `word-processor` binary against the compositor under test,
+/// Spawn the `word-processor` binary against the compositor under test,
 /// draining its stderr onto a background thread. Split out of
 /// [`a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor`]
 /// to keep it short.
@@ -3700,7 +3699,7 @@ fn wait_for_word_processor_mapped(compositor: &Compositor, app_log: &Arc<Mutex<V
     }
 }
 
-/// The same drag, dropped on the real word processor. A live lane: starts
+/// The same drag, dropped on the word processor. A live lane: starts
 /// `target/debug/word-processor` as an unsandboxed client (needs a GPU to
 /// render) and asserts its own report that it inserted the image.
 /// Self-skips unless `TILO_LIVE_APP_DND=1` (`docs/testing-live.md`), so

@@ -1,9 +1,7 @@
 //! Per-user hosted model gateway.
 //!
-//! This intentionally is a narrow OpenAI-compatible/Anthropic relay, not a
-//! general `LiteLLM` deployment. Tilo needs one profile-selected planning call;
-//! adding `LiteLLM` would introduce an unpinned Python control plane and more
-//! provider surface than is audited here.
+//! This is a narrow OpenAI-compatible/Anthropic relay for a profile-selected
+//! planning call. It does not include a general `LiteLLM` control plane.
 
 use std::fs;
 use std::io::Read;
@@ -137,7 +135,7 @@ fn systemd_listener(expected: &Path) -> Result<Option<UnixListener>, String> {
     if actual.as_pathname() != Some(expected) {
         return Err("systemd model-gateway listener has an unexpected path".into());
     }
-    // systemd deliberately supplies activation descriptors without CLOEXEC.
+    // systemd supplies activation descriptors without CLOEXEC.
     // This daemon can launch request-handling subprocesses; none may inherit
     // the session's authenticated listener or activation metadata.
     if unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {

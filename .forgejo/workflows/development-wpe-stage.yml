@@ -26,7 +26,7 @@ jobs:
   produce:
     if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/codex/')
     runs-on: ${{ inputs.architecture == 'aarch64' && 'qos-package-arm64' || 'qos-package' }}
-    # Guard within existing three-hour runner limits, not a duration estimate.
+    # Keep within the existing three-hour runner limit.
     timeout-minutes: 170
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262

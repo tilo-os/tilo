@@ -8,14 +8,13 @@
 //! tilo-doc-text -                      # ...read from stdin
 //! tilo-doc-text <file> --contains WORD # exit 0 if present, 1 if not
 //! ```
-//! explains itself instead of just failing.
 
 use std::io::Read;
 use std::process::ExitCode;
 
 use automerge::{Automerge, ObjId, ObjType, ReadDoc, Value};
 
-/// How deep the walk goes before giving up — a guard against a malformed document, not a real limit (no app nests anywhere near it).
+/// Maximum traversal depth for malformed documents.
 const MAX_DEPTH: usize = 64;
 
 fn main() -> ExitCode {
@@ -57,7 +56,7 @@ fn main() -> ExitCode {
         }
     };
 
-    // `load` is the strict one and it is the right one: a document this cannot parse is not a document, and reporting "no text found" for it would be a false negative in a new coat.
+    // Treat invalid Automerge bytes as an error rather than reporting no text.
     let doc = match Automerge::load(&bytes) {
         Ok(d) => d,
         Err(e) => {

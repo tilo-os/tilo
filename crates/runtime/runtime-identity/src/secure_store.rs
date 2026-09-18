@@ -7,7 +7,7 @@
 //! is deliberately named *broker file*: the launcher may read it, sandboxed
 //! applications never receive either its path or its bytes.
 //!
-//! `SecretProvider` is the hardware-backed seam.  A TPM/FIDO implementation
+//! `SecretProvider` is the hardware-backed seam. A TPM/FIDO implementation
 //! can implement it and pass it to the `_with_provider` APIs; this crate does
 //! not claim hardware protection merely because `/dev/tpm*` exists.
 

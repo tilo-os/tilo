@@ -28,7 +28,7 @@ impl format_router::Server for FormatRouterService {
     // capnp-rpc's generated `Results`/`Params` types are `Rc`-based and
     // never `Send` by design — this whole server runs on capnp-rpc's own
     // single-threaded local executor, with `spawn_blocking` below the only
-    // bridge to a real thread. There is no Send-safe alternative shape.
+    // bridge to a worker thread. There is no Send-safe alternative shape.
     #[allow(
         clippy::future_not_send,
         reason = "capnp-rpc's Rc-based Results/Params are never Send; this runs on its local executor"

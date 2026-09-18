@@ -172,7 +172,7 @@ pub struct CaptureTarget {
     pub virtual_rect: Rect,
     /// Complete semantic page/document/canvas bounds supplied by the app.
     /// Absent for ordinary and foreign windows, where `virtual_rect` remains
-    /// the honest complete surface. This is metadata only; execution asks the
+    /// the complete surface. This is metadata only; execution asks the
     /// live provider to paint again so stale picker geometry never wins.
     pub complete_rect: Option<Rect>,
 }
@@ -4120,7 +4120,7 @@ impl Widget for CaptureStudio {
             base_scrim_alpha *= 0.64;
         }
         // A fully off-screen app—or a continuation sliver too narrow to label
-        // honestly—has no useful aperture in the scrim. Keep the desktop
+        //—has no useful aperture in the scrim. Keep the desktop
         // contextual; the centered source card and picker chip carry focus.
         let selected_app_needs_card = self.source == SourceMode::Window
             && self.selected_candidate().is_some_and(|target| {

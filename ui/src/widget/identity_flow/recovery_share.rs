@@ -6,7 +6,7 @@
 //!
 //! The screen never invents recovery words. In single-device bootstrap mode
 //! no independent recovery artifact exists, so the ceremony presents an
-//! honest unavailable state until a 2-of-N DKG has produced a real share.
+//! unavailable state until a 2-of-N DKG has produced a share.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;

@@ -24,10 +24,8 @@ path = "src/lib.rs"
 # crate keys its groups by.
 collab-types = { path = "../collab-types" }
 
-# OpenMLS itself. `0.8.x` is the current stable line on crates.io
-# (the spec's "0.6" predates the API reshape; verified via
-# `cargo search openmls` at landing time). We pin the minor so a
-# 0.9 / 0.x bump doesn't silently re-shape our public surface.
+# OpenMLS. Pin the minor version so an upstream API change receives an
+# explicit review before it changes this crate's public surface.
 openmls = "0.9"
 # Rust-Crypto-backed crypto provider for openmls. The provider owns
 # the in-memory key+state storage; we use it for both group state

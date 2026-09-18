@@ -11,7 +11,8 @@
 //!
 //! ## Live vs. sample
 //!
-//! Production loads only real stores and renders an honest empty state.
+//! Production loads the configured stores and renders an empty state when none
+//! are available.
 //! Screenshot and widget tests may inject [`crate::accounts::sample_directory`]
 //! explicitly; those rows are labelled examples and omit mutation controls.
 //!
@@ -587,8 +588,8 @@ impl AccountsPane {
     /// One account: label + connection summary, status, and a Remove button
     /// (only for real accounts — sample rows are illustrative).
     ///
-    /// Sample rows report an honest "Example" status rather than fabricating
-    /// a live "Connected" — nothing is actually connected in the illustration.
+    /// Sample rows report an "Example" status; they do not represent a live
+    /// connection.
     #[allow(
         clippy::too_many_lines,
         reason = "the full account-row action hierarchy is kept together for auditability"
@@ -1999,10 +2000,6 @@ mod tests {
         );
     }
 
-    /// The live pane (`new()`, over an empty store) must NOT fabricate the
-    /// illustrative sample — it renders an honest empty state, mirroring the
-    /// Printers pane's no-fabrication rule. Asserts the real production path,
-    /// with `XDG_CONFIG_HOME` redirected to an empty temp dir.
     #[test]
     fn live_pane_over_empty_store_does_not_fabricate_sample() {
         let _cfg = crate::prefs::test_env::ConfigGuard::new("accounts_empty_live");

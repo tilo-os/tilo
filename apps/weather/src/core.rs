@@ -3047,8 +3047,7 @@ impl Core {
 
     /// The air-quality section: an AQI severity hero + a row (or two) of key
     /// pollutant tiles, or an honest loading / unavailable message when there
-    /// is no reading yet. Real data only — a missing value shows an em-dash,
-    /// never a fabricated zero.
+    /// is no reading yet. A missing value shows an em-dash rather than zero.
     fn draw_air_quality(
         &self,
         ctx: &mut DrawCtx<'_>,
@@ -3456,7 +3455,7 @@ impl Core {
         self.search.text()
     }
     /// Test seam: the number of suggestion rows the shared overlay currently
-    /// offers (proves the autocomplete is populated from real geocode data).
+    /// offers (the rows are populated from geocode data).
     #[cfg(test)]
     pub fn search_suggestion_count(&self) -> usize {
         self.search.suggestions().len()
