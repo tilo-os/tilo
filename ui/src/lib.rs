@@ -48,7 +48,10 @@ pub mod animation;
 #[cfg(test)]
 extern crate self as ui;
 #[cfg(test)]
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "shared support is compiled by library and integration tests whose consumers intentionally use different subsets"
+)]
 #[path = "../tests/support/application.rs"]
 pub(crate) mod application_test_support;
 
