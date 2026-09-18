@@ -101,12 +101,14 @@ pub(crate) fn layout_rect(
 
 /// A line of text at `size` in the theme's primary colour.
 pub fn text(s: impl AsRef<str>, size: f32) -> Text {
-    Text::new(s.as_ref()).with_size(size)
+    Text::new(s.as_ref()).with_scaled_size(size)
 }
 
 /// A line of text in an explicit colour.
 pub fn text_c(s: impl AsRef<str>, size: f32, color: Color) -> Text {
-    Text::new(s.as_ref()).with_size(size).with_color(color)
+    Text::new(s.as_ref())
+        .with_scaled_size(size)
+        .with_color(color)
 }
 
 /// Dim secondary text (channel names, metadata).
