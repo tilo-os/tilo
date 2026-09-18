@@ -21,8 +21,9 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
-ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }
+ui = { package = "tilo-app", path = "../../crates/app/tilo-app", features = ["portal"] }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-portal-xdg = { path = "../../crates/runtime/runtime-portal-xdg" }
 tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 blake3.workspace = true
@@ -31,6 +32,7 @@ serde_json.workspace = true
 uuid.workspace = true
 dirs.workspace = true
 tracing.workspace = true
+url.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
