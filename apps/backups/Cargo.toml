@@ -18,7 +18,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "tilo-app", path = "../../crates/app/tilo-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
 # The Tilo action model: every document-mutating operation is a serializable,
 # replayable action dispatched through one executor, so undo, multi-peer replay
 # and the Ctrl+K command palette all work from a single implementation.
