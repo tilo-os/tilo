@@ -2059,6 +2059,36 @@ mod interaction_tests {
     }
 
     #[test]
+    fn detail_keyboard_controls_scroll_hourly_forecast_and_refresh() {
+        let mut h = Harness::new(1280.0, 720.0);
+        h.redraw();
+        assert!(
+            h.app.core.borrow().hourly_max_scroll() > 0.0,
+            "the populated hourly strip overflows at the standard detail width"
+        );
+        h.app.core.borrow_mut().take_outbox(); // drain startup requests
+
+        h.key(Key::Named(NamedKey::ArrowRight), None);
+        assert!(
+            h.app.core.borrow().hourly_scroll_x() > 0.0,
+            "Right Arrow pages the overflowing hourly forecast"
+        );
+        h.key(Key::Named(NamedKey::Home), None);
+        assert_eq!(h.app.core.borrow().hourly_scroll_x(), 0.0);
+
+        h.key(Key::Character(SmolStr::new("r")), Some("r"));
+        assert!(
+            h.app
+                .core
+                .borrow_mut()
+                .take_outbox()
+                .iter()
+                .any(|request| matches!(request, Request::Forecast { .. })),
+            "R refreshes the forecast through the same queued network path as the button"
+        );
+    }
+
+    #[test]
     fn root_accessibility_announces_weather_status() {
         let mut h = Harness::new(1280.0, 720.0);
         h.redraw();
