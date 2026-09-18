@@ -205,6 +205,20 @@ enum MetadataEditorHit {
     Cancel,
 }
 
+/// The local selection shelf. Selection is intentionally not a CRDT value:
+/// collaborators should see the durable favourite/album result, never a
+/// private cursor-like set that changes while somebody is deciding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SelectionHit {
+    Start,
+    SelectAll,
+    Clear,
+    Favorite,
+    ChooseAlbum,
+    AddToAlbum,
+    Done,
+}
+
 /// A compact materialised card.  The full library remains canonical in the
 /// document; this carries just enough metadata to make the visible shelf
 /// scannable without another document walk while painting.
@@ -568,6 +582,21 @@ pub struct PhotosApp {
     /// stable photo id, not a card index, keeps confirmation correct if a
     /// collaborator changes the grid between clicks.
     library_remove_confirm: Option<String>,
+    /// Local selection is an affordance for applying one canonical batch
+    /// action. It is bounded to cards the current view has materialized.
+    selection_mode: bool,
+    selected_photo_ids: HashSet<String>,
+    selection_anchor: Option<String>,
+    /// The destination is an explicit local choice, never inferred from the
+    /// album currently being browsed (which would commonly be a no-op).
+    selection_destination_album: Option<String>,
+    selection_album_chooser: bool,
+    /// Projection refreshed from the shared library; it lets the visible
+    /// batch control say Favorite or Unfavorite truthfully without storing
+    /// selection state in the document.
+    selection_all_favorite: bool,
+    selection_hits: Vec<(SelectionHit, Rect)>,
+    selection_destination_hits: Vec<(String, Rect)>,
     /// Stable-id hit targets for the currently materialised grid cards.
     library_cards: Vec<(String, Rect, bool)>,
     pointer: Point,
@@ -680,6 +709,14 @@ impl PhotosApp {
             thumbnail_visible_ids: Vec::new(),
             thumbnail_queued: HashSet::new(),
             library_remove_confirm: None,
+            selection_mode: false,
+            selected_photo_ids: HashSet::new(),
+            selection_anchor: None,
+            selection_destination_album: None,
+            selection_album_chooser: false,
+            selection_all_favorite: false,
+            selection_hits: Vec::new(),
+            selection_destination_hits: Vec::new(),
             library_cards: Vec::new(),
             pointer: Point::ZERO,
             library_mode: false,
@@ -869,6 +906,146 @@ impl PhotosApp {
         self.active_tag = None;
         self.active_favorites = false;
         self.library_remove_confirm = None;
+        self.finish_selection();
+    }
+
+    fn begin_selection(&mut self) {
+        self.selection_mode = true;
+        self.selected_photo_ids.clear();
+        self.selection_anchor = None;
+        self.selection_destination_album = None;
+        self.selection_album_chooser = false;
+        self.selection_all_favorite = false;
+        self.notice = Some("Select photographs, then apply a shared library action".to_owned());
+    }
+
+    fn finish_selection(&mut self) {
+        self.selection_mode = false;
+        self.selected_photo_ids.clear();
+        self.selection_anchor = None;
+        self.selection_destination_album = None;
+        self.selection_album_chooser = false;
+        self.selection_all_favorite = false;
+    }
+
+    /// Toggle one materialised card, or the inclusive visible range from the
+    /// previous anchor. A range is a view operation, so it is intentionally
+    /// bounded to the cards the person can currently inspect.
+    fn toggle_library_selection(&mut self, photo_id: &str, extend: bool) {
+        if !self.selection_mode {
+            return;
+        }
+        let visible: Vec<_> = self.library_cards.iter().map(|(id, _, _)| id).collect();
+        if extend
+            && let Some(anchor) = &self.selection_anchor
+            && let (Some(start), Some(end)) = (
+                visible.iter().position(|id| **id == *anchor),
+                visible.iter().position(|id| **id == photo_id),
+            )
+        {
+            let (start, end) = if start <= end {
+                (start, end)
+            } else {
+                (end, start)
+            };
+            for id in &visible[start..=end] {
+                self.selected_photo_ids.insert((**id).clone());
+            }
+            return;
+        }
+        if !self.selected_photo_ids.insert(photo_id.to_owned()) {
+            self.selected_photo_ids.remove(photo_id);
+        }
+        self.selection_anchor = Some(photo_id.to_owned());
+    }
+
+    fn select_all_visible(&mut self) {
+        self.selected_photo_ids
+            .extend(self.library_cards.iter().map(|(id, _, _)| id.clone()));
+    }
+
+    fn set_selected_favorite(&mut self, doc: &mut AutoCommit, favorite: bool) {
+        let mut ids: Vec<_> = self.selected_photo_ids.iter().cloned().collect();
+        ids.sort_unstable();
+        if ids.is_empty() {
+            self.notice = Some("Select at least one photograph first".to_owned());
+            return;
+        }
+        self.commit_library_action(
+            doc,
+            &crate::actions::PhotosAction::SetFavorites {
+                photo_ids: ids,
+                favorite,
+            },
+        );
+        self.notice = Some(if favorite {
+            "Selected photographs added to Favorites".to_owned()
+        } else {
+            "Selected photographs removed from Favorites".to_owned()
+        });
+        self.finish_selection();
+    }
+
+    fn add_selected_to_destination_album(&mut self, doc: &mut AutoCommit) {
+        let Some(album_id) = self.selection_destination_album.clone() else {
+            self.notice = Some("Choose a destination album first".to_owned());
+            return;
+        };
+        let library = PhotosDoc::library(doc);
+        let Some(album) = library.album(&album_id) else {
+            self.notice = Some("That album is no longer available".to_owned());
+            return;
+        };
+        let mut photo_ids = album.photo_ids.clone();
+        let mut selected: Vec<_> = self.selected_photo_ids.iter().cloned().collect();
+        selected.sort_unstable();
+        for id in selected {
+            if !photo_ids.contains(&id) {
+                photo_ids.push(id);
+            }
+        }
+        if self.selected_photo_ids.is_empty() {
+            self.notice = Some("Select at least one photograph first".to_owned());
+            return;
+        }
+        self.commit_library_action(
+            doc,
+            &crate::actions::PhotosAction::SetAlbumMembership {
+                album_id,
+                photo_ids,
+            },
+        );
+        self.notice = Some("Selected photographs added to the album".to_owned());
+        self.finish_selection();
+    }
+
+    fn handle_selection_hit(&mut self, hit: SelectionHit, doc: &mut AutoCommit) {
+        match hit {
+            SelectionHit::Start => self.begin_selection(),
+            SelectionHit::SelectAll => self.select_all_visible(),
+            SelectionHit::Clear => {
+                self.selected_photo_ids.clear();
+                self.selection_anchor = None;
+            }
+            SelectionHit::Favorite => {
+                let library = PhotosDoc::library(doc);
+                let all_favorite = !self.selected_photo_ids.is_empty()
+                    && self
+                        .selected_photo_ids
+                        .iter()
+                        .all(|id| library.photo(id).is_some_and(|photo| photo.favorite));
+                self.set_selected_favorite(doc, !all_favorite);
+            }
+            SelectionHit::ChooseAlbum => {
+                if self.selected_photo_ids.is_empty() || self.library_albums.is_empty() {
+                    self.notice = Some("Select photographs and create an album first".to_owned());
+                } else {
+                    self.selection_album_chooser = true;
+                }
+            }
+            SelectionHit::AddToAlbum => self.add_selected_to_destination_album(doc),
+            SelectionHit::Done => self.finish_selection(),
+        }
     }
 
     /// Pose the ordinary library editor for deterministic offscreen coverage.
@@ -896,6 +1073,14 @@ impl PhotosApp {
         {
             self.begin_metadata_editor(doc, &id);
         }
+    }
+
+    /// Pose the ordinary selection shelf for deterministic visual coverage.
+    /// The app selects no photographs initially, so the screenshot proves
+    /// that disabled batch actions are honest before a person chooses cards.
+    pub fn show_selection_for_shot(&mut self) {
+        self.show_library();
+        self.begin_selection();
     }
 
     /// Zoom the canvas, as the scroll wheel would. Lets a caller frame a crop
@@ -1942,7 +2127,20 @@ impl PhotosApp {
                     let item = self.library_items.iter().find(|item| item.id == *id)?;
                     let name = &item.name;
                     let open_target = format!("photos:library-photo:{id}");
-                    let mut children = vec![if self.album_editor {
+                    let mut children = vec![if self.selection_mode {
+                        AccessNode::new(Role::ToggleButton)
+                            .with_name(name.clone())
+                            .with_description(
+                                "Selected photographs receive the chosen shared batch action",
+                            )
+                            .with_bounds(*bounds)
+                            .with_state(AccessState {
+                                focusable: true,
+                                checked: Some(self.selected_photo_ids.contains(id)),
+                                ..Default::default()
+                            })
+                            .with_action_target(open_target)
+                    } else if self.album_editor {
                         AccessNode::new(Role::ToggleButton)
                             .with_name(name.clone())
                             .with_description("Included in this album")
@@ -1964,7 +2162,7 @@ impl PhotosApp {
                             })
                             .with_action_target(open_target)
                     }];
-                    if !self.album_editor {
+                    if !self.album_editor && !self.selection_mode {
                         let favorite_target = format!("photos:library-favorite:{id}");
                         let favorite_bounds =
                             Rect::new(bounds.x1 - 44.0, bounds.y1 - 44.0, bounds.x1, bounds.y1);
@@ -2109,6 +2307,81 @@ impl PhotosApp {
                         } else {
                             "photos:library-page:previous"
                         }),
+                );
+            }
+            for (hit, bounds) in &self.selection_hits {
+                let (name, target, disabled) = match hit {
+                    SelectionHit::Start => ("Select photographs", "photos:selection:start", false),
+                    SelectionHit::SelectAll => (
+                        "Select all visible photographs",
+                        "photos:selection:all",
+                        false,
+                    ),
+                    SelectionHit::Clear => (
+                        "Clear photograph selection",
+                        "photos:selection:clear",
+                        self.selected_photo_ids.is_empty(),
+                    ),
+                    SelectionHit::Favorite => (
+                        if self.selection_all_favorite {
+                            "Remove selected photographs from Favorites"
+                        } else {
+                            "Add selected photographs to Favorites"
+                        },
+                        "photos:selection:favorite",
+                        self.selected_photo_ids.is_empty(),
+                    ),
+                    SelectionHit::ChooseAlbum => (
+                        "Choose destination album",
+                        "photos:selection:choose-album",
+                        self.selected_photo_ids.is_empty() || self.library_albums.is_empty(),
+                    ),
+                    SelectionHit::AddToAlbum => (
+                        "Add selected photographs to selected album",
+                        "photos:selection:add-to-album",
+                        self.selected_photo_ids.is_empty()
+                            || self.selection_destination_album.is_none(),
+                    ),
+                    SelectionHit::Done => (
+                        "Finish selecting photographs",
+                        "photos:selection:done",
+                        false,
+                    ),
+                };
+                cards.push(
+                    AccessNode::new(Role::Button)
+                        .with_name(name)
+                        .with_bounds(*bounds)
+                        .with_state(AccessState {
+                            focusable: !disabled,
+                            disabled,
+                            ..Default::default()
+                        })
+                        .with_action_target(target),
+                );
+            }
+            for (album_id, bounds) in &self.selection_destination_hits {
+                let name = self
+                    .library_albums
+                    .iter()
+                    .find(|(id, _, _)| id == album_id)
+                    .map_or_else(
+                        || "Choose destination album".to_owned(),
+                        |(_, name, _)| format!("Use {name} as destination album"),
+                    );
+                cards.push(
+                    AccessNode::new(Role::ToggleButton)
+                        .with_name(name)
+                        .with_bounds(*bounds)
+                        .with_state(AccessState {
+                            focusable: true,
+                            checked: Some(
+                                self.selection_destination_album.as_deref()
+                                    == Some(album_id.as_str()),
+                            ),
+                            ..Default::default()
+                        })
+                        .with_action_target(format!("photos:selection:destination:{album_id}")),
                 );
             }
             if self.metadata_editor {
@@ -2312,6 +2585,36 @@ impl PhotosApp {
         action: &AccessAction,
         doc: &mut AutoCommit,
     ) -> bool {
+        if let Some(command) = target.strip_prefix("photos:selection:") {
+            if !matches!(action, AccessAction::Activate | AccessAction::Focus) {
+                return false;
+            }
+            if matches!(action, AccessAction::Activate) {
+                if let Some(album_id) = command.strip_prefix("destination:") {
+                    if PhotosDoc::album(doc, album_id).is_none() {
+                        self.notice =
+                            Some("That destination album is no longer available".to_owned());
+                        return false;
+                    }
+                    self.selection_destination_album = Some(album_id.to_owned());
+                    self.selection_album_chooser = false;
+                    self.notice = Some("Destination album selected".to_owned());
+                    return true;
+                }
+                let hit = match command {
+                    "start" => SelectionHit::Start,
+                    "all" => SelectionHit::SelectAll,
+                    "clear" => SelectionHit::Clear,
+                    "favorite" => SelectionHit::Favorite,
+                    "choose-album" => SelectionHit::ChooseAlbum,
+                    "add-to-album" => SelectionHit::AddToAlbum,
+                    "done" => SelectionHit::Done,
+                    _ => return false,
+                };
+                self.handle_selection_hit(hit, doc);
+            }
+            return true;
+        }
         if let Some(direction) = target.strip_prefix("photos:library-page:") {
             if !matches!(action, AccessAction::Activate | AccessAction::Focus) {
                 return false;
@@ -2422,13 +2725,18 @@ impl PhotosApp {
                 return false;
             };
         if !matches!(action, AccessAction::Activate) {
+            if matches!(action, AccessAction::Focus) && self.selection_mode {
+                self.selection_anchor = Some(photo_id.to_owned());
+            }
             return matches!(action, AccessAction::Focus);
         }
         let Some(item) = self.library_items.iter().find(|item| item.id == photo_id) else {
             return false;
         };
         let favorite = item.favorite;
-        if remove {
+        if self.selection_mode {
+            self.toggle_library_selection(photo_id, false);
+        } else if remove {
             if self.library_remove_confirm.as_deref() == Some(photo_id) {
                 self.commit_library_action(
                     doc,
@@ -3387,7 +3695,37 @@ impl PhotosApp {
                 TextWeight::Medium,
             );
         }
-        let top = pager_y + pager_h;
+        // Selection owns an explicit action shelf above the cards. On a
+        // narrow or enlarged-text window it becomes two comfortable rows
+        // instead of compressing five actions into an unreadable strip.
+        let selection_h = if self.selection_mode {
+            if self.selection_album_chooser {
+                if large_text || bounds.width() < 620.0 {
+                    204.0
+                } else {
+                    152.0
+                }
+            } else if large_text || bounds.width() < 620.0 {
+                100.0
+            } else {
+                52.0
+            }
+        } else {
+            0.0
+        };
+        let selection_y = pager_y + pager_h;
+        self.draw_selection_controls(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            bounds,
+            masthead,
+            selection_y,
+            selection_h,
+            desktop_library,
+        );
+        let top = selection_y + selection_h;
         // The worker preserves source aspect ratio. A 3:2 shelf avoids the
         // oversized letterbox trays the old 16:10 geometry produced.
         let preview_h = (card_w * 0.667).clamp(
@@ -3458,6 +3796,15 @@ impl PhotosApp {
                 None,
                 &card,
             );
+            if self.selection_mode && self.selected_photo_ids.contains(id) {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.accent[6],
+                    None,
+                    &Rect::new(card.x0, card.y0, card.x1, card.y0 + 3.0),
+                );
+            }
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -3650,6 +3997,316 @@ impl PhotosApp {
         }
         self.draw_album_editor(scene, transform, text_renderer, theme, presence);
         self.draw_metadata_editor(scene, transform, text_renderer, theme, presence);
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the selection shelf keeps its responsive geometry and semantic hit boxes in one audited renderer"
+    )]
+    fn draw_selection_controls(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        bounds: Rect,
+        masthead: Rect,
+        selection_y: f64,
+        selection_h: f64,
+        desktop_library: bool,
+    ) {
+        use vello::peniko::Fill;
+
+        self.selection_hits.clear();
+        self.selection_destination_hits.clear();
+        let draw_button = |scene: &mut Scene,
+                           text_renderer: &mut TextRenderer,
+                           hit: SelectionHit,
+                           rect: Rect,
+                           label: &str,
+                           enabled: bool,
+                           hits: &mut Vec<(SelectionHit, Rect)>| {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                if enabled {
+                    theme.tokens.colors.surfaces.raised
+                } else {
+                    theme.tokens.colors.neutral[2]
+                },
+                None,
+                &rect,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.border_standard,
+                None,
+                &rect,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                label,
+                12.0,
+                if enabled {
+                    theme.text_primary
+                } else {
+                    theme.text_dim
+                },
+                transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 13.0)),
+                Some((rect.width() - 20.0) as f32),
+                TextWeight::Medium,
+            );
+            if enabled {
+                hits.push((hit, rect));
+            }
+        };
+
+        if !self.selection_mode {
+            // The normal desktop masthead has intentional empty room between
+            // its library identity and album management. On compact layouts
+            // this short, named control follows the heading rather than
+            // replacing a destructive card affordance.
+            let rect = if desktop_library {
+                Rect::new(
+                    masthead.x1 - 500.0,
+                    masthead.y0 + 16.0,
+                    masthead.x1 - 388.0,
+                    masthead.y1 - 16.0,
+                )
+            } else {
+                Rect::new(
+                    bounds.x1 - 118.0,
+                    bounds.y0 + 8.0,
+                    bounds.x1 - f64::from(PAD),
+                    bounds.y0 + 44.0,
+                )
+            };
+            draw_button(
+                scene,
+                text_renderer,
+                SelectionHit::Start,
+                rect,
+                "Select",
+                true,
+                &mut self.selection_hits,
+            );
+            return;
+        }
+
+        let selected = self.selected_photo_ids.len();
+        let destination_label = self
+            .selection_destination_album
+            .as_deref()
+            .and_then(|id| {
+                self.library_albums
+                    .iter()
+                    .find(|(album_id, _, _)| album_id == id)
+                    .map(|(_, name, _)| name)
+            })
+            .map_or_else(
+                || "Choose album".to_owned(),
+                |name| format!("Add to {}", compact_label(name, 12)),
+            );
+        let wide = selection_h <= 52.0;
+        let x = bounds.x0 + f64::from(PAD);
+        let max_x = bounds.x1 - f64::from(PAD);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &Rect::new(x, selection_y, max_x, selection_y + selection_h - 4.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &Rect::new(x, selection_y, max_x, selection_y + selection_h - 4.0),
+        );
+        let label = format!("{selected} selected");
+        if wide {
+            text_renderer.draw_text_weighted(
+                scene,
+                &label,
+                13.0,
+                theme.text_primary,
+                transform * Affine::translate((x + 12.0, selection_y + 15.0)),
+                Some(112.0),
+                TextWeight::Medium,
+            );
+            let mut button_x = x + 122.0;
+            for (hit, label, width, enabled) in [
+                (
+                    SelectionHit::SelectAll,
+                    "Select all",
+                    102.0,
+                    !self.library_cards.is_empty(),
+                ),
+                (SelectionHit::Clear, "Clear", 76.0, selected > 0),
+                (
+                    SelectionHit::Favorite,
+                    if self.selection_all_favorite {
+                        "Unfavorite"
+                    } else {
+                        "Favorite"
+                    },
+                    104.0,
+                    selected > 0,
+                ),
+                (
+                    if self.selection_destination_album.is_some() {
+                        SelectionHit::AddToAlbum
+                    } else {
+                        SelectionHit::ChooseAlbum
+                    },
+                    destination_label.as_str(),
+                    128.0,
+                    selected > 0 && !self.library_albums.is_empty(),
+                ),
+                (SelectionHit::Done, "Done", 78.0, true),
+            ] {
+                let rect = Rect::new(
+                    button_x,
+                    selection_y + 4.0,
+                    button_x + width,
+                    selection_y + 44.0,
+                );
+                draw_button(
+                    scene,
+                    text_renderer,
+                    hit,
+                    rect,
+                    label,
+                    enabled,
+                    &mut self.selection_hits,
+                );
+                button_x += width + 6.0;
+            }
+        } else {
+            text_renderer.draw_text_weighted(
+                scene,
+                &label,
+                12.0,
+                theme.text_primary,
+                transform * Affine::translate((x + 10.0, selection_y + 9.0)),
+                Some(96.0),
+                TextWeight::Medium,
+            );
+            let first_y = selection_y + 4.0;
+            let second_y = selection_y + 50.0;
+            for (hit, label, rect, enabled) in [
+                (
+                    SelectionHit::SelectAll,
+                    "All",
+                    Rect::new(x + 104.0, first_y, x + 168.0, first_y + 40.0),
+                    !self.library_cards.is_empty(),
+                ),
+                (
+                    SelectionHit::Clear,
+                    "Clear",
+                    Rect::new(x + 174.0, first_y, x + 246.0, first_y + 40.0),
+                    selected > 0,
+                ),
+                (
+                    SelectionHit::Done,
+                    "Done",
+                    Rect::new(max_x - 78.0, first_y, max_x, first_y + 40.0),
+                    true,
+                ),
+                (
+                    SelectionHit::Favorite,
+                    if self.selection_all_favorite {
+                        "Unfavorite"
+                    } else {
+                        "Favorite"
+                    },
+                    Rect::new(x, second_y, x + 108.0, second_y + 40.0),
+                    selected > 0,
+                ),
+                (
+                    if self.selection_destination_album.is_some() {
+                        SelectionHit::AddToAlbum
+                    } else {
+                        SelectionHit::ChooseAlbum
+                    },
+                    destination_label.as_str(),
+                    Rect::new(x + 114.0, second_y, x + 248.0, second_y + 40.0),
+                    selected > 0 && !self.library_albums.is_empty(),
+                ),
+            ] {
+                draw_button(
+                    scene,
+                    text_renderer,
+                    hit,
+                    rect,
+                    label,
+                    enabled,
+                    &mut self.selection_hits,
+                );
+            }
+        }
+        if self.selection_album_chooser {
+            let chooser_y = selection_y + 98.0;
+            text_renderer.draw_text_weighted(
+                scene,
+                "Destination album",
+                11.0,
+                theme.text_dim,
+                transform * Affine::translate((x + 10.0, chooser_y + 10.0)),
+                Some(160.0),
+                TextWeight::Medium,
+            );
+            let mut button_x = x + 10.0;
+            let mut button_y = chooser_y + 28.0;
+            for (id, name, _) in self.library_albums.iter().take(12) {
+                let width = (name.chars().count() as f64 * 7.5 + 26.0).clamp(84.0, 160.0);
+                if button_x + width > max_x - 8.0 {
+                    button_x = x + 10.0;
+                    button_y += 42.0;
+                }
+                if button_y + 38.0 > selection_y + selection_h - 4.0 {
+                    break;
+                }
+                let rect = Rect::new(button_x, button_y, button_x + width, button_y + 36.0);
+                let chosen = self.selection_destination_album.as_deref() == Some(id);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    if chosen {
+                        theme.tokens.colors.accent[6]
+                    } else {
+                        theme.tokens.colors.neutral[3]
+                    },
+                    None,
+                    &rect,
+                );
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    transform,
+                    theme.border_standard,
+                    None,
+                    &rect,
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    name,
+                    11.0,
+                    theme.text_primary,
+                    transform * Affine::translate((rect.x0 + 8.0, rect.y0 + 11.0)),
+                    Some((rect.width() - 16.0) as f32),
+                    TextWeight::Medium,
+                );
+                // Selection destinations are local presentation choices, so
+                // their stable album id is retained in the hit target rather
+                // than a column/row position.
+                // The semantic target resolves the id directly; the pointer
+                // path reads this paired side table below.
+                self.selection_destination_hits.push((id.clone(), rect));
+                button_x += width + 6.0;
+            }
+        }
     }
 
     /// Paint the album editor directly over the library, keeping the selected
@@ -5130,6 +5787,20 @@ impl Widget for PhotosApp {
         }
         self.status = self.status_text(doc);
         let library = PhotosDoc::library(doc);
+        self.selection_all_favorite = !self.selected_photo_ids.is_empty()
+            && self
+                .selected_photo_ids
+                .iter()
+                .all(|id| library.photo(id).is_some_and(|photo| photo.favorite));
+        if self
+            .selection_destination_album
+            .as_ref()
+            .is_some_and(|id| library.album(id).is_none())
+        {
+            self.selection_destination_album = None;
+            self.selection_album_chooser = false;
+            self.notice = Some("The selected destination album was removed elsewhere".to_owned());
+        }
         let membership = self.active_album.as_ref().and_then(|id| {
             library
                 .albums
@@ -5560,6 +6231,30 @@ impl Widget for PhotosApp {
             && let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == winit::event::ElementState::Pressed
         {
+            if (modifiers.state().control_key() || modifiers.state().super_key())
+                && matches!(&key.logical_key, Key::Character(value) if value.eq_ignore_ascii_case("a"))
+                && self.selection_mode
+            {
+                self.select_all_visible();
+                *handled = true;
+                return;
+            }
+            if (modifiers.state().control_key() || modifiers.state().super_key())
+                && matches!(&key.logical_key, Key::Character(value) if value == " ")
+            {
+                if self.selection_mode {
+                    self.finish_selection();
+                } else {
+                    self.begin_selection();
+                }
+                *handled = true;
+                return;
+            }
+            if self.selection_mode && matches!(&key.logical_key, Key::Named(NamedKey::Escape)) {
+                self.finish_selection();
+                *handled = true;
+                return;
+            }
             let forward = match &key.logical_key {
                 Key::Named(NamedKey::PageDown | NamedKey::ArrowRight) => Some(true),
                 Key::Named(NamedKey::PageUp | NamedKey::ArrowLeft) => Some(false),
@@ -5589,6 +6284,49 @@ impl Widget for PhotosApp {
             && enabled
         {
             self.page_library(forward);
+            *handled = true;
+            return;
+        }
+
+        if self.library_mode
+            && self.selection_album_chooser
+            && matches!(
+                event,
+                winit::event::WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Released,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+            )
+            && let Some((album_id, _)) = self
+                .selection_destination_hits
+                .iter()
+                .find(|(_, rect)| rect.contains(self.pointer))
+                .cloned()
+        {
+            self.selection_destination_album = Some(album_id);
+            self.selection_album_chooser = false;
+            self.notice = Some("Destination album selected".to_owned());
+            *handled = true;
+            return;
+        }
+
+        if self.library_mode
+            && matches!(
+                event,
+                winit::event::WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Released,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+            )
+            && let Some((hit, _)) = self
+                .selection_hits
+                .iter()
+                .find(|(_, rect)| rect.contains(self.pointer))
+                .copied()
+        {
+            self.handle_selection_hit(hit, doc);
             *handled = true;
             return;
         }
@@ -5724,7 +6462,9 @@ impl Widget for PhotosApp {
                 .find(|(_, card, _)| card.contains(self.pointer))
                 .cloned()
         {
-            if !self.album_editor
+            if self.selection_mode {
+                self.toggle_library_selection(&photo_id, modifiers.state().shift_key());
+            } else if !self.album_editor
                 && self.pointer.y >= card.y1 - 44.0
                 && self.pointer.x >= card.x1 - 88.0
             {
@@ -6167,6 +6907,91 @@ mod tests {
                 &ROOT,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn selection_is_local_but_its_favorite_and_album_results_are_canonical_actions() {
+        let mut app = PhotosApp::new();
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let first = LibraryPhoto::from_image(OpenImage::from_path("/photos/first.png", 20, 10));
+        let second = LibraryPhoto::from_image(OpenImage::from_path("/photos/second.png", 20, 10));
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos: vec![first.clone(), second.clone()],
+                albums: vec![Album {
+                    id: "photos.album:trip".into(),
+                    name: "Trip".into(),
+                    photo_ids: Vec::new(),
+                }],
+            },
+        );
+        app.library_cards = vec![
+            (first.id.clone(), Rect::new(0.0, 0.0, 44.0, 44.0), false),
+            (second.id.clone(), Rect::new(48.0, 0.0, 92.0, 44.0), false),
+        ];
+        app.library_albums = vec![("photos.album:trip".into(), "Trip".into(), 0)];
+        app.begin_selection();
+        app.toggle_library_selection(&first.id, false);
+        app.toggle_library_selection(&second.id, true);
+        assert_eq!(
+            app.selected_photo_ids.len(),
+            2,
+            "range selects visible cards"
+        );
+        app.set_selected_favorite(&mut doc, true);
+        assert!(
+            PhotosDoc::library(&doc)
+                .photos
+                .iter()
+                .all(|photo| photo.favorite)
+        );
+        assert!(!app.selection_mode, "selection itself never persists");
+
+        app.library_cards = vec![
+            (first.id.clone(), Rect::new(0.0, 0.0, 44.0, 44.0), true),
+            (second.id.clone(), Rect::new(48.0, 0.0, 92.0, 44.0), true),
+        ];
+        app.begin_selection();
+        app.select_all_visible();
+        assert!(app.perform_library_semantic_action(
+            "photos:selection:favorite",
+            &AccessAction::Activate,
+            &mut doc,
+        ));
+        assert!(
+            PhotosDoc::library(&doc)
+                .photos
+                .iter()
+                .all(|photo| !photo.favorite),
+            "the same batch command also has an explicit unfavorite result"
+        );
+
+        app.begin_selection();
+        app.select_all_visible();
+        assert!(app.perform_library_semantic_action(
+            "photos:selection:choose-album",
+            &AccessAction::Activate,
+            &mut doc,
+        ));
+        assert!(app.selection_album_chooser);
+        assert!(app.perform_library_semantic_action(
+            "photos:selection:destination:photos.album:trip",
+            &AccessAction::Activate,
+            &mut doc,
+        ));
+        assert_eq!(
+            app.selection_destination_album.as_deref(),
+            Some("photos.album:trip"),
+            "the target album is an explicit, stable choice rather than the current view"
+        );
+        app.add_selected_to_destination_album(&mut doc);
+        assert_eq!(
+            PhotosDoc::library(&doc).albums[0].photo_ids,
+            vec![first.id, second.id],
+            "album membership uses the same absolute document action agents invoke"
         );
     }
 
