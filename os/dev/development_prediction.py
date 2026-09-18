@@ -172,6 +172,9 @@ def verify_prediction(root, public_bundle, manifest_sha256, architecture, genera
     return {'schema': 1, 'purpose': 'tilo-development-offline-prediction-verification',
             'generation': generation, 'target_uki_sha256': digest, 'pcr_public_key_sha256': key_digest,
             'manifest_sha256': manifest_sha256, 'systemd_version': systemd_version,
+            # Preserve already signature-verified live identities for media
+            # consumers; target PCR proof below still applies only to TARGET.
+            'signed_ukis': boot_receipt['ukis'],
             'pcr_bank': 'sha256', 'pcrs': [11], 'phase': 'enter-initrd', 'approved_policy': actual.hex(),
             'proof': {'offline_policy_recomputed': True, 'live_pcr': False, 'vm_boot': False},
             'installable': False}
