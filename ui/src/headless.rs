@@ -1831,7 +1831,7 @@ impl FrameHarness {
         self.pump_component_wakes();
 
         if self.caller_palette.palette.is_some() {
-            let handled = self.caller_palette.palette.as_mut().unwrap().perform_host_semantic(name, semantic_target, action, &mut self.state.doc, &self.state.root);
+            let handled = self.perform_caller_palette_semantic(name, semantic_target, action);
             self.finish_caller_palette(); self.relayout();
             return if handled { Ok(()) } else { Err("palette owns input".into()) };
         }

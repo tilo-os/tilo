@@ -91,6 +91,19 @@ impl FrameHarness {
         }
     }
 
+    pub(super) fn perform_caller_palette_semantic(
+        &mut self,
+        name: &str,
+        target: Option<&str>,
+        action: &crate::a11y::Action,
+    ) -> bool {
+        let Some(snapshot) = self.caller_palette_inspection() else { return false; };
+        let Some(results_owner) = semantic_owner(&snapshot, name, target) else { return false; };
+        self.caller_palette.palette.as_mut().unwrap().perform_host_semantic(
+            results_owner, target, action, &mut self.state.doc, &self.state.root,
+        )
+    }
+
     pub(super) fn draw_caller_palette(&mut self) {
         if let Some(palette) = &mut self.caller_palette.palette {
             let width = (f64::from(self.viewport.0) - 32.0).clamp(1.0, 640.0);
@@ -130,6 +143,27 @@ impl FrameHarness {
             ],
         })
     }
+}
+
+// Mirror the browser's unique-test-ID or exact-path owner contract using only
+// the current palette tree. Background, invented and ambiguous owners fail closed.
+fn semantic_owner(snapshot: &InspectionNode, name: &str, target: Option<&str>) -> Option<bool> {
+    fn collect<'a>(node: &'a InspectionNode, results: bool, name: &str, found: &mut Vec<(bool, &'a InspectionNode)>) {
+        if node.path == name || node.test_id.as_deref() == Some(name) { found.push((results, node)); }
+        for child in &node.children { collect(child, results, name, found); }
+    }
+    fn target_count(node: &crate::a11y::AccessNode, target: &str) -> usize {
+        usize::from(node.action_target.as_deref() == Some(target))
+            + node.children.iter().map(|child| target_count(child, target)).sum::<usize>()
+    }
+    let mut found = Vec::new();
+    for (index, child) in snapshot.children.iter().enumerate() {
+        collect(child, index == 1, name, &mut found);
+    }
+    let [(results, node)] = found.as_slice() else { return None; };
+    let semantics = node.semantics.as_ref()?;
+    if target.is_some_and(|target| target_count(semantics, target) != 1) { return None; }
+    Some(*results)
 }
 
 #[cfg(test)]
@@ -333,11 +367,49 @@ mod tests {
         frame.set_caller_actions(original.clone());open(&mut frame);
         let snapshot=frame.caller_palette_inspection().unwrap();let results=&snapshot.children[1];
         let target=results.semantics.as_ref().unwrap().children[0].action_target.clone().unwrap();
+        // semanticBridge chooses a unique test ID before the inspection path.
+        let owner=results.test_id.as_deref().unwrap();
+        assert_eq!(owner,"action-palette-results");
         frame.set_caller_actions(vec![]);
-        assert!(frame.perform_semantic_named(&results.path,Some(&target),&crate::a11y::Action::Activate).is_err());
+        assert!(frame.perform_semantic_named(owner,Some(&target),&crate::a11y::Action::Activate).is_err());
         frame.set_caller_actions(original);
-        frame.perform_semantic_named(&results.path,Some(&target),&crate::a11y::Action::Activate).unwrap();
+        frame.perform_semantic_named(owner,Some(&target),&crate::a11y::Action::Activate).unwrap();
         assert_eq!(frame.take_caller_operation().unwrap().address.action,"insert");
+    }
+
+    #[test]
+    fn palette_semantics_refuse_unpublished_owners_and_field_targets() {
+        let mut frame=frame();
+        frame.set_caller_actions(resources(qos_actions::ConfirmationPolicy::None,vec![]));
+        open(&mut frame);
+        let snapshot=frame.caller_palette_inspection().unwrap();
+        let field=&snapshot.children[0];
+        assert!(field.test_id.is_none(),"search publishes its exact path owner");
+        for owner in ["document", "caller-palette/not-a-SearchField", "caller-palette/SearchField[99]"] {
+            assert!(frame.perform_semantic_named(owner,None,&crate::a11y::Action::SetValue("wrong".into())).is_err());
+        }
+        assert!(frame.perform_semantic_named(&field.path,Some("unpublished-child"),&crate::a11y::Action::SetValue("wrong".into())).is_err());
+        assert_eq!(frame.caller_palette.palette.as_ref().unwrap().query(),"");
+        frame.perform_semantic_named(&field.path,None,&crate::a11y::Action::SetValue("Insert table".into())).unwrap();
+        assert_eq!(frame.caller_palette.palette.as_ref().unwrap().query(),"Insert table");
+        assert!(frame.take_caller_operation().is_none());
+        assert!(frame.inspection_json().unwrap().contains("Insert table"));
+    }
+
+    #[test]
+    fn palette_semantic_owner_refuses_ambiguous_ids_and_targets() {
+        let mut frame=frame();
+        frame.set_caller_actions(resources(qos_actions::ConfirmationPolicy::None,vec![]));open(&mut frame);
+        let mut snapshot=frame.caller_palette_inspection().unwrap();
+        let results=&snapshot.children[1];let owner=results.test_id.clone().unwrap();
+        let target=results.semantics.as_ref().unwrap().children[0].action_target.clone().unwrap();
+        assert_eq!(semantic_owner(&snapshot,&owner,Some(&target)),Some(true));
+        snapshot.children[0].test_id=Some(owner.clone());
+        assert_eq!(semantic_owner(&snapshot,&owner,Some(&target)),None);
+        snapshot.children[0].test_id=None;
+        let rows=&mut snapshot.children[1].semantics.as_mut().unwrap().children;
+        rows.push(rows[0].clone());
+        assert_eq!(semantic_owner(&snapshot,&owner,Some(&target)),None);
     }
 
     #[test]

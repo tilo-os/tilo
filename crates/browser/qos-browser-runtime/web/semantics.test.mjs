@@ -375,3 +375,24 @@ test('duplicate tab test IDs route by current path while canonical group identit
   notes.dispatchEvent(event('click'));
   assert.equal(calls.at(-1)[0],'desktop/row/WindowGroup[2]/TabBar[0]');
 });
+
+
+test('caller palette publishes exact result test ID and search path routes and refuses removed rows',()=>{
+  const calls=[];const reports=[];const root=new Element('div');
+  const bridge=semanticBridge(root,(...args)=>{calls.push(args);return true;},report=>reports.push(report));
+  const target='action:exact-certified-host/room/record/revision:insert-table';
+  const searchPath='caller-palette/SearchField[0]';
+  const field={path:searchPath,semantics:{role:'TextInput',name:'Search',value:'',state:{focusable:true}}};
+  const results={path:'caller-palette/SearchResultsView[0]',test_id:'action-palette-results',semantics:{role:'List',name:'Search results',children:[{role:'ListItem',name:'Document — Insert table',action_target:target}]}};
+  const view=children=>({root:{path:'caller-palette',test_id:'caller-palette',children}});
+  document.activeElement=document.body;bridge.update(view([field,results]));
+  const row=root.children[1].children[0];row.dispatchEvent(event('click'));
+  assert.deepEqual(calls.at(-1),['action-palette-results',target,'activate','',0,0]);
+  const editor=root.children[0];document.activeElement=editor;editor.value='Insert table';
+  editor.dispatchEvent(event('input',{inputType:'insertText',isComposing:false}));
+  assert.deepEqual(calls.find(call=>call[2]==='value'),[searchPath,undefined,'value','Insert table',0,0]);
+  bridge.update(view([field,{...results,semantics:{...results.semantics,children:[]}}]));
+  const count=calls.length;row.dispatchEvent(event('click'));
+  assert.equal(calls.length,count,'revoked row cannot send a stale target into WASM');
+  assert.equal(reports.at(-1).semanticResult,'stale-target');
+});

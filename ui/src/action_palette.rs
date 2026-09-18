@@ -1340,14 +1340,16 @@ impl ActionPalette {
         (&self.field, &self.results)
     }
 
-    pub(crate) fn perform_host_semantic(&mut self, name: &str, target: Option<&str>, action: &crate::a11y::Action, doc: &mut AutoCommit, root: &ObjId) -> bool {
-        if !name.starts_with("caller-palette/") { return false; }
-        let handled = if name.contains("SearchField") || name.contains("TextInput") {
-            if matches!(action, crate::a11y::Action::Focus) { true }
-            else { self.field.perform_action(action, doc, root) }
-        } else if name.contains("SearchResultsView") || name.contains("action-palette-results") {
+    pub(crate) fn perform_host_semantic(&mut self, results_owner: bool, target: Option<&str>, action: &crate::a11y::Action, doc: &mut AutoCommit, root: &ObjId) -> bool {
+        // The caller resolves this owner against the current inspection before
+        // entering the widget. No guessed path or substring is an authority.
+        let handled = if results_owner {
             target.is_some_and(|target| self.results.perform_semantic_action(target, action, doc, root))
-        } else { false };
+        } else if matches!(action, crate::a11y::Action::Focus) {
+            true
+        } else {
+            self.field.perform_action(action, doc, root)
+        };
         if let Some(query) = self.field.take_dirty() {
             if self.arg.is_none() && self.confirm.is_none() { self.rebuild(&query); }
         }
