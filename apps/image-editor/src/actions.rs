@@ -59,16 +59,17 @@ impl Action for AddAdjustment {
     }
 }
 
-/// Delete is a tombstone rather than a whole-project replacement.  It is
-/// idempotent, delete-wins against parameter edits, and preserves a stable
-/// resource address for history even after the visible resource disappears.
+/// Hide an adjustment instead of replacing the entire project. It is
+/// idempotent, preserves the stable resource address, and can be restored by
+/// the editor's shared undo history. Permanent delete-wins tombstones remain
+/// available to document maintenance and migration code.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RemoveAdjustment {
     pub id: String,
 }
 impl Action for RemoveAdjustment {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        let _ = ProjectDoc::remove_adjustment(doc, &self.id);
+        let _ = ProjectDoc::hide_adjustment(doc, &self.id);
         Ok(())
     }
     fn locus(&self) -> ExecutionLocus {
@@ -268,8 +269,8 @@ pub fn resource(project: &Project) -> Resource {
             REMOVE_ADJUSTMENT_TYPE,
             &RemoveAdjustment { id: id.clone() },
         ) {
-            adjustment = adjustment.with_action(spec.destructive().with_description(
-                "Permanently remove this step while keeping later steps connected",
+            adjustment = adjustment.with_action(spec.reversible().with_description(
+                "Remove this step while keeping later steps connected; Undo restores it",
             ));
         }
         r = r.with_child(adjustment);
@@ -334,7 +335,9 @@ fn adjustment_parameter_actions(id: &str, operation: Option<&Operation>) -> Vec<
             Operation::Contrast { .. } => ("amount", "Set contrast", -2.0, 3.0),
             Operation::Saturation { .. } => ("amount", "Set colour", -2.0, 3.0),
             Operation::Rotate { .. } => ("quarter_turns", "Set rotation", 0.0, 3.0),
-            Operation::Crop { .. } => unreachable!("crop returned above"),
+            // Crop was handled by the early return above. Keep this branch
+            // harmless if the parameter surface is rearranged later.
+            Operation::Crop { .. } => return Vec::new(),
             Operation::Source { .. } | Operation::Grayscale | Operation::Output => {
                 return Vec::new();
             }
@@ -380,13 +383,14 @@ fn numeric_action(
             ),
         ],
         move |args: &ActionArgs| {
-            encode_update(UpdateAdjustment {
+            let update = UpdateAdjustment {
                 id: id.clone(),
                 update: AdjustmentUpdate::Number {
                     field: field.clone(),
                     value: args.number("value").unwrap_or_default(),
                 },
-            })
+            };
+            encode_update(&update)
         },
     )
 }
@@ -407,19 +411,20 @@ fn position_action(id: &str) -> ActionSpec {
             ),
         ],
         move |args: &ActionArgs| {
-            encode_update(UpdateAdjustment {
+            let update = UpdateAdjustment {
                 id: id.clone(),
                 update: AdjustmentUpdate::Position {
                     x: args.number("x").unwrap_or_default(),
                     y: args.number("y").unwrap_or_default(),
                 },
-            })
+            };
+            encode_update(&update)
         },
     )
 }
 
-fn encode_update(update: UpdateAdjustment) -> EncodedAction {
-    EncodedAction::encode(UPDATE_ADJUSTMENT_TYPE, &update).unwrap_or_else(|_| EncodedAction {
+fn encode_update(update: &UpdateAdjustment) -> EncodedAction {
+    EncodedAction::encode(UPDATE_ADJUSTMENT_TYPE, update).unwrap_or_else(|_| EncodedAction {
         type_id: UPDATE_ADJUSTMENT_TYPE.into(),
         payload: Vec::new(),
     })
@@ -471,9 +476,8 @@ mod tests {
             .actions
             .iter()
             .find(|action| action.id == "remove")
-            .expect("adjustments publish their permanent removal action");
-        assert!(!remove.contract.reversible);
-        assert_eq!(remove.contract.risk, tilo_actions::RiskLevel::Destructive);
+            .expect("adjustments publish their reversible removal action");
+        assert!(remove.contract.reversible);
     }
 
     #[test]
