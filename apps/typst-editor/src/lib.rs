@@ -53,7 +53,7 @@ pub mod worker;
 use ui::widget::Widget;
 
 /// Build the live app root: it reads the user's real document library from
-/// disk and opens (or seeds) an untitled starter document.
+/// disk and opens an empty untitled document when the library is empty.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(app::TypstApp::new())
 }
