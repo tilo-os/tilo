@@ -22,6 +22,7 @@ os/tests/test_wine_mock_producer.py
 os/tests/test_wine_ci_cleanup.py
 os/tests/test_wine_rpm_merge.py
 os/tests/imager_media_profiles.py
+os/tests/installer_cycle_graphics.py
 apps/imager/packaging/test_generate_winget.py
 os/tests/kernel_module_signing_test.sh
 os/tests/boot_performance_gate_test.sh
