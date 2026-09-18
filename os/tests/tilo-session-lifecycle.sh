@@ -12,7 +12,7 @@ identity_unit="$repo/os/usr/lib/systemd/user/tilo-identity.service"
 recipient_unit="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.service"
 recipient_socket="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.socket"
 release_workflow="$repo/.forgejo/workflows/build-image.yml"
-shell_main="$repo/shell/src/main.rs"
+shell_main="$repo/shell/src/linux_main.rs"
 
 grep -Fqx 'Requires=graphical-session-pre.target graphical-session.target' "$target"
 grep -Fqx 'After=graphical-session-pre.target' "$target"
@@ -49,13 +49,15 @@ if grep -q '^SuccessExitStatus=' "$identity_unit"; then
   echo 'identity migration must not turn failure into successful enrollment' >&2
   exit 1
 fi
-# The pre-session repair helper must not initialize the GPU/font/render stack;
-# the compositor does that once after the helper exits.
-identity_branch_line=$(grep -n 'if provision_identity_requested || portal_only || firstboot_only_requested' "$shell_main" | cut -d: -f1)
-gpu_pin_line=$(grep -n 'let gpu_pin = compositor::render_node::pin_process();' "$shell_main" | cut -d: -f1)
-if [ -z "$identity_branch_line" ] || [ -z "$gpu_pin_line" ] \
-   || [ "$identity_branch_line" -ge "$gpu_pin_line" ]; then
-  echo 'non-compositor helpers still pay GPU/UI warmup before branching' >&2
+# Helper entry points must return before long-lived compositor services bind.
+# GPU selection intentionally happens earlier now so every process shape uses
+# the same explicit device policy; line-order checks against an older startup
+# layout made this lifecycle test fail without proving a runtime defect.
+identity_prepare_line=$(grep -n 'if let Some(exit_code) = prepare_identity(provision_identity_requested)' "$shell_main" | cut -d: -f1)
+invite_broker_line=$(grep -n 'let _invite_broker = match identity_provisioning::start_configured_invite_broker()' "$shell_main" | cut -d: -f1)
+if [ -z "$identity_prepare_line" ] || [ -z "$invite_broker_line" ] \
+   || [ "$identity_prepare_line" -ge "$invite_broker_line" ]; then
+  echo 'identity helper no longer returns before compositor services start' >&2
   exit 1
 fi
 grep -Fqx 'PartOf=graphical-session.target' "$recipient_unit"
@@ -99,6 +101,8 @@ log="$tmp/log"
 fake_systemctl="$tmp/systemctl"
 fake_shell="$tmp/shell"
 test_wrapper="$tmp/tilo-session"
+runtime_dir="$tmp/runtime"
+install -d -m 700 "$runtime_dir"
 
 cat >"$fake_systemctl" <<'SH'
 #!/bin/bash
@@ -124,6 +128,17 @@ if [ "${1:-}" = --provision-identity ]; then
   exit "${TILO_SESSION_PROVISION_STATUS:-0}"
 fi
 printf 'desktop %s\n' "$*" >>"$TILO_SESSION_TEST_LOG"
+if [ "${TILO_SESSION_WRITE_LOGOUT:-0}" = 1 ]; then
+  case "${TILO_SESSION_LOGOUT_REQUEST:-}" in
+    /*) ;;
+    *)
+      printf 'logout channel is not absolute\n' >&2
+      exit 42
+      ;;
+  esac
+  printf '%s\n' "$TILO_SESSION_LOGOUT_REQUEST" >"$TILO_SESSION_TEST_LOG.request-path"
+  printf 'logout\n' >"$TILO_SESSION_LOGOUT_REQUEST"
+fi
 if [ "${TILO_SESSION_HOLD:-0}" = 1 ]; then
   trap 'printf "desktop-term\n" >>"$TILO_SESSION_TEST_LOG"; exit 0' TERM HUP INT
   while :; do sleep 1; done
@@ -140,7 +155,7 @@ chmod 0755 "$test_wrapper"
 # Successful verification starts the desktop, preserves its exit status, and
 # tears down the Tilo target afterward.
 set +e
-TILO_SESSION_TEST_LOG="$log" TILO_SESSION_DESKTOP_STATUS=7 \
+XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" TILO_SESSION_DESKTOP_STATUS=7 \
   "$test_wrapper" --backend drm
 status=$?
 set -e
@@ -152,11 +167,34 @@ systemctl --user stop tilo-graphical-session.target
 EOF
 cmp "$tmp/expected" "$log"
 
+# Logout gets a private absolute channel from the wrapper, and the wrapper
+# removes both the request file and its private directory after the compositor
+# returns. This is the cross-process edge used by os-actions::Logout.
+: >"$log"
+XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" TILO_SESSION_WRITE_LOGOUT=1 \
+  "$test_wrapper" --backend drm
+cat >"$tmp/expected" <<'EOF'
+systemctl --user start tilo-graphical-session.target
+desktop --backend drm
+systemctl --user stop tilo-graphical-session.target
+EOF
+cmp "$tmp/expected" "$log"
+request_path=$(cat "$log.request-path")
+case "$request_path" in
+  /*) ;;
+  *)
+    echo 'logout request path is not absolute' >&2
+    exit 1
+    ;;
+esac
+[ ! -e "$request_path" ]
+[ ! -d "$(dirname "$request_path")" ]
+
 # A missing identity reaches the native compositor, which owns the interactive
 # first-login OOBE. The wrapper must not preflight an identity that only that
 # compositor can create.
 : >"$log"
-TILO_SESSION_TEST_LOG="$log" TILO_SESSION_VERIFY_SEQUENCE=1 \
+XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" TILO_SESSION_VERIFY_SEQUENCE=1 \
   "$test_wrapper" --backend drm
 cat >"$tmp/expected" <<'EOF'
 systemctl --user start tilo-graphical-session.target
@@ -169,7 +207,7 @@ cmp "$tmp/expected" "$log"
 # the lifecycle target.
 : >"$log"
 rm -f "$log.verify-count"
-TILO_SESSION_TEST_LOG="$log" TILO_SESSION_HOLD=1 \
+XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" TILO_SESSION_HOLD=1 \
   "$test_wrapper" --backend drm &
 session_pid=$!
 for _ in $(seq 1 100); do
