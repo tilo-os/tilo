@@ -62,7 +62,8 @@ pub mod transport;
 
 pub use config::{RegistriesConfig, RegistryRef, RegistryTrust};
 pub use index::{HostProfile, IndexEntry, IndexError, RegistryIndex, RuntimeRef};
+pub use pkg::{MAX_APP_QPKG_BYTES, qpkg_size_allowed};
 pub use publish::{PublishReceipt, build_entry, publish_to_dir};
-pub use qpkg::{QpkgMeta, verify_bytes};
+pub use qpkg::{QpkgMeta, validate_payload_shape, verify_bytes};
 pub use resolve::{FetchOutcome, fetch_qpkg, resolve_and_fetch};
 pub use transport::{BlobNode, client_endpoint, fetch_blob};
