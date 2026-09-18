@@ -798,12 +798,15 @@ impl PeerSyncOverlay {
             .take(3)
         {
             let row = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + 42.0);
-            scene.fill(
-                Fill::NonZero,
+            // Control role (HIG §9.1/§9.5): a row card at the Control radius
+            // (`radii.sm` is for details inside a control) with an edge
+            // derived from its lift floor, so it registers in light as well.
+            ui::surface::card(
+                scene,
                 transform,
+                row,
+                ui::chrome::ChromeRole::Control.radius(theme, row.height()),
                 colors.lift(0.35),
-                None,
-                &RoundedRect::from_rect(row, f64::from(theme.tokens.radii.sm)),
             );
             let detail = format!(
                 "{} · expires in {}",
@@ -834,12 +837,12 @@ impl PeerSyncOverlay {
                 ("Copy", Button::Resend(invite.id), resend),
                 ("Cancel", Button::CancelPending(invite.id), cancel),
             ] {
-                scene.fill(
-                    Fill::NonZero,
+                ui::surface::card(
+                    scene,
                     transform,
+                    button_rect,
+                    button_rect.height() / 2.0,
                     colors.lift(0.35),
-                    None,
-                    &RoundedRect::from_rect(button_rect, button_rect.height() / 2.0),
                 );
                 let (width, height) = text.measure(label, body, None);
                 text.draw_text(
@@ -1128,18 +1131,24 @@ impl PeerSyncOverlay {
         body: f32,
     ) {
         let colors = &theme.tokens.colors;
-        let fill = if selected {
-            colors.accent[5]
-        } else {
-            colors.lift(0.35)
-        };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            fill,
-            None,
-            &RoundedRect::from_rect(rect, rect.height() / 2.0),
-        );
+        // Selector role (HIG §9.3): the chosen recipient or role is a lift
+        // with the tier's hairline, never an accent fill (the accent means
+        // live state, §9.4); idle choices rest on the lift floor.
+        let tier =
+            ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(selected));
+        let fill = if selected { tier.fill } else { colors.lift(0.35) };
+        let radius = rect.height() / 2.0;
+        let shape = RoundedRect::from_rect(rect, radius);
+        scene.fill(Fill::NonZero, transform, fill, None, &shape);
+        if let Some(border) = tier.border {
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                border,
+                None,
+                &ui::surface::edge_outline(rect, radius),
+            );
+        }
         let shown = text.elide_to_width(label, body, f64_to_f32(rect.width() - 16.0));
         let (width, height) = text.measure(&shown, body, None);
         text.draw_text(
@@ -1390,6 +1399,16 @@ fn draw_naming(
     let shown = text.elide_to_width(typed, name, f64_to_f32(avail - 40.0));
     let (tw, th) = text.measure(&shown, name, None);
     let ty = f64::midpoint(field.y0, field.y1) - f64::from(th) / 2.0;
+    let caret_w = 1.5;
+    // The caret sits on the text origin; an empty field shows its placeholder
+    // one `s1` to the right of the caret so the two never overlap (HIG §7).
+    let text_x = field.x0
+        + 12.0
+        + if typed.is_empty() {
+            caret_w + f64::from(theme.tokens.spacing.s1)
+        } else {
+            0.0
+        };
     text.draw_text(
         scene,
         if typed.is_empty() {
@@ -1403,7 +1422,7 @@ fn draw_naming(
         } else {
             colors.text_primary
         },
-        transform.pre_translate((field.x0 + 12.0, ty).into()),
+        transform.pre_translate((text_x, ty).into()),
         None,
     );
     let caret_x = field.x0
@@ -1418,7 +1437,7 @@ fn draw_naming(
         transform,
         colors.accent[5],
         None,
-        &Rect::new(caret_x, field.y0 + 9.0, caret_x + 1.5, field.y1 - 9.0),
+        &Rect::new(caret_x, field.y0 + 9.0, caret_x + caret_w, field.y1 - 9.0),
     );
     y = field.y1 + 12.0;
     let identity = recipient.map_or_else(
@@ -1675,6 +1694,28 @@ fn f64_to_f32(v: f64) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// HIG §9.5: the invite card's rows and mini pills rest on the lift
+    /// floor with an edge derived from it; that edge must register on every
+    /// shipped palette, and the card's Panel border on its Panel ground.
+    #[test]
+    fn invite_rows_and_panel_edge_register_on_every_palette() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let ground = ui::chrome::shell::panel_ground(&theme);
+            let floor = theme.tokens.colors.lift(0.35);
+            for (what, edge, fill) in [
+                ("panel border", ui::chrome::shell::panel_border(&theme), ground),
+                ("row card", ui::surface::edge_on(floor), floor),
+            ] {
+                let delta = ui::surface::edge_delta(edge, fill);
+                assert!(
+                    delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                    "{}: the {what} must separate from its fill (Δ luminance {delta:.4})",
+                    theme.name
+                );
+            }
+        }
+    }
 
     fn key(key: Key) -> WindowEvent {
         let mut event: KeyEvent = unsafe { std::mem::zeroed() };
