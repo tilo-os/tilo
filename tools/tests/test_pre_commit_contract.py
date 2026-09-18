@@ -21,7 +21,7 @@ class PreCommitContractTests(unittest.TestCase):
         self.assertIn("tools/clippy-diff.sh", workflow)
         self.assertIn("Clippy diagnostic diff", workflow)
 
-    def test_differential_clippy_covers_opt_in_features(self) -> None:
+    def test_differential_clippy_does_not_require_os_only_native_sdks(self) -> None:
         workflow = CHECK_WORKFLOW.read_text(encoding="utf-8")
 
         invocation = next(
@@ -29,7 +29,9 @@ class PreCommitContractTests(unittest.TestCase):
             for line in workflow.splitlines()
             if "tools/clippy-diff.sh" in line
         )
-        self.assertIn("--all-features", invocation)
+        self.assertNotIn("--all-features", invocation)
+        self.assertIn("ui/webview-wpe", workflow)
+        self.assertIn("release-app workflow", workflow)
 
     def test_manual_ci_retry_has_a_real_clippy_baseline(self) -> None:
         workflow = CHECK_WORKFLOW.read_text(encoding="utf-8")
