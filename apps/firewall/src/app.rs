@@ -24,12 +24,17 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
+use ui::chrome::{
+    PANEL_BORDER_ALPHA, SelectionState, chrome_hairline, panel_border, panel_ground, selection_tier,
+};
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tokens::Spacing;
 use ui::widget::{
-    SegmentedFace, SidebarDrawer, TextInput, Toggle, ToggleFace, ToggleGroup, Widget,
+    Button, ButtonFace, SegmentedFace, SidebarDrawer, TextInput, Toggle, ToggleFace, ToggleGroup,
+    Widget,
 };
 
 use crate::actions::FirewallAction;
@@ -50,13 +55,30 @@ use crate::paint;
 const HEADER_H: f64 = 60.0;
 const RAIL_W: f64 = 214.0;
 const SERVICES_W: f64 = 300.0;
-const PAD: f64 = 16.0;
 const CARD_R: f64 = 12.0;
+
+// ---- spacing rhythm (HIG §7b) ------------------------------------------
+//
+// One rhythm for the whole screen, read from the unscaled token scale so a
+// gap in this file is always a named step: `S1` between a row and its rule
+// or a label and its control, `S2` between related rows, `S3` between
+// siblings (controls on one form line, the filter row and the table), `S4`
+// for card padding and the gap between cards, `S6` before the next group.
+const S1: f64 = Spacing::BASE.s1 as f64;
+const S2: f64 = Spacing::BASE.s2 as f64;
+const S3: f64 = Spacing::BASE.s3 as f64;
+const S4: f64 = Spacing::BASE.s4 as f64;
+/// Card padding and the gap between cards / regions.
+const PAD: f64 = S4;
 /// Summary card floor: title, description and one row of stat chips. The
 /// card grows per extra chip row instead of reserving a fixed taller band
 /// (the old `SUMMARY_H_NARROW = 188` left ~60px blank when the chips fit).
-const SUMMARY_H: f64 = 134.0;
-const FORM_H: f64 = 154.0;
+/// `S4` padding above the 27.5px title, `S1` to the 15px description, `S3`
+/// to the 40px chip row, `S4` below it.
+const SUMMARY_H: f64 = S4 + 27.5 + S1 + 15.0 + S3 + 40.0 + S4;
+/// Add-rule form floor: title band, two control lines `S3` apart and the
+/// status band.
+const FORM_H: f64 = 42.0 + 2.0 * CTRL_H + S3 + 30.0;
 /// The add-rule form stacks its controls onto four lines when narrow.
 const FORM_H_NARROW: f64 = 226.0;
 const RULE_ROW_H: f64 = 40.0;
@@ -293,17 +315,18 @@ impl Metrics {
     /// description, the chip rows and the card's bottom padding.
     fn summary_h(&self, rows: usize) -> f64 {
         let rows = rows.max(1) as f64;
-        SUMMARY_H.max(
-            self.chips_top() + rows * self.chip_h + (rows - 1.0) * self.chip_row_gap + 20.0,
-        )
+        SUMMARY_H.max(self.chips_top() + rows * self.chip_h + (rows - 1.0) * self.chip_row_gap + S4)
     }
 
+    /// The description follows the title by `S1` (a label and the line
+    /// that explains it), under the card's `S4` padding.
     fn desc_top(&self) -> f64 {
-        14.0 + self.title_h + 4.5
+        S4 + self.title_h + S1
     }
 
+    /// The chip row is the next sibling group: `S3` under the description.
     fn chips_top(&self) -> f64 {
-        self.desc_top() + self.desc_h + 13.0
+        self.desc_top() + self.desc_h + S3
     }
 }
 
@@ -609,6 +632,14 @@ impl FirewallApp {
                 self.compact_view = CompactView::Services;
                 self.status = "Showing services (press S for rules)".into();
             }
+            // A selected rule row: the selection face on the raised table card.
+            "selected" => {
+                self.selected_zone = ZoneKind::Public;
+                self.selected_rule = self
+                    .selected_zone_ref()
+                    .and_then(|zone| zone.rules.get(1))
+                    .map(|rule| rule.id);
+            }
             _ => {}
         }
     }
@@ -880,8 +911,8 @@ impl FirewallApp {
         // the card is exactly as tall as its rows need (one row at desktop
         // width, two on a phone) instead of a fixed per-breakpoint band.
         let m = &self.metrics;
-        let inset_x = cx0 + 18.0;
-        let max_x = cx1 - 16.0;
+        let inset_x = cx0 + PAD;
+        let max_x = cx1 - PAD;
         let mut sx = inset_x;
         let mut row = 0_usize;
         let chip_ws = m.chip_ws(self.selected_zone);
@@ -936,7 +967,7 @@ impl FirewallApp {
                 m.form_title_h_narrow + 3.0 * m.ctrl_h + 12.0 + m.form_source_gap + 12.0 + m.ctrl_h,
             )
         } else {
-            FORM_H.max(m.form_title_h + 2.0 * m.ctrl_h + 14.0 + m.form_status_h)
+            FORM_H.max(m.form_title_h + 2.0 * m.ctrl_h + S3 + m.form_status_h)
         };
         l.form = if l.compact_services {
             Rect::ZERO
@@ -944,10 +975,10 @@ impl FirewallApp {
             Rect::new(cx0, cy1 - form_h, cx1, cy1)
         };
 
-        // Rules table fills the gap.
+        // Rules table fills the gap, `S3` under the filter row it belongs to.
         l.table = Rect::new(
             cx0,
-            fy + seg_h + 10.0,
+            fy + seg_h + S3,
             cx1,
             if l.compact_services {
                 cy1
@@ -982,11 +1013,13 @@ impl FirewallApp {
                 if y + row_h > panel.y1 - 6.0 {
                     break;
                 }
+                // Rows keep a token gap between their tiles: `S2` in the
+                // docked column, `S1` in the dense compact route.
                 let row = Rect::new(
-                    panel.x0 + 12.0,
+                    panel.x0 + S3,
                     y,
-                    panel.x1 - 12.0,
-                    y + row_h - if l.compact_services { 2.0 } else { 6.0 },
+                    panel.x1 - S3,
+                    y + row_h - if l.compact_services { S1 } else { S2 },
                 );
                 let toggle = Rect::new(
                     row.x1 - 44.0,
@@ -1059,24 +1092,28 @@ impl FirewallApp {
             let x = fx0 + f64::from(i) * kind_w;
             l.kind_seg.push(Rect::new(x, y1, x + kind_w, y1 + ctrl_h));
         }
-        let mut x = fx0 + kind_w * 2.0 + 12.0;
+        let mut x = fx0 + kind_w * 2.0 + S3;
         if self.form.is_service {
-            // service cycle selector: [<] name [>]
+            // service cycle selector: [<] name [>]. The hit rects stay
+            // contiguous (no dead zone between a stepper and the value); the
+            // value's painted well is inset `S1` from each stepper in
+            // `draw_form_service_selector`, so the controls never touch.
             let sel_w = 188.0;
-            l.service_prev = Rect::new(x, y1, x + 30.0, y1 + ctrl_h);
-            l.service_sel = Rect::new(x + 30.0, y1, x + sel_w - 30.0, y1 + ctrl_h);
-            l.service_next = Rect::new(x + sel_w - 30.0, y1, x + sel_w, y1 + ctrl_h);
-            x += sel_w + 12.0;
+            let step_w = 30.0;
+            l.service_prev = Rect::new(x, y1, x + step_w, y1 + ctrl_h);
+            l.service_sel = Rect::new(x + step_w, y1, x + sel_w - step_w, y1 + ctrl_h);
+            l.service_next = Rect::new(x + sel_w - step_w, y1, x + sel_w, y1 + ctrl_h);
+            x += sel_w + S3;
         } else {
             // port field + proto segmented
             l.port_field = Rect::new(x, y1, x + 96.0, y1 + ctrl_h);
-            x += 96.0 + 8.0;
+            x += 96.0 + S2;
             let pw = m.proto_w;
             for i in 0..2 {
                 let px = x + f64::from(i) * pw;
                 l.proto_seg.push(Rect::new(px, y1, px + pw, y1 + ctrl_h));
             }
-            x += pw * 2.0 + 12.0;
+            x += pw * 2.0 + S3;
         }
         let _ = x;
         // action segmented allow|deny — right aligned on line 1
@@ -1087,12 +1124,12 @@ impl FirewallApp {
                 .push(Rect::new(ax, y1, ax + act_w, y1 + ctrl_h));
         }
 
-        // Line 2: source field + Add button.
-        let y2 = y1 + ctrl_h + 14.0;
+        // Line 2: source field + Add button, `S3` under line 1 (siblings).
+        let y2 = y1 + ctrl_h + S3;
         let add_w = m.add_w;
         l.add_btn = Rect::new(fx1 - add_w, y2, fx1, y2 + ctrl_h);
         let src_x0 = fx0 + 64.0; // after "Source" label
-        l.source_field = Rect::new(src_x0, y2, l.add_btn.x0 - 16.0, y2 + ctrl_h);
+        l.source_field = Rect::new(src_x0, y2, l.add_btn.x0 - S4, y2 + ctrl_h);
     }
 
     /// Stacked add-rule form for narrow windows: four short lines instead of a
@@ -1120,6 +1157,8 @@ impl FirewallApp {
             let prev_w = 34.0;
             l.service_prev = Rect::new(fx0, y2, fx0 + prev_w, y2 + ctrl_h);
             l.service_next = Rect::new(fx1 - prev_w, y2, fx1, y2 + ctrl_h);
+            // Contiguous hit rects; the painted well is inset `S1` (see the
+            // wide layout above).
             l.service_sel = Rect::new(fx0 + prev_w, y2, fx1 - prev_w, y2 + ctrl_h);
         } else {
             let pw = m.proto_w;
@@ -1369,6 +1408,24 @@ fn seg_index(rects: &[Rect], p: Point) -> Option<usize> {
 
 fn alpha(c: Color, a: u8) -> Color {
     Color::from_rgba8(c.r(), c.g(), c.b(), a)
+}
+
+/// The face a selected row takes on a ground that is not the window tier:
+/// `(fill, edge)`. `selection_tier` lifts `surfaces.base → raised`, and on
+/// the light preset `raised` *is* the card the rules table and the overlay
+/// rail are painted on, so the lift vanished there. The fill is the derived
+/// edge colour of the ground used as a wash — `edge_on` climbs its alpha
+/// ladder until the step registers on that ground, pure-black high-contrast
+/// included — and the ring is the panel-strength derived edge: a step, never
+/// an accent wash (HIG §9.3).
+///
+/// Open — needs coordinator: `ui::chrome::selection_tier_on(theme, state,
+/// ground)` once merged.
+fn selected_on(ground: Color) -> (Color, Color) {
+    (
+        ui::surface::edge_on(ground),
+        ui::surface::edge_on_with(ground, PANEL_BORDER_ALPHA),
+    )
 }
 
 impl Widget for FirewallApp {
@@ -2452,8 +2509,7 @@ impl FirewallApp {
         let cx = area.x0 + (area.width() - cw) / 2.0;
         let cy = area.y0 + (area.height() - ch) / 2.0;
         let card = Rect::new(cx, cy, cx + cw, cy + ch);
-        paint::fill_rrect(scene, t, card, CARD_R, theme.tokens.colors.surfaces.raised);
-        paint::stroke_rrect(scene, t, card, CARD_R, theme.border_standard, 1.0);
+        paint::card(scene, t, card, CARD_R, theme.tokens.colors.surfaces.raised);
         paint::label(
             tr,
             scene,
@@ -2506,18 +2562,16 @@ impl FirewallApp {
             card.y0 + 132.0,
             cw - 48.0,
         );
-        paint::fill_rrect(scene, t, l.recover_btn, 8.0, theme.accent_primary);
-        paint::label_v(
-            tr,
+        Button::paint(
             scene,
             t,
-            "Retry connection",
-            12.0,
-            theme.tokens.colors.on_surface(theme.accent_primary).ink,
-            l.recover_btn.x0 + 14.0,
-            l.recover_btn.y0,
-            l.recover_btn.height(),
-            l.recover_btn.width() - 28.0,
+            tr,
+            theme,
+            &ButtonFace::new(l.recover_btn, "Retry connection")
+                .primary()
+                .radius(8.0)
+                .text_size(12.0)
+                .hovered(l.recover_btn.contains(self.last_cursor)),
         );
     }
 
@@ -2529,9 +2583,18 @@ impl FirewallApp {
         theme: &Theme,
         l: &Layout,
     ) {
+        // Bar role: one raised band with a derived hairline under it.
         let h = l.header;
-        paint::fill_rect(scene, t, h, theme.tokens.colors.neutral[0]);
-        paint::hline(scene, t, h.x0, h.x1, h.y1, theme.border_standard, 1.0);
+        paint::fill_rect(scene, t, h, theme.tokens.colors.surfaces.raised);
+        paint::hline(
+            scene,
+            t,
+            h.x0,
+            h.x1,
+            h.y1 - 0.5,
+            chrome_hairline(theme),
+            1.0,
+        );
 
         self.draw_header_status(scene, t, tr, theme, l, h);
 
@@ -2652,7 +2715,16 @@ impl FirewallApp {
                 "○ Stopped",
             )
         };
-        paint::fill_rrect(scene, t, l.enable_pill, 16.0, pill_bg);
+        // A status-tinted pill: the tint is its contrast step and the edge
+        // is the same semantic colour, so it reads on both palettes.
+        ui::surface::pill(
+            scene,
+            t,
+            l.enable_pill,
+            pill_bg,
+            Some(pill_fg.with_alpha_factor(0.55)),
+            None,
+        );
         let w = paint::text_width(tr, pill_txt, 12.0);
         paint::label_v(
             tr,
@@ -2667,47 +2739,33 @@ impl FirewallApp {
             w + 2.0,
         );
 
-        // Panic button.
-        let (pb_bg, pb_fg) = if self.config.panic_mode {
-            (theme.tokens.colors.semantic.danger, Color::WHITE)
-        } else {
-            (theme.tokens.colors.neutral[2], theme.text_dim)
-        };
-        paint::fill_rrect(scene, t, l.panic_btn, 16.0, pb_bg);
+        // Panic and Apply are the shared button face: rest edge, hover and
+        // ink contrast come with it.
         let pt = if self.config.panic_mode {
             "Panic ON"
         } else {
             "Panic"
         };
-        let w = paint::text_width(tr, pt, 12.0);
-        paint::label_v(
-            tr,
+        let panic = ButtonFace::new(l.panic_btn, pt)
+            .radius(l.panic_btn.height() / 2.0)
+            .text_size(12.0)
+            .hovered(l.panic_btn.contains(self.last_cursor));
+        let panic = if self.config.panic_mode {
+            panic.danger()
+        } else {
+            panic
+        };
+        Button::paint(scene, t, tr, theme, &panic);
+        Button::paint(
             scene,
             t,
-            pt,
-            12.0,
-            pb_fg,
-            l.panic_btn.x0 + (l.panic_btn.width() - w) / 2.0,
-            l.panic_btn.y0,
-            l.panic_btn.height(),
-            w + 2.0,
-        );
-
-        // Apply button.
-        paint::fill_rrect(scene, t, l.apply_btn, 16.0, theme.accent_primary);
-        let at = "Apply";
-        let w = paint::text_width(tr, at, 13.0);
-        paint::label_v(
             tr,
-            scene,
-            t,
-            at,
-            13.0,
-            Color::WHITE,
-            l.apply_btn.x0 + (l.apply_btn.width() - w) / 2.0,
-            l.apply_btn.y0,
-            l.apply_btn.height(),
-            w + 2.0,
+            theme,
+            &ButtonFace::new(l.apply_btn, "Apply")
+                .primary()
+                .radius(l.apply_btn.height() / 2.0)
+                .text_size(13.0)
+                .hovered(l.apply_btn.contains(self.last_cursor)),
         );
     }
 
@@ -2730,17 +2788,31 @@ impl FirewallApp {
             &rail,
         );
         // Opaque panel fill: transparent when docked (window bg matches), but a
-        // real surface when the drawer floats over content in overlay mode.
-        if self.rail.is_overlay() {
-            paint::fill_rect(scene, t, rail, theme.tokens.colors.neutral[0]);
-        }
-        // Right divider.
+        // real Panel-role surface when the drawer floats over content in
+        // overlay mode. The right edge and the selected row's face are both
+        // derived against whatever the rail actually sits on.
+        let (divider, selected_face) = if self.rail.is_overlay() {
+            let ground = panel_ground(theme);
+            paint::fill_rect(scene, t, rail, ground);
+            let (fill, edge) = selected_on(ground);
+            (panel_border(theme), (fill, Some(edge)))
+        } else {
+            // On the window tier the shared tier is the answer (HIG §9.3).
+            let tier = selection_tier(theme, SelectionState::active(true));
+            (
+                ui::surface::edge_on(theme.tokens.colors.surfaces.base),
+                (tier.fill, tier.border),
+            )
+        };
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             t,
-            theme.border_standard,
+            divider,
             None,
-            &vello::kurbo::Line::new(Point::new(rail.x1, rail.y0), Point::new(rail.x1, rail.y1)),
+            &vello::kurbo::Line::new(
+                Point::new(rail.x1 - 0.5, rail.y0),
+                Point::new(rail.x1 - 0.5, rail.y1),
+            ),
         );
         paint::label(
             tr,
@@ -2755,79 +2827,105 @@ impl FirewallApp {
         );
 
         for (kind, rect) in &l.zone_rows {
-            let selected = *kind == self.selected_zone;
-            let is_default = *kind == self.config.default_zone;
-            if selected {
-                paint::fill_rrect(scene, t, *rect, 8.0, theme.tokens.colors.lift(0.72));
-                // Accent left bar.
-                let bar = Rect::new(rect.x0, rect.y0 + 5.0, rect.x0 + 3.0, rect.y1 - 5.0);
-                paint::fill_rrect(scene, t, bar, 2.0, theme.accent_primary);
+            self.draw_rail_zone_row(scene, t, tr, theme, *kind, *rect, selected_face);
+        }
+        scene.pop_layer();
+    }
+
+    /// One zone row of the rail: the selected face (a lift with a derived
+    /// edge, HIG §9.3 — the accent stays for the *live* default zone's chip),
+    /// the trust dot, the name and the active chip or rule count. Split out
+    /// of [`Self::draw_rail`] to keep it under the line budget.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "scene/t/tr/theme is the fixed draw-call boilerplate; the rest is this row's zone, rect and the rail's selected face"
+    )]
+    fn draw_rail_zone_row(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        kind: ZoneKind,
+        rect: Rect,
+        selected_face: (Color, Option<Color>),
+    ) {
+        let selected = kind == self.selected_zone;
+        let is_default = kind == self.config.default_zone;
+        if selected {
+            let (fill, edge) = selected_face;
+            paint::fill_rrect(scene, t, rect, 8.0, fill);
+            if let Some(edge) = edge {
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.0),
+                    t,
+                    edge,
+                    None,
+                    &ui::surface::edge_outline(rect, 8.0),
+                );
             }
-            // Trust dot.
-            let cy = f64::midpoint(rect.y0, rect.y1);
-            paint::dot(
-                scene,
-                t,
-                Point::new(rect.x0 + 16.0, cy),
-                4.0,
-                trust_color(theme, kind.trust()),
-            );
-            // Name.
-            let name_color = if selected {
-                theme.text_primary
-            } else {
-                theme.tokens.colors.neutral[7]
-            };
-            paint::label_v(
+        }
+        // Trust dot.
+        let cy = f64::midpoint(rect.y0, rect.y1);
+        paint::dot(
+            scene,
+            t,
+            Point::new(rect.x0 + S4, cy),
+            4.0,
+            trust_color(theme, kind.trust()),
+        );
+        // Name.
+        let name_color = if selected {
+            theme.text_primary
+        } else {
+            theme.text_dim
+        };
+        paint::label_v(
+            tr,
+            scene,
+            t,
+            kind.name(),
+            14.0,
+            name_color,
+            rect.x0 + 30.0,
+            rect.y0,
+            rect.height(),
+            120.0,
+        );
+
+        // Active marker chip.
+        if is_default {
+            let _ = paint::chip(
                 tr,
                 scene,
                 t,
-                kind.name(),
-                14.0,
-                name_color,
-                rect.x0 + 30.0,
-                rect.y0,
-                rect.height(),
-                120.0,
+                "active",
+                9.0,
+                theme.tokens.colors.on_surface(theme.accent_primary).ink,
+                theme.accent_primary,
+                rect.x1 - 52.0,
+                cy,
+                6.0,
+                16.0,
+                8.0,
             );
-
-            // Active marker chip.
-            if is_default {
-                let _ = paint::chip(
+        } else if let Some(z) = self.config.zone(kind) {
+            // Rule + service count.
+            let n = z.rules.len() + z.services.len();
+            if n > 0 {
+                paint::label_right_v(
                     tr,
                     scene,
                     t,
-                    "active",
-                    9.0,
-                    Color::WHITE,
-                    theme.accent_primary,
-                    rect.x1 - 52.0,
-                    cy,
-                    6.0,
-                    16.0,
-                    8.0,
+                    &n.to_string(),
+                    11.0,
+                    theme.text_dim,
+                    rect.x1 - 8.0,
+                    rect.y0,
+                    rect.height(),
                 );
-            } else {
-                // Rule + service count.
-                if let Some(z) = self.config.zone(*kind) {
-                    let n = z.rules.len() + z.services.len();
-                    if n > 0 {
-                        paint::label_right_v(
-                            tr,
-                            scene,
-                            t,
-                            &n.to_string(),
-                            11.0,
-                            theme.text_dim,
-                            rect.x1 - 8.0,
-                            rect.y0,
-                            rect.height(),
-                        );
-                    }
-                }
             }
         }
-        scene.pop_layer();
     }
 
     fn draw_summary(
@@ -2839,18 +2937,23 @@ impl FirewallApp {
         l: &Layout,
     ) {
         let card = l.summary;
-        let border = if self.config.panic_mode {
-            theme.tokens.colors.semantic.danger
-        } else {
-            theme.border_standard
-        };
-        paint::fill_rrect(scene, t, card, CARD_R, theme.tokens.colors.surfaces.raised);
-        paint::stroke_rrect(scene, t, card, CARD_R, border, 1.0);
+        paint::card(scene, t, card, CARD_R, theme.tokens.colors.surfaces.raised);
+        if self.config.panic_mode {
+            // Panic is live state: a semantic ring on the card's own edge
+            // outline, so it replaces the rest edge instead of straddling it.
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                t,
+                theme.tokens.colors.semantic.danger,
+                None,
+                &ui::surface::edge_outline(card, CARD_R),
+            );
+        }
 
         let Some(z) = self.config.zone(self.selected_zone) else {
             return;
         };
-        let inset_x = card.x0 + 18.0;
+        let inset_x = card.x0 + PAD;
         self.draw_summary_title(scene, t, tr, theme, card, inset_x);
         Self::draw_summary_chips(scene, t, tr, theme, l, z);
         self.draw_summary_set_active(scene, t, tr, theme, l);
@@ -2874,7 +2977,7 @@ impl FirewallApp {
             22.0,
             theme.text_primary,
             inset_x,
-            card.y0 + 14.0,
+            card.y0 + PAD,
             260.0,
         );
         let (title_w, title_h) = tr.measure(self.selected_zone.name(), 22.0, None);
@@ -2887,10 +2990,10 @@ impl FirewallApp {
                 t,
                 "ACTIVE ZONE",
                 9.0,
-                Color::WHITE,
+                theme.tokens.colors.on_surface(theme.accent_primary).ink,
                 theme.accent_primary,
-                inset_x + f64::from(title_w) + 12.0,
-                card.y0 + 14.0 + f64::from(title_h) / 2.0,
+                inset_x + f64::from(title_w) + S3,
+                card.y0 + PAD + f64::from(title_h) / 2.0,
                 7.0,
                 16.0,
                 8.0,
@@ -2901,7 +3004,7 @@ impl FirewallApp {
         let shown = tr.elide_to_width(
             self.selected_zone.description(),
             12.0,
-            (card.width() - 36.0) as f32,
+            (card.width() - 2.0 * PAD) as f32,
         );
         paint::label(
             tr,
@@ -2912,7 +3015,7 @@ impl FirewallApp {
             theme.text_dim,
             inset_x,
             card.y0 + self.metrics.desc_top(),
-            card.width() - 36.0,
+            card.width() - 2.0 * PAD,
         );
     }
 
@@ -2952,27 +3055,15 @@ impl FirewallApp {
         if self.selected_zone == self.config.default_zone {
             return;
         }
-        paint::fill_rrect(
+        Button::paint(
             scene,
             t,
-            l.set_active_btn,
-            8.0,
-            theme.tokens.colors.neutral[2],
-        );
-        paint::stroke_rrect(scene, t, l.set_active_btn, 8.0, theme.accent_primary, 1.0);
-        let txt = "Set as active";
-        let w = paint::text_width(tr, txt, 12.0);
-        paint::label_v(
             tr,
-            scene,
-            t,
-            txt,
-            12.0,
-            theme.text_primary,
-            l.set_active_btn.x0 + (l.set_active_btn.width() - w) / 2.0,
-            l.set_active_btn.y0,
-            l.set_active_btn.height(),
-            w + 2.0,
+            theme,
+            &ButtonFace::new(l.set_active_btn, "Set as active")
+                .radius(8.0)
+                .text_size(12.0)
+                .hovered(l.set_active_btn.contains(self.last_cursor)),
         );
     }
 
@@ -2997,7 +3088,9 @@ impl FirewallApp {
         let (_, cap_h) = tr.measure(caption, 9.0, None);
         let (_, val_h) = tr.measure(value, 13.0, None);
         let inner = rect.width() - 20.0;
-        paint::fill_rrect(scene, t, rect, 8.0, theme.tokens.colors.neutral[1]);
+        // A tile inset into the raised card: the window tier as its fill,
+        // with the edge derived from it, so it reads on both palettes.
+        paint::card(scene, t, rect, 8.0, theme.tokens.colors.surfaces.base);
         // Centre the caption/value stack in the chip so the top and bottom
         // paddings match instead of the value crowding the lower edge.
         let stack_h = f64::from(cap_h) + f64::from(val_h);
@@ -3131,8 +3224,7 @@ impl FirewallApp {
         l: &Layout,
     ) {
         let table = l.table;
-        paint::fill_rrect(scene, t, table, CARD_R, theme.tokens.colors.surfaces.raised);
-        paint::stroke_rrect(scene, t, table, CARD_R, theme.border_standard, 1.0);
+        paint::card(scene, t, table, CARD_R, theme.tokens.colors.surfaces.raised);
 
         let cols = rule_columns(table);
         let head_h = self.metrics.table_head_h;
@@ -3147,7 +3239,7 @@ impl FirewallApp {
                 13.0,
                 theme.text_dim,
                 cols.text,
-                table.y0 + head_h + 14.0,
+                table.y0 + head_h + PAD,
                 300.0,
             );
             return;
@@ -3198,14 +3290,16 @@ impl FirewallApp {
             paint::label_v(tr, scene, t, "SOURCE", 10.0, hc, cols.source, hy0, hh, 160.0);
             paint::label_v(tr, scene, t, "ON", 10.0, hc, cols.ctrl, hy0, hh, 60.0);
         }
-        paint::hline(
+        // The caption rule is derived against the table it sits in and inset
+        // `S3` from the card edge (HIG §9.5), never run into the radius.
+        paint::separator(
             scene,
             t,
-            table.x0 + 12.0,
-            table.x1 - 12.0,
+            table.x0,
+            table.x1,
             table.y0 + head_h,
-            theme.border_standard,
-            1.0,
+            S3,
+            theme.tokens.colors.surfaces.raised,
         );
     }
 
@@ -3230,8 +3324,18 @@ impl FirewallApp {
     ) {
         let selected = self.selected_rule == Some(row.id);
         if selected {
-            paint::fill_rrect(scene, t, row.rect, 8.0, theme.tokens.colors.lift(0.72));
-            paint::stroke_rrect(scene, t, row.rect, 8.0, theme.accent_primary, 1.0);
+            // Selected row: a step measured against the raised table card it
+            // sits on, with a derived ring — not an accent ring, and not
+            // `selection_tier`'s lift, which is the card's own colour on light.
+            let (fill, edge) = selected_on(theme.tokens.colors.surfaces.raised);
+            paint::fill_rrect(scene, t, row.rect, 8.0, fill);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                t,
+                edge,
+                None,
+                &ui::surface::edge_outline(row.rect, 8.0),
+            );
         }
         let style = RowStyle::for_rule(theme, rule);
         let src = rule.source_label();
@@ -3479,15 +3583,17 @@ impl FirewallApp {
             ),
         );
 
-        // Row separator.
-        paint::hline(
+        // Row separator: centred in the `S1` gap under the row, derived
+        // against the table it sits in (the rows are already inset from the
+        // card edge, so no further inset).
+        paint::separator(
             scene,
             t,
             row.rect.x0,
             row.rect.x1,
-            row.rect.y1 + 2.0,
-            alpha(theme.border_standard, 120),
-            1.0,
+            row.rect.y1 + S1 / 2.0,
+            0.0,
+            theme.tokens.colors.surfaces.raised,
         );
     }
 
@@ -3504,15 +3610,19 @@ impl FirewallApp {
         } else {
             l.services
         };
-        paint::fill_rect(scene, t, panel, theme.tokens.colors.neutral[0]);
+        // A docked side pane on the window tier: its left edge is derived
+        // against that ground, and each enabled service is a raised tile
+        // with its own derived edge (an "on" state that reads on both
+        // palettes, where a bare lift did not).
+        paint::fill_rect(scene, t, panel, theme.tokens.colors.surfaces.base);
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             t,
-            theme.border_standard,
+            ui::surface::edge_on(theme.tokens.colors.surfaces.base),
             None,
             &vello::kurbo::Line::new(
-                Point::new(panel.x0, panel.y0),
-                Point::new(panel.x0, panel.y1),
+                Point::new(panel.x0 + 0.5, panel.y0),
+                Point::new(panel.x0 + 0.5, panel.y1),
             ),
         );
         let on_count = self
@@ -3556,7 +3666,7 @@ impl FirewallApp {
             };
             let on = z.has_service(def.id);
             if on {
-                paint::fill_rrect(scene, t, *row, 8.0, theme.tokens.colors.lift(0.35));
+                paint::card(scene, t, *row, 8.0, theme.tokens.colors.surfaces.raised);
             }
             let compact = l.compact_services;
             paint::label(
@@ -3604,8 +3714,7 @@ impl FirewallApp {
         l: &Layout,
     ) {
         let card = l.form;
-        paint::fill_rrect(scene, t, card, CARD_R, theme.tokens.colors.surfaces.raised);
-        paint::stroke_rrect(scene, t, card, CARD_R, theme.border_standard, 1.0);
+        paint::card(scene, t, card, CARD_R, theme.tokens.colors.surfaces.raised);
 
         let title = format!("Add rule to {}", self.selected_zone.name());
         paint::label(
@@ -3615,8 +3724,8 @@ impl FirewallApp {
             &title,
             13.0,
             theme.accent_primary,
-            card.x0 + 16.0,
-            card.y0 + 12.0,
+            card.x0 + PAD,
+            card.y0 + S3,
             300.0,
         );
 
@@ -3652,7 +3761,7 @@ impl FirewallApp {
         Self::draw_segmented(scene, t, tr, theme, &l.action_seg, &["allow", "deny"], asel);
 
         self.draw_form_source(scene, t, tr, theme, presence, l);
-        Self::draw_form_add_button(scene, t, tr, theme, l);
+        self.draw_form_add_button(scene, t, tr, theme, l);
 
         // Status is a polite, persistent acknowledgement rather than a transient
         // toast: keyboard and touch users can read validation and confirmation
@@ -3707,45 +3816,29 @@ impl FirewallApp {
     ) {
         let svc_id = self.form.current_service();
         let name = ServiceCatalog::name_of(&svc_id);
-        paint::fill_rrect(
-            scene,
-            t,
-            l.service_prev,
-            7.0,
-            theme.tokens.colors.neutral[2],
+        // The two steppers are shared button faces; the value between them
+        // is a field-like well on the window tier with its derived edge.
+        for (rect, glyph) in [(l.service_prev, "<"), (l.service_next, ">")] {
+            Button::paint(
+                scene,
+                t,
+                tr,
+                theme,
+                &ButtonFace::new(rect, glyph)
+                    .radius(7.0)
+                    .text_size(14.0)
+                    .hovered(rect.contains(self.last_cursor)),
+            );
+        }
+        // The well is inset `S1` from each stepper so the three controls
+        // keep a token gap; the hit rect (`l.service_sel`) stays contiguous.
+        let well = Rect::new(
+            l.service_sel.x0 + S1,
+            l.service_sel.y0,
+            l.service_sel.x1 - S1,
+            l.service_sel.y1,
         );
-        paint::fill_rrect(scene, t, l.service_sel, 0.0, theme.tokens.colors.neutral[1]);
-        paint::fill_rrect(
-            scene,
-            t,
-            l.service_next,
-            7.0,
-            theme.tokens.colors.neutral[2],
-        );
-        paint::label_v(
-            tr,
-            scene,
-            t,
-            "<",
-            14.0,
-            theme.text_primary,
-            l.service_prev.x0 + 12.0,
-            l.service_prev.y0,
-            l.service_prev.height(),
-            20.0,
-        );
-        paint::label_v(
-            tr,
-            scene,
-            t,
-            ">",
-            14.0,
-            theme.text_primary,
-            l.service_next.x0 + 12.0,
-            l.service_next.y0,
-            l.service_next.height(),
-            20.0,
-        );
+        paint::card(scene, t, well, 7.0, theme.tokens.colors.surfaces.base);
         let w = paint::text_width(tr, name, 13.0);
         paint::label_v(
             tr,
@@ -3754,9 +3847,9 @@ impl FirewallApp {
             name,
             13.0,
             theme.text_primary,
-            l.service_sel.x0 + (l.service_sel.width() - w) / 2.0,
-            l.service_sel.y0,
-            l.service_sel.height(),
+            well.x0 + (well.width() - w) / 2.0,
+            well.y0,
+            well.height(),
             w + 2.0,
         );
     }
@@ -3805,26 +3898,23 @@ impl FirewallApp {
     }
 
     fn draw_form_add_button(
+        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
         l: &Layout,
     ) {
-        paint::fill_rrect(scene, t, l.add_btn, 8.0, theme.accent_primary);
-        let at = "Add rule";
-        let w = paint::text_width(tr, at, 13.0);
-        paint::label_v(
-            tr,
+        Button::paint(
             scene,
             t,
-            at,
-            13.0,
-            Color::WHITE,
-            l.add_btn.x0 + (l.add_btn.width() - w) / 2.0,
-            l.add_btn.y0,
-            l.add_btn.height(),
-            w + 2.0,
+            tr,
+            theme,
+            &ButtonFace::new(l.add_btn, "Add rule")
+                .primary()
+                .radius(8.0)
+                .text_size(13.0)
+                .hovered(l.add_btn.contains(self.last_cursor)),
         );
     }
 }
@@ -4026,6 +4116,60 @@ mod tests {
         (app, tr)
     }
 
+    /// The service stepper's three controls hit-test as one contiguous strip
+    /// — no dead zone between `<`, the value and `>` — while the painted
+    /// value well is inset a token step from each stepper so the controls
+    /// never touch (HIG §7). Wide and stacked layouts alike.
+    #[test]
+    fn service_selector_hit_rects_are_contiguous() {
+        for width in [1280.0, 800.0] {
+            let (mut app, _) = measured_app(width, 1.0);
+            app.form.is_service = true;
+            app.relayout();
+            let l = &app.layout;
+            assert!(
+                (l.service_prev.x1 - l.service_sel.x0).abs() < 1e-6,
+                "no dead zone after `<` at {width}px"
+            );
+            assert!(
+                (l.service_sel.x1 - l.service_next.x0).abs() < 1e-6,
+                "no dead zone before `>` at {width}px"
+            );
+            assert!(
+                l.service_sel.width() > 2.0 * S1 + 60.0,
+                "the inset value well still has room for a service name at {width}px"
+            );
+        }
+    }
+
+    /// A selected rule row sits on the raised table card. `selection_tier`'s
+    /// lift ends at `raised` — the card's own colour on the light preset —
+    /// so the row takes a wash measured against the card instead, and that
+    /// wash registers on every preset (HIG §9.5's Δ-luminance bar) with the
+    /// ring as the stronger step.
+    #[test]
+    fn selected_rows_register_on_the_raised_card_on_every_preset() {
+        use ui::surface::edge_delta;
+        use ui::tokens::colors::HAIRLINE_MIN_DELTA;
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let raised = theme.tokens.colors.surfaces.raised;
+            let (fill, edge) = selected_on(raised);
+            assert!(
+                edge_delta(fill, raised) >= HAIRLINE_MIN_DELTA,
+                "the selected fill registers on the card"
+            );
+            assert!(
+                edge_delta(edge, raised) >= edge_delta(fill, raised),
+                "the ring is at least as strong a step as the fill"
+            );
+        }
+        // The case the wash exists for: on the light preset the tier's lift
+        // is the card itself, so it would not register at all.
+        let light = Theme::light();
+        let tier = selection_tier(&light, SelectionState::active(true));
+        assert!(edge_delta(tier.fill, light.tokens.colors.surfaces.raised) < HAIRLINE_MIN_DELTA);
+    }
+
     /// The summary card is as tall as its chip rows need: one row at desktop
     /// width keeps the 134px floor, and the phone width — where the five chips
     /// wrap onto two rows — grows by exactly one chip row instead of reserving
@@ -4062,7 +4206,7 @@ mod tests {
         );
         let last = chips.last().unwrap();
         assert!(
-            (phone.layout.summary.y1 - last.y1 - 20.0).abs() < 1e-6,
+            (phone.layout.summary.y1 - last.y1 - PAD).abs() < 1e-6,
             "the card ends one padding below the last chip row, not ~60px later"
         );
         assert!(phone.layout.summary.height() < 188.0);

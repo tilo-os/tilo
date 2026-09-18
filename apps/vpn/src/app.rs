@@ -20,12 +20,16 @@ use winit::keyboard::{Key, NamedKey};
 
 use std::cell::Cell;
 use std::rc::Rc;
+use ui::chrome::{
+    PANEL_BORDER_ALPHA, SelectionState, chrome_hairline, panel_border, panel_ground, selection_tier,
+};
 use ui::icons::Icon;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::qos_actions::{ActionAddress, ControlInvocation};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::tokens::Spacing;
 use ui::widget::{
     Button, ButtonFace, EmptyState, ModalDialog, SegmentedFace, Toggle, ToggleFace, ToggleGroup,
     Widget,
@@ -141,7 +145,18 @@ const ROW_H: f64 = 74.0;
 const ROW_NAME_LINE_1X: f64 = 18.75;
 const ROW_NAME_CY: f64 = 14.0 + ROW_NAME_LINE_1X / 2.0;
 const ROW_LINE2_TOP: f64 = 14.0 + ROW_NAME_LINE_1X + 11.25;
-const ROW_GAP: f64 = 8.0;
+
+// ---- spacing rhythm (HIG §7b) ------------------------------------------
+//
+// One rhythm for the whole window, read from the unscaled token scale so a
+// gap in this file is always a named step: `S2` between related rows (the
+// connection list), `S3` between sibling tiles and controls, `S4` between
+// sections (tiles → chart → facts), `S6` before the next group.
+const S2: f64 = Spacing::BASE.s2 as f64;
+const S3: f64 = Spacing::BASE.s3 as f64;
+const S4: f64 = Spacing::BASE.s4 as f64;
+/// Connection rows are related rows: `S2` apart.
+const ROW_GAP: f64 = S2;
 
 /// Deterministic fictional values used only by the hermetic visual-review
 /// build. Live instances populate this map solely from the locally selected
@@ -295,20 +310,13 @@ impl Widget for ConfirmBody {
         // Command preview box below the summary.
         let box_top = self.rect.y0 + 36.0;
         let cmd_box = Rect::new(x, box_top, self.rect.x1, (box_top + 56.0).min(self.rect.y1));
-        fill_round(
+        // A well in the dialog: the window tier with its derived edge.
+        ui::surface::card(
             scene,
             t,
             cmd_box,
             f64::from(theme.tokens.radii.md),
-            theme.tokens.colors.neutral[0],
-        );
-        stroke_round(
-            scene,
-            t,
-            cmd_box,
-            f64::from(theme.tokens.radii.md),
-            ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26),
-            1.0,
+            theme.tokens.colors.surfaces.base,
         );
         text_w(
             tr,
@@ -1365,7 +1373,13 @@ impl VpnApp {
             detail.x1 - dpad,
             detail.y1 - dpad,
         );
-        let connect_btn = if compact {
+        // The title row cannot carry the 150px action beside the 24px name,
+        // its status pill and the subtitle once the pane is narrower than
+        // ~560px (a docked list beside a tablet-width window): the action
+        // then takes its own full-width row under the subtitle, as it does
+        // in the compact route, instead of painting over the title.
+        let stack_header = compact || dinner.width() < 560.0;
+        let connect_btn = if stack_header {
             Rect::new(dinner.x0, dinner.y0 + 62.0, dinner.x1, dinner.y0 + 104.0)
         } else {
             Rect::new(
@@ -1375,7 +1389,7 @@ impl VpnApp {
                 dinner.y0 + 48.0,
             )
         };
-        let tabs_y = dinner.y0 + if compact { 120.0 } else { 76.0 };
+        let tabs_y = dinner.y0 + if stack_header { 120.0 } else { 76.0 };
         let mut tabs = Vec::new();
         let mut tx = dinner.x0;
         for t in DetailTab::ALL {
@@ -1453,16 +1467,48 @@ struct LayoutRects {
     notice_dismiss: Option<Rect>,
 }
 
+/// The Status tab's kv table: `(top, row stride)`. The table starts `S4`
+/// under the chart `status_geometry` places, and the one stride is shared by
+/// the painter, the Tor-toggle hit rect and the scroll extent so all three
+/// agree (a fixed 72px tile band once put the toggle 30px low).
+fn status_kv_table(content: Rect) -> (f64, f64) {
+    let (_, chart) = status_geometry(content);
+    (chart.y1 + S4, 30.0)
+}
+
+/// How tall the Status tab's content is: tiles, chart and the five kv rows
+/// (four facts and the Tor row). The detail pane scrolls by the difference
+/// to its height, so the Tor row stays reachable in a short window.
+fn status_content_height(content: Rect) -> f64 {
+    let (kv_top, row_h) = status_kv_table(content);
+    kv_top + 5.0 * row_h - content.y0
+}
+
 /// Position of the per-tunnel-Tor pill inside the Status kv table.
 fn kv_tor_rect(content: Rect) -> Rect {
-    // 5th kv row; rows are 30px tall starting after the chart.
-    let kv_top = content.y0 + 72.0 + 16.0 + 176.0 + 16.0;
-    let row_y = kv_top + 4.0 * 30.0;
+    // 5th kv row.
+    let (kv_top, row_h) = status_kv_table(content);
+    let row_y = kv_top + 4.0 * row_h;
     Rect::new(
         content.x1 - 84.0,
         row_y + 2.0,
         content.x1 - 84.0 + 64.0,
         row_y + 26.0,
+    )
+}
+
+/// The Status tab's vertical rhythm from the content rect alone, shared by
+/// the painter and the hit layout: the stat-tile band height (one row of
+/// 72px tiles, or two rows of 56px tiles `S3` apart when the pane is
+/// narrow) and the throughput chart `S4` under it.
+fn status_geometry(content: Rect) -> (f64, Rect) {
+    let compact = content.width() < 500.0;
+    let tiles_h = if compact { 2.0 * 56.0 + S3 } else { 72.0 };
+    let chart_top = content.y0 + tiles_h + S4;
+    let chart_h = if compact { 96.0 } else { 176.0 };
+    (
+        tiles_h,
+        Rect::new(content.x0, chart_top, content.x1, chart_top + chart_h),
     )
 }
 
@@ -1574,7 +1620,7 @@ impl VpnApp {
         match status {
             ConnStatus::Connected => theme.tokens.colors.semantic.success,
             ConnStatus::Connecting => theme.tokens.colors.semantic.warning,
-            ConnStatus::Disconnected => theme.tokens.colors.neutral[5],
+            ConnStatus::Disconnected => theme.text_dim,
         }
     }
 
@@ -1604,7 +1650,8 @@ impl VpnApp {
             ConnKind::WireGuard => theme.tokens.colors.accent[6],
             ConnKind::OpenVpn => theme.tokens.colors.semantic.info,
         };
-        fill_round(scene, t, r, 9.0, bg);
+        // A tinted capsule: the tint is its contrast step against the row.
+        ui::surface::pill(scene, t, r, bg, None, Some(9.0));
         text_center(tr, scene, t, label, 11.0, fg, r, TextWeight::Bold);
         bw
     }
@@ -1629,12 +1676,13 @@ impl VpnApp {
             0.0,
             theme.tokens.colors.surfaces.raised,
         );
+        // Bar role: one derived hairline under the raised band.
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26),
+            chrome_hairline(theme),
             None,
-            &Line::new(Point::new(h.x0, h.y1), Point::new(h.x1, h.y1)),
+            &Line::new(Point::new(h.x0, h.y1 - 0.5), Point::new(h.x1, h.y1 - 0.5)),
         );
         // Primary left label: the contextual saved/active tally. The compositor
         // owns window chrome, so the app draws no wordmark or brand mark here.
@@ -1777,24 +1825,25 @@ impl VpnApp {
         } else {
             theme.tokens.colors.surfaces.base
         };
-        fill_round(scene, t, r, f64::from(theme.tokens.radii.full), bg);
-        stroke_round(
+        // Off: the window tier with its derived rest edge; on: the accent tint
+        // with the accent as its edge (live state).
+        ui::surface::pill(
             scene,
             t,
             r,
-            f64::from(theme.tokens.radii.full),
-            if on {
+            bg,
+            Some(if on {
                 theme.tokens.colors.accent[5]
             } else {
-                theme.tokens.colors.border_standard
-            },
-            1.0,
+                ui::surface::edge_on(bg)
+            }),
+            Some(f64::from(theme.tokens.radii.full)),
         );
         // status dot
         let dot: Color = if on {
             theme.tokens.colors.accent[6]
         } else {
-            theme.tokens.colors.neutral[5]
+            theme.text_dim
         };
         scene.fill(
             Fill::NonZero,
@@ -1829,12 +1878,13 @@ impl VpnApp {
         let l = lay.list;
         // pane bg
         fill_round(scene, t, l, 0.0, theme.tokens.colors.surfaces.base);
+        // The pane's right edge is derived against the tier it is painted on.
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26),
+            ui::surface::edge_on(theme.tokens.colors.surfaces.base),
             None,
-            &Line::new(Point::new(l.x1, l.y0), Point::new(l.x1, l.y1)),
+            &Line::new(Point::new(l.x1 - 0.5, l.y0), Point::new(l.x1 - 0.5, l.y1)),
         );
         text_w(
             tr,
@@ -1895,24 +1945,23 @@ impl VpnApp {
         line2_top: f64,
     ) {
         let radius = f64::from(theme.tokens.radii.lg);
+        // Selection is a lift with a derived edge, hover half a lift (HIG
+        // §9.3); the accent stays for the *live* connected state. The rows
+        // sit on the window tier, so the shared tier registers on every
+        // preset; the ring is the panel-strength derived edge.
         if selected {
-            fill_round(
-                scene,
-                t,
-                *row,
-                radius,
-                theme.tokens.colors.accent[5].multiply_alpha(0.16),
-            );
+            let tier = selection_tier(theme, SelectionState::active(true));
+            fill_round(scene, t, *row, radius, tier.fill);
             stroke_round(
                 scene,
                 t,
-                *row,
-                radius,
-                theme.tokens.colors.accent[5].multiply_alpha(0.7),
+                row.inset(-0.5),
+                radius - 0.5,
+                ui::surface::edge_on_with(tier.fill, PANEL_BORDER_ALPHA),
                 1.0,
             );
         } else if hovered {
-            fill_round(scene, t, *row, radius, theme.tokens.colors.lift(0.35));
+            fill_round(scene, t, *row, radius, theme.tokens.colors.lift(0.5));
         }
 
         // The first line's centre is the name's measured centre (from the
@@ -2063,12 +2112,10 @@ impl VpnApp {
         self.draw_detail_connect_button(scene, tr, t, theme, lay, c);
         self.draw_detail_tabs(scene, tr, t, theme, lay);
 
-        let content_transform = if lay.compact {
-            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &lay.content);
-            t * Affine::translate((0.0, -self.detail_scroll))
-        } else {
-            t
-        };
+        // The tab content is clipped to its pane and scrolls whenever it is
+        // taller than the pane (`detail_scroll_max`), docked or compact.
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &lay.content);
+        let content_transform = t * Affine::translate((0.0, -self.detail_scroll));
         match self.detail_tab {
             DetailTab::Status => {
                 self.draw_status_tab(scene, tr, content_transform, theme, lay, c);
@@ -2080,9 +2127,7 @@ impl VpnApp {
                 self.draw_logs_tab(scene, tr, content_transform, theme, lay, c);
             }
         }
-        if lay.compact {
-            scene.pop_layer();
-        }
+        scene.pop_layer();
     }
 
     /// Composed zero-state centered in the detail pane. Distinguishes "no
@@ -2157,12 +2202,15 @@ impl VpnApp {
             pill_x + f64::from(pw) + 28.0,
             dinner.y0 + 26.0,
         );
-        fill_round(
+        // A tone-tinted capsule with the tone as its edge, so the status pill
+        // reads on both palettes.
+        ui::surface::pill(
             scene,
             t,
             pill,
-            f64::from(theme.tokens.radii.full),
             sc.multiply_alpha(0.18),
+            Some(sc.multiply_alpha(0.55)),
+            Some(f64::from(theme.tokens.radii.full)),
         );
         scene.fill(
             Fill::NonZero,
@@ -2255,23 +2303,12 @@ impl VpnApp {
         for (tab, r) in &lay.tabs {
             let active = *tab == self.detail_tab;
             if active {
-                fill_round(
+                ui::surface::card(
                     scene,
                     t,
                     *r,
                     f64::from(theme.tokens.radii.md),
                     theme.tokens.colors.surfaces.raised,
-                );
-                stroke_round(
-                    scene,
-                    t,
-                    *r,
-                    f64::from(theme.tokens.radii.md),
-                    ui::tokens::colors::Colors::hairline_on(
-                        theme.tokens.colors.surfaces.raised,
-                        26,
-                    ),
-                    1.0,
                 );
             }
             let col = if active {
@@ -2317,35 +2354,25 @@ impl VpnApp {
         let latest = hist.and_then(TransferHistory::latest);
         let down_now = down_series.last().copied();
         let up_now = up_series.last().copied();
-        let tiles_h = if content.width() < 500.0 { 120.0 } else { 72.0 };
+        // One geometry for the painter and the hit layout (`kv_tor_rect`).
+        let (tiles_h, chart) = status_geometry(content);
 
         Self::draw_status_tiles(
             scene, tr, t, theme, content, c, details, has_rate, down_now, up_now, tiles_h,
         );
-        let chart = Self::draw_status_throughput(
+        Self::draw_status_throughput(
             scene,
             tr,
             t,
             theme,
-            content,
-            tiles_h,
+            chart,
             &down_series,
             &up_series,
             has_rate,
             latest,
             c,
         );
-        Self::draw_status_kv_rows(
-            scene,
-            tr,
-            t,
-            theme,
-            content,
-            chart.y1 + 16.0,
-            lay,
-            c,
-            details,
-        );
+        Self::draw_status_kv_rows(scene, tr, t, theme, content, lay, c, details);
     }
 
     /// The four-across stat tiles (local state / handshake age / measured
@@ -2376,7 +2403,8 @@ impl VpnApp {
         // These values are local-only: they never enter the document, actions
         // or resource search index.
         let compact = content.width() < 500.0;
-        let gap = if compact { 8.0 } else { 12.0 };
+        // Sibling tiles sit `S3` apart in either arrangement.
+        let gap = S3;
         let columns = if compact { 2.0 } else { 4.0 };
         let tw = (content.width() - gap * (columns - 1.0)) / columns;
         let rate_or_dash = |v: Option<f64>| match v {
@@ -2405,20 +2433,12 @@ impl VpnApp {
             let x = content.x0 + column as f64 * (tw + gap);
             let y = content.y0 + row as f64 * (tile_h + gap);
             let r = Rect::new(x, y, x + tw, y + tile_h);
-            fill_round(
+            ui::surface::card(
                 scene,
                 t,
                 r,
                 f64::from(theme.tokens.radii.lg),
                 theme.tokens.colors.surfaces.raised,
-            );
-            stroke_round(
-                scene,
-                t,
-                r,
-                f64::from(theme.tokens.radii.lg),
-                ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26),
-                1.0,
             );
             text_w(
                 tr,
@@ -2457,23 +2477,17 @@ impl VpnApp {
         tr: &mut TextRenderer,
         t: Affine,
         theme: &Theme,
-        content: Rect,
-        tiles_h: f64,
+        chart: Rect,
         down_series: &[f64],
         up_series: &[f64],
         has_rate: bool,
         latest: Option<Transfer>,
         c: &Connection,
-    ) -> Rect {
+    ) {
         // Throughput panel — plots the REAL measured rate series. When there
         // is no live data yet the plot stays empty with an honest note; the
-        // app never draws a synthesized waveform.
-        let chart = Rect::new(
-            content.x0,
-            content.y0 + tiles_h + 16.0,
-            content.x1,
-            content.y0 + tiles_h + 16.0 + if content.width() < 500.0 { 96.0 } else { 176.0 },
-        );
+        // app never draws a synthesized waveform. `chart` comes from
+        // `status_geometry`, the rhythm the hit layout reads too.
         throughput::draw_chart(scene, t, chart, theme, down_series, up_series, has_rate);
         text_w(
             tr,
@@ -2528,14 +2542,13 @@ impl VpnApp {
                 TextWeight::Regular,
             );
         }
-        chart
     }
 
     /// The secret-free provisioning explanation plus the per-tunnel Tor
     /// toggle row. Split out of [`Self::draw_status_tab`].
     #[allow(
         clippy::too_many_arguments,
-        reason = "the kv table is scene + renderer + transform + theme + layout + the top y-offset + the connection; grouping into a struct would only move the fields, not reduce them"
+        reason = "the kv table is scene + renderer + transform + theme + content + layout + the connection and its local details; grouping into a struct would only move the fields, not reduce them"
     )]
     fn draw_status_kv_rows(
         scene: &mut Scene,
@@ -2543,11 +2556,11 @@ impl VpnApp {
         t: Affine,
         theme: &Theme,
         content: Rect,
-        kv_top: f64,
         lay: &LayoutRects,
         c: &Connection,
         details: Option<&LocalProfileDetails>,
     ) {
+        let (kv_top, row_h) = status_kv_table(content);
         let rows = [
             (
                 "Endpoint",
@@ -2567,7 +2580,7 @@ impl VpnApp {
             ),
         ];
         for (i, (k, v)) in rows.iter().enumerate() {
-            let ry = kv_top + i as f64 * 30.0;
+            let ry = kv_top + i as f64 * row_h;
             text_w(
                 tr,
                 scene,
@@ -2590,20 +2603,19 @@ impl VpnApp {
                 ry + 6.0,
                 TextWeight::Regular,
             );
-            scene.stroke(
-                &Stroke::new(1.0),
+            // Row rules derived against the pane they lie on (HIG §9.5).
+            ui::surface::separator(
+                scene,
                 t,
-                ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26)
-                    .multiply_alpha(0.5),
-                None,
-                &Line::new(
-                    Point::new(content.x0, ry + 30.0),
-                    Point::new(content.x1, ry + 30.0),
-                ),
+                content.x0,
+                content.x1,
+                ry + row_h,
+                0.0,
+                theme.tokens.colors.surfaces.base,
             );
         }
         // Per-tunnel Tor row (with a small toggle).
-        let ry = kv_top + 4.0 * 30.0;
+        let ry = kv_top + 4.0 * row_h;
         text_w(
             tr,
             scene,
@@ -2634,20 +2646,13 @@ impl VpnApp {
             content.x1,
             content.y1.min(content.y0 + 360.0),
         );
-        fill_round(
+        // A raised card with its derived edge, like the Status tiles.
+        ui::surface::card(
             scene,
             t,
             card,
             f64::from(theme.tokens.radii.lg),
-            theme.tokens.colors.neutral[0],
-        );
-        stroke_round(
-            scene,
-            t,
-            card,
-            f64::from(theme.tokens.radii.lg),
-            ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26),
-            1.0,
+            theme.tokens.colors.surfaces.raised,
         );
         let text = render_config_text(c, self.local_details.get(&c.id));
         let mut y = card.y0 + 14.0;
@@ -2693,20 +2698,13 @@ impl VpnApp {
             content.x1,
             content.y1.min(content.y0 + 360.0),
         );
-        fill_round(
+        // A raised card with its derived edge, like the Status tiles.
+        ui::surface::card(
             scene,
             t,
             card,
             f64::from(theme.tokens.radii.lg),
-            theme.tokens.colors.neutral[0],
-        );
-        stroke_round(
-            scene,
-            t,
-            card,
-            f64::from(theme.tokens.radii.lg),
-            ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26),
-            1.0,
+            theme.tokens.colors.surfaces.raised,
         );
         let xfer = self.throughput.get(&c.id).and_then(TransferHistory::latest);
         let lines = synth_logs(c, self.local_details.get(&c.id), &self.activity, xfer);
@@ -2760,20 +2758,16 @@ impl VpnApp {
             None,
             &self.rect,
         );
+        // Panel role: the panel ground with its derived panel edge (HIG §9.5).
         let card = lay.modal_card;
-        fill_round(
-            scene,
-            t,
-            card,
-            f64::from(theme.tokens.radii.xl),
-            theme.tokens.colors.surfaces.raised,
-        );
+        let radius = f64::from(theme.tokens.radii.xl);
+        fill_round(scene, t, card, radius, panel_ground(theme));
         stroke_round(
             scene,
             t,
-            card,
-            f64::from(theme.tokens.radii.xl),
-            ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 51),
+            card.inset(-0.5),
+            radius - 0.5,
+            panel_border(theme),
             1.0,
         );
         self.draw_add_modal(scene, tr, t, theme, presence, card);
@@ -3414,6 +3408,9 @@ impl Widget for VpnApp {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
+        // A taller pane shrinks the scroll range under the current offset.
+        let lay = self.layout();
+        self.detail_scroll = self.detail_scroll.min(self.detail_scroll_max(&lay));
     }
 
     fn draw(
@@ -4114,23 +4111,42 @@ impl VpnApp {
         }
     }
 
+    /// Wheel over the detail pane scrolls its tab content wherever the pane
+    /// is shown — docked beside the list as well as in the compact route —
+    /// so a short window (1024×640 with a stacked header) still reaches the
+    /// Tor row at the bottom of the Status table.
     fn handle_detail_scroll(&mut self, delta: &MouseScrollDelta, handled: &mut bool) {
         let lay = self.layout();
-        if !lay.compact || !self.compact_detail_open || !point_in(lay.detail, self.last_mouse) {
+        if !self.detail_shown(&lay) || !point_in(lay.detail, self.last_mouse) {
             return;
         }
         let delta_y = match delta {
             MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 32.0,
             MouseScrollDelta::PixelDelta(position) => position.y,
         };
+        let max_scroll = self.detail_scroll_max(&lay);
+        self.detail_scroll = (self.detail_scroll - delta_y).clamp(0.0, max_scroll);
+        *handled = true;
+    }
+
+    /// Whether the detail pane is on screen: always beside the list when
+    /// docked, only after a row was opened in the compact route.
+    fn detail_shown(&self, lay: &LayoutRects) -> bool {
+        self.vault.selected_conn().is_some() && (!lay.compact || self.compact_detail_open)
+    }
+
+    /// How far the current tab's content can scroll inside `lay.content`.
+    /// The Status extent is the geometry the painter and the Tor-toggle hit
+    /// rect share (`status_content_height`); Config and Logs paint a card
+    /// clamped to the pane, so their fixed extents only matter once the pane
+    /// is shorter than the card.
+    fn detail_scroll_max(&self, lay: &LayoutRects) -> f64 {
         let content_height: f64 = match self.detail_tab {
-            DetailTab::Status => 410.0,
+            DetailTab::Status => status_content_height(lay.content),
             DetailTab::Config => 360.0,
             DetailTab::Logs => 420.0,
         };
-        let max_scroll = (content_height - lay.content.height()).max(0.0);
-        self.detail_scroll = (self.detail_scroll - delta_y).clamp(0.0, max_scroll);
-        *handled = true;
+        (content_height - lay.content.height()).max(0.0)
     }
 
     /// A pressed global shortcut (the Add modal returns before reaching this
@@ -4199,6 +4215,53 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.refresh(&mut doc);
         (app, doc)
+    }
+
+    /// At 1024×640 the docked detail pane is 536px wide, so its header
+    /// stacks (the 150px action cannot share the title row) and the Status
+    /// table's Tor row lands below the pane. The pane scrolls — docked as
+    /// well as compact — by the extent the painter, the Tor hit rect and
+    /// `status_content_height` share, so the row is reachable with the wheel.
+    #[test]
+    fn docked_detail_scrolls_the_tor_row_into_view_at_1024x640() {
+        let (mut app, _doc) = demo_with_doc();
+        if app.vault.selected.is_none() {
+            let first = app.vault.connections[0].id;
+            app.select(first);
+        }
+        app.detail_tab = DetailTab::Status;
+        app.rect = Rect::new(0.0, 0.0, 1024.0, 640.0);
+        let lay = app.layout();
+        assert!(!lay.compact);
+        assert!(
+            lay.tor_row.y1 > lay.content.y1,
+            "without scrolling the Tor row starts below the pane"
+        );
+        let extent = lay.content.y0 + status_content_height(lay.content);
+        assert!(
+            lay.tor_row.y1 <= extent + 1e-6,
+            "the Tor row lies inside the Status extent"
+        );
+
+        app.last_mouse = lay.content.center();
+        let mut handled = false;
+        app.handle_detail_scroll(&MouseScrollDelta::LineDelta(0.0, -40.0), &mut handled);
+        assert!(handled, "the docked pane takes the wheel");
+        let max = app.detail_scroll_max(&lay);
+        assert!(
+            max > 0.0 && (app.detail_scroll - max).abs() < 1e-6,
+            "clamped to the content extent"
+        );
+        assert!(
+            lay.tor_row.y1 - app.detail_scroll <= lay.content.y1 + 1e-6,
+            "the Tor row is inside the pane after scrolling"
+        );
+
+        // A tall window shows the whole table: nothing to scroll.
+        app.rect = Rect::new(0.0, 0.0, 1024.0, 900.0);
+        let tall = app.layout();
+        assert!(tall.tor_row.y1 <= tall.content.y1);
+        assert!(app.detail_scroll_max(&tall).abs() < 1e-6);
     }
 
     /// Connection rows keep their 74px band at 1× and grow with the measured
