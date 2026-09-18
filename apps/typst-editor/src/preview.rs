@@ -21,7 +21,9 @@ use winit::event::MouseScrollDelta;
 use winit::keyboard::ModifiersState;
 
 use ui::ColorCompat;
+use ui::gesture::{DragSelect, Granularity};
 use ui::text_render::TextRenderer;
+use ui::text_selection::{Selection, extend_span_drag, line_boundaries, word_boundaries};
 use ui::theme::Theme;
 use ui::widget::{Image, ImageFit, SmallContentAlign, ViewportState};
 
@@ -79,12 +81,14 @@ pub struct PreviewPane {
     content_h: f64,
     /// Selectable glyph cells in reading order (content space).
     cells: Vec<Cell>,
-    /// Active selection as a `[anchor, cursor)` pair of cell-boundary indices
-    /// over `0..=cells.len()`. `anchor == cursor` means nothing is selected.
-    sel_anchor: usize,
-    sel_cursor: usize,
-    /// A text-selection drag is in progress.
-    selecting: bool,
+    /// Active selection as shared anchor/cursor state over cell-boundary
+    /// indices. The rendered page is read-only, so this is the same shared
+    /// selection model used by the other non-editable readers.
+    selection: Selection,
+    /// Shared click-count classifier for char/word/line selection gestures.
+    drag_select: DragSelect,
+    /// The whole unit selected by the press that started a word/line drag.
+    drag_anchor_span: (usize, usize),
     /// A drag-to-pan (hand-tool) gesture is in progress. Only begins when the
     /// page is zoomed past fit-width and therefore overflows the pane.
     panning: bool,
@@ -117,9 +121,9 @@ impl Default for PreviewPane {
             content_w: 0.0,
             content_h: 0.0,
             cells: Vec::new(),
-            sel_anchor: 0,
-            sel_cursor: 0,
-            selecting: false,
+            selection: Selection::collapsed(0),
+            drag_select: DragSelect::new(),
+            drag_anchor_span: (0, 0),
             panning: false,
             dragging_bar: false,
             fit_width: true,
@@ -416,15 +420,25 @@ impl PreviewPane {
             self.panning = true;
             return true;
         }
-        // Begin / extend a text selection.
+        // Begin / extend a text selection. DragSelect owns click counting and
+        // the shared text_selection boundaries own word/line semantics.
         if let Some(b) = self.boundary_at(p) {
-            if shift {
-                self.sel_cursor = b;
+            let intent = self.drag_select.press(p, shift);
+            if intent.extend {
+                self.selection.extend_to(b);
+                self.drag_anchor_span = (self.selection.anchor, self.selection.anchor);
             } else {
-                self.sel_anchor = b;
-                self.sel_cursor = b;
+                let (start, end) = match intent.granularity {
+                    Granularity::Char => (b, b),
+                    Granularity::Word => self.text_span_at(b, false),
+                    Granularity::Line => self.text_span_at(b, true),
+                };
+                self.selection = Selection {
+                    anchor: start,
+                    cursor: end,
+                };
+                self.drag_anchor_span = (start, end);
             }
-            self.selecting = true;
             return true;
         }
         false
@@ -441,10 +455,33 @@ impl PreviewPane {
             self.recompute_current();
             return;
         }
-        if self.selecting
-            && let Some(b) = self.boundary_at(p)
+        if let Some(granularity) = self.drag_select.drag()
+            && let Some(raw) = self.boundary_at(p)
         {
-            self.sel_cursor = b;
+            let (anchor, cursor) = match granularity {
+                Granularity::Char => (self.selection.anchor, raw),
+                Granularity::Word => {
+                    let (start, end) = self.text_span_at(raw, false);
+                    extend_span_drag(
+                        self.drag_anchor_span.0,
+                        self.drag_anchor_span.1,
+                        raw,
+                        start,
+                        end,
+                    )
+                }
+                Granularity::Line => {
+                    let (start, end) = self.text_span_at(raw, true);
+                    extend_span_drag(
+                        self.drag_anchor_span.0,
+                        self.drag_anchor_span.1,
+                        raw,
+                        start,
+                        end,
+                    )
+                }
+            };
+            self.selection = Selection { anchor, cursor };
         }
     }
 
@@ -457,7 +494,7 @@ impl PreviewPane {
             self.viewport.end_pan();
             self.panning = false;
         }
-        self.selecting = false;
+        self.drag_select.release();
     }
 
     /// Hover feedback for the scrollbar thumbs. Returns whether anything
@@ -541,6 +578,74 @@ impl PreviewPane {
         Some(last + 1)
     }
 
+    /// Reconstruct the logical read-only text used by the shared boundary
+    /// walkers. Glyph cells are kept as the selectable units; visual line
+    /// breaks become newlines only for word/line boundary calculation and
+    /// clipboard output.
+    fn logical_text(&self) -> String {
+        let mut text = String::new();
+        let mut previous = None;
+        for cell in &self.cells {
+            if let Some(key) = previous
+                && key != cell.line_key
+            {
+                text.push('\n');
+            }
+            text.push_str(&cell.text);
+            previous = Some(cell.line_key);
+        }
+        text
+    }
+
+    /// Byte offset before each cell in [`Self::logical_text`]. The extra
+    /// newline between visual lines is deliberately included so the shared
+    /// line-boundary result maps back to the first cell of the next line.
+    fn logical_offsets(&self) -> Vec<usize> {
+        let mut offsets = Vec::with_capacity(self.cells.len() + 1);
+        let mut byte = 0usize;
+        let mut previous = None;
+        for cell in &self.cells {
+            if let Some(key) = previous
+                && key != cell.line_key
+            {
+                byte = byte.saturating_add(1);
+            }
+            offsets.push(byte);
+            byte = byte.saturating_add(cell.text.len());
+            previous = Some(cell.line_key);
+        }
+        offsets.push(byte);
+        offsets
+    }
+
+    /// Convert a byte boundary returned by `text_selection` into the nearest
+    /// cell boundary. This keeps all UTF-8/word/line arithmetic in the shared
+    /// module while the preview continues to select shaped glyph cells.
+    fn cell_boundary_for_byte(&self, byte: usize, offsets: &[usize]) -> usize {
+        offsets
+            .iter()
+            .position(|&offset| offset >= byte)
+            .unwrap_or(self.cells.len())
+    }
+
+    fn text_span_at(&self, cell: usize, line: bool) -> (usize, usize) {
+        let text = self.logical_text();
+        let offsets = self.logical_offsets();
+        let byte = offsets
+            .get(cell.min(self.cells.len()))
+            .copied()
+            .unwrap_or(text.len());
+        let (start, end) = if line {
+            line_boundaries(&text, byte)
+        } else {
+            word_boundaries(&text, byte)
+        };
+        (
+            self.cell_boundary_for_byte(start, &offsets),
+            self.cell_boundary_for_byte(end, &offsets),
+        )
+    }
+
     fn thumb_click(&mut self, p: Point) {
         let tw = THUMB_STRIP_W - 2.0 * THUMB_GAP;
         let mut y = self.rect.y0 + THUMB_GAP;
@@ -563,18 +668,19 @@ impl PreviewPane {
     // ----- selection API used by the app --------------------------------
 
     pub fn has_selection(&self) -> bool {
-        self.sel_anchor != self.sel_cursor
+        !self.selection.is_collapsed()
     }
 
     pub fn clear_selection(&mut self) {
-        self.sel_anchor = 0;
-        self.sel_cursor = 0;
-        self.selecting = false;
+        self.selection = Selection::collapsed(0);
+        self.drag_select.release();
     }
 
     pub fn select_all(&mut self) {
-        self.sel_anchor = 0;
-        self.sel_cursor = self.cells.len();
+        self.selection = Selection {
+            anchor: 0,
+            cursor: self.cells.len(),
+        };
     }
 
     /// The selected text, with a newline inserted at every visual line break.
@@ -583,8 +689,8 @@ impl PreviewPane {
         if !self.has_selection() {
             return None;
         }
-        let lo = self.sel_anchor.min(self.sel_cursor);
-        let hi = self.sel_anchor.max(self.sel_cursor).min(self.cells.len());
+        let lo = self.selection.min();
+        let hi = self.selection.max().min(self.cells.len());
         if lo >= hi {
             return None;
         }
@@ -644,10 +750,11 @@ impl PreviewPane {
         if n == 0 {
             return;
         }
-        self.sel_anchor = ((n as f64) * lo.clamp(0.0, 1.0)) as usize;
-        self.sel_cursor = (((n as f64) * hi.clamp(0.0, 1.0)) as usize)
-            .max(self.sel_anchor + 1)
+        let anchor = ((n as f64) * lo.clamp(0.0, 1.0)) as usize;
+        let cursor = (((n as f64) * hi.clamp(0.0, 1.0)) as usize)
+            .max(anchor + 1)
             .min(n);
+        self.selection = Selection { anchor, cursor };
     }
 
     // ----- drawing -------------------------------------------------------
@@ -788,8 +895,8 @@ impl PreviewPane {
         if !self.has_selection() {
             return;
         }
-        let lo = self.sel_anchor.min(self.sel_cursor);
-        let hi = self.sel_anchor.max(self.sel_cursor).min(self.cells.len());
+        let lo = self.selection.min();
+        let hi = self.selection.max().min(self.cells.len());
         let fill = selection_color(theme);
 
         let mut run: Option<((usize, i64), Rect)> = None;
@@ -1001,6 +1108,24 @@ mod tests {
             0.0,
             "a first fit-width layout must not centre-scroll past the title"
         );
+    }
+
+    #[test]
+    fn preview_word_selection_uses_shared_boundaries_and_drag_state() {
+        let mut p = pane();
+        assert_eq!(p.text_span_at(7, false), (6, 11));
+
+        // The second word is selected by the shared double-click classifier;
+        // a subsequent drag extends in whole shared word units.
+        let point = p
+            .viewport
+            .content_point_to_screen(Point::new(20.0 + 7.5 * 8.0, 46.0));
+        assert!(p.on_mouse_down(point, false));
+        p.on_mouse_up();
+        assert!(p.on_mouse_down(point, false));
+        assert!(p.has_selection());
+        assert_eq!(p.selected_text().as_deref(), Some("world"));
+        p.on_mouse_up();
     }
 
     #[test]

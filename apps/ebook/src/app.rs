@@ -471,12 +471,13 @@ impl DocPos {
 }
 
 /// The unit an in-flight text-selection drag snaps to, set on press from the
-/// [`DragSelect`] click ladder: single click drags by character, double/triple
-/// click drags by whole words. Mirrors `TextInput`.
+/// [`DragSelect`] click ladder: single click drags by character, double click
+/// by word, and triple click by logical text block (the reader's line unit).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum DragUnit {
     Char,
     Word,
+    Line,
 }
 
 /// A drag text selection: an anchor (where the drag started) and a head
@@ -3785,6 +3786,22 @@ impl BooksApp {
         (p, p)
     }
 
+    /// Logical line span for triple-click. Ebook flow blocks are paragraphs
+    /// and headings, so the complete canonical block is the stable line unit
+    /// even when presentation reflows it across multiple visual rows.
+    fn line_span_at(&self, p: DocPos) -> (DocPos, DocPos) {
+        (
+            DocPos {
+                block: p.block,
+                ch: 0,
+            },
+            DocPos {
+                block: p.block,
+                ch: self.block_char_len(p.block),
+            },
+        )
+    }
+
     /// Char length of a laid-out block (0 for separators / unknown).
     fn block_char_len(&self, block: usize) -> usize {
         self.layout
@@ -5670,6 +5687,10 @@ impl BooksApp {
                             let (ws, we) = self.word_span_at(raw);
                             ui::extend_span_drag(lo, hi, raw, ws, we)
                         }
+                        DragUnit::Line => {
+                            let (ls, le) = self.line_span_at(raw);
+                            ui::extend_span_drag(lo, hi, raw, ls, le)
+                        }
                     };
                     let sel = TextSel { anchor, head };
                     self.sel = Some(sel);
@@ -5851,10 +5872,9 @@ impl BooksApp {
         if on_page {
             let intent = self.drag_select.press(self.cursor, shift);
             match intent.granularity {
-                // Double/triple click: select the word under the press and
-                // arm a word-granularity drag (so dragging beyond the word
-                // extends by whole words, never resetting to the click).
-                Granularity::Word | Granularity::Line => {
+                // Double click selects a word and preserves word granularity
+                // while dragging.
+                Granularity::Word => {
                     if let Some(dp) = self.press_doc {
                         self.select_word_at(dp);
                         if let Some(s) = self.sel {
@@ -5862,6 +5882,21 @@ impl BooksApp {
                             self.drag_unit = DragUnit::Word;
                             consumed_page = true;
                         }
+                    }
+                }
+                // Triple click selects the complete logical flow block and
+                // expands subsequent dragging block-by-block.
+                Granularity::Line => {
+                    if let Some(dp) = self.press_doc {
+                        let (start, end) = self.line_span_at(dp);
+                        self.sel = Some(TextSel {
+                            anchor: start,
+                            head: end,
+                        });
+                        self.selected_block = Some(dp.block);
+                        self.drag_anchor_span = (start, end);
+                        self.drag_unit = DragUnit::Line;
+                        consumed_page = true;
                     }
                 }
                 Granularity::Char if intent.extend => {

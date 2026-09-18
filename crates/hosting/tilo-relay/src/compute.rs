@@ -1127,9 +1127,12 @@ mod tests {
             let value: serde_json::Value =
                 serde_json::from_slice(&fs::read(request).map_err(|error| error.to_string())?)
                     .map_err(|error| error.to_string())?;
-            assert!(value.get("inputs").is_some());
-            assert!(value.get("arguments").is_none());
-            assert!(value.get("environment").is_none());
+            if value.get("inputs").is_none()
+                || value.get("arguments").is_some()
+                || value.get("environment").is_some()
+            {
+                return Err("compute request did not preserve the canonical input schema".into());
+            }
             if self.replace_output_with_symlink {
                 let output_dir = invocation.host_job_dir.join(".tilo-compute/outputs");
                 fs::remove_dir(&output_dir).map_err(|error| error.to_string())?;
