@@ -19,8 +19,8 @@ IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 # This process observes security state; it never repairs it. Keep the host
 # filesystem immutable and expose only TPM devices needed by the verified-boot
-# preflight it invokes. The two retained capabilities permit reading the
-# kernel log and inspecting the differently-owned fs daemon through /proc.
+# preflight it invokes. Kernel diagnostics come from the journal and daemon
+# configuration comes from systemd, so this observer needs no capabilities.
 UMask=0077
 NoNewPrivileges=yes
 ProtectSystem=strict
@@ -39,8 +39,8 @@ RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 RemoveIPC=yes
-CapabilityBoundingSet=CAP_SYS_PTRACE CAP_SYSLOG
-AmbientCapabilities=CAP_SYS_PTRACE CAP_SYSLOG
+CapabilityBoundingSet=
+AmbientCapabilities=
 DevicePolicy=closed
 DeviceAllow=/dev/tpmrm0 rw
 DeviceAllow=/dev/tpm0 rw

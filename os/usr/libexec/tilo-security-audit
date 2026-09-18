@@ -138,7 +138,8 @@ fi
 # that line is the only place the live setting is observable — there is no
 # sysfs knob for either. A karg that was ignored (typo, unsupported build)
 # shows up here and nowhere else.
-meminit="$(dmesg 2>/dev/null | grep -m1 'mem auto-init:' || true)"
+meminit="$(journalctl --quiet --boot --dmesg --no-pager --output=cat 2>/dev/null \
+  | grep -m1 'mem auto-init:' || true)"
 case "$meminit" in
   *'alloc:on'*'free:on'*) ok "${meminit#*mem auto-init: }(live, from the kernel's own report)" ;;
   '')                     note "mem auto-init: kernel report not in the ring buffer (rotated out?)" ;;
@@ -466,12 +467,18 @@ else
   warn "hidepid on /proc NOT set"
 fi
 
-# Hardened userspace allocator (scudo) on the base daemons
-fspid="$(systemctl show -p MainPID --value fs.service 2>/dev/null)"
-if [ -n "${fspid:-}" ] && [ "$fspid" != 0 ] && grep -q 'scudo' "/proc/$fspid/maps" 2>/dev/null; then
-  ok "scudo hardened allocator active in fs.service"
+# Hardened userspace allocator (scudo) on the base daemons. Query systemd's
+# effective unit environment rather than acquiring ptrace authority merely to
+# inspect a differently-owned process map.
+fsenv="$(systemctl show -p Environment --value fs.service 2>/dev/null || true)"
+if case " $fsenv " in
+     *' LD_PRELOAD=/usr/lib/tilo/libclang_rt.scudo_standalone.so '*) true ;;
+     *) false ;;
+   esac \
+   && [ -r /usr/lib/tilo/libclang_rt.scudo_standalone.so ]; then
+  ok "scudo hardened allocator configured for fs.service"
 else
-  warn "scudo allocator NOT detected in fs.service"
+  warn "scudo allocator NOT configured for fs.service"
 fi
 
 # fs daemon SELinux confinement (its own domain, not unconfined_service_t)
