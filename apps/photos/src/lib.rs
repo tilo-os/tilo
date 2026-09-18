@@ -66,6 +66,7 @@ pub mod app;
 pub mod doc;
 /// Bounded, cancellation-aware real-file discovery and metadata ingestion.
 pub mod import;
+pub mod library_analysis;
 pub mod model;
 pub mod people;
 pub mod pixels;
@@ -165,6 +166,7 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "people",
     "people-detail",
     "places",
+    "analysis",
     "selection",
     "selection-many-albums",
     "album-manage",
@@ -348,6 +350,7 @@ pub fn seed_scenario(
         | "people"
         | "people-detail"
         | "places"
+        | "analysis"
         | "selection"
         | "selection-many-albums"
         | "album-manage"
@@ -460,6 +463,8 @@ pub fn seed_scenario(
                 }
             } else if scenario == "places" {
                 app.show_places_for_shot();
+            } else if scenario == "analysis" {
+                app.show_library_analysis();
             } else {
                 app.show_library();
             }
