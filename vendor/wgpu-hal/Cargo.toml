@@ -47,7 +47,9 @@ targets = [
 ]
 
 [package.metadata.cargo-machete]
-ignored = ["cfg_aliases"]
+# GLES enables windows-result/std for windows_result::Error's Error impl;
+# it is a feature-unification dependency, not a directly imported crate.
+ignored = ["cfg_aliases", "windows-result"]
 
 [features]
 device_lost_panic = []
