@@ -15164,7 +15164,13 @@ impl Widget for ShellOverlayHost {
             *handled = true;
             return;
         }
-        self.release_follow_for_local_key(event);
+        // The first local key is the handoff edge out of Follow mode. Consume
+        // that same event after releasing the peer so a shell chord (for
+        // example Super+W) cannot also mutate the local desktop.
+        if self.release_follow_for_local_key(event) {
+            *handled = true;
+            return;
+        }
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -24997,9 +25003,16 @@ mod overlay_event_absorb_tests {
     }
 
     fn pump(h: &mut AbsorbHarness, event: &WindowEvent) -> bool {
+        pump_with_modifiers(h, event, winit::event::Modifiers::default())
+    }
+
+    fn pump_with_modifiers(
+        h: &mut AbsorbHarness,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT.clone();
-        let modifiers = winit::event::Modifiers::default();
         let mut focus: Option<NodeId> = None;
         let mut handled = false;
         h.host.handle_event(
@@ -25014,6 +25027,30 @@ mod overlay_event_absorb_tests {
             &h.taffy,
         );
         handled
+    }
+
+    #[test]
+    fn first_local_key_releases_follow_without_also_running_a_shell_chord() {
+        let mut h = build_harness();
+        h.host.set_followed_peer(Some("ada".into()));
+        let before = h.chrome.borrow().tree().workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .len();
+        let modifiers = winit::event::Modifiers::from(winit::keyboard::ModifiersState::SUPER);
+
+        assert!(pump_with_modifiers(
+            &mut h,
+            &key_pressed(Key::Character("w".into())),
+            modifiers,
+        ));
+        assert!(h.host.followed_peer.is_none(), "the key exits Follow mode");
+        assert_eq!(
+            h.chrome.borrow().tree().workspaces[0].strips[0].window_groups[0]
+                .tabs
+                .len(),
+            before,
+            "the handoff key must not also close the focused tab"
+        );
     }
 
     #[allow(
