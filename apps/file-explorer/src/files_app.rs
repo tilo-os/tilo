@@ -2903,8 +2903,10 @@ impl FileExplorerWidget {
                     self.status = Some(t("files-nearby-select-one"));
                     return true;
                 };
-                self.status = Some(t("files-nearby-queueing"));
-                self.nearby_send.send(&path, target);
+                self.status = Some(match self.nearby_send.send(&path, target) {
+                    Ok(()) => t("files-nearby-queueing"),
+                    Err(error) => error,
+                });
                 true
             }
             FileCommand::ChooseNearbyDestination { handle } => {
@@ -8599,8 +8601,8 @@ impl Widget for FileExplorerWidget {
                 {
                     return Err("nearby device is no longer available".into());
                 }
+                self.nearby_send.send(&target, handle)?;
                 self.nearby_send_path = Some(target.clone());
-                self.nearby_send.send(&target, handle);
                 self.status = Some(t("files-nearby-queueing"));
             }
             (OperationKind::Effect, "files.nearby-decide") => {

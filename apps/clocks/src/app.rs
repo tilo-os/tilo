@@ -1231,6 +1231,7 @@ impl Widget for ClocksApp {
                         weekdays: BTreeSet::new(),
                         enabled: true,
                         last_fired_local_date: None,
+                        next_due_utc: None,
                     });
                 }
             }),
@@ -1281,7 +1282,7 @@ impl Widget for ClocksApp {
             }
             crate::actions::ClockOperation::ToggleAlarm { id } => self.state.update(|s| {
                 if let Some(alarm) = s.alarms.iter_mut().find(|alarm| alarm.id == id) {
-                    alarm.enabled = !alarm.enabled;
+                    alarm.set_enabled(!alarm.enabled);
                 }
             }),
             crate::actions::ClockOperation::RemoveAlarm { id } => self
@@ -1613,6 +1614,48 @@ mod tests {
         assert!(remaining_fraction(0, 300_000).abs() < f32::EPSILON);
         assert!(remaining_fraction(20, 0).abs() < f32::EPSILON);
         assert!((remaining_fraction(400_000, 300_000) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn semantic_alarm_toggle_clears_the_previous_occurrence() {
+        let mut app = ClocksApp::scenario("empty");
+        let doc = automerge::AutoCommit::new();
+        let create = crate::actions::ClockOperation::NewAlarm {
+            hours: 12,
+            minutes: 0,
+            label: "Lunch".into(),
+        };
+        assert!(
+            app.invoke_resource_operation(
+                tilo_actions::OperationKind::Effect,
+                crate::actions::OPERATION_TYPE,
+                &serde_json::to_vec(&create).unwrap(),
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        let id = app.state.with(|state| state.alarms[0].id);
+        let toggle =
+            serde_json::to_vec(&crate::actions::ClockOperation::ToggleAlarm { id }).unwrap();
+        for enabled in [false, true] {
+            app.state
+                .update(|state| state.alarms[0].next_due_utc = Some(Utc::now()));
+            assert!(
+                app.invoke_resource_operation(
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::OPERATION_TYPE,
+                    &toggle,
+                    &doc,
+                    &automerge::ROOT,
+                )
+                .unwrap()
+            );
+            app.state.with(|state| {
+                assert_eq!(state.alarms[0].enabled, enabled);
+                assert_eq!(state.alarms[0].next_due_utc, None);
+            });
+        }
     }
 
     #[test]
