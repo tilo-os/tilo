@@ -59,6 +59,7 @@ members = [
     "apps/video-player",
     "crates/media",
     "crates/media/ocr",
+    "crates/media/vision",
     "crates/thumbnail",
     "fs",
     "shell",

@@ -12,9 +12,12 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use accounts::{AccountId, Secret, SecretVault};
-use agent_provider_config::{ProviderConfig, ProviderProfile, ProviderProtocol};
+use agent_provider_config::{EndpointLocation, ProviderConfig, ProviderProfile, ProviderProtocol};
+use base64::Engine as _;
 use clap::{Parser, Subcommand};
-use tilo_model_gateway::{Frame, RPC_VERSION, Request, Response, read_frame, write_frame};
+use tilo_model_gateway::{
+    Frame, RPC_VERSION, Request, Response, VisionImage, read_frame, write_frame,
+};
 use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Parser)]
@@ -45,6 +48,9 @@ enum Action {
 const MAX_HANDOFF: usize = 4096;
 const SETTINGS_APP: &str = "dev.tilo.settings";
 const AGENT_APP: &str = "dev.tilo.agent";
+const PHOTOS_APP: &str = "dev.tilo.photos";
+const MAX_VISION_IMAGE_BYTES: usize = 1024 * 1024;
+const VISION_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[derive(serde::Deserialize)]
 struct Handoff {
@@ -185,7 +191,11 @@ fn read_handoff(stream: &mut UnixStream) -> Result<Handoff, String> {
         .map_err(|_| "truncated launcher authentication".to_string())?;
     let handoff: Handoff =
         serde_json::from_slice(&body).map_err(|_| "invalid launcher authentication".to_string())?;
-    if handoff.protocol != 1 || (handoff.app_id != SETTINGS_APP && handoff.app_id != AGENT_APP) {
+    if handoff.protocol != 1
+        || (handoff.app_id != SETTINGS_APP
+            && handoff.app_id != AGENT_APP
+            && handoff.app_id != PHOTOS_APP)
+    {
         return Err("launcher is not authorized for the model gateway".into());
     }
     Ok(handoff)
@@ -211,6 +221,21 @@ fn handle(app_id: &str, request: Request) -> Response {
             error: None,
         }),
         Request::Plan { .. } => Err("only tilo-agent may plan through the model gateway".into()),
+        Request::AnalyzeImage {
+            profile_id,
+            model_id,
+            image,
+        } if app_id == PHOTOS_APP => {
+            analyze_image(&profile_id, &model_id, &image).map(|output| Response {
+                ok: true,
+                output: Some(output),
+                configured: None,
+                error: None,
+            })
+        }
+        Request::AnalyzeImage { .. } => {
+            Err("only Photos may request fixed local image analysis".into())
+        }
         Request::SecretStatus { profile_id } if app_id == SETTINGS_APP => {
             secret_status(&profile_id).map(|configured| Response {
                 ok: true,
@@ -344,17 +369,133 @@ fn plan(
     let result = while_busy(
         || timeout.checked_sub(began.elapsed()),
         std::thread::sleep,
-        |budget| provider_attempt(&client, &profile, &endpoint, secret.as_str(), body, budget),
+        |budget| {
+            provider_attempt(
+                &client,
+                &profile,
+                &endpoint,
+                Some(secret.as_str()),
+                body,
+                budget,
+            )
+        },
     );
     secret.zeroize();
     result
+}
+
+/// Run Photos' one fixed local-only visual-analysis operation. No arbitrary
+/// prompt crosses the app boundary: the schema, token budget, and image URL
+/// shape are all constructed here after validating the launcher-authenticated
+/// caller and model capability.
+fn analyze_image(profile_id: &str, model_id: &str, image: &VisionImage) -> Result<String, String> {
+    validate_vision_image(image)?;
+    let profile = configured_profile(profile_id)?;
+    if profile.location != EndpointLocation::ThisDevice
+        || profile.protocol != ProviderProtocol::OpenAiCompatible
+        || !loopback_http_endpoint(&profile.endpoint)
+    {
+        return Err("image analysis requires a supervised loopback OpenAI-compatible model".into());
+    }
+    let model = profile
+        .models
+        .iter()
+        .find(|model| model.id == model_id)
+        .ok_or_else(|| "model is not configured for this provider".to_string())?;
+    if !model.vision {
+        return Err("the selected local model does not declare image-analysis capability".into());
+    }
+    if !model.revision.as_deref().is_some_and(is_pinned_revision) {
+        return Err("the selected local vision model has no pinned revision".into());
+    }
+
+    let endpoint = provider_url(&profile);
+    let body = local_vision_body(model_id, image);
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|_| "gateway HTTP client is unavailable".to_string())?;
+    let began = Instant::now();
+    // A local vLLM endpoint is normally unauthenticated. Do not invent a
+    // bearer token, and never look up a hosted-provider secret for it.
+    while_busy(
+        || VISION_TIMEOUT.checked_sub(began.elapsed()),
+        std::thread::sleep,
+        |budget| provider_attempt(&client, &profile, &endpoint, None, &body, budget),
+    )
+}
+
+fn validate_vision_image(image: &VisionImage) -> Result<(), String> {
+    if !matches!(
+        image.media_type.as_str(),
+        "image/jpeg" | "image/png" | "image/webp"
+    ) {
+        return Err("image analysis accepts JPEG, PNG, or WebP previews only".into());
+    }
+    if image.source_content_hash.len() != 64
+        || !image
+            .source_content_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("image analysis requires a SHA-256 source-content hash".into());
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(&image.data_base64)
+        .map_err(|_| "image analysis preview is not valid base64".to_string())?;
+    if decoded.is_empty() || decoded.len() > MAX_VISION_IMAGE_BYTES {
+        return Err("image analysis preview exceeds the 1 MiB input limit".into());
+    }
+    Ok(())
+}
+
+fn loopback_http_endpoint(endpoint: &str) -> bool {
+    let Ok(url) = url::Url::parse(endpoint) else {
+        return false;
+    };
+    if !matches!(url.scheme(), "http" | "https") || url.username() != "" || url.password().is_some()
+    {
+        return false;
+    }
+    match url.host() {
+        Some(url::Host::Domain("localhost")) => true,
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        _ => false,
+    }
+}
+
+fn is_pinned_revision(revision: &str) -> bool {
+    matches!(revision.len(), 40 | 64)
+        && revision
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        && revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn local_vision_body(model_id: &str, image: &VisionImage) -> serde_json::Value {
+    const INSTRUCTIONS: &str = "You are a device-local image indexing component. Return JSON only, with exactly these keys: description (a concise factual caption, at most 480 Unicode characters), labels (an array of up to 24 common visible object, animal, place, or activity labels; do not guess identity or sensitive traits), ocr (literal visible text, or an empty string). Do not name people: face identity requires a separate consented face-clustering capability. If uncertain, omit the label or use an empty value.";
+    let data_url = format!("data:{};base64,{}", image.media_type, image.data_base64);
+    serde_json::json!({
+        "model": model_id,
+        "temperature": 0,
+        "max_tokens": 700,
+        "response_format": { "type": "json_object" },
+        "messages": [
+            { "role": "system", "content": INSTRUCTIONS },
+            { "role": "user", "content": [
+                { "type": "text", "text": "Index this photo using the fixed JSON schema." },
+                { "type": "image_url", "image_url": { "url": data_url, "detail": "low" } }
+            ] }
+        ]
+    })
 }
 
 fn provider_attempt(
     client: &reqwest::blocking::Client,
     profile: &ProviderProfile,
     endpoint: &str,
-    secret: &str,
+    secret: Option<&str>,
     body: &serde_json::Value,
     budget: Duration,
 ) -> Result<String, ProviderFailure> {
@@ -364,11 +505,21 @@ fn provider_attempt(
         .header("content-type", "application/json");
     match profile.protocol {
         ProviderProtocol::Anthropic => {
+            let Some(secret) = secret else {
+                return Err(ProviderFailure {
+                    why: "Anthropic requests require a configured credential".into(),
+                    again: Again::Never,
+                });
+            };
             request = request
                 .header("anthropic-version", "2023-06-01")
                 .header("x-api-key", secret);
         }
-        ProviderProtocol::OpenAiCompatible => request = request.bearer_auth(secret),
+        ProviderProtocol::OpenAiCompatible => {
+            if let Some(secret) = secret {
+                request = request.bearer_auth(secret);
+            }
+        }
     }
     let response = request.json(body).send().map_err(|error| ProviderFailure {
         why: if error.is_timeout() {
@@ -505,6 +656,57 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
+
+    fn vision_image() -> VisionImage {
+        VisionImage {
+            media_type: "image/jpeg".into(),
+            data_base64: base64::engine::general_purpose::STANDARD.encode(b"preview"),
+            source_content_hash: "a".repeat(64),
+        }
+    }
+
+    #[test]
+    fn local_vision_input_is_closed_and_bounded() {
+        assert!(validate_vision_image(&vision_image()).is_ok());
+        let mut foreign = vision_image();
+        foreign.media_type = "image/svg+xml".into();
+        assert!(validate_vision_image(&foreign).is_err());
+        let mut corrupt = vision_image();
+        corrupt.data_base64 = "not base64".into();
+        assert!(validate_vision_image(&corrupt).is_err());
+        let mut bad_hash = vision_image();
+        bad_hash.source_content_hash = "x".repeat(64);
+        assert!(validate_vision_image(&bad_hash).is_err());
+    }
+
+    #[test]
+    fn local_vision_never_routes_to_a_lan_or_hosted_endpoint() {
+        assert!(loopback_http_endpoint("http://127.0.0.1:8123/v1"));
+        assert!(loopback_http_endpoint("http://[::1]:8123/v1"));
+        assert!(!loopback_http_endpoint("http://192.168.1.20:8123/v1"));
+        assert!(!loopback_http_endpoint("https://models.example.test/v1"));
+        assert!(!loopback_http_endpoint(
+            "http://localhost.evil.test:8123/v1"
+        ));
+    }
+
+    #[test]
+    fn local_vision_requires_an_immutable_model_revision() {
+        assert!(is_pinned_revision(&"a".repeat(40)));
+        assert!(is_pinned_revision(&"b".repeat(64)));
+        assert!(!is_pinned_revision("main"));
+        assert!(!is_pinned_revision(&"A".repeat(40)));
+    }
+
+    #[test]
+    fn local_vision_prompt_is_fixed_and_contains_no_identity_request() {
+        let body = local_vision_body("vision-model", &vision_image());
+        let encoded = body.to_string();
+        assert!(encoded.contains("device-local image indexing component"));
+        assert!(encoded.contains("Do not name people"));
+        assert!(!encoded.contains("ignore previous"));
+        assert_eq!(body["model"], "vision-model");
+    }
 
     struct Fake {
         left: Duration,
