@@ -100,12 +100,25 @@ fn is_duplicate_personal_fabric_data(
     }
 }
 
+trait PersonalFabricEnvelopeRef {
+    fn envelope(&self) -> &crate::shell::device_fabric::PersonalFabricActionEnvelope;
+}
+
+impl PersonalFabricEnvelopeRef for crate::shell::device_fabric::PersonalFabricActionEnvelope {
+    fn envelope(&self) -> &crate::shell::device_fabric::PersonalFabricActionEnvelope {
+        self
+    }
+}
+
 fn personal_fabric_terminal_matches_data(
-    terminal: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
-    queued: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
+    terminal: &impl PersonalFabricEnvelopeRef,
+    queued: &impl PersonalFabricEnvelopeRef,
 ) -> bool {
     use crate::shell::device_fabric::PersonalFabricAction;
     use crate::shell::remote_capture_device::RemoteCaptureSignal;
+
+    let terminal = terminal.envelope();
+    let queued = queued.envelope();
 
     if terminal.source != queued.source || terminal.target != queued.target {
         return false;
@@ -133,20 +146,20 @@ fn personal_fabric_terminal_matches_data(
 /// queued authority decisions. Distinct media sequences are never collapsed:
 /// dropping an intermediate sequence lets the runtime's existing sequence
 /// checks fail closed instead of presenting corrupted media as contiguous.
-fn queue_personal_fabric_action(
-    queue: &mut VecDeque<crate::shell::device_fabric::PersonalFabricActionEnvelope>,
-    envelope: crate::shell::device_fabric::PersonalFabricActionEnvelope,
+fn queue_personal_fabric_action<T: PersonalFabricEnvelopeRef>(
+    queue: &mut VecDeque<T>,
+    envelope: T,
 ) -> PersonalFabricQueueOutcome {
-    if is_personal_fabric_bulk_data(&envelope.action) {
+    if is_personal_fabric_bulk_data(&envelope.envelope().action) {
         if queue
             .iter()
-            .any(|queued| is_duplicate_personal_fabric_data(queued, &envelope))
+            .any(|queued| is_duplicate_personal_fabric_data(queued.envelope(), envelope.envelope()))
         {
             return PersonalFabricQueueOutcome::Coalesced;
         }
         let data_count = queue
             .iter()
-            .filter(|queued| is_personal_fabric_bulk_data(&queued.action))
+            .filter(|queued| is_personal_fabric_bulk_data(&queued.envelope().action))
             .count();
         if queue.len() >= PERSONAL_FABRIC_ACTION_QUEUE_CAPACITY
             || data_count >= PERSONAL_FABRIC_DATA_QUEUE_CAPACITY
@@ -161,7 +174,7 @@ fn queue_personal_fabric_action(
     if queue.len() >= PERSONAL_FABRIC_ACTION_QUEUE_CAPACITY {
         let Some(oldest_data) = queue
             .iter()
-            .position(|queued| is_personal_fabric_bulk_data(&queued.action))
+            .position(|queued| is_personal_fabric_bulk_data(&queued.envelope().action))
         else {
             return PersonalFabricQueueOutcome::Saturated;
         };
@@ -507,12 +520,58 @@ pub struct PeerDeparture {
     /// is diagnostic only and must not decide whether an event is new.
     pub generation: u64,
     pub endpoint_id: iroh::EndpointId,
+    /// Actor-minted incarnation of this endpoint on this exact topic. `None`
+    /// is reserved for relay/session events that cannot authorize the
+    /// personal fabric.
+    pub membership_epoch: Option<crate::network::actor::MembershipEpoch>,
     pub session_handle: u64,
     pub route: CrdtRoute,
     pub cause: PeerDepartureCause,
     pub user_public_key: Option<[u8; 32]>,
     pub participant_name: Option<String>,
     pub observed_at: SystemTime,
+}
+
+/// Process-local proof that one certified same-person endpoint completed an
+/// `IdentityHello` on its current actor membership. It is deliberately not
+/// serializable; wire payloads can name devices but cannot mint route
+/// authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AuthenticatedPersonalRoute {
+    workspace_topic: u64,
+    endpoint_id: iroh::EndpointId,
+    membership_epoch: crate::network::actor::MembershipEpoch,
+    user_public_key: [u8; 32],
+    device: crate::shell::personal_continuity::DeviceId,
+}
+
+impl AuthenticatedPersonalRoute {
+    pub(crate) fn device(&self) -> &crate::shell::personal_continuity::DeviceId {
+        &self.device
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(device: crate::shell::personal_continuity::DeviceId) -> Self {
+        Self {
+            workspace_topic: 1,
+            endpoint_id: iroh::SecretKey::from_bytes(&[0xE7; 32]).public(),
+            membership_epoch: crate::network::actor::MembershipEpoch::for_test(1),
+            user_public_key: [0xE8; 32],
+            device,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReceivedPersonalFabricAction {
+    pub(crate) envelope: crate::shell::device_fabric::PersonalFabricActionEnvelope,
+    pub(crate) route: AuthenticatedPersonalRoute,
+}
+
+impl PersonalFabricEnvelopeRef for ReceivedPersonalFabricAction {
+    fn envelope(&self) -> &crate::shell::device_fabric::PersonalFabricActionEnvelope {
+        &self.envelope
+    }
 }
 
 /// Shared, bounded departure history. It is intentionally independent of
@@ -1040,8 +1099,11 @@ pub struct ShellNetwork {
     device_fabric: Mutex<crate::shell::device_fabric::DeviceFabric>,
     device_fabric_path: Option<PathBuf>,
     /// Validated, ephemeral exact-target actions awaiting the shell runtime.
-    personal_fabric_actions:
-        Mutex<VecDeque<crate::shell::device_fabric::PersonalFabricActionEnvelope>>,
+    personal_fabric_actions: Mutex<VecDeque<ReceivedPersonalFabricAction>>,
+    /// Exact current same-person routes admitted by a certificate-bearing
+    /// `IdentityHello`. Membership edges alone never populate this map.
+    authenticated_personal_routes:
+        Mutex<std::collections::HashMap<(u64, iroh::EndpointId), AuthenticatedPersonalRoute>>,
     /// Authenticated display lifecycle and latest-wins frames. This queue is
     /// deliberately separate from actions so video cannot starve control.
     personal_display_messages: Mutex<VecDeque<crate::shell::device_fabric::PersonalDisplayMessage>>,
@@ -1425,6 +1487,7 @@ impl ShellNetwork {
             device_fabric: Mutex::new(device_fabric),
             device_fabric_path: Some(device_fabric_path),
             personal_fabric_actions: Mutex::new(VecDeque::new()),
+            authenticated_personal_routes: Mutex::new(std::collections::HashMap::new()),
             personal_display_messages: Mutex::new(VecDeque::new()),
             personal_display_authorizations: Mutex::new(std::collections::BTreeMap::new()),
             personal_fabric_action_replays: Mutex::new(PersonalFabricReplayWindow::default()),
@@ -3273,11 +3336,57 @@ impl ShellNetwork {
         Ok(request_id)
     }
 
+    /// Send only while the exact actor membership authenticated by the caller
+    /// is still current. Holding the route registry through command enqueue
+    /// gives departure a defined ordering: either enqueue wins, or departure
+    /// removes authority first and this call fails without sending.
+    pub(crate) fn send_personal_fabric_action_on_route(
+        &self,
+        route: &AuthenticatedPersonalRoute,
+        action: crate::shell::device_fabric::PersonalFabricAction,
+    ) -> Result<[u8; 16], String> {
+        let routes = self
+            .authenticated_personal_routes
+            .lock()
+            .map_err(|_| "personal route authority is unavailable".to_string())?;
+        if routes.get(&(route.workspace_topic, route.endpoint_id)) != Some(route) {
+            return Err("personal route is no longer current".into());
+        }
+        self.send_personal_fabric_action(&route.device, action)
+    }
+
+    pub(crate) fn current_personal_route(
+        &self,
+        device: &crate::shell::personal_continuity::DeviceId,
+    ) -> Option<AuthenticatedPersonalRoute> {
+        self.authenticated_personal_routes
+            .lock()
+            .ok()?
+            .values()
+            .find(|route| &route.device == device)
+            .cloned()
+    }
+
+    pub(crate) fn personal_route_is_current(&self, route: &AuthenticatedPersonalRoute) -> bool {
+        self.authenticated_personal_routes
+            .lock()
+            .is_ok_and(|routes| {
+                routes.get(&(route.workspace_topic, route.endpoint_id)) == Some(route)
+            })
+    }
+
+    pub(crate) fn with_current_personal_route<T>(
+        &self,
+        route: &AuthenticatedPersonalRoute,
+        operation: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let routes = self.authenticated_personal_routes.lock().ok()?;
+        (routes.get(&(route.workspace_topic, route.endpoint_id)) == Some(route)).then(operation)
+    }
+
     /// Drain validated actions. They are never persisted or included in the
     /// convergent snapshot, so a stale command cannot execute after restart.
-    pub fn take_personal_fabric_actions(
-        &self,
-    ) -> Vec<crate::shell::device_fabric::PersonalFabricActionEnvelope> {
+    pub(crate) fn take_personal_fabric_actions(&self) -> Vec<ReceivedPersonalFabricAction> {
         self.personal_fabric_actions
             .lock()
             .map_or_else(|_| Vec::new(), |mut actions| actions.drain(..).collect())
@@ -3837,7 +3946,12 @@ impl ShellNetwork {
             }
             // Without this the roster only ever grows: nothing else
             // tells it a session went quiet.
-            NetEvent::PeerLeft { ws, peer, cause } => {
+            NetEvent::PeerLeft {
+                ws,
+                peer,
+                cause,
+                membership_epoch,
+            } => {
                 if let Ok(mut direct) = self.workspace_control_direct.lock() {
                     direct.remove(&(ws, peer));
                 }
@@ -3848,21 +3962,46 @@ impl ShellNetwork {
                     workspace_topic: ws,
                     peer,
                 });
-                self.record_peer_departure(ws, peer, cause);
-                let handle = crate::network::behaviour::peer_liveness_handle(&peer);
-                self.peer_identities
-                    .remove(&crate::shell::state::PeerOrigin::peer(&peer));
-                if let Ok(replica) = self.replica.lock() {
-                    replica.tree.write().retire_session(handle);
+                self.record_peer_departure(ws, peer, cause, membership_epoch);
+                if let Some(epoch) = membership_epoch
+                    && let Ok(mut routes) = self.authenticated_personal_routes.lock()
+                    && routes
+                        .get(&(ws, peer))
+                        .is_some_and(|route| route.membership_epoch == epoch)
+                {
+                    routes.remove(&(ws, peer));
+                }
+                let has_live_route =
+                    self.authenticated_personal_routes
+                        .lock()
+                        .is_ok_and(|routes| routes.values().any(|route| route.endpoint_id == peer))
+                        || self.workspace_control_direct.lock().is_ok_and(|direct| {
+                            direct.iter().any(|(_, endpoint)| endpoint == &peer)
+                        });
+                if !has_live_route {
+                    let handle = crate::network::behaviour::peer_liveness_handle(&peer);
+                    self.peer_identities
+                        .remove(&crate::shell::state::PeerOrigin::peer(&peer));
+                    if let Ok(replica) = self.replica.lock() {
+                        replica.tree.write().retire_session(handle);
+                    }
                 }
             }
-            NetEvent::Msg { ws, peer, msg } => self.dispatch_neighbour_msg(ws, peer, msg),
+            NetEvent::Msg {
+                ws,
+                peer,
+                membership_epoch,
+                msg,
+            } => self.dispatch_neighbour_msg(ws, peer, membership_epoch, msg),
             NetEvent::PersonalFabric {
                 ws,
                 peer,
+                membership_epoch,
                 user_public_key,
                 payload,
-            } => self.dispatch_personal_fabric(ws, peer, user_public_key, payload),
+            } => {
+                self.dispatch_personal_fabric(ws, peer, membership_epoch, user_public_key, payload)
+            }
             NetEvent::PersonalMediaTransfer {
                 target,
                 transfer_id,
@@ -3909,6 +4048,7 @@ impl ShellNetwork {
         &self,
         ws: u64,
         peer: iroh::EndpointId,
+        membership_epoch: crate::network::actor::MembershipEpoch,
         user_public_key: [u8; 32],
         payload: PersonalFabricPayload,
     ) {
@@ -3924,6 +4064,20 @@ impl ShellNetwork {
             tracing::warn!(peer = %peer, "dropping cross-identity personal fabric frame");
             return;
         }
+        let route = self
+            .authenticated_personal_routes
+            .lock()
+            .ok()
+            .and_then(|routes| routes.get(&(ws, peer)).cloned());
+        let Some(route) = route.filter(|route| {
+            route.membership_epoch == membership_epoch
+                && route.user_public_key == user_public_key
+                && route.endpoint_id == peer
+                && route.device.as_str() == hex::encode(identity.device_pubkey)
+        }) else {
+            tracing::warn!(peer = %peer, "dropping personal fabric frame without current authenticated route");
+            return;
+        };
         match payload {
             PersonalFabricPayload::Request => self.publish_device_fabric_snapshot(),
             PersonalFabricPayload::Snapshot(bytes) => {
@@ -3963,7 +4117,7 @@ impl ShellNetwork {
                 }
             }
             PersonalFabricPayload::Action(bytes) => {
-                self.dispatch_personal_fabric_action(peer, identity.device_pubkey, &bytes);
+                self.dispatch_personal_fabric_action(peer, identity.device_pubkey, route, &bytes);
             }
             PersonalFabricPayload::MediaTransfer(frame) => {
                 let Ok(source) = crate::shell::personal_continuity::DeviceId::new(hex::encode(
@@ -4208,6 +4362,7 @@ impl ShellNetwork {
         &self,
         peer: iroh::EndpointId,
         authenticated_device: [u8; 32],
+        route: AuthenticatedPersonalRoute,
         bytes: &[u8],
     ) {
         if bytes.len() > crate::shell::device_fabric::MAX_FABRIC_ACTION_BYTES {
@@ -4268,8 +4423,10 @@ impl ShellNetwork {
         let Ok(mut actions) = self.personal_fabric_actions.lock() else {
             return;
         };
-        if queue_personal_fabric_action(&mut actions, envelope)
-            == PersonalFabricQueueOutcome::Saturated
+        if queue_personal_fabric_action(
+            &mut actions,
+            ReceivedPersonalFabricAction { envelope, route },
+        ) == PersonalFabricQueueOutcome::Saturated
         {
             tracing::warn!(
                 peer = %peer,
@@ -4281,7 +4438,13 @@ impl ShellNetwork {
     /// Capture departure evidence before identity and roster cleanup. Every
     /// lock is best-effort: a poisoned diagnostic/replica lock must never turn
     /// a reader exit into a shell panic or keep a stale session alive.
-    fn record_peer_departure(&self, ws: u64, peer: iroh::EndpointId, cause: PeerDepartureCause) {
+    fn record_peer_departure(
+        &self,
+        ws: u64,
+        peer: iroh::EndpointId,
+        cause: PeerDepartureCause,
+        membership_epoch: Option<crate::network::actor::MembershipEpoch>,
+    ) {
         let session_handle = crate::network::behaviour::peer_liveness_handle(&peer);
         let route = self
             .replica
@@ -4313,6 +4476,7 @@ impl ShellNetwork {
         self.peer_departures.record(PeerDeparture {
             generation: 0,
             endpoint_id: peer,
+            membership_epoch,
             session_handle,
             route,
             cause,
@@ -4407,7 +4571,13 @@ impl ShellNetwork {
         clippy::too_many_lines,
         reason = "one security gate followed by an exhaustive wire-variant dispatcher; splitting the match would obscure the shared authentication order"
     )]
-    fn dispatch_neighbour_msg(&self, ws: u64, peer: iroh::EndpointId, msg: NeighbourMsg) {
+    fn dispatch_neighbour_msg(
+        &self,
+        ws: u64,
+        peer: iroh::EndpointId,
+        membership_epoch: Option<crate::network::actor::MembershipEpoch>,
+        msg: NeighbourMsg,
+    ) {
         if let Some(expected) = Self::explicit_topic_for_message(&msg)
             && expected != ws
         {
@@ -4427,10 +4597,35 @@ impl ShellNetwork {
                 direct.insert((ws, peer));
             }
             if self.peer_identities.get(&origin).is_none() {
+                if let Ok(mut routes) = self.authenticated_personal_routes.lock() {
+                    routes.remove(&(ws, peer));
+                }
                 self.notify_workspace_control(WorkspaceControlNetworkEvent::PeerRevoked {
                     workspace_topic: ws,
                     peer,
                 });
+            }
+            if let (Some(epoch), Some(user), Some(identity)) = (
+                membership_epoch,
+                self.personal_continuity_user,
+                self.peer_identities.get(&origin),
+            ) && ws == personal_continuity_topic_id(&user)
+                && identity.is_same_user(&user)
+                && let Ok(device) = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+                    identity.device_pubkey,
+                ))
+                && let Ok(mut routes) = self.authenticated_personal_routes.lock()
+            {
+                routes.insert(
+                    (ws, peer),
+                    AuthenticatedPersonalRoute {
+                        workspace_topic: ws,
+                        endpoint_id: peer,
+                        membership_epoch: epoch,
+                        user_public_key: user,
+                        device,
+                    },
+                );
             }
             return;
         }
@@ -5365,6 +5560,7 @@ pub(crate) fn shell_network_for_test(
         device_fabric: Mutex::new(crate::shell::device_fabric::DeviceFabric::default()),
         device_fabric_path: None,
         personal_fabric_actions: Mutex::new(VecDeque::new()),
+        authenticated_personal_routes: Mutex::new(std::collections::HashMap::new()),
         personal_display_messages: Mutex::new(VecDeque::new()),
         personal_display_authorizations: Mutex::new(std::collections::BTreeMap::new()),
         personal_fabric_action_replays: Mutex::new(PersonalFabricReplayWindow::default()),
@@ -5897,6 +6093,20 @@ mod tests {
         root: &ed25519_dalek::SigningKey,
         device: &iroh::SecretKey,
     ) {
+        authenticated_personal_peer_at(
+            net,
+            root,
+            device,
+            crate::network::actor::MembershipEpoch::for_test(1),
+        );
+    }
+
+    fn authenticated_personal_peer_at(
+        net: &ShellNetwork,
+        root: &ed25519_dalek::SigningKey,
+        device: &iroh::SecretKey,
+        membership_epoch: crate::network::actor::MembershipEpoch,
+    ) {
         use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
         let mut cert = DeviceCert {
@@ -5909,13 +6119,14 @@ mod tests {
             signature: [0; 64],
         };
         sign_device_cert(&mut cert, root).expect("valid personal device certificate");
-        let origin = crate::shell::state::PeerOrigin::peer(&device.public());
-        net.accept_identity_hello(
+        net.dispatch_neighbour_msg(
             personal_continuity_topic_id(&cert.user_public_key),
-            &origin,
-            &device.public(),
-            &cert,
-            &[],
+            device.public(),
+            Some(membership_epoch),
+            NeighbourMsg::IdentityHello {
+                cert: Box::new(cert),
+                revocations: Vec::new(),
+            },
         );
     }
 
@@ -6042,6 +6253,7 @@ mod tests {
         net.dispatch_neighbour_msg(
             personal_continuity_topic_id(&user),
             peer.public(),
+            None,
             NeighbourMsg::PersonalContinuityCheckpoint {
                 user_public_key: user,
                 publisher: crate::network::behaviour::peer_liveness_handle(&peer.public()),
@@ -6276,6 +6488,7 @@ mod tests {
         net.dispatch_personal_fabric(
             personal_continuity_topic_id(&user),
             peer_device.public(),
+            crate::network::actor::MembershipEpoch::for_test(1),
             user,
             PersonalFabricPayload::Snapshot(incoming.encode_checkpoint().unwrap()),
         );
@@ -6287,6 +6500,7 @@ mod tests {
         net.dispatch_personal_fabric(
             personal_continuity_topic_id(&user),
             peer_device.public(),
+            crate::network::actor::MembershipEpoch::for_test(1),
             user,
             PersonalFabricPayload::Snapshot(incoming.encode_checkpoint().unwrap()),
         );
@@ -6369,11 +6583,18 @@ mod tests {
             net.dispatch_personal_fabric(
                 personal_continuity_topic_id(&user),
                 peer_device.public(),
+                crate::network::actor::MembershipEpoch::for_test(1),
                 user,
                 payload.clone(),
             );
         }
-        assert_eq!(net.take_personal_fabric_actions(), vec![envelope.clone()]);
+        assert_eq!(
+            net.take_personal_fabric_actions()
+                .into_iter()
+                .map(|received| received.envelope)
+                .collect::<Vec<_>>(),
+            vec![envelope.clone()]
+        );
 
         let mut misaddressed = envelope;
         misaddressed.request_id = [9; 16];
@@ -6382,10 +6603,114 @@ mod tests {
         net.dispatch_personal_fabric(
             personal_continuity_topic_id(&user),
             peer_device.public(),
+            crate::network::actor::MembershipEpoch::for_test(1),
             user,
             PersonalFabricPayload::Action(postcard::to_allocvec(&misaddressed).unwrap()),
         );
         assert!(net.take_personal_fabric_actions().is_empty());
+    }
+
+    #[test]
+    fn personal_route_reconnect_rejects_queued_old_epoch_and_stale_departure() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xD3; 32]);
+        let user = root.verifying_key().to_bytes();
+        let peer = iroh::SecretKey::generate();
+        let (net, _commands) = personal_continuity_network_for_test(user);
+        let old_epoch = crate::network::actor::MembershipEpoch::for_test(41);
+        let new_epoch = crate::network::actor::MembershipEpoch::for_test(42);
+        authenticated_personal_peer_at(&net, &root, &peer, old_epoch);
+        let source =
+            crate::shell::personal_continuity::DeviceId::new(hex::encode(peer.public().as_bytes()))
+                .unwrap();
+        let target = net.personal_continuity_device.clone().unwrap();
+        let mut envelope = fabric_envelope(
+            0xD4,
+            &source,
+            &target,
+            crate::shell::device_fabric::PersonalFabricAction::MediaCancelled {
+                request_id: [0xD5; 16],
+                session_id: "player:old".into(),
+            },
+        );
+        envelope.issued_unix_ms = now_unix_millis();
+        net.dispatch_personal_fabric(
+            personal_continuity_topic_id(&user),
+            peer.public(),
+            old_epoch,
+            user,
+            PersonalFabricPayload::Action(postcard::to_allocvec(&envelope).unwrap()),
+        );
+        let queued_actions = net.take_personal_fabric_actions();
+        let [queued] = queued_actions.as_slice() else {
+            panic!("old action should reach the bounded local queue");
+        };
+        let queued = queued.clone();
+
+        authenticated_personal_peer_at(&net, &root, &peer, new_epoch);
+        assert!(!net.personal_route_is_current(&queued.route));
+        let current = net.current_personal_route(&source).unwrap();
+        assert_eq!(current.membership_epoch, new_epoch);
+
+        net.dispatch_net_event(NetEvent::PeerLeft {
+            ws: personal_continuity_topic_id(&user),
+            peer: peer.public(),
+            cause: PeerDepartureCause::GossipNeighborDown,
+            membership_epoch: Some(old_epoch),
+        });
+        assert_eq!(net.current_personal_route(&source), Some(current));
+    }
+
+    #[test]
+    fn personal_route_requires_exact_direct_same_user_identity_hello() {
+        let local_root = ed25519_dalek::SigningKey::from_bytes(&[0xD6; 32]);
+        let other_root = ed25519_dalek::SigningKey::from_bytes(&[0xD7; 32]);
+        let local_user = local_root.verifying_key().to_bytes();
+        let peer = iroh::SecretKey::generate();
+        let (net, _commands) = personal_continuity_network_for_test(local_user);
+        let epoch = crate::network::actor::MembershipEpoch::for_test(51);
+        authenticated_personal_peer_at(&net, &other_root, &peer, epoch);
+        let peer_device =
+            crate::shell::personal_continuity::DeviceId::new(hex::encode(peer.public().as_bytes()))
+                .unwrap();
+        assert!(net.current_personal_route(&peer_device).is_none());
+        net.peer_identities
+            .remove(&crate::shell::state::PeerOrigin::peer(&peer.public()));
+
+        authenticated_personal_peer_at(&net, &local_root, &peer, epoch);
+        let admitted = net.current_personal_route(&peer_device).unwrap();
+        net.dispatch_net_event(NetEvent::PeerLeft {
+            ws: personal_continuity_topic_id(&local_user).wrapping_add(1),
+            peer: peer.public(),
+            cause: PeerDepartureCause::GossipNeighborDown,
+            membership_epoch: Some(epoch),
+        });
+        assert_eq!(net.current_personal_route(&peer_device), Some(admitted));
+
+        if let Ok(mut routes) = net.authenticated_personal_routes.lock() {
+            routes.clear();
+        }
+        authenticated_personal_peer_at(
+            &net,
+            &local_root,
+            &peer,
+            crate::network::actor::MembershipEpoch::for_test(52),
+        );
+        // Prove the actor-only token is not part of the serializable envelope:
+        // changing local route authority leaves the exact wire bytes unchanged.
+        let envelope = fabric_envelope(
+            0xD8,
+            &peer_device,
+            net.personal_continuity_device.as_ref().unwrap(),
+            crate::shell::device_fabric::PersonalFabricAction::MediaCancelled {
+                request_id: [0xD9; 16],
+                session_id: "wire".into(),
+            },
+        );
+        let wire = postcard::to_allocvec(&envelope).unwrap();
+        let decoded: crate::shell::device_fabric::PersonalFabricActionEnvelope =
+            postcard::from_bytes(&wire).unwrap();
+        assert_eq!(decoded, envelope);
+        assert!(!wire.windows(8).any(|window| window == 52_u64.to_le_bytes()));
     }
 
     #[test]
@@ -6904,6 +7229,7 @@ mod tests {
         target.dispatch_neighbour_msg(
             personal_continuity_topic_id(&user_public_key),
             source_endpoint.public(),
+            None,
             NeighbourMsg::PersonalContinuityCheckpoint {
                 user_public_key,
                 publisher: crate::network::behaviour::peer_liveness_handle(
@@ -6987,6 +7313,7 @@ mod tests {
         target.dispatch_neighbour_msg(
             personal_continuity_topic_id(&user_public_key),
             source_endpoint.public(),
+            None,
             NeighbourMsg::PersonalContinuityCheckpoint {
                 user_public_key,
                 publisher: crate::network::behaviour::peer_liveness_handle(
@@ -7136,6 +7463,7 @@ mod tests {
         net.dispatch_neighbour_msg(
             personal_continuity_topic_id(&local_user),
             foreign_device.public(),
+            None,
             NeighbourMsg::PersonalContinuityCheckpoint {
                 user_public_key: local_user,
                 publisher: crate::network::behaviour::peer_liveness_handle(
@@ -7186,6 +7514,7 @@ mod tests {
         net.dispatch_neighbour_msg(
             personal_continuity_topic_id(&user_public_key),
             peer_device.public(),
+            None,
             NeighbourMsg::PersonalContinuityCheckpoint {
                 user_public_key,
                 publisher: crate::network::behaviour::peer_liveness_handle(&peer_device.public()),
@@ -7251,6 +7580,7 @@ mod tests {
         net.dispatch_neighbour_msg(
             personal_continuity_topic_id(&user_public_key),
             peer_device.public(),
+            None,
             NeighbourMsg::PersonalContinuityCheckpoint {
                 user_public_key,
                 publisher: crate::network::behaviour::peer_liveness_handle(&peer_device.public()),
@@ -7558,6 +7888,7 @@ mod tests {
             .try_send(NetEvent::Msg {
                 ws: room_topic_id(room),
                 peer: device.public(),
+                membership_epoch: None,
                 msg: NeighbourMsg::IdentityHello {
                     cert: Box::new(cert.clone()),
                     revocations: Vec::new(),
@@ -7578,6 +7909,7 @@ mod tests {
             .try_send(NetEvent::Msg {
                 ws: room_topic_id(room),
                 peer: device.public(),
+                membership_epoch: None,
                 msg: NeighbourMsg::SyncReq {
                     since: Vec::new(),
                     room: room.to_string(),
@@ -7599,6 +7931,7 @@ mod tests {
             .try_send(NetEvent::Msg {
                 ws: room_topic_id(room),
                 peer: device.public(),
+                membership_epoch: None,
                 msg: NeighbourMsg::SyncReq {
                     since: Vec::new(),
                     room: room.to_string(),
@@ -8400,6 +8733,7 @@ mod tests {
                 ws: room_topic_id(room),
                 peer,
                 cause: PeerDepartureCause::LivenessTimedOut,
+                membership_epoch: None,
             })
             .expect("queue peer departure");
         net.tick();
@@ -8500,6 +8834,7 @@ mod tests {
                 .filter(|room| !room.is_nil())
                 .map_or(DEFAULT_WS_TOPIC, room_topic_id),
             peer,
+            membership_epoch: None,
             msg: NeighbourMsg::AppDocument {
                 peer: from_peer_hash,
                 app_id: app_id.to_string(),
@@ -8562,6 +8897,7 @@ mod tests {
             .try_send(NetEvent::Msg {
                 ws: room_topic_id(our_room),
                 peer: device.public(),
+                membership_epoch: None,
                 msg: NeighbourMsg::IdentityHello {
                     cert: Box::new(cert.clone()),
                     revocations: Vec::new(),
