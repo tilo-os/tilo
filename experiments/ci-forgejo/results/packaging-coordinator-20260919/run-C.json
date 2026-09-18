@@ -1,0 +1,20 @@
+{
+  "id": 22842,
+  "workflow_id": "packaging-coordinator-probe.yml",
+  "commit_sha": "a335a2752c50eeeadaa128f6b1ef7ecee8ff64d0",
+  "event": "",
+  "trigger_event": "workflow_dispatch",
+  "status": "success",
+  "created": "2026-09-18T23:46:01Z",
+  "started": "2026-09-18T23:48:00Z",
+  "stopped": "2026-09-18T23:48:23Z",
+  "html_url": "https://code.podesta.ai/qos/ci-workflow-pilot-20260918-9245-repeat/actions/runs/19",
+  "dispatch_payload": {
+    "inputs": {
+      "baseline_sha": "94b3f3bbfd4d061efaf948245e882d3f98e3014f",
+      "coordinator_intent": "b65f7d2c-19c4-4621-9740-7bf69a6163f2"
+    },
+    "ref": "a335a2752c50eeeadaa128f6b1ef7ecee8ff64d0",
+    "workflow": ".forgejo/workflows/packaging-coordinator-probe.yml"
+  }
+}

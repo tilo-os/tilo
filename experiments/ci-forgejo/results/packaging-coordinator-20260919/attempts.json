@@ -1,0 +1,31 @@
+[
+  {
+    "baseline": null,
+    "created_at": 1789774867.7347353,
+    "desired": {
+      "fixture_generation": "A",
+      "source_sha": "94b3f3bbfd4d061efaf948245e882d3f98e3014f"
+    },
+    "id": "5c9982ac-991f-494a-9579-fd3650d56f13",
+    "receipt_sha256": "5351333e8a6aef72614bf1b5bdd72eb5620d571cecb6a3c7173dc489d6eabc75",
+    "run_id": 22827,
+    "status": "success",
+    "updated_at": 1789775157.2430763
+  },
+  {
+    "baseline": {
+      "fixture_generation": "A",
+      "source_sha": "94b3f3bbfd4d061efaf948245e882d3f98e3014f"
+    },
+    "created_at": 1789775159.685804,
+    "desired": {
+      "fixture_generation": "C",
+      "source_sha": "a335a2752c50eeeadaa128f6b1ef7ecee8ff64d0"
+    },
+    "id": "b65f7d2c-19c4-4621-9740-7bf69a6163f2",
+    "receipt_sha256": "c4225b075a08ff4303aefa2250173f7bc8db54bae3d4c7bfe5342d41921a5b1f",
+    "run_id": 22842,
+    "status": "success",
+    "updated_at": 1789775308.0124273
+  }
+]
