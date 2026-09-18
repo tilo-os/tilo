@@ -55,7 +55,9 @@ use crate::probe;
 use crate::timecode::{clock, frame_step, snap_to_frame, timecode};
 
 mod paint;
+mod selection;
 use paint::*;
+use selection::Selection;
 
 // ---- layout constants ----------------------------------------------------
 const TOPBAR_H: f64 = 48.0;
@@ -934,89 +936,6 @@ enum Drag {
     /// [`NumField`], which carries the range, the readout and where the value
     /// is written.
     Num(NumField),
-}
-
-/// The timeline's clip selection: an ordered set with a *primary* (anchor)
-/// clip. The primary is what the inspector edits and what a fresh click
-/// re-anchors to; every clip in the set takes part in delete / ripple-delete /
-/// copy / cut / duplicate / nudge / split, each of which lands as **one** undo
-/// boundary regardless of how many clips it touched.
-#[derive(Clone, Default, PartialEq)]
-struct Selection {
-    ids: Vec<ClipId>,
-    primary: Option<ClipId>,
-}
-
-impl Selection {
-    fn is_empty(&self) -> bool {
-        self.ids.is_empty()
-    }
-    fn len(&self) -> usize {
-        self.ids.len()
-    }
-    /// The anchor clip — the one the inspector shows and single-clip edits act
-    /// on. `None` exactly when the selection is empty.
-    fn primary(&self) -> Option<ClipId> {
-        self.primary
-    }
-    fn contains(&self, id: ClipId) -> bool {
-        self.ids.contains(&id)
-    }
-    fn ids(&self) -> &[ClipId] {
-        &self.ids
-    }
-    fn clear(&mut self) {
-        self.ids.clear();
-        self.primary = None;
-    }
-    /// Collapse to just `id` — a plain click.
-    fn select_only(&mut self, id: ClipId) {
-        self.ids.clear();
-        self.ids.push(id);
-        self.primary = Some(id);
-    }
-    /// Add or remove `id` (shift-click). Removing the primary promotes
-    /// whatever is left so the inspector never points at nothing while clips
-    /// are still selected.
-    fn toggle(&mut self, id: ClipId) {
-        if let Some(pos) = self.ids.iter().position(|&c| c == id) {
-            self.ids.remove(pos);
-            if self.primary == Some(id) {
-                self.primary = self.ids.last().copied();
-            }
-        } else {
-            self.ids.push(id);
-            self.primary = Some(id);
-        }
-    }
-    /// Re-anchor on an already-selected clip without disturbing the set — a
-    /// plain click inside a multi-selection.
-    fn set_primary(&mut self, id: ClipId) {
-        if self.ids.contains(&id) {
-            self.primary = Some(id);
-        }
-    }
-    /// Drop every id in `gone` (clips a track / media deletion is about to
-    /// take with it), promoting the primary if it was one of them.
-    fn remove_all(&mut self, gone: &[ClipId]) {
-        self.ids.retain(|id| !gone.contains(id));
-        if self.primary.map(|id| gone.contains(&id)).unwrap_or(false) {
-            self.primary = self.ids.last().copied();
-        }
-    }
-    /// Replace the whole set (a marquee release), anchoring on the last id.
-    fn set(&mut self, ids: Vec<ClipId>) {
-        self.primary = ids.last().copied();
-        self.ids = ids;
-    }
-    /// Drop ids whose clips are gone (a remote delete, or a track deletion),
-    /// promoting the primary if it was one of them.
-    fn retain_existing(&mut self, p: &Project) {
-        self.ids.retain(|id| p.clip(*id).is_some());
-        if self.primary.map(|id| p.clip(id).is_none()).unwrap_or(false) {
-            self.primary = self.ids.last().copied();
-        }
-    }
 }
 
 /// Pointer travel (logical px) before a press on empty lane space becomes a
@@ -5664,8 +5583,9 @@ impl VideoEditorApp {
                     .map(|clip| (clip.id, clip.start, clip.media))
                     .collect();
                 clips.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-                self.selection.ids = clips.iter().map(|(clip, _, _)| *clip).collect();
-                self.selection.primary = clips.first().map(|(clip, _, _)| *clip);
+                let ids = clips.iter().map(|(clip, _, _)| *clip).collect();
+                self.selection
+                    .set_with_primary(ids, clips.first().map(|(clip, _, _)| *clip));
                 self.selected_media = clips.first().map(|(_, _, media)| *media);
                 if let Some((_, at, _)) = clips.first() {
                     self.seek_to(*at);
