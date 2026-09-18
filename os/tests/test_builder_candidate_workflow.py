@@ -76,7 +76,7 @@ class BuilderCandidates(unittest.TestCase):
                 cwd=work, env={**os.environ, 'BUILDER_REF': ref,
                                'GITHUB_SHA': 'b' * 40, 'GITHUB_RUN_ID': '42',
                                'GITHUB_RUN_ATTEMPT': '2', 'GITHUB_STEP_SUMMARY': str(work / 'summary'),
-                               'RUNNER_TEMP': str(work)},
+                               'RUNNER_TEMP': str(work), 'COSIGN_KEY_REF': 'gcpkms://test/key'},
                 capture_output=True, text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
