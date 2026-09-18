@@ -409,6 +409,50 @@ pub enum WordProcessorAction {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActionDomain {
+    Text,
+    Formatting,
+    Media,
+    Table,
+    Structure,
+    Review,
+}
+
+impl WordProcessorAction {
+    fn domain(&self) -> ActionDomain {
+        match self {
+            Self::SpliceText { .. }
+            | Self::ReplaceSelection { .. }
+            | Self::SetMark { .. }
+            | Self::PasteFragment { .. }
+            | Self::InsertParagraph { .. }
+            | Self::RemoveBlocks { .. }
+            | Self::ReplaceBody { .. } => ActionDomain::Text,
+            Self::SetParagraphStyle { .. }
+            | Self::ApplyNamedStyle { .. }
+            | Self::SetBlockAttr { .. }
+            | Self::SetPageMargins { .. }
+            | Self::SetStyleProperty { .. }
+            | Self::DeleteStyle { .. } => ActionDomain::Formatting,
+            Self::SetImageCrop { .. }
+            | Self::SetImageSize { .. }
+            | Self::SetImagePlacement { .. }
+            | Self::InsertImage { .. } => ActionDomain::Media,
+            Self::InsertTable { .. } | Self::EditTable { .. } => ActionDomain::Table,
+            Self::InsertPageBreak { .. }
+            | Self::SplitBlock { .. }
+            | Self::InsertField { .. }
+            | Self::GenerateToc { .. } => ActionDomain::Structure,
+            Self::AcceptChanges { .. }
+            | Self::RejectChanges { .. }
+            | Self::ResolveComment { .. }
+            | Self::AddComment { .. }
+            | Self::ReplyToComment { .. } => ActionDomain::Review,
+        }
+    }
+}
+
 // Action payloads may arrive after the document has changed (or from an
 // untrusted automation).  Keep the limits deliberately generous for real
 // documents while making the action boundary a useful resource boundary too.
@@ -525,18 +569,20 @@ impl<'a> ActionValidator<'a> {
     }
 
     fn validate(&self, action: &WordProcessorAction) -> bool {
-        self.validate_text_edit(action)
-            .or_else(|| self.validate_paste_and_body(action))
-            .or_else(|| self.validate_formatting(action))
-            .or_else(|| self.validate_media(action))
-            .or_else(|| self.validate_tables(action))
-            .or_else(|| self.validate_structure(action))
-            .or_else(|| self.validate_review(action))
-            .unwrap_or(false)
+        match action.domain() {
+            ActionDomain::Text => {
+                self.validate_text_edit(action) || self.validate_paste_and_body(action)
+            }
+            ActionDomain::Formatting => self.validate_formatting(action),
+            ActionDomain::Media => self.validate_media(action),
+            ActionDomain::Table => self.validate_tables(action),
+            ActionDomain::Structure => self.validate_structure(action),
+            ActionDomain::Review => self.validate_review(action),
+        }
     }
 
-    fn validate_text_edit(&self, action: &WordProcessorAction) -> Option<bool> {
-        Some(match action {
+    fn validate_text_edit(&self, action: &WordProcessorAction) -> bool {
+        match action {
             WordProcessorAction::SpliceText {
                 region,
                 block,
@@ -596,12 +642,12 @@ impl<'a> ActionValidator<'a> {
                         _ => true,
                     }
             }
-            _ => return None,
-        })
+            _ => false,
+        }
     }
 
-    fn validate_paste_and_body(&self, action: &WordProcessorAction) -> Option<bool> {
-        Some(match action {
+    fn validate_paste_and_body(&self, action: &WordProcessorAction) -> bool {
+        match action {
             WordProcessorAction::PasteFragment {
                 region,
                 start_block,
@@ -650,12 +696,12 @@ impl<'a> ActionValidator<'a> {
                 self.unique_existing(RegionKind::Body, blocks)
             }
             WordProcessorAction::ReplaceBody { markdown } => Self::safe_text(markdown),
-            _ => return None,
-        })
+            _ => false,
+        }
     }
 
-    fn validate_formatting(&self, action: &WordProcessorAction) -> Option<bool> {
-        Some(match action {
+    fn validate_formatting(&self, action: &WordProcessorAction) -> bool {
+        match action {
         WordProcessorAction::SetParagraphStyle {
             region,
             blocks,
@@ -709,12 +755,12 @@ impl<'a> ActionValidator<'a> {
                     })
                 })
         }
-        _ => return None,
-        })
+            _ => false,
+        }
     }
 
-    fn validate_media(&self, action: &WordProcessorAction) -> Option<bool> {
-        Some(match action {
+    fn validate_media(&self, action: &WordProcessorAction) -> bool {
+        match action {
             WordProcessorAction::SetImageCrop {
                 block,
                 left,
@@ -781,12 +827,12 @@ impl<'a> ActionValidator<'a> {
                     && width.is_none_or(|value| (1..=100_000).contains(&value))
                     && height.is_none_or(|value| (1..=100_000).contains(&value))
             }
-            _ => return None,
-        })
+            _ => false,
+        }
     }
 
-    fn validate_tables(&self, action: &WordProcessorAction) -> Option<bool> {
-        Some(match action {
+    fn validate_tables(&self, action: &WordProcessorAction) -> bool {
+        match action {
             WordProcessorAction::InsertTable { after, rows, cols } => {
                 self.block_len(RegionKind::Body, after).is_some()
                     && *rows > 0
@@ -831,12 +877,12 @@ impl<'a> ActionValidator<'a> {
                         TableEdit::Delete => true,
                     }
             }
-            _ => return None,
-        })
+            _ => false,
+        }
     }
 
-    fn validate_structure(&self, action: &WordProcessorAction) -> Option<bool> {
-        Some(match action {
+    fn validate_structure(&self, action: &WordProcessorAction) -> bool {
+        match action {
             WordProcessorAction::InsertPageBreak { region, block, at } => {
                 self.block_len(*region, block).is_some_and(|len| *at <= len)
             }
@@ -879,12 +925,12 @@ impl<'a> ActionValidator<'a> {
                                 .any(|block| block.id == entry.heading && block.kind == "heading")
                     })
             }
-            _ => return None,
-        })
+            _ => false,
+        }
     }
 
-    fn validate_review(&self, action: &WordProcessorAction) -> Option<bool> {
-        Some(match action {
+    fn validate_review(&self, action: &WordProcessorAction) -> bool {
+        match action {
             WordProcessorAction::AcceptChanges { id }
             | WordProcessorAction::RejectChanges { id } => id
                 .as_ref()
@@ -927,8 +973,8 @@ impl<'a> ActionValidator<'a> {
                     && date.chars().count() <= 128
                     && Self::safe_text(text)
             }
-            _ => return None,
-        })
+            _ => false,
+        }
     }
 }
 
@@ -1666,6 +1712,249 @@ fn apply_add_comment(
     }
 }
 
+fn apply_text_action(dm: &mut DocMut<'_>, action: &WordProcessorAction) {
+    match action {
+        WordProcessorAction::SpliceText {
+            region,
+            block,
+            at,
+            del,
+            ins,
+        } => apply_splice_text(dm, region.to_region(), block, *at, *del, ins),
+        WordProcessorAction::ReplaceSelection {
+            region,
+            start_block,
+            start,
+            end_block,
+            end,
+            ins,
+        } => apply_replace_selection(
+            dm,
+            region.to_region(),
+            start_block,
+            *start,
+            end_block,
+            *end,
+            ins,
+        ),
+        WordProcessorAction::SetMark {
+            region,
+            spans,
+            name,
+            value,
+            also_clear,
+        } => apply_set_mark(
+            dm,
+            region.to_region(),
+            spans,
+            name,
+            value.as_ref(),
+            also_clear,
+        ),
+        WordProcessorAction::PasteFragment {
+            region,
+            start_block,
+            start,
+            end_block,
+            end,
+            blocks,
+            adopt_first_style,
+        } => apply_paste_fragment(
+            dm,
+            region.to_region(),
+            &SelectionTarget {
+                start_block: start_block.clone(),
+                start: *start,
+                end_block: end_block.clone(),
+                end: *end,
+            },
+            blocks,
+            *adopt_first_style,
+        ),
+        WordProcessorAction::InsertParagraph { after, text } => {
+            apply_insert_paragraph(dm, after, text);
+        }
+        WordProcessorAction::RemoveBlocks { blocks } => apply_remove_blocks(dm, blocks),
+        WordProcessorAction::ReplaceBody { markdown } => apply_replace_body(dm, markdown),
+        _ => {}
+    }
+}
+
+fn apply_formatting_action(dm: &mut DocMut<'_>, action: &WordProcessorAction) {
+    match action {
+        WordProcessorAction::SetParagraphStyle {
+            region,
+            blocks,
+            kind,
+            level,
+            ordered,
+        } => apply_set_paragraph_style(dm, region.to_region(), blocks, kind, *level, *ordered),
+        WordProcessorAction::ApplyNamedStyle {
+            region,
+            blocks,
+            style,
+            kind,
+            level,
+            ordered,
+        } => apply_named_style(
+            dm,
+            region.to_region(),
+            blocks,
+            style,
+            kind.as_ref(),
+            *level,
+            *ordered,
+        ),
+        WordProcessorAction::SetBlockAttr {
+            region,
+            blocks,
+            key,
+            value,
+        } => apply_set_block_attr(dm, region.to_region(), blocks, key, value),
+        WordProcessorAction::SetPageMargins {
+            top,
+            right,
+            bottom,
+            left,
+        } => {
+            dm.set_meta_str("page_margin_top", &top.to_string());
+            dm.set_meta_str("page_margin_right", &right.to_string());
+            dm.set_meta_str("page_margin_bottom", &bottom.to_string());
+            dm.set_meta_str("page_margin_left", &left.to_string());
+        }
+        WordProcessorAction::SetStyleProperty { style, key, value } => {
+            let value = match value {
+                AttrVal::Bool(value) => qdoc::AttrVal::Bool(*value),
+                AttrVal::Int(value) => qdoc::AttrVal::Int(*value),
+                AttrVal::Float(value) => qdoc::AttrVal::Float(*value),
+                AttrVal::Str(value) => qdoc::AttrVal::Str(value.clone()),
+            };
+            dm.set_style(style, &[(key.clone(), value)].into_iter().collect());
+        }
+        WordProcessorAction::DeleteStyle {
+            style,
+            fallback_blocks,
+        } => {
+            let mut blocks = fallback_blocks.clone();
+            blocks.sort();
+            for block in &blocks {
+                dm.set_attr(block, "style", "");
+            }
+            dm.tombstone_style(style);
+        }
+        _ => {}
+    }
+}
+
+fn apply_media_action(dm: &mut DocMut<'_>, action: &WordProcessorAction) {
+    match action {
+        WordProcessorAction::SetImageCrop {
+            block,
+            left,
+            top,
+            right,
+            bottom,
+        } => {
+            dm.set_attr(block, "crop_left", *left);
+            dm.set_attr(block, "crop_top", *top);
+            dm.set_attr(block, "crop_right", *right);
+            dm.set_attr(block, "crop_bottom", *bottom);
+        }
+        WordProcessorAction::SetImageSize {
+            block,
+            width,
+            height,
+        } => {
+            dm.set_attr(block, "width", *width);
+            dm.set_attr(block, "height", *height);
+        }
+        WordProcessorAction::SetImagePlacement {
+            block,
+            anchor,
+            wrap,
+            x,
+            y,
+            page,
+        } => {
+            dm.set_attr(block, "anchor", anchor.as_str());
+            dm.set_attr(block, "wrap", wrap.as_str());
+            dm.set_attr(block, "offset_x", *x);
+            dm.set_attr(block, "offset_y", *y);
+            dm.set_attr(block, "page", *page);
+        }
+        WordProcessorAction::InsertImage {
+            block,
+            at,
+            bytes,
+            width,
+            height,
+        } => apply_insert_image(dm, block, *at, bytes, *width, *height),
+        _ => {}
+    }
+}
+
+fn apply_table_action(dm: &mut DocMut<'_>, action: &WordProcessorAction) {
+    match action {
+        WordProcessorAction::InsertTable { after, rows, cols } => {
+            apply_insert_table(dm, after, *rows, *cols);
+        }
+        WordProcessorAction::EditTable { table, edit } => apply_table_edit(dm, table, *edit),
+        _ => {}
+    }
+}
+
+fn apply_structure_action(dm: &mut DocMut<'_>, action: &WordProcessorAction) {
+    match action {
+        WordProcessorAction::InsertPageBreak { region, block, at } => {
+            apply_insert_page_break(dm, region.to_region(), block, *at);
+        }
+        WordProcessorAction::SplitBlock {
+            region,
+            block,
+            at,
+            kind,
+            ordered,
+        } => apply_split_block(dm, region.to_region(), block, *at, kind, *ordered),
+        WordProcessorAction::InsertField {
+            region,
+            block,
+            at,
+            field: _,
+        } => dm.insert_page_number_field(region.to_region(), block, *at),
+        WordProcessorAction::GenerateToc { entries } => apply_generate_toc(dm, entries),
+        _ => {}
+    }
+}
+
+fn apply_review_action(dm: &mut DocMut<'_>, action: &WordProcessorAction) {
+    match action {
+        WordProcessorAction::AcceptChanges { id } => {
+            apply_review_changes(dm, id.as_deref(), true);
+        }
+        WordProcessorAction::RejectChanges { id } => {
+            apply_review_changes(dm, id.as_deref(), false);
+        }
+        WordProcessorAction::ResolveComment { id } => apply_resolve_comment(dm, id),
+        WordProcessorAction::AddComment {
+            block,
+            start,
+            end,
+            author,
+            date,
+            text,
+        } => apply_add_comment(dm, block, *start, *end, author, date, text),
+        WordProcessorAction::ReplyToComment {
+            comment,
+            author,
+            date,
+            text,
+        } => {
+            let _ = dm.add_comment_reply(comment, author, date, text);
+        }
+        _ => {}
+    }
+}
+
 impl Action for WordProcessorAction {
     /// Apply this action's mutation to `doc`.
     ///
@@ -1673,10 +1962,6 @@ impl Action for WordProcessorAction {
     ///
     /// Returns [`ActionError::Refused`] for an unavailable Writer document or
     /// stale/hostile decoded arguments before opening a mutable view.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one match deliberately makes the complete action envelope surface reviewable in one place"
-    )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         // Bind to the canonical schema under ROOT. Refuse an unbound document
         // explicitly so callers never mistake an unavailable target for a
@@ -1705,258 +1990,13 @@ impl Action for WordProcessorAction {
             ids: &mut ids,
         };
 
-        match self {
-            WordProcessorAction::SpliceText {
-                region,
-                block,
-                at,
-                del,
-                ins,
-            } => apply_splice_text(&mut dm, region.to_region(), block, *at, *del, ins),
-
-            WordProcessorAction::ReplaceSelection {
-                region,
-                start_block,
-                start,
-                end_block,
-                end,
-                ins,
-            } => apply_replace_selection(
-                &mut dm,
-                region.to_region(),
-                start_block,
-                *start,
-                end_block,
-                *end,
-                ins,
-            ),
-
-            WordProcessorAction::SetMark {
-                region,
-                spans,
-                name,
-                value,
-                also_clear,
-            } => apply_set_mark(
-                &mut dm,
-                region.to_region(),
-                spans,
-                name,
-                value.as_ref(),
-                also_clear,
-            ),
-
-            WordProcessorAction::SetParagraphStyle {
-                region,
-                blocks,
-                kind,
-                level,
-                ordered,
-            } => apply_set_paragraph_style(
-                &mut dm,
-                region.to_region(),
-                blocks,
-                kind,
-                *level,
-                *ordered,
-            ),
-
-            WordProcessorAction::ApplyNamedStyle {
-                region,
-                blocks,
-                style,
-                kind,
-                level,
-                ordered,
-            } => apply_named_style(
-                &mut dm,
-                region.to_region(),
-                blocks,
-                style,
-                kind.as_ref(),
-                *level,
-                *ordered,
-            ),
-
-            WordProcessorAction::SetBlockAttr {
-                region,
-                blocks,
-                key,
-                value,
-            } => apply_set_block_attr(&mut dm, region.to_region(), blocks, key, value),
-
-            WordProcessorAction::SetPageMargins {
-                top,
-                right,
-                bottom,
-                left,
-            } => {
-                dm.set_meta_str("page_margin_top", &top.to_string());
-                dm.set_meta_str("page_margin_right", &right.to_string());
-                dm.set_meta_str("page_margin_bottom", &bottom.to_string());
-                dm.set_meta_str("page_margin_left", &left.to_string());
-            }
-
-            WordProcessorAction::SetStyleProperty { style, key, value } => {
-                let value = match value {
-                    AttrVal::Bool(value) => qdoc::AttrVal::Bool(*value),
-                    AttrVal::Int(value) => qdoc::AttrVal::Int(*value),
-                    AttrVal::Float(value) => qdoc::AttrVal::Float(*value),
-                    AttrVal::Str(value) => qdoc::AttrVal::Str(value.clone()),
-                };
-                dm.set_style(style, &[(key.clone(), value)].into_iter().collect());
-            }
-
-            WordProcessorAction::DeleteStyle {
-                style,
-                fallback_blocks,
-            } => {
-                let mut blocks = fallback_blocks.clone();
-                blocks.sort();
-                for block in &blocks {
-                    dm.set_attr(block, "style", "");
-                }
-                dm.tombstone_style(style);
-            }
-
-            WordProcessorAction::SetImageCrop {
-                block,
-                left,
-                top,
-                right,
-                bottom,
-            } => {
-                dm.set_attr(block, "crop_left", *left);
-                dm.set_attr(block, "crop_top", *top);
-                dm.set_attr(block, "crop_right", *right);
-                dm.set_attr(block, "crop_bottom", *bottom);
-            }
-
-            WordProcessorAction::SetImageSize {
-                block,
-                width,
-                height,
-            } => {
-                dm.set_attr(block, "width", *width);
-                dm.set_attr(block, "height", *height);
-            }
-
-            WordProcessorAction::SetImagePlacement {
-                block,
-                anchor,
-                wrap,
-                x,
-                y,
-                page,
-            } => {
-                dm.set_attr(block, "anchor", anchor.as_str());
-                dm.set_attr(block, "wrap", wrap.as_str());
-                dm.set_attr(block, "offset_x", *x);
-                dm.set_attr(block, "offset_y", *y);
-                dm.set_attr(block, "page", *page);
-            }
-
-            WordProcessorAction::InsertTable { after, rows, cols } => {
-                apply_insert_table(&mut dm, after, *rows, *cols);
-            }
-
-            WordProcessorAction::EditTable { table, edit } => {
-                apply_table_edit(&mut dm, table, *edit);
-            }
-
-            WordProcessorAction::InsertImage {
-                block,
-                at,
-                bytes,
-                width,
-                height,
-            } => apply_insert_image(&mut dm, block, *at, bytes, *width, *height),
-
-            WordProcessorAction::InsertPageBreak { region, block, at } => {
-                apply_insert_page_break(&mut dm, region.to_region(), block, *at);
-            }
-
-            WordProcessorAction::SplitBlock {
-                region,
-                block,
-                at,
-                kind,
-                ordered,
-            } => apply_split_block(&mut dm, region.to_region(), block, *at, kind, *ordered),
-
-            WordProcessorAction::InsertField {
-                region,
-                block,
-                at,
-                field: _,
-            } => dm.insert_page_number_field(region.to_region(), block, *at),
-
-            WordProcessorAction::GenerateToc { entries } => {
-                apply_generate_toc(&mut dm, entries);
-            }
-
-            WordProcessorAction::PasteFragment {
-                region,
-                start_block,
-                start,
-                end_block,
-                end,
-                blocks,
-                adopt_first_style,
-            } => apply_paste_fragment(
-                &mut dm,
-                region.to_region(),
-                &SelectionTarget {
-                    start_block: start_block.clone(),
-                    start: *start,
-                    end_block: end_block.clone(),
-                    end: *end,
-                },
-                blocks,
-                *adopt_first_style,
-            ),
-
-            WordProcessorAction::InsertParagraph { after, text } => {
-                apply_insert_paragraph(&mut dm, after, text);
-            }
-
-            WordProcessorAction::RemoveBlocks { blocks } => {
-                apply_remove_blocks(&mut dm, blocks);
-            }
-
-            WordProcessorAction::ReplaceBody { markdown } => {
-                apply_replace_body(&mut dm, markdown);
-            }
-
-            WordProcessorAction::AcceptChanges { id } => {
-                apply_review_changes(&mut dm, id.as_deref(), true);
-            }
-
-            WordProcessorAction::RejectChanges { id } => {
-                apply_review_changes(&mut dm, id.as_deref(), false);
-            }
-
-            WordProcessorAction::ResolveComment { id } => {
-                apply_resolve_comment(&mut dm, id);
-            }
-
-            WordProcessorAction::AddComment {
-                block,
-                start,
-                end,
-                author,
-                date,
-                text,
-            } => apply_add_comment(&mut dm, block, *start, *end, author, date, text),
-
-            WordProcessorAction::ReplyToComment {
-                comment,
-                author,
-                date,
-                text,
-            } => {
-                let _ = dm.add_comment_reply(comment, author, date, text);
-            }
+        match self.domain() {
+            ActionDomain::Text => apply_text_action(&mut dm, self),
+            ActionDomain::Formatting => apply_formatting_action(&mut dm, self),
+            ActionDomain::Media => apply_media_action(&mut dm, self),
+            ActionDomain::Table => apply_table_action(&mut dm, self),
+            ActionDomain::Structure => apply_structure_action(&mut dm, self),
+            ActionDomain::Review => apply_review_action(&mut dm, self),
         }
         Ok(())
     }
