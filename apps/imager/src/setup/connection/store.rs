@@ -192,6 +192,7 @@ pub(super) struct DisconnectFence {
 }
 
 use super::super::migration_journal_log as framing;
+pub(super) use format::ExistingAncestorPatchV1;
 use format::{Change, Connection, Event, Row};
 use std::{
     collections::BTreeMap,
@@ -216,6 +217,7 @@ fn native_correlation() -> Result<[u8; 16], StoreError> {
 }
 /// Inspection and paid reads only. This cannot be used for step admission.
 pub(super) struct RecoveryContext {
+    native_identity: Option<Vec<u8>>,
     action: ExecutionAction,
     gate: Arc<super::transaction::AdmissionGate>,
     id: OperationId,
@@ -231,6 +233,9 @@ pub(super) struct RecoveryContext {
     baseline: Option<u64>,
 }
 impl RecoveryContext {
+    pub(super) fn native_identity(&self) -> Option<&[u8]> {
+        self.native_identity.as_deref()
+    }
     pub(super) fn action(&self) -> &ExecutionAction {
         &self.action
     }
@@ -328,6 +333,8 @@ impl ReviewedSelection {
 }
 /// Opaque current-store authority. No serialized row can recreate it.
 pub(super) struct LiveOperation {
+    native_identity: Option<Vec<u8>>,
+    planned_baseline_count: Option<u32>,
     action: ExecutionAction,
     gate: Arc<super::transaction::AdmissionGate>,
     deletion_baseline_checked: bool,
@@ -343,6 +350,9 @@ pub(super) struct LiveOperation {
     reads: Arc<super::transaction::native::OperationReads>,
 }
 impl LiveOperation {
+    pub(super) fn native_identity(&self) -> Option<&[u8]> {
+        self.native_identity.as_deref()
+    }
     pub(super) fn action(&self) -> &ExecutionAction {
         &self.action
     }
@@ -378,6 +388,7 @@ impl LiveOperation {
     }
 }
 pub(super) struct BaselineCandidate {
+    existing_ancestors: Option<ExistingAncestorPatchV1>,
     id: OperationId,
     lifetime: std::sync::Weak<()>,
     revision: u64,
@@ -987,6 +998,17 @@ impl ConnectionStore {
         identity: Option<Vec<u8>>,
         action: Option<format::SelectedAction>,
     ) -> Result<LiveOperation, StoreError> {
+        let planned_baseline_count = if identity.is_some()
+            && action.is_none()
+            && matches!(
+                intent.decision,
+                Decision::VerifyEqual | Decision::Propagate { .. }
+            ) {
+            Some(self.preflight_regular_baseline(&intent, &self.load_baseline(intent.connection)?)?)
+        } else {
+            None
+        };
+        let native_identity = identity.clone();
         let review = reviewed
             .as_ref()
             .map(|token| token.validate(self, &intent))
@@ -1016,6 +1038,8 @@ impl ConnectionStore {
         self.append(Change::Intent { operation })?;
         let revision = format::next(before.revision)?;
         Ok(LiveOperation {
+            native_identity,
+            planned_baseline_count,
             action,
             gate: Arc::clone(
                 self.native_gates
@@ -1420,10 +1444,12 @@ impl ConnectionStore {
     ) -> Result<(), StoreError> {
         self.check_native(live)?;
         let connection = self.connection(live.id.connection)?;
-        let new_count = connection
-            .baseline_count
-            .checked_add(1)
-            .ok_or(StoreError::LimitExceeded)?;
+        let new_count = live.planned_baseline_count.unwrap_or(
+            connection
+                .baseline_count
+                .checked_add(1)
+                .ok_or(StoreError::LimitExceeded)?,
+        );
         let bytes = baseline_phase_estimate(connection.baseline_count, new_count)?
             .checked_add(payload_bound)
             .ok_or(StoreError::LimitExceeded)?;
@@ -1563,6 +1589,7 @@ impl ConnectionStore {
         let receipt = operation.decode()?;
         let intent = receipt.intent;
         Ok(RecoveryContext {
+            native_identity: operation.native_identity.clone(),
             action: receipt.action,
             gate: recovery_gate,
             id,
@@ -1699,6 +1726,8 @@ impl ConnectionStore {
         }
         let before = connection.decode()?;
         let live = LiveOperation {
+            native_identity: operation.native_identity.clone(),
+            planned_baseline_count: None,
             action: receipt.action,
             gate: Arc::clone(
                 self.native_gates
@@ -1794,6 +1823,8 @@ impl ConnectionStore {
         }
         evidence.validate(self, context)?;
         let mut live = LiveOperation {
+            native_identity: context.native_identity.clone(),
+            planned_baseline_count: None,
             action: context.action.clone(),
             gate: context.gate(),
             deletion_baseline_checked: false,
@@ -1914,6 +1945,8 @@ impl ConnectionStore {
         }
         evidence.validate_recovery(context)?;
         let live = LiveOperation {
+            native_identity: context.native_identity.clone(),
+            planned_baseline_count: None,
             action: ExecutionAction::Captured,
             gate: context.gate(),
             deletion_baseline_checked: false,
@@ -1960,6 +1993,8 @@ impl ConnectionStore {
         self.check_recovery_context(context)?;
         session.require_idle()?;
         let live = LiveOperation {
+            native_identity: context.native_identity.clone(),
+            planned_baseline_count: None,
             action: context.action.clone(),
             gate: context.gate(),
             deletion_baseline_checked: false,
@@ -2004,6 +2039,8 @@ impl ConnectionStore {
         }
         evidence.validate(context)?;
         let mut live = LiveOperation {
+            native_identity: context.native_identity.clone(),
+            planned_baseline_count: None,
             action: context.action.clone(),
             gate: context.gate(),
             deletion_baseline_checked: false,
@@ -3478,6 +3515,7 @@ impl ConnectionStore {
                 recovery_checks,
             ),
             Change::BaselineCommit {
+                existing_ancestors,
                 connection,
                 expected,
                 root,
@@ -3493,6 +3531,7 @@ impl ConnectionStore {
                 source,
                 destination,
                 *initial_review,
+                existing_ancestors.as_ref(),
                 recovery_checks,
             ),
             Change::Create { record } => self.reduce_create(record),
@@ -4423,8 +4462,9 @@ impl BaselineAppendCheck<'_, '_> {
                 comparison,
                 cancel,
             } => {
-                if !matches!(change, Change::BaselineCommit { connection, expected, .. }
-                    if *connection == live.id.connection.0 && *expected == live.revision)
+                if !matches!(change, Change::BaselineCommit { connection, expected, existing_ancestors, .. }
+                    if *connection == live.id.connection.0 && *expected == live.revision
+                        && existing_ancestors.as_ref() == comparison.existing_ancestors())
                 {
                     return Err(StoreError::StaleRevision);
                 }
@@ -4559,6 +4599,31 @@ impl ConnectionStore {
             revision: live.revision,
         }))
     }
+    pub(super) fn native_ancestor_patch(
+        &self,
+        live: &LiveOperation,
+        deadline: std::time::Instant,
+        cancel: &AtomicBool,
+    ) -> Result<Option<ExistingAncestorPatchV1>, StoreError> {
+        self.check_native(live)?;
+        let context = self.native_read_context(live, deadline, cancel)?;
+        let connection = self.connection(live.id.connection)?;
+        let entries = if let Some(revision) = connection.baseline {
+            self.read_baseline_with_context(
+                &connection,
+                connection.baseline_root,
+                connection.baseline_count,
+                revision,
+                Some(&context),
+            )?
+            .entries()
+            .cloned()
+            .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+        recovery::ancestor_patch(&self.operation(live.id)?, &entries)
+    }
     pub(super) fn prepare_baseline(
         &mut self,
         live: &LiveOperation,
@@ -4590,16 +4655,6 @@ impl ConnectionStore {
                 return Err(StoreError::RecoveryRequired);
             }
         }
-        let estimate = baseline_phase_estimate(
-            connection.baseline_count,
-            connection
-                .baseline_count
-                .checked_add(1)
-                .ok_or(StoreError::LimitExceeded)?,
-        )?;
-        live.reads
-            .require_credit(estimate)
-            .map_err(|()| StoreError::LimitExceeded)?;
         let mut entries = if let Some(revision) = connection.baseline {
             self.read_baseline_with_context(
                 &connection,
@@ -4614,6 +4669,17 @@ impl ConnectionStore {
         } else {
             BTreeMap::new()
         };
+        let existing_ancestors = recovery::ancestor_patch(&operation, &entries)?;
+        if existing_ancestors.as_ref() != comparison.existing_ancestors() {
+            return Err(StoreError::RecoveryRequired);
+        }
+        let requirement = super::transaction::ExistingAncestorRequirement::from_baseline(
+            &live.intent.path,
+            &entries,
+        )?;
+        for path in requirement.paths() {
+            entries.insert(path, EntryState::Directory);
+        }
         if comparison.value() != self.native_baseline_value(&operation)?.as_ref() {
             return Err(StoreError::RecoveryRequired);
         }
@@ -4626,6 +4692,9 @@ impl ConnectionStore {
             return Err(StoreError::LimitExceeded);
         }
         let count = u32::try_from(entries.len()).map_err(|_| StoreError::LimitExceeded)?;
+        live.reads
+            .require_credit(baseline_phase_estimate(connection.baseline_count, count)?)
+            .map_err(|()| StoreError::LimitExceeded)?;
         let revision = format::next(live.revision)?;
         let mut entries: Vec<_> = entries.into_iter().collect();
         entries.sort_by_key(|(path, _)| path.logical());
@@ -4651,6 +4720,7 @@ impl ConnectionStore {
         self.read_baseline_with_context(&connection, root, count, revision, Some(&context))?;
         comparison.validate(self, live, cancel)?;
         Ok(BaselineCandidate {
+            existing_ancestors,
             id: live.id,
             lifetime: live.lifetime.clone(),
             revision: live.revision,
@@ -4682,6 +4752,7 @@ impl ConnectionStore {
             || candidate.lifetime.strong_count() == 0
             || candidate.root != self.candidate_pin
             || candidate.value.as_ref() != comparison.value()
+            || candidate.existing_ancestors.as_ref() != comparison.existing_ancestors()
         {
             return Err(StoreError::StaleRevision);
         }
@@ -4695,6 +4766,7 @@ impl ConnectionStore {
         comparison.validate(self, live, cancel)?;
         self.append_checked_with_baseline(
             Change::BaselineCommit {
+                existing_ancestors: candidate.existing_ancestors,
                 connection: connection.id,
                 expected: live.revision,
                 root: candidate.root,
@@ -5094,6 +5166,8 @@ impl ConnectionStore {
         }
         evidence.validate_recovery(self, context)?;
         let live = LiveOperation {
+            native_identity: context.native_identity.clone(),
+            planned_baseline_count: None,
             action: context.action.clone(),
             gate: context.gate(),
             deletion_baseline_checked: false,
@@ -5248,6 +5322,8 @@ impl ConnectionStore {
         }
         evidence.validate_recovery(self, context)?;
         let live = LiveOperation {
+            native_identity: context.native_identity.clone(),
+            planned_baseline_count: None,
             action: context.action.clone(),
             gate: context.gate(),
             deletion_baseline_checked: false,
@@ -5349,6 +5425,8 @@ impl ConnectionStore {
         }
         proof.validate(self, context)?;
         let live = LiveOperation {
+            native_identity: context.native_identity.clone(),
+            planned_baseline_count: None,
             action: context.action.clone(),
             gate: context.gate(),
             deletion_baseline_checked: false,
@@ -5622,6 +5700,69 @@ impl ConnectionStore {
                 serial: connection.serial,
             }),
         ))
+    }
+    /// Metadata-only pre-Intent feasibility. This is a requirement, never proof.
+    pub(super) fn preflight_regular_baseline(
+        &self,
+        intent: &OperationIntent,
+        baseline: &VerifiedBaseline,
+    ) -> Result<u32, StoreError> {
+        let record = self.load_connection(intent.connection)?;
+        if record.revision != intent.expected_revision
+            || record.baseline_revision != intent.expected_baseline
+            || baseline.connection != record.id
+            || baseline.source != record.source.identity
+            || baseline.destination != record.destination.identity
+        {
+            return Err(StoreError::StaleRevision);
+        }
+        let mut entries = baseline.entries().cloned().unwrap_or_default();
+        let requirement =
+            super::transaction::ExistingAncestorRequirement::from_baseline(&intent.path, &entries)?;
+        if requirement.prefixes() != 0
+            && !matches!(
+                intent.decision,
+                Decision::VerifyEqual | Decision::Propagate { .. }
+            )
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
+        for path in requirement.paths() {
+            entries.insert(path, EntryState::Directory);
+        }
+        if let Some(value) = intent
+            .source_before
+            .as_ref()
+            .or(intent.destination_before.as_ref())
+        {
+            entries.insert(intent.path.clone(), value.clone());
+        }
+        let count = u32::try_from(entries.len()).map_err(|_| StoreError::LimitExceeded)?;
+        let old_count = u32::try_from(baseline.entries().map_or(0, BTreeMap::len))
+            .map_err(|_| StoreError::LimitExceeded)?;
+        baseline_phase_estimate(old_count, count)?
+            .checked_add(64 * 1024 * 1024)
+            .filter(|bytes| *bytes <= format::READ_LIMIT)
+            .ok_or(StoreError::LimitExceeded)?;
+        let mut bytes = 0_usize;
+        for (ordinal, (path, state)) in entries.into_iter().enumerate() {
+            bytes = bytes
+                .checked_add(
+                    format::encode(&format::BaselineEntry {
+                        connection: intent.connection.0,
+                        revision: format::next(intent.expected_revision)?,
+                        ordinal: u32::try_from(ordinal).map_err(|_| StoreError::LimitExceeded)?,
+                        path: path.into(),
+                        state: state.into(),
+                    })?
+                    .len(),
+                )
+                .ok_or(StoreError::LimitExceeded)?;
+            if bytes > 32 * 1024 * 1024 {
+                return Err(StoreError::LimitExceeded);
+            }
+        }
+        Ok(count)
     }
     pub(super) fn executor_candidate_allowed(
         &self,

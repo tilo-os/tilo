@@ -1267,6 +1267,7 @@ impl ConnectionStore {
         source: &storage::Identity,
         destination: &storage::Identity,
         initial_review: bool,
+        existing_ancestors: Option<&format::ExistingAncestorPatchV1>,
         recovery_checks: &mut RecoveryChecks,
     ) -> Result<Vec<Row>, StoreError> {
         let mut connection = self.connection(ConnectionId(id))?;
@@ -1298,6 +1299,9 @@ impl ConnectionStore {
         };
         let candidate =
             self.read_baseline_with_context(&connection, root, count, revision, context)?;
+        if existing_ancestors.is_some() && operation.native_budget.is_none() {
+            return Err(StoreError::RecoveryRequired);
+        }
         if operation.native_budget.is_some() {
             let mut patch = if let Some(old_revision) = connection.baseline {
                 self.read_baseline_with_context(
@@ -1314,6 +1318,22 @@ impl ConnectionStore {
                 std::collections::BTreeMap::default()
             };
             let value = self.native_baseline_value(&operation)?;
+            if let Some(receipt) = existing_ancestors {
+                let expected = ancestor_patch(&operation, &patch)?;
+                if expected.as_ref() != Some(receipt)
+                    || !matches!(value, Some(super::EntryState::File { .. }))
+                {
+                    return Err(StoreError::RecoveryRequired);
+                }
+                let requirement =
+                    super::super::transaction::ExistingAncestorRequirement::from_baseline(
+                        &operation.path.to_relative()?,
+                        &patch,
+                    )?;
+                for path in requirement.paths() {
+                    patch.insert(path, super::EntryState::Directory);
+                }
+            }
             let relative_path = operation.path.to_relative()?;
             if let Some(value) = value {
                 patch.insert(relative_path, value);
@@ -4638,4 +4658,47 @@ impl super::VerifiedSelection<'_> {
             Self::Tombstone(_) => Err(StoreError::RecoveryRequired),
         }
     }
+}
+
+/// Reconstruct the full missing closure from the verified old baseline. Both
+/// live preparation and replay use this exact join, without creating live proof.
+pub(super) fn ancestor_patch(
+    operation: &format::Operation,
+    entries: &std::collections::BTreeMap<super::RelativePath, super::EntryState>,
+) -> Result<Option<format::ExistingAncestorPatchV1>, StoreError> {
+    let requirement = super::super::transaction::ExistingAncestorRequirement::from_baseline(
+        &operation.path.to_relative()?,
+        entries,
+    )?;
+    if requirement.prefixes() == 0 {
+        return Ok(None);
+    }
+    if operation.action.is_some()
+        || operation.native_capture.is_some()
+        || operation.native_boundary.is_some()
+        || operation.selected_applied.is_some()
+        || !matches!(operation.decision, 0..=2)
+        || ![&operation.source, &operation.destination]
+            .into_iter()
+            .any(|state| matches!(state, Some(format::State::File { .. })))
+    {
+        return Err(StoreError::RecoveryRequired);
+    }
+    let bytes = operation
+        .native_identity
+        .as_deref()
+        .ok_or(StoreError::RecoveryRequired)?;
+    let admission = super::super::transaction::native::descriptor::Admission::decode(bytes)
+        .map_err(|_| StoreError::Corrupt)?;
+    // Operation::decode validates the canonical admission's operation/path,
+    // endpoints, direction, decision and original proposal joins.
+    operation.decode()?;
+    if admission.path != operation.path.to_relative()? {
+        return Err(StoreError::Corrupt);
+    }
+    Ok(Some(format::ExistingAncestorPatchV1 {
+        version: 1,
+        admission: format::digest(bytes),
+        prefixes: requirement.prefixes(),
+    }))
 }

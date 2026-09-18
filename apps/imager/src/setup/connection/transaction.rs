@@ -25,6 +25,8 @@ pub(super) struct ReviewedInitial {
     lifetime: Weak<()>,
     preview: [u8; 32],
     selection: super::store::OperationIntent,
+    source: super::model::ObservedTree,
+    destination: super::model::ObservedTree,
 }
 impl InitialPreview {
     fn from_observations(
@@ -67,6 +69,8 @@ impl InitialPreview {
             lifetime: self.lifetime,
             preview: self.digest,
             selection,
+            source: self.source,
+            destination: self.destination,
         })
     }
 }
@@ -81,7 +85,15 @@ impl ReviewedInitial {
             self.record.source.identity,
             self.record.destination.identity,
         );
-        Ok(missing_baseline_ancestor(&self.selection.path, &absent))
+        Ok(
+            regular_ancestor_prerequisite(
+                &self.selection,
+                &absent,
+                &self.source,
+                &self.destination,
+            )
+            .err(),
+        )
     }
     pub(super) fn validate(
         &self,
@@ -327,22 +339,98 @@ pub(super) struct StructuralPending {
     pub(super) path: super::model::RelativePath,
     pub(super) missing_baseline_ancestor: super::model::RelativePath,
 }
-fn missing_baseline_ancestor(
-    path: &super::model::RelativePath,
-    baseline: &super::model::VerifiedBaseline,
-) -> Option<StructuralPending> {
-    let parent = path.parent()?;
-    if baseline.entries().and_then(|entries| {
-        entries
-            .get(&parent)
-            .or_else(|| entries.get(&parent.logical()))
-    }) == Some(&super::model::EntryState::Directory)
-    {
-        return None;
+/// A bounded requirement, never live filesystem evidence or permission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ExistingAncestorRequirement {
+    path: super::model::RelativePath,
+    prefixes: u64,
+}
+impl ExistingAncestorRequirement {
+    pub(super) fn from_baseline(
+        path: &super::model::RelativePath,
+        entries: &std::collections::BTreeMap<super::model::RelativePath, super::model::EntryState>,
+    ) -> Result<Self, StoreError> {
+        let mut prefixes = 0;
+        let mut parent = path.parent();
+        while let Some(value) = parent {
+            match entries
+                .iter()
+                .find(|(key, _)| key.logical() == value.logical())
+                .map(|(_, state)| state)
+            {
+                Some(super::model::EntryState::Directory) => (),
+                Some(_) => return Err(StoreError::RecoveryRequired),
+                None => prefixes |= 1_u64 << value.components().len(),
+            }
+            parent = value.parent();
+        }
+        Ok(Self {
+            path: path.clone(),
+            prefixes,
+        })
     }
-    Some(StructuralPending {
-        path: path.clone(),
-        missing_baseline_ancestor: parent,
+    pub(super) fn prefixes(&self) -> u64 {
+        self.prefixes
+    }
+    pub(super) fn paths(&self) -> Vec<super::model::RelativePath> {
+        let mut result = Vec::new();
+        let mut parent = self.path.parent();
+        while let Some(value) = parent {
+            if self.prefixes & (1_u64 << value.components().len()) != 0 {
+                result.push(value.clone());
+            }
+            parent = value.parent();
+        }
+        result.reverse();
+        result
+    }
+}
+fn regular_ancestor_prerequisite(
+    intent: &super::store::OperationIntent,
+    baseline: &super::model::VerifiedBaseline,
+    source: &super::model::ObservedTree,
+    destination: &super::model::ObservedTree,
+) -> Result<ExistingAncestorRequirement, StructuralPending> {
+    use super::model::{Decision, EntryState};
+    let empty = std::collections::BTreeMap::new();
+    let entries = baseline.entries().unwrap_or(&empty);
+    let mut parent = intent.path.parent();
+    while let Some(value) = parent {
+        let prior = entries
+            .iter()
+            .find(|(key, _)| key.logical() == value.logical())
+            .map(|(_, state)| state);
+        let observed = |tree: &super::model::ObservedTree| {
+            tree.entries()
+                .iter()
+                .find(|(key, _)| key.logical() == value.logical())
+                .map(|(_, state)| state)
+                == Some(&EntryState::Directory)
+        };
+        if !observed(source)
+            || !observed(destination)
+            || prior.is_some_and(|state| state != &EntryState::Directory)
+            || (prior.is_none()
+                && !(matches!(
+                    intent.decision,
+                    Decision::VerifyEqual | Decision::Propagate { .. }
+                ) && [&intent.source_before, &intent.destination_before]
+                    .into_iter()
+                    .any(|state| matches!(state, Some(EntryState::File { .. })))))
+        {
+            return Err(StructuralPending {
+                path: intent.path.clone(),
+                missing_baseline_ancestor: value,
+            });
+        }
+        parent = value.parent();
+    }
+    // Every possible structural failure was identified above.
+    ExistingAncestorRequirement::from_baseline(&intent.path, entries).map_err(|_| {
+        StructuralPending {
+            path: intent.path.clone(),
+            missing_baseline_ancestor: intent.path.clone(),
+        }
     })
 }
 /// Read-only dispatch proposal. A plan never grants native step authority.
@@ -413,10 +501,6 @@ pub(super) fn plan_regular(
             pending = true;
             continue;
         }
-        if let Some(reason) = missing_baseline_ancestor(&proposal.path, baseline) {
-            structural.get_or_insert(reason);
-            continue;
-        }
         let intent = super::store::OperationIntent {
             connection: id,
             expected_revision: record.revision,
@@ -426,6 +510,12 @@ pub(super) fn plan_regular(
             destination_before: proposal.destination,
             decision: proposal.decision,
         };
+        if let Err(reason) = regular_ancestor_prerequisite(&intent, baseline, &source, &destination)
+        {
+            structural.get_or_insert(reason);
+            continue;
+        }
+        store.preflight_regular_baseline(&intent, baseline)?;
         if store.executor_candidate_allowed(&intent)? {
             return Ok(RegularPlan::Ready(intent));
         }

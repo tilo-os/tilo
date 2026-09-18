@@ -3786,7 +3786,16 @@ mod tests {
         assert_eq!(std::fs::read(paths[0].join(&name)).unwrap(), b"guarded");
         assert_eq!(std::fs::read(paths[1].join(&name)).unwrap(), b"guarded");
     }
-    fn executor_nested_initial_case() {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep exact existing-parent fixture setup, durable boundaries and retained-byte assertions together."
+    )]
+    fn executor_nested_initial_case(
+        reverse: bool,
+        equal: bool,
+        unrelated: bool,
+        damaged_side: Option<usize>,
+    ) {
         use crate::setup::connection::{
             model::{Decision, EntryState, Side as ModelSide},
             store::{ConnectionPolicy, ConnectionStore, EndpointBinding, OperationIntent},
@@ -3795,9 +3804,18 @@ mod tests {
         let tree = fixture();
         let paths = [tree.path().join("left"), tree.path().join("right")];
         for path in &paths {
-            std::fs::create_dir_all(path.join("folder")).unwrap();
+            std::fs::create_dir_all(path.join("a/b")).unwrap();
         }
-        std::fs::write(paths[0].join("folder/file"), b"nested").unwrap();
+        let source_side = usize::from(reverse);
+        std::fs::write(paths[source_side].join("a/b/file"), b"nested").unwrap();
+        if equal {
+            std::fs::write(paths[1 - source_side].join("a/b/file"), b"nested").unwrap();
+        }
+        if unrelated {
+            for (index, root) in paths.iter().enumerate() {
+                std::fs::write(root.join("unrelated"), [index as u8]).unwrap();
+            }
+        }
         let endpoints = [endpoint(&paths[0]), endpoint(&paths[1])];
         let binding = |path: &std::path::Path| {
             let probe = probe_endpoint(path).unwrap();
@@ -3831,45 +3849,165 @@ mod tests {
         ) else {
             panic!("review");
         };
-        let path = RelativePath::unix(b"folder/file").unwrap();
+        let path = RelativePath::unix(b"a/b/file").unwrap();
+        let value = Some(EntryState::File {
+            sha256: Sha256::digest(b"nested").into(),
+            bytes: 6,
+            executable: false,
+        });
         let reviewed = preview
             .accept(OperationIntent {
                 connection: record.id,
                 expected_revision: record.revision,
                 expected_baseline: None,
                 path: path.clone(),
-                source_before: Some(EntryState::File {
-                    sha256: Sha256::digest(b"nested").into(),
-                    bytes: 6,
-                    executable: false,
-                }),
-                destination_before: None,
-                decision: Decision::Propagate {
-                    from: ModelSide::Source,
+                source_before: if !reverse || equal {
+                    value.clone()
+                } else {
+                    None
+                },
+                destination_before: if reverse || equal {
+                    value.clone()
+                } else {
+                    None
+                },
+                decision: if equal {
+                    Decision::VerifyEqual
+                } else {
+                    Decision::Propagate {
+                        from: if reverse {
+                            ModelSide::Destination
+                        } else {
+                            ModelSide::Source
+                        },
+                    }
                 },
             })
             .unwrap();
-        assert!(
-            matches!(execute_reviewed_initial(&mut store, reviewed, &session, &endpoints[0], &endpoints[1], &cancel),
-            TransactionOutcome::StructuralPending(reason) if reason.path == path && reason.missing_baseline_ancestor == RelativePath::unix(b"folder").unwrap())
-        );
-        assert_eq!(store.load_connection(record.id).unwrap(), record);
-        assert_eq!(store.executor_position(record.id).unwrap(), (None, None));
-        assert!(store.load_baseline(record.id).unwrap().entries().is_none());
-        for path in &paths {
-            assert_eq!(std::fs::read_dir(path).unwrap().count(), 1);
+        if let Some(side) = damaged_side {
+            let root = paths[side].clone();
+            let invoked = std::rc::Rc::new(std::cell::Cell::new(false));
+            let called = invoked.clone();
+            BEFORE_PUBLICATION_REREAD.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    called.set(true);
+                    std::fs::rename(root.join("a"), root.join("retained-a")).unwrap();
+                    std::fs::create_dir_all(root.join("a/b")).unwrap();
+                    std::fs::write(root.join("a/b/file"), b"competitor").unwrap();
+                }));
+            });
+            assert!(matches!(
+                execute_reviewed_initial(
+                    &mut store,
+                    reviewed,
+                    &session,
+                    &endpoints[0],
+                    &endpoints[1],
+                    &cancel
+                ),
+                TransactionOutcome::RecoveryRequired {
+                    operation: Some(_),
+                    ..
+                }
+            ));
+            assert!(
+                invoked.get(),
+                "actual publication reread boundary must be reached"
+            );
+            assert!(store.load_baseline(record.id).unwrap().entries().is_none());
+            assert!(store.executor_position(record.id).unwrap().0.is_some());
+            assert_eq!(
+                std::fs::read(paths[side].join("retained-a/b/file")).unwrap(),
+                b"nested"
+            );
+            assert_eq!(
+                std::fs::read(paths[side].join("a/b/file")).unwrap(),
+                b"competitor"
+            );
+            assert_eq!(
+                std::fs::read(paths[1 - side].join("a/b/file")).unwrap(),
+                b"nested"
+            );
+            drop(store);
+            let store = ConnectionStore::open_at(&tree.path().join("store")).unwrap();
+            assert!(store.load_baseline(record.id).unwrap().entries().is_none());
+            assert!(store.executor_position(record.id).unwrap().0.is_some());
+            assert_eq!(
+                std::fs::read(paths[side].join("retained-a/b/file")).unwrap(),
+                b"nested"
+            );
+            return;
         }
-        assert_eq!(
-            std::fs::read(paths[0].join("folder/file")).unwrap(),
-            b"nested"
-        );
-        assert!(!paths[1].join("folder/file").exists());
         assert!(
+            matches!(execute_reviewed_initial(&mut store, reviewed, &session, &endpoints[0], &endpoints[1], &cancel), TransactionOutcome::Verified { up_to_date, .. } if up_to_date != unrelated)
+        );
+        let baseline = store.load_baseline(record.id).unwrap();
+        let rows = baseline.entries().unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows.get(&RelativePath::unix(b"a").unwrap()),
+            Some(&EntryState::Directory)
+        );
+        assert_eq!(
+            rows.get(&RelativePath::unix(b"a/b").unwrap()),
+            Some(&EntryState::Directory)
+        );
+        assert_eq!(rows.get(&path), value.as_ref());
+        for endpoint in &paths {
+            assert_eq!(std::fs::read(endpoint.join("a/b/file")).unwrap(), b"nested");
+        }
+        std::fs::write(paths[source_side].join("a/b/second"), b"shared").unwrap();
+        assert!(matches!(
+            execute_next_regular(
+                &mut store,
+                record.id,
+                &session,
+                &endpoints[0],
+                &endpoints[1],
+                &cancel
+            ),
+            TransactionOutcome::Verified { .. }
+        ));
+        assert_eq!(
             store
-                .recovery_page(record.id, None, 16)
+                .load_baseline(record.id)
                 .unwrap()
-                .entries
-                .is_empty()
+                .entries()
+                .unwrap()
+                .len(),
+            4
+        );
+        std::fs::write(paths[source_side].join("a/b/file"), b"updated").unwrap();
+        assert!(matches!(
+            execute_next_regular(
+                &mut store,
+                record.id,
+                &session,
+                &endpoints[0],
+                &endpoints[1],
+                &cancel
+            ),
+            TransactionOutcome::Verified { .. }
+        ));
+        for root in &paths {
+            assert_eq!(std::fs::read(root.join("a/b/file")).unwrap(), b"updated");
+            assert_eq!(std::fs::read(root.join("a/b/second")).unwrap(), b"shared");
+        }
+        if unrelated {
+            for (index, root) in paths.iter().enumerate() {
+                assert_eq!(
+                    std::fs::read(root.join("unrelated")).unwrap(),
+                    [index as u8]
+                );
+            }
+        }
+        let expected = store.load_baseline(record.id).unwrap();
+        assert_eq!(expected.entries().unwrap().len(), 4);
+        drop(store);
+        let store = ConnectionStore::open_at(&tree.path().join("store")).unwrap();
+        assert_eq!(
+            store.load_baseline(record.id).unwrap().entries(),
+            expected.entries()
         );
     }
     #[expect(
@@ -4126,7 +4264,18 @@ mod tests {
     )]
     fn native_executor_requires_review_and_progresses_two_regular_files() {
         native_count_and_guard_limits_case();
-        executor_nested_initial_case();
+        for reverse in [false, true] {
+            for equal in [false, true] {
+                for unrelated in [false, true] {
+                    executor_nested_initial_case(reverse, equal, unrelated, None);
+                }
+            }
+        }
+        for reverse in [false, true] {
+            for side in 0..2 {
+                executor_nested_initial_case(reverse, false, false, Some(side));
+            }
+        }
         for mapping in [false, true] {
             executor_live_writer_case(mapping);
         }
@@ -4603,11 +4752,34 @@ mod tests {
             }
         }
     }
+    fn reopened_addition_case(reverse: bool, published: u8, damage: RestartDamage) {
+        reopened_addition_at_path(reverse, published, damage, false);
+    }
+    #[test]
+    #[ignore = "authorized native filesystem and helper required; nested restart bodies UNRUN"]
+    fn native_initial_nested_addition_reopens_durable_boundaries() {
+        for reverse in [false, true] {
+            for published in 0..=5 {
+                for damage in [
+                    RestartDamage::None,
+                    RestartDamage::Disconnect,
+                    RestartDamage::Stopped,
+                ] {
+                    reopened_addition_at_path(reverse, published, damage, true);
+                }
+            }
+        }
+    }
     #[expect(
         clippy::too_many_lines,
-        reason = "Keep real-state boundary setup, continuation/refusal and exact retained-byte assertions together."
+        reason = "Retain actual original/reopened native owners through all regular publication boundaries."
     )]
-    fn reopened_addition_case(reverse: bool, published: u8, damage: RestartDamage) {
+    fn reopened_addition_at_path(
+        reverse: bool,
+        published: u8,
+        damage: RestartDamage,
+        nested: bool,
+    ) {
         use crate::setup::connection::{
             model::{Decision, EntryState, Side as ModelSide},
             store::{
@@ -4615,12 +4787,18 @@ mod tests {
             },
         };
         use std::sync::atomic::AtomicBool;
+        let leaf = if nested { "a/b/file" } else { "file" };
         let tree = fixture();
         let source_path = tree.path().join("source");
         let target_path = tree.path().join("target");
         std::fs::create_dir(&source_path).unwrap();
         std::fs::create_dir(&target_path).unwrap();
-        std::fs::write(source_path.join("file"), b"new bytes").unwrap();
+        if nested {
+            for root in [&source_path, &target_path] {
+                std::fs::create_dir_all(root.join("a/b")).unwrap();
+            }
+        }
+        std::fs::write(source_path.join(leaf), b"new bytes").unwrap();
         let source_endpoint = endpoint(&source_path);
         let target_endpoint = endpoint(&target_path);
         let binding = |path: &std::path::Path| {
@@ -4662,7 +4840,7 @@ mod tests {
             connection: record.id,
             expected_revision: record.revision,
             expected_baseline: None,
-            path: RelativePath::unix(b"file").unwrap(),
+            path: RelativePath::unix(leaf.as_bytes()).unwrap(),
             source_before,
             destination_before,
             decision: Decision::Propagate { from },
@@ -4685,7 +4863,11 @@ mod tests {
             .reserve_native_work(
                 &mut live,
                 &session,
-                16 * 1024 * 1024,
+                if nested {
+                    EXECUTOR_READ_WINDOW
+                } else {
+                    16 * 1024 * 1024
+                },
                 Instant::now() + std::time::Duration::from_secs(30),
                 &cancel,
             )
@@ -4795,20 +4977,20 @@ mod tests {
         let private_path = target_path.join(&private_name);
         match damage {
             RestartDamage::Source => {
-                std::fs::rename(source_path.join("file"), &held).unwrap();
-                std::fs::write(source_path.join("file"), b"later source").unwrap();
+                std::fs::rename(source_path.join(leaf), &held).unwrap();
+                std::fs::write(source_path.join(leaf), b"later source").unwrap();
             }
             RestartDamage::Competitor => {
                 if published != 0 {
-                    std::fs::rename(target_path.join("file"), &held).unwrap();
+                    std::fs::rename(target_path.join(leaf), &held).unwrap();
                 }
-                std::fs::write(target_path.join("file"), b"competitor").unwrap();
+                std::fs::write(target_path.join(leaf), b"competitor").unwrap();
             }
             RestartDamage::SameBytesOtherObject => {
                 let path = if published == 0 {
                     private_path.join("stage")
                 } else {
-                    target_path.join("file")
+                    target_path.join(leaf)
                 };
                 std::fs::rename(&path, &held).unwrap();
                 std::fs::write(path, b"new bytes").unwrap();
@@ -4846,7 +5028,11 @@ mod tests {
         store
             .reserve_recovery_reads(
                 &mut context,
-                32 * 1024 * 1024,
+                if nested {
+                    EXECUTOR_READ_WINDOW
+                } else {
+                    32 * 1024 * 1024
+                },
                 Instant::now() + std::time::Duration::from_secs(30),
                 &cancel,
             )
@@ -4887,7 +5073,7 @@ mod tests {
             }
             if damage == RestartDamage::Source {
                 assert_eq!(
-                    std::fs::read(source_path.join("file")).unwrap(),
+                    std::fs::read(source_path.join(leaf)).unwrap(),
                     b"later source"
                 );
             }
@@ -4907,7 +5093,7 @@ mod tests {
             }
             if damage == RestartDamage::Competitor {
                 assert_eq!(
-                    std::fs::read(target_path.join("file")).unwrap(),
+                    std::fs::read(target_path.join(leaf)).unwrap(),
                     b"competitor"
                 );
             }
@@ -4926,21 +5112,15 @@ mod tests {
                 .record_boundary(&context, &mut boundary, &cancel)
                 .unwrap();
             assert_eq!(ack.value().stage, ReceiptStage::AccountedPending);
-            assert_eq!(
-                std::fs::read(source_path.join("file")).unwrap(),
-                b"new bytes"
-            );
+            assert_eq!(std::fs::read(source_path.join(leaf)).unwrap(), b"new bytes");
             if published == 0 {
-                assert!(!target_path.join("file").exists());
+                assert!(!target_path.join(leaf).exists());
                 assert_eq!(
                     std::fs::read(private_path.join("stage")).unwrap(),
                     b"new bytes"
                 );
             } else {
-                assert_eq!(
-                    std::fs::read(target_path.join("file")).unwrap(),
-                    b"new bytes"
-                );
+                assert_eq!(std::fs::read(target_path.join(leaf)).unwrap(), b"new bytes");
             }
             assert_eq!(
                 std::fs::read(private_path.join("intent")).unwrap(),
@@ -4989,7 +5169,7 @@ mod tests {
                     .entries()
                     .is_none()
             );
-            assert_eq!(target_path.join("file").exists(), published != 0);
+            assert_eq!(target_path.join(leaf).exists(), published != 0);
             assert_eq!(
                 target_path.join(&private_name).join("stage").exists(),
                 published == 0
@@ -5024,14 +5204,8 @@ mod tests {
         drop(outcome);
         drop(recovered);
         crash_ready(tree.path(), id, reverse, "addition-6");
-        assert_eq!(
-            std::fs::read(source_path.join("file")).unwrap(),
-            b"new bytes"
-        );
-        assert_eq!(
-            std::fs::read(target_path.join("file")).unwrap(),
-            b"new bytes"
-        );
+        assert_eq!(std::fs::read(source_path.join(leaf)).unwrap(), b"new bytes");
+        assert_eq!(std::fs::read(target_path.join(leaf)).unwrap(), b"new bytes");
         assert!(
             store
                 .pending_page(id.connection, None, 8)
@@ -5046,7 +5220,7 @@ mod tests {
                 .entries()
                 .unwrap()
                 .len(),
-            1
+            if nested { 3 } else { 1 }
         );
         assert!(
             store
@@ -7783,7 +7957,7 @@ pub(super) struct ObjectId {
     generation: [u8; 32],
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Stamp {
+pub(super) struct Stamp {
     length: u64,
     modified: (i64, i64),
     changed: (i64, i64),
@@ -7900,6 +8074,8 @@ pub(in crate::setup::connection::transaction) struct NativePublication {
     reason = "These are independent observed namespace-presence or epoch hazard facts, not mutually exclusive states."
 )]
 pub(in crate::setup::connection::transaction) struct NativeEpoch<'a> {
+    ancestor_chains: u16,
+    ancestors: Option<super::ExistingAncestorProof>,
     cancel_read: Option<&'a std::sync::atomic::AtomicBool>,
     stop_read: Option<Arc<super::super::AdmissionGate>>,
     source: &'a PinnedEndpoint,
@@ -8025,6 +8201,8 @@ impl<'a> NativeEpoch<'a> {
             namespace_created: false,
             deletion_scope: false,
             connected: None,
+            ancestors: None,
+            ancestor_chains: 0,
         })
     }
     fn failure(&mut self, cause: EndpointError) -> Failure {
@@ -8104,6 +8282,34 @@ impl<'a> NativeEpoch<'a> {
         path: &RelativePath,
     ) -> Result<ParentGuard> {
         self.check()?;
+        if let Some(proof) = &self.ancestors {
+            if &proof.admission.path == path {
+                let original = proof
+                    .parents
+                    .get(usize::from(side == Side::Target))
+                    .ok_or_else(|| Failure {
+                        cause: EndpointError::Unverified,
+                        boundary: self.boundary,
+                        os_error: None,
+                    })?;
+                return Ok(ParentGuard {
+                    directory: original.directory.clone(),
+                    name: original.name.clone(),
+                    epoch: original.epoch,
+                    side,
+                    chain: original.chain.clone(),
+                    path: original.path.clone(),
+                });
+            }
+        }
+        self.pin_parent_sample(side, path).map(|(guard, _)| guard)
+    }
+    fn pin_parent_sample(
+        &mut self,
+        side: Side,
+        path: &RelativePath,
+    ) -> Result<(ParentGuard, Vec<Stamp>)> {
+        self.check()?;
         let Some((last, ancestors)) = path.components().split_last() else {
             return Err(self.failure(EndpointError::Unsupported));
         };
@@ -8112,6 +8318,7 @@ impl<'a> NativeEpoch<'a> {
         } else {
             self.target_root.clone()
         };
+        let mut stamps = vec![Stamp::new(&self.io(directory.file().metadata())?)];
         let mut chain = vec![self.ep(object(directory.file()))?];
         for name in ancestors {
             let NativeName::Unix(bytes) = name else {
@@ -8119,6 +8326,7 @@ impl<'a> NativeEpoch<'a> {
             };
             directory = self.ep(directory.child(OsStr::from_bytes(bytes), side == Side::Target))?;
             chain.push(self.ep(object(directory.file()))?);
+            stamps.push(Stamp::new(&self.io(directory.file().metadata())?));
         }
         let NativeName::Unix(bytes) = last else {
             return Err(self.failure(EndpointError::Unsupported));
@@ -8126,14 +8334,17 @@ impl<'a> NativeEpoch<'a> {
         let name =
             CString::new(bytes.as_slice()).map_err(|_| self.failure(EndpointError::Unsupported))?;
         self.check()?;
-        Ok(ParentGuard {
-            directory,
-            name,
-            side,
-            epoch: self.nonce,
-            chain,
-            path: Some(path.clone()),
-        })
+        Ok((
+            ParentGuard {
+                directory,
+                name,
+                side,
+                epoch: self.nonce,
+                chain,
+                path: Some(path.clone()),
+            },
+            stamps,
+        ))
     }
     pub(in crate::setup::connection::transaction) fn guard_regular(
         &mut self,
@@ -8815,6 +9026,14 @@ impl<'e> NativeEpoch<'e> {
             direction,
             intent: live.intent().clone(),
         });
+        if !capture_only
+            && matches!(
+                live.intent().decision,
+                Decision::VerifyEqual | Decision::Propagate { .. }
+            )
+        {
+            epoch.prove_existing_ancestors(live.native_identity())?;
+        }
         Ok(epoch)
     }
     fn connected_check(&mut self, live: &LiveOperation) -> Result<()> {
@@ -8845,6 +9064,7 @@ impl<'e> NativeEpoch<'e> {
         {
             return Err(self.failure(EndpointError::Unverified));
         }
+        self.validate_existing_ancestors(false)?;
         self.check()
     }
     fn admitted(
@@ -10428,10 +10648,16 @@ impl super::CompletionEvidence for super::NativeOutcome<'_, '_> {
         live: &LiveOperation,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> std::result::Result<Option<crate::setup::connection::model::EntryState>, StoreError> {
-        self.validate(live)?;
-        let value = observe_comparison(self.epoch, store, live, cancel)?;
-        self.validate(live)?;
-        Ok(value)
+        let result = (|| {
+            self.validate(live)?;
+            let value = observe_comparison(self.epoch, store, live, cancel)?;
+            self.validate(live)?;
+            Ok(value)
+        })();
+        if result.is_err() && self.epoch.ancestors.is_some() {
+            self.epoch.failure(EndpointError::Unstable);
+        }
+        result
     }
     fn deadline(&self) -> Instant {
         self.epoch.deadline
@@ -10465,8 +10691,10 @@ impl super::NativeOutcome<'_, '_> {
         live: &LiveOperation,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> std::result::Result<super::VerifiedComparison<'a>, StoreError> {
+        let existing_ancestors = self.epoch.comparison_ancestors(store, live, cancel)?;
         let value = super::CompletionEvidence::fresh(self, store, live, cancel)?;
         Ok(super::VerifiedComparison {
+            existing_ancestors,
             evidence: self,
             id: live.id(),
             revision: live.revision(),
@@ -10483,8 +10711,10 @@ impl super::NativeDeletion<'_, '_> {
         live: &LiveOperation,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> std::result::Result<super::VerifiedComparison<'a>, StoreError> {
+        let existing_ancestors = None;
         let value = super::CompletionEvidence::fresh(self, store, live, cancel)?;
         Ok(super::VerifiedComparison {
+            existing_ancestors,
             evidence: self,
             id: live.id(),
             revision: live.revision(),
@@ -10495,6 +10725,11 @@ impl super::NativeDeletion<'_, '_> {
     }
 }
 impl super::VerifiedComparison<'_> {
+    pub(in crate::setup::connection) fn existing_ancestors(
+        &self,
+    ) -> Option<&crate::setup::connection::store::ExistingAncestorPatchV1> {
+        self.existing_ancestors.as_ref()
+    }
     #[cfg(test)]
     pub(in crate::setup::connection) fn revoke_for_test(&mut self) {
         self.evidence.revoke_for_test();
@@ -10613,6 +10848,15 @@ impl<'e> NativeEpoch<'e> {
             direction,
             intent: context.intent().clone(),
         });
+        if !capture_only
+            && !context.recovery_only()
+            && matches!(
+                context.intent().decision,
+                Decision::VerifyEqual | Decision::Propagate { .. }
+            )
+        {
+            epoch.prove_existing_ancestors(context.native_identity())?;
+        }
         Ok(epoch)
     }
     fn recovery_check(
@@ -10639,6 +10883,7 @@ impl<'e> NativeEpoch<'e> {
         }) {
             return Err(self.failure(EndpointError::Unverified));
         }
+        self.validate_existing_ancestors(false)?;
         self.check()
     }
     fn owned_recovery_names(
@@ -12213,8 +12458,10 @@ impl super::NativeEquality<'_> {
         live: &LiveOperation,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> std::result::Result<super::VerifiedComparison<'a>, StoreError> {
+        let existing_ancestors = self.epoch.comparison_ancestors(store, live, cancel)?;
         let value = super::CompletionEvidence::fresh(self, store, live, cancel)?;
         Ok(super::VerifiedComparison {
+            existing_ancestors,
             evidence: self,
             id: live.id(),
             revision: live.revision(),
@@ -12236,10 +12483,16 @@ impl super::CompletionEvidence for super::NativeEquality<'_> {
         live: &LiveOperation,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> std::result::Result<Option<crate::setup::connection::model::EntryState>, StoreError> {
-        self.validate(live)?;
-        let value = observe_comparison(&mut self.epoch, store, live, cancel)?;
-        self.validate(live)?;
-        Ok(value)
+        let result = (|| {
+            self.validate(live)?;
+            let value = observe_comparison(&mut self.epoch, store, live, cancel)?;
+            self.validate(live)?;
+            Ok(value)
+        })();
+        if result.is_err() && self.epoch.ancestors.is_some() {
+            self.epoch.failure(EndpointError::Unstable);
+        }
+        result
     }
     fn deadline(&self) -> Instant {
         self.epoch.deadline
@@ -12357,6 +12610,7 @@ impl AdmissionPath {
         path: &RelativePath,
         deadline: Instant,
         cancel: &std::sync::atomic::AtomicBool,
+        writable: bool,
     ) -> std::result::Result<Self, EndpointError> {
         planning_check(deadline, cancel)?;
         let Some((leaf, ancestors)) = path.components().split_last() else {
@@ -12365,14 +12619,14 @@ impl AdmissionPath {
         if path.components().len() > 64 {
             return Err(EndpointError::LimitExceeded);
         }
-        let mut directory = endpoint.native_directory(false)?;
+        let mut directory = endpoint.native_directory(writable)?;
         let mut chain = vec![descriptor_object(&object(directory.file())?)];
         for component in ancestors {
             planning_check(deadline, cancel)?;
             let NativeName::Unix(bytes) = component else {
                 return Err(EndpointError::Unsupported);
             };
-            directory = directory.child(OsStr::from_bytes(bytes), false)?;
+            directory = directory.child(OsStr::from_bytes(bytes), writable)?;
             chain.push(descriptor_object(&object(directory.file())?));
         }
         let NativeName::Unix(bytes) = leaf else {
@@ -12469,10 +12723,22 @@ pub(in crate::setup::connection::transaction) fn admission_metadata<'e>(
         return Err(StoreError::IdentityChanged);
     }
     let deadline = Instant::now() + std::time::Duration::from_secs(30);
-    let left = AdmissionPath::capture(source, &intent.path, deadline, cancel)
-        .map_err(|_| StoreError::RecoveryRequired)?;
-    let right = AdmissionPath::capture(target, &intent.path, deadline, cancel)
-        .map_err(|_| StoreError::RecoveryRequired)?;
+    let left = AdmissionPath::capture(
+        source,
+        &intent.path,
+        deadline,
+        cancel,
+        matches!(decision, 2 | 3),
+    )
+    .map_err(|_| StoreError::RecoveryRequired)?;
+    let right = AdmissionPath::capture(
+        target,
+        &intent.path,
+        deadline,
+        cancel,
+        !matches!(decision, 2 | 3),
+    )
+    .map_err(|_| StoreError::RecoveryRequired)?;
     let states = [
         left.planned_state(intent.source_before.as_ref()),
         right.planned_state(intent.destination_before.as_ref()),
@@ -12522,10 +12788,26 @@ impl super::NativeAdmission<'_> {
         {
             return Err(StoreError::StaleRevision);
         }
-        for (endpoint, path) in self.endpoints.iter().zip(&self.paths) {
+        for (index, (endpoint, path)) in self.endpoints.iter().zip(&self.paths).enumerate() {
             endpoint
                 .revalidate()
                 .map_err(|_| StoreError::IdentityChanged)?;
+            path.validate(self.deadline, self.cancel)
+                .map_err(|_| StoreError::RecoveryRequired)?;
+            let fresh = AdmissionPath::capture(
+                endpoint,
+                &intent.path,
+                self.deadline,
+                self.cancel,
+                index != usize::from(self.snapshot.direction),
+            )
+            .map_err(|_| StoreError::RecoveryRequired)?;
+            if fresh.chain != path.chain {
+                return Err(StoreError::IdentityChanged);
+            }
+            fresh
+                .validate(self.deadline, self.cancel)
+                .map_err(|_| StoreError::RecoveryRequired)?;
             path.validate(self.deadline, self.cancel)
                 .map_err(|_| StoreError::RecoveryRequired)?;
         }
@@ -17061,4 +17343,384 @@ fn execute_pending(
         store.commit_baseline(&mut live, candidate, &mut comparison, cancel)?;
     }
     executor_verified(store, id, left, right, cancel)
+}
+
+impl NativeEpoch<'_> {
+    /// A separate per-epoch work bound, never fictional payload-byte credit.
+    /// Actual descriptor, payload and page requests still use `OperationReads`.
+    fn admit_ancestor_chain(&mut self, depth: usize) -> Result<()> {
+        self.check()?;
+        if !(1..=64).contains(&depth) || self.ancestor_chains >= 256 {
+            return Err(self.failure(EndpointError::LimitExceeded));
+        }
+        self.ancestor_chains += 1;
+        Ok(())
+    }
+    fn prove_existing_ancestors(&mut self, bytes: Option<&[u8]>) -> Result<()> {
+        let Some(bytes) = bytes else {
+            return Ok(());
+        };
+        let admission =
+            d::Admission::decode(bytes).map_err(|_| self.failure(EndpointError::Unverified))?;
+        if admission.path.components().len() == 1 {
+            return Ok(());
+        }
+        let binding = self.connected.as_ref().ok_or_else(|| Failure {
+            cause: EndpointError::Unverified,
+            boundary: self.boundary,
+            os_error: None,
+        })?;
+        if admission.connection != binding.id.connection.0
+            || admission.operation != binding.id.serial
+            || admission.revision.checked_add(1) != Some(binding.admission)
+            || admission.fence != binding.fence
+            || admission.baseline != binding.intent.expected_baseline
+            || admission.path != binding.intent.path
+            || usize::from(admission.direction) != binding.direction
+            || admission.endpoints.get(usize::from(admission.direction))
+                != Some(&descriptor_endpoint(self.identities[0]))
+            || admission
+                .endpoints
+                .get(1 - usize::from(admission.direction))
+                != Some(&descriptor_endpoint(self.identities[1]))
+        {
+            return Err(self.failure(EndpointError::IdentityChanged));
+        }
+        self.admit_ancestor_chain(admission.path.components().len())?;
+        let (source, _) = self.pin_parent_sample(Side::Source, &admission.path)?;
+        self.admit_ancestor_chain(admission.path.components().len())?;
+        let (target, _) = self.pin_parent_sample(Side::Target, &admission.path)?;
+        self.ancestors = Some(super::ExistingAncestorProof {
+            admission,
+            parents: [source, target],
+            stability: None,
+        });
+        self.validate_existing_ancestors(false)
+    }
+    fn validate_existing_ancestors(&mut self, start_window: bool) -> Result<()> {
+        let Some(mut proof) = self.ancestors.take() else {
+            return Ok(());
+        };
+        let result = (|| {
+            let mut stamps = [Vec::new(), Vec::new()];
+            for (index, ((original, stamp_slot), side)) in proof
+                .parents
+                .iter()
+                .zip(&mut stamps)
+                .zip([Side::Source, Side::Target])
+                .enumerate()
+            {
+                self.admit_ancestor_chain(proof.admission.path.components().len())?;
+                self.parent_check(original)?;
+                // One full temporary chain at a time, never a repin per prefix.
+                let (fresh, observed) = self.pin_parent_sample(side, &proof.admission.path)?;
+                let logical = if index == 0 {
+                    usize::from(proof.admission.direction)
+                } else {
+                    1 - usize::from(proof.admission.direction)
+                };
+                let expected = proof
+                    .admission
+                    .chains
+                    .get(logical)
+                    .ok_or_else(|| self.failure(EndpointError::Unverified))?;
+                if original
+                    .chain
+                    .iter()
+                    .map(descriptor_object)
+                    .collect::<Vec<_>>()
+                    != *expected
+                    || fresh
+                        .chain
+                        .iter()
+                        .map(descriptor_object)
+                        .collect::<Vec<_>>()
+                        != *expected
+                    || proof
+                        .stability
+                        .as_ref()
+                        .and_then(|expected| expected.get(index))
+                        .is_some_and(|expected| *expected != observed)
+                {
+                    return Err(self.failure(EndpointError::IdentityChanged));
+                }
+                self.parent_check(original)?;
+                self.parent_check(&fresh)?;
+                *stamp_slot = observed;
+            }
+            if start_window && proof.stability.is_none() {
+                proof.stability = Some(stamps);
+            }
+            self.check()
+        })();
+        self.ancestors = Some(proof);
+        result
+    }
+    fn comparison_ancestors(
+        &mut self,
+        store: &crate::setup::connection::store::ConnectionStore,
+        live: &LiveOperation,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> std::result::Result<
+        Option<crate::setup::connection::store::ExistingAncestorPatchV1>,
+        StoreError,
+    > {
+        self.connected_check(live)
+            .map_err(|_| StoreError::RecoveryRequired)?;
+        self.validate_existing_ancestors(true)
+            .map_err(|_| StoreError::RecoveryRequired)?;
+        let patch = store.native_ancestor_patch(live, self.deadline, cancel)?;
+        if let Some(patch) = &patch {
+            let proof = self
+                .ancestors
+                .as_ref()
+                .ok_or(StoreError::RecoveryRequired)?;
+            let encoded = proof.admission.encode().map_err(|_| StoreError::Corrupt)?;
+            if patch.admission != <[u8; 32]>::from(Sha256::digest(encoded)) {
+                return Err(StoreError::RecoveryRequired);
+            }
+        }
+        self.connected_check(live)
+            .map_err(|_| StoreError::RecoveryRequired)?;
+        Ok(patch)
+    }
+}
+
+#[cfg(test)]
+mod initial_parent_tests {
+    use super::*;
+    use crate::setup::connection::{
+        model::{Decision, EntryState},
+        store::{ConnectionPolicy, ConnectionStore, EndpointBinding, OperationIntent},
+        transaction::TransactionOutcome,
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    fn change_parent(root: &std::path::Path, fault: u8) {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        if fault == 6 {
+            std::fs::write(root.join("a/b/competitor"), b"unrelated").unwrap();
+            return;
+        }
+        if fault == 5 {
+            std::fs::set_permissions(root.join("a"), std::fs::Permissions::from_mode(0o1700))
+                .unwrap();
+            return;
+        }
+        std::fs::rename(root.join("a"), root.join("retained-a")).unwrap();
+        match fault {
+            1 => {
+                std::fs::create_dir_all(root.join("a/b")).unwrap();
+                std::fs::write(root.join("a/b/file"), b"equal").unwrap();
+            }
+            2 => (),
+            3 => symlink(root.join("retained-a"), root.join("a")).unwrap(),
+            4 => std::fs::write(root.join("a"), b"competitor").unwrap(),
+            _ => panic!("fault"),
+        }
+    }
+
+    #[test]
+    #[ignore = "authorized native filesystem/helper required; source and link evidence only, UNRUN"]
+    fn native_existing_ancestors_restart_and_refusal_matrix() {
+        for side in 0..2 {
+            for boundary in 0..=5 {
+                for fault in 0..=5 {
+                    existing_parent_boundary(side, boundary, fault);
+                }
+                if boundary == 5 {
+                    for fault in 6..=8 {
+                        existing_parent_boundary(side, boundary, fault);
+                    }
+                }
+            }
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Retain actual native owners through the explicit initial-parent durable-boundary matrix."
+    )]
+    fn existing_parent_boundary(side: usize, boundary: u8, fault: u8) {
+        let tree = tests::fixture();
+        let roots = [tree.path().join("left"), tree.path().join("right")];
+        for root in &roots {
+            std::fs::create_dir_all(root.join("a/b")).unwrap();
+            std::fs::write(root.join("a/b/file"), b"equal").unwrap();
+        }
+        let endpoints = [tests::endpoint(&roots[0]), tests::endpoint(&roots[1])];
+        let binding = |root: &std::path::Path| {
+            let probe = endpoint::probe_endpoint(root).unwrap();
+            EndpointBinding {
+                identity: probe.identity,
+                locator: probe.locator,
+            }
+        };
+        let store_path = tree.path().join("store");
+        let mut store = ConnectionStore::open_at(&store_path).unwrap();
+        let record = store
+            .create_connection(
+                ConnectionId([107; 16]),
+                binding(&roots[0]),
+                binding(&roots[1]),
+                ConnectionPolicy {
+                    deletion_retention_seconds: 2_592_000,
+                },
+            )
+            .unwrap()
+            .value()
+            .clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let session = store.transaction_session(record.id).unwrap();
+        let value = Some(EntryState::File {
+            sha256: Sha256::digest(b"equal").into(),
+            bytes: 5,
+            executable: false,
+        });
+        let intent = OperationIntent {
+            connection: record.id,
+            expected_revision: record.revision,
+            expected_baseline: None,
+            path: RelativePath::unix(b"a/b/file").unwrap(),
+            source_before: value.clone(),
+            destination_before: value,
+            decision: Decision::VerifyEqual,
+        };
+        let reviewed = initial_preview(&store, record.id, &endpoints[0], &endpoints[1], &cancel)
+            .unwrap()
+            .accept(intent.clone())
+            .unwrap();
+        let metadata =
+            admission_metadata(&store, &intent, &endpoints[0], &endpoints[1], &cancel).unwrap();
+        if boundary == 0 && fault != 0 {
+            change_parent(&roots[side], fault);
+        }
+        let admitted = store.begin_native_reviewed(intent, &session, reviewed, metadata);
+        if boundary == 0 && fault != 0 {
+            assert!(admitted.is_err());
+            assert_eq!(store.load_connection(record.id).unwrap(), record);
+            assert_eq!(store.executor_position(record.id).unwrap(), (None, None));
+        } else {
+            let mut live = admitted.unwrap();
+            if boundary >= 2 {
+                store
+                    .reserve_native_work(
+                        &mut live,
+                        &session,
+                        EXECUTOR_READ_WINDOW,
+                        Instant::now() + std::time::Duration::from_secs(30),
+                        &cancel,
+                    )
+                    .unwrap();
+            }
+            if boundary >= 3 {
+                let epoch =
+                    NativeEpoch::begin_connected(&live, &endpoints[0], &endpoints[1], &cancel)
+                        .unwrap();
+                let mut proof = epoch.equal_evidence(&live).unwrap();
+                store
+                    .record_native_equal(&mut live, &mut proof, &cancel)
+                    .unwrap();
+                if boundary >= 4 {
+                    let mut comparison = proof.comparison(&store, &live, &cancel).unwrap();
+                    let candidate = store
+                        .prepare_baseline(&live, &mut comparison, &cancel)
+                        .unwrap();
+                    if boundary == 5 {
+                        let root = roots[side].clone();
+                        let invoked = std::rc::Rc::new(std::cell::Cell::new(false));
+                        let called = invoked.clone();
+                        let cancel_at_commit = cancel.clone();
+                        let reads = live.operation_reads().clone();
+                        crate::setup::connection::store::before_native_baseline_write_for_test(
+                            false,
+                            move || {
+                                called.set(true);
+                                match fault {
+                                    0 => (),
+                                    7 => cancel_at_commit.store(true, Ordering::Release),
+                                    8 => {
+                                        for chunk in [4 * 1024 * 1024, 4096, 1] {
+                                            while reads.charge(chunk).is_ok() {}
+                                        }
+                                    }
+                                    _ => change_parent(&root, fault),
+                                }
+                            },
+                        );
+                        let result =
+                            store.commit_baseline(&mut live, candidate, &mut comparison, &cancel);
+                        assert!(invoked.get());
+                        assert_eq!(result.is_ok(), fault == 0);
+                    }
+                }
+            }
+            if (1..=4).contains(&boundary) && fault != 0 {
+                change_parent(&roots[side], fault);
+            }
+            if boundary != 5 || fault != 0 {
+                assert!(store.load_baseline(record.id).unwrap().entries().is_none());
+            }
+            drop(store);
+            let mut store = ConnectionStore::open_at(&store_path).unwrap();
+            if fault == 0 {
+                let endpoints = [tests::endpoint(&roots[0]), tests::endpoint(&roots[1])];
+                let session = store.transaction_session(record.id).unwrap();
+                assert!(matches!(
+                    execute_next_regular(
+                        &mut store,
+                        record.id,
+                        &session,
+                        &endpoints[0],
+                        &endpoints[1],
+                        &cancel
+                    ),
+                    TransactionOutcome::Verified { .. }
+                ));
+                assert_eq!(
+                    store
+                        .load_baseline(record.id)
+                        .unwrap()
+                        .entries()
+                        .unwrap()
+                        .len(),
+                    3
+                );
+                for root in &roots {
+                    assert_eq!(std::fs::read(root.join("a/b/file")).unwrap(), b"equal");
+                }
+            } else {
+                assert!(store.load_baseline(record.id).unwrap().entries().is_none());
+                assert!(store.executor_position(record.id).unwrap().0.is_some());
+                // Retained endpoint handles cannot reauthorize a changed edge.
+                if fault <= 5 || fault == 7 {
+                    let session = store.transaction_session(record.id).unwrap();
+                    assert!(matches!(
+                        execute_next_regular(
+                            &mut store,
+                            record.id,
+                            &session,
+                            &endpoints[0],
+                            &endpoints[1],
+                            &cancel
+                        ),
+                        TransactionOutcome::RecoveryRequired { .. }
+                    ));
+                }
+                assert!(store.load_baseline(record.id).unwrap().entries().is_none());
+            }
+        }
+        if fault != 0 {
+            let retained = if fault >= 5 {
+                roots[side].join("a/b/file")
+            } else {
+                roots[side].join("retained-a/b/file")
+            };
+            assert_eq!(std::fs::read(retained).unwrap(), b"equal");
+            if fault == 4 {
+                assert_eq!(std::fs::read(roots[side].join("a")).unwrap(), b"competitor");
+            }
+        }
+        assert_eq!(cancel.load(Ordering::Acquire), fault == 7);
+    }
 }
