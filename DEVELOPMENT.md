@@ -147,7 +147,10 @@ Passwords UI exposes recovery errors to both sighted and assistive users.
 Passwords explicitly enables the shared native file-picker feature. Backup and
 restore passphrase fields use protected semantic input, and transfer polling
 keeps a stable wake deadline until the next sync. File-dialog completion and
-revealed-password expiry therefore do not need another input event. Native
+revealed-password expiry therefore do not need another input event. Passwords
+uses `try_clipboard_copy` for copy actions: an installed host backend's refusal
+is final, and a failed system write reports an accessible error without keeping
+a secret in the editor-local fallback buffer. Native
 transfer verification covers Unicode paths, acknowledged CSV export/import,
 encrypted backup, wrong-passphrase rejection, and fresh-profile restoration.
 
