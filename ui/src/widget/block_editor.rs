@@ -7,10 +7,12 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::sync::OnceLock;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
+use syntect::parsing::{ParseState, ScopeStack, SyntaxSet};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use uuid::Uuid;
@@ -20,6 +22,7 @@ use winit::event::{KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
+use crate::icons::{Icon, draw_icon};
 use crate::presence::{PathSegment, PresenceCtx, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::text_selection::{clipboard_copy, clipboard_paste};
@@ -28,7 +31,9 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::link_popover::{LinkPopover, PageEntry};
 use crate::widget::marks::{Mark, MarkSpan, PageId};
-use crate::widget::rich_text_line::{LineSignal, RichTextLine};
+use crate::widget::rich_text_line::{
+    LineSignal, RichTextLine, TransientColorRole, TransientColorSpan,
+};
 use crate::widget::slash_menu::SlashMenu;
 
 /// Deeper nesting runs off the panel's right edge.
@@ -36,11 +41,128 @@ pub const MAX_LIST_INDENT: u8 = 5;
 /// Matches the 28px indent step Notion uses in its dense block view.
 pub const LIST_INDENT_STEP_PX: f32 = 28.0;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkTarget {
+    Page(PageId),
+    External(String),
+}
+
+fn syntax_set() -> &'static SyntaxSet {
+    static SET: OnceLock<SyntaxSet> = OnceLock::new();
+    SET.get_or_init(SyntaxSet::load_defaults_newlines)
+}
+
+fn syntax_role(scopes: &ScopeStack) -> Option<TransientColorRole> {
+    let rendered = scopes
+        .as_slice()
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" ");
+    for scope in rendered.split_whitespace().rev() {
+        let role = if scope.starts_with("comment") {
+            TransientColorRole::Comment
+        } else if scope.starts_with("string") || scope.starts_with("constant.character") {
+            TransientColorRole::String
+        } else if scope.starts_with("constant.numeric") || scope.starts_with("constant.language") {
+            TransientColorRole::Number
+        } else if scope.starts_with("entity.name.function")
+            || scope.starts_with("support.function")
+            || scope.starts_with("meta.function-call")
+            || scope.starts_with("variable.function")
+        {
+            TransientColorRole::Function
+        } else if scope.starts_with("entity.name.type")
+            || scope.starts_with("entity.name.class")
+            || scope.starts_with("entity.name.struct")
+            || scope.starts_with("entity.name.enum")
+            || scope.starts_with("entity.name.trait")
+            || scope.starts_with("support.type")
+            || scope.starts_with("support.class")
+        {
+            TransientColorRole::Type
+        } else if scope.starts_with("keyword")
+            || scope.starts_with("storage.type")
+            || scope.starts_with("storage.modifier")
+        {
+            TransientColorRole::Keyword
+        } else if scope.starts_with("entity.name.macro")
+            || scope.starts_with("support.macro")
+            || scope.starts_with("meta.attribute")
+            || scope.starts_with("meta.annotation")
+        {
+            TransientColorRole::Macro
+        } else if scope.starts_with("keyword.operator") || scope.starts_with("punctuation.accessor")
+        {
+            TransientColorRole::Operator
+        } else {
+            continue;
+        };
+        return Some(role);
+    }
+    None
+}
+
+fn apply_syntax_colors(blocks: &mut [Block], languages: &[Option<String>]) {
+    let set = syntax_set();
+    let mut index = 0usize;
+    while index < blocks.len() {
+        let Some(language) = languages.get(index).and_then(Option::as_deref) else {
+            blocks[index].line.set_transient_colors(Vec::new());
+            index = index.saturating_add(1);
+            continue;
+        };
+        let syntax = set
+            .find_syntax_by_token(language)
+            .or_else(|| set.find_syntax_by_extension(language))
+            .unwrap_or_else(|| set.find_syntax_plain_text());
+        let mut parse = ParseState::new(syntax);
+        let mut scopes = ScopeStack::new();
+        while index < blocks.len()
+            && languages.get(index).and_then(Option::as_deref) == Some(language)
+        {
+            let source = blocks[index].text();
+            let with_newline = format!("{source}\n");
+            let mut colors = Vec::new();
+            let mut last = 0usize;
+            let mut role = syntax_role(&scopes);
+            if let Ok(ops) = parse.parse_line(&with_newline, set) {
+                for (offset, op) in ops {
+                    if offset > last {
+                        if let Some(role) = role {
+                            colors.push(TransientColorSpan {
+                                range: last..offset.min(source.len()),
+                                role,
+                            });
+                        }
+                        last = offset;
+                    }
+                    let _ = scopes.apply(&op);
+                    role = syntax_role(&scopes);
+                }
+                if last < source.len()
+                    && let Some(role) = role
+                {
+                    colors.push(TransientColorSpan {
+                        range: last..source.len(),
+                        role,
+                    });
+                }
+            }
+            colors.retain(|span| span.range.start < span.range.end);
+            blocks[index].line.set_transient_colors(colors);
+            index = index.saturating_add(1);
+        }
+    }
+}
+
 /// `CodeBlock` is single-line per block: Enter creates a new code block
 /// below rather than a newline, since `RichTextLine` is single-line only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockKind {
     Paragraph,
+    /// Markdown block quote, rendered with an accent rule and subdued surface.
+    Quote,
     /// Constructor helpers clamp to [1, 3]; other values are invalid.
     Heading(u8),
     Bullet {
@@ -59,6 +181,11 @@ pub enum BlockKind {
     CodeBlock {
         lang: Option<String>,
     },
+    /// GitHub-flavoured Markdown table stored as editable source and rendered
+    /// as a native grid.
+    Table {
+        visual: bool,
+    },
     /// Non-editable, non-focusable.
     Divider,
 }
@@ -67,6 +194,7 @@ impl BlockKind {
     pub fn font_size(&self) -> f32 {
         match self {
             BlockKind::Paragraph
+            | BlockKind::Quote
             | BlockKind::Bullet { .. }
             | BlockKind::Numbered { .. }
             | BlockKind::Checklist { .. }
@@ -74,7 +202,7 @@ impl BlockKind {
             BlockKind::Heading(1) => 28.0,
             BlockKind::Heading(2) => 22.0,
             BlockKind::Heading(_) => 18.0,
-            BlockKind::CodeBlock { .. } => 14.0,
+            BlockKind::CodeBlock { .. } | BlockKind::Table { .. } => 14.0,
         }
     }
 
@@ -140,6 +268,16 @@ impl Block {
         )
     }
 
+    pub fn quote(text: &str) -> Self {
+        let kind = BlockKind::Quote;
+        Self::with_id(
+            kind.clone(),
+            RichTextLine::new()
+                .with_text(text)
+                .with_size(kind.font_size()),
+        )
+    }
+
     pub fn heading(level: u8, text: &str) -> Self {
         let kind = BlockKind::Heading(level.clamp(1, 3));
         Self::with_id(
@@ -189,6 +327,17 @@ impl Block {
 
     pub fn code_block(lang: Option<String>, text: &str) -> Self {
         let kind = BlockKind::CodeBlock { lang };
+        Self::with_id(
+            kind.clone(),
+            RichTextLine::new()
+                .with_text(text)
+                .with_size(kind.font_size())
+                .with_mono(),
+        )
+    }
+
+    pub fn table(text: &str, visual: bool) -> Self {
+        let kind = BlockKind::Table { visual };
         Self::with_id(
             kind.clone(),
             RichTextLine::new()
@@ -252,6 +401,14 @@ struct BlockSnapshot {
     text: String,
 }
 
+/// Display-only, bounded projection for a live page embed. The source CRDT
+/// keeps only the stable UUID mark; hosts refresh this projection on sync.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransclusionPreview {
+    pub title: String,
+    pub excerpt: String,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag tracks an independent, orthogonal piece of transient \
@@ -311,7 +468,16 @@ pub struct BlockEditor {
     /// Actual painted link geometry from the most recent draw. This keeps
     /// app-level navigation hit-testing independent of a guessed theme,
     /// padding, font advances, or window scale.
-    live_link_hits: Vec<(Rect, PageId)>,
+    live_link_hits: Vec<(Rect, LinkTarget)>,
+    transclusion_previews: HashMap<PageId, TransclusionPreview>,
+    transclusion_rects: Vec<Option<(Rect, PageId)>>,
+    pending_transclusion_opens: Vec<PageId>,
+    pending_external_link_opens: Vec<String>,
+    /// Painted copy controls for fenced-code runs. Each tuple retains the
+    /// inclusive block range so pointer and accessibility activation copy the
+    /// exact source, including newlines, without touching document state.
+    code_copy_hits: Vec<(Rect, usize, usize)>,
+    copied_code_start: Option<usize>,
     /// Reordering begins only from the quiet six-dot handle, preserving normal
     /// text selection drags everywhere else in a block.
     block_drag: Option<BlockDrag>,
@@ -333,6 +499,9 @@ pub struct BlockEditor {
     /// Reserved preview geometry for the final source line in each TeX/Typst
     /// fenced block. Source remains an ordinary CRDT-backed code line.
     formula_preview_rects: Vec<Option<Rect>>,
+    table_preview_rects: Vec<Option<Rect>>,
+    image_preview_rects: Vec<Option<Rect>>,
+    image_store: Option<crate::ImageStore>,
     formula_chrome: Vec<Option<FormulaChrome>>,
     visual_formulas: HashMap<usize, VisualFormulaState>,
     visual_formula_focus: Option<usize>,
@@ -350,12 +519,16 @@ pub struct BlockEditor {
     pending_semantic_ops: Vec<BlockEditOp>,
 }
 
-const DEFAULT_EMPTY_HINT: &str = "Start typing — / for blocks, [[ to link a page";
+const DEFAULT_EMPTY_HINT: &str = "Start typing — / for blocks, [[ to link, ![[ to embed";
 const FORMULA_BLOCK_MIN_HEIGHT: f32 = 164.0;
 const FORMULA_VISUAL_MIN_HEIGHT: f32 = 132.0;
 const FORMULA_HEADER_HEIGHT: f64 = 28.0;
 const FORMULA_SOURCE_HEIGHT: f64 = 24.0;
 const FORMULA_PREVIEW_GAP: f64 = 6.0;
+const TABLE_SOURCE_LINE_HEIGHT: f32 = 22.0;
+const TABLE_ROW_HEIGHT: f64 = 34.0;
+const TRANSCLUSION_MIN_HEIGHT: f32 = 104.0;
+const IMAGE_PREVIEW_HEIGHT: f32 = 220.0;
 
 impl BlockEditor {
     /// Starts with one empty paragraph — there must be a block to focus.
@@ -383,6 +556,12 @@ impl BlockEditor {
             slash_anchor_caret: None,
             link_anchor_caret: None,
             live_link_hits: Vec::new(),
+            transclusion_previews: HashMap::new(),
+            transclusion_rects: Vec::new(),
+            pending_transclusion_opens: Vec::new(),
+            pending_external_link_opens: Vec::new(),
+            code_copy_hits: Vec::new(),
+            copied_code_start: None,
             block_drag: None,
             blocks_list: None,
             doc_structure_dirty: false,
@@ -390,6 +569,9 @@ impl BlockEditor {
             kbd_sel_anchor: None,
             empty_hint: DEFAULT_EMPTY_HINT.to_string(),
             formula_preview_rects: Vec::new(),
+            table_preview_rects: Vec::new(),
+            image_preview_rects: Vec::new(),
+            image_store: None,
             formula_chrome: Vec::new(),
             visual_formulas: HashMap::new(),
             visual_formula_focus: None,
@@ -565,6 +747,10 @@ impl BlockEditor {
             }
             match &b.kind {
                 BlockKind::Paragraph => out.push_str(b.text()),
+                BlockKind::Quote => {
+                    out.push_str("> ");
+                    out.push_str(b.text());
+                }
                 BlockKind::Heading(1) => {
                     out.push_str("# ");
                     out.push_str(b.text());
@@ -601,6 +787,7 @@ impl BlockEditor {
                     out.push_str(b.text());
                     out.push_str("\n```");
                 }
+                BlockKind::Table { .. } => out.push_str(b.text()),
                 BlockKind::Divider => {
                     out.push_str("---");
                 }
@@ -698,6 +885,7 @@ impl BlockEditor {
         self.cross_block_drag_touched = None;
         self.kbd_sel_anchor = None;
         self.formula_preview_rects.clear();
+        self.table_preview_rects.clear();
         self.formula_chrome.clear();
         self.visual_formulas.clear();
         self.visual_formula_focus = None;
@@ -967,6 +1155,7 @@ impl BlockEditor {
                 Block::checklist(indent, false, suffix)
             }
             BlockKind::CodeBlock { ref lang } => Block::code_block(lang.clone(), suffix),
+            BlockKind::Quote => Block::quote(suffix),
             _ => Block::paragraph(suffix),
         };
         suffix_block.line.set_marks(suffix_marks);
@@ -1062,6 +1251,28 @@ impl BlockEditor {
         new_line.set_focus(true);
         new_line.set_cursor_pos(0);
         b.line = new_line;
+        self.structure_dirty = true;
+        self.doc_structure_dirty = true;
+        self.dirty = true;
+        true
+    }
+
+    /// Converts a freshly typed `> ` paragraph prefix into a semantic quote.
+    pub fn try_promote_to_quote(&mut self, idx: usize) -> bool {
+        let Some(block) = self.blocks.get_mut(idx) else {
+            return false;
+        };
+        if !matches!(block.kind, BlockKind::Paragraph) || !block.line.value().starts_with("> ") {
+            return false;
+        }
+        let text = block.line.value().get(2..).unwrap_or_default().to_string();
+        let mut line = RichTextLine::new()
+            .with_text(&text)
+            .with_size(BlockKind::Quote.font_size());
+        line.set_focus(true);
+        line.set_cursor_pos(0);
+        block.kind = BlockKind::Quote;
+        block.line = line;
         self.structure_dirty = true;
         self.doc_structure_dirty = true;
         self.dirty = true;
@@ -1207,6 +1418,14 @@ impl BlockEditor {
             new_kind = BlockKind::CodeBlock {
                 lang: Some(descriptor.fence_language()),
             };
+        }
+        if matches!(new_kind, BlockKind::Table { .. })
+            && let Some(block) = self.blocks.get_mut(focused_idx)
+            && block.text().trim().is_empty()
+        {
+            const TABLE_TEMPLATE: &str = "| Column | Value |\n| --- | --- |\n|  |  |";
+            block.line.set_text(TABLE_TEMPLATE);
+            block.line.set_cursor_pos(TABLE_TEMPLATE.len());
         }
         let _ = self.try_convert_to(focused_idx, new_kind);
     }
@@ -1549,6 +1768,37 @@ impl BlockEditor {
         self.link_popover.set_items(pages);
     }
 
+    /// Supply an asynchronous, host-policy-owned image loader. The editor
+    /// never performs filesystem or network access itself.
+    pub fn set_image_store(&mut self, store: Option<crate::ImageStore>) {
+        self.image_store = store;
+        self.dirty = true;
+        self.structure_dirty = true;
+    }
+
+    /// Preload currently referenced images for deterministic offscreen shots.
+    /// Live UI code must rely on [`Widget::needs_animation_frame`] instead.
+    #[doc(hidden)]
+    pub fn prewarm_images_for_shots(&self) -> bool {
+        let Some(store) = self.image_store.as_ref() else {
+            return false;
+        };
+        let mut sources = Vec::new();
+        for (_, source) in self
+            .blocks
+            .iter()
+            .filter_map(|block| standalone_markdown_image(block.text()))
+        {
+            sources.push(source);
+            let _ = store.get(source);
+        }
+        store.block_until_idle(std::time::Duration::from_secs(2));
+        !sources.is_empty()
+            && sources
+                .into_iter()
+                .all(|source| store.get(source).is_some())
+    }
+
     pub fn link_popover(&self) -> &LinkPopover {
         &self.link_popover
     }
@@ -1561,10 +1811,63 @@ impl BlockEditor {
     /// Resolve a link against the exact geometry produced by the live draw.
     /// A stale layout intentionally refuses rather than approximating with a
     /// different theme or font.
-    pub fn link_at_point(&self, point: Point) -> Option<PageId> {
+    pub fn link_at_point(&self, point: Point) -> Option<LinkTarget> {
+        if let Some(id) = self
+            .transclusion_rects
+            .iter()
+            .flatten()
+            .find_map(|(rect, id)| rect.contains(point).then_some(*id))
+        {
+            return Some(LinkTarget::Page(id));
+        }
         self.live_link_hits
             .iter()
-            .find_map(|(rect, id)| rect.contains(point).then_some(*id))
+            .find_map(|(rect, target)| rect.contains(point).then(|| target.clone()))
+    }
+
+    pub fn set_transclusion_previews(&mut self, previews: HashMap<PageId, TransclusionPreview>) {
+        if self.transclusion_previews != previews {
+            self.transclusion_previews = previews;
+            self.dirty = true;
+            self.structure_dirty = true;
+        }
+    }
+
+    pub fn take_transclusion_open(&mut self) -> Option<PageId> {
+        self.pending_transclusion_opens.pop()
+    }
+
+    pub fn take_external_link_open(&mut self) -> Option<String> {
+        self.pending_external_link_opens.pop()
+    }
+
+    fn copy_code_run(&mut self, start: usize, end: usize) -> bool {
+        let Some(run) = self.blocks.get(start..=end) else {
+            return false;
+        };
+        if run.is_empty()
+            || run
+                .iter()
+                .any(|block| !matches!(block.kind, BlockKind::CodeBlock { .. }))
+        {
+            return false;
+        }
+        clipboard_copy(&run.iter().map(Block::text).collect::<Vec<_>>().join("\n"));
+        self.copied_code_start = Some(start);
+        self.dirty = true;
+        true
+    }
+
+    fn code_copy_target(start: usize, end: usize) -> String {
+        format!("notes.code-copy:{start}:{end}")
+    }
+
+    fn parse_code_copy_target(target: &str) -> Option<(usize, usize)> {
+        let rest = target.strip_prefix("notes.code-copy:")?;
+        let (start, end) = rest.split_once(':')?;
+        let start = start.parse().ok()?;
+        let end = end.parse().ok()?;
+        (start <= end).then_some((start, end))
     }
 
     fn refresh_live_link_hits(&mut self, theme: &Theme) {
@@ -1572,15 +1875,13 @@ impl BlockEditor {
         for block in &self.blocks {
             let line = &block.line;
             for span in line.marks() {
-                let Mark::Link(id) = &span.mark else {
-                    continue;
+                let target = match &span.mark {
+                    Mark::Link(id) => LinkTarget::Page(*id),
+                    Mark::ExternalLink(url) => LinkTarget::External(url.clone()),
+                    _ => continue,
                 };
-                let x0 = line.pixel_x_for_byte(theme, span.range.start);
-                let x1 = line.pixel_x_for_byte(theme, span.range.end);
-                if x1 > x0 {
-                    let rect = line.get_rect();
-                    self.live_link_hits
-                        .push((Rect::new(x0, rect.y0, x1, rect.y1), *id));
+                for rect in line.mark_rects(theme, span.range.clone()) {
+                    self.live_link_hits.push((rect, target.clone()));
                 }
             }
         }
@@ -1602,18 +1903,28 @@ impl BlockEditor {
         if cursor <= start {
             return;
         }
-        let (Some(head), Some(tail)) = (text.get(..start), text.get(cursor..)) else {
+        let embedded = start > 0 && text.get(start.saturating_sub(1)..start) == Some("!");
+        let head_end = if embedded {
+            start.saturating_sub(1)
+        } else {
+            start
+        };
+        let (Some(head), Some(tail)) = (text.get(..head_end), text.get(cursor..)) else {
             return;
         };
-        let title_end = start.saturating_add(page.title.len());
+        let mark_start = head_end;
+        let title_end = mark_start.saturating_add(page.title.len());
         let mut new_text = String::with_capacity(text.len().saturating_add(page.title.len()));
         new_text.push_str(head);
         new_text.push_str(&page.title);
         new_text.push_str(tail);
         b.line.set_text(&new_text);
-        let mark_range = start..title_end;
-        b.line
-            .add_mark(MarkSpan::new(mark_range, Mark::Link(page.id)));
+        let mark = if embedded {
+            Mark::Transclusion(page.id)
+        } else {
+            Mark::Link(page.id)
+        };
+        b.line.add_mark(MarkSpan::new(mark_start..title_end, mark));
         b.line.set_cursor_pos(title_end);
         self.dirty = true;
         self.edit_pending = true;
@@ -1940,6 +2251,7 @@ pub(crate) fn prefix_gutter_for(kind: &BlockKind) -> f64 {
         BlockKind::Numbered { .. } => 28.0,
         BlockKind::Checklist { .. } => 24.0,
         BlockKind::CodeBlock { .. } => 12.0,
+        BlockKind::Quote => 16.0,
         _ => 0.0,
     }
 }
@@ -1951,6 +2263,45 @@ fn formula_descriptor(kind: &BlockKind) -> Option<crate::math::FormulaDescriptor
         return None;
     };
     crate::math::FormulaDescriptor::from_fence_language(lang.as_deref())
+}
+
+fn markdown_table_rows(source: &str) -> Vec<Vec<&str>> {
+    source
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if !trimmed.contains('|') {
+                return None;
+            }
+            let body = trimmed.strip_prefix('|').unwrap_or(trimmed);
+            let body = body.strip_suffix('|').unwrap_or(body);
+            Some(body.split('|').map(str::trim).collect::<Vec<_>>())
+        })
+        .collect()
+}
+
+fn markdown_table_separator(row: &[&str]) -> bool {
+    !row.is_empty()
+        && row.iter().all(|cell| {
+            let cell = cell.trim_matches(':').trim();
+            cell.len() >= 3 && cell.chars().all(|ch| ch == '-')
+        })
+}
+
+fn markdown_table_source_height(source: &str) -> f32 {
+    let lines = source.lines().count().clamp(2, 12) as f32;
+    lines * TABLE_SOURCE_LINE_HEIGHT + 8.0
+}
+
+fn standalone_markdown_image(source: &str) -> Option<(&str, &str)> {
+    let source = source.trim();
+    let body = source.strip_prefix("![")?;
+    let (alt, destination) = body.split_once("](")?;
+    let destination = destination.strip_suffix(')')?.trim();
+    if destination.is_empty() || destination.contains(['\n', '\r']) {
+        return None;
+    }
+    Some((alt.trim(), destination))
 }
 
 fn formula_run_end(blocks: &[Block], start: usize) -> usize {
@@ -2457,6 +2808,7 @@ fn document_selection_blocks(key: &PresenceKey) -> Option<(usize, usize)> {
 fn kind_to_str(kind: &BlockKind) -> String {
     match kind {
         BlockKind::Paragraph => "paragraph".to_string(),
+        BlockKind::Quote => "quote".to_string(),
         BlockKind::Heading(n) => format!("heading{n}"),
         BlockKind::Bullet { indent } => format!("bullet:{indent}"),
         BlockKind::Numbered { indent } => format!("numbered:{indent}"),
@@ -2466,7 +2818,22 @@ fn kind_to_str(kind: &BlockKind) -> String {
         BlockKind::CodeBlock { lang } => {
             format!("code:{}", lang.clone().unwrap_or_default())
         }
+        BlockKind::Table { visual } => format!("table:{}", i32::from(*visual)),
         BlockKind::Divider => "divider".to_string(),
+    }
+}
+
+fn accessible_kind_name(kind: &BlockKind) -> &'static str {
+    match kind {
+        BlockKind::Paragraph => "Paragraph",
+        BlockKind::Quote => "Quote",
+        BlockKind::Heading(_) => "Heading",
+        BlockKind::Bullet { .. } => "Bullet",
+        BlockKind::Numbered { .. } => "Numbered item",
+        BlockKind::Checklist { .. } => "Checklist item",
+        BlockKind::CodeBlock { .. } => "Code block",
+        BlockKind::Table { .. } => "Table",
+        BlockKind::Divider => "Divider",
     }
 }
 
@@ -2478,7 +2845,7 @@ fn valid_existing_kind(kind: &str) -> bool {
     };
     matches!(
         kind,
-        "paragraph" | "divider" | "heading1" | "heading2" | "heading3"
+        "paragraph" | "quote" | "divider" | "heading1" | "heading2" | "heading3"
     ) || kind.strip_prefix("bullet:").is_some_and(indent)
         || kind.strip_prefix("numbered:").is_some_and(indent)
         || kind.strip_prefix("checklist:").is_some_and(|rest| {
@@ -2488,11 +2855,15 @@ fn valid_existing_kind(kind: &str) -> bool {
                 && parts.next().is_none()
         })
         || kind.starts_with("code:")
+        || matches!(kind, "table:0" | "table:1")
 }
 
 fn kind_from_str(s: &str) -> BlockKind {
     if s == "paragraph" {
         return BlockKind::Paragraph;
+    }
+    if s == "quote" {
+        return BlockKind::Quote;
     }
     if s == "divider" {
         return BlockKind::Divider;
@@ -2527,6 +2898,11 @@ fn kind_from_str(s: &str) -> BlockKind {
         };
         return BlockKind::CodeBlock { lang };
     }
+    if let Some(visual) = s.strip_prefix("table:") {
+        return BlockKind::Table {
+            visual: visual == "1",
+        };
+    }
     BlockKind::Paragraph
 }
 
@@ -2534,11 +2910,13 @@ fn kind_from_str(s: &str) -> BlockKind {
 fn block_for_kind(kind: &BlockKind) -> Block {
     match kind {
         BlockKind::Paragraph => Block::paragraph(""),
+        BlockKind::Quote => Block::quote(""),
         BlockKind::Heading(n) => Block::heading(*n, ""),
         BlockKind::Bullet { indent } => Block::bullet(*indent, ""),
         BlockKind::Numbered { indent } => Block::numbered(*indent, ""),
         BlockKind::Checklist { indent, done } => Block::checklist(*indent, *done, ""),
         BlockKind::CodeBlock { lang } => Block::code_block(lang.clone(), ""),
+        BlockKind::Table { visual } => Block::table("", *visual),
         BlockKind::Divider => Block::divider(),
     }
 }
@@ -2550,6 +2928,8 @@ fn continuation_block(kind: &BlockKind, text: &str) -> Block {
         BlockKind::Numbered { indent } => Block::numbered(*indent, text),
         BlockKind::Checklist { indent, .. } => Block::checklist(*indent, false, text),
         BlockKind::CodeBlock { lang } => Block::code_block(lang.clone(), text),
+        BlockKind::Table { visual } => Block::table(text, *visual),
+        BlockKind::Quote => Block::quote(text),
         _ => Block::paragraph(text),
     }
 }
@@ -3273,6 +3653,9 @@ struct BlockDrawCtx<'a> {
     presence: &'a PresenceCtx,
     line_rects: &'a [Rect],
     ordinals: &'a [u32],
+    table_previews: &'a [Option<Rect>],
+    image_previews: &'a [Option<Rect>],
+    image_store: Option<&'a crate::ImageStore>,
 }
 
 /// Formula-run state threaded through [`draw_block`]'s `CodeBlock` arm —
@@ -3288,6 +3671,168 @@ struct FormulaDrawCtx<'a> {
     focus: Option<usize>,
 }
 
+fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
+    let rows = markdown_table_rows(source)
+        .into_iter()
+        .filter(|row| !markdown_table_separator(row))
+        .take(12)
+        .collect::<Vec<_>>();
+    let columns = rows.iter().map(Vec::len).max().unwrap_or(0).clamp(1, 8);
+    if rows.is_empty() || rect.width() <= 1.0 || rect.height() <= 1.0 {
+        return;
+    }
+    let scale = f64::from(ctx.theme.text_scale);
+    let row_height = TABLE_ROW_HEIGHT * scale;
+    let column_width = rect.width() / columns as f64;
+    let bottom = (rect.y0 + row_height * rows.len() as f64).min(rect.y1);
+    let table_rect = Rect::new(rect.x0, rect.y0, rect.x1, bottom);
+    ctx.scene.fill(
+        vello::peniko::Fill::NonZero,
+        ctx.transform,
+        ctx.theme.tokens.colors.surfaces.raised,
+        None,
+        &vello::kurbo::RoundedRect::from_rect(table_rect, 6.0 * scale),
+    );
+    let header = Rect::new(
+        table_rect.x0,
+        table_rect.y0,
+        table_rect.x1,
+        table_rect.y0 + row_height,
+    );
+    ctx.scene.fill(
+        vello::peniko::Fill::NonZero,
+        ctx.transform,
+        ctx.theme.tokens.colors.surface_white_10,
+        None,
+        &header,
+    );
+    let stroke = vello::kurbo::Stroke::new(1.0 * scale);
+    for column in 1..columns {
+        let x = table_rect.x0 + column_width * column as f64;
+        ctx.scene.stroke(
+            &stroke,
+            ctx.transform,
+            ctx.theme.tokens.colors.border_standard,
+            None,
+            &vello::kurbo::Line::new((x, table_rect.y0), (x, table_rect.y1)),
+        );
+    }
+    for row in 1..rows.len() {
+        let y = table_rect.y0 + row_height * row as f64;
+        ctx.scene.stroke(
+            &stroke,
+            ctx.transform,
+            ctx.theme.tokens.colors.border_standard,
+            None,
+            &vello::kurbo::Line::new((table_rect.x0, y), (table_rect.x1, y)),
+        );
+    }
+    for (row_index, row) in rows.iter().enumerate() {
+        for (column_index, value) in row.iter().take(columns).enumerate() {
+            let x = table_rect.x0 + column_width * column_index as f64 + 10.0 * scale;
+            let y = table_rect.y0 + row_height * row_index as f64 + 8.0 * scale;
+            ctx.text_renderer.draw_text_styled(
+                ctx.scene,
+                value,
+                14.0,
+                if row_index == 0 {
+                    ctx.theme.tokens.colors.text_primary
+                } else {
+                    ctx.theme.tokens.colors.text_dim
+                },
+                translated(ctx.transform, x, y),
+                Some((column_width - 20.0 * scale).max(1.0) as f32),
+                if row_index == 0 {
+                    crate::text_render::TextWeight::Bold
+                } else {
+                    crate::text_render::TextWeight::Regular
+                },
+                false,
+                false,
+            );
+        }
+    }
+}
+
+fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
+    let Some((alt, destination)) = standalone_markdown_image(source) else {
+        return;
+    };
+    if rect.width() <= 1.0 || rect.height() <= 1.0 {
+        return;
+    }
+    let scale = f64::from(ctx.theme.text_scale);
+    let radius = 8.0 * scale;
+    let shape = vello::kurbo::RoundedRect::from_rect(rect, radius);
+    ctx.scene.fill(
+        vello::peniko::Fill::NonZero,
+        ctx.transform,
+        ctx.theme.tokens.colors.surfaces.raised,
+        None,
+        &shape,
+    );
+    if let Some(image) = ctx.image_store.and_then(|store| store.get(destination)) {
+        crate::image_store::paint_image_cover(ctx.scene, ctx.transform, rect, &image, radius);
+        ctx.scene.stroke(
+            &vello::kurbo::Stroke::new(scale),
+            ctx.transform,
+            ctx.theme.tokens.colors.border_standard,
+            None,
+            &shape,
+        );
+        return;
+    }
+    ctx.scene.stroke(
+        &vello::kurbo::Stroke::new(scale),
+        ctx.transform,
+        ctx.theme.tokens.colors.border_standard,
+        None,
+        &shape,
+    );
+    let icon_rect = Rect::new(
+        rect.x0 + 18.0 * scale,
+        rect.y0 + 18.0 * scale,
+        rect.x0 + 46.0 * scale,
+        rect.y0 + 46.0 * scale,
+    );
+    draw_icon(
+        ctx.scene,
+        ctx.transform,
+        icon_rect,
+        Icon::Image,
+        ctx.theme.tokens.colors.text_dim,
+        1.5 * scale,
+    );
+    let label = if alt.is_empty() { "Image" } else { alt };
+    ctx.text_renderer.draw_text_styled(
+        ctx.scene,
+        label,
+        16.0,
+        ctx.theme.tokens.colors.text_primary,
+        translated(
+            ctx.transform,
+            rect.x0 + 58.0 * scale,
+            rect.y0 + 18.0 * scale,
+        ),
+        Some((rect.width() - 76.0 * scale).max(1.0) as f32),
+        crate::text_render::TextWeight::Medium,
+        false,
+        false,
+    );
+    ctx.text_renderer.draw_text(
+        ctx.scene,
+        destination,
+        13.0,
+        ctx.theme.tokens.colors.text_dim,
+        translated(
+            ctx.transform,
+            rect.x0 + 58.0 * scale,
+            rect.y0 + 42.0 * scale,
+        ),
+        Some((rect.width() - 76.0 * scale).max(1.0) as f32),
+    );
+}
+
 /// One block's prefix glyph (bullet/ordinal/checkbox/code bar/divider
 /// rule) plus its text line. A free function, not a method — it only
 /// ever needs `b`, not `self`, which keeps `draw`'s per-block loop out
@@ -3299,6 +3844,9 @@ fn draw_block(
     formulas: &mut FormulaDrawCtx<'_>,
 ) {
     let line_rect = b.line.get_rect();
+    if transclusion_target(b).is_some() {
+        return;
+    }
     let scale = f64::from(ctx.theme.text_scale);
     let indent_px = f64::from(LIST_INDENT_STEP_PX) * f64::from(b.kind.indent()) * scale;
     let gutter = prefix_gutter_for(&b.kind) * scale;
@@ -3307,7 +3855,40 @@ fn draw_block(
     let _ = row_x0;
 
     match &b.kind {
-        BlockKind::Paragraph | BlockKind::Heading(_) => {}
+        BlockKind::Paragraph => {
+            if let Some(Some(preview)) = ctx.image_previews.get(idx).copied() {
+                draw_markdown_image(ctx, preview, b.text());
+            }
+        }
+        BlockKind::Heading(_) => {}
+        BlockKind::Quote => {
+            let background = Rect::new(
+                line_rect.x0 - gutter,
+                line_rect.y0 - 4.0 * scale,
+                line_rect.x1,
+                line_rect.y1 + 4.0 * scale,
+            );
+            ctx.scene.fill(
+                vello::peniko::Fill::NonZero,
+                ctx.transform,
+                ctx.theme.tokens.colors.surfaces.raised,
+                None,
+                &background,
+            );
+            let rule = Rect::new(
+                background.x0,
+                background.y0,
+                background.x0 + 3.0 * scale,
+                background.y1,
+            );
+            ctx.scene.fill(
+                vello::peniko::Fill::NonZero,
+                ctx.transform,
+                ctx.theme.tokens.colors.accent[5],
+                None,
+                &rule,
+            );
+        }
         BlockKind::Bullet { .. } => {
             draw_bullet_prefix(line_rect, prefix_x0, gutter, ctx);
             let _ = indent_px;
@@ -3337,6 +3918,21 @@ fn draw_block(
             draw_formula_run(idx, ctx, formulas);
             return;
         }
+        BlockKind::Table { visual } => {
+            if !visual {
+                b.line.draw(
+                    ctx.scene,
+                    ctx.transform,
+                    ctx.text_renderer,
+                    ctx.theme,
+                    ctx.presence,
+                );
+            }
+            if let Some(Some(preview)) = ctx.table_previews.get(idx).copied() {
+                draw_markdown_table(ctx, preview, b.text());
+            }
+            return;
+        }
         BlockKind::Divider => {
             let cy = f64::midpoint(line_rect.y0, line_rect.y1);
             let rule = Rect::new(line_rect.x0, cy - 0.5, line_rect.x1, cy + 0.5);
@@ -3357,6 +3953,92 @@ fn draw_block(
         ctx.text_renderer,
         ctx.theme,
         ctx.presence,
+    );
+}
+
+fn transclusion_target(block: &Block) -> Option<PageId> {
+    let text_len = block.text().len();
+    block.line.marks().iter().find_map(|span| match &span.mark {
+        Mark::Transclusion(id)
+            if !id.is_nil() && span.range.start == 0 && span.range.end == text_len =>
+        {
+            Some(*id)
+        }
+        _ => None,
+    })
+}
+
+fn transclusion_action_target(id: PageId) -> String {
+    format!("notes.transclusion:{id}")
+}
+
+fn page_link_action_target(id: PageId) -> String {
+    format!("notes.page-link:{id}")
+}
+
+fn external_link_action_target(url: &str) -> String {
+    format!("notes.external-link:{url}")
+}
+
+fn draw_transclusion_card(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    preview: Option<&TransclusionPreview>,
+) {
+    let tokens = &theme.tokens;
+    let card =
+        vello::kurbo::RoundedRect::from_rect(rect.inflate(-1.0, -1.0), f64::from(tokens.radii.md));
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        tokens.colors.surfaces.raised,
+        None,
+        &card,
+    );
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.0),
+        transform,
+        tokens.colors.border_standard,
+        None,
+        &card,
+    );
+    let (title, excerpt) = preview.map_or(
+        ("Unavailable page", "The referenced page was removed."),
+        |p| (p.title.as_str(), p.excerpt.as_str()),
+    );
+    let trim = |value: &str, limit: usize| {
+        let mut out = value.chars().take(limit).collect::<String>();
+        if value.chars().nth(limit).is_some() {
+            out.push('…');
+        }
+        out
+    };
+    text_renderer.draw_text(
+        scene,
+        &trim(title, 72),
+        15.0,
+        tokens.colors.text_primary,
+        translated(transform, rect.x0 + 16.0, rect.y0 + 16.0),
+        None,
+    );
+    text_renderer.draw_text(
+        scene,
+        &trim(excerpt, 128),
+        13.0,
+        tokens.colors.text_dim,
+        translated(transform, rect.x0 + 16.0, rect.y0 + 45.0),
+        None,
+    );
+    text_renderer.draw_text(
+        scene,
+        "Embedded page · Open",
+        12.0,
+        theme.accent_primary,
+        translated(transform, rect.x0 + 16.0, rect.y1 - 24.0),
+        None,
     );
 }
 
@@ -3684,8 +4366,11 @@ impl Widget for BlockEditor {
             .collect();
         let is_formula_end = compute_is_formula_end(&self.blocks);
         for (i, b) in self.blocks.iter_mut().enumerate() {
-            b.line
-                .set_wrap(self.wrap_lines && !matches!(b.kind, BlockKind::CodeBlock { .. }));
+            b.line.set_wrap(
+                self.wrap_lines
+                    && !matches!(b.kind, BlockKind::CodeBlock { .. })
+                    && !matches!(b.kind, BlockKind::Table { visual: true }),
+            );
             let n = b.line.build_layout(taffy, theme, node_map);
             // Per-block top margin (not the parent's `gap`) so it can be
             // zeroed for soft-break continuations, the first block, and
@@ -3701,7 +4386,32 @@ impl Widget for BlockEditor {
                 8.0 * theme.text_scale
             };
             let block_is_formula_end = is_formula_end.get(i).copied().unwrap_or(false);
-            if top_margin > 0.0 || block_is_formula_end {
+            let is_transclusion = transclusion_target(b).is_some();
+            let is_image = matches!(b.kind, BlockKind::Paragraph)
+                && standalone_markdown_image(b.text()).is_some();
+            let table_height = if let BlockKind::Table { visual } = b.kind {
+                let rows = markdown_table_rows(b.text())
+                    .into_iter()
+                    .filter(|row| !markdown_table_separator(row))
+                    .count()
+                    .clamp(1, 12) as f32;
+                Some(
+                    rows * TABLE_ROW_HEIGHT as f32
+                        + if visual {
+                            12.0
+                        } else {
+                            markdown_table_source_height(b.text())
+                        },
+                )
+            } else {
+                None
+            };
+            if top_margin > 0.0
+                || block_is_formula_end
+                || is_transclusion
+                || is_image
+                || table_height.is_some()
+            {
                 let existing = taffy.style(n).cloned().unwrap_or_default();
                 let mut s = existing;
                 s.margin = taffy::Rect {
@@ -3719,6 +4429,15 @@ impl Widget for BlockEditor {
                         FORMULA_BLOCK_MIN_HEIGHT
                     };
                     s.min_size.height = length(min_height);
+                }
+                if is_transclusion {
+                    s.min_size.height = length(TRANSCLUSION_MIN_HEIGHT * theme.text_scale);
+                }
+                if is_image {
+                    s.min_size.height = length((IMAGE_PREVIEW_HEIGHT + 34.0) * theme.text_scale);
+                }
+                if let Some(height) = table_height {
+                    s.min_size.height = length(height * theme.text_scale);
                 }
                 let _ = taffy.set_style(n, s);
             }
@@ -3758,7 +4477,10 @@ impl Widget for BlockEditor {
         // so any internal re-ordering taffy applies is tolerated.
         let children = taffy.children(node).unwrap_or_default();
         self.formula_preview_rects = vec![None; self.blocks.len()];
+        self.table_preview_rects = vec![None; self.blocks.len()];
+        self.image_preview_rects = vec![None; self.blocks.len()];
         self.formula_chrome = vec![None; self.blocks.len()];
+        self.transclusion_rects = vec![None; self.blocks.len()];
         let is_formula_start = compute_is_formula_start(&self.blocks);
         let is_formula_end = compute_is_formula_end(&self.blocks);
         for (index, (b, child_node)) in self.blocks.iter_mut().zip(children.iter()).enumerate() {
@@ -3769,6 +4491,55 @@ impl Widget for BlockEditor {
             let indent_px =
                 f64::from(LIST_INDENT_STEP_PX) * f64::from(b.kind.indent()) * self.text_scale;
             let original = b.line.get_rect();
+            if let BlockKind::Table { visual } = b.kind {
+                let source_bottom = if visual {
+                    original.y0
+                } else {
+                    (original.y0
+                        + f64::from(markdown_table_source_height(b.text())) * self.text_scale)
+                        .min(original.y1)
+                };
+                if let Some(slot) = self.table_preview_rects.get_mut(index) {
+                    *slot = Some(Rect::new(
+                        original.x0,
+                        source_bottom + 6.0 * self.text_scale,
+                        original.x1,
+                        original.y1,
+                    ));
+                }
+                b.line.apply_layout_external(Rect::new(
+                    original.x0,
+                    original.y0,
+                    original.x1,
+                    source_bottom,
+                ));
+                continue;
+            }
+            if let Some(target) = transclusion_target(b)
+                && let Some(slot) = self.transclusion_rects.get_mut(index)
+            {
+                *slot = Some((original, target));
+            }
+            if matches!(b.kind, BlockKind::Paragraph)
+                && standalone_markdown_image(b.text()).is_some()
+            {
+                let source_bottom = (original.y0 + 28.0 * self.text_scale).min(original.y1);
+                if let Some(slot) = self.image_preview_rects.get_mut(index) {
+                    *slot = Some(Rect::new(
+                        original.x0,
+                        source_bottom + 6.0 * self.text_scale,
+                        original.x1,
+                        original.y1,
+                    ));
+                }
+                b.line.apply_layout_external(Rect::new(
+                    original.x0,
+                    original.y0,
+                    original.x1,
+                    source_bottom,
+                ));
+                continue;
+            }
             let descriptor = formula_descriptor(&b.kind);
             let starts_formula = is_formula_start.get(index).copied().unwrap_or(false);
             let ends_formula = is_formula_end.get(index).copied().unwrap_or(false);
@@ -3870,6 +4641,7 @@ impl Widget for BlockEditor {
                 _ => None,
             })
             .collect();
+        apply_syntax_colors(&mut self.blocks, &code_languages);
         let mut formula_runs: Vec<Option<FormulaRunPreview>> = vec![None; self.blocks.len()];
         let mut formula_index = 0usize;
         while formula_index < self.blocks.len() {
@@ -3897,6 +4669,32 @@ impl Widget for BlockEditor {
             formula_index = end.saturating_add(1);
         }
 
+        self.code_copy_hits.clear();
+        let mut code_index = 0usize;
+        while code_index < code_languages.len() {
+            let Some(Some(_)) = code_languages.get(code_index) else {
+                code_index = code_index.saturating_add(1);
+                continue;
+            };
+            let mut end = code_index;
+            while code_languages.get(end.saturating_add(1)) == code_languages.get(code_index) {
+                end = end.saturating_add(1);
+            }
+            if formula_runs.get(code_index).is_none_or(Option::is_none)
+                && let Some(line) = line_rects.get(code_index)
+            {
+                let size = 22.0 * self.text_scale;
+                let rect = Rect::new(
+                    line.x1 - size - 4.0 * self.text_scale,
+                    line.y0 + 2.0 * self.text_scale,
+                    line.x1 - 4.0 * self.text_scale,
+                    line.y0 + 2.0 * self.text_scale + size,
+                );
+                self.code_copy_hits.push((rect, code_index, end));
+            }
+            code_index = end.saturating_add(1);
+        }
+
         let mut ctx = BlockDrawCtx {
             scene,
             text_renderer,
@@ -3905,6 +4703,9 @@ impl Widget for BlockEditor {
             presence,
             line_rects: line_rects.as_slice(),
             ordinals: ordinals.as_slice(),
+            table_previews: self.table_preview_rects.as_slice(),
+            image_previews: self.image_preview_rects.as_slice(),
+            image_store: self.image_store.as_ref(),
         };
         let mut formulas = FormulaDrawCtx {
             runs: formula_runs.as_slice(),
@@ -3915,8 +4716,65 @@ impl Widget for BlockEditor {
             focus: self.visual_formula_focus,
         };
 
+        for (rect, id) in self.transclusion_rects.iter().flatten() {
+            draw_transclusion_card(
+                ctx.scene,
+                ctx.transform,
+                ctx.text_renderer,
+                ctx.theme,
+                *rect,
+                self.transclusion_previews.get(id),
+            );
+        }
+
         for (idx, b) in self.blocks.iter_mut().enumerate() {
             draw_block(b, idx, &mut ctx, &mut formulas);
+        }
+
+        // Compact language + copy chrome overlays the upper-right corner of
+        // each fenced run, matching established editors while leaving source
+        // selection and CRDT text untouched.
+        for (rect, start, _) in &self.code_copy_hits {
+            let hovered = rect.contains(self.last_mouse_pos);
+            let copied = self.copied_code_start == Some(*start);
+            if hovered || copied {
+                ctx.scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    ctx.transform,
+                    ctx.theme.tokens.colors.surface_white_10,
+                    None,
+                    &vello::kurbo::RoundedRect::from_rect(*rect, 4.0 * self.text_scale),
+                );
+            }
+            draw_icon(
+                ctx.scene,
+                ctx.transform,
+                rect.inflate(-4.0 * self.text_scale, -4.0 * self.text_scale),
+                if copied { Icon::Check } else { Icon::Copy },
+                ctx.theme.tokens.colors.text_dim,
+                1.5 * self.text_scale,
+            );
+            let language =
+                code_languages
+                    .get(*start)
+                    .and_then(Option::as_ref)
+                    .map_or(
+                        "Code",
+                        |value| if value.is_empty() { "Code" } else { value },
+                    );
+            let (label_width, _) = ctx.text_renderer.measure(language, 11.0, None);
+            ctx.text_renderer.draw_text(
+                ctx.scene,
+                language,
+                11.0,
+                ctx.theme.tokens.colors.text_dim,
+                ctx.transform
+                    * Affine::translate((
+                        rect.x0 - f64::from(label_width) - 8.0 * self.text_scale,
+                        rect.y0 + 4.0 * self.text_scale,
+                    )),
+                None,
+            );
         }
 
         // Runs AFTER the block loop: pixel_x_for_byte needs this frame's
@@ -4093,7 +4951,28 @@ impl Widget for BlockEditor {
         self.rect
     }
 
+    fn needs_animation_frame(&self) -> bool {
+        self.image_store
+            .as_ref()
+            .is_some_and(|store| !store.is_idle())
+    }
+
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self
+            .transclusion_rects
+            .iter()
+            .flatten()
+            .any(|(rect, _)| rect.contains(point))
+        {
+            return Some(winit::window::CursorIcon::Pointer);
+        }
+        if self
+            .live_link_hits
+            .iter()
+            .any(|(rect, _)| rect.contains(point))
+        {
+            return Some(winit::window::CursorIcon::Pointer);
+        }
         if self.block_drag.is_some() {
             return Some(winit::window::CursorIcon::Grabbing);
         }
@@ -4105,7 +4984,11 @@ impl Widget for BlockEditor {
         }
         if self.formula_chrome.iter().flatten().any(|chrome| {
             chrome.source_button.contains(point) || chrome.visual_button.contains(point)
-        }) {
+        }) || self
+            .code_copy_hits
+            .iter()
+            .any(|(rect, _, _)| rect.contains(point))
+        {
             return Some(winit::window::CursorIcon::Pointer);
         }
         if self.rect.contains(point) {
@@ -4189,6 +5072,27 @@ impl Widget for BlockEditor {
                 )
             })
             .collect();
+        children.extend(
+            self.code_copy_hits
+                .iter()
+                .filter_map(|(bounds, start, end)| {
+                    let run = self.blocks.get(*start..=*end)?;
+                    let language = run.first().and_then(|block| match &block.kind {
+                        BlockKind::CodeBlock { lang } => lang.as_deref(),
+                        _ => None,
+                    });
+                    Some(
+                        AccessNode::new(Role::Button)
+                            .with_name(language.map_or_else(
+                                || "Copy code".to_string(),
+                                |lang| format!("Copy {lang} code"),
+                            ))
+                            .with_action_target(Self::code_copy_target(*start, *end))
+                            .with_bounds(*bounds)
+                            .with_state(AccessState::new().focusable(true)),
+                    )
+                }),
+        );
         let total = self.blocks.len();
         children.extend(self.blocks.iter().enumerate().map(|(index, block)| {
             let up_disabled = index == 0;
@@ -4197,32 +5101,133 @@ impl Widget for BlockEditor {
             let bounds = self
                 .block_drag_handle_rect(index)
                 .unwrap_or_else(|| block.line.get_rect());
+            let mut block_children = vec![
+                AccessNode::new(Role::Button)
+                    .with_name("Move block up")
+                    .with_action_target(Self::block_move_target(&block.id, "up"))
+                    .with_bounds(bounds)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(!up_disabled)
+                            .disabled(up_disabled),
+                    ),
+                AccessNode::new(Role::Button)
+                    .with_name("Move block down")
+                    .with_action_target(Self::block_move_target(&block.id, "down"))
+                    .with_bounds(bounds)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(!down_disabled)
+                            .disabled(down_disabled),
+                    ),
+            ];
+            if let Some(target) = transclusion_target(block) {
+                let name = self
+                    .transclusion_previews
+                    .get(&target)
+                    .map_or("embedded page", |preview| preview.title.as_str());
+                let card_bounds = self
+                    .transclusion_rects
+                    .get(index)
+                    .and_then(|entry| *entry)
+                    .map_or_else(|| block.line.get_rect(), |(rect, _)| rect);
+                block_children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name(format!("Open embedded page: {name}"))
+                        .with_description("Live preview of a linked page")
+                        .with_action_target(transclusion_action_target(target))
+                        .with_bounds(card_bounds)
+                        .with_state(AccessState::new().focusable(true)),
+                );
+            }
+            if matches!(block.kind, BlockKind::Table { .. }) {
+                let table_bounds = self
+                    .table_preview_rects
+                    .get(index)
+                    .and_then(|entry| *entry)
+                    .unwrap_or_else(|| block.line.get_rect());
+                let rows = markdown_table_rows(block.text())
+                    .into_iter()
+                    .filter(|row| !markdown_table_separator(row))
+                    .enumerate()
+                    .map(|(row_index, row)| {
+                        let cells = row
+                            .into_iter()
+                            .enumerate()
+                            .map(|(column_index, value)| {
+                                AccessNode::new(Role::Cell)
+                                    .with_name(if row_index == 0 {
+                                        format!("Column {}", column_index.saturating_add(1))
+                                    } else {
+                                        format!(
+                                            "Cell {}, {}",
+                                            row_index,
+                                            column_index.saturating_add(1)
+                                        )
+                                    })
+                                    .with_value(value)
+                            })
+                            .collect();
+                        AccessNode::new(Role::Row)
+                            .with_name(if row_index == 0 {
+                                "Header row".to_string()
+                            } else {
+                                format!("Row {row_index}")
+                            })
+                            .with_children(cells)
+                    })
+                    .collect();
+                block_children.push(
+                    AccessNode::new(Role::Table)
+                        .with_name("Markdown table")
+                        .with_value(block.text())
+                        .with_bounds(table_bounds)
+                        .with_children(rows),
+                );
+            }
+            if let Some((alt, destination)) = standalone_markdown_image(block.text()) {
+                let bounds = self
+                    .image_preview_rects
+                    .get(index)
+                    .and_then(|entry| *entry)
+                    .unwrap_or_else(|| block.line.get_rect());
+                block_children.push(
+                    AccessNode::new(Role::Image)
+                        .with_name(if alt.is_empty() { "Image" } else { alt })
+                        .with_description(destination)
+                        .with_bounds(bounds),
+                );
+            }
+            for span in block.line.marks() {
+                let (name, target) = match &span.mark {
+                    Mark::Link(id) if !id.is_nil() => {
+                        ("Open linked page".to_string(), page_link_action_target(*id))
+                    }
+                    Mark::ExternalLink(url) => (
+                        "Open external link".to_string(),
+                        external_link_action_target(url),
+                    ),
+                    _ => continue,
+                };
+                block_children.push(
+                    AccessNode::new(Role::Link)
+                        .with_name(name)
+                        .with_value(block.text().get(span.range.clone()).unwrap_or_default())
+                        .with_action_target(target)
+                        .with_bounds(block.line.get_rect())
+                        .with_state(AccessState::new().focusable(true)),
+                );
+            }
             AccessNode::new(Role::Group)
-                .with_name(format!("Block {position}"))
+                .with_name(format!(
+                    "{} block {position}",
+                    accessible_kind_name(&block.kind)
+                ))
                 .with_semantic_key(format!("notes.block:{}", block.id))
                 .with_hashed_key(format!("notes.block:group:{}", block.id))
                 .with_position(position, total)
                 .with_bounds(block.line.get_rect())
-                .with_children(vec![
-                    AccessNode::new(Role::Button)
-                        .with_name("Move block up")
-                        .with_action_target(Self::block_move_target(&block.id, "up"))
-                        .with_bounds(bounds)
-                        .with_state(
-                            AccessState::new()
-                                .focusable(!up_disabled)
-                                .disabled(up_disabled),
-                        ),
-                    AccessNode::new(Role::Button)
-                        .with_name("Move block down")
-                        .with_action_target(Self::block_move_target(&block.id, "down"))
-                        .with_bounds(bounds)
-                        .with_state(
-                            AccessState::new()
-                                .focusable(!down_disabled)
-                                .disabled(down_disabled),
-                        ),
-                ])
+                .with_children(block_children)
         }));
         Some(
             AccessNode::new(Role::Document)
@@ -4246,7 +5251,34 @@ impl Widget for BlockEditor {
         _state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
-        matches!(action, crate::a11y::Action::Activate) && self.move_block_from_semantics(target)
+        if !matches!(action, crate::a11y::Action::Activate) {
+            return false;
+        }
+        if let Some(id) = target
+            .strip_prefix("notes.transclusion:")
+            .and_then(|id| id.parse::<PageId>().ok())
+        {
+            self.pending_transclusion_opens.push(id);
+            self.dirty = true;
+            return true;
+        }
+        if let Some(id) = target
+            .strip_prefix("notes.page-link:")
+            .and_then(|id| id.parse::<PageId>().ok())
+        {
+            self.pending_transclusion_opens.push(id);
+            self.dirty = true;
+            return true;
+        }
+        if let Some(url) = target.strip_prefix("notes.external-link:") {
+            self.pending_external_link_opens.push(url.to_string());
+            self.dirty = true;
+            return true;
+        }
+        if let Some((start, end)) = Self::parse_code_copy_target(target) {
+            return self.copy_code_run(start, end);
+        }
+        self.move_block_from_semantics(target)
     }
 
     fn needs_redraw(&self) -> bool {
@@ -4634,6 +5666,17 @@ impl BlockEditor {
         else {
             return false;
         };
+        if let Some((_, start, end)) = self
+            .code_copy_hits
+            .iter()
+            .copied()
+            .find(|(rect, _, _)| rect.contains(self.last_mouse_pos))
+        {
+            if self.copy_code_run(start, end) {
+                *ctx.handled = true;
+                return true;
+            }
+        }
         if self.handle_popover_pointer_press(ctx) || self.begin_block_drag_at_handle(ctx) {
             return true;
         }
@@ -4924,6 +5967,8 @@ impl BlockEditor {
                 let caret = b.line.cursor_pos().min(now.len());
                 if now.get(..caret).is_some_and(is_heading_prefix) {
                     let _ = self.try_promote_to_heading(focused_idx);
+                } else if now.get(..caret) == Some("> ") {
+                    let _ = self.try_promote_to_quote(focused_idx);
                 }
             }
         }
@@ -4934,9 +5979,17 @@ impl BlockEditor {
     fn apply_signal(&mut self, idx: usize, sig: &LineSignal) {
         match sig {
             LineSignal::Enter { split_at } => {
-                self.split_at_cursor(idx, *split_at);
+                if self.exit_empty_outline_block(idx) {
+                    return;
+                }
+                if !self.insert_table_newline(idx, *split_at) {
+                    self.split_at_cursor(idx, *split_at);
+                }
             }
             LineSignal::SoftNewline { split_at } => {
+                if self.insert_table_newline(idx, *split_at) {
+                    return;
+                }
                 // Same as Enter, but marks the new block soft_break.
                 self.split_at_cursor(idx, *split_at);
                 let new_idx = idx.saturating_add(1);
@@ -4991,6 +6044,53 @@ impl BlockEditor {
             }
         }
     }
+
+    fn insert_table_newline(&mut self, idx: usize, split_at: usize) -> bool {
+        let Some(block) = self.blocks.get_mut(idx) else {
+            return false;
+        };
+        if !matches!(block.kind, BlockKind::Table { visual: false }) {
+            return false;
+        }
+        let source = block.text();
+        let split_at = clamp_char_boundary(source, split_at.min(source.len()));
+        let mut updated = String::with_capacity(source.len().saturating_add(1));
+        updated.push_str(&source[..split_at]);
+        updated.push('\n');
+        updated.push_str(&source[split_at..]);
+        block.line.set_text(&updated);
+        block.line.set_cursor_pos(split_at.saturating_add(1));
+        self.dirty = true;
+        self.edit_pending = true;
+        true
+    }
+
+    fn exit_empty_outline_block(&mut self, idx: usize) -> bool {
+        let Some(block) = self.blocks.get(idx) else {
+            return false;
+        };
+        if !block.text().is_empty() {
+            return false;
+        }
+        let next = match &block.kind {
+            BlockKind::Bullet { indent } if *indent > 0 => BlockKind::Bullet {
+                indent: indent.saturating_sub(1),
+            },
+            BlockKind::Numbered { indent } if *indent > 0 => BlockKind::Numbered {
+                indent: indent.saturating_sub(1),
+            },
+            BlockKind::Checklist { indent, .. } if *indent > 0 => BlockKind::Checklist {
+                indent: indent.saturating_sub(1),
+                done: false,
+            },
+            BlockKind::Bullet { .. }
+            | BlockKind::Numbered { .. }
+            | BlockKind::Checklist { .. }
+            | BlockKind::Quote => BlockKind::Paragraph,
+            _ => return false,
+        };
+        self.try_convert_to(idx, next)
+    }
 }
 
 #[cfg(test)]
@@ -5021,6 +6121,73 @@ mod tests {
     }
 
     #[test]
+    fn markdown_table_exposes_rows_and_cells_to_accessibility() {
+        use crate::a11y::Role;
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::table(
+            "| Name | Status |\n| --- | --- |\n| Search | Done |",
+            false,
+        )]);
+        let document = Widget::accessibility(&editor).expect("document semantics");
+        let table = document.children[0]
+            .children
+            .iter()
+            .find(|node| node.role == Role::Table)
+            .expect("table semantics");
+        assert_eq!(table.children.len(), 2);
+        assert!(table.children.iter().all(|row| row.role == Role::Row));
+        assert!(
+            table
+                .children
+                .iter()
+                .flat_map(|row| &row.children)
+                .all(|cell| cell.role == Role::Cell)
+        );
+    }
+
+    #[test]
+    fn standalone_markdown_image_exposes_alt_text() {
+        use crate::a11y::Role;
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::paragraph("![Architecture](diagram.png)")]);
+        let document = Widget::accessibility(&editor).expect("document semantics");
+        let image = document.children[0]
+            .children
+            .iter()
+            .find(|node| node.role == Role::Image)
+            .expect("image semantics");
+        assert_eq!(image.name.as_deref(), Some("Architecture"));
+        assert_eq!(image.description.as_deref(), Some("diagram.png"));
+    }
+
+    #[test]
+    fn enter_on_empty_top_level_list_exits_to_paragraph() {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::checklist(0, false, "")]);
+        editor.apply_signal(0, &LineSignal::Enter { split_at: 0 });
+        assert_eq!(editor.blocks().len(), 1);
+        assert!(matches!(editor.blocks()[0].kind, BlockKind::Paragraph));
+    }
+
+    #[test]
+    fn enter_on_empty_nested_list_outdents_before_exiting() {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::bullet(2, "")]);
+        editor.apply_signal(0, &LineSignal::Enter { split_at: 0 });
+        assert!(matches!(
+            editor.blocks()[0].kind,
+            BlockKind::Bullet { indent: 1 }
+        ));
+        editor.apply_signal(0, &LineSignal::Enter { split_at: 0 });
+        assert!(matches!(
+            editor.blocks()[0].kind,
+            BlockKind::Bullet { indent: 0 }
+        ));
+        editor.apply_signal(0, &LineSignal::Enter { split_at: 0 });
+        assert!(matches!(editor.blocks()[0].kind, BlockKind::Paragraph));
+    }
+
+    #[test]
     fn accessible_block_reorder_controls_are_stable_and_action_owned() {
         let mut editor = BlockEditor::new();
         editor.set_blocks(vec![Block::paragraph("first"), Block::paragraph("second")]);
@@ -5031,7 +6198,7 @@ mod tests {
         let first = node
             .children
             .iter()
-            .find(|child| child.name.as_deref() == Some("Block 1"))
+            .find(|child| child.name.as_deref() == Some("Paragraph block 1"))
             .expect("first block group");
         let first_group_key = first.key.expect("block group has durable AT identity");
         assert!(first.children[0].state.disabled, "top block cannot move up");
@@ -5592,6 +6759,54 @@ mod tests {
     }
 
     #[test]
+    fn code_copy_targets_are_bounded_and_copy_complete_runs() {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![
+            Block::code_block(Some("rust".into()), "let a = 1;"),
+            Block::code_block(Some("rust".into()), "let b = 2;"),
+            Block::paragraph("outside"),
+        ]);
+
+        let target = BlockEditor::code_copy_target(0, 1);
+        assert_eq!(BlockEditor::parse_code_copy_target(&target), Some((0, 1)));
+        assert!(editor.copy_code_run(0, 1));
+        assert_eq!(editor.copied_code_start, Some(0));
+        assert!(!editor.copy_code_run(0, 2), "a run cannot include prose");
+        assert_eq!(
+            BlockEditor::parse_code_copy_target("notes.code-copy:2:1"),
+            None
+        );
+    }
+
+    #[test]
+    fn fenced_languages_get_ephemeral_syntax_roles() {
+        let mut blocks = vec![Block::code_block(
+            Some("rust".into()),
+            "let answer = 42; // documented",
+        )];
+        apply_syntax_colors(&mut blocks, &[Some("rust".into())]);
+        let colors = blocks[0].line.transient_colors();
+        assert!(
+            colors
+                .iter()
+                .any(|span| span.role == TransientColorRole::Keyword),
+            "the Rust grammar should classify `let`"
+        );
+        assert!(
+            colors
+                .iter()
+                .any(|span| span.role == TransientColorRole::Number),
+            "numeric literals should receive the theme's semantic number role"
+        );
+        assert!(
+            colors
+                .iter()
+                .any(|span| span.role == TransientColorRole::Comment),
+            "comments should remain distinct from executable code"
+        );
+    }
+
+    #[test]
     fn high_text_checklist_and_code_rows_leave_full_scaled_line_bands() {
         let mut editor = BlockEditor::new();
         editor.set_blocks(vec![
@@ -5780,6 +6995,18 @@ mod tests {
         assert!(matches!(e.blocks()[0].kind, BlockKind::Heading(1)));
         assert_eq!(e.blocks()[0].text(), "x");
         assert_eq!(e.blocks()[0].line.cursor_pos(), 0);
+    }
+
+    #[test]
+    fn promote_to_quote_strips_marker_and_keeps_typing_focus() {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::paragraph("> ")]);
+        editor.focus_block(0, CursorPlacement::End);
+
+        assert!(editor.try_promote_to_quote(0));
+        assert!(matches!(editor.blocks()[0].kind, BlockKind::Quote));
+        assert_eq!(editor.blocks()[0].text(), "");
+        assert!(editor.blocks()[0].line.is_focused());
     }
 
     #[test]

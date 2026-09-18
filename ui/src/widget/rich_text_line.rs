@@ -27,6 +27,24 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::marks::{self, Mark, MarkSegment, MarkSpan, PageId};
 use crate::widget::{TextInput, Widget};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransientColorRole {
+    Keyword,
+    Type,
+    Function,
+    String,
+    Number,
+    Comment,
+    Macro,
+    Operator,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransientColorSpan {
+    pub range: std::ops::Range<usize>,
+    pub role: TransientColorRole,
+}
+
 /// Emitted when a key would carry the edit out of the line itself; the
 /// parent (a `BlockEditor`) drains these via [`RichTextLine::take_signal`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +105,9 @@ pub struct RichTextLine {
     wrap: bool,
     /// Kept sorted by `range.start`.
     marks: Vec<MarkSpan>,
+    /// Paint-only semantic colours (for example fenced-code syntax). These
+    /// never enter Automerge or the Markdown mark model.
+    transient_colors: Vec<TransientColorSpan>,
     /// Formatting-only edits must notify the owning document just like typing.
     marks_dirty: bool,
     /// Drained once `handle_event` observes a text-input edit.
@@ -114,6 +135,7 @@ impl RichTextLine {
             font_size: DEFAULT_FONT_SIZE,
             wrap: false,
             marks: Vec::new(),
+            transient_colors: Vec::new(),
             marks_dirty: false,
             pending_marks: Vec::new(),
             prev_text: String::new(),
@@ -294,6 +316,15 @@ impl RichTextLine {
         self.marks.sort_by_key(|s| s.range.start);
     }
 
+    pub fn set_transient_colors(&mut self, colors: Vec<TransientColorSpan>) {
+        self.transient_colors = colors;
+    }
+
+    #[doc(hidden)]
+    pub fn transient_colors(&self) -> &[TransientColorSpan] {
+        &self.transient_colors
+    }
+
     pub fn add_mark(&mut self, span: MarkSpan) {
         self.marks.push(span);
         self.marks.sort_by_key(|s| s.range.start);
@@ -367,7 +398,10 @@ impl RichTextLine {
         let mut any_hit: Option<&Mark> = None;
         for s in &self.marks {
             if s.range.start <= byte && byte < s.range.end {
-                if matches!(s.mark, Mark::Link(_)) {
+                if matches!(
+                    s.mark,
+                    Mark::Link(_) | Mark::Transclusion(_) | Mark::ExternalLink(_)
+                ) {
                     link_hit = Some(&s.mark);
                 }
                 if any_hit.is_none() {
@@ -428,6 +462,44 @@ impl RichTextLine {
         {
             self.signal = Some(LineSignal::LinkOpen { open_at });
         }
+    }
+
+    fn draw_wrapped_mark_decorations(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        for span in &self.marks {
+            let (color, strike) = match span.mark {
+                Mark::Link(_) | Mark::Transclusion(_) | Mark::ExternalLink(_) => {
+                    (theme.tokens.colors.accent[5], false)
+                }
+                Mark::Underline => (theme.tokens.colors.text_primary, false),
+                Mark::Strikethrough => (theme.tokens.colors.text_primary, true),
+                _ => continue,
+            };
+            for bounds in self
+                .inner
+                .selection_rects(theme, span.range.start, span.range.end)
+            {
+                let y = if strike {
+                    bounds.y0 + bounds.height() * 0.52
+                } else {
+                    bounds.y1 - 1.0
+                };
+                let rule = Rect::new(bounds.x0, y - 1.0, bounds.x1, y + 1.0);
+                scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &rule);
+            }
+        }
+    }
+
+    pub fn mark_rects(&self, theme: &Theme, range: std::ops::Range<usize>) -> Vec<Rect> {
+        if self.wrap {
+            return self.inner.selection_rects(theme, range.start, range.end);
+        }
+        let x0 = self.pixel_x_for_byte(theme, range.start);
+        let x1 = self.pixel_x_for_byte(theme, range.end);
+        let rect = self.get_rect();
+        (x1 > x0)
+            .then_some(Rect::new(x0, rect.y0, x1, rect.y1))
+            .into_iter()
+            .collect()
     }
 }
 
@@ -523,13 +595,18 @@ impl Widget for RichTextLine {
         self.inner
             .draw(scene, transform, text_renderer, theme, presence);
 
-        if self.marks.is_empty() {
+        if self.marks.is_empty() && self.transient_colors.is_empty() {
             return;
         }
 
         let text = self.inner.value().to_string();
         let segments = marks::segments_for(text.len(), &self.marks);
-        if segments.is_empty() {
+        if segments.is_empty() && self.transient_colors.is_empty() {
+            return;
+        }
+
+        if self.wrap {
+            self.draw_wrapped_mark_decorations(scene, transform, theme);
             return;
         }
 
@@ -569,6 +646,9 @@ impl Widget for RichTextLine {
             line_height,
             text_size,
         };
+        for span in &self.transient_colors {
+            paint_transient_color(scene, transform, text_renderer, theme, span, &ctx);
+        }
         for seg in &segments {
             paint_mark_segment(scene, transform, text_renderer, theme, seg, &ctx);
         }
@@ -735,6 +815,47 @@ impl Widget for RichTextLine {
     }
 }
 
+fn paint_transient_color(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    span: &TransientColorSpan,
+    ctx: &MarkDrawCtx<'_>,
+) {
+    let end = span.range.end.min(ctx.text.len());
+    let Some(slice) = ctx.text.get(span.range.start..end) else {
+        return;
+    };
+    if slice.is_empty() {
+        return;
+    }
+    let x_offset = ctx.xs.get(span.range.start).copied().unwrap_or(0.0);
+    let x = ctx.rect.x0 + ctx.pad + x_offset - ctx.scroll_x;
+    let colors = &theme.tokens.colors;
+    let color = match span.role {
+        TransientColorRole::Keyword => colors.accent[6],
+        TransientColorRole::Type => colors.accent[7],
+        TransientColorRole::Function => colors.semantic.info,
+        TransientColorRole::String => colors.semantic.success,
+        TransientColorRole::Number => colors.semantic.warning,
+        TransientColorRole::Comment => colors.text_dim,
+        TransientColorRole::Macro => colors.semantic.danger,
+        TransientColorRole::Operator => colors.neutral[7],
+    };
+    text_renderer.draw_text_styled(
+        scene,
+        slice,
+        ctx.text_size,
+        color,
+        translated(transform, x, ctx.text_y),
+        None,
+        TextWeight::Regular,
+        false,
+        true,
+    );
+}
+
 /// Paints one mark segment's overpaint (code chip, link/underline/strike
 /// rules, and restyled glyphs) inside the clip layer `draw` already pushed.
 /// A pure function of its inputs — no `self` needed.
@@ -777,13 +898,14 @@ fn paint_mark_segment(
         || seg.code
         || seg.underline
         || seg.strikethrough
-        || seg.link.is_some();
+        || seg.link.is_some()
+        || seg.external_link;
     if !needs_overpaint {
         return;
     }
 
     let tokens = &theme.tokens;
-    let color = if seg.link.is_some() || seg.code {
+    let color = if seg.link.is_some() || seg.external_link || seg.code {
         tokens.colors.accent[5]
     } else {
         tokens.colors.text_primary
@@ -844,10 +966,10 @@ fn paint_segment_decorations(
         );
     }
 
-    if seg.link.is_some() {
+    if seg.link.is_some() || seg.external_link {
         let underline = Rect::new(
             x,
-            ctx.text_y + ctx.line_height - 2.0,
+            ctx.text_y + ctx.line_height - 3.0,
             sans_end_x,
             ctx.text_y + ctx.line_height - 1.0,
         );
@@ -957,7 +1079,7 @@ pub fn chip_mono_width(text_renderer: &mut TextRenderer, slice: &str, size: f32)
 /// the page-navigation handler.
 pub fn link_at_byte(marks_list: &[MarkSpan], byte: usize) -> Option<PageId> {
     for s in marks_list {
-        if let Mark::Link(id) = &s.mark
+        if let Mark::Link(id) | Mark::Transclusion(id) = &s.mark
             && s.range.start <= byte
             && byte < s.range.end
         {
