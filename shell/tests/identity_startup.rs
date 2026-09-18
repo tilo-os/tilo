@@ -18,7 +18,7 @@ fn provision_identity_fails_closed_without_replacing_metadata_when_secret_servic
     let root = TempDir::new().expect("test root");
     let config = root.path().join("config");
     let bin = root.path().join("bin");
-    fs::create_dir_all(config.join("qos/identity")).expect("identity directory");
+    fs::create_dir_all(config.join("tilo/identity")).expect("identity directory");
     fs::create_dir_all(&bin).expect("fake PATH");
     let secret_tool = bin.join("secret-tool");
     fs::write(&secret_tool, b"#!/bin/sh\nexit 1\n").expect("fake secret-tool");
@@ -43,7 +43,7 @@ fn provision_identity_fails_closed_without_replacing_metadata_when_secret_servic
             "locator": "00".repeat(32),
         },
     });
-    let identity = config.join("qos/identity/primary.json");
+    let identity = config.join("tilo/identity/primary.json");
     let original = serde_json::to_vec_pretty(&metadata).expect("metadata JSON");
     fs::write(&identity, &original).expect("metadata");
     fs::set_permissions(&identity, fs::Permissions::from_mode(0o600)).expect("metadata mode");
@@ -52,7 +52,7 @@ fn provision_identity_fails_closed_without_replacing_metadata_when_secret_servic
         .arg("--provision-identity")
         .env("HOME", root.path().join("home"))
         .env("XDG_CONFIG_HOME", &config)
-        .env("QOS_STARTUP_WARM", "off")
+        .env("TILO_STARTUP_WARM", "off")
         .env("PATH", &bin)
         .output()
         .expect("run production shell binary");
