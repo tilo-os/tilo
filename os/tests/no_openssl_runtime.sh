@@ -172,6 +172,18 @@ else
   ok 'Git and OpenVPN are excluded from the immutable host crypto surface'
 fi
 
+music_packages="$(sed -n '/# GStreamer/,/# Display manager/p' "$repo/os/Containerfile")"
+if grep -Eq '^[[:space:]]+(yt-dlp|python3-dbus-next|python3-gobject)[[:space:]\\]' \
+    <<<"$music_packages"; then
+  bad 'Music retains the external downloader or unused Python bindings'
+elif grep -Fq 'youtubei/v1/player' "$repo/apps/music/src/backend/android_vr.rs" \
+   && grep -Fq 'rustls-tls' "$repo/apps/music/Cargo.toml" \
+   && ! rg -n 'backend::ytdlp|Command::new\("yt-dlp"\)' "$repo/apps/music/src" >/dev/null; then
+  ok 'Music full-track resolution is Rust-native and removes yt-dlp/Python bindings'
+else
+  bad 'Music does not carry a Rust-native full-track resolver'
+fi
+
 host_runtime="$(sed -n '/# Minimal runtime/,/# Copy binaries/p' "$repo/os/Containerfile.host")"
 if sed -e "/rpm -q --qf.*openssl sbsigntools/d" \
        -e '/^[[:space:]]*openvpn NetworkManager-openvpn openssh/d' \
