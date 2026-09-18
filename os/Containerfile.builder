@@ -19,6 +19,8 @@ FROM registry.fedoraproject.org/fedora:42
 # rust-analyzer, for the code editor's language-server suite, but it comes from
 # rustup below: the shims in /usr/local/cargo/bin precede /usr/bin, so a Fedora
 # package here would be shadowed by a shim reporting the component missing.
+# pulseaudio supplies only the private software endpoint started by
+# tools/with-headless-audio.sh; CI does not start or replace a host audio service.
 RUN dnf install -y \
       nodejs \
       capnproto \
@@ -27,7 +29,7 @@ RUN dnf install -y \
       libxkbcommon-devel wayland-devel \
       libseat-devel libinput-devel systemd-devel libdrm-devel \
       mesa-libgbm-devel mesa-libGL-devel mesa-libEGL-devel \
-      pipewire-devel \
+      pipewire-devel pulseaudio \
       ffmpeg-free-devel libva-devel \
       gstreamer1 gstreamer1-devel gstreamer1-plugins-base-devel \
       gstreamer1-plugins-good gstreamer1-plugins-bad-free \
