@@ -57,7 +57,8 @@ def validate_inputs(wpe, generation, revision, branch, mode='full-build',
                     firmware_candidate='', firmware_manifest_sha256='', require_firmware_artifact=False,
                     native_builder_receipt=None, native_builder_sha256='',
                     reconstructed_native_receipt=None, reconstructed_native_sha256='',
-                    approved_reconstruction_sha256='', resume_checkpoint=None):
+                    approved_reconstruction_sha256='', resume_checkpoint=None,
+                    native_source_compatibility=None, native_source_compatibility_sha256=''):
     validate_firmware_selection(mode, hardware_profile, firmware_candidate, firmware_manifest_sha256,
                                 require_firmware_artifact)
     hardware_definition(hardware_profile, architecture)
@@ -81,8 +82,13 @@ def validate_inputs(wpe, generation, revision, branch, mode='full-build',
                 or not re.fullmatch(r'[0-9a-f]{64}', native_builder_sha256)):
             raise ValueError('native builder reuse requires full-build and independently pinned receipt')
     reconstructed = bool(reconstructed_native_receipt or reconstructed_native_sha256 or approved_reconstruction_sha256)
+    compatibility = bool(native_source_compatibility or native_source_compatibility_sha256)
+    if compatibility and (not native_source_compatibility
+            or not re.fullmatch(r'[0-9a-f]{64}', native_source_compatibility_sha256)
+            or not reconstructed or revision == RECONSTRUCTION_SOURCE):
+        raise ValueError('source compatibility requires corrected source and pinned reconstructed native admission')
     if reconstructed:
-        if (mode != 'full-build' or architecture != 'aarch64' or revision != RECONSTRUCTION_SOURCE
+        if (mode != 'full-build' or architecture != 'aarch64' or (revision != RECONSTRUCTION_SOURCE and not compatibility)
                 or native_builder_receipt or native_builder_sha256 or not reconstructed_native_receipt
                 or not re.fullmatch(r'[0-9a-f]{64}', reconstructed_native_sha256)
                 or not re.fullmatch(r'[0-9a-f]{64}', approved_reconstruction_sha256)):
@@ -704,6 +710,8 @@ def main(argv=None):
     parser.add_argument('--reconstructed-native-receipt', type=Path)
     parser.add_argument('--reconstructed-native-sha256', default='')
     parser.add_argument('--approved-reconstruction-sha256', default='')
+    parser.add_argument('--native-source-compatibility', type=Path)
+    parser.add_argument('--native-source-compatibility-sha256', default='')
     parser.add_argument('--resume-reconstructed-partial-admission', nargs=2, metavar=('JSON','SHA256'))
     parser.add_argument('--resume-checkpoint', nargs=2, action='append', metavar=('RECEIPT', 'SHA256'))
     parser.add_argument('--resume-thin-cache-approval', nargs=2, metavar=('APPROVAL', 'SHA256'))
@@ -744,7 +752,15 @@ def main(argv=None):
                     reconstructed_native_receipt=args.reconstructed_native_receipt,
                     reconstructed_native_sha256=args.reconstructed_native_sha256,
                     approved_reconstruction_sha256=args.approved_reconstruction_sha256,
-                    resume_checkpoint=args.resume_checkpoint)
+                    resume_checkpoint=args.resume_checkpoint,
+                    native_source_compatibility=args.native_source_compatibility,
+                    native_source_compatibility_sha256=args.native_source_compatibility_sha256)
+    source_compatibility = None
+    if args.native_source_compatibility:
+        import native_source_compatibility
+        source_compatibility = native_source_compatibility.verify(REPO, args.revision,
+            args.native_source_compatibility, args.native_source_compatibility_sha256,
+            args.reconstructed_native_sha256, args.approved_reconstruction_sha256)
     for candidate in (args.rpms_candidate, args.builder_candidate):
         if candidate:
             immutable_candidate(candidate)
@@ -768,6 +784,8 @@ def main(argv=None):
     EVIDENCE.mkdir(mode=0o755)
     if controller_source is not None:
         write_receipt('controller-source.json', controller_source)
+    if source_compatibility is not None:
+        write_receipt('native-source-compatibility.json', source_compatibility)
     if firmware_import is not None:
         write_receipt('firmware-import.json', firmware_import)
     cache = cache_configuration(os.environ)
@@ -803,7 +821,8 @@ def main(argv=None):
         'generation': args.generation, 'wpe_candidate': args.wpe or None, 'builder': args.builder_candidate,
         'wpe_input_mode': 'adopted-development' if adopted is not None else 'current-producer',
         'wpe_adoption_sha256': args.wpe_adoption_sha256 or None,
-        'pins': pins, 'browser': True, 'prebuilt_apps': False, 'prebuilt_desktop': False})
+        'pins': pins, 'browser': True, 'prebuilt_apps': False, 'prebuilt_desktop': False,
+        'native_source_compatibility': source_compatibility})
     # Full source builds need real guest backing storage, not a small tmpfs.
     backing = {path: dict(zip(('total', 'used', 'free'), shutil.disk_usage(path)))
                for path in ('/work', '/var/lib/containers')}
@@ -853,6 +872,8 @@ def main(argv=None):
         native_inputs = native_builder.expected_inputs(REPO, args.revision, args.architecture,
             pins['BASE_REF'], pins['RPMS_REF'], wpe_reference,
             hashlib.sha256(receipt_bytes).hexdigest(), epoch)
+        if source_compatibility is not None:
+            native_inputs = native_source_compatibility.original_native_inputs(native_inputs, source_compatibility)
         if args.native_builder_receipt or args.reconstructed_native_receipt:
             native_id = import_selected_native(native_builder, args, native_inputs)
             env['TILO_NATIVE_BUILDER_IMAGE_ID'] = native_id
@@ -861,7 +882,9 @@ def main(argv=None):
                     'schema': 1, 'source_revision': args.revision, 'image_id': native_id,
                     'receipt_sha256': args.reconstructed_native_sha256,
                     'approved_reconstruction_sha256': args.approved_reconstruction_sha256,
-                    'inventory_verified': True, 'installable': False})
+                    'inventory_verified': True, 'installable': False,
+                    'native_inputs': native_inputs,
+                    'source_compatibility': source_compatibility})
         else:
             env['TILO_NATIVE_BUILDER_ONLY'] = '1'
             env['TILO_NATIVE_BUILDER_IIDFILE'] = str(EVIDENCE / 'native-builder.iid')
@@ -886,6 +909,7 @@ def main(argv=None):
         'reason': 'raw compilation; ephemeral trust must be rebound; disk/VM acceptance not performed',
         'retained_image': retained['image'], 'handoff_sha256': retained['handoff_sha256'],
         'revision': args.revision, 'generation': args.generation,
+        'native_source_compatibility': source_compatibility,
         'public_manifest_sha256': trust['manifest_sha256'],
         'containerfile_sha256': hashlib.sha256((REPO / 'os/Containerfile').read_bytes()).hexdigest()})
 

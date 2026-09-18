@@ -189,11 +189,13 @@ fn load_display_scale() -> f64 {
 /// The protocol and compositor share **one** locked state: a client `lock`
 /// stashes the [`SessionLocker`] here and raises `lock_requested`; the run
 /// loop locks, paints the overlay, then confirms via [`SessionLocker::lock`]
-/// so `locked` fires only once content is hidden. `unlock_and_destroy` raises `unlock_requested`. Same-thread, so no `Arc`/lock.
+/// so `locked` fires only once content is hidden. Releasing the protocol
+/// object never unlocks Tilo: the compositor-owned password verifier is the
+/// sole authority that can clear the session lock. Same-thread, so no
+/// `Arc`/lock.
 #[derive(Default)]
 pub struct SessionLockHooks {
     lock_requested: bool,
-    unlock_requested: bool,
     pending_locker: Option<SessionLocker>,
 }
 
@@ -201,11 +203,6 @@ impl SessionLockHooks {
     /// Take the "a client asked to lock" edge (clears it; true at most once per protocol `lock` request).
     pub fn take_lock_requested(&mut self) -> bool {
         std::mem::take(&mut self.lock_requested)
-    }
-
-    /// Take the "a client asked to unlock" edge (clears it).
-    pub fn take_unlock_requested(&mut self) -> bool {
-        std::mem::take(&mut self.unlock_requested)
     }
 
     /// Take the stashed [`SessionLocker`] so the run loop can confirm the lock after the overlay is presented; `None` if nothing pending.
@@ -4100,7 +4097,9 @@ delegate_ext_data_control!(State);
 // compositor hides all normal client surfaces + routes input only to the
 // lock surface (enforced by the native run loop, which owns the
 // authoritative lock + overlay). Tilo renders its own lock UI rather than a
-// client lock surface, so the handler bridges protocol lock/unlock into that one lock state via [`SessionLockHooks`].
+// client lock surface, so the handler bridges only protocol lock requests
+// into that state via [`SessionLockHooks`]. Protocol-object release is not an
+// authentication event.
 impl SessionLockHandler for State {
     fn lock_state(&mut self) -> &mut SessionLockManagerState {
         &mut self.session_lock_state
@@ -4113,8 +4112,9 @@ impl SessionLockHandler for State {
     }
 
     fn unlock(&mut self) {
-        // The client tore down its lock (having authenticated on its side).
-        self.session_lock.unlock_requested = true;
+        // Tilo paints and authenticates its own lock screen. A client may
+        // release the ext-session-lock protocol object, but that is not proof
+        // of authentication and must never clear the compositor's lock.
     }
 
     fn new_surface(&mut self, surface: LockSurface, _output: WlOutput) {
@@ -5141,23 +5141,37 @@ mod tick_hook_tests {
         );
     }
 
-    /// The `ext_session_lock_v1` bridge reports each lock/unlock request as a one-shot edge: `true` once, then `false`, so the loop can't re-fire it.
+    /// The `ext_session_lock_v1` bridge reports a lock request as a one-shot
+    /// edge. Protocol-object release deliberately has no unlock edge.
     #[test]
-    fn session_lock_hooks_report_and_clear_edges() {
+    fn session_lock_hooks_report_and_clear_lock_edge_only() {
         let mut h = SessionLockHooks::default();
         assert!(!h.take_lock_requested());
-        assert!(!h.take_unlock_requested());
         assert!(!h.has_pending_locker());
 
         h.lock_requested = true;
-        h.unlock_requested = true;
         assert!(h.take_lock_requested());
         assert!(
             !h.take_lock_requested(),
             "lock edge is consumed exactly once"
         );
-        assert!(h.take_unlock_requested());
-        assert!(!h.take_unlock_requested(), "unlock edge is consumed once");
+    }
+
+    /// Releasing an ext-session-lock object cannot manufacture an unlock
+    /// request. The protocol callback itself is exercised here so a future
+    /// refactor cannot accidentally reconnect object lifetime to authentication.
+    #[test]
+    fn protocol_session_lock_release_is_not_unlock_authority() {
+        let mut state = make_state();
+        state.session_lock.lock_requested = true;
+
+        <State as SessionLockHandler>::unlock(&mut state);
+
+        assert!(
+            state.session_lock.take_lock_requested(),
+            "releasing the protocol object must not cancel the pending lock"
+        );
+        assert!(!state.session_lock.has_pending_locker());
     }
 
     /// A freshly constructed state advertises the session-lock global and starts with no client holding a lock.
@@ -5166,7 +5180,6 @@ mod tick_hook_tests {
         let mut state = make_state();
         // Constructing the state ran `SessionLockManagerState::new` (global advertised) without panic; no client holds a lock yet.
         assert!(!state.session_lock.take_lock_requested());
-        assert!(!state.session_lock.take_unlock_requested());
         assert!(!state.session_lock.has_pending_locker());
     }
 }

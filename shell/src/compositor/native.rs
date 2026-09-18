@@ -5936,10 +5936,11 @@ pub fn run() {
             }
         }
 
-        // `ext_session_lock_v1`: fold a protocol client's lock/unlock into the one
+        // `ext_session_lock_v1`: fold a protocol client's lock into the one
         // authoritative session lock. Client `lock` drives the same locked state as
-        // chord/idle; `unlock_and_destroy` clears it (client authenticated itself —
-        // the compositor's password path is only for chord/idle). The stashed
+        // chord/idle. `unlock_and_destroy` only releases the protocol object:
+        // because Tilo paints the lock UI itself, it is not evidence that the
+        // user authenticated. The stashed
         // `SessionLocker` confirms after the overlay paints, below, so `locked` fires only once content is hidden.
         if state.session_lock.take_lock_requested() {
             session_changed = true;
@@ -5947,13 +5948,6 @@ pub fn run() {
                 apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
             }
         }
-        if state.session_lock.take_unlock_requested() {
-            session_changed = true;
-            for t in session.request_unlock(Instant::now()) {
-                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
-            }
-        }
-
         // Async unlock: pick up an in-flight credential verify's result from the
         // worker thread (started by lock-screen Enter). The loop never blocks —
         // it keeps ticking and unlocks only on verified success; a wrong/failed

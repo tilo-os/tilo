@@ -242,6 +242,24 @@ pub fn provide_resources(
     catalog: &Catalog,
     configured: bool,
 ) -> Vec<Resource> {
+    provide_resources_with_unavailable_reason(policy, catalog, configured, None)
+}
+
+/// As [`provide_resources`], but lets a live local backend surface the reason
+/// an otherwise-saved configuration is unavailable. The public three-argument
+/// form keeps deterministic callers and tests independent of host-only paths.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the complete stable resource hierarchy is intentionally visible together"
+)]
+pub fn provide_resources_with_unavailable_reason(
+    policy: &RetentionPolicy,
+    catalog: &Catalog,
+    configured: bool,
+    unavailable_reason: Option<&str>,
+) -> Vec<Resource> {
+    let unavailable_reason =
+        unavailable_reason.unwrap_or("Choose a source and destination before running a backup");
     let mut root = Resource::new("backups.policy", "backups.policy", "Retention policy");
 
     for field in PolicyField::ALL {
@@ -294,10 +312,7 @@ pub fn provide_resources(
         backups = backups.with_action(if configured {
             spec
         } else {
-            spec.unavailable(
-                "not_configured",
-                "Choose a source and destination before running a backup",
-            )
+            spec.unavailable("not_configured", unavailable_reason)
         });
     }
     if let Some(spec) = operation_spec(
@@ -379,7 +394,8 @@ pub fn provide_resources(
         "Snapshot versions and runs · recent page",
     );
     for snapshot in catalog.snapshots.iter().take(128) {
-        snapshots = snapshots.with_child(snapshot_resource(snapshot, configured));
+        snapshots =
+            snapshots.with_child(snapshot_resource(snapshot, configured, unavailable_reason));
     }
     backups = backups.with_child(snapshots);
 
@@ -397,10 +413,28 @@ pub fn resource(
     configured: bool,
     id: &str,
 ) -> Option<Resource> {
+    resource_with_unavailable_reason(policy, catalog, configured, id, None)
+}
+
+/// Resolve one resource with the live backend's current unavailable reason.
+/// This keeps a search result's individually-materialized action tree in sync
+/// with the contextual resource page.
+pub fn resource_with_unavailable_reason(
+    policy: &RetentionPolicy,
+    catalog: &Catalog,
+    configured: bool,
+    id: &str,
+    unavailable_reason: Option<&str>,
+) -> Option<Resource> {
     if id == "backups.policy" || id == "backups" {
-        return provide_resources(policy, catalog, configured)
-            .into_iter()
-            .find(|resource| resource.id.as_str() == id);
+        return provide_resources_with_unavailable_reason(
+            policy,
+            catalog,
+            configured,
+            unavailable_reason,
+        )
+        .into_iter()
+        .find(|resource| resource.id.as_str() == id);
     }
     let snapshot_id = id
         .strip_prefix("backups.snapshot:")
@@ -410,7 +444,11 @@ pub fn resource(
         .snapshots
         .iter()
         .find(|snapshot| snapshot.id == snapshot_id)?;
-    let snapshot_resource = snapshot_resource(snapshot, configured);
+    let snapshot_resource = snapshot_resource(
+        snapshot,
+        configured,
+        unavailable_reason.unwrap_or("This local repository is not configured on this device"),
+    );
     if id.starts_with("backups.snapshot:") {
         return Some(snapshot_resource);
     }
@@ -420,7 +458,7 @@ pub fn resource(
         .find(|child| child.id.as_str() == id)
 }
 
-fn snapshot_resource(snapshot: &Snapshot, configured: bool) -> Resource {
+fn snapshot_resource(snapshot: &Snapshot, configured: bool, unavailable_reason: &str) -> Resource {
     let mut resource = Resource::new(
         format!("backups.snapshot:{}", snapshot.id),
         "backups.snapshot",
@@ -452,10 +490,7 @@ fn snapshot_resource(snapshot: &Snapshot, configured: bool) -> Resource {
         resource = resource.with_action(if configured {
             spec
         } else {
-            spec.unavailable(
-                "not_configured",
-                "This local repository is not configured on this device",
-            )
+            spec.unavailable("not_configured", unavailable_reason)
         });
     }
     if let Some(spec) = operation_spec(
@@ -469,10 +504,7 @@ fn snapshot_resource(snapshot: &Snapshot, configured: bool) -> Resource {
         resource = resource.with_action(if configured {
             spec
         } else {
-            spec.unavailable(
-                "not_configured",
-                "This local repository is not configured on this device",
-            )
+            spec.unavailable("not_configured", unavailable_reason)
         });
     }
     let mut run = Resource::new(
@@ -514,10 +546,7 @@ fn snapshot_resource(snapshot: &Snapshot, configured: bool) -> Resource {
         restore_target = restore_target.with_action(if configured {
             spec
         } else {
-            spec.unavailable(
-                "not_configured",
-                "This local repository is not configured on this device",
-            )
+            spec.unavailable("not_configured", unavailable_reason)
         });
     }
     resource = resource.with_child(restore_target);
@@ -528,19 +557,21 @@ impl ResourceProvider for crate::app::BackupsApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         // Level-triggered: recomputed each frame from the document, the source of
         // truth every action reads and writes.
-        provide_resources(
+        provide_resources_with_unavailable_reason(
             &BackupsDoc::policy(doc, &ROOT),
             self.resource_catalog(),
             self.is_configured(),
+            self.unavailable_reason(),
         )
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        resource(
+        resource_with_unavailable_reason(
             &BackupsDoc::policy(doc, &ROOT),
             self.resource_catalog(),
             self.is_configured(),
             id,
+            self.unavailable_reason(),
         )
     }
 }
@@ -550,7 +581,7 @@ mod tests {
     use super::*;
     use crate::app::BackupsApp;
     use crate::model::Catalog;
-    use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, Availability, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -707,6 +738,30 @@ mod tests {
             "a 999-count field can't increment: {m_actions:?}"
         );
         assert!(m_actions.contains(&"decrement"), "{m_actions:?}");
+    }
+
+    #[test]
+    fn unavailable_repository_reason_reaches_the_canonical_backup_action() {
+        let reason = "The saved backup location is unavailable. Choose another location.";
+        let resources = provide_resources_with_unavailable_reason(
+            &RetentionPolicy::default(),
+            &Catalog::empty(),
+            false,
+            Some(reason),
+        );
+        let workspace = resources
+            .iter()
+            .find(|resource| resource.id.as_str() == "backups")
+            .expect("backups workspace resource");
+        let backup = workspace
+            .actions
+            .iter()
+            .find(|action| action.id == "backup-now")
+            .expect("backup action");
+        assert!(matches!(
+            &backup.contract.availability,
+            Availability::Unavailable { reason: actual, .. } if actual == reason
+        ));
     }
 
     #[test]

@@ -39,14 +39,19 @@ def inputs(arch, fex_ref, guest_ref):
 def traditional_wine(root, guest, pin):
     """Check the Fedora spec's supported cross-width Unix loader layout."""
     records = []
-    for name, bits, machine in (
-        ("usr/lib64/wine/i386-unix/wine", 32, 3),
-        ("usr/lib/wine/x86_64-unix/wine", 64, 62),
+    for name, canonical, bits, machine in (
+        ("usr/lib64/wine/i386-unix/wine", "usr/lib/wine/i386-unix/wine", 32, 3),
+        ("usr/lib/wine/x86_64-unix/wine", "usr/lib64/wine/x86_64-unix/wine", 64, 62),
     ):
         path = guest.guest_file(root, name)
-        if file_hash(path) != file_hash(guest.guest_file(root, f"usr/bin/wine{bits}")):
-            raise ValueError("alternate Wine loader differs from the matching width entrypoint")
-        records.append({"path": name, "resolved_path": path.relative_to(root).as_posix(),
+        # Fedora's cross-width directory aliases must reach the corresponding
+        # Unix loader. Wine 11 builds /usr/bin/wine{32,64} from tools/wine,
+        # separately from loader/main.c; guest.validate checks those wrappers.
+        if path != guest.guest_file(root, canonical):
+            raise ValueError("alternate Wine loader does not resolve to the canonical Unix loader")
+        records.append({"path": name, "canonical_path": canonical,
+                        "resolved_path": path.relative_to(root).as_posix(),
+                        "sha256": file_hash(path),
                         **guest.elf_info(path, bits, machine, True)})
     packages = guest.guest_file(root, "usr/lib/tilo/windows-guest/installed-packages.tsv")
     cores = []
