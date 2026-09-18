@@ -1312,6 +1312,64 @@ mod tests {
         ChromeState::new_with_handle(handle)
     }
 
+    fn action_results(
+        provider: &ActionsProvider,
+        chrome: &Chrome,
+    ) -> Vec<crate::shell::search::SearchResult> {
+        let document = AutoCommit::new();
+        let state = chrome.borrow();
+        provider.query(SearchContext {
+            needle: "",
+            wanted: &[ResourceKind::Action],
+            chrome: &state,
+            doc: &document,
+            doc_root: &automerge::ROOT,
+        })
+    }
+
+    fn invoke_action(results: &[crate::shell::search::SearchResult], id: &str, chrome: &Chrome) {
+        let result = results
+            .iter()
+            .find(|result| result.id == id)
+            .unwrap_or_else(|| panic!("action provider did not return {id}"));
+        let mut document = AutoCommit::new();
+        (result.on_open)(&mut document, &automerge::ROOT, chrome, &ActionArgs::none()).unwrap();
+    }
+
+    #[test]
+    fn panel_actions_share_the_provider_dispatch_path() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let results = action_results(&provider, &chrome);
+
+        invoke_action(&results, "settings.open", &chrome);
+        assert!(chrome.borrow().overlays.ws_settings);
+
+        invoke_action(&results, "quick-settings.open", &chrome);
+        let state = chrome.borrow();
+        assert!(state.overlays.quick_settings);
+        assert!(!state.overlays.ws_settings);
+    }
+
+    #[test]
+    fn collaboration_actions_enqueue_typed_requests_through_the_provider() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        chrome.borrow_mut().peer_sync_enabled = true;
+        let results = action_results(&provider, &chrome);
+
+        invoke_action(&results, "peer.invite", &chrome);
+        invoke_action(&results, "peer.connect", &chrome);
+
+        assert_eq!(
+            chrome.borrow_mut().take_peer_sync_requests(),
+            vec![
+                crate::shell::overlay_host::PeerSyncAction::IssueInvite,
+                crate::shell::overlay_host::PeerSyncAction::PromptConnect,
+            ]
+        );
+    }
+
     #[test]
     fn prefix_beats_substring_beats_subtitle() {
         let p = ActionsProvider::new();

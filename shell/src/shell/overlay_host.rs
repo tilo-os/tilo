@@ -2171,9 +2171,6 @@ pub struct ShellOverlayHost {
     /// surfaced. It follows the live session transport and can be enabled
     /// when first-login provisioning completes.
     peer_sync_enabled: bool,
-    /// Queue of peer-sync actions from [`Self::dispatch_palette_command`],
-    /// drained by the compositor into its `ShellNetwork` handle.
-    peer_sync_actions: Vec<PeerSyncAction>,
     /// Closure that carries out a peer-sync request against
     /// `ShellNetwork`, keeping the widget layer transport-agnostic.
     /// `None` in tests and in sessions booted without peer-sync, where
@@ -2332,10 +2329,10 @@ pub struct ShellSceneSections {
     pub quick_settings_bounds: Option<Rect>,
 }
 
-/// Action emitted from the palette into [`ShellOverlayHost::peer_sync_actions`]
-/// when the user picks a peer-sync command; the compositor drains these
-/// into its `ShellNetwork` handle so Iroh side-effects stay on the
-/// runtime thread.
+/// Action emitted by a search-provider callback into `ChromeState` when the
+/// user picks a peer-sync command. The overlay host drains that typed queue
+/// into its `ShellNetwork` bridge so Iroh side-effects stay on the runtime
+/// thread.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeerSyncAction {
     /// User invoked `/invite`. The compositor calls
@@ -3329,7 +3326,6 @@ impl ShellOverlayHost {
             file_picker_overlay: FilePickerOverlay::default(),
             portal_dialogs: PortalDialogController::default(),
             peer_sync_enabled: false,
-            peer_sync_actions: Vec::new(),
             peer_sync_bridge: None,
             clipboard_manager_bridge: None,
             device_fabric_bridge: None,
@@ -4238,15 +4234,9 @@ impl ShellOverlayHost {
         self.peer_sync_enabled
     }
 
-    /// Drain pending [`PeerSyncAction`]s since the last call, FIFO. Pumped
-    /// each frame by the compositor into its `ShellNetwork` handle. No
-    /// de-dup or coalescing, so repeated `/invite` all surface.
-    pub fn take_peer_sync_actions(&mut self) -> Vec<PeerSyncAction> {
-        std::mem::take(&mut self.peer_sync_actions)
-    }
-
     /// Install the closure that carries out [`PeerSyncRequest`]s. Without
-    /// one, `/invite` and `/connect` push to a queue nothing drains.
+    /// one, requests fail visibly as unavailable when the frame pump drains
+    /// them.
     #[must_use]
     pub fn with_peer_sync_bridge(mut self, bridge: PeerSyncBridge) -> Self {
         self.set_peer_sync_bridge(bridge);
@@ -4416,10 +4406,9 @@ impl ShellOverlayHost {
     /// frame from [`Widget::update`]. `/invite` mints a token; `/connect`
     /// opens the token prompt. Both write their outcome into chrome.
     fn pump_peer_sync(&mut self) {
-        let mut actions = std::mem::take(&mut self.peer_sync_actions);
-        if let Some(chrome) = self.chrome.clone() {
-            actions.extend(chrome.borrow_mut().take_peer_sync_requests());
-        }
+        let actions = self.chrome.as_ref().map_or_else(Vec::new, |chrome| {
+            chrome.borrow_mut().take_peer_sync_requests()
+        });
         if actions.is_empty() {
             return;
         }
@@ -7710,20 +7699,6 @@ impl ShellOverlayHost {
             self.palette_visible = false;
             return;
         }
-        // Legacy id-based dispatch for peer-sync rows, which enqueue an
-        // action drained by `take_peer_sync_actions`.
-        if id.starts_with("peer:") {
-            match id.as_str() {
-                "peer:invite" => {
-                    self.peer_sync_actions.push(PeerSyncAction::IssueInvite);
-                }
-                "peer:connect" => {
-                    self.peer_sync_actions.push(PeerSyncAction::PromptConnect);
-                }
-                _ => {}
-            }
-            self.palette_visible = false;
-        }
     }
 
     /// The command-palette visibility flag, for tests that only hold the
@@ -8174,73 +8149,6 @@ impl ShellOverlayHost {
     /// theme's typography token.
     pub fn overview_header_font_size(&self, theme: &Theme) -> f32 {
         Self::overview_header_font_size_for(&theme.tokens)
-    }
-
-    /// Dispatches the shell action for a palette command id, then closes
-    /// the palette (even on an unknown id, to avoid a stale overlay).
-    // No production caller routes a selection here, so `/invite` and
-    // `/connect` are inert even under --enable-peer-sync. Kept as the
-    // only definition of what those commands do; tests pin the contract.
-    #[allow(dead_code)]
-    pub(crate) fn dispatch_palette_command(&mut self, id: &str) -> bool {
-        // Peer-sync rows enqueue an action for the compositor to drain
-        // (Iroh stays on the runtime thread) rather than mutating
-        // chrome directly. Ignored when the flag is off, in case a stale
-        // palette row survives a toggle.
-        if self.peer_sync_enabled {
-            match id {
-                "peer.invite" => {
-                    self.peer_sync_actions.push(PeerSyncAction::IssueInvite);
-                    self.palette_visible = false;
-                    return true;
-                }
-                "peer.connect" => {
-                    self.peer_sync_actions.push(PeerSyncAction::PromptConnect);
-                    self.palette_visible = false;
-                    return true;
-                }
-                _ => {}
-            }
-        }
-
-        let matched = if let Some(chrome) = self.chrome.clone() {
-            let mut st = chrome.borrow_mut();
-            let hit = match id {
-                "overview.toggle" => {
-                    st.overlays.overview = !st.overlays.overview;
-                    true
-                }
-                "settings.open" => {
-                    st.open_workspace_settings(WsTab::General);
-                    true
-                }
-                "quick-settings.open" => {
-                    st.open_quick_settings();
-                    true
-                }
-                "projection.open" => {
-                    st.overlays.projection = true;
-                    true
-                }
-                "capture.open" => {
-                    st.overlays.capture = true;
-                    true
-                }
-                // `search.open` is a no-op: the palette is already open
-                // when the user reaches this row. We close it below like
-                // the other commands so behaviour is consistent.
-                "search.open" => true,
-                _ => false,
-            };
-            if hit {
-                st.bump();
-            }
-            hit
-        } else {
-            false
-        };
-        self.palette_visible = false;
-        matched
     }
 
     fn overview_header_font_size_for(tokens: &ui::tokens::Tokens) -> f32 {
@@ -22611,24 +22519,6 @@ mod palette_dispatch_tests {
     }
 
     #[test]
-    fn palette_panel_routes_replace_the_other_top_right_panel() {
-        let (mut host, chrome) = host_with_chrome();
-        chrome.borrow_mut().open_workspace_settings(WsTab::General);
-
-        assert!(host.dispatch_palette_command("quick-settings.open"));
-        {
-            let state = chrome.borrow();
-            assert!(state.overlays.quick_settings);
-            assert!(!state.overlays.ws_settings);
-        }
-
-        assert!(host.dispatch_palette_command("settings.open"));
-        let state = chrome.borrow();
-        assert!(state.overlays.ws_settings);
-        assert!(!state.overlays.quick_settings);
-    }
-
-    #[test]
     fn direct_quick_settings_open_reconciles_focus_before_the_first_draw() {
         let (mut host, chrome) = host_with_chrome();
 
@@ -23247,36 +23137,6 @@ mod palette_dispatch_tests {
         );
     }
 
-    #[test]
-    fn dispatch_overview_toggle_flips_overlay_and_closes_palette() {
-        let (mut h, chrome) = host_with_chrome();
-        h.palette_visible = true;
-        assert!(h.dispatch_palette_command("overview.toggle"));
-        assert!(
-            chrome.borrow().overlays.overview,
-            "overview overlay must be on after dispatch"
-        );
-        assert!(!h.palette_visible, "palette must close after dispatch");
-    }
-
-    #[test]
-    fn dispatch_settings_open_raises_ws_settings_flag() {
-        let (mut h, chrome) = host_with_chrome();
-        h.palette_visible = true;
-        assert!(h.dispatch_palette_command("settings.open"));
-        assert!(chrome.borrow().overlays.ws_settings);
-        assert!(!h.palette_visible);
-    }
-
-    #[test]
-    fn dispatch_quick_settings_open_raises_quick_settings_flag() {
-        let (mut h, chrome) = host_with_chrome();
-        h.palette_visible = true;
-        assert!(h.dispatch_palette_command("quick-settings.open"));
-        assert!(chrome.borrow().overlays.quick_settings);
-        assert!(!h.palette_visible);
-    }
-
     #[allow(
         clippy::items_after_statements,
         reason = "the local test helper is deliberately introduced beside the scenario that exercises it"
@@ -23383,88 +23243,11 @@ mod palette_dispatch_tests {
     }
 
     #[test]
-    fn dispatch_unknown_command_still_closes_palette() {
-        let (mut h, _chrome) = host_with_chrome();
-        h.palette_visible = true;
-        assert!(!h.dispatch_palette_command("does.not.exist"));
-        assert!(
-            !h.palette_visible,
-            "palette should close even for unknown ids so no stale overlay stays up"
-        );
-    }
-
-    #[test]
-    fn dispatch_search_open_is_noop_but_closes_palette() {
-        let (mut h, chrome) = host_with_chrome();
-        h.palette_visible = true;
-        let before = chrome.borrow().overlays;
-        assert!(h.dispatch_palette_command("search.open"));
-        assert_eq!(
-            chrome.borrow().overlays,
-            before,
-            "search.open should not mutate overlay flags"
-        );
-        assert!(!h.palette_visible);
-    }
-
-    /// `peer.invite` / `peer.connect` must not register as known
-    /// commands when the peer-sync flag is off — defence-in-depth in
-    /// case a stale row lingers across a flag toggle.
-    #[test]
-    fn peer_sync_palette_ids_ignored_when_flag_off() {
-        let (mut h, _chrome) = host_with_chrome();
-        assert!(!h.peer_sync_enabled());
-        assert!(!h.dispatch_palette_command("peer.invite"));
-        assert!(!h.dispatch_palette_command("peer.connect"));
-        assert!(
-            h.take_peer_sync_actions().is_empty(),
-            "no actions should leak when flag is off"
-        );
-    }
-
-    #[test]
-    fn peer_sync_invite_enqueues_action_when_flag_on() {
-        let tree = WorkspaceTree::bootstrap_demo();
-        let chrome = ChromeState::new(tree);
-        let mut h = ShellOverlayHost::new(Box::new(Container::new()))
-            .with_chrome(chrome)
-            .with_peer_sync_enabled(true);
-        assert!(h.peer_sync_enabled());
-        h.palette_visible = true;
-        assert!(h.dispatch_palette_command("peer.invite"));
-        assert!(!h.palette_visible, "palette must close after dispatch");
-        let actions = h.take_peer_sync_actions();
-        assert_eq!(actions, vec![PeerSyncAction::IssueInvite]);
-        // Drain is destructive; second call returns empty.
-        assert!(h.take_peer_sync_actions().is_empty());
-    }
-
-    #[test]
-    fn peer_sync_connect_enqueues_action_when_flag_on() {
-        let tree = WorkspaceTree::bootstrap_demo();
-        let chrome = ChromeState::new(tree);
-        let mut h = ShellOverlayHost::new(Box::new(Container::new()))
-            .with_chrome(chrome)
-            .with_peer_sync_enabled(true);
-        h.palette_visible = true;
-        assert!(h.dispatch_palette_command("peer.connect"));
-        assert!(!h.palette_visible);
-        assert_eq!(
-            h.take_peer_sync_actions(),
-            vec![PeerSyncAction::PromptConnect]
-        );
-    }
-
-    #[test]
     fn with_peer_sync_enabled_is_idempotent() {
         let host = ShellOverlayHost::new(Box::new(Container::new()))
             .with_peer_sync_enabled(true)
             .with_peer_sync_enabled(true);
-        // No entry-count API, so proven indirectly: invoking a peer-sync id
-        // twice must still dispatch exactly one action, no panic.
-        let mut h = host.with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
-        assert!(h.dispatch_palette_command("peer.invite"));
-        assert_eq!(h.take_peer_sync_actions().len(), 1);
+        assert!(host.peer_sync_enabled());
     }
 
     #[test]
@@ -23479,7 +23262,6 @@ mod palette_dispatch_tests {
 
         assert!(host.peer_sync_enabled());
         assert!(chrome.borrow().peer_sync_enabled);
-        assert!(host.dispatch_palette_command("peer.invite"));
     }
 
     // Proves both halves of the invite-token crossing (mint → clipboard
