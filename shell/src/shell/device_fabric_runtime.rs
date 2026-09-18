@@ -1355,8 +1355,7 @@ pub struct DeviceFabricRuntime {
     realtime_online_peers: BTreeSet<crate::shell::personal_continuity::DeviceId>,
     remote_capture: Option<crate::shell::remote_capture_runtime::SharedRemoteCaptureRuntime>,
     remote_capture_online_peers: BTreeSet<crate::shell::personal_continuity::DeviceId>,
-    remote_capture_pending_actions:
-        VecDeque<crate::shell::device_fabric::PersonalFabricActionEnvelope>,
+    remote_capture_pending_actions: VecDeque<crate::shell::network::ReceivedPersonalFabricAction>,
     tethering: crate::shell::personal_tethering_runtime::PersonalTetheringRuntime,
     gamepad_broker: ProductionGamepadBroker,
     inbound_gamepads: BTreeMap<[u8; 16], InboundGamepadForwarding>,
@@ -1433,6 +1432,7 @@ impl DeviceFabricRuntime {
         // operation must still observe stale completion and roll hardware back.
         pump_bluetooth_handoffs(network);
         if policy.permits(ContinuityCapability::Media) {
+            self.prune_media_routes(network);
             pump_media_handoff_statuses(network);
             self.expire_incoming_media(network);
         }
@@ -1680,13 +1680,16 @@ impl DeviceFabricRuntime {
         if let Some(runtime) = self.remote_capture.as_ref()
             && let Ok(mut runtime) = runtime.try_lock()
         {
-            for envelope in self.remote_capture_pending_actions.drain(..) {
-                runtime.handle_action(&envelope, Instant::now());
+            for received in self.remote_capture_pending_actions.drain(..) {
+                if network.personal_route_is_current(&received.route) {
+                    runtime.handle_action(&received.envelope, Instant::now());
+                }
             }
         }
         for received in network.take_personal_fabric_actions() {
             let crate::shell::network::ReceivedPersonalFabricAction { envelope, route } = received;
             if !network.personal_route_is_current(&route) {
+                network.revoke_queued_personal_action_authority(&envelope);
                 continue;
             }
             if !policy.permits_action(&envelope.action) {
@@ -1713,7 +1716,9 @@ impl DeviceFabricRuntime {
                 } else if self.remote_capture_pending_actions.len()
                     < crate::shell::remote_capture_device::MAX_REMOTE_CAPTURE_SESSIONS * 4
                 {
-                    self.remote_capture_pending_actions.push_back(envelope);
+                    self.remote_capture_pending_actions.push_back(
+                        crate::shell::network::ReceivedPersonalFabricAction { envelope, route },
+                    );
                 }
                 continue;
             }
@@ -1826,6 +1831,7 @@ impl DeviceFabricRuntime {
                         pending.request_id == request_id
                             && pending.source == envelope.source
                             && pending.session_id == session_id
+                            && pending.route == route
                     });
                     self.terminate_incoming_media(network, cancelled, None);
                 }
@@ -2519,6 +2525,9 @@ impl DeviceFabricRuntime {
         network: &ShellNetwork,
         request: &PendingIncomingMedia,
     ) -> IncomingMediaLaunch {
+        if !network.personal_route_is_current(&request.route) {
+            return IncomingMediaLaunch::Rejected(MediaHandoffFailure::DestinationUnavailable);
+        }
         let Some((local, _)) = network.local_device_fabric_identity() else {
             return IncomingMediaLaunch::Rejected(MediaHandoffFailure::DestinationUnavailable);
         };
@@ -2614,8 +2623,8 @@ impl DeviceFabricRuntime {
         request: &PendingIncomingMedia,
         failure: MediaHandoffFailure,
     ) {
-        let _ = network.send_personal_fabric_action(
-            &request.source,
+        let _ = network.send_personal_fabric_action_on_route(
+            &request.route,
             PersonalFabricAction::MediaRejected {
                 request_id: request.request_id,
                 session_id: request.session_id.clone(),
@@ -2641,19 +2650,41 @@ impl DeviceFabricRuntime {
 
     fn acknowledge_opened_media(&mut self, network: &ShellNetwork) {
         let mut accepted = media::handoff::accepted_handoff_requests();
-        accepted.extend(crate::shell::mpris::take_accepted_handoff_requests());
         accepted.sort_unstable();
         accepted.dedup();
         for request_id in accepted {
             let Some(pending) = self.pending_incoming_media.remove(&request_id) else {
                 continue;
             };
-            let _ = network.send_personal_fabric_action(
-                &pending.source,
+            if network
+                .send_personal_fabric_action_on_route(
+                    &pending.route,
+                    PersonalFabricAction::MediaAccepted {
+                        request_id,
+                        session_id: pending.session_id,
+                    },
+                )
+                .is_err()
+            {
+                let _ = crate::shell::mpris::cancel_resume_after_launch(request_id);
+            }
+        }
+        for accepted in crate::shell::mpris::take_accepted_handoff_resumes() {
+            let Some(pending) = self.pending_incoming_media.remove(&accepted.request_id) else {
+                continue;
+            };
+            let delivery = network.send_personal_fabric_action_on_route(
+                &pending.route,
                 PersonalFabricAction::MediaAccepted {
-                    request_id,
+                    request_id: accepted.request_id,
                     session_id: pending.session_id,
                 },
+            );
+            compensate_failed_media_acceptance(
+                &delivery,
+                accepted.controller_bus_name.as_deref(),
+                accepted.expected_uri.as_deref(),
+                crate::shell::mpris::pause_named_if_uri,
             );
         }
     }
@@ -2702,6 +2733,25 @@ impl DeviceFabricRuntime {
     fn tear_down_incoming_media(&mut self, network: &ShellNetwork, failure: MediaHandoffFailure) {
         let incoming = self.take_incoming_media(|_| true);
         self.terminate_incoming_media(network, incoming, Some(failure));
+    }
+
+    fn prune_media_routes(&mut self, network: &ShellNetwork) {
+        let departed =
+            self.take_incoming_media(|pending| !network.personal_route_is_current(&pending.route));
+        self.terminate_incoming_media(network, departed, None);
+        if let Ok(mut statuses) = media_handoff_statuses().lock() {
+            let now = Instant::now();
+            for status in statuses.values_mut().filter(|status| {
+                status.phase == MediaHandoffPhase::Pending
+                    && !network.personal_route_is_current(&status.route)
+            }) {
+                let _ =
+                    media::handoff::cancel_outbound_handoff(status.request_id, &status.session_id);
+                status.phase =
+                    MediaHandoffPhase::Failed(MediaHandoffFailure::DestinationUnavailable);
+                status.updated = now;
+            }
+        }
     }
 
     fn expire_incoming_media(&mut self, network: &ShellNetwork) {
@@ -4320,7 +4370,7 @@ fn pump_media_handoff_statuses(network: &ShellNetwork) {
                         status.phase = MediaHandoffPhase::Failed(MediaHandoffFailure::TimedOut);
                         status.updated = now;
                         (
-                            status.target.clone(),
+                            status.route.clone(),
                             PersonalFabricAction::MediaCancelled {
                                 request_id: status.request_id,
                                 session_id: status.session_id.clone(),
@@ -4331,9 +4381,27 @@ fn pump_media_handoff_statuses(network: &ShellNetwork) {
                 .collect::<Vec<_>>()
         },
     );
-    for (target, action) in expired {
-        let _ = network.send_personal_fabric_action(&target, action);
+    for (route, action) in expired {
+        let _ = network.send_personal_fabric_action_on_route(&route, action);
     }
+}
+
+fn compensate_failed_media_acceptance<T>(
+    delivery: &Result<T, String>,
+    controller_bus_name: Option<&str>,
+    expected_uri: Option<&str>,
+    mut pause: impl FnMut(&str, &str) -> bool,
+) -> bool {
+    let Some((controller, expected_uri)) = controller_bus_name
+        .zip(expected_uri)
+        .filter(|_| delivery.is_err())
+    else {
+        return false;
+    };
+    // Player mutation completed before route teardown won the worker race,
+    // but its acknowledgement could not be enqueued under the same route.
+    // Pausing the exact launcher-verified controller is the compensating edge.
+    pause(controller, expected_uri)
 }
 
 fn tear_down_media_handoffs(network: &ShellNetwork) {
@@ -4348,8 +4416,8 @@ fn tear_down_media_handoffs(network: &ShellNetwork) {
     );
     for status in pending {
         let _ = media::handoff::cancel_outbound_handoff(status.request_id, &status.session_id);
-        let _ = network.send_personal_fabric_action(
-            &status.target,
+        let _ = network.send_personal_fabric_action_on_route(
+            &status.route,
             PersonalFabricAction::MediaCancelled {
                 request_id: status.request_id,
                 session_id: status.session_id,
@@ -4373,8 +4441,8 @@ pub(crate) fn cancel_media_handoff(
     if status.phase != MediaHandoffPhase::Pending {
         return Err("that media handoff is no longer pending".into());
     }
-    network.send_personal_fabric_action(
-        &status.target,
+    network.send_personal_fabric_action_on_route(
+        &status.route,
         PersonalFabricAction::MediaCancelled {
             request_id,
             session_id: status.session_id.clone(),
@@ -7894,6 +7962,118 @@ mod tests {
 
         assert!(runtime.waiting_incoming_media.is_empty());
         assert!(runtime.pending_incoming_media.is_empty());
+    }
+
+    #[test]
+    fn media_route_loss_is_exact_across_workspace_and_reconnect_epochs() {
+        let (network, _commands) = crate::shell::network::shell_network_for_test(
+            crate::shell::state::WorkspaceTree::default().shared(),
+            0x4550_4f43_48,
+        );
+        let endpoint = iroh::SecretKey::from_bytes(&[0x91; 32]).public();
+        let sibling_endpoint = iroh::SecretKey::from_bytes(&[0x92; 32]).public();
+        let old_epoch = crate::network::actor::MembershipEpoch::for_test(7);
+        let sibling_epoch = crate::network::actor::MembershipEpoch::for_test(8);
+        let route = network.install_personal_route_for_test(77, endpoint, old_epoch, [0x93; 32]);
+        let sibling_route = network.install_personal_route_for_test(
+            77,
+            sibling_endpoint,
+            sibling_epoch,
+            [0x93; 32],
+        );
+        let mut runtime = DeviceFabricRuntime::new(&network, NotificationBridge::new());
+        let mut departed = pending_media([0x94; 16], route.device().clone(), Instant::now());
+        departed.route = route.clone();
+        let mut sibling = pending_media([0x95; 16], sibling_route.device().clone(), Instant::now());
+        sibling.route = sibling_route.clone();
+        runtime
+            .pending_incoming_media
+            .insert(departed.request_id, departed.clone());
+        runtime
+            .pending_incoming_media
+            .insert(sibling.request_id, sibling.clone());
+
+        network
+            .event_tx
+            .try_send(crate::network::actor::NetEvent::PeerLeft {
+                ws: 78,
+                peer: endpoint,
+                cause: crate::network::actor::PeerDepartureCause::LivenessTimedOut,
+                membership_epoch: Some(old_epoch),
+            })
+            .unwrap();
+        network.tick();
+        runtime.prune_media_routes(&network);
+        assert!(
+            runtime
+                .pending_incoming_media
+                .contains_key(&departed.request_id)
+        );
+
+        network
+            .event_tx
+            .try_send(crate::network::actor::NetEvent::PeerLeft {
+                ws: 77,
+                peer: endpoint,
+                cause: crate::network::actor::PeerDepartureCause::LivenessTimedOut,
+                membership_epoch: Some(crate::network::actor::MembershipEpoch::for_test(6)),
+            })
+            .unwrap();
+        network.tick();
+        runtime.prune_media_routes(&network);
+        assert!(
+            runtime
+                .pending_incoming_media
+                .contains_key(&departed.request_id)
+        );
+
+        network
+            .event_tx
+            .try_send(crate::network::actor::NetEvent::PeerLeft {
+                ws: 77,
+                peer: endpoint,
+                cause: crate::network::actor::PeerDepartureCause::LivenessTimedOut,
+                membership_epoch: Some(old_epoch),
+            })
+            .unwrap();
+        network.tick();
+        runtime.prune_media_routes(&network);
+        assert!(
+            !runtime
+                .pending_incoming_media
+                .contains_key(&departed.request_id)
+        );
+        assert_eq!(
+            runtime.pending_incoming_media.get(&sibling.request_id),
+            Some(&sibling)
+        );
+    }
+
+    #[test]
+    fn failed_mpris_acceptance_ack_pauses_only_the_exact_controller() {
+        let mut paused = Vec::new();
+        assert!(compensate_failed_media_acceptance(
+            &Err::<(), _>("route departed".into()),
+            Some("org.mpris.MediaPlayer2.exact"),
+            Some("https://media.example/exact.mp3"),
+            |controller, uri| {
+                paused.push((controller.to_string(), uri.to_string()));
+                true
+            },
+        ));
+        assert_eq!(
+            paused,
+            [(
+                "org.mpris.MediaPlayer2.exact".to_string(),
+                "https://media.example/exact.mp3".to_string()
+            )]
+        );
+        assert!(!compensate_failed_media_acceptance(
+            &Ok(()),
+            Some("org.mpris.MediaPlayer2.must-not-pause"),
+            Some("https://media.example/unrelated.mp3"),
+            |_, _| true,
+        ));
     }
 
     #[test]
