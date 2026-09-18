@@ -114,6 +114,95 @@ impl ImageAnalysis {
     }
 }
 
+/// A deliberately small, explicitly shared location attached to one photo.
+///
+/// Coordinates are useful for browsing a personal library, but are sensitive:
+/// this is never inferred from an IP address, uploaded for reverse geocoding,
+/// or copied from a machine-local file path.  A location reaches the shared
+/// document only through `SetPhotoLocation`; clearing it removes the complete
+/// shared record.  The label is a collaborator-visible convenience, not an
+/// authority over the coordinates.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PhotoLocation {
+    /// WGS-84 latitude in decimal degrees.
+    pub latitude: f64,
+    /// WGS-84 longitude in decimal degrees.
+    pub longitude: f64,
+    /// Optional user-facing place name, e.g. "Golden Gate Park".
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Why this location exists and whether it was deliberately shared.
+    #[serde(default)]
+    pub provenance: LocationProvenance,
+}
+
+/// Compact, inspectable provenance for photo location metadata.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocationProvenance {
+    /// `user`, `exif`, or `device`.  No network-derived source is silently
+    /// accepted: hosted geocoding would be a privacy boundary, not metadata.
+    #[serde(default = "default_location_source")]
+    pub source: String,
+    /// `shared` is required for durable locations. `local` is reserved for
+    /// an app-private draft and must never be persisted in the CRDT.
+    #[serde(default = "default_location_scope")]
+    pub scope: String,
+}
+
+fn default_location_source() -> String {
+    "user".to_owned()
+}
+fn default_location_scope() -> String {
+    "shared".to_owned()
+}
+
+impl Default for LocationProvenance {
+    fn default() -> Self {
+        Self {
+            source: default_location_source(),
+            scope: default_location_scope(),
+        }
+    }
+}
+
+impl PhotoLocation {
+    /// Coordinates must be finite WGS-84 degrees and the optional label must
+    /// be short enough to remain safe in collaboration/search projections.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.latitude.is_finite()
+            && self.longitude.is_finite()
+            && (-90.0..=90.0).contains(&self.latitude)
+            && (-180.0..=180.0).contains(&self.longitude)
+            && self.label.as_ref().is_none_or(|label| {
+                !label.trim().is_empty()
+                    && label.chars().count() <= 256
+                    && !label.chars().any(char::is_control)
+            })
+            && matches!(self.provenance.source.as_str(), "user" | "exif" | "device")
+            && self.provenance.scope == "shared"
+    }
+
+    /// Stable resource identity for a named place.  Coordinates are rounded
+    /// to ~11m so two metadata records in the same small place cluster rather
+    /// than producing an unhelpful resource for every camera jitter sample.
+    #[must_use]
+    pub fn place_key(&self) -> String {
+        let lat = (self.latitude * 10_000.0).round() as i32;
+        let lon = (self.longitude * 10_000.0).round() as i32;
+        format!("{lat}:{lon}:{}", self.label.as_deref().unwrap_or_default())
+    }
+
+    /// Human-safe detail, deliberately excluding exact coordinates from card
+    /// summaries where accidental shoulder-surfing is more likely.
+    #[must_use]
+    pub fn display_name(&self) -> String {
+        self.label
+            .clone()
+            .unwrap_or_else(|| "Shared location".to_owned())
+    }
+}
+
 /// A durable entry in Photos' shared library. Pixel bytes remain in the
 /// content store; this is intentionally only addressable metadata.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -138,6 +227,10 @@ pub struct LibraryPhoto {
     /// string avoids silently changing a collaborator's timezone or precision.
     #[serde(default)]
     pub captured_at: Option<String>,
+    /// Optional explicit location. Absence means no location was shared — it
+    /// is not a failed lookup and never triggers a network request.
+    #[serde(default)]
+    pub location: Option<PhotoLocation>,
     /// Explicitly shared intelligence. Device-local analysis belongs in the
     /// caller's ephemeral cache until this compact record is intentionally
     /// accepted through a canonical action.
@@ -160,6 +253,7 @@ impl LibraryPhoto {
             people: Vec::new(),
             tags: Vec::new(),
             captured_at: None,
+            location: None,
             analysis: None,
         }
     }
@@ -181,6 +275,9 @@ impl LibraryPhoto {
         }
         if let Some(captured_at) = &self.captured_at {
             parts.push(format!("Captured: {captured_at}"));
+        }
+        if let Some(location) = &self.location {
+            parts.push(format!("Place: {}", location.display_name()));
         }
         if let Some(analysis) = &self.analysis
             && !analysis.description.is_empty()
@@ -207,6 +304,9 @@ impl LibraryPhoto {
         }
         if let Some(captured_at) = &self.captured_at {
             parts.push(captured_at.clone());
+        }
+        if let Some(location) = &self.location {
+            parts.push(location.display_name());
         }
         if let Some(analysis) = &self.analysis
             && !analysis.description.is_empty()
