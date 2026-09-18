@@ -6,7 +6,6 @@ Run from a reviewed checkout as root; use an independently selected directory
 outside checkout, runner temporary directories and artifact upload roots.
 """
 import argparse
-import hashlib
 import importlib.util
 import json
 import os
@@ -32,31 +31,29 @@ def provision(directory):
     if any(directory == root or root in directory.parents for root in forbidden):
         raise ValueError('private signer must be outside checkout and runner temporary paths')
     signer.trusted(directory.parent, directory=True)
+    crypto = signer.trusted(Path('/usr/local/bin/tilo-crypto'))
     previous_umask = os.umask(0o077)
     try:
         directory.mkdir(mode=0o700, exist_ok=False)
         # Leave an incomplete identity visibly incomplete if provisioning fails;
         # never silently regenerate keys at an already selected path.
-        signer.run(['/usr/bin/openssl', 'genpkey', '-algorithm', 'RSA', '-pkeyopt',
-                    'rsa_keygen_bits:3072', '-out', str(directory / 'pcr-signing.key')])
-        signer.run(['/usr/bin/openssl', 'pkey', '-in', str(directory / 'pcr-signing.key'),
-                    '-pubout', '-out', str(directory / 'tpm2-pcr-signing.public.pem')])
-        signer.run(['/usr/bin/openssl', 'req', '-x509', '-newkey', 'rsa:3072', '-nodes',
-                    '-days', '365', '-subj', '/CN=Tilo Development Test Signer/',
-                    '-addext', 'basicConstraints=critical,CA:FALSE',
-                    '-addext', 'keyUsage=critical,digitalSignature',
-                    '-addext', 'extendedKeyUsage=codeSigning',
-                    '-keyout', str(directory / 'efi-signing.key'),
-                    '-out', str(directory / 'efi-signing.crt')])
+        pcr_certificate = directory / 'pcr-signing.crt'
+        signer.run([str(crypto), 'generate-secure-boot-cert', 'Tilo Development PCR Signer',
+                    str(directory / 'pcr-signing.key'), str(pcr_certificate)])
+        signer.run([str(crypto), 'rsa-public-key', str(directory / 'pcr-signing.key'),
+                    str(directory / 'tpm2-pcr-signing.public.pem')])
+        pcr_certificate.unlink()
+        signer.run([str(crypto), 'generate-secure-boot-cert', 'Tilo Development Test Signer',
+                    str(directory / 'efi-signing.key'), str(directory / 'efi-signing.crt')])
         destination = directory / 'signer'
         shutil.copyfile(Path(__file__).with_name('development-signer.py'), destination)
         destination.chmod(0o700)
         (directory / 'purpose').write_bytes(signer.PURPOSE)
-        certificate_der = signer.run(['/usr/bin/openssl', 'x509', '-in', str(directory / 'efi-signing.crt'),
-                                      '-outform', 'DER'])
+        certificate_sha256 = signer.run([str(crypto), 'certificate-sha256',
+                                         str(directory / 'efi-signing.crt')]).decode().strip()
         return {'purpose': 'tilo-development', 'signer': str(destination),
                 'efi_certificate': str(directory / 'efi-signing.crt'),
-                'efi_certificate_sha256': hashlib.sha256(certificate_der).hexdigest(),
+                'efi_certificate_sha256': certificate_sha256,
                 'pcr_public': str(directory / 'tpm2-pcr-signing.public.pem')}
     finally:
         os.umask(previous_umask)
