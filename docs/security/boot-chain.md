@@ -219,7 +219,8 @@ consumer appears; the verifier itself is deleted before the image is sealed.
 Tilo-owned ELF outputs are independently rejected for either ABI, and Tilo-owned
 TLS and signing remain Rust-native. The sealed root also deletes OpenSSL's
 optional legacy-provider DSO and loadable ENGINE modules, plus GStreamer's
-OpenSSL-backed DTLS plugin (Tilo has no WebRTC/DTLS/SRTP media path).
+OpenSSL-backed DTLS, curl, and Icecast/Shoutcast plugins (Tilo has none of
+those network media paths).
 Foundational Fedora consumers retain only the built-in provider surface they
 require; the recurring security audit fails if any removed module reappears.
 
