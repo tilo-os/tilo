@@ -4073,7 +4073,15 @@ impl ConnectionStore {
     fn append_checked(
         &mut self,
         change: Change,
+        recovery_checks: RecoveryChecks<'_>,
+    ) -> Result<(), StoreError> {
+        self.append_checked_with_baseline(change, recovery_checks, BaselineAppendCheck::none())
+    }
+    fn append_checked_with_baseline(
+        &mut self,
+        change: Change,
         mut recovery_checks: RecoveryChecks<'_>,
+        mut baseline: BaselineAppendCheck<'_, '_>,
     ) -> Result<(), StoreError> {
         // An implicit checkpoint may collect pages before this event is durable.
         self.candidate_pin = match &change {
@@ -4124,12 +4132,21 @@ impl ConnectionStore {
             self.validate_verification_mode(&event.change, &recovery_checks, true)?;
             let committed_sequence = format::next(self.sequence)?;
             let mut sequence = committed_sequence;
+            // All page/recovery rereads and any checkpoint/second reduction are
+            // finished. A read-budget context alone is not endpoint authority.
+            #[cfg(all(test, target_os = "linux"))]
+            baseline.before_write_for_test();
+            baseline.validate(self, &event.change)?;
             touched = true;
             framing::write_record(&mut self.log, &mut sequence, &event)?;
             storage::sync_file(&self.log)?;
             self.log_identity = storage::regular(&self.log)?;
             self.validate()?;
             self.validate_verification_mode(&event.change, &recovery_checks, true)?;
+            // Keep the actual native proof and Windows recovery readers alive
+            // through fsync. A failure here poisons the owner: reopen may show
+            // the already durable event; returning Err cannot roll it back.
+            baseline.validate(self, &event.change)?;
             self.commit_rows(prepared);
             self.sequence = committed_sequence;
             self.digest = format::digest(&bytes);
@@ -4357,6 +4374,72 @@ enum VerificationMode<'a> {
     Legacy,
     NativeLive(&'a NativeReadContext<'a>),
     NativeReplay(OperationId),
+}
+// The host-only variant probes shared append ordering, never native validity.
+enum BaselineAppendCheck<'a, 'proof> {
+    None(std::marker::PhantomData<&'a &'proof ()>),
+    #[cfg(target_os = "linux")]
+    Native {
+        live: &'a LiveOperation,
+        comparison: &'a mut super::transaction::native::VerifiedComparison<'proof>,
+        cancel: &'a AtomicBool,
+    },
+    #[cfg(test)]
+    Host(&'a tests::BaselineAppendProbe),
+}
+impl BaselineAppendCheck<'_, '_> {
+    fn none() -> Self {
+        Self::None(std::marker::PhantomData)
+    }
+    #[cfg(all(test, target_os = "linux"))]
+    fn before_write_for_test(&mut self) {
+        if let Self::Native { comparison, .. } = self {
+            BEFORE_NATIVE_BASELINE_WRITE.with(|slot| {
+                if let Some(hook) = slot.borrow_mut().take() {
+                    (hook.action)();
+                    if hook.revoke {
+                        comparison.revoke_for_test();
+                    }
+                }
+            });
+        }
+    }
+    #[cfg_attr(
+        not(any(test, target_os = "linux")),
+        expect(
+            clippy::unnecessary_wraps,
+            clippy::needless_pass_by_ref_mut,
+            reason = "The shared append interface is fallible and mutates owning native proof on Linux; non-Linux production has only its legacy no-op variant."
+        )
+    )]
+    fn validate(&mut self, store: &ConnectionStore, change: &Change) -> Result<(), StoreError> {
+        // Non-Linux production builds have only the no-op legacy variant.
+        let _ = (store, change);
+        match self {
+            Self::None(_) => Ok(()),
+            #[cfg(target_os = "linux")]
+            Self::Native {
+                live,
+                comparison,
+                cancel,
+            } => {
+                if !matches!(change, Change::BaselineCommit { connection, expected, .. }
+                    if *connection == live.id.connection.0 && *expected == live.revision)
+                {
+                    return Err(StoreError::StaleRevision);
+                }
+                store.check_native(live)?;
+                comparison.validate(store, live, cancel)
+            }
+            #[cfg(test)]
+            Self::Host(probe) => {
+                if !matches!(change, Change::BaselineCommit { .. }) {
+                    return Err(StoreError::RecoveryRequired);
+                }
+                probe.validate(store)
+            }
+        }
+    }
 }
 #[derive(Default)]
 struct RecoveryChecks<'a> {
@@ -4610,7 +4693,7 @@ impl ConnectionStore {
             return Err(StoreError::RecoveryRequired);
         }
         comparison.validate(self, live, cancel)?;
-        self.append_native(
+        self.append_checked_with_baseline(
             Change::BaselineCommit {
                 connection: connection.id,
                 expected: live.revision,
@@ -4620,7 +4703,15 @@ impl ConnectionStore {
                 destination: connection.destination.identity,
                 initial_review,
             },
-            &context,
+            RecoveryChecks {
+                mode: VerificationMode::NativeLive(&context),
+                ..RecoveryChecks::default()
+            },
+            BaselineAppendCheck::Native {
+                live,
+                comparison,
+                cancel,
+            },
         )?;
         live.revision = format::next(live.revision)?;
         Ok(self.ack(live.revision))
@@ -5639,5 +5730,51 @@ impl ConnectionStore {
             return Ok(reservation);
         }
         self.reserve_native_namespace(live, side)
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+struct NativeBaselineWriteHook {
+    revoke: bool,
+    action: Box<dyn FnOnce()>,
+}
+#[cfg(all(test, target_os = "linux"))]
+thread_local! {
+    static BEFORE_NATIVE_BASELINE_WRITE: std::cell::RefCell<Option<NativeBaselineWriteHook>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(all(test, target_os = "linux"))]
+pub(super) fn before_native_baseline_write_for_test(revoke: bool, hook: impl FnOnce() + 'static) {
+    BEFORE_NATIVE_BASELINE_WRITE.with(|slot| {
+        *slot.borrow_mut() = Some(NativeBaselineWriteHook {
+            revoke,
+            action: Box::new(hook),
+        });
+    });
+}
+#[cfg(all(test, target_os = "linux"))]
+impl ConnectionStore {
+    pub(super) fn selected_attention_snapshot_for_test(
+        &self,
+        id: ConnectionId,
+    ) -> Result<Vec<Vec<u8>>, StoreError> {
+        let mut result = Vec::new();
+        for row in self.rows()? {
+            if let Row::Operation(operation) = row?
+                && operation.connection == id.0
+                && operation
+                    .selected_applied
+                    .as_ref()
+                    .is_some_and(|fact| fact.attention)
+            {
+                result.push(format::encode(&operation)?);
+            }
+        }
+        Ok(result)
+    }
+    pub(super) fn baseline_checkpoint_generation_for_test(&self) -> u64 {
+        self.current.generation
+    }
+    pub(super) fn force_baseline_checkpoint_for_test(&mut self) {
+        self.overlay_bytes = 9 * 1024 * 1024;
     }
 }
