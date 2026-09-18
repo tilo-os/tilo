@@ -189,11 +189,20 @@ def local_hardware_inputs(profile, architecture):
     return hashes
 
 
-def run(*command, env=None, capture=True, timeout=None):
-    result = subprocess.run(command, cwd=REPO, env=env, check=True,
+def run(*command, env=None, capture=True, timeout=None, cwd=None):
+    result = subprocess.run(command, cwd=REPO if cwd is None else cwd, env=env, check=True,
                             stdout=subprocess.PIPE if capture else None,
                             stderr=subprocess.PIPE if capture else None, timeout=timeout)
     return result.stdout.decode().strip() if capture else ''
+
+
+def build_host_crypto():
+    """Host utility commands belong to the controller, not frozen OS source."""
+    target = PRIVATE / 'host-tools-target'
+    run('cargo', 'build', '--locked', '--release', '-p', 'tilo-crypto',
+        '--target-dir', str(target), cwd=CONTROLLER)
+    run('install', '-m', '0755', str(target / 'release/tilo-crypto'),
+        '/usr/local/bin/tilo-crypto', cwd=CONTROLLER)
 
 
 def write_receipt(name, value):
@@ -898,8 +907,7 @@ def main(argv=None):
         'rustc': ('rustc', '--version'), 'cosign': ('cosign', 'version')}.items()})
     metadata = json.loads(run('cargo', 'metadata', '--locked', '--no-deps', '--format-version', '1'))
     write_receipt('workspace.json', {'packages': sorted(package['name'] for package in metadata['packages'])})
-    run('cargo', 'build', '--locked', '--release', '-p', 'tilo-crypto')
-    run('install', '-m', '0755', 'target/release/tilo-crypto', '/usr/local/bin/tilo-crypto')
+    build_host_crypto()
     run('bash', 'os/tests/app_store.sh', capture=False)
     signer = json.loads(run('python3', 'os/dev/setup-development-signer.py', str(PRIVATE / 'signer')))
     identity_env = os.environ.copy()
