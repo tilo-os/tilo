@@ -57,16 +57,26 @@ extern crate runtime_dylib;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
-        &LaunchSpec::new("dev.tilo.photos", photos::app_root)
+        &LaunchSpec::new_with_args("dev.tilo.photos", live_root)
             .open_state_with_args(open_state)
             .shot_handler(render_shot)
             .allowed_options(&["--size"])
-            .allowed_live_options(&["--open"])
+            .allowed_live_flags(&["--analyze-imports"])
+            .allowed_live_options(&["--open", "--import-directory"])
             .max_positionals(1)
             .scenarios(photos::SHOT_SCENARIOS)
             .configure_app(configure_app),
     )?;
     Ok(())
+}
+
+fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    photos::strings::install();
+    let mut app = photos::PhotosApp::new();
+    if args.value("--import-directory").is_some() {
+        app.show_library();
+    }
+    Ok(Box::new(app))
 }
 
 fn requested_path(args: &LaunchArgs) -> Option<&str> {
@@ -81,7 +91,53 @@ fn open_state(app_id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persis
         photos::strings::install();
         opener.open_path(&mut state.doc, path);
     }
+    if let Some(directory) = args.value("--import-directory") {
+        import_directory_at_startup(&mut state.doc, directory, args.has("--analyze-imports"));
+    }
     (state, autosave)
+}
+
+/// An explicit launch import is useful for first-run migration and acceptance
+/// testing. It uses the production bounded indexer and genuine local analysis;
+/// no fixture labels, dates, locations, descriptions, or people are injected.
+fn import_directory_at_startup(
+    doc: &mut ui::automerge::AutoCommit,
+    directory: &str,
+    analyze: bool,
+) {
+    use std::sync::atomic::AtomicBool;
+
+    let cancelled = AtomicBool::new(false);
+    let Ok(report) = photos::import::index_directory(
+        std::path::Path::new(directory),
+        photos::import::ImportOptions::default(),
+        &cancelled,
+        |_| {},
+    ) else {
+        return;
+    };
+    let capability = if analyze {
+        tilo_vision::discover_local_capability(&agent_provider_config::ProviderConfig::load())
+    } else {
+        None
+    };
+    let mut library = photos::doc::PhotosDoc::library(doc);
+    for mut indexed in report.photos {
+        if analyze {
+            let result = capability
+                .as_ref()
+                .and_then(|model| photos::analysis::analyze_image(&indexed.photo.image, model).ok())
+                .or_else(|| photos::analysis::recognize_text(&indexed.photo.image, "eng").ok());
+            if let Some(mut analysis) = result {
+                "shared".clone_into(&mut analysis.provenance.scope);
+                if !analysis.searchable_text().is_empty() {
+                    indexed.photo.analysis = Some(analysis);
+                }
+            }
+        }
+        let _ = library.add_photo(indexed.photo);
+    }
+    photos::doc::PhotosDoc::set_library(doc, &library);
 }
 
 fn configure_app(app: &mut ui::App) {
