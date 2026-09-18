@@ -18,25 +18,16 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
-use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action, set_text_action};
 use crate::continuity::{Capability, ContinuityPrivacy};
 use crate::widgets::{
-    caption, card, card_with_action, cards, choice_row_described, rows, setting_row_described,
-    status_pill, value_row,
+    StatusTone, caption, card, card_with_action, cards, choice_row_described, rows,
+    semantic_status_pill, setting_row_described, value_row,
 };
 use settings_store::roaming_provenance::{Origin, RoamingProvenance};
 
 const DEFAULT_CONFIG: &str = "/etc/tilo/relay.toml";
-const ROLE_KEY: &str = "device_mesh.role";
-const REPLICATION_KEY: &str = "device_mesh.replication";
-const INBOUND_RELAY_KEY: &str = "device_mesh.inbound_relay";
-const REMOTE_RELAY_KEY: &str = "device_mesh.remote_control_relay";
-const APP_SERVING_KEY: &str = "device_mesh.app_serving";
-const COMPUTE_KEY: &str = "device_mesh.compute";
 const APPROVE_ENROLLMENT_KEY: &str = "device_mesh.approve_enrollment.edit";
 const APPROVE_PERSONAL_DEVICE_KEY: &str = "device_mesh.approve_personal_device.edit";
-const CONFIRM_ROLE_KEY: &str = "device_mesh.confirm_role.edit";
-const CANCEL_ROLE_KEY: &str = "device_mesh.cancel_role.edit";
 const CONTINUITY_ENABLED_KEY: &str = "device_mesh.continuity.enabled";
 const CONTROL_HELPER: &str = "/usr/libexec/tilo-home-peer-control";
 const RELAY_ADMIN: &str = "/usr/bin/tilo-relay-admin";
@@ -62,10 +53,6 @@ const REPLICATION_OPTIONS: &[&str] = &[
     REPLICATION_FULL,
 ];
 const REVOKE_REASONS: &[&str] = &["Retired", "Lost", "Stolen", "Compromised"];
-
-fn draft_key(key: &str) -> String {
-    format!("{key}.edit")
-}
 
 fn role_label(role: DeviceRole) -> &'static str {
     match role {
@@ -182,12 +169,11 @@ impl RelayRuntimeStatus {
     }
 }
 
-fn runtime_status_tint(status: RelayRuntimeStatus) -> vello::peniko::Color {
-    let theme = Theme::dark();
+fn runtime_status_tone(status: RelayRuntimeStatus) -> StatusTone {
     match status {
-        RelayRuntimeStatus::Ready | RelayRuntimeStatus::Online => theme.status_success,
-        RelayRuntimeStatus::Syncing => theme.tokens.colors.semantic.warning,
-        RelayRuntimeStatus::Offline => theme.text_dim,
+        RelayRuntimeStatus::Ready | RelayRuntimeStatus::Online => StatusTone::Success,
+        RelayRuntimeStatus::Syncing => StatusTone::Warning,
+        RelayRuntimeStatus::Offline => StatusTone::Neutral,
     }
 }
 
@@ -223,7 +209,6 @@ pub struct DeviceMeshPane {
     management_device: Option<String>,
     next_peer_health: usize,
     remove_armed: std::collections::HashSet<String>,
-    pending_role: Option<DeviceRole>,
     apply_child: Option<bounded_command::AsyncCommand>,
     apply_queued: bool,
     pairing_child: Option<bounded_command::AsyncCommand>,
@@ -233,7 +218,8 @@ pub struct DeviceMeshPane {
     next_status_refresh: Instant,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
-    actions: ui::ActionHost,
+    command_state: Option<ui::LocalState<Option<crate::actions::DeviceMeshOperation>>>,
+    operation_status: Option<ui::LocalState<crate::actions::LocalOperationStatus>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -304,6 +290,13 @@ fn discover_workspaces(config: &RelayConfig) -> Vec<DiscoveredWorkspace> {
     }
     result.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
     result
+}
+
+pub(crate) fn resource_workspaces() -> Vec<(u64, String)> {
+    discover_workspaces(&RelayConfig::default())
+        .into_iter()
+        .map(|workspace| (workspace.id, workspace.name))
+        .collect()
 }
 
 fn registered_home_peer_count() -> usize {
@@ -574,7 +567,6 @@ impl DeviceMeshPane {
             management_device: None,
             next_peer_health: 0,
             remove_armed: std::collections::HashSet::new(),
-            pending_role: None,
             apply_child: None,
             apply_queued: false,
             pairing_child: None,
@@ -584,8 +576,27 @@ impl DeviceMeshPane {
             next_status_refresh: Instant::now() + STATUS_REFRESH_INTERVAL,
             composed: None,
             rect: Rect::ZERO,
-            actions: ui::ActionHost::new(),
+            command_state: None,
+            operation_status: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_command_state(
+        mut self,
+        state: &ui::LocalState<Option<crate::actions::DeviceMeshOperation>>,
+    ) -> Self {
+        self.command_state = Some(state.clone());
+        self
+    }
+
+    #[must_use]
+    pub fn with_operation_status(
+        mut self,
+        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
+    ) -> Self {
+        self.operation_status = Some(status.clone());
+        self
     }
 
     #[cfg(test)]
@@ -616,13 +627,115 @@ impl DeviceMeshPane {
             })
     }
 
-    fn dispatch(&mut self, state: &mut AutoCommit, action: &SettingsAction) {
-        self.actions.dispatch_with_context(
-            state,
-            SETTINGS_ACTION_TYPE,
-            action,
-            tilo_actions::ActionContext::for_action("org.tilo.Settings", "Settings", action),
+    fn finish_command(
+        &self,
+        operation: &crate::actions::DeviceMeshOperation,
+        result: Result<(), String>,
+    ) {
+        let Some(status) = &self.operation_status else {
+            return;
+        };
+        let token = crate::actions::local_operation_token_for(
+            crate::actions::DEVICE_MESH_OPERATION_TYPE,
+            operation,
         );
+        status.set(match result {
+            Ok(()) => crate::actions::LocalOperationStatus::Succeeded {
+                token,
+                message: "Device & Sync settings saved on this device".into(),
+            },
+            Err(message) => crate::actions::LocalOperationStatus::Failed { token, message },
+        });
+    }
+
+    fn apply_command(&mut self, operation: &crate::actions::DeviceMeshOperation) {
+        let result = match operation {
+            crate::actions::DeviceMeshOperation::SetRole { role } => role_from_label(role)
+                .ok_or_else(|| "unsupported device role".to_string())
+                .map(|role| {
+                    self.apply_role_change(role);
+                }),
+            crate::actions::DeviceMeshOperation::SetReplication { replication } => {
+                replication_from_label(replication)
+                    .ok_or_else(|| "unsupported replication policy".to_string())
+                    .map(|intent| {
+                        for workspace in &mut self.config.workspaces {
+                            workspace.replication = intent.clone();
+                        }
+                        self.config.services.full_content_replication =
+                            intent == ReplicationIntent::FullWorkspace;
+                    })
+            }
+            crate::actions::DeviceMeshOperation::SetService { service, enabled } => {
+                match service.as_str() {
+                    "inbound_relay" => self.config.services.inbound_relay = *enabled,
+                    "remote_control_relay" => {
+                        self.config.services.remote_control_relay = *enabled;
+                    }
+                    "app_serving" => self.config.services.app_serving = *enabled,
+                    "compute" => self.config.services.compute = *enabled,
+                    "continuity.enabled" => {
+                        self.continuity.enabled = *enabled;
+                        self.continuity.record(None, *enabled, unix_seconds());
+                        self.save_continuity();
+                    }
+                    service if service.starts_with("continuity.") => {
+                        let key = service.strip_prefix("continuity.").unwrap_or_default();
+                        let Some(capability) = Capability::ALL
+                            .into_iter()
+                            .find(|capability| capability.key() == key)
+                        else {
+                            self.finish_command(
+                                operation,
+                                Err("unsupported Continuity capability".into()),
+                            );
+                            return;
+                        };
+                        self.continuity.set_allowed(capability, *enabled);
+                        self.continuity
+                            .record(Some(capability), *enabled, unix_seconds());
+                        self.save_continuity();
+                    }
+                    _ => {
+                        self.finish_command(operation, Err("unsupported device service".into()));
+                        return;
+                    }
+                }
+                Ok(())
+            }
+            crate::actions::DeviceMeshOperation::SetWorkspace { id, enabled } => {
+                if self
+                    .discovered_workspaces
+                    .iter()
+                    .any(|workspace| workspace.id == *id)
+                {
+                    if *enabled
+                        && !self
+                            .config
+                            .workspaces
+                            .iter()
+                            .any(|workspace| workspace.id == *id)
+                    {
+                        self.config.workspaces.push(tilo_relay::WorkspaceBinding {
+                            id: *id,
+                            pin: self.config.device_role.can_serve(),
+                            replication: ReplicationIntent::OnDemand,
+                            admitted_users: Vec::new(),
+                        });
+                    } else if !*enabled {
+                        self.config.remove_workspace(*id);
+                    }
+                    Ok(())
+                } else {
+                    Err("workspace is no longer available on this device".into())
+                }
+            }
+        };
+        if result.is_ok() {
+            self.persist();
+            self.structure_dirty = true;
+        }
+        self.finish_command(operation, result);
     }
 
     fn refresh_runtime_status(&mut self) {
@@ -652,12 +765,7 @@ impl DeviceMeshPane {
         self.structure_dirty = true;
     }
 
-    fn apply_role_change(
-        &mut self,
-        role: DeviceRole,
-        state: &mut AutoCommit,
-        _root: &ObjId,
-    ) -> bool {
+    fn apply_role_change(&mut self, role: DeviceRole) -> bool {
         if role == self.config.device_role {
             return false;
         }
@@ -667,7 +775,6 @@ impl DeviceMeshPane {
         self.config.device_role = role;
         self.config.services.workspace_replication = role.can_serve();
         self.config.services.inbound_relay = role.can_serve();
-        self.dispatch(state, &set_bool_action(INBOUND_RELAY_KEY, role.can_serve()));
         for workspace in &mut self.config.workspaces {
             workspace.pin = role.can_serve();
         }
@@ -683,21 +790,11 @@ impl DeviceMeshPane {
                         admitted_users: Vec::new(),
                     })
                     .collect();
-                for workspace in self.discovered_workspaces.clone() {
-                    self.dispatch(state, &set_bool_action(workspace_key(workspace.id), true));
-                }
             }
             self.config.services.full_content_replication = true;
             for workspace in &mut self.config.workspaces {
                 workspace.replication = ReplicationIntent::FullWorkspace;
             }
-            self.dispatch(
-                state,
-                &set_text_action(
-                    REPLICATION_KEY,
-                    replication_label(&ReplicationIntent::FullWorkspace),
-                ),
-            );
         } else {
             self.config.services.full_content_replication = false;
         }
@@ -710,15 +807,20 @@ impl DeviceMeshPane {
         reason = "the pane composition keeps the four device-mesh policy cards and their explanatory security text in one auditable hierarchy"
     )]
     fn build_composition(&self) -> Box<dyn Widget> {
-        let role = Dropdown::new(
+        let role_state = ui::LocalState::new(role_label(self.config.device_role).to_string());
+        let role = Dropdown::from_state(
             ROLE_OPTIONS
                 .iter()
                 .map(|label| (*label).to_string())
                 .collect(),
-            &draft_key(ROLE_KEY),
+            &role_state,
         )
         .with_id("device_mesh.role")
         .with_placeholder(role_label(self.config.device_role));
+        let role = match crate::actions::device_mesh_text_binding("role") {
+            Some(binding) => role.on_action(binding),
+            None => role.with_enabled(false),
+        };
 
         let mut continuation_rows = vec![
             value_row("Workspace and app activity", "Sync automatically"),
@@ -729,15 +831,21 @@ impl DeviceMeshPane {
         if self.config.workspaces.is_empty() {
             continuation_rows.push(value_row("Files", "Download when opened"));
         } else {
-            let replication = Dropdown::new(
+            let replication_state =
+                ui::LocalState::new(replication_label(&self.common_replication()).to_string());
+            let replication = Dropdown::from_state(
                 REPLICATION_OPTIONS
                     .iter()
                     .map(|label| (*label).to_string())
                     .collect(),
-                &draft_key(REPLICATION_KEY),
+                &replication_state,
             )
             .with_id("device_mesh.replication")
             .with_placeholder(replication_label(&self.common_replication()));
+            let replication = match crate::actions::device_mesh_text_binding("replication") {
+                Some(binding) => replication.on_action(binding),
+                None => replication.with_enabled(false),
+            };
             continuation_rows.push(choice_row_described(
                 "Files",
                 replication_description(&self.common_replication()),
@@ -770,9 +878,9 @@ impl DeviceMeshPane {
                     }
                     RelayRuntimeStatus::Offline => "The sync service is not currently reachable.",
                 },
-                status_pill(
+                semantic_status_pill(
                     self.runtime_status.label(),
-                    runtime_status_tint(self.runtime_status),
+                    runtime_status_tone(self.runtime_status),
                 ),
             ));
         }
@@ -810,10 +918,29 @@ impl DeviceMeshPane {
                     .iter()
                     .map(|workspace| {
                         let key = workspace_key(workspace.id);
+                        let selected = self
+                            .config
+                            .workspaces
+                            .iter()
+                            .any(|binding| binding.id == workspace.id);
                         setting_row_described(
                             &workspace.name,
                             "Keep this workspace available from this device",
-                            Box::new(Toggle::new(&key, &draft_key(&key)).with_id(&key)),
+                            Box::new(
+                                crate::actions::device_mesh_workspace_binding(workspace.id)
+                                    .map_or_else(
+                                        || {
+                                            Toggle::from_state(&ui::LocalState::new(selected))
+                                                .with_id(&key)
+                                                .with_enabled(false)
+                                        },
+                                        |binding| {
+                                            Toggle::from_state(&ui::LocalState::new(selected))
+                                                .with_id(&key)
+                                                .on_action(binding)
+                                        },
+                                    ),
+                            ),
                         )
                     })
                     .collect(),
@@ -896,12 +1023,12 @@ impl DeviceMeshPane {
                             .with_enabled(!device.current && !device.revoked),
                     )
                 } else if device.current || device.revoked || device.can_host {
-                    status_pill(
+                    semantic_status_pill(
                         status,
                         if device.current {
-                            Theme::dark().status_success
+                            StatusTone::Success
                         } else {
-                            Theme::dark().text_dim
+                            StatusTone::Neutral
                         },
                     )
                 } else {
@@ -967,16 +1094,22 @@ impl DeviceMeshPane {
                 )
             },
         );
+        let continuity_toggle = crate::actions::device_mesh_bool_binding("continuity-enabled")
+            .map_or_else(
+                || {
+                    Toggle::from_state(&ui::LocalState::new(self.continuity.enabled))
+                        .with_enabled(false)
+                },
+                |binding| {
+                    Toggle::from_state(&ui::LocalState::new(self.continuity.enabled))
+                        .on_action(binding)
+                },
+            )
+            .with_id(CONTINUITY_ENABLED_KEY);
         let mut privacy_rows = vec![setting_row_described(
             "Allow Continuity from this device",
             "Master device-local kill switch. Turning it off stops every facet immediately without forgetting individual choices.",
-            Box::new(
-                Toggle::new(
-                    "settings.device_mesh.continuity.enabled",
-                    &draft_key(CONTINUITY_ENABLED_KEY),
-                )
-                .with_id(CONTINUITY_ENABLED_KEY),
-            ),
+            Box::new(continuity_toggle),
         )];
         for capability in Capability::ALL {
             let key = continuity_key(capability);
@@ -990,10 +1123,27 @@ impl DeviceMeshPane {
             } else {
                 format!("{} Off on this device.", capability.description())
             };
+            let action_id = format!("continuity-{}", capability.key().replace('_', "-"));
+            let toggle = crate::actions::device_mesh_bool_binding(&action_id)
+                .map_or_else(
+                    || {
+                        Toggle::from_state(&ui::LocalState::new(
+                            self.continuity.allowed(capability),
+                        ))
+                        .with_enabled(false)
+                    },
+                    |binding| {
+                        Toggle::from_state(&ui::LocalState::new(
+                            self.continuity.allowed(capability),
+                        ))
+                        .on_action(binding)
+                    },
+                )
+                .with_id(&key);
             privacy_rows.push(setting_row_described(
                 capability.label(),
                 &status,
-                Box::new(Toggle::new(&format!("settings.{key}"), &draft_key(&key)).with_id(&key)),
+                Box::new(toggle),
             ));
         }
         privacy_rows.push(caption(
@@ -1084,50 +1234,6 @@ impl DeviceMeshPane {
             card("Synced workspaces", workspace_rows),
             card_with_action("Home server or NAS", approve, rows(home_server_rows)),
         ];
-        if let Some(pending) = self.pending_role {
-            let making_server = pending == DeviceRole::AlwaysOnServer;
-            let confirm = Box::new(Button::new(
-                "device_mesh.confirm_role",
-                if making_server {
-                    "Make always-on"
-                } else {
-                    "Stop always-on"
-                },
-                Some(CONFIRM_ROLE_KEY),
-            ));
-            let cancel = Box::new(Button::new(
-                "device_mesh.cancel_role",
-                if making_server {
-                    "Keep current setup"
-                } else {
-                    "Keep always-on"
-                },
-                Some(CANCEL_ROLE_KEY),
-            ));
-            sections.insert(
-                4,
-                card_with_action(
-                    if making_server {
-                        "Make this device always-on?"
-                    } else {
-                        "Stop hosting from this device?"
-                    },
-                    confirm,
-                    rows(vec![
-                        caption(if making_server {
-                            "Selected workspaces and their files will be copied to this device. It will relay collaboration and chat while powered and online, using additional storage, network, and energy."
-                        } else {
-                            "Other devices will no longer be able to rely on this one while it sleeps or is powered off. Existing local files stay on this device and continue to follow the file policy below."
-                        }),
-                        setting_row_described(
-                            "This affects availability",
-                            "It does not change collaborators or their workspace permissions.",
-                            cancel,
-                        ),
-                    ]),
-                ),
-            );
-        }
         for peer in &self.home_peers {
             let device = &peer.device_node_id;
             let rename_key = peer_key("name", device);
@@ -1169,14 +1275,14 @@ impl DeviceMeshPane {
                 setting_row_described(
                     "Availability",
                     &health,
-                    status_pill(
+                    semantic_status_pill(
                         peer_health_badge(&health),
                         if health.starts_with("Online") {
-                            Theme::dark().status_success
+                            StatusTone::Success
                         } else if health.contains("Syncing") || health == "Checking…" {
-                            Theme::dark().tokens.colors.semantic.warning
+                            StatusTone::Warning
                         } else {
-                            Theme::dark().text_dim
+                            StatusTone::Neutral
                         },
                     ),
                 ),
@@ -1203,41 +1309,87 @@ impl DeviceMeshPane {
                         "Collaboration and chat relay",
                         "Keep workspace updates and messages moving between devices",
                         Box::new(
-                            Toggle::new(
-                                "settings.device_mesh.inbound_relay",
-                                &draft_key(INBOUND_RELAY_KEY),
-                            )
-                            .with_id("device_mesh.inbound_relay"),
+                            crate::actions::device_mesh_bool_binding("inbound-relay").map_or_else(
+                                || {
+                                    Toggle::from_state(&ui::LocalState::new(
+                                        self.config.services.inbound_relay,
+                                    ))
+                                    .with_id("device_mesh.inbound_relay")
+                                    .with_enabled(false)
+                                },
+                                |binding| {
+                                    Toggle::from_state(&ui::LocalState::new(
+                                        self.config.services.inbound_relay,
+                                    ))
+                                    .with_id("device_mesh.inbound_relay")
+                                    .on_action(binding)
+                                },
+                            ),
                         ),
                     ),
                     setting_row_described(
                         "Remote-control relay",
                         "Connect remote-control sessions through this device when needed",
                         Box::new(
-                            Toggle::new(
-                                "settings.device_mesh.remote_relay",
-                                &draft_key(REMOTE_RELAY_KEY),
-                            )
-                            .with_id("device_mesh.remote_relay"),
+                            crate::actions::device_mesh_bool_binding("remote-control").map_or_else(
+                                || {
+                                    Toggle::from_state(&ui::LocalState::new(
+                                        self.config.services.remote_control_relay,
+                                    ))
+                                    .with_id("device_mesh.remote_relay")
+                                    .with_enabled(false)
+                                },
+                                |binding| {
+                                    Toggle::from_state(&ui::LocalState::new(
+                                        self.config.services.remote_control_relay,
+                                    ))
+                                    .with_id("device_mesh.remote_relay")
+                                    .on_action(binding)
+                                },
+                            ),
                         ),
                     ),
                     setting_row_described(
                         "Serve app backends",
                         "Run compatible app services from this device",
                         Box::new(
-                            Toggle::new(
-                                "settings.device_mesh.app_serving",
-                                &draft_key(APP_SERVING_KEY),
-                            )
-                            .with_id("device_mesh.app_serving"),
+                            crate::actions::device_mesh_bool_binding("app-serving").map_or_else(
+                                || {
+                                    Toggle::from_state(&ui::LocalState::new(
+                                        self.config.services.app_serving,
+                                    ))
+                                    .with_id("device_mesh.app_serving")
+                                    .with_enabled(false)
+                                },
+                                |binding| {
+                                    Toggle::from_state(&ui::LocalState::new(
+                                        self.config.services.app_serving,
+                                    ))
+                                    .with_id("device_mesh.app_serving")
+                                    .on_action(binding)
+                                },
+                            ),
                         ),
                     ),
                     setting_row_described(
                         "Accept distributed jobs",
                         "Run compatible background jobs from this device",
                         Box::new(
-                            Toggle::new("settings.device_mesh.compute", &draft_key(COMPUTE_KEY))
-                                .with_id("device_mesh.compute"),
+                            crate::actions::device_mesh_bool_binding("compute").map_or_else(
+                                || {
+                                    Toggle::from_state(&ui::LocalState::new(
+                                        self.config.services.compute,
+                                    ))
+                                    .with_enabled(false)
+                                },
+                                |binding| {
+                                    Toggle::from_state(&ui::LocalState::new(
+                                        self.config.services.compute,
+                                    ))
+                                    .with_id("device_mesh.compute")
+                                    .on_action(binding)
+                                },
+                            ),
                         ),
                     ),
                 ]),
@@ -1265,16 +1417,6 @@ impl DeviceMeshPane {
             },
             _ => None,
         }
-    }
-
-    fn apply_bool(state: &AutoCommit, root: &ObjId, key: &str, current: &mut bool) -> bool {
-        if let Some(value) = Self::read_bool(state, root, key)
-            && value != *current
-        {
-            *current = value;
-            return true;
-        }
-        false
     }
 
     fn persist(&mut self) {
@@ -1680,53 +1822,13 @@ impl Widget for DeviceMeshPane {
     )]
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         self.poll_background_tasks();
+        if let Some(command_state) = &self.command_state
+            && let Some(operation) = command_state.get()
+        {
+            command_state.set(None);
+            self.apply_command(&operation);
+        }
         if self.needs_seed {
-            let _ = state.put(root, ROLE_KEY, role_label(self.config.device_role));
-            let _ = state.put(
-                root,
-                draft_key(ROLE_KEY),
-                role_label(self.config.device_role),
-            );
-            let _ = state.put(
-                root,
-                REPLICATION_KEY,
-                replication_label(&self.common_replication()),
-            );
-            let _ = state.put(
-                root,
-                draft_key(REPLICATION_KEY),
-                replication_label(&self.common_replication()),
-            );
-            for (key, value) in [
-                (INBOUND_RELAY_KEY, self.config.services.inbound_relay),
-                (REMOTE_RELAY_KEY, self.config.services.remote_control_relay),
-                (APP_SERVING_KEY, self.config.services.app_serving),
-                (COMPUTE_KEY, self.config.services.compute),
-            ] {
-                let _ = state.put(root, key, value);
-                let _ = state.put(root, draft_key(key), value);
-            }
-            let _ = state.put(root, CONTINUITY_ENABLED_KEY, self.continuity.enabled);
-            let _ = state.put(
-                root,
-                draft_key(CONTINUITY_ENABLED_KEY),
-                self.continuity.enabled,
-            );
-            for capability in Capability::ALL {
-                let key = continuity_key(capability);
-                let allowed = self.continuity.allowed(capability);
-                let _ = state.put(root, &key, allowed);
-                let _ = state.put(root, draft_key(&key), allowed);
-            }
-            for workspace in &self.discovered_workspaces {
-                let selected = self
-                    .config
-                    .workspaces
-                    .iter()
-                    .any(|binding| binding.id == workspace.id);
-                let _ = state.put(root, workspace_key(workspace.id), selected);
-                let _ = state.put(root, draft_key(&workspace_key(workspace.id)), selected);
-            }
             for peer in &self.home_peers {
                 let _ = state.put(
                     root,
@@ -1744,168 +1846,12 @@ impl Widget for DeviceMeshPane {
             }
             let _ = state.put(root, APPROVE_ENROLLMENT_KEY, false);
             let _ = state.put(root, APPROVE_PERSONAL_DEVICE_KEY, false);
-            let _ = state.put(root, CONFIRM_ROLE_KEY, false);
-            let _ = state.put(root, CANCEL_ROLE_KEY, false);
             self.needs_seed = false;
         }
 
-        // Durable controls edit draft keys only.  Promote a changed draft by
-        // the same SettingsAction executor used by palette actions; local
-        // command latches below intentionally remain `.edit` presentation
-        // state and are never replayed as preferences.
-        let role = role_label(self.config.device_role);
-        if Self::read_str(state, root, ROLE_KEY).as_deref() == Some(role)
-            && let Some(draft) = Self::read_str(state, root, &draft_key(ROLE_KEY))
-            && draft != role
-            && role_from_label(&draft).is_some()
-        {
-            self.dispatch(state, &set_text_action(ROLE_KEY, draft));
-        }
-        let replication = replication_label(&self.common_replication());
-        if Self::read_str(state, root, REPLICATION_KEY).as_deref() == Some(replication)
-            && let Some(draft) = Self::read_str(state, root, &draft_key(REPLICATION_KEY))
-            && draft != replication
-            && replication_from_label(&draft).is_some()
-        {
-            self.dispatch(state, &set_text_action(REPLICATION_KEY, draft));
-        }
-        for (key, current) in [
-            (INBOUND_RELAY_KEY, self.config.services.inbound_relay),
-            (REMOTE_RELAY_KEY, self.config.services.remote_control_relay),
-            (APP_SERVING_KEY, self.config.services.app_serving),
-            (COMPUTE_KEY, self.config.services.compute),
-        ] {
-            if Self::read_bool(state, root, key) == Some(current)
-                && let Some(draft) = Self::read_bool(state, root, &draft_key(key))
-                && draft != current
-            {
-                self.dispatch(state, &set_bool_action(key, draft));
-            }
-        }
-        for (key, current) in
-            std::iter::once((CONTINUITY_ENABLED_KEY.to_string(), self.continuity.enabled)).chain(
-                Capability::ALL.map(|capability| {
-                    (
-                        continuity_key(capability),
-                        self.continuity.allowed(capability),
-                    )
-                }),
-            )
-        {
-            if Self::read_bool(state, root, &key) == Some(current)
-                && let Some(draft) = Self::read_bool(state, root, &draft_key(&key))
-                && draft != current
-            {
-                self.dispatch(state, &set_bool_action(&key, draft));
-            }
-        }
-        for workspace in self.discovered_workspaces.clone() {
-            let key = workspace_key(workspace.id);
-            let selected = self
-                .config
-                .workspaces
-                .iter()
-                .any(|binding| binding.id == workspace.id);
-            if Self::read_bool(state, root, &key) == Some(selected)
-                && let Some(draft) = Self::read_bool(state, root, &draft_key(&key))
-                && draft != selected
-            {
-                self.dispatch(state, &set_bool_action(key, draft));
-            }
-        }
-
-        let mut changed = false;
-        if Self::read_bool(state, root, CANCEL_ROLE_KEY) == Some(true) {
-            let _ = state.put(root, CANCEL_ROLE_KEY, false);
-            self.pending_role = None;
-            self.structure_dirty = true;
-        }
-        if Self::read_bool(state, root, CONFIRM_ROLE_KEY) == Some(true) {
-            let _ = state.put(root, CONFIRM_ROLE_KEY, false);
-            if let Some(role) = self.pending_role.take() {
-                changed |= self.apply_role_change(role, state, root);
-                self.dispatch(state, &set_text_action(ROLE_KEY, role_label(role)));
-                self.structure_dirty = true;
-            }
-        }
-        if let Some(role) = Self::read_str(state, root, ROLE_KEY)
-            .as_deref()
-            .and_then(role_from_label)
-            && role != self.config.device_role
-        {
-            if role == DeviceRole::AlwaysOnServer
-                || self.config.device_role == DeviceRole::AlwaysOnServer
-            {
-                self.pending_role = Some(role);
-                self.dispatch(
-                    state,
-                    &set_text_action(ROLE_KEY, role_label(self.config.device_role)),
-                );
-                self.structure_dirty = true;
-            } else {
-                changed |= self.apply_role_change(role, state, root);
-            }
-        }
-        if let Some(intent) = Self::read_str(state, root, REPLICATION_KEY)
-            .as_deref()
-            .and_then(replication_from_label)
-            && self
-                .config
-                .workspaces
-                .iter()
-                .any(|workspace| workspace.replication != intent)
-        {
-            for workspace in &mut self.config.workspaces {
-                workspace.replication = intent.clone();
-            }
-            self.config.services.full_content_replication =
-                intent == ReplicationIntent::FullWorkspace;
-            changed = true;
-        }
-        changed |= Self::apply_bool(
-            state,
-            root,
-            INBOUND_RELAY_KEY,
-            &mut self.config.services.inbound_relay,
-        );
-        changed |= Self::apply_bool(
-            state,
-            root,
-            REMOTE_RELAY_KEY,
-            &mut self.config.services.remote_control_relay,
-        );
-        changed |= Self::apply_bool(
-            state,
-            root,
-            APP_SERVING_KEY,
-            &mut self.config.services.app_serving,
-        );
-        changed |= Self::apply_bool(state, root, COMPUTE_KEY, &mut self.config.services.compute);
-        for workspace in self.discovered_workspaces.clone() {
-            let selected =
-                Self::read_bool(state, root, &workspace_key(workspace.id)).unwrap_or(false);
-            if selected
-                && !self
-                    .config
-                    .workspaces
-                    .iter()
-                    .any(|binding| binding.id == workspace.id)
-            {
-                self.config.workspaces.push(tilo_relay::WorkspaceBinding {
-                    id: workspace.id,
-                    pin: self.config.device_role.can_serve(),
-                    replication: if self.config.device_role == DeviceRole::AlwaysOnServer {
-                        ReplicationIntent::FullWorkspace
-                    } else {
-                        ReplicationIntent::OnDemand
-                    },
-                    admitted_users: Vec::new(),
-                });
-                changed = true;
-            } else if !selected && self.config.remove_workspace(workspace.id) {
-                changed = true;
-            }
-        }
+        // Device role, relay services, and workspace residency never enter
+        // the collaborative document. Their controls emit typed local effect
+        // operations and `apply_command` persists directly to RelayConfig.
         if Self::read_bool(state, root, APPROVE_ENROLLMENT_KEY) == Some(true) {
             let _ = state.put(root, APPROVE_ENROLLMENT_KEY, false);
             if self.pairing_child.is_none() {
@@ -1980,33 +1926,6 @@ impl Widget for DeviceMeshPane {
                     self.structure_dirty = true;
                 }
             }
-        }
-        let mut continuity_changed = false;
-        if let Some(enabled) = Self::read_bool(state, root, CONTINUITY_ENABLED_KEY)
-            && enabled != self.continuity.enabled
-        {
-            self.continuity.enabled = enabled;
-            self.continuity.record(None, enabled, unix_seconds());
-            continuity_changed = true;
-        }
-        for capability in Capability::ALL {
-            let key = continuity_key(capability);
-            if let Some(enabled) = Self::read_bool(state, root, &key)
-                && enabled != self.continuity.allowed(capability)
-            {
-                self.continuity.set_allowed(capability, enabled);
-                self.continuity
-                    .record(Some(capability), enabled, unix_seconds());
-                continuity_changed = true;
-            }
-        }
-        if continuity_changed {
-            self.save_continuity();
-            self.structure_dirty = true;
-        }
-        if changed {
-            self.persist();
-            self.structure_dirty = true;
         }
         if Instant::now() >= self.next_status_refresh {
             self.refresh_runtime_status();
@@ -2135,10 +2054,6 @@ impl Widget for DeviceMeshPane {
         )
     }
 
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
         own || self
@@ -2264,15 +2179,14 @@ mod tests {
     fn continuity_edits_persist_locally_and_append_redacted_audit_rows() {
         let dir = tempfile::tempdir().unwrap();
         let mut pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
-
-        doc.put(&automerge::ROOT, draft_key(CONTINUITY_ENABLED_KEY), true)
-            .unwrap();
-        let clipboard = continuity_key(Capability::Clipboard);
-        doc.put(&automerge::ROOT, draft_key(&clipboard), true)
-            .unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
+        pane.apply_command(&crate::actions::DeviceMeshOperation::SetService {
+            service: "continuity.enabled".into(),
+            enabled: true,
+        });
+        pane.apply_command(&crate::actions::DeviceMeshOperation::SetService {
+            service: "continuity.clipboard".into(),
+            enabled: true,
+        });
 
         let saved = ContinuityPrivacy::load_at(&dir.path().join("settings.json"));
         assert!(saved.enabled);
@@ -2300,20 +2214,16 @@ mod tests {
         let mut pane = DeviceMeshPane::with_path(&path);
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
-        doc.put(&automerge::ROOT, draft_key(ROLE_KEY), ROLE_ACTIVE)
-            .unwrap();
-        doc.put(
-            &automerge::ROOT,
-            draft_key(REPLICATION_KEY),
-            REPLICATION_FULL,
-        )
-        .unwrap();
-        doc.put(&automerge::ROOT, draft_key(REMOTE_RELAY_KEY), false)
-            .unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(pane.pending_role, Some(DeviceRole::Hybrid));
-        doc.put(&automerge::ROOT, CONFIRM_ROLE_KEY, true).unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
+        pane.apply_command(&crate::actions::DeviceMeshOperation::SetRole {
+            role: ROLE_ACTIVE.into(),
+        });
+        pane.apply_command(&crate::actions::DeviceMeshOperation::SetReplication {
+            replication: REPLICATION_FULL.into(),
+        });
+        pane.apply_command(&crate::actions::DeviceMeshOperation::SetService {
+            service: "remote_control_relay".into(),
+            enabled: false,
+        });
 
         let saved = RelayConfig::load(&path).unwrap();
         assert_eq!(saved.device_role, DeviceRole::Hybrid);
@@ -2338,8 +2248,9 @@ mod tests {
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
         assert!(!path.exists());
-        doc.put(&automerge::ROOT, ROLE_KEY, ROLE_ACTIVE).unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
+        pane.apply_command(&crate::actions::DeviceMeshOperation::SetRole {
+            role: ROLE_ACTIVE.into(),
+        });
         assert!(path.exists());
     }
 
@@ -2394,8 +2305,9 @@ mod tests {
         pane.sync(&mut doc, &automerge::ROOT);
         assert!(!pane.take_structure_dirty());
 
-        doc.put(&automerge::ROOT, ROLE_KEY, ROLE_ACTIVE).unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
+        pane.apply_command(&crate::actions::DeviceMeshOperation::SetRole {
+            role: ROLE_ACTIVE.into(),
+        });
 
         assert!(pane.take_structure_dirty());
         assert_eq!(pane.config.device_role, DeviceRole::Hybrid);
@@ -2421,19 +2333,9 @@ mod tests {
         let mut pane = DeviceMeshPane::with_path(&path);
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
-        doc.put(&automerge::ROOT, ROLE_KEY, ROLE_SERVER).unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
-
-        assert_eq!(pane.pending_role, Some(DeviceRole::AlwaysOnServer));
-        assert_eq!(pane.config.device_role, DeviceRole::Interactive);
-        assert_eq!(
-            RelayConfig::load(&path).unwrap().device_role,
-            DeviceRole::Interactive,
-            "choosing the high-impact role must not apply before review"
-        );
-
-        doc.put(&automerge::ROOT, CONFIRM_ROLE_KEY, true).unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
+        pane.apply_command(&crate::actions::DeviceMeshOperation::SetRole {
+            role: ROLE_SERVER.into(),
+        });
 
         let saved = RelayConfig::load(&path).unwrap();
         assert_eq!(saved.device_role, DeviceRole::AlwaysOnServer);
@@ -2448,7 +2350,7 @@ mod tests {
     }
 
     #[test]
-    fn cancelling_server_promotion_preserves_the_existing_setup() {
+    fn replicated_document_edits_cannot_change_local_device_role() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("relay.toml");
         let config = RelayConfig {
@@ -2460,17 +2362,11 @@ mod tests {
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
 
-        doc.put(&automerge::ROOT, ROLE_KEY, ROLE_SERVER).unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
-        doc.put(&automerge::ROOT, CANCEL_ROLE_KEY, true).unwrap();
+        doc.put(&automerge::ROOT, "device_mesh.role", ROLE_SERVER)
+            .unwrap();
         pane.sync(&mut doc, &automerge::ROOT);
 
-        assert_eq!(pane.pending_role, None);
         assert_eq!(pane.config.device_role, DeviceRole::Interactive);
-        assert_eq!(
-            DeviceMeshPane::read_str(&doc, &automerge::ROOT, ROLE_KEY).as_deref(),
-            Some(ROLE_PERSONAL)
-        );
         assert_eq!(
             RelayConfig::load(&path).unwrap().device_role,
             DeviceRole::Interactive
@@ -2554,10 +2450,10 @@ mod tests {
             id: 44,
             name: "Studio".into(),
         }];
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
-        doc.put(&automerge::ROOT, workspace_key(44), true).unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
+        pane.apply_command(&crate::actions::DeviceMeshOperation::SetWorkspace {
+            id: 44,
+            enabled: true,
+        });
         assert!(
             pane.config
                 .workspaces

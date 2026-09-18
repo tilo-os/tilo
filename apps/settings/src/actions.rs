@@ -16,12 +16,11 @@
 //!
 //! ## What is *not* an action
 //!
-//! * **The hardware / service apply** — pushing a preference to the audio graph,
-//!   the Wi-Fi radio, the backlight, the compositor's theme, or the shared
-//!   `settings.json` on disk is an external side effect *driven by* the document
-//!   state (see each pane's `sync`), never part of [`Action::apply`], which only
-//!   writes the CRDT scalar. A setting's value lands in the document; a separate
-//!   reaction carries it to the world.
+//! * **Hardware / service effects** — changing an audio graph, radio,
+//!   backlight, update service, or other device authority uses a typed local
+//!   operation. The executor issues a one-shot token and the owning pane
+//!   consumes only that exact command; replicated document state can never
+//!   trigger the effect. Portable preferences alone use [`Action::apply`].
 //! * **Presentation** — which pane is open, the sidebar search, scroll, a
 //!   section's expand/collapse — never leaves the machine and never becomes an
 //!   action.
@@ -33,6 +32,15 @@
 //! at the same heads land on the byte-identical result. Writing the value the
 //! key already holds is skipped (a no-op leaves the document — and its heads —
 //! untouched), so a double-applied or stale envelope can't churn a peer.
+
+#![allow(
+    clippy::indexing_slicing,
+    clippy::needless_pass_by_value,
+    clippy::redundant_locals,
+    clippy::too_many_lines,
+    clippy::unreachable,
+    reason = "resource builders operate on closed, locally-constructed action schemas; fallible public resolution remains bounded and returns Option/Result"
+)]
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
@@ -64,6 +72,13 @@ pub const UPDATE_OPERATION_TYPE: &str = "settings.update-operation";
 /// Typed commands for the per-user keyboard-source roster.  The compositor
 /// owns application of this local durable preference.
 pub const KEYBOARD_SOURCE_OPERATION_TYPE: &str = "settings.keyboard-source-operation";
+/// Input and pointer configuration belongs to the machine running Settings.
+/// It is applied by the local compositor from `settings.json`, so it must not
+/// be represented by a replayable `SettingsAction`.
+pub const INPUT_OPERATION_TYPE: &str = "settings.input-operation";
+/// Clock service and clock-display commands are likewise local effects: a
+/// peer must never change this machine's timedated service or locale file.
+pub const TIME_DATE_OPERATION_TYPE: &str = "settings.time-date-operation";
 /// Hardware capability command, intentionally separate from portable Power
 /// preferences because a charge cap only exists on some devices.
 pub const POWER_OPERATION_TYPE: &str = "settings.power-operation";
@@ -85,6 +100,65 @@ pub const USER_OPERATION_TYPE: &str = "settings.user-operation";
 /// the supervised server belong to this machine, so these requests are never
 /// replicated as collaborative preferences.
 pub const AGENT_MODEL_OPERATION_TYPE: &str = "settings.agent-model-operation";
+/// Device-mesh role, relay services and workspace pinning configure this
+/// machine's trust boundary. They are local effects, never CRDT preferences.
+pub const DEVICE_MESH_OPERATION_TYPE: &str = "settings.device-mesh-operation";
+pub const AGENT_PROVIDER_OPERATION_TYPE: &str = "settings.agent-provider-operation";
+
+/// Collaboration policy for every action exported by Settings. There is no
+/// implicit/default bucket: a new operation type must be added here before it
+/// can be published, so hardware effects cannot accidentally become replayable
+/// document changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingScope {
+    PortableDocument,
+    DeviceLocalEffect,
+    Presentation,
+}
+
+pub(crate) const DEVICE_LOCAL_OPERATION_TYPES: &[&str] = &[
+    ACCOUNT_OPERATION_TYPE,
+    UPDATE_OPERATION_TYPE,
+    KEYBOARD_SOURCE_OPERATION_TYPE,
+    INPUT_OPERATION_TYPE,
+    TIME_DATE_OPERATION_TYPE,
+    POWER_OPERATION_TYPE,
+    NETWORK_OPERATION_TYPE,
+    BLUETOOTH_OPERATION_TYPE,
+    STORAGE_OPERATION_TYPE,
+    AUDIO_OPERATION_TYPE,
+    DISPLAY_OPERATION_TYPE,
+    PRINTER_OPERATION_TYPE,
+    USER_OPERATION_TYPE,
+    AGENT_MODEL_OPERATION_TYPE,
+    DEVICE_MESH_OPERATION_TYPE,
+    AGENT_PROVIDER_OPERATION_TYPE,
+];
+
+pub fn classify_action(spec: &ActionSpec) -> Option<SettingScope> {
+    match spec.kind {
+        OperationKind::Document => Some(SettingScope::PortableDocument),
+        OperationKind::Effect
+            if spec
+                .operation_type
+                .as_deref()
+                .is_some_and(|type_id| DEVICE_LOCAL_OPERATION_TYPES.contains(&type_id)) =>
+        {
+            Some(SettingScope::DeviceLocalEffect)
+        }
+        OperationKind::View => Some(SettingScope::Presentation),
+        OperationKind::Effect => None,
+    }
+}
+
+/// Hard ceiling for any live/discovered collection published by Settings.
+///
+/// A compositor, service, or corrupted local inventory is not allowed to make
+/// opening global search allocate an unbounded resource/action tree. Exact
+/// lookup is scoped to one section below and uses the same ceiling.
+const MAX_DYNAMIC_RESOURCES: usize = 256;
+/// Hard ceiling for choices/actions attached to one dynamic resource.
+const MAX_DYNAMIC_CHOICES: usize = 128;
 
 /// Device-local account-management commands. Payloads contain only stable ids
 /// and provider kinds; credentials are collected by the Settings form and
@@ -124,17 +198,56 @@ pub enum KeyboardSourceOperation {
     Remove { index: usize },
 }
 
+/// Every hardware-backed Mouse & Keyboard preference exposed by Settings.
+/// The enum is intentionally closed: agents cannot smuggle arbitrary input
+/// keys or compositor options through the local-operation boundary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum InputOperation {
+    SetTouchpadNaturalScroll { enabled: bool },
+    SetMouseNaturalScroll { enabled: bool },
+    SetTapToClick { enabled: bool },
+    SetTouchpadPointerSpeed { value: f64 },
+    SetMousePointerSpeed { value: f64 },
+    SetKeyRepeat { value: f64 },
+    SetTapDrag { enabled: bool },
+    SetDisableWhileTyping { enabled: bool },
+    SetMiddleEmulation { enabled: bool },
+    SetLeftHanded { enabled: bool },
+    SetTouchpadGestures { enabled: bool },
+    SetAccelerationProfile { profile: String },
+    SetComposeKey { key: String },
+    SetActiveSource { label: String },
+}
+
+/// Time & Date controls which reach a system service or durable local locale
+/// configuration. They deliberately use the same bounded effect protocol as
+/// their visible controls and resource actions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TimeDateOperation {
+    SetAutomaticTime { enabled: bool },
+    SetTimezone { timezone: String },
+    SetHourCycle { h24: bool },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PowerOperation {
     SetChargeLimit { percent: u32 },
+    SetProfile { profile: String },
+    SetAutoSuspend { enabled: bool },
+    SetBlankTimeout { label: String },
+    SetLockTimeout { label: String },
+    SetSuspendTimeout { profile: String, label: String },
+    SetLidAction { action: String },
+    SetPowerKeyAction { action: String },
+    SetCriticalAction { action: String },
 }
 
-/// Bounded commands owned by the Network pane. The Wi-Fi preference remains a
-/// collaborative setting; these commands change hardware or sample live
-/// network state and must never replay on another device.
+/// Bounded commands owned by the Network pane. Radio state and diagnostics
+/// belong to the current device and must never replay on another machine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NetworkOperation {
     Refresh,
+    SetWifiEnabled { enabled: bool },
     SetWiredEnabled { enabled: bool },
     SetAirplaneMode { enabled: bool },
     SetHotspot { enabled: bool },
@@ -146,6 +259,7 @@ pub enum NetworkOperation {
 /// owns the adapter. Pairing is intentionally not a shared preference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BluetoothOperation {
+    SetPowered { enabled: bool },
     StartScan,
     Refresh,
     Pair { path: String },
@@ -162,16 +276,106 @@ pub enum StorageOperation {
     OpenBackups,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AudioOperation {
-    SelectOutput { device_id: u32 },
-    SelectInput { device_id: u32 },
-    RoutePlayback { stream_id: u32, device_id: u32 },
-    RouteRecording { stream_id: u32, device_id: u32 },
+    SetOutputVolume {
+        value: f64,
+    },
+    SetOutputMuted {
+        muted: bool,
+    },
+    SetInputVolume {
+        value: f64,
+    },
+    SetBalance {
+        value: f64,
+    },
+    SetMono {
+        enabled: bool,
+    },
+    SetDeviceProfile {
+        device_id: u32,
+        profile_index: u32,
+    },
+    RouteStream {
+        stream_id: u32,
+        playback: bool,
+        device_id: Option<u32>,
+    },
+    SetStreamVolume {
+        stream_id: u32,
+        value: f64,
+    },
+    SetStreamMuted {
+        stream_id: u32,
+        muted: bool,
+    },
+    ToggleDiagnostics,
+    TestChannel {
+        left: bool,
+    },
+    ToggleMicrophoneMeter,
+    SelectOutput {
+        device_id: u32,
+    },
+    SelectInput {
+        device_id: u32,
+    },
+    RoutePlayback {
+        stream_id: u32,
+        device_id: u32,
+    },
+    RouteRecording {
+        stream_id: u32,
+        device_id: u32,
+    },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DisplayOperation {
+    SetBrightness {
+        value: f64,
+    },
+    SetAutoBrightness {
+        enabled: bool,
+    },
+    SetNightLight {
+        enabled: bool,
+    },
+    SetNightLightTemperature {
+        label: String,
+    },
+    SetScale {
+        label: String,
+    },
+    SetPrimary {
+        connector: String,
+        primary: bool,
+    },
+    SetOutputScale {
+        connector: String,
+        label: String,
+    },
+    SetPosition {
+        connector: String,
+        label: String,
+    },
+    SetMirror {
+        connector: String,
+        label: String,
+    },
+    SetModeLabel {
+        connector: String,
+        label: String,
+    },
+    SetTransformLabel {
+        connector: String,
+        label: String,
+    },
+    SetColorProfileLabel {
+        connector: String,
+        label: String,
+    },
     SetEnabled {
         connector: String,
         enabled: bool,
@@ -199,6 +403,23 @@ pub enum DisplayOperation {
     Apply,
     Confirm,
     Revert,
+}
+
+/// Process-local delivery envelope for device effects. This value is never
+/// serialized into Automerge: the collaborative document contains portable
+/// preferences only, while the selected pane consumes one typed command.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LocalPaneCommand {
+    Updates(UpdateOperation),
+    Power(PowerOperation),
+    Network(NetworkOperation),
+    Bluetooth(BluetoothOperation),
+    Audio(AudioOperation),
+    Display(DisplayOperation),
+    Storage(StorageOperation),
+    Printer(PrinterOperation),
+    User(UserOperation),
+    AgentModel(AgentModelOperation),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,6 +462,41 @@ pub enum AgentModelOperation {
     Remove { id: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DeviceMeshOperation {
+    SetRole { role: String },
+    SetReplication { replication: String },
+    SetService { service: String, enabled: bool },
+    SetWorkspace { id: u64, enabled: bool },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentProviderOperation {
+    Add {
+        protocol: String,
+    },
+    SetProtocol {
+        id: String,
+        protocol: String,
+    },
+    SetEnabled {
+        id: String,
+        enabled: bool,
+    },
+    Remove {
+        id: String,
+    },
+    SetDefault {
+        id: String,
+    },
+    SetDetails {
+        id: String,
+        label: String,
+        endpoint: String,
+        model: Option<String>,
+    },
+}
+
 /// Lifecycle reported by the pane that actually executes a device-local
 /// command. Unlike a document action this is intentionally process-local and
 /// never replicated or persisted as a preference.
@@ -278,6 +534,16 @@ pub fn local_operation_token(type_id: &str, payload: &[u8]) -> Result<String, St
         }
         KEYBOARD_SOURCE_OPERATION_TYPE => {
             let operation: KeyboardSourceOperation =
+                serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            Ok(local_operation_token_for(type_id, &operation))
+        }
+        INPUT_OPERATION_TYPE => {
+            let operation: InputOperation =
+                serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            Ok(local_operation_token_for(type_id, &operation))
+        }
+        TIME_DATE_OPERATION_TYPE => {
+            let operation: TimeDateOperation =
                 serde_json::from_slice(payload).map_err(|e| e.to_string())?;
             Ok(local_operation_token_for(type_id, &operation))
         }
@@ -323,6 +589,11 @@ pub fn local_operation_token(type_id: &str, payload: &[u8]) -> Result<String, St
         }
         AGENT_MODEL_OPERATION_TYPE => {
             let operation: AgentModelOperation =
+                serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            Ok(local_operation_token_for(type_id, &operation))
+        }
+        DEVICE_MESH_OPERATION_TYPE => {
+            let operation: DeviceMeshOperation =
                 serde_json::from_slice(payload).map_err(|e| e.to_string())?;
             Ok(local_operation_token_for(type_id, &operation))
         }
@@ -457,6 +728,72 @@ impl Action for SettingsAction {
 /// obsolete UI could silently create an unrelated value.  Draft (`.edit`),
 /// confirmation, and navigation keys are intentionally absent: they are local
 /// presentation state, not collaborative resources.
+fn input_bool_operation(template: &InputOperation, enabled: bool) -> InputOperation {
+    match template {
+        InputOperation::SetTouchpadNaturalScroll { .. } => {
+            InputOperation::SetTouchpadNaturalScroll { enabled }
+        }
+        InputOperation::SetMouseNaturalScroll { .. } => {
+            InputOperation::SetMouseNaturalScroll { enabled }
+        }
+        InputOperation::SetTapToClick { .. } => InputOperation::SetTapToClick { enabled },
+        InputOperation::SetTapDrag { .. } => InputOperation::SetTapDrag { enabled },
+        InputOperation::SetDisableWhileTyping { .. } => {
+            InputOperation::SetDisableWhileTyping { enabled }
+        }
+        InputOperation::SetMiddleEmulation { .. } => InputOperation::SetMiddleEmulation { enabled },
+        InputOperation::SetLeftHanded { .. } => InputOperation::SetLeftHanded { enabled },
+        InputOperation::SetTouchpadGestures { .. } => {
+            InputOperation::SetTouchpadGestures { enabled }
+        }
+        _ => unreachable!("input bool resources only contain boolean operations"),
+    }
+}
+
+fn input_number_operation(template: &InputOperation, value: f64) -> InputOperation {
+    match template {
+        InputOperation::SetTouchpadPointerSpeed { .. } => {
+            InputOperation::SetTouchpadPointerSpeed { value }
+        }
+        InputOperation::SetMousePointerSpeed { .. } => {
+            InputOperation::SetMousePointerSpeed { value }
+        }
+        InputOperation::SetKeyRepeat { .. } => InputOperation::SetKeyRepeat { value },
+        _ => unreachable!("input number resources only contain numeric operations"),
+    }
+}
+
+fn input_choice_spec(
+    id: &str,
+    label: &str,
+    choices: &[String],
+    operation: fn(String) -> InputOperation,
+) -> ActionSpec {
+    let choices = choices.to_vec();
+    let fallback = choices.first().cloned().unwrap_or_default();
+    ActionSpec::typed_operation(
+        id,
+        label,
+        "Choose an input preference",
+        OperationKind::Effect,
+        INPUT_OPERATION_TYPE,
+        vec![
+            ActionParam::required_owned("choice", ParamType::Text, "Device-local input value")
+                .with_choices(choices),
+        ],
+        move |args| {
+            encode_local_operation(
+                INPUT_OPERATION_TYPE,
+                &operation(
+                    args.text("choice")
+                        .map_or_else(|| fallback.clone(), str::to_string),
+                ),
+            )
+        },
+    )
+    .with_contract(local_operation_contract(&["device-local", "input"]))
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "the allow-list is a deliberately auditable stale-action boundary"
@@ -465,7 +802,6 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
     let text =
         || matches!(value, SettingValue::Text(text) if !text.is_empty() && text.len() <= 1024);
     let boolean = || matches!(value, SettingValue::Bool(_));
-    let finite_float = || matches!(value, SettingValue::Float(number) if number.is_finite());
     let presentation_key = matches!(key.rsplit_once('.'), Some((_, "edit" | "error")));
     let valid_notification_app_key = key
         .strip_prefix("notifications.app.")
@@ -500,21 +836,7 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         | "a11y.switch_keys"
         | "a11y.switch_scan"
         | "a11y.reader_rate"
-        | "a11y.reader_voice"
-        | "time.timezone"
-        | "power.profile"
-        | "power.blank"
-        | "power.lock"
-        | "power.suspend"
-        | "power.lid"
-        | "power.power_key"
-        | "power.critical"
-        | "power.profile_idle.saver"
-        | "power.profile_idle.balanced"
-        | "power.profile_idle.performance"
-        | "input.accel_profile"
-        | "input.compose_key"
-        | "input.keyboard_layout" => text(),
+        | "a11y.reader_voice" => text(),
         "appearance.high_contrast"
         | "appearance.reduce_motion"
         | "a11y.high_contrast"
@@ -528,8 +850,6 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         | "a11y.cursor_crosshair"
         | "a11y.thick_text_caret"
         | "a11y.switch_control"
-        | "time.auto"
-        | "time.h24"
         | "shortcuts.vim_mode"
         | "notifications.do_not_disturb"
         | "notifications.show_banners"
@@ -538,37 +858,8 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         | "notifications.show_on_lock_screen"
         | "notifications.show_badges"
         | "notifications.focus.enabled"
-        | "network.wifi_enabled"
-        | "bluetooth.enabled"
-        | "audio.muted"
-        | "display.auto_brightness"
-        | "display.night_light"
-        | "input.natural_scroll"
-        | "input.tap_to_click"
-        | "input.tap_drag"
-        | "input.disable_while_typing"
-        | "input.middle_emulation"
-        | "input.left_handed"
-        | "input.touchpad_gestures"
-        | "input.touchpad_natural_scroll"
-        | "input.mouse_natural_scroll"
         | "text.check_spelling"
-        | "text.auto_correct"
-        | "power.auto_suspend"
-        | "updates.auto" => boolean(),
-        "display.scale" => matches!(
-            value,
-            SettingValue::Text(label)
-                if crate::panes::display::DISPLAY_SCALES
-                    .iter()
-                    .any(|(candidate, _)| *candidate == label)
-        ),
-        "audio.volume"
-        | "display.brightness"
-        | "input.pointer_speed"
-        | "input.touchpad_pointer_speed"
-        | "input.mouse_pointer_speed"
-        | "input.key_repeat" => finite_float(),
+        | "text.auto_correct" => boolean(),
         "notifications.focus.start" | "notifications.focus.end" | "notifications.focus.days" => {
             text()
         }
@@ -581,25 +872,9 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         }
         key if key.starts_with("default_apps.") && !presentation_key => text(),
         _ if valid_notification_app_key => true,
-        // Device-mesh resources are discovered at runtime. Their stable
-        // namespace is the stale-target boundary; only its documented scalar
-        // preferences can enter it.
-        "device_mesh.role" | "device_mesh.replication" => text(),
-        "device_mesh.inbound_relay"
-        | "device_mesh.remote_control_relay"
-        | "device_mesh.app_serving"
-        | "device_mesh.compute"
-        | "device_mesh.continuity.enabled"
-        | "device_mesh.continuity.clipboard"
-        | "device_mesh.continuity.notifications"
-        | "device_mesh.continuity.wifi_settings"
-        | "device_mesh.continuity.media"
-        | "device_mesh.continuity.display_input"
-        | "device_mesh.continuity.file_transfer"
-        | "device_mesh.continuity.realtime_sessions"
-        | "device_mesh.continuity.typed_gamepad"
-        | "device_mesh.continuity.app_continuations" => boolean(),
-        key if key.starts_with("device_mesh.workspace.") && !presentation_key => boolean(),
+        // Trust, service and residency policy is deliberately absent: those
+        // settings use typed device-local effect operations and must never
+        // enter the replayable SettingsAction namespace.
         _ => false,
     };
     allowed.then_some(()).ok_or_else(|| {
@@ -783,36 +1058,95 @@ fn local_operation_spec<T: Serialize>(
         .map(|spec| spec.with_contract(local_operation_contract(tags)))
 }
 
+fn immediate_local_effect_spec<T: Serialize>(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    type_id: &str,
+    operation: &T,
+    tags: &[&str],
+) -> Option<ActionSpec> {
+    ActionSpec::operation(id, label, OperationKind::Effect, type_id, operation)
+        .ok()
+        .map(|spec| {
+            spec.with_contract(ActionContract {
+                retry: RetryPolicy::AtMostOnce,
+                reversible: false,
+                tags: tags.iter().map(|tag| (*tag).into()).collect(),
+                ..ActionContract::default()
+            })
+        })
+}
+
+fn local_bool_spec(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    type_id: &'static str,
+    tags: &'static [&'static str],
+    build: impl Fn(bool) -> EncodedAction + Send + Sync + 'static,
+) -> ActionSpec {
+    ActionSpec::typed_operation(
+        id,
+        label,
+        "On or off on this device",
+        OperationKind::Effect,
+        type_id,
+        vec![ActionParam::required(
+            "value",
+            ParamType::Boolean,
+            "Enabled",
+        )],
+        move |args| build(args.boolean("value").unwrap_or(false)),
+    )
+    .with_contract(local_operation_contract(tags))
+}
+
+fn local_number_spec(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    type_id: &'static str,
+    tags: &'static [&'static str],
+    build: impl Fn(f64) -> EncodedAction + Send + Sync + 'static,
+) -> ActionSpec {
+    ActionSpec::typed_operation(
+        id,
+        label,
+        "A value from 0 to 1",
+        OperationKind::Effect,
+        type_id,
+        vec![
+            ActionParam::required("value", ParamType::Number, "Value")
+                .with_schema(serde_json::json!({ "minimum": 0.0, "maximum": 1.0 })),
+        ],
+        move |args| build(args.number("value").unwrap_or(0.0)),
+    )
+    .with_contract(local_operation_contract(tags))
+}
+
+fn local_choice_spec(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    type_id: &'static str,
+    choices: Vec<String>,
+    tags: &'static [&'static str],
+    build: impl Fn(String) -> EncodedAction + Send + Sync + 'static,
+) -> ActionSpec {
+    ActionSpec::typed_operation(
+        id,
+        label,
+        "Choose a value available on this device",
+        OperationKind::Effect,
+        type_id,
+        vec![ActionParam::required("choice", ParamType::Text, "Choice").with_choices(choices)],
+        move |args| build(args.text("choice").unwrap_or_default().to_string()),
+    )
+    .with_contract(local_operation_contract(tags))
+}
+
 fn encode_local_operation<T: Serialize>(type_id: &str, operation: &T) -> EncodedAction {
     EncodedAction::encode_operation(type_id, operation).unwrap_or_else(|_| EncodedAction {
         type_id: type_id.into(),
         payload: Vec::new(),
     })
-}
-
-fn float_prompt_spec(
-    id: &str,
-    label: &str,
-    key: &'static str,
-    placeholder: &str,
-    lo: f64,
-    hi: f64,
-) -> ActionSpec {
-    ActionSpec::typed(
-        id,
-        label,
-        placeholder,
-        ExecutionLocus::ClientLocal,
-        vec![
-            ActionParam::required("value", ParamType::Number, "New setting value")
-                .with_schema(serde_json::json!({ "minimum": lo, "maximum": hi })),
-        ],
-        move |args| {
-            let v = args.number("value").unwrap_or(lo).clamp(lo, hi);
-            encode(&set_float_action(key, v))
-        },
-    )
-    .with_contract(setting_contract())
 }
 
 fn choice_prompt_spec(
@@ -862,46 +1196,97 @@ pub fn provide_resources_with_accounts(
     let d = SystemPrefs::load();
     let mut root = Resource::new("settings.root", "settings.root", "Settings");
     for category in Category::ALL.iter().copied() {
-        let mut pane = match category {
-            Category::Network => network_section(doc),
-            Category::Bluetooth => bluetooth_section(doc),
-            Category::Sound => sound_section(doc),
-            Category::Displays => displays_section(doc, &d),
-            Category::MouseKeyboard => input_section(doc, &d),
-            Category::Power => power_section(doc, &d),
-            Category::Appearance => appearance_section(doc, &d),
-            Category::Accessibility => accessibility_section(doc, &d),
-            Category::Notifications => notifications_section(doc, &d),
-            Category::RegionFormats => region_section(doc, &d),
-            Category::TimeDate => time_date_section(doc, &d),
-            Category::KeyboardShortcuts => shortcuts_section(doc),
-            Category::DeviceMesh => device_mesh_section(doc),
-            Category::Updates => updates_section(),
-            Category::ExternalAccounts => accounts_section(account_inventory),
-            Category::AgentModels => agent_models_section(),
-            Category::DefaultApps => default_apps_section(doc),
-            Category::Storage => storage_section(),
-            Category::Printers => printers_section(),
-            Category::Users => users_section(),
-            _ => Resource::new(
-                pane_resource_id(category),
-                "settings.section",
-                category.label(),
-            ),
-        };
-        if let Some(open) = pane_navigation_resource(category)
-            .actions
-            .into_iter()
-            .next()
-        {
-            // `&str` serialization is infallible in serde_json. Keep the
-            // fallible API boundary explicit; the resource-coverage test
-            // ensures a framework regression cannot silently drop this door.
-            pane.actions.insert(0, open);
-        }
-        root = root.with_child(pane);
+        root = root.with_child(section_resource(category, doc, &d, account_inventory));
     }
     vec![root]
+}
+
+fn section_resource(
+    category: Category,
+    doc: &AutoCommit,
+    prefs: &SystemPrefs,
+    account_inventory: &[accounts::Account],
+) -> Resource {
+    let mut pane = match category {
+        Category::Network => network_section(doc),
+        Category::Bluetooth => bluetooth_section(doc),
+        Category::Sound => sound_section(doc),
+        Category::Displays => displays_section(doc, prefs),
+        Category::MouseKeyboard => input_section(doc, prefs),
+        Category::Power => power_section(doc, prefs),
+        Category::Appearance => appearance_section(doc, prefs),
+        Category::Accessibility => accessibility_section(doc, prefs),
+        Category::Notifications => notifications_section(doc, prefs),
+        Category::RegionFormats => region_section(doc, prefs),
+        Category::TimeDate => time_date_section(doc, prefs),
+        Category::KeyboardShortcuts => shortcuts_section(doc),
+        Category::DeviceMesh => device_mesh_section(doc),
+        Category::Updates => updates_section(),
+        Category::ExternalAccounts => accounts_section(account_inventory),
+        Category::AgentModels => agent_models_section(),
+        Category::DefaultApps => default_apps_section(doc),
+        Category::Storage => storage_section(),
+        Category::Printers => printers_section(),
+        Category::Users => users_section(),
+        _ => Resource::new(
+            pane_resource_id(category),
+            "settings.section",
+            category.label(),
+        ),
+    };
+    if let Some(open) = pane_navigation_resource(category)
+        .actions
+        .into_iter()
+        .next()
+    {
+        pane.actions.insert(0, open);
+    }
+    pane
+}
+
+fn category_for_resource_id(id: &str) -> Option<Category> {
+    if let Some(category) = Category::ALL
+        .iter()
+        .copied()
+        .find(|category| pane_resource_id(*category) == id)
+    {
+        return Some(category);
+    }
+    let mappings = [
+        ("settings.default-app:", Category::DefaultApps),
+        ("settings.account:", Category::ExternalAccounts),
+        ("settings.notification-app:", Category::Notifications),
+        ("settings.audio-output:", Category::Sound),
+        ("settings.audio-input:", Category::Sound),
+        ("settings.audio-playback:", Category::Sound),
+        ("settings.audio-recording:", Category::Sound),
+        ("settings.display-output:", Category::Displays),
+        ("settings.input-source:", Category::MouseKeyboard),
+        ("settings.bluetooth-device:", Category::Bluetooth),
+        ("settings.printer:", Category::Printers),
+        ("settings.print-job:", Category::Printers),
+        ("settings.user:", Category::Users),
+        ("settings.device-mesh-workspace:", Category::DeviceMesh),
+        (
+            "settings.agent-model-recommendation:",
+            Category::AgentModels,
+        ),
+        ("settings.agent-model:", Category::AgentModels),
+        ("settings.agent-provider:", Category::AgentModels),
+    ];
+    mappings
+        .into_iter()
+        .find_map(|(prefix, category)| id.starts_with(prefix).then_some(category))
+}
+
+fn find_resource(mut resource: Resource, id: &str) -> Option<Resource> {
+    if resource.id.as_str() == id {
+        return Some(resource);
+    }
+    resource
+        .children
+        .drain(..)
+        .find_map(|child| find_resource(child, id))
 }
 
 /// Personal defaults are a bounded, device-discovered hierarchy: each file
@@ -939,11 +1324,12 @@ fn default_apps_section_with_candidates(
         "settings.default-apps",
         Category::DefaultApps.label(),
     );
-    for kind in kinds {
+    for kind in kinds.into_iter().take(MAX_DYNAMIC_RESOURCES) {
         let mut choices: Vec<String> = candidates
             .iter()
             .filter(|candidate| candidate.handles(&kind))
             .map(option)
+            .take(MAX_DYNAMIC_CHOICES)
             .collect();
         choices.sort();
         choices.dedup();
@@ -994,7 +1380,16 @@ fn account_operation_spec(
     kind: OperationKind,
     operation: &AccountOperation,
 ) -> Option<ActionSpec> {
-    ActionSpec::operation(id, label, kind, ACCOUNT_OPERATION_TYPE, operation).ok()
+    let mut spec =
+        ActionSpec::operation(id, label, kind, ACCOUNT_OPERATION_TYPE, operation).ok()?;
+    if matches!(operation, AccountOperation::Test { .. }) {
+        spec = spec.with_contract(local_operation_contract(&[
+            "device-local",
+            "accounts",
+            "network-probe",
+        ]));
+    }
+    Some(spec)
 }
 
 /// Build the exact nullary door used by both account-row controls and the
@@ -1039,7 +1434,7 @@ fn accounts_section(account_inventory: &[accounts::Account]) -> Resource {
             section = section.with_action(action);
         }
     }
-    for account in account_inventory {
+    for account in account_inventory.iter().take(MAX_DYNAMIC_RESOURCES) {
         let mut resource = Resource::new(
             format!("settings.account:{}", account.id),
             "settings.external-account",
@@ -1220,6 +1615,8 @@ fn notifications_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     }
     for (app_id, app_name) in
         crate::panes::notifications::resource_notification_apps(&d.notifications)
+            .into_iter()
+            .take(MAX_DYNAMIC_RESOURCES)
     {
         let mut resource = Resource::new(
             format!("settings.notification-app:{app_id}"),
@@ -1326,25 +1723,157 @@ fn appearance_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     reason = "resource tree mirrors Sound hierarchy"
 )]
 fn sound_section(doc: &AutoCommit) -> Resource {
-    use crate::panes;
-    let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
+    let _ = doc;
     let mut sec = Resource::new("settings.section:sound", "settings.section", "Sound");
-    sec = sec.with_action(bool_flip_spec(
+    sec = sec.with_action(local_bool_spec(
         "muted",
-        panes::audio::MUTED_KEY,
-        b(panes::audio::MUTED_KEY, false),
-        "output mute",
+        "Set output mute",
+        AUDIO_OPERATION_TYPE,
+        &["device-local", "audio", "hardware"],
+        |muted| {
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetOutputMuted { muted },
+            )
+        },
     ));
-    sec = sec.with_action(float_prompt_spec(
+    sec = sec.with_action(local_number_spec(
         "volume",
         "Set output volume",
-        panes::audio::VOLUME_KEY,
-        "0.0 – 1.0",
-        0.0,
-        1.0,
+        AUDIO_OPERATION_TYPE,
+        &["device-local", "audio", "hardware"],
+        |value| {
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetOutputVolume { value },
+            )
+        },
     ));
+    sec = sec.with_action(local_number_spec(
+        "balance",
+        "Set output balance",
+        AUDIO_OPERATION_TYPE,
+        &["device-local", "audio", "session"],
+        |value| encode_local_operation(AUDIO_OPERATION_TYPE, &AudioOperation::SetBalance { value }),
+    ));
+    sec = sec.with_action(local_bool_spec(
+        "mono",
+        "Set mono output",
+        AUDIO_OPERATION_TYPE,
+        &["device-local", "audio", "session"],
+        |enabled| {
+            encode_local_operation(AUDIO_OPERATION_TYPE, &AudioOperation::SetMono { enabled })
+        },
+    ));
+    sec = sec.with_action(local_number_spec(
+        "input-volume",
+        "Set input volume",
+        AUDIO_OPERATION_TYPE,
+        &["device-local", "audio", "hardware"],
+        |value| {
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetInputVolume { value },
+            )
+        },
+    ));
+    for (id, label, operation) in [
+        (
+            "diagnostics",
+            "Show or hide speaker diagnostics",
+            AudioOperation::ToggleDiagnostics,
+        ),
+        (
+            "test-left",
+            "Test left speaker",
+            AudioOperation::TestChannel { left: true },
+        ),
+        (
+            "test-right",
+            "Test right speaker",
+            AudioOperation::TestChannel { left: false },
+        ),
+        (
+            "microphone-meter",
+            "Start or stop microphone meter",
+            AudioOperation::ToggleMicrophoneMeter,
+        ),
+    ] {
+        if let Some(action) = local_operation_spec(
+            id,
+            label,
+            OperationKind::Effect,
+            AUDIO_OPERATION_TYPE,
+            &operation,
+            &["device-local", "audio", "diagnostic"],
+        ) {
+            sec = sec.with_action(action);
+        }
+    }
     let graph = media::audio::enumerate();
-    for device in &graph.sinks {
+    if !graph.sinks.is_empty() {
+        let choices = graph
+            .sinks
+            .iter()
+            .take(MAX_DYNAMIC_CHOICES)
+            .map(|device| device.description.clone())
+            .collect::<Vec<_>>();
+        let devices = graph
+            .sinks
+            .iter()
+            .take(MAX_DYNAMIC_CHOICES)
+            .map(|device| (device.description.clone(), device.id))
+            .collect::<Vec<_>>();
+        sec = sec.with_action(local_choice_spec(
+            "output-device",
+            "Set output device",
+            AUDIO_OPERATION_TYPE,
+            choices,
+            &["device-local", "audio", "live-device"],
+            move |choice| {
+                let device_id = devices
+                    .iter()
+                    .find(|(label, _)| label == &choice)
+                    .map_or(u32::MAX, |(_, id)| *id);
+                encode_local_operation(
+                    AUDIO_OPERATION_TYPE,
+                    &AudioOperation::SelectOutput { device_id },
+                )
+            },
+        ));
+    }
+    if !graph.sources.is_empty() {
+        let choices = graph
+            .sources
+            .iter()
+            .take(MAX_DYNAMIC_CHOICES)
+            .map(|device| device.description.clone())
+            .collect::<Vec<_>>();
+        let devices = graph
+            .sources
+            .iter()
+            .take(MAX_DYNAMIC_CHOICES)
+            .map(|device| (device.description.clone(), device.id))
+            .collect::<Vec<_>>();
+        sec = sec.with_action(local_choice_spec(
+            "input-device",
+            "Set input device",
+            AUDIO_OPERATION_TYPE,
+            choices,
+            &["device-local", "audio", "live-device"],
+            move |choice| {
+                let device_id = devices
+                    .iter()
+                    .find(|(label, _)| label == &choice)
+                    .map_or(u32::MAX, |(_, id)| *id);
+                encode_local_operation(
+                    AUDIO_OPERATION_TYPE,
+                    &AudioOperation::SelectInput { device_id },
+                )
+            },
+        ));
+    }
+    for device in graph.sinks.iter().take(MAX_DYNAMIC_RESOURCES) {
         let mut resource = Resource::new(
             format!("settings.audio-output:{}", device.id),
             "settings.audio-output",
@@ -1364,7 +1893,7 @@ fn sound_section(doc: &AutoCommit) -> Resource {
         }
         sec = sec.with_child(resource);
     }
-    for device in &graph.sources {
+    for device in graph.sources.iter().take(MAX_DYNAMIC_RESOURCES) {
         let mut resource = Resource::new(
             format!("settings.audio-input:{}", device.id),
             "settings.audio-input",
@@ -1384,107 +1913,508 @@ fn sound_section(doc: &AutoCommit) -> Resource {
         }
         sec = sec.with_child(resource);
     }
-    for stream in &graph.playback_streams {
-        let mut resource = Resource::new(
-            format!("settings.audio-playback:{}", stream.id),
-            "settings.audio-playback",
-            stream.label(),
-        );
-        for device in &graph.sinks {
-            if let Some(action) = local_operation_spec(
-                format!("route-to-{}", device.id),
-                format!("Route to {}", device.description),
-                OperationKind::Effect,
-                AUDIO_OPERATION_TYPE,
-                &AudioOperation::RoutePlayback {
-                    stream_id: stream.id,
-                    device_id: device.id,
-                },
-                &["device-local", "audio", "live-device"],
-            ) {
-                resource = resource.with_action(action);
-            }
+    for hardware in graph.hardware.iter().take(MAX_DYNAMIC_RESOURCES) {
+        let profiles: Vec<_> = hardware
+            .profiles
+            .iter()
+            .filter(|profile| profile.available)
+            .take(MAX_DYNAMIC_CHOICES)
+            .map(|profile| (profile.description.clone(), profile.index))
+            .collect();
+        if profiles.is_empty() {
+            continue;
         }
-        sec = sec.with_child(resource);
+        let choices = profiles.iter().map(|(label, _)| label.clone()).collect();
+        let device_id = hardware.id;
+        let action = local_choice_spec(
+            "profile",
+            "Set audio device profile",
+            AUDIO_OPERATION_TYPE,
+            choices,
+            &["device-local", "audio", "live-device"],
+            move |choice| {
+                let profile_index = profiles
+                    .iter()
+                    .find(|(label, _)| label == &choice)
+                    .map_or(u32::MAX, |(_, index)| *index);
+                encode_local_operation(
+                    AUDIO_OPERATION_TYPE,
+                    &AudioOperation::SetDeviceProfile {
+                        device_id,
+                        profile_index,
+                    },
+                )
+            },
+        );
+        sec = sec.with_child(
+            Resource::new(
+                format!("settings.audio-device:{}", hardware.id),
+                "settings.audio-device",
+                hardware.description.clone(),
+            )
+            .with_action(action),
+        );
     }
-    for stream in &graph.record_streams {
-        let mut resource = Resource::new(
-            format!("settings.audio-recording:{}", stream.id),
-            "settings.audio-recording",
-            stream.label(),
+    for stream in graph
+        .playback_streams
+        .iter()
+        .chain(graph.record_streams.iter())
+        .take(MAX_DYNAMIC_RESOURCES)
+    {
+        let devices = if stream.playback {
+            &graph.sinks
+        } else {
+            &graph.sources
+        };
+        let mut route_choices = vec![crate::panes::audio::FOLLOW_DEFAULT.to_string()];
+        route_choices.extend(
+            devices
+                .iter()
+                .take(MAX_DYNAMIC_CHOICES - 1)
+                .map(|device| device.description.clone()),
         );
-        for device in &graph.sources {
-            if let Some(action) = local_operation_spec(
-                format!("route-to-{}", device.id),
-                format!("Route to {}", device.description),
-                OperationKind::Effect,
-                AUDIO_OPERATION_TYPE,
-                &AudioOperation::RouteRecording {
-                    stream_id: stream.id,
-                    device_id: device.id,
-                },
-                &["device-local", "audio", "live-device"],
-            ) {
-                resource = resource.with_action(action);
-            }
-        }
+        let route_devices: Vec<_> = devices
+            .iter()
+            .take(MAX_DYNAMIC_CHOICES - 1)
+            .map(|device| (device.description.clone(), device.id))
+            .collect();
+        let stream_id = stream.id;
+        let playback = stream.playback;
+        let route = local_choice_spec(
+            "route",
+            "Set audio stream route",
+            AUDIO_OPERATION_TYPE,
+            route_choices,
+            &["device-local", "audio", "live-stream"],
+            move |choice| {
+                let device_id = if choice == crate::panes::audio::FOLLOW_DEFAULT {
+                    None
+                } else {
+                    route_devices
+                        .iter()
+                        .find(|(label, _)| label == &choice)
+                        .map(|(_, id)| *id)
+                };
+                encode_local_operation(
+                    AUDIO_OPERATION_TYPE,
+                    &AudioOperation::RouteStream {
+                        stream_id,
+                        playback,
+                        device_id,
+                    },
+                )
+            },
+        );
+        let stream_id = stream.id;
+        let volume = local_number_spec(
+            "volume",
+            "Set audio stream volume",
+            AUDIO_OPERATION_TYPE,
+            &["device-local", "audio", "live-stream"],
+            move |value| {
+                encode_local_operation(
+                    AUDIO_OPERATION_TYPE,
+                    &AudioOperation::SetStreamVolume { stream_id, value },
+                )
+            },
+        );
+        let stream_id = stream.id;
+        let muted = local_bool_spec(
+            "muted",
+            "Set audio stream mute",
+            AUDIO_OPERATION_TYPE,
+            &["device-local", "audio", "live-stream"],
+            move |muted| {
+                encode_local_operation(
+                    AUDIO_OPERATION_TYPE,
+                    &AudioOperation::SetStreamMuted { stream_id, muted },
+                )
+            },
+        );
+        let resource = audio_stream_resource(stream.id, stream.playback, &stream.label(), route)
+            .with_action(volume)
+            .with_action(muted);
         sec = sec.with_child(resource);
     }
     sec
+}
+
+fn audio_control_resource(action: ActionSpec) -> Resource {
+    Resource::new(
+        pane_resource_id(Category::Sound),
+        "settings.section",
+        "Sound",
+    )
+    .with_action(action)
+}
+
+pub fn audio_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<bool>> {
+    let action = match action_id {
+        "muted" => local_bool_spec(
+            "muted",
+            "Set output mute",
+            AUDIO_OPERATION_TYPE,
+            &["device-local", "audio", "hardware"],
+            |muted| {
+                encode_local_operation(
+                    AUDIO_OPERATION_TYPE,
+                    &AudioOperation::SetOutputMuted { muted },
+                )
+            },
+        ),
+        "mono" => local_bool_spec(
+            "mono",
+            "Set mono output",
+            AUDIO_OPERATION_TYPE,
+            &["device-local", "audio", "session"],
+            |enabled| {
+                encode_local_operation(AUDIO_OPERATION_TYPE, &AudioOperation::SetMono { enabled })
+            },
+        ),
+        _ => return None,
+    };
+    bool_binding_for(&audio_control_resource(action), action_id)
+}
+
+pub fn audio_unit_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<()>> {
+    tilo_actions::ActionBinding::unit_for(&sound_section(&AutoCommit::new()), action_id).ok()
+}
+
+pub fn audio_number_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<f64>> {
+    let action = match action_id {
+        "volume" => local_number_spec(
+            "volume",
+            "Set output volume",
+            AUDIO_OPERATION_TYPE,
+            &["device-local", "audio", "hardware"],
+            |value| {
+                encode_local_operation(
+                    AUDIO_OPERATION_TYPE,
+                    &AudioOperation::SetOutputVolume { value },
+                )
+            },
+        ),
+        "input-volume" => local_number_spec(
+            "input-volume",
+            "Set input volume",
+            AUDIO_OPERATION_TYPE,
+            &["device-local", "audio", "hardware"],
+            |value| {
+                encode_local_operation(
+                    AUDIO_OPERATION_TYPE,
+                    &AudioOperation::SetInputVolume { value },
+                )
+            },
+        ),
+        "balance" => local_number_spec(
+            "balance",
+            "Set output balance",
+            AUDIO_OPERATION_TYPE,
+            &["device-local", "audio", "session"],
+            |value| {
+                encode_local_operation(AUDIO_OPERATION_TYPE, &AudioOperation::SetBalance { value })
+            },
+        ),
+        _ => return None,
+    };
+    let resource = audio_control_resource(action);
+    let spec = resource.actions.first()?;
+    tilo_actions::ActionBinding::new(&resource, spec, |value| {
+        serde_json::Map::from_iter([("value".to_string(), serde_json::json!(value))])
+    })
+    .ok()
+}
+
+pub fn audio_device_binding(
+    action_id: &'static str,
+    devices: Vec<(String, u32)>,
+) -> Option<tilo_actions::ActionBinding<String>> {
+    if devices.is_empty() || devices.len() > MAX_DYNAMIC_CHOICES {
+        return None;
+    }
+    let choices = devices.iter().map(|(name, _)| name.clone()).collect();
+    let label = if action_id == "output-device" {
+        "Set output device"
+    } else if action_id == "input-device" {
+        "Set input device"
+    } else {
+        return None;
+    };
+    let action = local_choice_spec(
+        action_id,
+        label,
+        AUDIO_OPERATION_TYPE,
+        choices,
+        &["device-local", "audio", "live-device"],
+        move |choice| {
+            let device_id = devices
+                .iter()
+                .find(|(name, _)| name == &choice)
+                .map_or(u32::MAX, |(_, id)| *id);
+            let operation = if action_id == "output-device" {
+                AudioOperation::SelectOutput { device_id }
+            } else {
+                AudioOperation::SelectInput { device_id }
+            };
+            encode_local_operation(AUDIO_OPERATION_TYPE, &operation)
+        },
+    );
+    let resource = audio_control_resource(action);
+    let spec = resource.actions.first()?;
+    tilo_actions::ActionBinding::new(&resource, spec, |choice| {
+        serde_json::Map::from_iter([("choice".to_string(), serde_json::Value::String(choice))])
+    })
+    .ok()
+}
+
+pub fn audio_profile_binding(
+    device_id: u32,
+    profiles: Vec<(String, u32)>,
+) -> Option<tilo_actions::ActionBinding<String>> {
+    if profiles.is_empty() || profiles.len() > MAX_DYNAMIC_CHOICES {
+        return None;
+    }
+    let choices = profiles.iter().map(|(label, _)| label.clone()).collect();
+    let action = local_choice_spec(
+        "profile",
+        "Set audio device profile",
+        AUDIO_OPERATION_TYPE,
+        choices,
+        &["device-local", "audio", "live-device"],
+        move |choice| {
+            let profile_index = profiles
+                .iter()
+                .find(|(label, _)| label == &choice)
+                .map_or(u32::MAX, |(_, index)| *index);
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetDeviceProfile {
+                    device_id,
+                    profile_index,
+                },
+            )
+        },
+    );
+    let resource = Resource::new(
+        format!("settings.audio-device:{device_id}"),
+        "settings.audio-device",
+        format!("Audio device {device_id}"),
+    )
+    .with_action(action);
+    tilo_actions::ActionBinding::new(&resource, &resource.actions[0], |choice| {
+        serde_json::Map::from_iter([("choice".into(), serde_json::Value::String(choice))])
+    })
+    .ok()
+}
+
+fn audio_stream_resource(
+    stream_id: u32,
+    playback: bool,
+    label: &str,
+    action: ActionSpec,
+) -> Resource {
+    Resource::new(
+        format!(
+            "settings.audio-{}:{stream_id}",
+            if playback { "playback" } else { "recording" }
+        ),
+        if playback {
+            "settings.audio-playback"
+        } else {
+            "settings.audio-recording"
+        },
+        label.to_string(),
+    )
+    .with_action(action)
+}
+
+pub fn audio_stream_route_binding(
+    stream_id: u32,
+    playback: bool,
+    stream_label: &str,
+    devices: Vec<(String, u32)>,
+) -> Option<tilo_actions::ActionBinding<String>> {
+    if devices.len() >= MAX_DYNAMIC_CHOICES {
+        return None;
+    }
+    let mut choices = vec![crate::panes::audio::FOLLOW_DEFAULT.to_string()];
+    choices.extend(devices.iter().map(|(label, _)| label.clone()));
+    let action = local_choice_spec(
+        "route",
+        "Set audio stream route",
+        AUDIO_OPERATION_TYPE,
+        choices,
+        &["device-local", "audio", "live-stream"],
+        move |choice| {
+            let device_id = if choice == crate::panes::audio::FOLLOW_DEFAULT {
+                None
+            } else {
+                devices
+                    .iter()
+                    .find(|(label, _)| label == &choice)
+                    .map(|(_, id)| *id)
+            };
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::RouteStream {
+                    stream_id,
+                    playback,
+                    device_id,
+                },
+            )
+        },
+    );
+    let resource = audio_stream_resource(stream_id, playback, stream_label, action);
+    tilo_actions::ActionBinding::new(&resource, &resource.actions[0], |choice| {
+        serde_json::Map::from_iter([("choice".into(), serde_json::Value::String(choice))])
+    })
+    .ok()
+}
+
+pub fn audio_stream_number_binding(
+    stream_id: u32,
+    playback: bool,
+    stream_label: &str,
+) -> Option<tilo_actions::ActionBinding<f64>> {
+    let action = local_number_spec(
+        "volume",
+        "Set audio stream volume",
+        AUDIO_OPERATION_TYPE,
+        &["device-local", "audio", "live-stream"],
+        move |value| {
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetStreamVolume { stream_id, value },
+            )
+        },
+    );
+    let resource = audio_stream_resource(stream_id, playback, stream_label, action);
+    tilo_actions::ActionBinding::new(&resource, &resource.actions[0], |value| {
+        serde_json::Map::from_iter([("value".into(), serde_json::json!(value))])
+    })
+    .ok()
+}
+
+pub fn audio_stream_bool_binding(
+    stream_id: u32,
+    playback: bool,
+    stream_label: &str,
+) -> Option<tilo_actions::ActionBinding<bool>> {
+    let action = local_bool_spec(
+        "muted",
+        "Set audio stream mute",
+        AUDIO_OPERATION_TYPE,
+        &["device-local", "audio", "live-stream"],
+        move |muted| {
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetStreamMuted { stream_id, muted },
+            )
+        },
+    );
+    bool_binding_for(
+        &audio_stream_resource(stream_id, playback, stream_label, action),
+        "muted",
+    )
 }
 
 #[allow(
     clippy::too_many_lines,
     reason = "resource tree mirrors display capability hierarchy"
 )]
-fn displays_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
-    use crate::panes;
-    let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
+fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
     let mut sec = Resource::new(
         pane_resource_id(Category::Displays),
         "settings.section",
         "Displays",
     );
-    sec = sec.with_action(bool_flip_spec(
+    sec = sec.with_action(local_bool_spec(
         "auto_brightness",
-        panes::display::AUTO_BRIGHTNESS_KEY,
-        b(
-            panes::display::AUTO_BRIGHTNESS_KEY,
-            d.display.auto_brightness,
-        ),
-        "automatic brightness",
+        "Set automatic brightness",
+        DISPLAY_OPERATION_TYPE,
+        &["device-local", "display", "hardware"],
+        |enabled| {
+            encode_local_operation(
+                DISPLAY_OPERATION_TYPE,
+                &DisplayOperation::SetAutoBrightness { enabled },
+            )
+        },
     ));
-    sec = sec.with_action(bool_flip_spec(
+    sec = sec.with_action(local_bool_spec(
         "night_light",
-        panes::display::NIGHT_LIGHT_KEY,
-        b(panes::display::NIGHT_LIGHT_KEY, d.display.night_light),
-        "Night Light",
+        "Set Night Light",
+        DISPLAY_OPERATION_TYPE,
+        &["device-local", "display", "hardware"],
+        |enabled| {
+            encode_local_operation(
+                DISPLAY_OPERATION_TYPE,
+                &DisplayOperation::SetNightLight { enabled },
+            )
+        },
     ));
-    sec = sec.with_action(float_prompt_spec(
+    sec = sec.with_action(local_choice_spec(
+        "night_light_temperature",
+        "Set Night Light warmth",
+        DISPLAY_OPERATION_TYPE,
+        vec!["Subtle · 4500 K", "Warm · 3700 K", "Very warm · 2800 K"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        &["device-local", "display", "hardware"],
+        |label| {
+            encode_local_operation(
+                DISPLAY_OPERATION_TYPE,
+                &DisplayOperation::SetNightLightTemperature { label },
+            )
+        },
+    ));
+    sec = sec.with_action(local_number_spec(
         "brightness",
         "Set brightness",
-        panes::display::BRIGHTNESS_KEY,
-        "0.0 – 1.0",
-        0.0,
-        1.0,
+        DISPLAY_OPERATION_TYPE,
+        &["device-local", "display", "hardware"],
+        |value| {
+            encode_local_operation(
+                DISPLAY_OPERATION_TYPE,
+                &DisplayOperation::SetBrightness { value },
+            )
+        },
     ));
     // The Display pane persists its scale as the same human-readable labels
     // shown in its picker (for example `150%`), not as a raw factor.  Keeping
     // the resource action on that wire format means Ctrl+K, agents and the
     // visible dropdown all reach the pane through one typed value contract.
-    sec = sec.with_action(choice_prompt_spec(
+    sec = sec.with_action(local_choice_spec(
         "scale",
         "Set display scale",
-        panes::display::DISPLAY_SCALE_KEY,
-        "100%, 125%, 150%, 175%, 200%",
-        &["100%", "125%", "150%", "175%", "200%"],
-        doc_str(doc, panes::display::DISPLAY_SCALE_KEY)
-            .unwrap_or_else(|| panes::display::scale_label(d.display.scale).to_string()),
+        DISPLAY_OPERATION_TYPE,
+        vec!["100%", "125%", "150%", "175%", "200%"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        &["device-local", "display", "hardware"],
+        |label| {
+            encode_local_operation(
+                DISPLAY_OPERATION_TYPE,
+                &DisplayOperation::SetScale { label },
+            )
+        },
     ));
     // Output topology is supplied by the compositor's live, PID-validated
     // snapshot.  Do not turn an absent/stale snapshot into invented monitors.
     if let Some(snapshot) = settings_store::hardware::DisplayHardwareSnapshot::load() {
-        for output in snapshot.outputs {
+        let output_labels: Vec<_> = snapshot
+            .outputs
+            .iter()
+            .take(MAX_DYNAMIC_RESOURCES)
+            .map(|output| {
+                (
+                    output.descriptor.connector.clone(),
+                    output.descriptor.label().to_string(),
+                )
+            })
+            .collect();
+        for output in snapshot.outputs.into_iter().take(MAX_DYNAMIC_RESOURCES) {
             let descriptor = output.descriptor;
             let connector = descriptor.connector.clone();
             let mut resource = Resource::new(
@@ -1492,136 +2422,225 @@ fn displays_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
                 "settings.display-output",
                 descriptor.label().to_string(),
             );
-            for (id, label, operation) in [
-                (
-                    "enable",
-                    "Enable output",
-                    DisplayOperation::SetEnabled {
-                        connector: connector.clone(),
-                        enabled: true,
-                    },
-                ),
-                (
-                    "disable",
-                    "Disable output",
-                    DisplayOperation::SetEnabled {
-                        connector: connector.clone(),
-                        enabled: false,
-                    },
-                ),
-            ] {
-                if let Some(action) = local_operation_spec(
-                    id,
-                    label,
-                    OperationKind::Effect,
-                    DISPLAY_OPERATION_TYPE,
-                    &operation,
-                    &["device-local", "display", "live-output"],
-                ) {
-                    resource = resource.with_action(action);
-                }
-            }
-            for mode in descriptor.modes.iter().copied() {
-                if let Some(action) = local_operation_spec(
-                    format!("mode-{}-{}-{}", mode.width, mode.height, mode.refresh_mhz),
-                    format!("Use {}", mode.label()),
-                    OperationKind::Effect,
-                    DISPLAY_OPERATION_TYPE,
-                    &DisplayOperation::SetMode {
-                        connector: connector.clone(),
-                        mode,
-                    },
-                    &["device-local", "display", "live-output"],
-                ) {
-                    resource = resource.with_action(action);
-                }
-            }
-            for transform in [
-                settings_store::hardware::OutputTransform::Normal,
-                settings_store::hardware::OutputTransform::Rotate90,
-                settings_store::hardware::OutputTransform::Rotate180,
-                settings_store::hardware::OutputTransform::Rotate270,
-            ] {
-                if let Some(action) = local_operation_spec(
-                    format!("transform-{transform:?}").to_lowercase(),
-                    format!("Set orientation to {transform:?}"),
-                    OperationKind::Effect,
-                    DISPLAY_OPERATION_TYPE,
-                    &DisplayOperation::SetTransform {
-                        connector: connector.clone(),
-                        transform,
-                    },
-                    &["device-local", "display", "live-output"],
-                ) {
-                    resource = resource.with_action(action);
-                }
-            }
-            if descriptor.hdr {
-                for enabled in [true, false] {
-                    if let Some(action) = local_operation_spec(
-                        if enabled { "enable-hdr" } else { "disable-hdr" },
-                        if enabled { "Enable HDR" } else { "Disable HDR" },
-                        OperationKind::Effect,
+            let operation_connector = connector.clone();
+            resource = resource.with_action(local_bool_spec(
+                "enabled",
+                "Set display enabled",
+                DISPLAY_OPERATION_TYPE,
+                &["device-local", "display", "live-output"],
+                move |enabled| {
+                    encode_local_operation(
                         DISPLAY_OPERATION_TYPE,
-                        &DisplayOperation::SetHdr {
-                            connector: connector.clone(),
+                        &DisplayOperation::SetEnabled {
+                            connector: operation_connector.clone(),
                             enabled,
                         },
-                        &["device-local", "display", "live-output"],
-                    ) {
-                        resource = resource.with_action(action);
-                    }
-                }
+                    )
+                },
+            ));
+            let operation_connector = connector.clone();
+            resource = resource.with_action(local_choice_spec(
+                "scale",
+                "Set output scale",
+                DISPLAY_OPERATION_TYPE,
+                vec!["100%", "125%", "150%", "175%", "200%"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+                &["device-local", "display", "live-output"],
+                move |label| {
+                    encode_local_operation(
+                        DISPLAY_OPERATION_TYPE,
+                        &DisplayOperation::SetOutputScale {
+                            connector: operation_connector.clone(),
+                            label,
+                        },
+                    )
+                },
+            ));
+            let position_choices: Vec<String> = std::iter::once("Automatic".into())
+                .chain(
+                    output_labels
+                        .iter()
+                        .filter(|(candidate, _)| candidate != &connector)
+                        .flat_map(|(_, label)| {
+                            ["Left", "Right", "Above", "Below"]
+                                .map(|side| format!("{side} of {label}"))
+                        }),
+                )
+                .collect();
+            let operation_connector = connector.clone();
+            resource = resource.with_action(local_choice_spec(
+                "position",
+                "Set output position",
+                DISPLAY_OPERATION_TYPE,
+                position_choices,
+                &["device-local", "display", "live-output"],
+                move |label| {
+                    encode_local_operation(
+                        DISPLAY_OPERATION_TYPE,
+                        &DisplayOperation::SetPosition {
+                            connector: operation_connector.clone(),
+                            label,
+                        },
+                    )
+                },
+            ));
+            let mirror_choices: Vec<String> = std::iter::once("Extend workspace".into())
+                .chain(
+                    output_labels
+                        .iter()
+                        .filter(|(candidate, _)| candidate != &connector)
+                        .map(|(_, label)| format!("Mirror {label}")),
+                )
+                .collect();
+            let operation_connector = connector.clone();
+            resource = resource.with_action(local_choice_spec(
+                "mirror",
+                "Set output mirroring",
+                DISPLAY_OPERATION_TYPE,
+                mirror_choices,
+                &["device-local", "display", "live-output"],
+                move |label| {
+                    encode_local_operation(
+                        DISPLAY_OPERATION_TYPE,
+                        &DisplayOperation::SetMirror {
+                            connector: operation_connector.clone(),
+                            label,
+                        },
+                    )
+                },
+            ));
+            let operation_connector = connector.clone();
+            resource = resource.with_action(local_bool_spec(
+                "primary",
+                "Set primary display",
+                DISPLAY_OPERATION_TYPE,
+                &["device-local", "display", "live-output"],
+                move |primary| {
+                    encode_local_operation(
+                        DISPLAY_OPERATION_TYPE,
+                        &DisplayOperation::SetPrimary {
+                            connector: operation_connector.clone(),
+                            primary,
+                        },
+                    )
+                },
+            ));
+            let mode_choices = descriptor
+                .modes
+                .iter()
+                .take(MAX_DYNAMIC_CHOICES)
+                .map(|mode| mode.label())
+                .collect();
+            let operation_connector = connector.clone();
+            resource = resource.with_action(local_choice_spec(
+                "mode",
+                "Set resolution and refresh rate",
+                DISPLAY_OPERATION_TYPE,
+                mode_choices,
+                &["device-local", "display", "live-output"],
+                move |label| {
+                    encode_local_operation(
+                        DISPLAY_OPERATION_TYPE,
+                        &DisplayOperation::SetModeLabel {
+                            connector: operation_connector.clone(),
+                            label,
+                        },
+                    )
+                },
+            ));
+            let operation_connector = connector.clone();
+            resource = resource.with_action(local_choice_spec(
+                "transform",
+                "Set display orientation",
+                DISPLAY_OPERATION_TYPE,
+                vec![
+                    "Landscape",
+                    "Portrait right",
+                    "Upside down",
+                    "Portrait left",
+                ]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+                &["device-local", "display", "live-output"],
+                move |label| {
+                    encode_local_operation(
+                        DISPLAY_OPERATION_TYPE,
+                        &DisplayOperation::SetTransformLabel {
+                            connector: operation_connector.clone(),
+                            label,
+                        },
+                    )
+                },
+            ));
+            if descriptor.hdr {
+                let operation_connector = connector.clone();
+                resource = resource.with_action(local_bool_spec(
+                    "hdr",
+                    "Set HDR",
+                    DISPLAY_OPERATION_TYPE,
+                    &["device-local", "display", "live-output"],
+                    move |enabled| {
+                        encode_local_operation(
+                            DISPLAY_OPERATION_TYPE,
+                            &DisplayOperation::SetHdr {
+                                connector: operation_connector.clone(),
+                                enabled,
+                            },
+                        )
+                    },
+                ));
             }
             if descriptor.vrr {
-                for enabled in [true, false] {
-                    if let Some(action) = local_operation_spec(
-                        if enabled { "enable-vrr" } else { "disable-vrr" },
-                        if enabled {
-                            "Enable variable refresh rate"
-                        } else {
-                            "Disable variable refresh rate"
-                        },
-                        OperationKind::Effect,
-                        DISPLAY_OPERATION_TYPE,
-                        &DisplayOperation::SetVrr {
-                            connector: connector.clone(),
-                            enabled,
-                        },
-                        &["device-local", "display", "live-output"],
-                    ) {
-                        resource = resource.with_action(action);
-                    }
-                }
-            }
-            if let Some(action) = local_operation_spec(
-                "profile-system-default",
-                "Use system colour profile",
-                OperationKind::Effect,
-                DISPLAY_OPERATION_TYPE,
-                &DisplayOperation::SetColorProfile {
-                    connector: connector.clone(),
-                    profile: None,
-                },
-                &["device-local", "display", "live-output"],
-            ) {
-                resource = resource.with_action(action);
-            }
-            for profile in &descriptor.color_profiles {
-                if let Some(action) = local_operation_spec(
-                    format!("profile-{profile}"),
-                    format!("Use colour profile {profile}"),
-                    OperationKind::Effect,
+                let operation_connector = connector.clone();
+                resource = resource.with_action(local_bool_spec(
+                    "vrr",
+                    "Set variable refresh rate",
                     DISPLAY_OPERATION_TYPE,
-                    &DisplayOperation::SetColorProfile {
-                        connector: connector.clone(),
-                        profile: Some(profile.clone()),
-                    },
                     &["device-local", "display", "live-output"],
-                ) {
-                    resource = resource.with_action(action);
-                }
+                    move |enabled| {
+                        encode_local_operation(
+                            DISPLAY_OPERATION_TYPE,
+                            &DisplayOperation::SetVrr {
+                                connector: operation_connector.clone(),
+                                enabled,
+                            },
+                        )
+                    },
+                ));
             }
+            let mut profile_choices = vec!["System default".to_string()];
+            profile_choices.extend(
+                descriptor
+                    .color_profiles
+                    .iter()
+                    .take(MAX_DYNAMIC_CHOICES - 1)
+                    .filter_map(|id| {
+                        output
+                            .color_profile_labels
+                            .get(id)
+                            .map(|name| format!("{name} · {id}"))
+                    }),
+            );
+            let operation_connector = connector.clone();
+            resource = resource.with_action(local_choice_spec(
+                "color-profile",
+                "Set colour profile",
+                DISPLAY_OPERATION_TYPE,
+                profile_choices,
+                &["device-local", "display", "live-output"],
+                move |label| {
+                    encode_local_operation(
+                        DISPLAY_OPERATION_TYPE,
+                        &DisplayOperation::SetColorProfileLabel {
+                            connector: operation_connector.clone(),
+                            label,
+                        },
+                    )
+                },
+            ));
             sec = sec.with_child(resource);
         }
     }
@@ -1648,96 +2667,414 @@ fn displays_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     sec
 }
 
+fn display_control_resource(action: ActionSpec) -> Resource {
+    Resource::new(
+        pane_resource_id(Category::Displays),
+        "settings.section",
+        "Displays",
+    )
+    .with_action(action)
+}
+
+pub fn display_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<bool>> {
+    let action = match action_id {
+        "auto_brightness" => local_bool_spec(
+            "auto_brightness",
+            "Set automatic brightness",
+            DISPLAY_OPERATION_TYPE,
+            &["device-local", "display", "hardware"],
+            |enabled| {
+                encode_local_operation(
+                    DISPLAY_OPERATION_TYPE,
+                    &DisplayOperation::SetAutoBrightness { enabled },
+                )
+            },
+        ),
+        "night_light" => local_bool_spec(
+            "night_light",
+            "Set Night Light",
+            DISPLAY_OPERATION_TYPE,
+            &["device-local", "display", "hardware"],
+            |enabled| {
+                encode_local_operation(
+                    DISPLAY_OPERATION_TYPE,
+                    &DisplayOperation::SetNightLight { enabled },
+                )
+            },
+        ),
+        _ => return None,
+    };
+    bool_binding_for(&display_control_resource(action), action_id)
+}
+
+pub fn display_choice_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<String>> {
+    let action = match action_id {
+        "night_light_temperature" => local_choice_spec(
+            action_id,
+            "Set Night Light warmth",
+            DISPLAY_OPERATION_TYPE,
+            vec!["Subtle · 4500 K", "Warm · 3700 K", "Very warm · 2800 K"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            &["device-local", "display", "hardware"],
+            |label| {
+                encode_local_operation(
+                    DISPLAY_OPERATION_TYPE,
+                    &DisplayOperation::SetNightLightTemperature { label },
+                )
+            },
+        ),
+        _ => return None,
+    };
+    let resource = display_control_resource(action);
+    let spec = resource.actions.first()?;
+    tilo_actions::ActionBinding::new(&resource, spec, |choice| {
+        serde_json::Map::from_iter([("choice".into(), serde_json::Value::String(choice))])
+    })
+    .ok()
+}
+
+pub fn display_number_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<f64>> {
+    let action = match action_id {
+        "brightness" => local_number_spec(
+            "brightness",
+            "Set brightness",
+            DISPLAY_OPERATION_TYPE,
+            &["device-local", "display", "hardware"],
+            |value| {
+                encode_local_operation(
+                    DISPLAY_OPERATION_TYPE,
+                    &DisplayOperation::SetBrightness { value },
+                )
+            },
+        ),
+        _ => return None,
+    };
+    let resource = display_control_resource(action);
+    let spec = resource.actions.first()?;
+    tilo_actions::ActionBinding::new(&resource, spec, |value| {
+        serde_json::Map::from_iter([("value".to_string(), serde_json::json!(value))])
+    })
+    .ok()
+}
+
+pub fn display_scale_binding() -> Option<tilo_actions::ActionBinding<String>> {
+    let action = local_choice_spec(
+        "scale",
+        "Set display scale",
+        DISPLAY_OPERATION_TYPE,
+        vec!["100%", "125%", "150%", "175%", "200%"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        &["device-local", "display", "hardware"],
+        |label| {
+            encode_local_operation(
+                DISPLAY_OPERATION_TYPE,
+                &DisplayOperation::SetScale { label },
+            )
+        },
+    );
+    let resource = display_control_resource(action);
+    let spec = resource.actions.first()?;
+    tilo_actions::ActionBinding::new(&resource, spec, |choice| {
+        serde_json::Map::from_iter([("choice".to_string(), serde_json::Value::String(choice))])
+    })
+    .ok()
+}
+
+pub fn display_unit_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<()>> {
+    let resource = displays_section(&AutoCommit::new(), &SystemPrefs::default());
+    tilo_actions::ActionBinding::unit_for(&resource, action_id).ok()
+}
+
+fn display_output_control_resource(connector: &str, action: ActionSpec) -> Resource {
+    Resource::new(
+        format!("settings.display-output:{connector}"),
+        "settings.display-output",
+        connector.to_string(),
+    )
+    .with_action(action)
+}
+
+pub fn display_output_bool_binding(
+    action_id: &'static str,
+    connector: String,
+) -> Option<tilo_actions::ActionBinding<bool>> {
+    let operation_connector = connector.clone();
+    let action = match action_id {
+        "enabled" => local_bool_spec(
+            "enabled",
+            "Set display enabled",
+            DISPLAY_OPERATION_TYPE,
+            &["device-local", "display", "live-output"],
+            move |enabled| {
+                encode_local_operation(
+                    DISPLAY_OPERATION_TYPE,
+                    &DisplayOperation::SetEnabled {
+                        connector: operation_connector.clone(),
+                        enabled,
+                    },
+                )
+            },
+        ),
+        "primary" => local_bool_spec(
+            "primary",
+            "Set primary display",
+            DISPLAY_OPERATION_TYPE,
+            &["device-local", "display", "live-output"],
+            move |primary| {
+                encode_local_operation(
+                    DISPLAY_OPERATION_TYPE,
+                    &DisplayOperation::SetPrimary {
+                        connector: operation_connector.clone(),
+                        primary,
+                    },
+                )
+            },
+        ),
+        "hdr" => local_bool_spec(
+            "hdr",
+            "Set HDR",
+            DISPLAY_OPERATION_TYPE,
+            &["device-local", "display", "live-output"],
+            move |enabled| {
+                encode_local_operation(
+                    DISPLAY_OPERATION_TYPE,
+                    &DisplayOperation::SetHdr {
+                        connector: operation_connector.clone(),
+                        enabled,
+                    },
+                )
+            },
+        ),
+        "vrr" => local_bool_spec(
+            "vrr",
+            "Set variable refresh rate",
+            DISPLAY_OPERATION_TYPE,
+            &["device-local", "display", "live-output"],
+            move |enabled| {
+                encode_local_operation(
+                    DISPLAY_OPERATION_TYPE,
+                    &DisplayOperation::SetVrr {
+                        connector: operation_connector.clone(),
+                        enabled,
+                    },
+                )
+            },
+        ),
+        _ => return None,
+    };
+    bool_binding_for(
+        &display_output_control_resource(&connector, action),
+        action_id,
+    )
+}
+
+pub fn display_output_choice_binding(
+    action_id: &'static str,
+    connector: String,
+    choices: Vec<String>,
+) -> Option<tilo_actions::ActionBinding<String>> {
+    if choices.is_empty() || choices.len() > MAX_DYNAMIC_CHOICES {
+        return None;
+    }
+    let operation_connector = connector.clone();
+    let label = match action_id {
+        "scale" => "Set output scale",
+        "position" => "Set output position",
+        "mirror" => "Set output mirroring",
+        "mode" => "Set resolution and refresh rate",
+        "transform" => "Set display orientation",
+        "color-profile" => "Set colour profile",
+        _ => return None,
+    };
+    let action = local_choice_spec(
+        action_id,
+        label,
+        DISPLAY_OPERATION_TYPE,
+        choices,
+        &["device-local", "display", "live-output"],
+        move |label| {
+            let operation = match action_id {
+                "scale" => DisplayOperation::SetOutputScale {
+                    connector: operation_connector.clone(),
+                    label,
+                },
+                "position" => DisplayOperation::SetPosition {
+                    connector: operation_connector.clone(),
+                    label,
+                },
+                "mirror" => DisplayOperation::SetMirror {
+                    connector: operation_connector.clone(),
+                    label,
+                },
+                "mode" => DisplayOperation::SetModeLabel {
+                    connector: operation_connector.clone(),
+                    label,
+                },
+                "transform" => DisplayOperation::SetTransformLabel {
+                    connector: operation_connector.clone(),
+                    label,
+                },
+                "color-profile" => DisplayOperation::SetColorProfileLabel {
+                    connector: operation_connector.clone(),
+                    label,
+                },
+                _ => unreachable!("action id is validated before constructing the closure"),
+            };
+            encode_local_operation(DISPLAY_OPERATION_TYPE, &operation)
+        },
+    );
+    let resource = display_output_control_resource(&connector, action);
+    let spec = resource.actions.first()?;
+    tilo_actions::ActionBinding::new(&resource, spec, |choice| {
+        serde_json::Map::from_iter([("choice".to_string(), serde_json::Value::String(choice))])
+    })
+    .ok()
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "the ordered resource declaration mirrors the Input hierarchy"
 )]
 fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     use crate::panes;
-    let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
     let mut sec = Resource::new(
         pane_resource_id(Category::MouseKeyboard),
         "settings.section",
         "Mouse & Keyboard",
     );
-    sec = sec.with_action(bool_flip_spec(
-        "touchpad_natural_scroll",
-        panes::mouse_keyboard::TOUCHPAD_NATURAL_SCROLL_KEY,
-        b(
-            panes::mouse_keyboard::TOUCHPAD_NATURAL_SCROLL_KEY,
-            d.input
-                .touchpad_natural_scroll
-                .unwrap_or(d.input.natural_scroll),
+    for (id, label, operation) in [
+        (
+            "touchpad-natural-scroll",
+            "Set touchpad natural scrolling",
+            InputOperation::SetTouchpadNaturalScroll { enabled: false },
         ),
-        "touchpad natural scrolling",
-    ));
-    sec = sec.with_action(bool_flip_spec(
-        "mouse_natural_scroll",
-        panes::mouse_keyboard::MOUSE_NATURAL_SCROLL_KEY,
-        b(
-            panes::mouse_keyboard::MOUSE_NATURAL_SCROLL_KEY,
-            d.input
-                .mouse_natural_scroll
-                .unwrap_or(d.input.natural_scroll),
+        (
+            "mouse-natural-scroll",
+            "Set mouse natural scrolling",
+            InputOperation::SetMouseNaturalScroll { enabled: false },
         ),
-        "mouse natural scrolling",
-    ));
-    sec = sec.with_action(bool_flip_spec(
-        "tap_to_click",
-        panes::mouse_keyboard::TAP_CLICK_KEY,
-        b(panes::mouse_keyboard::TAP_CLICK_KEY, d.input.tap_to_click),
-        "tap to click",
-    ));
-    sec = sec.with_action(float_prompt_spec(
-        "touchpad_pointer_speed",
-        "Set touchpad speed",
-        panes::mouse_keyboard::TOUCHPAD_POINTER_SPEED_KEY,
-        "0.0 – 1.0",
-        0.0,
-        1.0,
-    ));
-    sec = sec.with_action(float_prompt_spec(
-        "mouse_pointer_speed",
-        "Set mouse speed",
-        panes::mouse_keyboard::MOUSE_POINTER_SPEED_KEY,
-        "0.0 – 1.0",
-        0.0,
-        1.0,
-    ));
-    sec = sec.with_action(float_prompt_spec(
-        "key_repeat",
-        "Set key-repeat rate",
-        panes::mouse_keyboard::KEY_REPEAT_KEY,
-        "0.0 – 1.0",
-        0.0,
-        1.0,
-    ));
-    for (id, key, label) in [
+        (
+            "tap-to-click",
+            "Set tap to click",
+            InputOperation::SetTapToClick { enabled: false },
+        ),
         (
             "tap-drag",
-            panes::mouse_keyboard::TAP_DRAG_KEY,
-            "tap and drag",
+            "Set tap and drag",
+            InputOperation::SetTapDrag { enabled: false },
         ),
         (
             "disable-while-typing",
-            panes::mouse_keyboard::DWT_KEY,
-            "disable touchpad while typing",
+            "Set disable while typing",
+            InputOperation::SetDisableWhileTyping { enabled: false },
         ),
         (
             "middle-emulation",
-            panes::mouse_keyboard::MIDDLE_EMULATION_KEY,
-            "middle-button emulation",
+            "Set middle-button emulation",
+            InputOperation::SetMiddleEmulation { enabled: false },
         ),
         (
             "left-handed",
-            panes::mouse_keyboard::LEFT_HANDED_KEY,
-            "left-handed pointer buttons",
+            "Set left-handed pointer buttons",
+            InputOperation::SetLeftHanded { enabled: false },
         ),
         (
             "touchpad-gestures",
-            panes::mouse_keyboard::GESTURES_KEY,
-            "touchpad gestures",
+            "Set touchpad gestures",
+            InputOperation::SetTouchpadGestures { enabled: false },
         ),
+    ] {
+        let operation = operation;
+        sec = sec.with_action(
+            ActionSpec::typed_operation(
+                id,
+                label,
+                "On or off on this device",
+                OperationKind::Effect,
+                INPUT_OPERATION_TYPE,
+                vec![ActionParam::required(
+                    "value",
+                    ParamType::Boolean,
+                    "Whether this local preference is enabled",
+                )],
+                move |args| {
+                    encode_local_operation(
+                        INPUT_OPERATION_TYPE,
+                        &input_bool_operation(&operation, args.boolean("value").unwrap_or(false)),
+                    )
+                },
+            )
+            .with_contract(local_operation_contract(&["device-local", "input"])),
+        );
+    }
+    for (id, label, operation) in [
+        (
+            "touchpad-speed",
+            "Set touchpad speed",
+            InputOperation::SetTouchpadPointerSpeed { value: 0.0 },
+        ),
+        (
+            "mouse-speed",
+            "Set mouse speed",
+            InputOperation::SetMousePointerSpeed { value: 0.0 },
+        ),
+        (
+            "key-repeat",
+            "Set key-repeat rate",
+            InputOperation::SetKeyRepeat { value: 0.0 },
+        ),
+    ] {
+        let operation = operation;
+        sec = sec.with_action(
+            ActionSpec::typed_operation(
+                id,
+                label,
+                "0.0 – 1.0",
+                OperationKind::Effect,
+                INPUT_OPERATION_TYPE,
+                vec![
+                    ActionParam::required("value", ParamType::Number, "New local input value")
+                        .with_schema(serde_json::json!({"minimum": 0.0, "maximum": 1.0})),
+                ],
+                move |args| {
+                    encode_local_operation(
+                        INPUT_OPERATION_TYPE,
+                        &input_number_operation(
+                            &operation,
+                            args.number("value").unwrap_or(0.0).clamp(0.0, 1.0),
+                        ),
+                    )
+                },
+            )
+            .with_contract(local_operation_contract(&["device-local", "input"])),
+        );
+    }
+    sec = sec.with_action(input_choice_spec(
+        "acceleration-profile",
+        "Set pointer acceleration profile",
+        &["Adaptive".into(), "Flat".into()],
+        |choice| InputOperation::SetAccelerationProfile { profile: choice },
+    ));
+    sec = sec.with_action(input_choice_spec(
+        "compose-key",
+        "Set compose key",
+        &[
+            "Disabled".into(),
+            "Right Alt".into(),
+            "Menu".into(),
+            "Caps Lock".into(),
+            "Right Super".into(),
+            "Left Super".into(),
+        ],
+        |choice| InputOperation::SetComposeKey { key: choice },
+    ));
+    // Text assistance is portable user text preference rather than a hardware
+    // command, and therefore intentionally remains in SettingsAction.
+    for (id, key, label) in [
         (
             "spell-checking",
             panes::mouse_keyboard::CHECK_SPELLING_KEY,
@@ -1749,38 +3086,11 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             "automatic spelling correction",
         ),
     ] {
-        sec = sec.with_action(bool_flip_spec(id, key, b(key, false), label));
-    }
-    for (id, label, key, options, fallback) in [
-        (
-            "acceleration-profile",
-            "Set pointer acceleration profile",
-            panes::mouse_keyboard::ACCEL_PROFILE_KEY,
-            &["Adaptive", "Flat"][..],
-            "Adaptive",
-        ),
-        (
-            "compose-key",
-            "Set compose key",
-            panes::mouse_keyboard::COMPOSE_KEY,
-            &[
-                "Disabled",
-                "Right Alt",
-                "Menu",
-                "Caps Lock",
-                "Right Super",
-                "Left Super",
-            ][..],
-            "Disabled",
-        ),
-    ] {
-        sec = sec.with_action(choice_prompt_spec(
+        sec = sec.with_action(bool_flip_spec(
             id,
-            label,
             key,
-            "Choose an input preference",
-            options,
-            doc_str(doc, key).unwrap_or_else(|| fallback.into()),
+            doc_bool(doc, key).unwrap_or(true),
+            label,
         ));
     }
     // Input-source edits are device-local commands: they mutate the local
@@ -1791,6 +3101,23 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         sources.push(d.input.keyboard_layout.clone());
     }
     let catalog = crate::input_sources::installed_catalog();
+    let active_choices: Vec<String> = sources
+        .iter()
+        .filter_map(|source| {
+            catalog
+                .iter()
+                .find(|entry| entry.id == *source)
+                .map(|entry| entry.label.clone())
+        })
+        .collect();
+    if !active_choices.is_empty() {
+        sec = sec.with_action(input_choice_spec(
+            "active-source",
+            "Set active keyboard input source",
+            &active_choices,
+            |label| InputOperation::SetActiveSource { label },
+        ));
+    }
     let mut add_choices: Vec<String> = catalog
         .iter()
         .filter(|entry| !sources.contains(&entry.id))
@@ -1828,7 +3155,7 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             .with_contract(local_operation_contract(&["device-local", "input-source"])),
         );
     }
-    for (index, source) in sources.iter().enumerate() {
+    for (index, source) in sources.iter().take(MAX_DYNAMIC_RESOURCES).enumerate() {
         let label = catalog
             .iter()
             .find(|entry| entry.id == *source)
@@ -1883,21 +3210,21 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     clippy::too_many_lines,
     reason = "the ordered resource declaration mirrors the Power hierarchy"
 )]
-fn power_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
-    use crate::panes;
-    let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
-    let s = |key: &str, default: &str| doc_str(doc, key).unwrap_or_else(|| default.to_string());
+fn power_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
     let mut sec = Resource::new("settings.section:power", "settings.section", "Power");
-    sec = sec.with_action(bool_flip_spec(
+    sec = sec.with_action(local_bool_spec(
         "auto_suspend",
-        panes::power::AUTO_SUSPEND_KEY,
-        b(panes::power::AUTO_SUSPEND_KEY, d.power.auto_suspend),
-        "automatic suspend",
+        "Set automatic suspend",
+        POWER_OPERATION_TYPE,
+        &["device-local", "power"],
+        |enabled| {
+            encode_local_operation(
+                POWER_OPERATION_TYPE,
+                &PowerOperation::SetAutoSuspend { enabled },
+            )
+        },
     ));
-    // These choices deliberately mirror the controls' durable document
-    // values, not the power daemon's transient availability. A hardware-only
-    // capability is exported below only when the local probe says it exists.
-    let suspend_options = &[
+    let suspend_options = vec![
         "5 minutes",
         "10 minutes",
         "15 minutes",
@@ -1906,144 +3233,175 @@ fn power_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         "1 hour",
         "Never",
     ];
-    for (id, label, key, options, fallback) in [
+    for (id, label, options, profile) in [
         (
             "profile",
             "Set power profile",
-            panes::power::PROFILE_KEY,
-            &["Power Saver", "Balanced", "Performance"][..],
-            "Balanced",
+            vec!["Power Saver", "Balanced", "Performance"],
+            "active",
         ),
         (
             "suspend-after",
             "Set idle suspend delay",
-            panes::power::SUSPEND_KEY,
-            suspend_options,
-            "30 minutes",
+            suspend_options.clone(),
+            "default",
         ),
         (
             "blank-after",
             "Set screen blank delay",
-            panes::power::BLANK_KEY,
-            &[
+            vec![
                 "1 minute",
                 "5 minutes",
                 "10 minutes",
                 "15 minutes",
                 "30 minutes",
                 "Never",
-            ][..],
-            "10 minutes",
+            ],
+            "blank",
         ),
         (
             "lock-after",
             "Set automatic lock delay",
-            panes::power::LOCK_KEY,
-            &[
+            vec![
                 "1 minute",
                 "5 minutes",
                 "10 minutes",
                 "15 minutes",
                 "30 minutes",
                 "Never",
-            ][..],
-            "5 minutes",
+            ],
+            "lock",
         ),
         (
             "saver-suspend",
             "Set Power Saver suspend delay",
-            panes::power::SAVER_SUSPEND_KEY,
-            suspend_options,
-            "15 minutes",
+            suspend_options.clone(),
+            "saver",
         ),
         (
             "balanced-suspend",
             "Set Balanced suspend delay",
-            panes::power::BALANCED_SUSPEND_KEY,
-            suspend_options,
-            "30 minutes",
+            suspend_options.clone(),
+            "balanced",
         ),
         (
             "performance-suspend",
             "Set Performance suspend delay",
-            panes::power::PERFORMANCE_SUSPEND_KEY,
             suspend_options,
-            "Never",
+            "performance",
         ),
     ] {
-        sec = sec.with_action(choice_prompt_spec(
+        sec = sec.with_action(local_choice_spec(
             id,
             label,
-            key,
-            "Choose a power preference",
-            options,
-            s(key, fallback),
+            POWER_OPERATION_TYPE,
+            options.into_iter().map(str::to_string).collect(),
+            &["device-local", "power"],
+            move |choice| {
+                let operation = match profile {
+                    "active" => PowerOperation::SetProfile { profile: choice },
+                    "blank" => PowerOperation::SetBlankTimeout { label: choice },
+                    "lock" => PowerOperation::SetLockTimeout { label: choice },
+                    profile => PowerOperation::SetSuspendTimeout {
+                        profile: profile.into(),
+                        label: choice,
+                    },
+                };
+                encode_local_operation(POWER_OPERATION_TYPE, &operation)
+            },
         ));
     }
-    let power_actions = &["Suspend", "Lock screen", "Do nothing"];
-    let cur_lid = s(panes::power::LID_KEY, d.power.lid_close_action.display());
-    sec = sec.with_action(choice_prompt_spec(
-        "lid",
-        "Set lid-close action",
-        panes::power::LID_KEY,
-        "Suspend, Lock screen, Do nothing",
-        power_actions,
-        cur_lid,
-    ));
-    let cur_key = s(
-        panes::power::POWER_KEY_KEY,
-        d.power.power_key_action.display(),
-    );
-    sec = sec.with_action(choice_prompt_spec(
-        "power_key",
-        "Set power-key action",
-        panes::power::POWER_KEY_KEY,
-        "Suspend, Lock screen, Do nothing",
-        power_actions,
-        cur_key,
-    ));
-    let cur_crit = s(
-        panes::power::CRITICAL_KEY,
-        d.power.critical_action.display(),
-    );
-    sec = sec.with_action(choice_prompt_spec(
-        "critical",
-        "Set critical-battery action",
-        panes::power::CRITICAL_KEY,
-        "Suspend, Lock screen, Do nothing",
-        power_actions,
-        cur_crit,
-    ));
+    for (id, label, kind) in [
+        ("lid", "Set lid-close action", "lid"),
+        ("power_key", "Set power-key action", "power-key"),
+        ("critical", "Set critical-battery action", "critical"),
+    ] {
+        sec = sec.with_action(local_choice_spec(
+            id,
+            label,
+            POWER_OPERATION_TYPE,
+            ["Suspend", "Lock screen", "Do nothing"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            &["device-local", "power"],
+            move |action| {
+                let operation = match kind {
+                    "lid" => PowerOperation::SetLidAction { action },
+                    "power-key" => PowerOperation::SetPowerKeyAction { action },
+                    _ => PowerOperation::SetCriticalAction { action },
+                };
+                encode_local_operation(POWER_OPERATION_TYPE, &operation)
+            },
+        ));
+    }
     if let Some(capability) = os_actions::charge_capability() {
-        let fallback = capability.current;
-        let choices: Vec<String> = capability.choices.iter().map(u32::to_string).collect();
-        sec = sec.with_action(
-            ActionSpec::typed_operation(
-                "set-charge-cap",
-                "Set battery charge cap",
-                "Choose a supported charge percentage",
-                OperationKind::Effect,
-                POWER_OPERATION_TYPE,
-                vec![
-                    ActionParam::required_owned("percent", ParamType::Text, "Charge percentage")
-                        .with_choices(choices),
-                ],
-                move |args| {
-                    let percent = args
-                        .text("percent")
-                        .and_then(|value| value.parse::<u32>().ok())
-                        .unwrap_or(fallback);
-                    encode_local_operation(
-                        POWER_OPERATION_TYPE,
-                        &PowerOperation::SetChargeLimit { percent },
-                    )
-                },
-            )
-            .with_contract(local_operation_contract(&["device-local", "hardware"]))
-            .privileged(),
-        );
+        sec = sec.with_action(charge_cap_spec(&capability.choices, capability.current));
     }
     sec
+}
+
+fn charge_cap_spec(choices: &[u32], fallback: u32) -> ActionSpec {
+    let choices = choices
+        .iter()
+        .map(|percent| format!("{percent}%"))
+        .collect::<Vec<_>>();
+    ActionSpec::typed_operation(
+        "set-charge-cap",
+        "Set battery charge cap",
+        "Choose a supported charge percentage",
+        OperationKind::Effect,
+        POWER_OPERATION_TYPE,
+        vec![
+            ActionParam::required_owned("percent", ParamType::Text, "Charge percentage")
+                .with_choices(choices),
+        ],
+        move |args| {
+            let percent = args
+                .text("percent")
+                .and_then(|value| value.trim_end_matches('%').parse::<u32>().ok())
+                .unwrap_or(fallback);
+            encode_local_operation(
+                POWER_OPERATION_TYPE,
+                &PowerOperation::SetChargeLimit { percent },
+            )
+        },
+    )
+    .with_contract(local_operation_contract(&["device-local", "hardware"]))
+    .privileged()
+}
+
+pub fn power_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<bool>> {
+    bool_binding_for(
+        &power_section(&AutoCommit::new(), &SystemPrefs::default()),
+        action_id,
+    )
+}
+
+pub fn power_text_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<String>> {
+    let resource = power_section(&AutoCommit::new(), &SystemPrefs::default());
+    let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
+    tilo_actions::ActionBinding::new(&resource, spec, |choice| {
+        serde_json::Map::from_iter([("choice".to_string(), serde_json::Value::String(choice))])
+    })
+    .ok()
+}
+
+pub fn power_charge_binding(
+    choices: &[u32],
+    fallback: u32,
+) -> Option<tilo_actions::ActionBinding<String>> {
+    let resource = Resource::new(
+        pane_resource_id(Category::Power),
+        "settings.section",
+        "Power",
+    )
+    .with_action(charge_cap_spec(choices, fallback));
+    let spec = resource.actions.first()?;
+    tilo_actions::ActionBinding::new(&resource, spec, |percent| {
+        serde_json::Map::from_iter([("percent".to_string(), serde_json::Value::String(percent))])
+    })
+    .ok()
 }
 
 #[allow(
@@ -2266,22 +3624,18 @@ fn updates_section() -> Resource {
     // The timer is an effective property of this machine, not a shared
     // preference.  It gets a typed local request so its result can be read
     // back from systemd and reported to the caller.
-    for (id, label, enabled) in [
-        ("enable-auto", "Enable automatic updates", true),
-        ("disable-auto", "Disable automatic updates", false),
-    ] {
-        if let Some(mut action) = local_operation_spec(
-            id,
-            label,
-            OperationKind::Effect,
-            UPDATE_OPERATION_TYPE,
-            &UpdateOperation::SetAutomatic { enabled },
-            &["device-local", "system-update"],
-        ) {
-            action.contract.retry = RetryPolicy::Idempotent;
-            sec = sec.with_action(action);
-        }
-    }
+    sec = sec.with_action(local_bool_spec(
+        "automatic",
+        "Set automatic updates",
+        UPDATE_OPERATION_TYPE,
+        &["device-local", "system-update"],
+        |enabled| {
+            encode_local_operation(
+                UPDATE_OPERATION_TYPE,
+                &UpdateOperation::SetAutomatic { enabled },
+            )
+        },
+    ));
     for (id, label, operation) in [
         ("check", "Check for updates", UpdateOperation::Check),
         (
@@ -2341,57 +3695,78 @@ fn updates_section() -> Resource {
     ) {
         sec = sec.with_action(review);
     }
-    for (id, label, schedule) in [
-        (
-            "schedule-system",
-            "Use system update schedule",
-            "System schedule",
-        ),
-        ("schedule-daily", "Check for updates daily", "Daily"),
-        ("schedule-weekly", "Check for updates weekly", "Weekly"),
-    ] {
-        if let Some(mut action) = local_operation_spec(
-            id,
-            label,
-            OperationKind::Effect,
-            UPDATE_OPERATION_TYPE,
-            &UpdateOperation::SetSchedule {
-                schedule: schedule.into(),
-            },
-            &["device-local", "system-update"],
-        ) {
-            action.contract.retry = RetryPolicy::Idempotent;
-            sec = sec.with_action(action);
-        }
-    }
-    for (id, label, allowed) in [
-        ("allow-metered", "Allow updates on metered networks", true),
-        ("avoid-metered", "Avoid updates on metered networks", false),
-    ] {
-        if let Some(mut action) = local_operation_spec(
-            id,
-            label,
-            OperationKind::Effect,
-            UPDATE_OPERATION_TYPE,
-            &UpdateOperation::SetMetered { allowed },
-            &["device-local", "system-update"],
-        ) {
-            action.contract.retry = RetryPolicy::Idempotent;
-            sec = sec.with_action(action);
-        }
-    }
+    sec = sec.with_action(local_choice_spec(
+        "schedule",
+        "Set update schedule",
+        UPDATE_OPERATION_TYPE,
+        vec!["System schedule", "Daily", "Weekly"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        &["device-local", "system-update"],
+        |schedule| {
+            encode_local_operation(
+                UPDATE_OPERATION_TYPE,
+                &UpdateOperation::SetSchedule { schedule },
+            )
+        },
+    ));
+    sec = sec.with_action(local_bool_spec(
+        "metered",
+        "Set metered-network update policy",
+        UPDATE_OPERATION_TYPE,
+        &["device-local", "system-update"],
+        |allowed| {
+            encode_local_operation(
+                UPDATE_OPERATION_TYPE,
+                &UpdateOperation::SetMetered { allowed },
+            )
+        },
+    ));
     sec
 }
 
-fn network_section(doc: &AutoCommit) -> Resource {
-    use crate::panes;
-    let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
+pub fn updates_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<bool>> {
+    let resource = updates_section();
+    let spec = resource
+        .actions
+        .iter()
+        .find(|action| action.id == action_id)?;
+    tilo_actions::ActionBinding::new(&resource, spec, |value| {
+        serde_json::Map::from_iter([("value".into(), serde_json::json!(value))])
+    })
+    .ok()
+}
+
+pub fn updates_schedule_binding() -> Option<tilo_actions::ActionBinding<String>> {
+    let resource = updates_section();
+    let spec = resource
+        .actions
+        .iter()
+        .find(|action| action.id == "schedule")?;
+    tilo_actions::ActionBinding::new(&resource, spec, |choice| {
+        serde_json::Map::from_iter([("choice".into(), serde_json::Value::String(choice))])
+    })
+    .ok()
+}
+
+pub fn updates_unit_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<()>> {
+    tilo_actions::ActionBinding::unit_for(&updates_section(), action_id).ok()
+}
+
+fn network_section(_doc: &AutoCommit) -> Resource {
     let mut sec = Resource::new("settings.section:network", "settings.section", "Network");
-    sec = sec.with_action(bool_flip_spec(
+    sec = sec.with_action(local_bool_spec(
         "wifi",
-        panes::network::WIFI_ENABLED_KEY,
-        b(panes::network::WIFI_ENABLED_KEY, true),
-        "Wi-Fi",
+        "Set Wi-Fi power",
+        NETWORK_OPERATION_TYPE,
+        &["device-local", "network", "hardware"],
+        |enabled| {
+            encode_local_operation(
+                NETWORK_OPERATION_TYPE,
+                &NetworkOperation::SetWifiEnabled { enabled },
+            )
+        },
     ));
     // These controls address adapters and radios present on *this* machine.
     // They are local effects with a status lifecycle, not shared settings.
@@ -2457,19 +3832,23 @@ fn network_section(doc: &AutoCommit) -> Resource {
     sec
 }
 
-fn bluetooth_section(doc: &AutoCommit) -> Resource {
-    use crate::panes;
-    let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
+fn bluetooth_section(_doc: &AutoCommit) -> Resource {
     let mut bt = Resource::new(
         "settings.section:bluetooth",
         "settings.section",
         "Bluetooth",
     );
-    bt = bt.with_action(bool_flip_spec(
+    bt = bt.with_action(local_bool_spec(
         "bluetooth",
-        panes::bluetooth::BT_ENABLED_KEY,
-        b(panes::bluetooth::BT_ENABLED_KEY, true),
-        "Bluetooth",
+        "Set Bluetooth power",
+        BLUETOOTH_OPERATION_TYPE,
+        &["device-local", "bluetooth", "hardware"],
+        |enabled| {
+            encode_local_operation(
+                BLUETOOTH_OPERATION_TYPE,
+                &BluetoothOperation::SetPowered { enabled },
+            )
+        },
     ));
     for (id, label, operation) in [
         (
@@ -2497,7 +3876,11 @@ fn bluetooth_section(doc: &AutoCommit) -> Resource {
     // Device resources are deliberately live: an object path is meaningful
     // only while BlueZ advertises it. The host revalidates it again before
     // latching the pane command, closing the stale-resource race.
-    for device in os_actions::bluez::devices().unwrap_or_default() {
+    for device in os_actions::bluez::devices()
+        .unwrap_or_default()
+        .into_iter()
+        .take(MAX_DYNAMIC_RESOURCES)
+    {
         let mut resource = Resource::new(
             format!("settings.bluetooth-device:{}", device.path),
             "settings.bluetooth-device",
@@ -2550,11 +3933,30 @@ fn bluetooth_section(doc: &AutoCommit) -> Resource {
                 &["device-local", "bluetooth", "destructive", "live-device"],
             )
         {
-            resource = resource.with_action(action);
+            resource = resource.with_action(action.destructive());
         }
         bt = bt.with_child(resource);
     }
     bt
+}
+
+fn bool_binding_for(
+    resource: &Resource,
+    action_id: &str,
+) -> Option<tilo_actions::ActionBinding<bool>> {
+    let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
+    tilo_actions::ActionBinding::new(resource, spec, |value| {
+        serde_json::Map::from_iter([("value".to_string(), serde_json::Value::Bool(value))])
+    })
+    .ok()
+}
+
+pub fn network_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<bool>> {
+    bool_binding_for(&network_section(&AutoCommit::new()), action_id)
+}
+
+pub fn bluetooth_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<bool>> {
+    bool_binding_for(&bluetooth_section(&AutoCommit::new()), action_id)
 }
 
 fn storage_section() -> Resource {
@@ -2577,7 +3979,7 @@ fn storage_section() -> Resource {
             StorageOperation::OpenBackups,
         ),
     ] {
-        if let Some(action) = local_operation_spec(
+        if let Some(mut action) = local_operation_spec(
             id,
             label,
             OperationKind::Effect,
@@ -2585,6 +3987,12 @@ fn storage_section() -> Resource {
             &operation,
             &["device-local", "storage"],
         ) {
+            if matches!(
+                operation,
+                StorageOperation::CleanupCaches | StorageOperation::FreeSyncedFiles
+            ) {
+                action = action.destructive();
+            }
             storage = storage.with_action(action);
         }
     }
@@ -2620,7 +4028,11 @@ fn printers_section() -> Resource {
             sec = sec.with_action(action);
         }
     }
-    for queue in os_actions::printing::queues().unwrap_or_default() {
+    for queue in os_actions::printing::queues()
+        .unwrap_or_default()
+        .into_iter()
+        .take(MAX_DYNAMIC_RESOURCES)
+    {
         let mut resource = Resource::new(
             format!("settings.printer:{}", queue.name),
             "settings.printer",
@@ -2658,7 +4070,7 @@ fn printers_section() -> Resource {
                 },
             ),
         ] {
-            if let Some(action) = local_operation_spec(
+            if let Some(mut action) = local_operation_spec(
                 id,
                 label,
                 OperationKind::Effect,
@@ -2666,12 +4078,19 @@ fn printers_section() -> Resource {
                 &operation,
                 &["device-local", "printers", "live-queue"],
             ) {
+                if matches!(operation, PrinterOperation::Remove { .. }) {
+                    action = action.destructive();
+                }
                 resource = resource.with_action(action);
             }
         }
         sec = sec.with_child(resource);
     }
-    for job in os_actions::printing::jobs().unwrap_or_default() {
+    for job in os_actions::printing::jobs()
+        .unwrap_or_default()
+        .into_iter()
+        .take(MAX_DYNAMIC_RESOURCES)
+    {
         let mut resource = Resource::new(
             format!("settings.print-job:{}", job.id),
             "settings.print-job",
@@ -2711,7 +4130,10 @@ fn users_section() -> Resource {
         "settings.section",
         "Users",
     );
-    for user in crate::panes::users::users_for_display() {
+    for user in crate::panes::users::users_for_display()
+        .into_iter()
+        .take(MAX_DYNAMIC_RESOURCES)
+    {
         if user.current {
             continue;
         }
@@ -2793,6 +4215,131 @@ fn agent_models_section() -> Resource {
         "settings.agent-models",
         Category::AgentModels.label(),
     );
+    for (id, label, protocol) in [
+        ("add-anthropic", "Add Anthropic provider", "anthropic"),
+        (
+            "add-openai-compatible",
+            "Add compatible API provider",
+            "openai-compatible",
+        ),
+    ] {
+        if let Some(action) = immediate_local_effect_spec(
+            id,
+            label,
+            AGENT_PROVIDER_OPERATION_TYPE,
+            &AgentProviderOperation::Add {
+                protocol: protocol.into(),
+            },
+            &["device-local", "agent-provider"],
+        ) {
+            section = section.with_action(action);
+        }
+    }
+    let provider_config = agent_provider_config::ProviderConfig::load();
+    for profile in provider_config
+        .profiles
+        .iter()
+        .filter(|profile| profile.location != agent_provider_config::EndpointLocation::ThisDevice)
+        .take(MAX_DYNAMIC_RESOURCES)
+    {
+        let mut resource = Resource::new(
+            format!("settings.agent-provider:{}", profile.id),
+            "settings.agent-provider",
+            profile.display_label(),
+        );
+        let alternate = match profile.protocol {
+            agent_provider_config::ProviderProtocol::Anthropic => "openai-compatible",
+            agent_provider_config::ProviderProtocol::OpenAiCompatible => "anthropic",
+        };
+        for (id, label, operation) in [
+            (
+                "set-protocol",
+                format!("Use {alternate} protocol"),
+                AgentProviderOperation::SetProtocol {
+                    id: profile.id.clone(),
+                    protocol: alternate.into(),
+                },
+            ),
+            (
+                if profile.enabled { "disable" } else { "enable" },
+                if profile.enabled {
+                    "Disable provider".into()
+                } else {
+                    "Enable provider".into()
+                },
+                AgentProviderOperation::SetEnabled {
+                    id: profile.id.clone(),
+                    enabled: !profile.enabled,
+                },
+            ),
+            (
+                "remove",
+                "Remove provider".into(),
+                AgentProviderOperation::Remove {
+                    id: profile.id.clone(),
+                },
+            ),
+        ] {
+            if let Some(mut action) = immediate_local_effect_spec(
+                id,
+                label,
+                AGENT_PROVIDER_OPERATION_TYPE,
+                &operation,
+                &["device-local", "agent-provider"],
+            ) {
+                if matches!(operation, AgentProviderOperation::Remove { .. }) {
+                    action = action.destructive();
+                }
+                resource = resource.with_action(action);
+            }
+        }
+        let details_id = profile.id.clone();
+        resource = resource.with_action(
+            ActionSpec::typed_operation(
+                "set-details",
+                "Update provider details",
+                "Provider name",
+                OperationKind::Effect,
+                AGENT_PROVIDER_OPERATION_TYPE,
+                vec![
+                    ActionParam::required("label", ParamType::Text, "Provider name"),
+                    ActionParam::required("endpoint", ParamType::Text, "HTTPS API endpoint"),
+                    ActionParam::optional("model", ParamType::Text, "Default model id"),
+                ],
+                move |args| {
+                    encode_local_operation(
+                        AGENT_PROVIDER_OPERATION_TYPE,
+                        &AgentProviderOperation::SetDetails {
+                            id: details_id.clone(),
+                            label: args.text("label").unwrap_or_default().to_string(),
+                            endpoint: args.text("endpoint").unwrap_or_default().to_string(),
+                            model: args.text("model").map(str::to_string),
+                        },
+                    )
+                },
+            )
+            .with_contract(ActionContract {
+                retry: RetryPolicy::AtMostOnce,
+                reversible: false,
+                tags: vec!["device-local".into(), "agent-provider".into()],
+                ..ActionContract::default()
+            }),
+        );
+        if profile.default_model.is_some()
+            && let Some(action) = immediate_local_effect_spec(
+                "set-default",
+                "Use by default",
+                AGENT_PROVIDER_OPERATION_TYPE,
+                &AgentProviderOperation::SetDefault {
+                    id: profile.id.clone(),
+                },
+                &["device-local", "agent-provider"],
+            )
+        {
+            resource = resource.with_action(action);
+        }
+        section = section.with_child(resource);
+    }
     let Ok(snapshot) = agent_models::live_snapshot() else {
         return section;
     };
@@ -2840,7 +4387,7 @@ fn agent_models_section() -> Resource {
             section = section.with_child(resource);
         }
     }
-    for model in snapshot.models {
+    for model in snapshot.models.into_iter().take(MAX_DYNAMIC_RESOURCES) {
         let mut resource = Resource::new(
             format!("settings.agent-model:{}", model.package.id),
             "settings.agent-model",
@@ -2901,6 +4448,28 @@ fn agent_models_section() -> Resource {
         section = section.with_child(resource);
     }
     section
+}
+
+pub fn agent_provider_action_resources() -> Resource {
+    agent_models_section()
+}
+
+pub fn agent_provider_binding(
+    section: &Resource,
+    profile_id: Option<&str>,
+    action_id: &str,
+) -> Option<tilo_actions::ActionBinding<()>> {
+    let resource = match profile_id {
+        None => section.clone(),
+        Some(profile_id) => section
+            .children
+            .iter()
+            .find(|resource| {
+                resource.id.as_str() == format!("settings.agent-provider:{profile_id}")
+            })?
+            .clone(),
+    };
+    tilo_actions::ActionBinding::unit_for(&resource, action_id).ok()
 }
 
 /// Region and time are deliberately represented as individual named actions,
@@ -2985,46 +4554,147 @@ fn region_section(doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
     section
 }
 
-fn time_date_section(doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
-    use crate::panes;
-    let b = |key: &str, fallback| doc_bool(doc, key).unwrap_or(fallback);
+fn time_date_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
     let mut section = Resource::new(
         pane_resource_id(Category::TimeDate),
         "settings.section",
         "Time & Date",
     );
-    section = section.with_action(bool_flip_spec(
-        "automatic-time",
-        panes::time_date::AUTO_TIME_KEY,
-        b(panes::time_date::AUTO_TIME_KEY, true),
-        "automatic time",
-    ));
-    section = section.with_action(bool_flip_spec(
-        "24-hour",
-        panes::time_date::H24_KEY,
-        b(panes::time_date::H24_KEY, true),
-        "24-hour time",
-    ));
+    for (id, label, operation) in [
+        (
+            "automatic-time",
+            "Set automatic time",
+            TimeDateOperation::SetAutomaticTime { enabled: false },
+        ),
+        (
+            "24-hour",
+            "Set 24-hour time",
+            TimeDateOperation::SetHourCycle { h24: false },
+        ),
+    ] {
+        section = section.with_action(
+            ActionSpec::typed_operation(
+                id,
+                label,
+                "On or off on this device",
+                OperationKind::Effect,
+                TIME_DATE_OPERATION_TYPE,
+                vec![ActionParam::required(
+                    "value",
+                    ParamType::Boolean,
+                    "Whether this local time control is enabled",
+                )],
+                move |args| {
+                    encode_local_operation(
+                        TIME_DATE_OPERATION_TYPE,
+                        &time_bool_operation(&operation, args.boolean("value").unwrap_or(false)),
+                    )
+                },
+            )
+            .with_contract(local_operation_contract(&["device-local", "time-date"])),
+        );
+    }
     section.with_action(
-        ActionSpec::typed(
+        ActionSpec::typed_operation(
             "timezone",
             "Set time zone",
             "IANA time-zone identifier",
-            ExecutionLocus::ClientLocal,
+            OperationKind::Effect,
+            TIME_DATE_OPERATION_TYPE,
             vec![ActionParam::required(
                 "choice",
                 ParamType::Text,
                 "Time zone",
             )],
             |args| {
-                encode(&set_text_action(
-                    panes::time_date::TIMEZONE_KEY,
-                    args.text("choice").unwrap_or("UTC"),
-                ))
+                encode_local_operation(
+                    TIME_DATE_OPERATION_TYPE,
+                    &TimeDateOperation::SetTimezone {
+                        timezone: args.text("choice").unwrap_or("UTC").to_string(),
+                    },
+                )
             },
         )
-        .with_contract(setting_contract()),
+        .with_contract(local_operation_contract(&["device-local", "time-date"])),
     )
+}
+
+fn time_bool_operation(template: &TimeDateOperation, value: bool) -> TimeDateOperation {
+    match template {
+        TimeDateOperation::SetAutomaticTime { .. } => {
+            TimeDateOperation::SetAutomaticTime { enabled: value }
+        }
+        TimeDateOperation::SetHourCycle { .. } => TimeDateOperation::SetHourCycle { h24: value },
+        TimeDateOperation::SetTimezone { .. } => {
+            unreachable!("time boolean resource must be boolean")
+        }
+    }
+}
+
+/// Bind a Mouse & Keyboard boolean control to the exact action published in
+/// the local resource tree. This keeps pointer, keyboard and a11y activation
+/// on the same typed door as palette and agent requests.
+pub fn input_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<bool>> {
+    let resource = input_section(&AutoCommit::new(), &SystemPrefs::load());
+    let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
+    tilo_actions::ActionBinding::new(&resource, spec, |value| {
+        serde_json::Map::from_iter([("value".into(), serde_json::Value::Bool(value))])
+    })
+    .ok()
+}
+
+pub fn input_number_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<f64>> {
+    let resource = input_section(&AutoCommit::new(), &SystemPrefs::load());
+    let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
+    tilo_actions::ActionBinding::new(&resource, spec, |value| {
+        serde_json::Map::from_iter([("value".into(), serde_json::json!(value))])
+    })
+    .ok()
+}
+
+pub fn input_text_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<String>> {
+    let resource = input_section(&AutoCommit::new(), &SystemPrefs::load());
+    let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
+    let parameter = if spec.params().iter().any(|param| param.name == "choice") {
+        "choice"
+    } else if spec.params().iter().any(|param| param.name == "label") {
+        "label"
+    } else {
+        "value"
+    };
+    tilo_actions::ActionBinding::new(&resource, spec, move |value| {
+        serde_json::Map::from_iter([(parameter.into(), serde_json::Value::String(value))])
+    })
+    .ok()
+}
+
+pub fn keyboard_source_binding(
+    source: &str,
+    action_id: &str,
+) -> Option<tilo_actions::ActionBinding<()>> {
+    let resource = input_section(&AutoCommit::new(), &SystemPrefs::load())
+        .children
+        .into_iter()
+        .find(|resource| resource.id.as_str() == format!("settings.input-source:{source}"))?;
+    tilo_actions::ActionBinding::unit_for(&resource, action_id).ok()
+}
+
+pub fn time_date_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<bool>> {
+    let resource = time_date_section(&AutoCommit::new(), &SystemPrefs::load());
+    let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
+    tilo_actions::ActionBinding::new(&resource, spec, |value| {
+        serde_json::Map::from_iter([("value".into(), serde_json::Value::Bool(value))])
+    })
+    .ok()
+}
+
+pub fn time_date_text_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<String>> {
+    let resource = time_date_section(&AutoCommit::new(), &SystemPrefs::load());
+    let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
+    tilo_actions::ActionBinding::new(&resource, spec, |value| {
+        serde_json::Map::from_iter([("choice".into(), serde_json::Value::String(value))])
+    })
+    .ok()
 }
 
 fn shortcuts_section(doc: &AutoCommit) -> Resource {
@@ -3069,48 +4739,78 @@ fn shortcuts_section(doc: &AutoCommit) -> Resource {
     section
 }
 
-fn device_mesh_section(doc: &AutoCommit) -> Resource {
-    let b = |key: &str, fallback| doc_bool(doc, key).unwrap_or(fallback);
+#[allow(
+    clippy::too_many_lines,
+    reason = "the declaration keeps the closed device-local trust and Continuity action catalogue auditable in one place"
+)]
+fn device_mesh_section(_doc: &AutoCommit) -> Resource {
     let mut section = Resource::new(
         pane_resource_id(Category::DeviceMesh),
         "settings.section",
         "Devices & Sync",
     );
-    section = section.with_action(choice_prompt_spec(
+    section = section.with_action(device_mesh_choice_spec(
         "role",
-        "Set device role",
-        "device_mesh.role",
-        "Personal device, Available while active, Always-on server",
+        "Set device role on this device",
         &[
             "Personal device",
             "Available while active",
             "Always-on server",
         ],
-        doc_str(doc, "device_mesh.role").unwrap_or_else(|| "Personal device".into()),
+        |role| DeviceMeshOperation::SetRole { role },
     ));
-    section = section.with_action(choice_prompt_spec(
+    section = section.with_action(device_mesh_choice_spec(
         "replication",
-        "Set replication",
-        "device_mesh.replication",
-        "On demand, Workspace state, Full workspace copy",
+        "Set local replication policy",
         &["On demand", "Workspace state", "Full workspace copy"],
-        doc_str(doc, "device_mesh.replication").unwrap_or_else(|| "On demand".into()),
+        |replication| DeviceMeshOperation::SetReplication { replication },
     ));
-    for (id, key, label) in [
-        (
-            "inbound-relay",
-            "device_mesh.inbound_relay",
-            "inbound relay",
-        ),
+    for (id, service, label) in [
+        ("inbound-relay", "inbound_relay", "Set inbound relay"),
         (
             "remote-control",
-            "device_mesh.remote_control_relay",
-            "remote-control relay",
+            "remote_control_relay",
+            "Set remote-control relay",
         ),
-        ("app-serving", "device_mesh.app_serving", "app serving"),
-        ("compute", "device_mesh.compute", "remote compute"),
+        ("app-serving", "app_serving", "Set app serving"),
+        ("compute", "compute", "Set remote compute"),
     ] {
-        section = section.with_action(bool_flip_spec(id, key, b(key, false), label));
+        section = section.with_action(device_mesh_bool_spec(id, label, service));
+    }
+    for (workspace_id, name) in crate::panes::device_mesh::resource_workspaces()
+        .into_iter()
+        .take(MAX_DYNAMIC_RESOURCES)
+    {
+        let resource_id = format!("settings.device-mesh-workspace:{workspace_id}");
+        let action = ActionSpec::typed_operation(
+            "set-available",
+            "Set availability on this device",
+            "On or off on this device",
+            OperationKind::Effect,
+            DEVICE_MESH_OPERATION_TYPE,
+            vec![ActionParam::required(
+                "value",
+                ParamType::Boolean,
+                "Whether this workspace is available on this device",
+            )],
+            move |args| {
+                encode_local_operation(
+                    DEVICE_MESH_OPERATION_TYPE,
+                    &DeviceMeshOperation::SetWorkspace {
+                        id: workspace_id,
+                        enabled: args.boolean("value").unwrap_or(false),
+                    },
+                )
+            },
+        )
+        .with_contract(local_operation_contract(&[
+            "device-local",
+            "device-mesh",
+            "workspace",
+        ]));
+        section = section.with_child(
+            Resource::new(resource_id, "settings.device-mesh-workspace", name).with_action(action),
+        );
     }
     for (id, key, label) in [
         (
@@ -3164,14 +4864,136 @@ fn device_mesh_section(doc: &AutoCommit) -> Resource {
             "Continuity app continuations",
         ),
     ] {
-        section = section.with_action(bool_flip_spec(id, key, b(key, false), label));
+        let service = key.strip_prefix("device_mesh.").unwrap_or(key).to_string();
+        section = section.with_action(device_mesh_bool_spec(id, label, &service));
     }
     section
+}
+
+fn device_mesh_choice_spec(
+    id: &'static str,
+    label: &'static str,
+    choices: &'static [&'static str],
+    operation: fn(String) -> DeviceMeshOperation,
+) -> ActionSpec {
+    let spec = ActionSpec::typed_operation(
+        id,
+        label,
+        "Choose a value",
+        OperationKind::Effect,
+        DEVICE_MESH_OPERATION_TYPE,
+        vec![
+            ActionParam::required("choice", ParamType::Text, "Device-local value")
+                .with_choices(choices.iter().copied()),
+        ],
+        move |args| {
+            encode_local_operation(
+                DEVICE_MESH_OPERATION_TYPE,
+                &operation(args.text("choice").unwrap_or_default().to_string()),
+            )
+        },
+    )
+    .with_contract(local_operation_contract(&[
+        "device-local",
+        "security",
+        "device-mesh",
+    ]));
+    if id == "role" {
+        spec.destructive()
+    } else {
+        spec
+    }
+}
+
+fn device_mesh_bool_spec(id: &str, label: &str, service: &str) -> ActionSpec {
+    let service = service.to_string();
+    ActionSpec::typed_operation(
+        id,
+        label,
+        "On or off on this device",
+        OperationKind::Effect,
+        DEVICE_MESH_OPERATION_TYPE,
+        vec![ActionParam::required(
+            "value",
+            ParamType::Boolean,
+            "Whether this local service is enabled",
+        )],
+        move |args| {
+            encode_local_operation(
+                DEVICE_MESH_OPERATION_TYPE,
+                &DeviceMeshOperation::SetService {
+                    service: service.clone(),
+                    enabled: args.boolean("value").unwrap_or(false),
+                },
+            )
+        },
+    )
+    .with_contract(local_operation_contract(&[
+        "device-local",
+        "security",
+        "device-mesh",
+    ]))
+}
+
+pub fn device_mesh_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<bool>> {
+    let resource = device_mesh_section(&AutoCommit::new());
+    let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
+    tilo_actions::ActionBinding::new(&resource, spec, |value| {
+        serde_json::Map::from_iter([("value".to_string(), serde_json::Value::Bool(value))])
+    })
+    .ok()
+}
+
+pub fn device_mesh_text_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<String>> {
+    let resource = device_mesh_section(&AutoCommit::new());
+    let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
+    tilo_actions::ActionBinding::new(&resource, spec, |choice| {
+        serde_json::Map::from_iter([("choice".to_string(), serde_json::Value::String(choice))])
+    })
+    .ok()
+}
+
+pub fn device_mesh_workspace_binding(
+    workspace_id: u64,
+) -> Option<tilo_actions::ActionBinding<bool>> {
+    let resource = device_mesh_section(&AutoCommit::new())
+        .children
+        .into_iter()
+        .find(|resource| {
+            resource.id.as_str() == format!("settings.device-mesh-workspace:{workspace_id}")
+        })?;
+    let spec = resource
+        .actions
+        .iter()
+        .find(|spec| spec.id == "set-available")?;
+    tilo_actions::ActionBinding::new(&resource, spec, |value| {
+        serde_json::Map::from_iter([("value".to_string(), serde_json::Value::Bool(value))])
+    })
+    .ok()
 }
 
 impl ResourceProvider for crate::SettingsApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources_with_accounts(doc, self.account_resource_inventory())
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if id == "settings.root" {
+            // Exact root lookup is intentionally shallow. Building every live
+            // hardware inventory merely to resolve the root made one address
+            // proportional to every device, stream, account, job, and model.
+            let root = Category::ALL.iter().copied().fold(
+                Resource::new("settings.root", "settings.root", "Settings"),
+                |root, category| root.with_child(pane_navigation_resource(category)),
+            );
+            return Some(root);
+        }
+        let category = category_for_resource_id(id)?;
+        let prefs = SystemPrefs::load();
+        find_resource(
+            section_resource(category, doc, &prefs, self.account_resource_inventory()),
+            id,
+        )
     }
 }
 
@@ -3285,6 +5107,44 @@ mod tests {
     }
 
     #[test]
+    fn exact_root_lookup_is_shallow_and_section_lookup_is_canonical() {
+        let app = SettingsApp::new();
+        let doc = AutoCommit::new();
+        let root =
+            ResourceProvider::resource(&app, &doc, "settings.root").expect("root resolves exactly");
+        assert_eq!(root.children.len(), Category::ALL.len());
+        assert!(
+            root.children
+                .iter()
+                .all(|section| section.children.is_empty()),
+            "resolving the root must not enumerate live dynamic inventories"
+        );
+
+        let appearance =
+            ResourceProvider::resource(&app, &doc, &pane_resource_id(Category::Appearance))
+                .expect("one section resolves without rebuilding every other section");
+        assert_eq!(appearance.label, Category::Appearance.label());
+        assert!(appearance.actions.iter().any(|action| action.id == "theme"));
+    }
+
+    #[test]
+    fn adversarial_account_inventory_is_hard_bounded() {
+        let accounts: Vec<_> = (0..100_001)
+            .map(|index| accounts::Account::new(format!("account-{index}"), "nextcloud"))
+            .collect();
+        let section = accounts_section(&accounts);
+        assert_eq!(section.children.len(), MAX_DYNAMIC_RESOURCES);
+        assert_eq!(
+            section.children[0].id.as_str(),
+            "settings.account:account-0"
+        );
+        assert_eq!(
+            section.children[MAX_DYNAMIC_RESOURCES - 1].id.as_str(),
+            "settings.account:account-255"
+        );
+    }
+
+    #[test]
     fn account_removal_resource_requires_host_confirmation() {
         let mut account = accounts::Account::new("stable-account", "nextcloud");
         account.display_name = "Work cloud".into();
@@ -3306,6 +5166,33 @@ mod tests {
             remove.contract.confirmation,
             tilo_actions::ConfirmationPolicy::Confirm
         );
+        let test = account
+            .actions
+            .iter()
+            .find(|action| action.id == "test")
+            .expect("account test resource action");
+        assert_eq!(
+            test.contract.execution,
+            ExecutionMode::Background { cancellable: false }
+        );
+        assert!(matches!(test.contract.result, ResultSpec::Json { .. }));
+    }
+
+    #[test]
+    fn storage_reclamation_requires_host_confirmation() {
+        let storage = storage_section();
+        for id in ["cleanup-caches", "free-synced-files"] {
+            let action = storage
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap_or_else(|| panic!("{id} action is published"));
+            assert_eq!(action.contract.risk, tilo_actions::RiskLevel::Destructive);
+            assert_eq!(
+                action.contract.execution,
+                ExecutionMode::Background { cancellable: false }
+            );
+        }
     }
 
     /// A bool flip spec's target follows the current document value: on when the
@@ -3394,8 +5281,12 @@ mod tests {
             .map(|action| action.id.as_str())
             .collect();
         for id in [
-            "touchpad_natural_scroll",
-            "mouse_natural_scroll",
+            "touchpad-natural-scroll",
+            "mouse-natural-scroll",
+            "tap-to-click",
+            "touchpad-speed",
+            "mouse-speed",
+            "key-repeat",
             "tap-drag",
             "disable-while-typing",
             "middle-emulation",
@@ -3467,8 +5358,9 @@ mod tests {
             "rollback",
             "refresh-firmware",
             "install-firmware",
-            "enable-auto",
-            "disable-auto",
+            "automatic",
+            "schedule",
+            "metered",
         ] {
             let action = updates
                 .actions
@@ -3580,6 +5472,100 @@ mod tests {
     }
 
     #[test]
+    fn input_and_time_controls_cannot_enter_settings_action_replay() {
+        let mut doc = AutoCommit::new();
+        for (key, value) in [
+            (
+                panes::mouse_keyboard::TAP_CLICK_KEY,
+                SettingValue::Bool(true),
+            ),
+            (
+                panes::mouse_keyboard::TOUCHPAD_POINTER_SPEED_KEY,
+                SettingValue::Float(0.8),
+            ),
+            (
+                panes::mouse_keyboard::ACCEL_PROFILE_KEY,
+                SettingValue::Text("Flat".into()),
+            ),
+            (
+                panes::mouse_keyboard::LAYOUT_KEY,
+                SettingValue::Text("English (US)".into()),
+            ),
+            (panes::time_date::AUTO_TIME_KEY, SettingValue::Bool(false)),
+            (panes::time_date::H24_KEY, SettingValue::Bool(false)),
+            (
+                panes::time_date::TIMEZONE_KEY,
+                SettingValue::Text("Europe/Amsterdam".into()),
+            ),
+        ] {
+            assert!(
+                SettingsAction::SetSetting {
+                    key: key.into(),
+                    value
+                }
+                .apply(&mut doc)
+                .is_err()
+            );
+        }
+        assert!(
+            doc.get(&ROOT, panes::mouse_keyboard::TAP_CLICK_KEY)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            doc.get(&ROOT, panes::time_date::TIMEZONE_KEY)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn input_and_time_resources_and_controls_share_local_effect_protocols() {
+        let resources = provide_resources(&AutoCommit::new());
+        let input = find(&resources, &pane_resource_id(Category::MouseKeyboard));
+        let time = find(&resources, &pane_resource_id(Category::TimeDate));
+        for (resource, ids, operation_type) in [
+            (
+                &input,
+                &[
+                    "tap-to-click",
+                    "touchpad-speed",
+                    "active-source",
+                    "compose-key",
+                ][..],
+                INPUT_OPERATION_TYPE,
+            ),
+            (
+                &time,
+                &["automatic-time", "24-hour", "timezone"][..],
+                TIME_DATE_OPERATION_TYPE,
+            ),
+        ] {
+            for id in ids {
+                let action = resource
+                    .actions
+                    .iter()
+                    .find(|action| action.id == *id)
+                    .unwrap_or_else(|| panic!("missing local action {id}"));
+                assert_eq!(action.kind, OperationKind::Effect);
+                assert_eq!(action.operation_type.as_deref(), Some(operation_type));
+                assert!(action.contract.tags.iter().any(|tag| tag == "device-local"));
+            }
+        }
+        let input = input_bool_binding("tap-to-click").expect("visible toggle binding");
+        let invocation = input.invoke(true).expect("boolean input is valid");
+        assert_eq!(
+            invocation.address,
+            ActionAddress::new(pane_resource_id(Category::MouseKeyboard), "tap-to-click")
+        );
+        let time = time_date_bool_binding("automatic-time").expect("visible time binding");
+        assert_eq!(
+            time.invoke(false).unwrap().arguments.get("value"),
+            Some(&serde_json::Value::Bool(false))
+        );
+    }
+
+    #[test]
     fn accepted_local_operations_advertise_background_string_results() {
         fn walk(resource: &Resource, out: &mut Vec<ActionSpec>) {
             out.extend(
@@ -3592,6 +5578,8 @@ mod tests {
                             Some(
                                 UPDATE_OPERATION_TYPE
                                     | KEYBOARD_SOURCE_OPERATION_TYPE
+                                    | INPUT_OPERATION_TYPE
+                                    | TIME_DATE_OPERATION_TYPE
                                     | POWER_OPERATION_TYPE
                                     | NETWORK_OPERATION_TYPE
                                     | BLUETOOTH_OPERATION_TYPE
@@ -3772,61 +5760,90 @@ mod tests {
     }
 
     #[test]
-    fn continuity_actions_are_discoverable_and_target_the_closed_boolean_catalogue() {
+    fn continuity_actions_are_typed_device_local_effects() {
         let resources = provide_resources(&AutoCommit::new());
         let devices = find(&resources, &pane_resource_id(Category::DeviceMesh));
         let targets = [
-            ("continuity-enabled", "device_mesh.continuity.enabled"),
-            ("continuity-clipboard", "device_mesh.continuity.clipboard"),
-            (
-                "continuity-notifications",
-                "device_mesh.continuity.notifications",
-            ),
-            (
-                "continuity-wifi-settings",
-                "device_mesh.continuity.wifi_settings",
-            ),
-            ("continuity-media", "device_mesh.continuity.media"),
-            (
-                "continuity-display-input",
-                "device_mesh.continuity.display_input",
-            ),
-            (
-                "continuity-file-transfer",
-                "device_mesh.continuity.file_transfer",
-            ),
+            ("continuity-enabled", "continuity.enabled"),
+            ("continuity-clipboard", "continuity.clipboard"),
+            ("continuity-notifications", "continuity.notifications"),
+            ("continuity-wifi-settings", "continuity.wifi_settings"),
+            ("continuity-media", "continuity.media"),
+            ("continuity-display-input", "continuity.display_input"),
+            ("continuity-file-transfer", "continuity.file_transfer"),
             (
                 "continuity-realtime-sessions",
-                "device_mesh.continuity.realtime_sessions",
+                "continuity.realtime_sessions",
             ),
-            (
-                "continuity-typed-gamepad",
-                "device_mesh.continuity.typed_gamepad",
-            ),
+            ("continuity-typed-gamepad", "continuity.typed_gamepad"),
             (
                 "continuity-app-continuations",
-                "device_mesh.continuity.app_continuations",
+                "continuity.app_continuations",
             ),
         ];
 
-        for (id, key) in targets {
+        for (id, service) in targets {
             let spec = devices
                 .actions
                 .iter()
                 .find(|action| action.id == id)
                 .unwrap_or_else(|| panic!("missing Continuity action {id}"));
-            let encoded = immediate_encode(spec);
-            let decoded = registry().decode(&encoded).expect("registered action");
-            let mut doc = AutoCommit::new();
-            let mut transport = LocalTransport::new();
-            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport)
-                .expect("catalogued boolean target is valid");
-            assert_eq!(doc_bool(&doc, key), Some(true));
+            assert_eq!(spec.kind, OperationKind::Effect);
+            assert_eq!(
+                spec.operation_type.as_deref(),
+                Some(DEVICE_MESH_OPERATION_TYPE)
+            );
+            let args =
+                serde_json::Map::from_iter([("value".to_string(), serde_json::Value::Bool(true))]);
+            let encoded = spec.build_json(&args).expect("typed boolean value");
+            let decoded: DeviceMeshOperation =
+                serde_json::from_slice(&encoded.payload).expect("device-local payload");
+            assert_eq!(
+                decoded,
+                DeviceMeshOperation::SetService {
+                    service: service.into(),
+                    enabled: true,
+                }
+            );
         }
+
+        let mut doc = AutoCommit::new();
+        assert!(
+            set_text_action("device_mesh.role", "Always-on server")
+                .apply(&mut doc)
+                .is_err(),
+            "device trust policy must not enter the replayable document action namespace"
+        );
+        let role = devices
+            .actions
+            .iter()
+            .find(|action| action.id == "role")
+            .unwrap();
+        assert_eq!(role.contract.risk, tilo_actions::RiskLevel::Destructive);
     }
 
     #[test]
-    fn per_device_natural_scroll_actions_are_accepted_and_convergent() {
+    fn agent_provider_configuration_is_a_typed_immediate_local_effect() {
+        let resources = provide_resources(&AutoCommit::new());
+        let models = find(&resources, &pane_resource_id(Category::AgentModels));
+        let add = models
+            .actions
+            .iter()
+            .find(|action| action.id == "add-openai-compatible")
+            .expect("provider creation is agent-addressable");
+        assert_eq!(add.kind, OperationKind::Effect);
+        assert_eq!(add.locus, ExecutionLocus::ClientLocal);
+        assert_eq!(
+            add.operation_type.as_deref(),
+            Some(AGENT_PROVIDER_OPERATION_TYPE)
+        );
+        assert!(matches!(add.contract.execution, ExecutionMode::Immediate));
+        assert!(matches!(add.contract.result, ResultSpec::None));
+        assert!(add.contract.tags.iter().any(|tag| tag == "device-local"));
+    }
+
+    #[test]
+    fn per_device_natural_scroll_actions_are_refused_from_replay() {
         let mut a = AutoCommit::new();
         a.put(
             &ROOT,
@@ -3835,21 +5852,13 @@ mod tests {
         )
         .expect("seed touchpad preference");
         a.commit();
-        let mut b = AutoCommit::load(&a.save()).expect("clone the same base document");
-
         let action = set_bool_action(panes::mouse_keyboard::TOUCHPAD_NATURAL_SCROLL_KEY, true);
-        let encoded = encode(&action);
-        let envelope = tilo_actions::apply_local(&mut a, &action, encoded).expect("apply locally");
-        tilo_actions::replay(&mut b, &envelope, &registry()).expect("replay on peer");
+        assert!(action.apply(&mut a).is_err());
 
         assert_eq!(
             doc_bool(&a, panes::mouse_keyboard::TOUCHPAD_NATURAL_SCROLL_KEY),
-            Some(true)
-        );
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "the preference converges exactly"
+            Some(false),
+            "the prior document value is not overwritten by a local hardware action"
         );
     }
 
@@ -3860,12 +5869,12 @@ mod tests {
         let mut doc = AutoCommit::new();
         let _ = doc.put(
             &ROOT,
-            panes::display::NIGHT_LIGHT_KEY,
+            panes::notifications::DND_KEY,
             ScalarValue::Boolean(true),
         );
         doc.commit();
         let before = doc.get_heads();
-        let action = set_bool_action(panes::display::NIGHT_LIGHT_KEY, true);
+        let action = set_bool_action(panes::notifications::DND_KEY, true);
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
@@ -3906,9 +5915,9 @@ mod tests {
         assert!(error.to_string().contains("must be one of"), "{error}");
     }
 
-    /// Display scale is stored as the picker label, rather than a bare numeric
-    /// factor.  This keeps a palette/agent invocation consumable by the same
-    /// durable preference reader as the visible Display dropdown.
+    /// Display scale is a device-local typed effect rather than a replicated
+    /// document write. The operation still carries the exact picker label so
+    /// agents and the visible control share one validated contract.
     #[test]
     fn display_scale_resource_uses_the_dropdowns_durable_label() {
         let resources = provide_resources(&AutoCommit::new());
@@ -3925,16 +5934,15 @@ mod tests {
         let encoded = scale
             .build_json(&args)
             .expect("the visible display scale is accepted");
-        let mut doc = AutoCommit::new();
-        registry()
-            .decode(&encoded)
-            .expect("settings action decodes")
-            .apply(&mut doc)
-            .expect("display scale target is accepted");
+        assert_eq!(encoded.type_id, DISPLAY_OPERATION_TYPE);
         assert_eq!(
-            doc_str(&doc, panes::display::DISPLAY_SCALE_KEY).as_deref(),
-            Some("150%")
+            serde_json::from_slice::<DisplayOperation>(&encoded.payload)
+                .expect("display operation decodes"),
+            DisplayOperation::SetScale {
+                label: "150%".into()
+            }
         );
+        let mut doc = AutoCommit::new();
         assert!(matches!(
             set_text_action(panes::display::DISPLAY_SCALE_KEY, "300%").apply(&mut doc),
             Err(ActionError::Refused(_))
@@ -3995,5 +6003,99 @@ mod tests {
             action.build_json(&invalid).is_err(),
             "a stale or undiscovered handler is refused before dispatch"
         );
+    }
+
+    #[test]
+    fn every_published_action_has_an_explicit_collaboration_scope() {
+        fn visit(resource: &Resource) {
+            for action in &resource.actions {
+                let scope = classify_action(action).unwrap_or_else(|| {
+                    panic!(
+                        "{:?}#{} has no explicit collaboration scope",
+                        resource.id, action.id
+                    )
+                });
+                match scope {
+                    SettingScope::PortableDocument => {
+                        assert_eq!(action.kind, OperationKind::Document);
+                        assert_eq!(action.locus, ExecutionLocus::ClientLocal);
+                    }
+                    SettingScope::DeviceLocalEffect => {
+                        assert_eq!(action.kind, OperationKind::Effect);
+                        assert!(
+                            action.contract.tags.iter().any(|tag| tag == "device-local"),
+                            "{:?}#{} must state its device-local policy",
+                            resource.id,
+                            action.id
+                        );
+                    }
+                    SettingScope::Presentation => {
+                        assert_eq!(action.kind, OperationKind::View);
+                    }
+                }
+            }
+            for child in &resource.children {
+                visit(child);
+            }
+        }
+
+        for resource in &provide_resources(&AutoCommit::new()) {
+            visit(resource);
+        }
+    }
+
+    #[test]
+    fn hardware_preference_keys_are_never_replayable_document_targets() {
+        let local_keys = [
+            "network.wifi_enabled",
+            "bluetooth.enabled",
+            "audio.volume",
+            "audio.muted",
+            "audio.input_volume",
+            "audio.balance",
+            "audio.mono",
+            "display.brightness",
+            "display.auto_brightness",
+            "display.scale",
+            "power.profile",
+            "power.auto_suspend",
+            "power.blank",
+            "power.suspend",
+            "power.lid",
+            "power.power_key",
+            "power.critical",
+            "updates.auto",
+            "time.auto",
+            "time.timezone",
+            "time.h24",
+            "input.touchpad_natural_scroll",
+            "input.mouse_natural_scroll",
+            "input.tap_to_click",
+            "input.touchpad_pointer_speed",
+            "input.mouse_pointer_speed",
+            "input.key_repeat",
+            "input.accel_profile",
+            "input.compose_key",
+            "input.keyboard_layout",
+        ];
+        for key in local_keys {
+            for value in [
+                SettingValue::Bool(true),
+                SettingValue::Float(0.5),
+                SettingValue::Text("value".into()),
+            ] {
+                assert!(
+                    matches!(
+                        SettingsAction::SetSetting {
+                            key: key.into(),
+                            value,
+                        }
+                        .apply(&mut AutoCommit::new()),
+                        Err(ActionError::Refused(_))
+                    ),
+                    "device-local key {key} accepted a replayable SettingsAction"
+                );
+            }
+        }
     }
 }

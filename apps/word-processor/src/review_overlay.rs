@@ -5,15 +5,13 @@
 //! typed [`ReviewAction`] to the document.
 
 use qdoc::snapshot::{ChangeKind, ChangeView, CommentView};
-use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
 
-use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
-use ui::text_render::TextRenderer;
-
 use crate::i18n::t;
 use crate::num;
+use crate::paint_context::PaintContext;
+use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 
 /// Pale-yellow band drawn behind a comment-marked body range.
 pub(super) const COMMENT_HIGHLIGHT: Color = Color::from_rgba8(0xff, 0xe5, 0x7a, 0x66);
@@ -59,6 +57,13 @@ pub(super) struct ReviewOverlay {
     changes: Vec<ChangeView>,
     visible: bool,
     hits: Vec<(Rect, ReviewAction)>,
+}
+
+struct CommentCardLayout {
+    author: String,
+    body: RichTextLayout,
+    replies: Option<RichTextLayout>,
+    rect: Rect,
 }
 
 impl Default for ReviewOverlay {
@@ -112,10 +117,8 @@ impl ReviewOverlay {
 
     pub(super) fn draw(
         &mut self,
-        scene: &mut Scene,
-        text_renderer: &mut TextRenderer,
+        context: &mut PaintContext<'_>,
         canvas: Rect,
-        transform: Affine,
         mut comment_markers: Vec<(String, f64, f64)>,
         mut change_markers: Vec<(String, f64, f64)>,
     ) {
@@ -129,9 +132,7 @@ impl ReviewOverlay {
         let mut next_comment_y = f64::MIN;
         for (id, anchor_y, range_right) in comment_markers {
             next_comment_y = self.draw_comment(
-                scene,
-                text_renderer,
-                transform,
+                context,
                 comment_x,
                 next_comment_y,
                 anchor_y,
@@ -144,24 +145,13 @@ impl ReviewOverlay {
         let change_x = canvas.x1 - COMMENT_CARD_W - CHANGE_CARD_W - 12.0;
         let mut next_change_y = f64::MIN;
         for (id, anchor_y, _) in change_markers {
-            next_change_y = self.draw_change(
-                scene,
-                text_renderer,
-                transform,
-                change_x,
-                next_change_y,
-                anchor_y,
-                &id,
-            );
+            next_change_y = self.draw_change(context, change_x, next_change_y, anchor_y, &id);
         }
     }
 
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn draw_comment(
         &mut self,
-        scene: &mut Scene,
-        text_renderer: &mut TextRenderer,
-        transform: Affine,
+        context: &mut PaintContext<'_>,
         card_x: f64,
         next_card_y: f64,
         anchor_y: f64,
@@ -171,6 +161,8 @@ impl ReviewOverlay {
         let Some(comment) = self.comments.iter().find(|comment| comment.id == id) else {
             return next_card_y;
         };
+        let card_top = anchor_y.max(next_card_y);
+        let layout = Self::layout_comment(context.text, comment, card_x, card_top);
         let tab_x = (range_right + 2.0).min(card_x - COMMENT_TAB_W - 2.0);
         let tab = Rect::new(
             tab_x,
@@ -178,19 +170,30 @@ impl ReviewOverlay {
             tab_x + COMMENT_TAB_W,
             anchor_y + 18.0,
         );
-        scene.fill(
+        context.scene.fill(
             Fill::NonZero,
-            transform,
+            context.transform,
             COMMENT_TAB,
             None,
             &vello::kurbo::RoundedRect::from_rect(tab, 1.5),
         );
 
-        let comment_label = t("review-comment");
+        Self::draw_comment_card(context, &layout);
+        self.draw_comment_reply_button(context, card_x, card_top, layout.rect.height(), id);
+        self.draw_comment_resolve_button(context, card_x, card_top, layout.rect.height(), id);
+        layout.rect.y1 + 6.0
+    }
+
+    fn layout_comment(
+        text_renderer: &mut ui::text_render::TextRenderer,
+        comment: &CommentView,
+        card_x: f64,
+        card_top: f64,
+    ) -> CommentCardLayout {
         let author = if comment.author.is_empty() {
-            comment_label.as_str()
+            t("review-comment")
         } else {
-            comment.author.as_str()
+            comment.author.clone()
         };
         let body = comment
             .blocks
@@ -211,7 +214,6 @@ impl ReviewOverlay {
             vec![],
             1.0,
         );
-        let card_top = anchor_y.max(next_card_y);
         let replies: Vec<String> = comment
             .replies
             .iter()
@@ -227,101 +229,99 @@ impl ReviewOverlay {
             })
             .collect();
         let reply_text = replies.join("\n");
-        let reply_layout = RichTextLayout::shape(
-            &mut text_renderer.font_system,
-            &[RichSpan::new(&reply_text)],
-            false,
-            10.0,
-            num::f32_of_f64(COMMENT_CARD_W - 16.0),
-            TextAlign::Left,
-            FontFamily::Sans,
-            vec![],
-            vec![],
-            1.0,
-        );
-        let reply_h = if replies.is_empty() {
-            0.0
-        } else {
-            4.0 + f64::from(reply_layout.height())
-        };
+        let reply_layout = (!replies.is_empty()).then(|| {
+            RichTextLayout::shape(
+                &mut text_renderer.font_system,
+                &[RichSpan::new(&reply_text)],
+                false,
+                10.0,
+                num::f32_of_f64(COMMENT_CARD_W - 16.0),
+                TextAlign::Left,
+                FontFamily::Sans,
+                vec![],
+                vec![],
+                1.0,
+            )
+        });
+        let reply_h = reply_layout
+            .as_ref()
+            .map_or(0.0, |layout| 4.0 + f64::from(layout.height()));
         let card_h = 22.0 + f64::from(body_layout.height()) + reply_h + 8.0 + REVIEW_BTN + 6.0;
-        let card = Rect::new(card_x, card_top, card_x + COMMENT_CARD_W, card_top + card_h);
-        let rounded = vello::kurbo::RoundedRect::from_rect(card, 5.0);
-        scene.fill(Fill::NonZero, transform, COMMENT_CARD_BG, None, &rounded);
-        scene.stroke(
+        CommentCardLayout {
+            author,
+            body: body_layout,
+            replies: reply_layout,
+            rect: Rect::new(card_x, card_top, card_x + COMMENT_CARD_W, card_top + card_h),
+        }
+    }
+
+    fn draw_comment_card(context: &mut PaintContext<'_>, layout: &CommentCardLayout) {
+        let rounded = vello::kurbo::RoundedRect::from_rect(layout.rect, 5.0);
+        context.scene.fill(
+            Fill::NonZero,
+            context.transform,
+            COMMENT_CARD_BG,
+            None,
+            &rounded,
+        );
+        context.scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
-            transform,
+            context.transform,
             COMMENT_CARD_EDGE,
             None,
             &rounded,
         );
-        scene.fill(
+        context.scene.fill(
             Fill::NonZero,
-            transform,
+            context.transform,
             COMMENT_TAB,
             None,
-            &Rect::new(card_x, card_top, card_x + 3.0, card_top + card_h),
+            &Rect::new(
+                layout.rect.x0,
+                layout.rect.y0,
+                layout.rect.x0 + 3.0,
+                layout.rect.y1,
+            ),
         );
-        text_renderer.draw_text(
-            scene,
-            author,
+        context.text.draw_text(
+            context.scene,
+            &layout.author,
             11.5,
             COMMENT_AUTHOR_INK,
-            transform * Affine::translate((card_x + 9.0, card_top + 5.0)),
+            context.transform * Affine::translate((layout.rect.x0 + 9.0, layout.rect.y0 + 5.0)),
             None,
         );
-        text_renderer.draw_rich(
-            scene,
-            &body_layout,
-            transform * Affine::translate((card_x + 9.0, card_top + 20.0)),
+        context.text.draw_rich(
+            context.scene,
+            &layout.body,
+            context.transform * Affine::translate((layout.rect.x0 + 9.0, layout.rect.y0 + 20.0)),
             COMMENT_BODY_INK,
         );
-
-        if !replies.is_empty() {
-            text_renderer.draw_rich(
-                scene,
-                &reply_layout,
-                transform
+        if let Some(replies) = &layout.replies {
+            context.text.draw_rich(
+                context.scene,
+                replies,
+                context.transform
                     * Affine::translate((
-                        card_x + 9.0,
-                        card_top + 22.0 + f64::from(body_layout.height()) + 3.0,
+                        layout.rect.x0 + 9.0,
+                        layout.rect.y0 + 22.0 + f64::from(layout.body.height()) + 3.0,
                     )),
                 COMMENT_BODY_INK,
             );
         }
-
-        self.draw_comment_reply_button(
-            scene,
-            text_renderer,
-            transform,
-            card_x,
-            card_top,
-            card_h,
-            id,
-        );
-        self.draw_comment_resolve_button(
-            scene,
-            text_renderer,
-            transform,
-            card_x,
-            card_top,
-            card_h,
-            id,
-        );
-        card_top + card_h + 6.0
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_comment_reply_button(
         &mut self,
-        scene: &mut Scene,
-        text_renderer: &mut TextRenderer,
-        transform: Affine,
+        context: &mut PaintContext<'_>,
         card_x: f64,
         card_top: f64,
         card_h: f64,
         id: &str,
     ) {
+        let scene = &mut *context.scene;
+        let text_renderer = &mut *context.text;
+        let transform = context.transform;
         let button_y = card_top + card_h - REVIEW_BTN - 4.0;
         let button = Rect::new(card_x + 8.0, button_y, card_x + 51.0, button_y + REVIEW_BTN);
         scene.fill(
@@ -353,21 +353,17 @@ impl ReviewOverlay {
     /// The Resolve button on a comment card: its rect, chrome, label and
     /// hit entry. Split out of [`Self::draw_comment`] to keep that under the
     /// line limit; the card's own geometry is already decided by then.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the paint context (scene/text_renderer/transform) plus the card geometry \
-                  its caller already computed; the same bundle every draw_* here carries"
-    )]
     fn draw_comment_resolve_button(
         &mut self,
-        scene: &mut Scene,
-        text_renderer: &mut TextRenderer,
-        transform: Affine,
+        context: &mut PaintContext<'_>,
         card_x: f64,
         card_top: f64,
         card_h: f64,
         id: &str,
     ) {
+        let scene = &mut *context.scene;
+        let text_renderer = &mut *context.text;
+        let transform = context.transform;
         let button_y = card_top + card_h - REVIEW_BTN - 4.0;
         let button = Rect::new(
             card_x + COMMENT_CARD_W - 64.0,
@@ -402,17 +398,17 @@ impl ReviewOverlay {
             .push((button, ReviewAction::ResolveComment(id.to_string())));
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_change(
         &mut self,
-        scene: &mut Scene,
-        text_renderer: &mut TextRenderer,
-        transform: Affine,
+        context: &mut PaintContext<'_>,
         card_x: f64,
         next_card_y: f64,
         anchor_y: f64,
         id: &str,
     ) -> f64 {
+        let scene = &mut *context.scene;
+        let text_renderer = &mut *context.text;
+        let transform = context.transform;
         let Some(change) = self.changes.iter().find(|change| change.id == id) else {
             return next_card_y;
         };

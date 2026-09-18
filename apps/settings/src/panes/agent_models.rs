@@ -398,21 +398,17 @@ fn phase_progress(phase: &LocalModelPhase) -> Option<f32> {
     }
 }
 
-fn save_profile(profile: ProviderProfile) {
-    let mut config = ProviderConfig::load();
-    config.upsert(profile);
-    let _ = config.save();
-}
-
-fn select_default(profile_id: String) {
-    let mut config = ProviderConfig::load();
-    if config
-        .profiles
-        .iter()
-        .any(|profile| profile.id == profile_id && profile.default_model.is_some())
-    {
-        config.default_profile = Some(profile_id);
-        let _ = config.save();
+fn provider_action_button(
+    resources: &tilo_actions::Resource,
+    id: &str,
+    label: &str,
+    profile_id: Option<&str>,
+    action_id: &str,
+) -> Button {
+    let button = Button::new(id, label, None);
+    match crate::actions::agent_provider_binding(resources, profile_id, action_id) {
+        Some(binding) => button.on_action(binding),
+        None => button.with_enabled(false),
     }
 }
 
@@ -505,11 +501,15 @@ pub struct AgentModelsPane {
     needs_seed: bool,
     structure_dirty: bool,
     operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
+    command_state: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
+    local_doc: AutoCommit,
+    isolate_document: bool,
     /// API keys are deliberately process-local masked-input buffers. They are
     /// not Automerge text, never enter the settings document, and are erased
     /// as soon as the gateway accepts or rejects submission.
     provider_key_buffers: Arc<Mutex<HashMap<String, Arc<Mutex<String>>>>>,
     provider_field_buffers: Arc<Mutex<HashMap<String, HostedFieldBuffers>>>,
+    provider_notice: ui::LocalState<Option<String>>,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -521,6 +521,15 @@ impl AgentModelsPane {
         status: &ui::LocalState<crate::actions::LocalOperationStatus>,
     ) -> Self {
         self.operation_status = status.clone();
+        self
+    }
+    #[must_use]
+    pub fn with_command_state(
+        mut self,
+        commands: &ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
+    ) -> Self {
+        self.command_state = commands.clone();
+        self.isolate_document = true;
         self
     }
 
@@ -554,8 +563,12 @@ impl AgentModelsPane {
             needs_seed: true,
             structure_dirty: false,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
+            command_state: ui::LocalState::new(None),
+            local_doc: AutoCommit::new(),
+            isolate_document: false,
             provider_key_buffers: Arc::new(Mutex::new(HashMap::new())),
             provider_field_buffers: Arc::new(Mutex::new(HashMap::new())),
+            provider_notice: ui::LocalState::new(None),
             composed: None,
             rect: Rect::ZERO,
         }
@@ -902,26 +915,27 @@ impl AgentModelsPane {
     )]
     fn hosted_profiles(&self) -> El {
         let config = ProviderConfig::load();
+        let action_resources = crate::actions::agent_provider_action_resources();
         let mut body: Vec<El> = vec![caption(
             "Hosted and compatible endpoints are personal to this device. Credentials remain references in the system vault.",
         )];
         body.push(Box::new(
             Row::new()
-                .push(Box::new(
-                    Button::new("agent-models-add-anthropic", "Add Anthropic", None).on_effect(
-                        || save_profile(ProviderProfile::hosted(ProviderProtocol::Anthropic)),
-                    ),
-                ))
+                .push(Box::new(provider_action_button(
+                    &action_resources,
+                    "agent-models-add-anthropic",
+                    "Add Anthropic",
+                    None,
+                    "add-anthropic",
+                )))
                 .push(hgap(8.0))
-                .push(Box::new(
-                    Button::new("agent-models-add-openai", "Add compatible API", None).on_effect(
-                        || {
-                            save_profile(ProviderProfile::hosted(
-                                ProviderProtocol::OpenAiCompatible,
-                            ));
-                        },
-                    ),
-                ))
+                .push(Box::new(provider_action_button(
+                    &action_resources,
+                    "agent-models-add-openai",
+                    "Add compatible API",
+                    None,
+                    "add-openai-compatible",
+                )))
                 .push(Box::new(Spacer::new())),
         ));
         for profile in config
@@ -970,14 +984,12 @@ impl AgentModelsPane {
             ));
             let save_id = profile_id.clone();
             let save_fields = fields.clone();
-            let protocol_id = profile_id.clone();
+            let save_notice = self.provider_notice.clone();
             let alternate_protocol = match profile.protocol {
                 ProviderProtocol::Anthropic => ProviderProtocol::OpenAiCompatible,
                 ProviderProtocol::OpenAiCompatible => ProviderProtocol::Anthropic,
             };
             let alternate_protocol_label = format!("Use {}", alternate_protocol.label());
-            let enabled_id = profile_id.clone();
-            let remove_profile_id = profile_id.clone();
             body.push(Box::new(
                 Row::new()
                     .push(Box::new(
@@ -1003,7 +1015,7 @@ impl AgentModelsPane {
                                 .map(|value| value.clone())
                                 .unwrap_or_default();
                             let mut config = ProviderConfig::load();
-                            if let Some(profile) = config
+                            let result = if let Some(profile) = config
                                 .profiles
                                 .iter_mut()
                                 .find(|profile| profile.id == save_id)
@@ -1017,62 +1029,40 @@ impl AgentModelsPane {
                                     }
                                     profile.default_model = Some(model);
                                 }
-                                let _ = config.save();
-                            }
+                                config.save().map_err(|error| error.to_string())
+                            } else {
+                                Err("Provider is no longer available.".into())
+                            };
+                            save_notice.set(Some(match result {
+                                Ok(()) => "Provider details saved.".into(),
+                                Err(error) => format!("Provider details were not saved: {error}"),
+                            }));
                         }),
                     ))
                     .push(hgap(8.0))
-                    .push(Box::new(
-                        Button::new(
-                            &format!("agent-models-protocol-{profile_id}"),
-                            &alternate_protocol_label,
-                            None,
-                        )
-                        .on_effect(move || {
-                            let mut config = ProviderConfig::load();
-                            if let Some(profile) = config
-                                .profiles
-                                .iter_mut()
-                                .find(|profile| profile.id == protocol_id)
-                            {
-                                profile.protocol = alternate_protocol;
-                                let _ = config.save();
-                            }
-                        }),
-                    ))
+                    .push(Box::new(provider_action_button(
+                        &action_resources,
+                        &format!("agent-models-protocol-{profile_id}"),
+                        &alternate_protocol_label,
+                        Some(&profile_id),
+                        "set-protocol",
+                    )))
                     .push(hgap(8.0))
-                    .push(Box::new(
-                        Button::new(
-                            &format!("agent-models-enabled-{profile_id}"),
-                            if profile.enabled { "Disable" } else { "Enable" },
-                            None,
-                        )
-                        .on_effect(move || {
-                            let mut config = ProviderConfig::load();
-                            if let Some(profile) = config
-                                .profiles
-                                .iter_mut()
-                                .find(|profile| profile.id == enabled_id)
-                            {
-                                profile.enabled = !profile.enabled;
-                                let _ = config.save();
-                            }
-                        }),
-                    ))
+                    .push(Box::new(provider_action_button(
+                        &action_resources,
+                        &format!("agent-models-enabled-{profile_id}"),
+                        if profile.enabled { "Disable" } else { "Enable" },
+                        Some(&profile_id),
+                        if profile.enabled { "disable" } else { "enable" },
+                    )))
                     .push(hgap(8.0))
-                    .push(Box::new(
-                        Button::new(
-                            &format!("agent-models-remove-provider-{profile_id}"),
-                            "Remove provider",
-                            None,
-                        )
-                        .on_effect(move || {
-                            let mut config = ProviderConfig::load();
-                            config.remove(&remove_profile_id);
-                            let _ = config.save();
-                            let _ = tilo_model_gateway::remove_api_key(&remove_profile_id);
-                        }),
-                    ))
+                    .push(Box::new(provider_action_button(
+                        &action_resources,
+                        &format!("agent-models-remove-provider-{profile_id}"),
+                        "Remove provider",
+                        Some(&profile_id),
+                        "remove",
+                    )))
                     .push(Box::new(Spacer::new())),
             ));
             body.push(value_row("Protocol", profile.protocol.label()));
@@ -1080,7 +1070,9 @@ impl AgentModelsPane {
             let initial = buffer.lock().map(|key| key.clone()).unwrap_or_default();
             let set_id = profile_id.clone();
             let set_buffer = Arc::clone(&buffer);
+            let set_notice = self.provider_notice.clone();
             let remove_id = profile_id.clone();
+            let remove_notice = self.provider_notice.clone();
             let configured = tilo_model_gateway::secret_configured(&profile_id).unwrap_or(false);
             body.push(Box::new(
                 Row::new()
@@ -1108,8 +1100,13 @@ impl AgentModelsPane {
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
                             let value = std::mem::take(&mut *key);
-                            let _ = tilo_model_gateway::set_api_key(&set_id, value);
+                            let result = tilo_model_gateway::set_api_key(&set_id, value);
                             key.zeroize();
+                            drop(key);
+                            set_notice.set(Some(match result {
+                                Ok(()) => "API key saved in the Tilo vault.".into(),
+                                Err(error) => format!("API key was not saved: {error}"),
+                            }));
                         }),
                     ))
                     .push(hgap(8.0))
@@ -1120,7 +1117,11 @@ impl AgentModelsPane {
                             None,
                         )
                         .on_effect(move || {
-                            let _ = tilo_model_gateway::remove_api_key(&remove_id);
+                            let result = tilo_model_gateway::remove_api_key(&remove_id);
+                            remove_notice.set(Some(match result {
+                                Ok(()) => "API key removed from the Tilo vault.".into(),
+                                Err(error) => format!("API key was not removed: {error}"),
+                            }));
                         }),
                     ))
                     .push(Box::new(Spacer::new())),
@@ -1131,19 +1132,17 @@ impl AgentModelsPane {
                 "No API key stored."
             }));
             if profile.default_model.is_some() {
-                let profile_id = profile.id.clone();
-                body.push(Box::new(
-                    Button::new(
-                        &format!("agent-models-default-{profile_id}"),
-                        if config.default_profile.as_deref() == Some(&profile.id) {
-                            "Default for new tasks"
-                        } else {
-                            "Use by default"
-                        },
-                        None,
-                    )
-                    .on_effect(move || select_default(profile_id.clone())),
-                ));
+                body.push(Box::new(provider_action_button(
+                    &action_resources,
+                    &format!("agent-models-default-{profile_id}"),
+                    if config.default_profile.as_deref() == Some(&profile.id) {
+                        "Default for new tasks"
+                    } else {
+                        "Use by default"
+                    },
+                    Some(&profile_id),
+                    "set-default",
+                )));
             }
         }
         for issue in config.validation_errors() {
@@ -1367,11 +1366,52 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for AgentModelsPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        self.seed(state, root);
-        self.sync_actions(state, root);
+    fn sync(&mut self, shared: &mut AutoCommit, _root: &ObjId) {
+        let isolated = self.isolate_document;
+        let mut state = if isolated {
+            std::mem::take(&mut self.local_doc)
+        } else {
+            std::mem::take(shared)
+        };
+        let root = automerge::ROOT;
+        if let Some(notice) = self.provider_notice.get() {
+            self.provider_notice.set(None);
+            self.notice = Some(notice);
+            self.structure_dirty = true;
+        }
+        self.seed(&mut state, &root);
+        if let Some(crate::actions::LocalPaneCommand::AgentModel(operation)) =
+            self.command_state.get()
+        {
+            self.command_state.set(None);
+            let key = match operation {
+                crate::actions::AgentModelOperation::StageAccelerator => {
+                    ACCELERATOR_SETUP_KEY.into()
+                }
+                crate::actions::AgentModelOperation::Install { .. } => CONFIRM_KEY.into(),
+                crate::actions::AgentModelOperation::Start { id } => {
+                    model_key(&id, ModelAction::Start)
+                }
+                crate::actions::AgentModelOperation::Stop { id } => {
+                    model_key(&id, ModelAction::Stop)
+                }
+                crate::actions::AgentModelOperation::Retry { id, .. } => {
+                    model_key(&id, ModelAction::Retry)
+                }
+                crate::actions::AgentModelOperation::Remove { id } => {
+                    model_key(&id, ModelAction::Remove)
+                }
+            };
+            let _ = state.put(&root, key, true);
+        }
+        self.sync_actions(&mut state, &root);
         if let Some(composed) = &mut self.composed {
-            composed.sync(state, root);
+            composed.sync(&mut state, &root);
+        }
+        if isolated {
+            self.local_doc = state;
+        } else {
+            *shared = state;
         }
     }
 
