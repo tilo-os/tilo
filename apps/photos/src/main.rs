@@ -215,11 +215,10 @@ fn render_scenario(
             | "album-manage"
             | "metadata-edit"
     ) {
-        // A library queues one bounded thumbnail job per sync.  Give the
-        // deterministic offscreen gallery enough frames to show the fully
-        // materialised shelf without changing the live app's non-blocking
-        // scheduling policy.
-        96
+        // The live view fills a four-item bounded queue per sync. A small
+        // deterministic settle budget exercises hydration without making
+        // offscreen acceptance render dozens of complete frames per shelf.
+        16
     } else {
         2
     };
