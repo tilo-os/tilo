@@ -4051,6 +4051,57 @@ impl Widget for BrowserWidget {
                 || self.pip_select_area_rect.contains(point)))
         .then_some(winit::window::CursorIcon::Pointer)
     }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        // The suggestion list paints in Browser's overlay pass instead of
+        // being a retained layout child. Publish it from the Browser owner so
+        // it is present in the same semantic tree as the address field and
+        // its virtual rows resolve actions back to this widget.
+        if !self.suggestions.is_visible() {
+            return None;
+        }
+        self.suggestions.accessibility().map(|suggestions| {
+            ui::a11y::AccessNode::new(ui::a11y::Role::Group)
+                .with_name("Browser")
+                .with_children(vec![suggestions])
+        })
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if !self
+            .suggestions
+            .perform_accessibility_action(target, action)
+        {
+            return false;
+        }
+        if let Some(entry) = self.suggestions.take_chosen() {
+            self.suggestions.clear();
+            self.last_query = None;
+            self.address.set(entry.url.clone());
+            // This queues Browser's existing typed `browser.page/navigate`
+            // action — AT-SPI does not get a parallel imperative navigation
+            // route.
+            self.queue_navigate(entry.url);
+        }
+        true
+    }
+
+    fn modal_capture(&self) -> Option<Rect> {
+        // Overlay widgets are not ordinary retained children, so the trait's
+        // default child walk cannot see their capture rect. Without this,
+        // a click on the suggestion panel could leak through to the page.
+        self.suggestions.modal_capture().or_else(|| {
+            self.composed
+                .as_ref()
+                .and_then(|composed| composed.modal_capture())
+        })
+    }
 }
 
 impl AppWidget for BrowserWidget {
@@ -4458,6 +4509,45 @@ mod tests {
                             && address.action == "toggle-history-pause"
                 )
         }));
+    }
+
+    #[test]
+    fn address_suggestions_are_modal_and_a11y_actions_queue_canonical_navigation() {
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_force_suggestions(vec![crate::history::HistoryEntry {
+            url: "https://accessible.example/reading".into(),
+            title: "Accessible reading".into(),
+            last_visit: 1,
+            visit_count: 1,
+        }]);
+        layout_at(&mut widget, 390.0, 844.0);
+
+        let mut semantic = ui::a11y_tree::SemanticTree::new();
+        semantic.refresh(&widget, &std::collections::HashMap::new(), None, &[]);
+        let suggestion = semantic
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Accessible reading"))
+            .expect("floating address suggestions must reach the semantic tree");
+        assert!(suggestion.action("activate").is_some());
+        assert!(Widget::modal_capture(&widget).is_some());
+
+        let target = format!(
+            "browser.address-suggestion:{}",
+            blake3::hash(b"https://accessible.example/reading").to_hex()
+        );
+        assert!(Widget::perform_semantic_action(
+            &mut widget,
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        let invocation = widget
+            .take_control_invocation()
+            .expect("accessibility activation must queue Browser's action binding");
+        assert_eq!(invocation.address.resource, "browser.page");
+        assert_eq!(invocation.address.action, "navigate");
+        assert!(Widget::modal_capture(&widget).is_none());
     }
 
     #[test]

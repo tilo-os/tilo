@@ -114,7 +114,7 @@ fn browser_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 }
 
 fn browser_widget(args: &LaunchArgs) -> BrowserWidget {
-    let mut widget = launch_target(args.positionals()).map_or_else(BrowserWidget::new, |uri| {
+    let mut widget = launch_target(args.positionals()).map_or_else(browser::app_root, |uri| {
         BrowserWidget::new().with_initial_uri(uri)
     });
     match args.value("--audit-state") {
