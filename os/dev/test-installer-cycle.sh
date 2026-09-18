@@ -13,18 +13,20 @@ set -euo pipefail
 
 dev_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 vm="$dev_dir/vm.sh"
-medium="${1:?usage: test-installer-cycle.sh INSTALLER_QCOW2 [--out DIRECTORY] [--prepared-alongside|--guided-alongside] [--software-tpm] [--graphics gl|software]}"
+medium="${1:?usage: test-installer-cycle.sh INSTALLER_QCOW2 [--out DIRECTORY] [--prepared-alongside|--guided-alongside] [--software-tpm] [--graphics gl|software] [--build-profile-encoder]}"
 shift
 out=""
 install_mode=erase
 software_tpm=0
 graphics=gl
+build_profile_encoder=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --out) out="${2:-}"; shift 2;;
     --prepared-alongside) install_mode=prepared-alongside; shift;;
     --guided-alongside) install_mode=guided-alongside; shift;;
     --software-tpm) software_tpm=1; shift;;
+    --build-profile-encoder) build_profile_encoder=1; shift;;
     --graphics) graphics="${2:-}"; [ "$#" -ge 2 ] || exit 2; shift 2;;
     *) printf 'unknown option: %s\n' "$1" >&2; exit 2;;
   esac
@@ -43,6 +45,25 @@ if [ "$software_tpm" -eq 1 ]; then
       ;;
   esac
 fi
+# Remote acceptance hosts must use the pinned standalone production encoder.
+# Compiling it is an explicit local-development option, never an implicit GUI
+# workspace build during a VM acceptance run.
+encoder="${TILO_PROFILE_ENCODER:-}"
+encoder_sha="${TILO_PROFILE_ENCODER_SHA256:-}"
+if [ "$build_profile_encoder" -eq 1 ]; then
+  [ -z "$encoder$encoder_sha" ] || { echo 'choose prebuilt encoder or --build-profile-encoder' >&2; exit 2; }
+  encoder_command=(cargo run --quiet --release --locked --manifest-path "$dev_dir/../../apps/imager/profile-tool/Cargo.toml" --)
+  encoder_sha=explicit-local-build
+else
+  [[ "$encoder" = /* ]] && [ -f "$encoder" ] && [ ! -L "$encoder" ] && [ -x "$encoder" ] \
+    || { echo 'TILO_PROFILE_ENCODER must name an absolute regular executable' >&2; exit 2; }
+  [[ "$encoder_sha" =~ ^[0-9a-f]{64}$ ]] \
+    || { echo 'TILO_PROFILE_ENCODER_SHA256 must pin the prebuilt encoder' >&2; exit 2; }
+  [ "$(sha256sum "$encoder" | awk '{print $1}')" = "$encoder_sha" ] \
+    || { echo 'profile encoder SHA256 differs' >&2; exit 2; }
+  encoder_command=("$encoder")
+fi
+
 command -v tesseract >/dev/null 2>&1 \
   || { printf 'tesseract is required for framebuffer verification\n' >&2; exit 1; }
 
@@ -348,7 +369,12 @@ profiled_raw="$cycle_dir/profiled-medium.raw"
 profiled_medium="$cycle_dir/profiled-medium.qcow2"
 qemu-img convert -f qcow2 -O raw "$medium" "$profiled_raw"
 truncate -s "+$((64 * 1024))" "$profiled_raw"
-cargo run -q -p imager --locked --example embed-profile -- \
+if [ "$build_profile_encoder" -eq 0 ]; then
+  # Recheck immediately before execution, after potentially long fixture setup.
+  [ "$(sha256sum "$encoder" | awk '{print $1}')" = "$encoder_sha" ] \
+    || die "profile encoder changed after admission"
+fi
+"${encoder_command[@]}" \
   --target "$profiled_raw" \
   --hostname cycle-tilo \
   --username "$TILO_USER" \
@@ -362,8 +388,8 @@ rm -f -- "$profiled_raw"
 [ "$(sha256sum "$medium" | awk '{print $1}')" = "$source_hash_before" ] \
   || die "customization modified the released installer medium"
 export TILO_INSTALLER_DISK="$profiled_medium"
-printf 'medium=%s\ncustomized_medium=%s\narchitecture=%s\nuser=%s\nhostname=cycle-tilo\nunlock=%s\ninstall_mode=%s\nstorage=%s\ngraphics=%s\n' \
-  "$medium" "$profiled_medium" "$TILO_VM_ARCH" "$TILO_USER" "$unlock" "$install_mode" "$storage" "$graphics" \
+printf 'medium=%s\ncustomized_medium=%s\narchitecture=%s\nuser=%s\nhostname=cycle-tilo\nunlock=%s\ninstall_mode=%s\nstorage=%s\ngraphics=%s\nprofile_encoder_sha256=%s\n' \
+  "$medium" "$profiled_medium" "$TILO_VM_ARCH" "$TILO_USER" "$unlock" "$install_mode" "$storage" "$graphics" "$encoder_sha" \
   > "$out/scenario.txt"
 
 if [ "$software_tpm" -eq 1 ]; then
