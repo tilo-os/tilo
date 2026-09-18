@@ -9472,8 +9472,8 @@ impl PhotosApp {
         // action; it does not occupy a permanent New/Edit row in front of
         // every first photo.
         if !self.album_editor
-            && (theme.text_scale > 1.25
-                || self.canvas_rect.width() < LIBRARY_DESKTOP_MASTHEAD_MIN_W)
+            && theme.text_scale <= 1.25
+            && self.canvas_rect.width() < LIBRARY_DESKTOP_MASTHEAD_MIN_W
         {
             return;
         }
@@ -10912,6 +10912,15 @@ impl PhotosApp {
             return;
         };
         for photo in sources {
+            // The channel itself is bounded, but the decoder can take a job
+            // between two `try_send` calls. Without this independent
+            // accounting fence a fast worker lets one sync enqueue an
+            // arbitrarily large visible slice while `thumbnail_queued`
+            // continues to grow. Keep the whole in-flight generation—not
+            // merely the instantaneous channel depth—strictly bounded.
+            if self.thumbnail_queued.len() >= THUMBNAIL_QUEUE_LIMIT {
+                break;
+            }
             if self.library_thumbnails.contains_key(&photo.id)
                 || self.thumbnail_unavailable.contains(&photo.id)
                 || self.thumbnail_queued.contains(&photo.id)
@@ -14488,7 +14497,10 @@ mod tests {
         app.sync(&mut doc, &ROOT);
         app.show_library();
         app.active_album = Some("photos.album:trip".into());
-        app.canvas_rect = Rect::new(0.0, 0.0, 480.0, 900.0);
+        // Album management lives in the desktop masthead. Compact layouts
+        // intentionally reclaim that row for the photo timeline and expose
+        // the same canonical actions through their responsive overflow.
+        app.canvas_rect = Rect::new(0.0, 0.0, 1_280.0, 900.0);
 
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
