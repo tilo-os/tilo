@@ -1564,7 +1564,7 @@ impl CodeApp {
                 }
                 true
             }
-            Err(disk::SaveError::Conflict(_)) => {
+            Err(disk::SaveError::Conflict) => {
                 if let Some(buf) = self.session.open.get_mut(idx) {
                     buf.stale = true;
                 }
