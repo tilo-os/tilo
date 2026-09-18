@@ -12,7 +12,7 @@ use tilo_user_identity::{
     MAX_IMAGE_SIGNING_AUTHORIZATION_LIFETIME_NS, RevocationEntry, RevocationList,
     canonical::{canonical_bytes, from_canonical_bytes},
     image_endorsement_signing_digest, image_signing_authorization_digest,
-    persist::{read_device_cert, read_device_key, read_signing_key},
+    persist::{read_device_cert, read_device_key, read_owned_signing_key},
     sign_image_endorsement, sign_image_signing_authorization, verify_device_cert_at,
     verify_image_endorsement_at, verify_image_endorsement_with_revocations_at,
     verify_image_signing_authorization_at, verify_revocation_entry,
@@ -284,7 +284,7 @@ fn grant(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<(), Strin
     if args.next().is_some() {
         return Err(usage());
     }
-    let root = read_signing_key(&root_path).map_err(|error| error.to_string())?;
+    let root = read_owned_signing_key(&root_path).map_err(|error| error.to_string())?;
     let cert = read_device_cert(&cert_path).map_err(|error| error.to_string())?;
     verify_device_cert_at(&cert, issued_at_ns).map_err(|error| error.to_string())?;
     if root.verifying_key().to_bytes() != cert.user_public_key {
