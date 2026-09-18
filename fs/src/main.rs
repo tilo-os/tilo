@@ -551,7 +551,7 @@ async fn publish_authority(cache_dir: PathBuf, acl: PathBuf) -> Result<()> {
     let ticket = Ticket::decode(&std::fs::read_to_string(workspace_ticket_path(&cache_dir))?)?;
     let capabilities = serde_json::from_slice(&std::fs::read(&acl)?)?;
     let paths = identity_paths();
-    let governor = tilo_user_identity::persist::read_signing_key(&paths.user_privkey)?;
+    let governor = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)?;
     let socket = local_authority_socket_path(ticket.workspace_id());
     let current = local_authority_request(
         &socket,
@@ -991,7 +991,7 @@ fn export_home_peer(
         serde_json::from_str(&capability_json).context("capability list is not valid JSON")?;
     let capabilities = serde_json::from_str(&capability_json)?;
     let paths = identity_paths();
-    let governor = tilo_user_identity::persist::read_signing_key(&paths.user_privkey)
+    let governor = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)
         .context("read workspace governor key")?;
     relay_workspace_ids.push(personal_continuity_workspace_id(
         &governor.verifying_key().to_bytes(),
