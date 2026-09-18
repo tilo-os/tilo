@@ -906,11 +906,7 @@ fn lock_generation_state(path: &Path) -> Result<std::fs::File, String> {
 }
 
 fn read_generation_floor(path: &Path) -> Result<Option<u64>, String> {
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    let file = match options.open(path) {
+    let file = match open_readonly_without_symlinks(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("cannot open {}: {error}", path.display())),
@@ -1121,6 +1117,9 @@ mod tests {
             .expect("generation fixture");
         symlink(&state, &link).expect("generation symlink");
         assert!(read_generation_floor(&link).is_err());
+        let linked_parent = temp.path().join("linked-parent");
+        symlink(temp.path(), &linked_parent).expect("generation parent symlink");
+        assert!(read_generation_floor(&linked_parent.join("generation")).is_err());
 
         fs::set_permissions(&state, fs::Permissions::from_mode(0o660))
             .expect("make generation state group writable");
