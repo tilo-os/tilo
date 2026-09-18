@@ -2250,14 +2250,16 @@ impl PhotosApp {
                         .send(),
                 );
             }
-            crate::actions::PhotosOperation::ImportDirectory { path: None } => {
+            crate::actions::PhotosOperation::ImportDirectory { path: None, .. } => {
                 self.directory_picker = Some(
                     ui::portal::PickRequest::directory("Import photo folder", "Import folder")
                         .thread_name("photos-portal-directory-import")
                         .send(),
                 );
             }
-            crate::actions::PhotosOperation::ImportDirectory { path: Some(path) } => {
+            crate::actions::PhotosOperation::ImportDirectory {
+                path: Some(path), ..
+            } => {
                 self.begin_directory_import(std::path::PathBuf::from(path), None);
             }
             crate::actions::PhotosOperation::ImportCameraMedia { media_id, name } => {
@@ -2265,8 +2267,7 @@ impl PhotosApp {
                     "Camera import requires document dispatch: {media_id} ({name})"
                 ));
             }
-            crate::actions::PhotosOperation::ImportDirectory { .. }
-            | crate::actions::PhotosOperation::ReindexDirectory { .. } => {
+            crate::actions::PhotosOperation::ReindexDirectory { .. } => {
                 return Err("directory indexing requires the Photos indexing job host".to_owned());
             }
             crate::actions::PhotosOperation::AnalyzeText { .. }
@@ -3503,24 +3504,42 @@ impl PhotosApp {
     }
 
     fn drain_directory_import(&mut self, doc: &mut AutoCommit) {
-        let Some(import) = self.directory_import.as_mut() else {
+        if self.directory_import.is_none() {
             return;
-        };
+        }
         for _ in 0..DIRECTORY_IMPORT_PER_FRAME {
-            match import.receiver.try_recv() {
-                Ok(DirectoryImportEvent::Candidate(path)) => {
-                    import.discovered = import.discovered.saturating_add(1);
+            let event = self
+                .directory_import
+                .as_ref()
+                .map(|import| import.receiver.try_recv());
+            match event {
+                None => return,
+                Some(Ok(DirectoryImportEvent::Candidate(path))) => {
+                    if let Some(import) = self.directory_import.as_mut() {
+                        import.discovered = import.discovered.saturating_add(1);
+                    }
                     let before = PhotosDoc::library(doc).photos.len();
                     self.open_path(doc, &path.to_string_lossy());
-                    if PhotosDoc::library(doc).photos.len() > before {
-                        import.imported = import.imported.saturating_add(1);
-                    } else {
-                        import.skipped = import.skipped.saturating_add(1);
+                    let imported = PhotosDoc::library(doc).photos.len() > before;
+                    if let Some(import) = self.directory_import.as_mut() {
+                        if imported {
+                            import.imported = import.imported.saturating_add(1);
+                        } else {
+                            import.skipped = import.skipped.saturating_add(1);
+                        }
                     }
                 }
-                Ok(DirectoryImportEvent::Finished) => import.done = true,
-                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => import.done = true,
+                Some(Ok(DirectoryImportEvent::Finished)) => {
+                    if let Some(import) = self.directory_import.as_mut() {
+                        import.done = true;
+                    }
+                }
+                Some(Err(std::sync::mpsc::TryRecvError::Empty)) => break,
+                Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                    if let Some(import) = self.directory_import.as_mut() {
+                        import.done = true;
+                    }
+                }
             }
         }
         let Some(import) = self.directory_import.as_ref() else {
@@ -3554,7 +3573,8 @@ impl PhotosApp {
             match rx.try_recv() {
                 Ok(ui::portal::PortalOutcome::Opened(path)) => {
                     self.directory_picker = None;
-                    self.begin_directory_import(path, self.resource_invocation.take());
+                    let invocation = self.resource_invocation.take();
+                    self.begin_directory_import(path, invocation);
                 }
                 Ok(ui::portal::PortalOutcome::Cancelled) => {
                     self.directory_picker = None;
@@ -4167,7 +4187,7 @@ impl PhotosApp {
                     scene.draw_image(image, image_transform);
                 } else {
                     let avatar = Rect::from_center_size(preview.center(), (38.0, 38.0));
-                    draw_icon(scene, transform, avatar, Icon::Image, theme.text_dim);
+                    draw_icon(scene, transform, avatar, Icon::Image, theme.text_dim, 1.5);
                 }
                 text_renderer.draw_text_weighted(
                     scene,
