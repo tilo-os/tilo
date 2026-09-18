@@ -209,9 +209,6 @@ pub enum CertifiedIdentityError {
     /// The certificate's root signature is invalid or its deadline passed.
     #[error("device certificate is invalid: {0}")]
     Certificate(#[from] DeviceCertError),
-    /// The certificate is signed correctly but is not valid yet.
-    #[error("device certificate was issued in the future")]
-    CertificateNotYetValid,
     /// The certificate belongs to a different device key.
     #[error("device certificate does not name this mount's device key")]
     DeviceKeyMismatch,
@@ -266,9 +263,6 @@ pub fn load_certified_mount_identity(
     let mount = load_mount_identity(paths).map_err(CertifiedIdentityError::DeviceKey)?;
     let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)?;
     verify_device_cert_at(&cert, now_ns)?;
-    if cert.issued_at_ns > now_ns {
-        return Err(CertifiedIdentityError::CertificateNotYetValid);
-    }
     if cert.device_public_key != mount.public {
         return Err(CertifiedIdentityError::DeviceKeyMismatch);
     }
@@ -481,7 +475,7 @@ mod tests {
         write_device_cert(&paths.device_cert, &cert).unwrap();
         assert!(matches!(
             certified_error(&paths),
-            CertifiedIdentityError::CertificateNotYetValid
+            CertifiedIdentityError::Certificate(DeviceCertError::NotYetValid)
         ));
     }
 
