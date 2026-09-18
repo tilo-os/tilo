@@ -4,6 +4,8 @@ from pathlib import Path
 import subprocess
 import sys
 import types
+import tempfile
+import time
 import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dev'))
@@ -125,5 +127,43 @@ class BrokerTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.bridge(b'public',fail=True)
         with self.assertRaises(ValueError): self.bridge(b'public',limit=1)
 
+
+
+class RemoteDeadlineTests(unittest.TestCase):
+    def command(self, payload_bytes, timeout, code):
+        return [sys.executable, '-c', b.REMOTE_WRAPPER, str(payload_bytes), str(timeout),
+                json.dumps([sys.executable, '-c', code])]
+
+    def test_binary_input_and_real_eof(self):
+        data=bytes(range(256))*4097
+        result=subprocess.run(self.command(len(data), 3, 'import sys;sys.stdout.buffer.write(sys.stdin.buffer.read())'),
+                              input=data, capture_output=True, timeout=5)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, data)
+
+    def test_stalled_input_has_worker_deadline(self):
+        child=subprocess.Popen(self.command(5, .2, 'raise AssertionError("must not run")'),
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            self.assertNotEqual(child.wait(timeout=2), 0)
+        finally:
+            child.kill();child.communicate()
+
+    def test_timeout_kills_child_and_descendant(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker=Path(tmp)/'escaped'
+            descendant='import time,pathlib;time.sleep(.7);pathlib.Path('+repr(str(marker))+').write_text("escaped")'
+            code='import subprocess,sys,time;subprocess.Popen([sys.executable,"-c",'+repr(descendant)+']);time.sleep(30)'
+            before=time.monotonic()
+            result=subprocess.run(self.command(0,.2,code),input=b'',capture_output=True,timeout=2)
+            self.assertNotEqual(result.returncode,0)
+            self.assertLess(time.monotonic()-before,1)
+            time.sleep(.8)
+            self.assertFalse(marker.exists())
+
+    def test_exited_leader_does_not_leave_descendant_pipe_open(self):
+        code='import subprocess,sys;subprocess.Popen([sys.executable,"-c","import time;time.sleep(30)"])'
+        result=subprocess.run(self.command(0,1,code),input=b'',capture_output=True,timeout=2)
+        self.assertEqual(result.returncode,0)
 
 if __name__=='__main__': unittest.main()
