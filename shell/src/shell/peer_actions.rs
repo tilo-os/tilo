@@ -40,7 +40,7 @@ pub(super) struct Request {
     pub poll: Option<qos_actions::InvocationId>,
     pub notification: Option<qos_actions::InvocationUpdate>,
     pub reply: oneshot::Sender<Result<ActionMessage, ()>>,
-    _permit: OwnedSemaphorePermit,
+    pub(super) _permit: OwnedSemaphorePermit,
 }
 impl PeerActionQueue {
     pub(super) fn channel() -> (Self, mpsc::Receiver<Request>) {
@@ -76,6 +76,19 @@ impl PeerActionQueue {
             .await
             .map_err(|_| ())?
             .map_err(|_| ())?
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn request_for_test(
+        &self,
+        evidence: Option<CertifiedAction>,
+    ) -> Result<ActionMessage, ()> {
+        self.request(evidence, None, None).await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn available_permits_for_test(&self) -> usize {
+        self.permits.available_permits()
     }
 
     #[cfg(test)]

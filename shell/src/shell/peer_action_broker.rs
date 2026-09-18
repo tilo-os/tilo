@@ -101,6 +101,9 @@ impl CapnpBrokerState {
                     };
                     // Dropped reply is uncertainty, never rollback/re-execution.
                     let _ = request.reply.send(response);
+                    // Explicit use captures the guard in this future despite
+                    // precise field capture. Cancellation also drops it here.
+                    drop(request._permit);
                 });
             }
         }))

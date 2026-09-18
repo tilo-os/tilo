@@ -402,3 +402,102 @@ fn native_peer_facade_production_startup_uses_explicit_private_roots() {
     assert!(!root.path().join("must-not-be-used").exists());
     drop(broker);
 }
+
+/// A real local capability whose pending resolve futures are released by the
+/// test. This exercises draining/processing rather than a full unread channel.
+struct BlockedBridgeDirectory {
+    entered: Rc<std::cell::Cell<usize>>,
+    releases: Rc<RefCell<std::collections::VecDeque<tokio::sync::oneshot::Sender<()>>>>,
+}
+#[allow(refining_impl_trait, reason = "generated Capnp endpoint Promise shape")]
+impl action_directory::Server for BlockedBridgeDirectory {
+    fn resolve(
+        self: Rc<Self>,
+        _params: action_directory::ResolveParams,
+        mut results: action_directory::ResolveResults,
+    ) -> Promise<(), capnp::Error> {
+        self.entered.set(self.entered.get() + 1);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.releases.borrow_mut().push_back(tx);
+        Promise::from_future(async move {
+            rx.await.map_err(|_| capnp::Error::failed("test directory cancelled".into()))?;
+            results.get().init_resolution().set_stale_revision(());
+            Ok(())
+        })
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_peer_facade_draining_bridge_retains_inflight_permits() {
+    let local = tokio::task::LocalSet::new();
+    let (queue, caller, recipient, relay, _root, _relay_root, _releases) = local.run_until(async {
+        let root = tempfile::tempdir().unwrap();
+        let relay_root = tempfile::tempdir().unwrap();
+        let (fixture, _, mut request) = durable_fixture(root.path(), None);
+        request.revision = Some("directory-r1".into());
+        let room = Uuid::parse_str(&fixture.cluster_id).unwrap();
+        let ws = qos_relay::room_workspace_id(&room.to_string()).unwrap();
+        let (relay_key, relay_cert) = device(55, true);
+        let relay = Relay::start(RelayConfig {
+            state_root: relay_root.path().into(),
+            workspaces: vec![WorkspaceBinding { id: ws, pin: true, replication: qos_relay::ReplicationIntent::FullWorkspace, admitted_users: vec![] }],
+            ..Default::default()
+        }, RelayIdentity { user_public_key: relay_cert.user_public_key, device_signing_key: relay_key, device_cert: relay_cert, revocations: RevocationList::new() }).await.unwrap();
+        relay.set_workspace_membership(ws, true, [52, 54].into_iter().map(|seed| device(seed, false).1.device_public_key).collect(), relay_root.path().into()).await.unwrap();
+        let caller = client(&relay, 52, room).await;
+        let recipient = client(&relay, 54, room).await;
+        recipient.send_action(EnvelopeV2::RegisterBroker { room, host: request.host }).unwrap();
+        assert!(matches!(recipient.recv_action().await, Some(EnvelopeV2::ActionsReady { .. })));
+        send(&caller, room, 52, invoke(&request));
+        let qos_relay::client::CertifiedActionEvent::Delivered(evidence) =
+            recipient.recv_certified_action().await.unwrap() else { panic!("real certified request required") };
+
+        let entered = Rc::new(std::cell::Cell::new(0));
+        let releases = Rc::new(RefCell::new(std::collections::VecDeque::new()));
+        fixture.directories.directories.borrow_mut().get_mut(&71).unwrap().directory = capnp_rpc::new_client(BlockedBridgeDirectory {
+            entered: entered.clone(), releases: releases.clone(),
+        });
+        fixture.state.start_peer_action_bridge(fixture.directories.clone()).unwrap();
+        let queue = fixture.state.peer_action_queue();
+        let completed = Rc::new(std::cell::Cell::new(0));
+        for _ in 0..32 {
+            let (queue, evidence, completed) = (queue.clone(), evidence.clone(), completed.clone());
+            tokio::task::spawn_local(async move {
+                assert!(matches!(queue.request_for_test(Some(evidence)).await, Ok(ActionMessage::Rejected { .. })));
+                completed.set(completed.get() + 1);
+            });
+        }
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while entered.get() != 32 { tokio::task::yield_now().await; }
+        }).await.expect("all32 requests must drain into actual blocked directory futures");
+        assert!(queue.request_for_test(None).await.is_err(), "33rd request must be refused while32 drained requests remain inflight");
+        assert_eq!(queue.available_permits_for_test(), 0);
+        assert_eq!(completed.get(), 0);
+
+        releases.borrow_mut().pop_front().unwrap().send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while completed.get() != 1 { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        assert_eq!(queue.available_permits_for_test(), 1, "one completed broker task restores one permit");
+        assert!(queue.request_for_test(None).await.is_ok(), "restored capacity accepts a health request");
+        assert_eq!(queue.available_permits_for_test(), 1);
+
+        let (more, evidence) = (queue.clone(), evidence.clone());
+        let waiting_caller = tokio::task::spawn_local(async move { more.request_for_test(Some(evidence)).await });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while entered.get() != 33 { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        assert_eq!(queue.available_permits_for_test(), 0);
+        waiting_caller.abort();
+        assert!(waiting_caller.await.unwrap_err().is_cancelled());
+        assert_eq!(queue.available_permits_for_test(), 0, "caller cancellation must not release still-running broker work");
+        assert!(fixture.invocation_rx.is_empty(), "blocked or stale directory never dispatches effects");
+        (queue, caller, recipient, relay, root, relay_root, releases)
+    }).await;
+    drop(local); // Cancels the actual32 spawned broker tasks, dropping their guards.
+    assert_eq!(queue.available_permits_for_test(), 32, "worker cancellation restores all held permits");
+    assert!(queue.request_for_test(None).await.is_err(), "cancelled receiver cannot accept work");
+    caller.close().await;
+    recipient.close().await;
+    relay.shutdown().await;
+}

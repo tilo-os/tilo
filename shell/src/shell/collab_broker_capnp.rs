@@ -1559,6 +1559,7 @@ impl CapnpBrokerState {
         Arc::clone(&self.broker_channels)
     }
 
+    #[cfg(test)]
     fn new(
         fanout: &Arc<FanoutState>,
         broker_channels: Arc<Mutex<BrokerChannels>>,
