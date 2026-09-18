@@ -1927,7 +1927,7 @@ RUN cp -a /etc/selinux/targeted /var/tmp/tilo-sestore \
 # modem, power, homed, hardening, boot assessment, automatic bootc updates and
 # NetworkManager are system services/timers.
 RUN systemctl enable greetd.service && \
-    systemctl disable NetworkManager.service firewalld.service && \
+    systemctl disable NetworkManager.service firewalld.service chronyd.service && \
     systemctl enable tilo-device-key-init.service && \
     systemctl set-default graphical.target && \
     systemctl enable tilo-growfs-sysroot.timer && \
@@ -1943,7 +1943,6 @@ RUN systemctl enable greetd.service && \
     systemctl --global enable tilo-fs-recipient.socket && \
     systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service && \
     systemctl enable cups.socket && \
-    systemctl enable chronyd.service && \
     systemctl enable tilo-hidepid.service && \
     systemctl enable tilo-security-audit.timer && \
     systemctl enable tilo-rollback-harden.timer && \
