@@ -11,7 +11,7 @@ use ui::Widget;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{TextInput, TextInputKind};
+use ui::widget::{Button, ButtonFace, TextInput, TextInputKind};
 
 use crate::canvas;
 use crate::draw;
@@ -341,7 +341,7 @@ impl EndpointEditor {
         self.origin_input
             .draw(scene, transform, text, theme, &PresenceCtx::empty());
 
-        let destination_y = y + field_h + 8.0;
+        let destination_y = y + field_h + f64::from(theme.tokens.spacing.s2);
         let destination_rect = Rect::new(
             content.x0,
             destination_y,
@@ -376,21 +376,17 @@ impl EndpointEditor {
             content.x1,
             destination_rect.y1 - field_h / 2.0,
         );
-        draw::fill_rrect(scene, transform, swap, 8.0, colors.surfaces.raised);
-        draw::stroke_rrect(scene, transform, swap, 8.0, 1.0, colors.border_standard);
-        draw::text_center(
+        Button::paint(
             scene,
-            text,
             transform,
-            "⇅",
-            swap.x0,
-            swap.x1,
-            vmid(swap.center().y - 8.0, 16.0, 16.0),
-            16.0,
-            theme.text_primary,
+            text,
+            theme,
+            &ButtonFace::new(swap, "⇅")
+                .text_size(16.0)
+                .accessible_name("Swap origin and destination"),
         );
         self.hits.push((swap, EndpointHit::Swap));
-        destination_rect.y1 + 10.0
+        destination_rect.y1 + f64::from(theme.tokens.spacing.s3)
     }
 
     fn draw_field(
@@ -403,13 +399,12 @@ impl EndpointEditor {
         endpoint: Endpoint,
     ) -> Rect {
         let colors = &theme.tokens.colors;
-        let border = if self.focused == Some(endpoint) {
-            theme.border_focus
-        } else {
-            colors.border_standard
-        };
-        draw::fill_rrect(scene, transform, rect, 9.0, colors.surfaces.base);
-        draw::stroke_rrect(scene, transform, rect, 9.0, 1.0, border);
+        // The field is the base tier seated in the panel with its derived
+        // edge; focus adds the toolkit's 2 px ring.
+        draw::edged(scene, transform, rect, 9.0, colors.surfaces.base);
+        if self.focused == Some(endpoint) {
+            draw::stroke_rrect(scene, transform, rect, 9.0, 2.0, theme.border_focus);
+        }
         draw::fill_circle(
             scene,
             transform,
@@ -445,21 +440,15 @@ impl EndpointEditor {
             Endpoint::Origin => &self.origin_results,
             Endpoint::Destination => &self.destination_results,
         };
-        let top = field.y1 + 6.0;
+        let sp = &theme.tokens.spacing;
+        let top = field.y1 + f64::from(sp.s2);
         let colors = &theme.tokens.colors;
         if results.is_empty() {
             if self.query(endpoint).trim().is_empty() {
                 return;
             }
             let card = Rect::new(field.x0, top, field.x1, top + 34.0);
-            draw::card(
-                scene,
-                transform,
-                card,
-                12.0,
-                colors.surfaces.raised,
-                colors.border_standard,
-            );
+            draw::card(scene, transform, card, 12.0, colors.surfaces.raised);
             self.hits.push((card, EndpointHit::Consume));
             draw::text(
                 scene,
@@ -473,27 +462,27 @@ impl EndpointEditor {
             );
             return;
         }
-        let row_h = 46.0;
-        let pad = 6.0;
+        // Same dropdown rhythm as the search overlay: 46 px row pitch, `s1`
+        // between hit rects, `s2` pad and `s2` under the field.
+        let row_pitch = 46.0;
+        let row_gap = f64::from(sp.s1);
+        let pad = f64::from(sp.s2);
         let count = results.len().min(OVERLAY_MAX);
         let card = Rect::new(
             field.x0,
             top,
             field.x1,
-            top + pad * 2.0 + count as f64 * row_h,
+            top + pad * 2.0 + count as f64 * row_pitch - row_gap,
         );
-        draw::card(
-            scene,
-            transform,
-            card,
-            12.0,
-            colors.surfaces.raised,
-            colors.border_standard,
-        );
+        draw::card(scene, transform, card, 12.0, colors.surfaces.raised);
         self.hits.push((card, EndpointHit::Consume));
+        let scale = text.text_scale();
+        let name_h = ui::text_metrics::line_height_px(13.0, scale);
+        let sub_h = ui::text_metrics::line_height_px(11.0, scale);
         let mut y = top + pad;
         for (index, place) in results.iter().take(count).enumerate() {
-            let rect = Rect::new(field.x0 + pad, y, field.x1 - pad, y + row_h - 2.0);
+            let rect = Rect::new(field.x0 + pad, y, field.x1 - pad, y + row_pitch - row_gap);
+            let name_y = rect.y0 + (rect.height() - name_h - sub_h) / 2.0;
             draw::fill_circle(
                 scene,
                 transform,
@@ -510,7 +499,7 @@ impl EndpointEditor {
                 transform,
                 &place.name,
                 text_x,
-                rect.y0 + 6.0,
+                name_y,
                 13.0,
                 theme.text_primary,
                 rect.x1 - text_x - distance_w,
@@ -521,7 +510,7 @@ impl EndpointEditor {
                 transform,
                 &place.address,
                 text_x,
-                rect.y0 + 24.0,
+                name_y + name_h,
                 11.0,
                 theme.text_dim,
                 rect.x1 - text_x - distance_w,
@@ -531,13 +520,13 @@ impl EndpointEditor {
                 text,
                 transform,
                 &distance,
-                rect.x1 - 8.0,
-                rect.y0 + 8.0,
+                rect.x1 - pad,
+                name_y + (name_h - sub_h) / 2.0,
                 11.0,
                 theme.accent_primary,
             );
             self.hits.push((rect, EndpointHit::Pick(endpoint, index)));
-            y += row_h;
+            y += row_pitch;
         }
     }
 
