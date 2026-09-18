@@ -80,6 +80,51 @@ class CompatibilityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'duplicate'):c.read_approval(self.approval,c.sha(self.approval.read_bytes()))
         with self.assertRaisesRegex(ValueError,'bytes differ'):c.read_approval(self.approval,'0'*64)
 
+    def test_rootfs_stage_isolation(self):
+        old=b'ARG BASE_REF=x\nFROM x AS builder\nRUN compile\nFROM ${BASE_REF} AS rootfs\nRUN old\nFROM rootfs AS split\nRUN split\n'
+        new=old.replace(b'RUN old', b'RUN fixed')
+        c.verify_rootfs(old,new)
+        for bad in (new.replace(b'RUN compile',b'RUN changed'), new.replace(b'RUN split',b'RUN changed'), new.replace(b'RUN fixed',b'FROM evil AS injected')):
+            with self.assertRaises(ValueError):c.verify_rootfs(old,bad)
+
+    def test_rootfs_three_commit_tree_and_wpe_receipt_bridge(self):
+        # Build a separate exact baseline with a real multi-stage recipe.
+        self.git('reset','--hard',self.base)
+        old=b'FROM x AS builder\nRUN compile\nFROM ${BASE_REF} AS rootfs\nRUN old\nFROM rootfs AS split\n'
+        (self.repo/'os/Containerfile').write_bytes(old)
+        (self.repo/'os/dev/build-wpe.sh').write_bytes(b'wpe\n')
+        self.git('add','.');self.git('commit','-qm','baseline recipe')
+        self.base=self.git('rev-parse','HEAD').decode().strip()
+        for name in c.PATHS:(self.repo/name).write_bytes(b'corrected\n')
+        self.git('commit','-qam','provider')
+        provider=self.git('rev-parse','HEAD').decode().strip()
+        new=old.replace(b'RUN old',b'RUN fixed');(self.repo/'os/Containerfile').write_bytes(new)
+        self.git('commit','-qam','rootfs');self.revision=self.git('rev-parse','HEAD').decode().strip()
+        original=dict(reference='immutable',config_digest='same',payload_sha256='same',audit_sha256='a'*64,
+            audit=dict(compatible_recipes={'os/Containerfile':c.sha(old),'os/dev/build-wpe.sh':c.sha(b'wpe\n')},original_source_revision=None))
+        updated=json.loads(json.dumps(original));updated['audit']['compatible_recipes']['os/Containerfile']=c.sha(new)
+        updated['audit_sha256']=c.sha((json.dumps(updated['audit'],sort_keys=True,separators=(',',':'))+'\n').encode())
+        bridge={}
+        for prefix,value in (('original',original),('assembly',updated)):
+            raw=json.dumps(value);bridge[prefix+'_receipt_json']=raw;bridge[prefix+'_receipt_sha256']=c.sha(raw.encode())
+        self.value.update(purpose='tilo-rootfs-native-source-compatibility',native_source_revision=self.base,
+            assembly_source_revision=self.revision,provider_revision=provider,wpe_bridge=bridge)
+        for name in (*c.PATHS,'os/Containerfile'):
+            self.value['changes'][name]={}
+            for label,rev in (('old',self.base),('new',self.revision)):
+                self.value['changes'][name][label+'_blob']=self.git('rev-parse',rev+':'+name).decode().strip()
+                self.value['changes'][name][label+'_sha256']=c.sha(self.git('show',rev+':'+name))
+        proof=self.verify()
+        inputs=dict(revision=self.revision,epoch=proof['assembly_epoch'],containerfile_sha256=c.sha(new),
+            wpe_reference='immutable',wpe_receipt_sha256=bridge['assembly_receipt_sha256'])
+        with patch.object(c,'SOURCE',self.base): result=c.original_native_inputs(inputs,proof)
+        self.assertEqual(result['containerfile_sha256'],c.sha(old))
+        self.assertEqual(result['wpe_receipt_sha256'],bridge['original_receipt_sha256'])
+        c.verify_selected_wpe(proof,bridge['assembly_receipt_json'].encode(),bridge['assembly_receipt_sha256'])
+        with self.assertRaises(ValueError):c.verify_selected_wpe(proof,b'{}',bridge['assembly_receipt_sha256'])
+        updated['payload_sha256']='changed';raw=json.dumps(updated);bridge['assembly_receipt_json']=raw;bridge['assembly_receipt_sha256']=c.sha(raw.encode())
+        with self.assertRaisesRegex(ValueError,'more than'):self.verify()
+
     def test_selection_requires_explicit_full_reconstructed_adoption(self):
         kwargs=dict(wpe='code.podesta.ai/qos/tilo-wpe-buildroot@sha256:'+'a'*64,generation='1',
             revision='c'*40,branch='refs/heads/main',mode='full-build',architecture='aarch64',
