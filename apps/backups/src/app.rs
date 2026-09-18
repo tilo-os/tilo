@@ -86,10 +86,6 @@ fn should_paint_rail(drawer: &SidebarDrawer, rail: Rect) -> bool {
 
 /// Click/hover targets discovered during `draw` and consumed by
 /// `handle_event`. Cleared and rebuilt every frame.
-#[allow(
-    dead_code,
-    reason = "the optional per-file restore sheet is not yet opened"
-)]
 #[derive(Clone, Debug, PartialEq)]
 enum Hit {
     Tab(View),
@@ -208,7 +204,6 @@ impl Default for BackupsApp {
     }
 }
 
-#[allow(dead_code, reason = "the optional per-file restore sheet is retained")]
 impl BackupsApp {
     pub(crate) fn resource_catalog(&self) -> &Catalog {
         &self.catalog
