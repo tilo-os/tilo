@@ -563,6 +563,15 @@ def verify_native_image(reference, architecture):
             'scope': 'native manifest/config selection; no layer or kernel payload execution'}
 
 
+def prepare_base_installation_tooling(mode, image):
+    # The native builder consumes builder/RPM/WPE layers, never the installed
+    # base rootfs. Its registry identity is still verified by the caller.
+    if mode == 'native-payload':
+        return
+    run('podman', '--remote=false', 'pull', image)
+    write_receipt('base-installation-tooling.json', installation_tooling(image))
+
+
 def installation_tooling(image):
     """Read CLI evidence without exposing devices, credentials or host mounts."""
     common = ('podman', '--remote=false', 'run', '--rm', '--pull=never',
@@ -798,8 +807,7 @@ def main(argv=None):
     info = json.loads(run('podman', '--remote=false', 'info', '--format', 'json'))
     if info['store']['graphDriverName'] != 'overlay':
         raise ValueError('private guest volume must support native Podman overlay storage')
-    run('podman', '--remote=false', 'pull', pins['BASE_REF'])
-    write_receipt('base-installation-tooling.json', installation_tooling(pins['BASE_REF']))
+    prepare_base_installation_tooling(args.mode, pins['BASE_REF'])
     write_receipt('tools.json', {name: run(*command) for name, command in {
         'podman': ('podman', '--version'), 'cargo': ('cargo', '--version'),
         'rustc': ('rustc', '--version'), 'cosign': ('cosign', 'version')}.items()})
