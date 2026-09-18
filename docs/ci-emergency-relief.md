@@ -1,7 +1,8 @@
 # CI emergency relief: deployed state and recovery
 
-Recorded 2026-09-18. This is the emergency delivery record, not a claim that
-current main CI is green. It supersedes older **branch-only** descriptions of
+Updated 2026-09-19 (production timing observed 2026-09-18 UTC). This is the
+emergency delivery record, not a claim that current main CI is green. It
+supersedes older **branch-only** descriptions of
 the changes listed here; the broader CI/build/release roadmap remains unfinished.
 
 ## Delivered changes
@@ -18,14 +19,17 @@ health guarantee.
 | `qos/qos` `e6f0e61aa` | Deployed integration checkpoint containing the relief changes and upstream work. This is a merge commit, not a standalone feature to revert wholesale. Includes `3fd676546`, which preserves every main commit's check/lint work during queue cleanup. |
 | `qos/qos` `e0c6484e6` | Deployed follow-up integration checkpoint: task-branch instructions, runtime artifact layout repair, confined audio dependency helper, narrow design-only Rust applicability, fail-closed aggregate with the Forgejo sentinel-matrix workaround, and rename-owner coverage. Includes unrelated upstream work; do not revert the whole merge. |
 | `qos/qos` `e279fbf35` | Later deployed checkpoint includes focused development helpers (`8f768b116`) and per-main-SHA check/lint concurrency groups. Deployment is not evidence that its actual CI passed. |
+| `qos/qos` `0975d89a8` | Deployed checkpoint containing `f660a53a4`: lean pinned fast-quality image, native toolchain smoke, and the exclusive `runner-quality` lane. Its actual production lint run 22696 passed; the separate check run 22695 is not claimed green here. |
 | Infrastructure `93be3f6` | Enables `forgejo/qos-ci-queue-coalescer`, using the heavy-only policy. |
 | Infrastructure `8c1de67` + `4c20a8e` | Pins the attempted broker fix image and permits bounded startup reconciliation before liveness enforcement. Operator reports Argo applications synced/healthy at `4c20a8e`, but subsequent runtime inspection found the performance guard was not loaded; see below. |
-| Infrastructure `506195f` | Deploys the corrected image that patches the imported runtime module, retaining the startup probe. Coordinating task confirms this runtime correction is live. |
+| Infrastructure `506195f` | Deploys the corrected image that patches the imported runtime module, retaining the startup probe. Superseded by the current broker below. |
+| Infrastructure `a30e1c8` | Adds one exclusive on-prem `runner-quality` slot, with a 2 CPU / 4 GiB Docker-in-Docker workload envelope; general/heavy jobs cannot use its reserved capacity. |
+| Infrastructure `ffbd0a1` | Deploys the current broker image with completed-cleanup tolerance and live-runner deletion guards. These guards do not prove the cause of historical runner loss. |
 
 Broker image:
 
 ```text
-code.sandbox.example/podestaai/sandbox-broker@sha256:af62ba80f88fce080f1d267021d224810f54ce48332cb2df199ec534ed97eaee
+code.sandbox.example/podestaai/sandbox-broker@sha256:2a4ad90ca83c9860e54c619fb9569d3a7e854252935d911ad4b4b1e03653dcdd
 ```
 
 The broker runs as Deployment `sandbox-broker` in namespace `sandbox-broker`.
@@ -35,11 +39,12 @@ five-second intervals. Startup-probe recovery is healthy independently of the
 performance patch. The `c568...` image patched a source-tree copy, while the running
 broker imported its implementation from `site-packages`; the intended performance
 guard therefore did **not** take effect. Infrastructure `506195f` replaces that
-image with the imported-module correction shown above; the coordinating task
-reports the correction live. End-to-end dispatch/feedback improvement still needs
-actual observations. Image deployment and green
-health probes do not establish that a particular code path changed. No Forgejo
-server Deployment was changed by the coalescer rollout.
+image with the imported-module correction. The current `ffbd0a1` deployment
+retains that correction and the exclusive quality lane, and adds cleanup guards
+that tolerate completed resources and protect live runners. Green probes and
+source changes alone do not prove end-to-end improvement; the production
+measurement below is the evidence for the fast-quality path. No Forgejo server
+Deployment was changed by these coalescer/broker rollouts.
 
 ## What stays protected
 
@@ -65,54 +70,71 @@ The runtime handoff now transports `runtime/tilo-runtime/...` and the public
 publisher key together. Fixture tests exercise both architecture layouts, not
 full native signing/packaging acceptance. The audio helper's actual qualification
 passed both native architectures in run 9230; this does not establish that all
-tests on the latest main revision passed. Design-only skipping applies narrowly
-to `docs/designs/*.md` changes; security and selection remain mandatory, mixed
-changes retain Rust coverage, and explicit full checks override the skip.
+tests on the latest main revision passed. Rust skipping applies narrowly to
+`docs/designs/*.md` and the explicit audited CI/developer-prose allowlist in
+`tools/ci_select.py`; security and selection remain mandatory, mixed changes
+retain Rust coverage, and explicit full checks override the skip.
 
 ## Current validation limits and next work
 
-At 21:48 UTC, the coordinating task recorded the actual `e0c6484e6` check run
-22677 (UI run 9242) and lint run 22678 (UI run 9243) as **waiting**. This document
-does not upgrade those observations to green. Main can advance while they run;
-match each run's full commit SHA before reporting its result.
+The product checkpoint `0975d89a87367b8625e8bb3b6d898cf997a684af` is deployed.
+Its production lint [run 9257](https://code.sandbox.example/qos/qos/actions/runs/9257)
+(API run 22696, job 83334) finished **successfully**. The timing record in
+`target/main-fast-quality-timing.json` and a fresh exact-run API readback agree:
 
-Infrastructure `a30e1c8` deploys a separate `runner-quality` lane, reserving one
-total on-prem capacity slot from heavy CI. Its private canary passed and the idle
-reserve replenished. Native compilation stays on its existing architecture lanes.
+| Production lint measurement | Observed value |
+| --- | --- |
+| Created / started / stopped (UTC) | 22:13:26 / 22:13:27 / 22:15:41 on 2026-09-18 |
+| Queue wait | 1 second |
+| Run wall time, started to stopped | 134 seconds |
+| Image pull request to container creation | 9.905 seconds |
 
-The lean image `code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a`
-passed the complete lint workflow on that lane in [run 9253](https://code.sandbox.example/qos/qos/actions/runs/9253).
-Its compressed layers total 393 MB versus 1.694 GB for the source builder.
-The successful run took 3m49s end-to-end, including about 93s pull/unpack and
-76s dependency-usage analysis. An earlier pull measured 36s; network/worker
-variation remains material. Lint now uses this pinned image and reserved lane;
-the final check aggregate and receipt jobs also use the lane. Selection and
-native compilation still use the full builder.
+The pull interval includes work between those two log events; it is not an
+isolated network-bandwidth measurement. This is one successful production run,
+not a latency guarantee for every future worker. The separate main **check** run
+22695 is not claimed green. Match each run's full SHA before reporting results
+as main advances.
 
-The first image pilot lost its runner heartbeat and was marked failed without
-a final step result. That failure is not attributed to the image or OOM without
-evidence. Private-builder prewarming, isolated disk-cache clones, last-green
-selection and broader scheduling/release qualification remain separate work.
-Retain explicit manual hardware runs while pursuing these improvements.
+The lean image
+`code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a`
+contains the pinned Rust toolchain and lint tools, without the full builder's
+native graphics/media/application stack. Compressed layers total 393 MB versus
+1.694 GB for its source builder. Its unchanged OpenSSL exclusion invariant
+passed; no runtime-policy exemption was introduced.
 
-The later product checkpoint `e279fbf35` is now live:
+Before production rollout, the complete lint workflow passed on the exclusive
+2 CPU / 4 GiB lane in [run 9253](https://code.sandbox.example/qos/qos/actions/runs/9253).
+That qualification took 3m49s end-to-end, including about 93s pull/unpack and 76s
+dependency-usage analysis. Another image pilot measured a 36s pull interval.
+These observations show material worker/network variation; the 9.905s
+production observation must not be generalized into a universal cold-start bound.
+Lint, the final check aggregate, and receipt jobs now use `runner-quality`.
+Selection and native compilation retain their existing builder/architecture lanes.
 
-- Product commit `8f768b116` adds locally tested focused development contract
-  commands and receipts and is included in that deployed checkpoint.
-- Main check/lint concurrency groups changed from a shared branch key
-  to the commit SHA, retaining `cancel-in-progress: false` on main. A live queue
-  observation of one running and seven waiting runs motivated removal of that
-  head-of-line block; it is not yet evidence that the deployed grouping improves
-  latency. Branch/PR supersession behavior remains unchanged. Runner admission
-  must still bound resource use; independent workflow groups do not create capacity.
-- The broker's imported-module correction is deployed at infrastructure `506195f`.
-  New-worker warm-builder preload and end-to-end performance qualification remain
-  pending. Source patches or image tags alone do not satisfy that work.
+The reservation is one total on-prem quality slot: busy, idle and pending quality
+guests all count, and general/heavy work cannot consume its reserved capacity.
+This prevents heavy builds from occupying every feedback slot; it does not make
+queueing impossible under sustained quality demand. Main check/lint concurrency
+uses the commit SHA and keeps `cancel-in-progress: false`, preserving every main
+commit's result. The heavy-only coalescer still excludes both workflows.
 
-After rollout, verify the imported module path and effective guard in the running
-broker, then observe actual request/dispatch latency and new-worker image readiness.
-Recheck the specific main CI runs; neither a healthy broker nor an idle runner is
-a substitute for completed per-commit results.
+The earlier image pilot (run 22684) lost its runner heartbeat and ended in
+failure without a final step result. Its log/evidence remains retained. Cleanup
+guards are now deployed at `ffbd0a1`, but the historical loss is **not proven** to
+have been caused by cleanup, OOM, or the image. Do not recast a later green run
+as a diagnosis of that earlier failure.
+
+An isolated full-builder disk-clone experiment reported a reduction from about
+222 seconds to 1 second. This is **prototype evidence**, separate from production
+lint's lean-image result. Production seed rollout and actual new-worker
+qualification remain pending. A trusted read-only seed must produce an isolated
+writable disk per job; never share a mutable Docker root or copy candidate output,
+job credentials or signing material into a seed. ARM64/EBS restore needs its own
+measurement; the on-prem result does not establish equivalent cloud timings.
+
+Continuous dependency-aware packaging, last-green coverage selection, broader
+scheduler qualification and reliable automatic integration remain unfinished.
+Keep manual hardware/bring-up requests intact while delivering those changes.
 
 ## Observe before changing anything
 
@@ -120,9 +142,9 @@ Run these read-only commands on an operations host with the configured contexts:
 
 ```sh
 fgj --hostname code.sandbox.example api repos/qos/qos/branches/main
-fgj --hostname code.sandbox.example api repos/qos/qos/actions/runs/22677
-fgj --hostname code.sandbox.example api repos/qos/qos/actions/runs/22677/jobs
-fgj --hostname code.sandbox.example api repos/qos/qos/actions/runs/22678
+fgj --hostname code.sandbox.example api repos/qos/qos/actions/runs/22695
+fgj --hostname code.sandbox.example api repos/qos/qos/actions/runs/22695/jobs
+fgj --hostname code.sandbox.example api repos/qos/qos/actions/runs/22696
 kubectl -n forgejo get cronjob qos-ci-queue-coalescer
 kubectl -n forgejo get jobs -l app=qos-ci-queue-coalescer
 kubectl -n sandbox-broker get deployment sandbox-broker
@@ -165,22 +187,20 @@ Previously cancelled runs are not resurrected. If one is needed, inspect its
 revision and event and explicitly rerun that single request in Forgejo. Never
 cancel a repository-wide queue or all running builds as a rollback procedure.
 
-**Broker rollback:** retain the startup probe; reverting `4c20a8e` would remove
-the mitigation for the observed startup restart loop. If the new image itself is
-the diagnosed cause, change only its image in GitOps, keeping the startup and
-grace-period settings. The recorded previous image was:
+**Broker rollback:** retain the startup probe, graceful drain, exclusive quality
+routing and live-runner protections wherever possible. Reverting `4c20a8e` would
+remove the startup restart-loop mitigation. Older `3526...`/`af62...` images must
+not be substituted blindly: they predate the current quality-lane/cleanup behavior
+and may strand workflows requesting `runner-quality` or restore deletion hazards.
 
-```sh
-kubectl -n sandbox-broker set image deployment/sandbox-broker broker=code.sandbox.example/podestaai/sandbox-broker@sha256:3526f0173d964d765840ac27cbc42d5f77dbe830a5e7dd2834171742b7a0a4d7
-kubectl -n sandbox-broker rollout status deployment/sandbox-broker --timeout=180s
-```
-
-Publish the matching image-only GitOps change. Neither the previous image nor the
-ineffective `c568...` source patch establishes resolution of legacy reconciliation;
-rollback is a recovery option to assess, not an assertion of health. Reassess these
-recorded rollback digests against the corrected `af62...` runtime now deployed.
-Do not delete broker/runner pods or
-interrupt active signing/hardware sessions to force a rollout.
+If the current image is the diagnosed cause, select and verify a compatible
+replacement, then change only that image through the authorized GitOps path.
+The immediate predecessor to `ffbd0a1` was `0ab15dde6aea3c11b0f3cb366565160dd15518f283e2813d0570dc28f22fc55b`;
+it lacks the new cleanup guards and is not automatically a safe recovery target.
+Inspect active jobs and the candidate image's label/admission contract before
+any rollback. Verify rollout health and a real quality run afterward. Do not
+delete broker/runner pods or interrupt active signing/hardware sessions to force
+a rollout.
 
 **Product CI rollback:** use a new task branch and a narrowly reviewed fix to the
 specific selector, helper or workflow. Keep per-commit check/lint triggers and
