@@ -1,6 +1,7 @@
 //! Populated, interactive reference scene for the chart catalogue.
 
 use ui::chart_palette::ChartPalette;
+use ui::num::f64_of_usize;
 use ui::theme::Theme;
 use ui::widget::{
     AxisLabelFormat, Candle, CandlestickChart, Card, CardGrid, CartesianAnnotation, CartesianPan,
@@ -32,6 +33,10 @@ pub fn build_inspected(theme: &Theme) -> Box<dyn Widget> {
     build_scene(theme, true)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "this is one declarative visual fixture catalogue; splitting its chart definitions across helpers would obscure the rendered ordering without isolating reusable behavior"
+)]
 fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
     let palette = ChartPalette::from_theme(theme);
     let c = [
@@ -55,7 +60,7 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
         values
             .iter()
             .enumerate()
-            .map(|(i, value)| PlotDatum::new(format!("p{i}"), i as f64, *value))
+            .map(|(i, value)| PlotDatum::new(format!("p{i}"), f64_of_usize(i), *value))
             .collect()
     };
     let mut cartesian = CartesianPlot::new(vec![
@@ -77,9 +82,9 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
                 .enumerate()
                 .map(|(index, value)| {
                     if index == 2 {
-                        PlotDatum::missing("forecast-gap", index as f64)
+                        PlotDatum::missing("forecast-gap", f64_of_usize(index))
                     } else {
-                        PlotDatum::new(format!("f{index}"), index as f64, value)
+                        PlotDatum::new(format!("f{index}"), f64_of_usize(index), value)
                     }
                 })
                 .collect(),
@@ -172,10 +177,15 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
     .layout(CategoryLayout::Stacked)
     .with_height(CHART_HEIGHT);
 
-    let heat_cells = (0..5)
+    let heat_cells = (0_usize..5)
         .flat_map(|row| {
-            (0..7).map(move |column| {
-                let value = ((row * 11 + column * 7 + 3) % 18) as f64;
+            (0_usize..7).map(move |column| {
+                let value = row
+                    .saturating_mul(11)
+                    .saturating_add(column.saturating_mul(7))
+                    .saturating_add(3)
+                    .checked_rem(18)
+                    .map_or(0.0, f64_of_usize);
                 HeatmapCell::new(format!("{row}-{column}"), row, column, value)
                     .with_detail(format!("{value:.0} sessions"))
             })
@@ -257,13 +267,13 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
         .map(|(i, (open, high, low, close))| {
             Candle::new(
                 format!("d{i}"),
-                format!("Day {}", i + 1),
+                format!("Day {}", i.saturating_add(1)),
                 open,
                 high,
                 low,
                 close,
             )
-            .with_volume(20.0 + i as f64 * 8.0)
+            .with_volume(20.0 + f64_of_usize(i) * 8.0)
         })
         .collect(),
     )
@@ -272,8 +282,8 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
     let mut sankey = SankeyChart::new(
         ["Visits", "Signup", "Trial", "Paid", "Churn"]
             .into_iter()
-            .enumerate()
-            .map(|(i, label)| SankeyNode::new(label, label).colored(c[i % c.len()]))
+            .zip(c.iter().copied().cycle())
+            .map(|(label, color)| SankeyNode::new(label, label).colored(color))
             .collect(),
         vec![
             SankeyLink::new("v-s", "Visits", "Signup", 72.0),
@@ -288,8 +298,8 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
     let mut chord = ChordChart::new(
         ["Design", "Engineering", "Research", "Support", "Sales"]
             .into_iter()
-            .enumerate()
-            .map(|(index, label)| ChordNode::new(label, label).colored(c[index % c.len()]))
+            .zip(c.iter().copied().cycle())
+            .map(|(label, color)| ChordNode::new(label, label).colored(color))
             .collect(),
         vec![
             ChordLink::new("d-e", "Design", "Engineering", 32.0),
@@ -354,10 +364,10 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
             ("Aug", 46.0),
         ]
         .into_iter()
-        .enumerate()
-        .map(|(index, (label, value))| {
+        .zip(c.iter().copied().cycle())
+        .map(|((label, value), color)| {
             PolarAreaDatum::new(label, label, value)
-                .colored(c[index % c.len()])
+                .colored(color)
                 .with_detail("active users")
         })
         .collect(),
