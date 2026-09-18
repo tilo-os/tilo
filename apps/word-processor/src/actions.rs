@@ -409,6 +409,50 @@ pub enum WordProcessorAction {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActionDomain {
+    Text,
+    Formatting,
+    Media,
+    Table,
+    Structure,
+    Review,
+}
+
+impl WordProcessorAction {
+    fn domain(&self) -> ActionDomain {
+        match self {
+            Self::SpliceText { .. }
+            | Self::ReplaceSelection { .. }
+            | Self::SetMark { .. }
+            | Self::PasteFragment { .. }
+            | Self::InsertParagraph { .. }
+            | Self::RemoveBlocks { .. }
+            | Self::ReplaceBody { .. } => ActionDomain::Text,
+            Self::SetParagraphStyle { .. }
+            | Self::ApplyNamedStyle { .. }
+            | Self::SetBlockAttr { .. }
+            | Self::SetPageMargins { .. }
+            | Self::SetStyleProperty { .. }
+            | Self::DeleteStyle { .. } => ActionDomain::Formatting,
+            Self::SetImageCrop { .. }
+            | Self::SetImageSize { .. }
+            | Self::SetImagePlacement { .. }
+            | Self::InsertImage { .. } => ActionDomain::Media,
+            Self::InsertTable { .. } | Self::EditTable { .. } => ActionDomain::Table,
+            Self::InsertPageBreak { .. }
+            | Self::SplitBlock { .. }
+            | Self::InsertField { .. }
+            | Self::GenerateToc { .. } => ActionDomain::Structure,
+            Self::AcceptChanges { .. }
+            | Self::RejectChanges { .. }
+            | Self::ResolveComment { .. }
+            | Self::AddComment { .. }
+            | Self::ReplyToComment { .. } => ActionDomain::Review,
+        }
+    }
+}
+
 // Action payloads may arrive after the document has changed (or from an
 // untrusted automation).  Keep the limits deliberately generous for real
 // documents while making the action boundary a useful resource boundary too.
@@ -425,136 +469,239 @@ const MAX_TABLE_CELLS: usize = 10_000;
 /// action allocates a large table/blob or asks automerge to index impossible
 /// offsets.  The caller maps `false` to an explicit [`ActionError::Refused`],
 /// preserving a useful stale-target result without leaving a partial edit.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one exhaustive validation table keeps every action's atomic preconditions auditable at one boundary"
-)]
 fn action_is_valid(action: &WordProcessorAction, doc: &AutoCommit, c: &Containers) -> bool {
-    let snap = qdoc::model::materialize(doc, c);
-    let blocks_for = |region: RegionKind| match region {
-        RegionKind::Body => &snap.blocks,
-        RegionKind::Header => &snap.header,
-        RegionKind::Footer => &snap.footer,
-    };
-    let block_len = |region: RegionKind, id: &str| {
-        blocks_for(region)
+    ActionValidator::new(doc, c).validate(action)
+}
+
+struct ActionValidator<'a> {
+    doc: &'a AutoCommit,
+    containers: &'a Containers,
+    snapshot: qdoc::snapshot::DocSnapshot,
+}
+
+impl<'a> ActionValidator<'a> {
+    fn new(doc: &'a AutoCommit, containers: &'a Containers) -> Self {
+        Self {
+            doc,
+            containers,
+            snapshot: qdoc::model::materialize(doc, containers),
+        }
+    }
+
+    fn blocks_for(&self, region: RegionKind) -> &[qdoc::snapshot::BlockView] {
+        match region {
+            RegionKind::Body => &self.snapshot.blocks,
+            RegionKind::Header => &self.snapshot.header,
+            RegionKind::Footer => &self.snapshot.footer,
+        }
+    }
+
+    fn block_len(&self, region: RegionKind, id: &str) -> Option<usize> {
+        self.blocks_for(region)
             .iter()
             .find(|block| block.id == id)
             .map(|block| block.text.chars().count())
-    };
-    let unique_existing = |region: RegionKind, ids: &[String]| {
+    }
+
+    fn unique_existing(&self, region: RegionKind, ids: &[String]) -> bool {
         !ids.is_empty()
-            && ids.iter().all(|id| block_len(region, id).is_some())
+            && ids.iter().all(|id| self.block_len(region, id).is_some())
             && ids.iter().collect::<HashSet<_>>().len() == ids.len()
-    };
-    let safe_name = |name: &str| {
+    }
+
+    fn safe_name(name: &str) -> bool {
         !name.is_empty()
             && name.len() <= 128
             && name
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    };
-    let safe_text = |text: &str| text.chars().count() <= MAX_ACTION_TEXT_CHARS;
-    let valid_attr = |key: &str, value: &AttrVal| match key {
-        "align" => {
-            matches!(value, AttrVal::Str(v) if matches!(v.as_str(), "left" | "center" | "right" | "justify"))
-        }
-        "page_break_before" | "flip_h" | "flip_v" => matches!(value, AttrVal::Bool(_)),
-        "indent" | "line_spacing" => {
-            matches!(value, AttrVal::Float(v) if v.is_finite() && *v >= 0.0 && *v <= 10_000.0)
-        }
-        "first_line_indent" => {
-            matches!(value, AttrVal::Float(v) if v.is_finite() && (-10_000.0..=10_000.0).contains(v))
-        }
-        "tab_stops" | "style" => matches!(value, AttrVal::Str(v) if v.len() <= 4_096),
-        "width" | "height" => matches!(value, AttrVal::Int(v) if *v > 0 && *v <= 100_000),
-        _ => false,
-    };
-    let valid_style_prop = |key: &str, value: &AttrVal| match key {
-        qdoc::schema::STYLE_NAME => matches!(value, AttrVal::Str(v) if v.chars().count() <= 256),
-        qdoc::schema::STYLE_FONT => {
-            matches!(value, AttrVal::Str(v) if matches!(v.as_str(), "sans" | "serif" | "mono"))
-        }
-        qdoc::schema::STYLE_SIZE => {
-            matches!(value, AttrVal::Float(v) if v.is_finite() && (6.0..=200.0).contains(v))
-        }
-        qdoc::schema::STYLE_BOLD | qdoc::schema::STYLE_ITALIC => {
-            matches!(value, AttrVal::Bool(_))
-        }
-        qdoc::schema::STYLE_COLOR => {
-            matches!(value, AttrVal::Str(v) if v.len() == 7 && v.starts_with('#'))
-        }
-        qdoc::schema::STYLE_ALIGN => {
-            matches!(value, AttrVal::Str(v) if matches!(v.as_str(), "left" | "center" | "right" | "justify"))
-        }
-        qdoc::schema::STYLE_SPACE_BEFORE
-        | qdoc::schema::STYLE_SPACE_AFTER
-        | qdoc::schema::STYLE_INDENT => {
-            matches!(value, AttrVal::Float(v) if v.is_finite() && (0.0..=10_000.0).contains(v))
-        }
-        _ => false,
-    };
+    }
 
-    match action {
-        WordProcessorAction::SpliceText {
-            region,
-            block,
-            at,
-            del,
-            ins,
-        } => {
-            block_len(*region, block)
-                .is_some_and(|len| *at <= len && *del <= len.saturating_sub(*at))
-                && safe_text(ins)
-        }
-        WordProcessorAction::ReplaceSelection {
-            region,
-            start_block,
-            start,
-            end_block,
-            end,
-            ins,
-        } => {
-            let blocks = blocks_for(*region);
-            let start_index = blocks.iter().position(|block| block.id == *start_block);
-            let end_index = blocks.iter().position(|block| block.id == *end_block);
-            match (
-                start_index,
-                end_index,
-                block_len(*region, start_block),
-                block_len(*region, end_block),
-            ) {
-                (Some(start_index), Some(end_index), Some(start_len), Some(end_len)) => {
-                    (start_index < end_index || (start_index == end_index && start <= end))
-                        && *start <= start_len
-                        && *end <= end_len
-                        && safe_text(ins)
-                }
-                _ => false,
+    fn safe_text(text: &str) -> bool {
+        text.chars().count() <= MAX_ACTION_TEXT_CHARS
+    }
+
+    fn valid_attr(key: &str, value: &AttrVal) -> bool {
+        match key {
+            "align" => {
+                matches!(value, AttrVal::Str(v) if matches!(v.as_str(), "left" | "center" | "right" | "justify"))
             }
+            "page_break_before" | "flip_h" | "flip_v" => matches!(value, AttrVal::Bool(_)),
+            "indent" | "line_spacing" => {
+                matches!(value, AttrVal::Float(v) if v.is_finite() && *v >= 0.0 && *v <= 10_000.0)
+            }
+            "first_line_indent" => {
+                matches!(value, AttrVal::Float(v) if v.is_finite() && (-10_000.0..=10_000.0).contains(v))
+            }
+            "tab_stops" | "style" => matches!(value, AttrVal::Str(v) if v.len() <= 4_096),
+            "width" | "height" => matches!(value, AttrVal::Int(v) if *v > 0 && *v <= 100_000),
+            _ => false,
         }
-        WordProcessorAction::SetMark {
-            region,
-            spans,
-            name,
-            value,
-            also_clear,
-        } => {
-            safe_name(name)
-                && also_clear.iter().all(|sibling| safe_name(sibling))
-                && spans.len() <= 10_000
-                && !spans.is_empty()
-                && spans.iter().all(|span| {
-                    block_len(*region, &span.block)
-                        .is_some_and(|len| span.start < span.end && span.end <= len)
-                })
-                && match (name.as_str(), value) {
-                    ("link", Some(MarkVal::Str(target))) => valid_hyperlink_target(target),
-                    ("link", Some(_)) => false,
-                    (_, Some(MarkVal::Str(text))) => safe_text(text),
-                    _ => true,
+    }
+
+    fn valid_style_property(key: &str, value: &AttrVal) -> bool {
+        match key {
+            qdoc::schema::STYLE_NAME => {
+                matches!(value, AttrVal::Str(v) if v.chars().count() <= 256)
+            }
+            qdoc::schema::STYLE_FONT => {
+                matches!(value, AttrVal::Str(v) if matches!(v.as_str(), "sans" | "serif" | "mono"))
+            }
+            qdoc::schema::STYLE_SIZE => {
+                matches!(value, AttrVal::Float(v) if v.is_finite() && (6.0..=200.0).contains(v))
+            }
+            qdoc::schema::STYLE_BOLD | qdoc::schema::STYLE_ITALIC => {
+                matches!(value, AttrVal::Bool(_))
+            }
+            qdoc::schema::STYLE_COLOR => {
+                matches!(value, AttrVal::Str(v) if v.len() == 7 && v.starts_with('#'))
+            }
+            qdoc::schema::STYLE_ALIGN => {
+                matches!(value, AttrVal::Str(v) if matches!(v.as_str(), "left" | "center" | "right" | "justify"))
+            }
+            qdoc::schema::STYLE_SPACE_BEFORE
+            | qdoc::schema::STYLE_SPACE_AFTER
+            | qdoc::schema::STYLE_INDENT => {
+                matches!(value, AttrVal::Float(v) if v.is_finite() && (0.0..=10_000.0).contains(v))
+            }
+            _ => false,
+        }
+    }
+
+    fn validate(&self, action: &WordProcessorAction) -> bool {
+        match action.domain() {
+            ActionDomain::Text => {
+                self.validate_text_edit(action) || self.validate_paste_and_body(action)
+            }
+            ActionDomain::Formatting => self.validate_formatting(action),
+            ActionDomain::Media => self.validate_media(action),
+            ActionDomain::Table => self.validate_tables(action),
+            ActionDomain::Structure => self.validate_structure(action),
+            ActionDomain::Review => self.validate_review(action),
+        }
+    }
+
+    fn validate_text_edit(&self, action: &WordProcessorAction) -> bool {
+        match action {
+            WordProcessorAction::SpliceText {
+                region,
+                block,
+                at,
+                del,
+                ins,
+            } => {
+                self.block_len(*region, block)
+                    .is_some_and(|len| *at <= len && *del <= len.saturating_sub(*at))
+                    && Self::safe_text(ins)
+            }
+            WordProcessorAction::ReplaceSelection {
+                region,
+                start_block,
+                start,
+                end_block,
+                end,
+                ins,
+            } => {
+                let blocks = self.blocks_for(*region);
+                let start_index = blocks.iter().position(|block| block.id == *start_block);
+                let end_index = blocks.iter().position(|block| block.id == *end_block);
+                match (
+                    start_index,
+                    end_index,
+                    self.block_len(*region, start_block),
+                    self.block_len(*region, end_block),
+                ) {
+                    (Some(start_index), Some(end_index), Some(start_len), Some(end_len)) => {
+                        (start_index < end_index || (start_index == end_index && start <= end))
+                            && *start <= start_len
+                            && *end <= end_len
+                            && Self::safe_text(ins)
+                    }
+                    _ => false,
                 }
+            }
+            WordProcessorAction::SetMark {
+                region,
+                spans,
+                name,
+                value,
+                also_clear,
+            } => {
+                Self::safe_name(name)
+                    && also_clear.iter().all(|sibling| Self::safe_name(sibling))
+                    && spans.len() <= 10_000
+                    && !spans.is_empty()
+                    && spans.iter().all(|span| {
+                        self.block_len(*region, &span.block)
+                            .is_some_and(|len| span.start < span.end && span.end <= len)
+                    })
+                    && match (name.as_str(), value) {
+                        ("link", Some(MarkVal::Str(target))) => valid_hyperlink_target(target),
+                        ("link", Some(_)) => false,
+                        (_, Some(MarkVal::Str(text))) => Self::safe_text(text),
+                        _ => true,
+                    }
+            }
+            _ => false,
         }
+    }
+
+    fn validate_paste_and_body(&self, action: &WordProcessorAction) -> bool {
+        match action {
+            WordProcessorAction::PasteFragment {
+                region,
+                start_block,
+                start,
+                end_block,
+                end,
+                blocks,
+                ..
+            } => {
+                let region_blocks = self.blocks_for(*region);
+                let start_index = region_blocks
+                    .iter()
+                    .position(|block| block.id == *start_block);
+                let end_index = region_blocks
+                    .iter()
+                    .position(|block| block.id == *end_block);
+                let valid_range = match (
+                    start_index,
+                    end_index,
+                    self.block_len(*region, start_block),
+                    self.block_len(*region, end_block),
+                ) {
+                    (Some(si), Some(ei), Some(sl), Some(el)) => {
+                        (si < ei || (si == ei && start <= end)) && *start <= sl && *end <= el
+                    }
+                    _ => false,
+                };
+                valid_range
+                    && !blocks.is_empty()
+                    && blocks.len() <= 10_000
+                    && blocks.iter().all(|block| {
+                        Self::safe_text(&block.text)
+                            && Self::safe_name(&block.kind)
+                            && block.level.is_none_or(|level| (0..=9).contains(&level))
+                            && block.marks.iter().all(|mark| {
+                                Self::safe_name(&mark.name)
+                                    && mark.start < mark.end
+                                    && mark.end <= block.text.chars().count()
+                            })
+                    })
+            }
+            WordProcessorAction::InsertParagraph { after, text } => {
+                self.block_len(RegionKind::Body, after).is_some() && Self::safe_text(text)
+            }
+            WordProcessorAction::RemoveBlocks { blocks } => {
+                self.unique_existing(RegionKind::Body, blocks)
+            }
+            WordProcessorAction::ReplaceBody { markdown } => Self::safe_text(markdown),
+            _ => false,
+        }
+    }
+
+    fn validate_formatting(&self, action: &WordProcessorAction) -> bool {
+        match action {
         WordProcessorAction::SetParagraphStyle {
             region,
             blocks,
@@ -562,8 +709,8 @@ fn action_is_valid(action: &WordProcessorAction, doc: &AutoCommit, c: &Container
             level,
             ..
         } => {
-            unique_existing(*region, blocks)
-                && safe_name(kind)
+            self.unique_existing(*region, blocks)
+                && Self::safe_name(kind)
                 && level.is_none_or(|level| (0..=9).contains(&level))
         }
         WordProcessorAction::ApplyNamedStyle {
@@ -574,10 +721,10 @@ fn action_is_valid(action: &WordProcessorAction, doc: &AutoCommit, c: &Container
             level,
             ..
         } => {
-            unique_existing(*region, blocks)
+            self.unique_existing(*region, blocks)
                 && !style.is_empty()
                 && style.len() <= 128
-                && kind.as_deref().is_none_or(safe_name)
+                && kind.as_deref().is_none_or(Self::safe_name)
                 && level.is_none_or(|level| (0..=9).contains(&level))
         }
         WordProcessorAction::SetBlockAttr {
@@ -585,38 +732,44 @@ fn action_is_valid(action: &WordProcessorAction, doc: &AutoCommit, c: &Container
             blocks,
             key,
             value,
-        } => unique_existing(*region, blocks) && valid_attr(key, value),
+        } => self.unique_existing(*region, blocks) && Self::valid_attr(key, value),
         WordProcessorAction::SetPageMargins { top, right, bottom, left } => [top, right, bottom, left]
             .into_iter()
             .all(|value| value.is_finite() && (4.0..=10_000.0).contains(value)),
         WordProcessorAction::SetStyleProperty { style, key, value } => {
-            safe_name(style)
-                && !qdoc::model::style_is_tombstoned(doc, c, style)
-                && valid_style_prop(key, value)
+            Self::safe_name(style)
+                && !qdoc::model::style_is_tombstoned(self.doc, self.containers, style)
+                && Self::valid_style_property(key, value)
         }
         WordProcessorAction::DeleteStyle {
             style,
             fallback_blocks,
         } => {
-            safe_name(style)
+            Self::safe_name(style)
                 && !crate::styles::StyleSheet::is_builtin(style)
-                && qdoc::model::style_ids(doc, c).contains(style)
+                && qdoc::model::style_ids(self.doc, self.containers).contains(style)
                 && fallback_blocks.iter().all(|block| {
-                    snap.blocks.iter().any(|entry| {
+                    self.snapshot.blocks.iter().any(|entry| {
                         entry.id == *block
                             && matches!(entry.attrs.get("style"), Some(qdoc::AttrVal::Str(id)) if id == style)
                     })
                 })
         }
-        WordProcessorAction::SetImageCrop {
-            block,
-            left,
-            top,
-            right,
-            bottom,
-        } => {
-            block_len(RegionKind::Body, block).is_some()
-                && snap.blocks.iter().any(|b| b.id == *block && b.kind == "image")
+            _ => false,
+        }
+    }
+
+    fn validate_media(&self, action: &WordProcessorAction) -> bool {
+        match action {
+            WordProcessorAction::SetImageCrop {
+                block,
+                left,
+                top,
+                right,
+                bottom,
+            } => {
+                self.block_len(RegionKind::Body, block).is_some()
+                && self.snapshot.blocks.iter().any(|b| b.id == *block && b.kind == "image")
                 && [left, top, right, bottom]
                     .iter()
                     .all(|edge| (0_i64..=9_500).contains(*edge))
@@ -625,207 +778,202 @@ fn action_is_valid(action: &WordProcessorAction, doc: &AutoCommit, c: &Container
                 // infinite scale factor in the renderer.
                 && (*left).saturating_add(*right) <= 9_500
                 && (*top).saturating_add(*bottom) <= 9_500
+            }
+            WordProcessorAction::SetImageSize {
+                block,
+                width,
+                height,
+            } => {
+                self.block_len(RegionKind::Body, block).is_some()
+                    && self
+                        .snapshot
+                        .blocks
+                        .iter()
+                        .any(|b| b.id == *block && b.kind == "image")
+                    && (16..=100_000).contains(width)
+                    && (16..=100_000).contains(height)
+            }
+            WordProcessorAction::SetImagePlacement {
+                block,
+                anchor,
+                wrap,
+                x,
+                y,
+                page,
+            } => {
+                self.block_len(RegionKind::Body, block).is_some()
+                    && self
+                        .snapshot
+                        .blocks
+                        .iter()
+                        .any(|b| b.id == *block && b.kind == "image")
+                    && matches!(anchor.as_str(), "inline" | "paragraph" | "page")
+                    && matches!(wrap.as_str(), "none" | "left" | "right" | "both")
+                    && (-100_000..=100_000).contains(x)
+                    && (-100_000..=100_000).contains(y)
+                    && (0..=10_000).contains(page)
+            }
+            WordProcessorAction::InsertImage {
+                block,
+                at,
+                bytes,
+                width,
+                height,
+            } => {
+                self.block_len(RegionKind::Body, block)
+                    .is_some_and(|len| *at <= len)
+                    && !bytes.is_empty()
+                    && bytes.len() <= MAX_ACTION_BLOB_BYTES
+                    && width.is_none_or(|value| (1..=100_000).contains(&value))
+                    && height.is_none_or(|value| (1..=100_000).contains(&value))
+            }
+            _ => false,
         }
-        WordProcessorAction::SetImageSize {
-            block,
-            width,
-            height,
-        } => {
-            block_len(RegionKind::Body, block).is_some()
-                && snap
+    }
+
+    fn validate_tables(&self, action: &WordProcessorAction) -> bool {
+        match action {
+            WordProcessorAction::InsertTable { after, rows, cols } => {
+                self.block_len(RegionKind::Body, after).is_some()
+                    && *rows > 0
+                    && *cols > 0
+                    && *rows <= MAX_TABLE_DIMENSION
+                    && *cols <= MAX_TABLE_DIMENSION
+                    && rows.saturating_mul(*cols) <= MAX_TABLE_CELLS
+            }
+            WordProcessorAction::EditTable { table, edit } => {
+                let cells: Vec<_> = self
+                    .snapshot
                     .blocks
                     .iter()
-                    .any(|b| b.id == *block && b.kind == "image")
-                && (16..=100_000).contains(width)
-                && (16..=100_000).contains(height)
-        }
-        WordProcessorAction::SetImagePlacement {
-            block,
-            anchor,
-            wrap,
-            x,
-            y,
-            page,
-        } => {
-            block_len(RegionKind::Body, block).is_some()
-                && snap
-                    .blocks
+                    .filter(|block| {
+                        block.kind == "cell"
+                            && matches!(block.attrs.get("table"), Some(qdoc::AttrVal::Str(id)) if id == table)
+                    })
+                    .collect();
+                let coord =
+                    |block: &qdoc::snapshot::BlockView, key: &str| match block.attrs.get(key) {
+                        Some(qdoc::AttrVal::Int(value)) if *value >= 0 => num::usize_of_i64(*value),
+                        _ => 0,
+                    };
+                let rows = cells
                     .iter()
-                    .any(|b| b.id == *block && b.kind == "image")
-                && matches!(anchor.as_str(), "inline" | "paragraph" | "page")
-                && matches!(wrap.as_str(), "none" | "left" | "right" | "both")
-                && (-100_000..=100_000).contains(x)
-                && (-100_000..=100_000).contains(y)
-                && (0..=10_000).contains(page)
-        }
-        WordProcessorAction::InsertTable { after, rows, cols } => {
-            block_len(RegionKind::Body, after).is_some()
-                && *rows > 0
-                && *cols > 0
-                && *rows <= MAX_TABLE_DIMENSION
-                && *cols <= MAX_TABLE_DIMENSION
-                && rows.saturating_mul(*cols) <= MAX_TABLE_CELLS
-        }
-        WordProcessorAction::EditTable { table, edit } => {
-            let cells: Vec<_> = snap
-                .blocks
-                .iter()
-                .filter(|block| {
-                    block.kind == "cell"
-                        && matches!(block.attrs.get("table"), Some(qdoc::AttrVal::Str(id)) if id == table)
-                })
-                .collect();
-            let coord = |block: &qdoc::snapshot::BlockView, key: &str| match block.attrs.get(key) {
-                Some(qdoc::AttrVal::Int(value)) if *value >= 0 => num::usize_of_i64(*value),
-                _ => 0,
-            };
-            let rows = cells
-                .iter()
-                .map(|block| coord(block, "row"))
-                .max()
-                .map_or(0, |value| value.saturating_add(1));
-            let cols = cells
-                .iter()
-                .map(|block| coord(block, "col"))
-                .max()
-                .map_or(0, |value| value.saturating_add(1));
-            !table.is_empty()
-                && !cells.is_empty()
-                && cells.len() == rows.saturating_mul(cols)
-                && match edit {
-                    TableEdit::InsertRow { at } => *at <= rows && rows < MAX_TABLE_DIMENSION,
-                    TableEdit::InsertColumn { at } => *at <= cols && cols < MAX_TABLE_DIMENSION,
-                    TableEdit::DeleteRow { row } => *row < rows,
-                    TableEdit::DeleteColumn { column } => *column < cols,
-                    TableEdit::Delete => true,
-                }
-        }
-        WordProcessorAction::InsertImage {
-            block,
-            at,
-            bytes,
-            width,
-            height,
-        } => {
-            block_len(RegionKind::Body, block).is_some_and(|len| *at <= len)
-                && !bytes.is_empty()
-                && bytes.len() <= MAX_ACTION_BLOB_BYTES
-                && width.is_none_or(|value| (1..=100_000).contains(&value))
-                && height.is_none_or(|value| (1..=100_000).contains(&value))
-        }
-        WordProcessorAction::InsertPageBreak { region, block, at } => {
-            block_len(*region, block).is_some_and(|len| *at <= len)
-        }
-        WordProcessorAction::SplitBlock {
-            region,
-            block,
-            at,
-            kind,
-            ..
-        } => {
-            block_len(*region, block).is_some_and(|len| *at <= len)
-                && matches!(kind.as_str(), "paragraph" | "list_item")
-        }
-        WordProcessorAction::InsertField {
-            region,
-            block,
-            at,
-            field,
-        } => {
-            block_len(*region, block).is_some_and(|len| *at <= len)
-                && field == qdoc::schema::FIELD_PAGE_NUMBER
-        }
-        WordProcessorAction::GenerateToc { entries } => {
-            !entries.is_empty()
-                && entries.len() <= 10_000
-                && entries
+                    .map(|block| coord(block, "row"))
+                    .max()
+                    .map_or(0, |value| value.saturating_add(1));
+                let cols = cells
                     .iter()
-                    .map(|entry| entry.heading.as_str())
-                    .collect::<HashSet<_>>()
-                    .len()
-                    == entries.len()
-                && entries.iter().all(|entry| {
-                    (1..=9).contains(&entry.level)
-                        && safe_text(&entry.text)
-                        && entry.page.is_none_or(|page| page <= 100_000)
-                        && snap.blocks.iter().any(|block| {
-                            block.id == entry.heading && block.kind == "heading"
-                        })
-                })
+                    .map(|block| coord(block, "col"))
+                    .max()
+                    .map_or(0, |value| value.saturating_add(1));
+                !table.is_empty()
+                    && !cells.is_empty()
+                    && cells.len() == rows.saturating_mul(cols)
+                    && match edit {
+                        TableEdit::InsertRow { at } => *at <= rows && rows < MAX_TABLE_DIMENSION,
+                        TableEdit::InsertColumn { at } => *at <= cols && cols < MAX_TABLE_DIMENSION,
+                        TableEdit::DeleteRow { row } => *row < rows,
+                        TableEdit::DeleteColumn { column } => *column < cols,
+                        TableEdit::Delete => true,
+                    }
+            }
+            _ => false,
         }
-        WordProcessorAction::PasteFragment {
-            region,
-            start_block,
-            start,
-            end_block,
-            end,
-            blocks,
-            ..
-        } => {
-            let region_blocks = blocks_for(*region);
-            let start_index = region_blocks.iter().position(|block| block.id == *start_block);
-            let end_index = region_blocks.iter().position(|block| block.id == *end_block);
-            let valid_range = match (
-                start_index,
-                end_index,
-                block_len(*region, start_block),
-                block_len(*region, end_block),
-            ) {
-                (Some(si), Some(ei), Some(sl), Some(el)) => {
-                    (si < ei || (si == ei && start <= end)) && *start <= sl && *end <= el
-                }
-                _ => false,
-            };
-            valid_range
-                && !blocks.is_empty()
-                && blocks.len() <= 10_000
-                && blocks.iter().all(|block| {
-                    safe_text(&block.text)
-                        && safe_name(&block.kind)
-                        && block.level.is_none_or(|level| (0..=9).contains(&level))
-                        && block.marks.iter().all(|mark| {
-                            safe_name(&mark.name)
-                                && mark.start < mark.end
-                                && mark.end <= block.text.chars().count()
-                        })
-                })
+    }
+
+    fn validate_structure(&self, action: &WordProcessorAction) -> bool {
+        match action {
+            WordProcessorAction::InsertPageBreak { region, block, at } => {
+                self.block_len(*region, block).is_some_and(|len| *at <= len)
+            }
+            WordProcessorAction::SplitBlock {
+                region,
+                block,
+                at,
+                kind,
+                ..
+            } => {
+                self.block_len(*region, block).is_some_and(|len| *at <= len)
+                    && matches!(kind.as_str(), "paragraph" | "list_item")
+            }
+            WordProcessorAction::InsertField {
+                region,
+                block,
+                at,
+                field,
+            } => {
+                self.block_len(*region, block).is_some_and(|len| *at <= len)
+                    && field == qdoc::schema::FIELD_PAGE_NUMBER
+            }
+            WordProcessorAction::GenerateToc { entries } => {
+                !entries.is_empty()
+                    && entries.len() <= 10_000
+                    && entries
+                        .iter()
+                        .map(|entry| entry.heading.as_str())
+                        .collect::<HashSet<_>>()
+                        .len()
+                        == entries.len()
+                    && entries.iter().all(|entry| {
+                        (1..=9).contains(&entry.level)
+                            && Self::safe_text(&entry.text)
+                            && entry.page.is_none_or(|page| page <= 100_000)
+                            && self
+                                .snapshot
+                                .blocks
+                                .iter()
+                                .any(|block| block.id == entry.heading && block.kind == "heading")
+                    })
+            }
+            _ => false,
         }
-        WordProcessorAction::InsertParagraph { after, text } => {
-            block_len(RegionKind::Body, after).is_some() && safe_text(text)
-        }
-        WordProcessorAction::RemoveBlocks { blocks } => unique_existing(RegionKind::Body, blocks),
-        WordProcessorAction::ReplaceBody { markdown } => safe_text(markdown),
-        WordProcessorAction::AcceptChanges { id } | WordProcessorAction::RejectChanges { id } => id
-            .as_ref()
-            .is_none_or(|id| snap.changes.iter().any(|change| &change.id == id)),
-        WordProcessorAction::ResolveComment { id } => {
-            !id.is_empty() && snap.comments.iter().any(|comment| comment.id == *id)
-        }
-        WordProcessorAction::AddComment {
-            block,
-            start,
-            end,
-            author,
-            date,
-            text,
-        } => {
-            block_len(RegionKind::Body, block).is_some_and(|len| *start < *end && *end <= len)
-                && !author.trim().is_empty()
-                && author.chars().count() <= 256
-                && date.chars().count() <= 128
-                && safe_text(text)
-        }
-        WordProcessorAction::ReplyToComment {
-            comment,
-            author,
-            date,
-            text,
-        } => {
-            snap.comments.iter().any(|entry| entry.id == *comment)
-                && !author.trim().is_empty()
-                && author.chars().count() <= 256
-                && date.chars().count() <= 128
-                && safe_text(text)
+    }
+
+    fn validate_review(&self, action: &WordProcessorAction) -> bool {
+        match action {
+            WordProcessorAction::AcceptChanges { id }
+            | WordProcessorAction::RejectChanges { id } => id
+                .as_ref()
+                .is_none_or(|id| self.snapshot.changes.iter().any(|change| &change.id == id)),
+            WordProcessorAction::ResolveComment { id } => {
+                !id.is_empty()
+                    && self
+                        .snapshot
+                        .comments
+                        .iter()
+                        .any(|comment| comment.id == *id)
+            }
+            WordProcessorAction::AddComment {
+                block,
+                start,
+                end,
+                author,
+                date,
+                text,
+            } => {
+                self.block_len(RegionKind::Body, block)
+                    .is_some_and(|len| *start < *end && *end <= len)
+                    && !author.trim().is_empty()
+                    && author.chars().count() <= 256
+                    && date.chars().count() <= 128
+                    && Self::safe_text(text)
+            }
+            WordProcessorAction::ReplyToComment {
+                comment,
+                author,
+                date,
+                text,
+            } => {
+                self.snapshot
+                    .comments
+                    .iter()
+                    .any(|entry| entry.id == *comment)
+                    && !author.trim().is_empty()
+                    && author.chars().count() <= 256
+                    && date.chars().count() <= 128
+                    && Self::safe_text(text)
+            }
+            _ => false,
         }
     }
 }
@@ -1564,6 +1712,249 @@ fn apply_add_comment(
     }
 }
 
+fn apply_text_action(dm: &mut DocMut<'_>, action: &WordProcessorAction) {
+    match action {
+        WordProcessorAction::SpliceText {
+            region,
+            block,
+            at,
+            del,
+            ins,
+        } => apply_splice_text(dm, region.to_region(), block, *at, *del, ins),
+        WordProcessorAction::ReplaceSelection {
+            region,
+            start_block,
+            start,
+            end_block,
+            end,
+            ins,
+        } => apply_replace_selection(
+            dm,
+            region.to_region(),
+            start_block,
+            *start,
+            end_block,
+            *end,
+            ins,
+        ),
+        WordProcessorAction::SetMark {
+            region,
+            spans,
+            name,
+            value,
+            also_clear,
+        } => apply_set_mark(
+            dm,
+            region.to_region(),
+            spans,
+            name,
+            value.as_ref(),
+            also_clear,
+        ),
+        WordProcessorAction::PasteFragment {
+            region,
+            start_block,
+            start,
+            end_block,
+            end,
+            blocks,
+            adopt_first_style,
+        } => apply_paste_fragment(
+            dm,
+            region.to_region(),
+            &SelectionTarget {
+                start_block: start_block.clone(),
+                start: *start,
+                end_block: end_block.clone(),
+                end: *end,
+            },
+            blocks,
+            *adopt_first_style,
+        ),
+        WordProcessorAction::InsertParagraph { after, text } => {
+            apply_insert_paragraph(dm, after, text);
+        }
+        WordProcessorAction::RemoveBlocks { blocks } => apply_remove_blocks(dm, blocks),
+        WordProcessorAction::ReplaceBody { markdown } => apply_replace_body(dm, markdown),
+        _ => {}
+    }
+}
+
+fn apply_formatting_action(dm: &mut DocMut<'_>, action: &WordProcessorAction) {
+    match action {
+        WordProcessorAction::SetParagraphStyle {
+            region,
+            blocks,
+            kind,
+            level,
+            ordered,
+        } => apply_set_paragraph_style(dm, region.to_region(), blocks, kind, *level, *ordered),
+        WordProcessorAction::ApplyNamedStyle {
+            region,
+            blocks,
+            style,
+            kind,
+            level,
+            ordered,
+        } => apply_named_style(
+            dm,
+            region.to_region(),
+            blocks,
+            style,
+            kind.as_ref(),
+            *level,
+            *ordered,
+        ),
+        WordProcessorAction::SetBlockAttr {
+            region,
+            blocks,
+            key,
+            value,
+        } => apply_set_block_attr(dm, region.to_region(), blocks, key, value),
+        WordProcessorAction::SetPageMargins {
+            top,
+            right,
+            bottom,
+            left,
+        } => {
+            dm.set_meta_str("page_margin_top", &top.to_string());
+            dm.set_meta_str("page_margin_right", &right.to_string());
+            dm.set_meta_str("page_margin_bottom", &bottom.to_string());
+            dm.set_meta_str("page_margin_left", &left.to_string());
+        }
+        WordProcessorAction::SetStyleProperty { style, key, value } => {
+            let value = match value {
+                AttrVal::Bool(value) => qdoc::AttrVal::Bool(*value),
+                AttrVal::Int(value) => qdoc::AttrVal::Int(*value),
+                AttrVal::Float(value) => qdoc::AttrVal::Float(*value),
+                AttrVal::Str(value) => qdoc::AttrVal::Str(value.clone()),
+            };
+            dm.set_style(style, &[(key.clone(), value)].into_iter().collect());
+        }
+        WordProcessorAction::DeleteStyle {
+            style,
+            fallback_blocks,
+        } => {
+            let mut blocks = fallback_blocks.clone();
+            blocks.sort();
+            for block in &blocks {
+                dm.set_attr(block, "style", "");
+            }
+            dm.tombstone_style(style);
+        }
+        _ => {}
+    }
+}
+
+fn apply_media_action(dm: &mut DocMut<'_>, action: &WordProcessorAction) {
+    match action {
+        WordProcessorAction::SetImageCrop {
+            block,
+            left,
+            top,
+            right,
+            bottom,
+        } => {
+            dm.set_attr(block, "crop_left", *left);
+            dm.set_attr(block, "crop_top", *top);
+            dm.set_attr(block, "crop_right", *right);
+            dm.set_attr(block, "crop_bottom", *bottom);
+        }
+        WordProcessorAction::SetImageSize {
+            block,
+            width,
+            height,
+        } => {
+            dm.set_attr(block, "width", *width);
+            dm.set_attr(block, "height", *height);
+        }
+        WordProcessorAction::SetImagePlacement {
+            block,
+            anchor,
+            wrap,
+            x,
+            y,
+            page,
+        } => {
+            dm.set_attr(block, "anchor", anchor.as_str());
+            dm.set_attr(block, "wrap", wrap.as_str());
+            dm.set_attr(block, "offset_x", *x);
+            dm.set_attr(block, "offset_y", *y);
+            dm.set_attr(block, "page", *page);
+        }
+        WordProcessorAction::InsertImage {
+            block,
+            at,
+            bytes,
+            width,
+            height,
+        } => apply_insert_image(dm, block, *at, bytes, *width, *height),
+        _ => {}
+    }
+}
+
+fn apply_table_action(dm: &mut DocMut<'_>, action: &WordProcessorAction) {
+    match action {
+        WordProcessorAction::InsertTable { after, rows, cols } => {
+            apply_insert_table(dm, after, *rows, *cols);
+        }
+        WordProcessorAction::EditTable { table, edit } => apply_table_edit(dm, table, *edit),
+        _ => {}
+    }
+}
+
+fn apply_structure_action(dm: &mut DocMut<'_>, action: &WordProcessorAction) {
+    match action {
+        WordProcessorAction::InsertPageBreak { region, block, at } => {
+            apply_insert_page_break(dm, region.to_region(), block, *at);
+        }
+        WordProcessorAction::SplitBlock {
+            region,
+            block,
+            at,
+            kind,
+            ordered,
+        } => apply_split_block(dm, region.to_region(), block, *at, kind, *ordered),
+        WordProcessorAction::InsertField {
+            region,
+            block,
+            at,
+            field: _,
+        } => dm.insert_page_number_field(region.to_region(), block, *at),
+        WordProcessorAction::GenerateToc { entries } => apply_generate_toc(dm, entries),
+        _ => {}
+    }
+}
+
+fn apply_review_action(dm: &mut DocMut<'_>, action: &WordProcessorAction) {
+    match action {
+        WordProcessorAction::AcceptChanges { id } => {
+            apply_review_changes(dm, id.as_deref(), true);
+        }
+        WordProcessorAction::RejectChanges { id } => {
+            apply_review_changes(dm, id.as_deref(), false);
+        }
+        WordProcessorAction::ResolveComment { id } => apply_resolve_comment(dm, id),
+        WordProcessorAction::AddComment {
+            block,
+            start,
+            end,
+            author,
+            date,
+            text,
+        } => apply_add_comment(dm, block, *start, *end, author, date, text),
+        WordProcessorAction::ReplyToComment {
+            comment,
+            author,
+            date,
+            text,
+        } => {
+            let _ = dm.add_comment_reply(comment, author, date, text);
+        }
+        _ => {}
+    }
+}
+
 impl Action for WordProcessorAction {
     /// Apply this action's mutation to `doc`.
     ///
@@ -1571,10 +1962,6 @@ impl Action for WordProcessorAction {
     ///
     /// Returns [`ActionError::Refused`] for an unavailable Writer document or
     /// stale/hostile decoded arguments before opening a mutable view.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one match deliberately makes the complete action envelope surface reviewable in one place"
-    )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         // Bind to the canonical schema under ROOT. Refuse an unbound document
         // explicitly so callers never mistake an unavailable target for a
@@ -1603,258 +1990,13 @@ impl Action for WordProcessorAction {
             ids: &mut ids,
         };
 
-        match self {
-            WordProcessorAction::SpliceText {
-                region,
-                block,
-                at,
-                del,
-                ins,
-            } => apply_splice_text(&mut dm, region.to_region(), block, *at, *del, ins),
-
-            WordProcessorAction::ReplaceSelection {
-                region,
-                start_block,
-                start,
-                end_block,
-                end,
-                ins,
-            } => apply_replace_selection(
-                &mut dm,
-                region.to_region(),
-                start_block,
-                *start,
-                end_block,
-                *end,
-                ins,
-            ),
-
-            WordProcessorAction::SetMark {
-                region,
-                spans,
-                name,
-                value,
-                also_clear,
-            } => apply_set_mark(
-                &mut dm,
-                region.to_region(),
-                spans,
-                name,
-                value.as_ref(),
-                also_clear,
-            ),
-
-            WordProcessorAction::SetParagraphStyle {
-                region,
-                blocks,
-                kind,
-                level,
-                ordered,
-            } => apply_set_paragraph_style(
-                &mut dm,
-                region.to_region(),
-                blocks,
-                kind,
-                *level,
-                *ordered,
-            ),
-
-            WordProcessorAction::ApplyNamedStyle {
-                region,
-                blocks,
-                style,
-                kind,
-                level,
-                ordered,
-            } => apply_named_style(
-                &mut dm,
-                region.to_region(),
-                blocks,
-                style,
-                kind.as_ref(),
-                *level,
-                *ordered,
-            ),
-
-            WordProcessorAction::SetBlockAttr {
-                region,
-                blocks,
-                key,
-                value,
-            } => apply_set_block_attr(&mut dm, region.to_region(), blocks, key, value),
-
-            WordProcessorAction::SetPageMargins {
-                top,
-                right,
-                bottom,
-                left,
-            } => {
-                dm.set_meta_str("page_margin_top", &top.to_string());
-                dm.set_meta_str("page_margin_right", &right.to_string());
-                dm.set_meta_str("page_margin_bottom", &bottom.to_string());
-                dm.set_meta_str("page_margin_left", &left.to_string());
-            }
-
-            WordProcessorAction::SetStyleProperty { style, key, value } => {
-                let value = match value {
-                    AttrVal::Bool(value) => qdoc::AttrVal::Bool(*value),
-                    AttrVal::Int(value) => qdoc::AttrVal::Int(*value),
-                    AttrVal::Float(value) => qdoc::AttrVal::Float(*value),
-                    AttrVal::Str(value) => qdoc::AttrVal::Str(value.clone()),
-                };
-                dm.set_style(style, &[(key.clone(), value)].into_iter().collect());
-            }
-
-            WordProcessorAction::DeleteStyle {
-                style,
-                fallback_blocks,
-            } => {
-                let mut blocks = fallback_blocks.clone();
-                blocks.sort();
-                for block in &blocks {
-                    dm.set_attr(block, "style", "");
-                }
-                dm.tombstone_style(style);
-            }
-
-            WordProcessorAction::SetImageCrop {
-                block,
-                left,
-                top,
-                right,
-                bottom,
-            } => {
-                dm.set_attr(block, "crop_left", *left);
-                dm.set_attr(block, "crop_top", *top);
-                dm.set_attr(block, "crop_right", *right);
-                dm.set_attr(block, "crop_bottom", *bottom);
-            }
-
-            WordProcessorAction::SetImageSize {
-                block,
-                width,
-                height,
-            } => {
-                dm.set_attr(block, "width", *width);
-                dm.set_attr(block, "height", *height);
-            }
-
-            WordProcessorAction::SetImagePlacement {
-                block,
-                anchor,
-                wrap,
-                x,
-                y,
-                page,
-            } => {
-                dm.set_attr(block, "anchor", anchor.as_str());
-                dm.set_attr(block, "wrap", wrap.as_str());
-                dm.set_attr(block, "offset_x", *x);
-                dm.set_attr(block, "offset_y", *y);
-                dm.set_attr(block, "page", *page);
-            }
-
-            WordProcessorAction::InsertTable { after, rows, cols } => {
-                apply_insert_table(&mut dm, after, *rows, *cols);
-            }
-
-            WordProcessorAction::EditTable { table, edit } => {
-                apply_table_edit(&mut dm, table, *edit);
-            }
-
-            WordProcessorAction::InsertImage {
-                block,
-                at,
-                bytes,
-                width,
-                height,
-            } => apply_insert_image(&mut dm, block, *at, bytes, *width, *height),
-
-            WordProcessorAction::InsertPageBreak { region, block, at } => {
-                apply_insert_page_break(&mut dm, region.to_region(), block, *at);
-            }
-
-            WordProcessorAction::SplitBlock {
-                region,
-                block,
-                at,
-                kind,
-                ordered,
-            } => apply_split_block(&mut dm, region.to_region(), block, *at, kind, *ordered),
-
-            WordProcessorAction::InsertField {
-                region,
-                block,
-                at,
-                field: _,
-            } => dm.insert_page_number_field(region.to_region(), block, *at),
-
-            WordProcessorAction::GenerateToc { entries } => {
-                apply_generate_toc(&mut dm, entries);
-            }
-
-            WordProcessorAction::PasteFragment {
-                region,
-                start_block,
-                start,
-                end_block,
-                end,
-                blocks,
-                adopt_first_style,
-            } => apply_paste_fragment(
-                &mut dm,
-                region.to_region(),
-                &SelectionTarget {
-                    start_block: start_block.clone(),
-                    start: *start,
-                    end_block: end_block.clone(),
-                    end: *end,
-                },
-                blocks,
-                *adopt_first_style,
-            ),
-
-            WordProcessorAction::InsertParagraph { after, text } => {
-                apply_insert_paragraph(&mut dm, after, text);
-            }
-
-            WordProcessorAction::RemoveBlocks { blocks } => {
-                apply_remove_blocks(&mut dm, blocks);
-            }
-
-            WordProcessorAction::ReplaceBody { markdown } => {
-                apply_replace_body(&mut dm, markdown);
-            }
-
-            WordProcessorAction::AcceptChanges { id } => {
-                apply_review_changes(&mut dm, id.as_deref(), true);
-            }
-
-            WordProcessorAction::RejectChanges { id } => {
-                apply_review_changes(&mut dm, id.as_deref(), false);
-            }
-
-            WordProcessorAction::ResolveComment { id } => {
-                apply_resolve_comment(&mut dm, id);
-            }
-
-            WordProcessorAction::AddComment {
-                block,
-                start,
-                end,
-                author,
-                date,
-                text,
-            } => apply_add_comment(&mut dm, block, *start, *end, author, date, text),
-
-            WordProcessorAction::ReplyToComment {
-                comment,
-                author,
-                date,
-                text,
-            } => {
-                let _ = dm.add_comment_reply(comment, author, date, text);
-            }
+        match self.domain() {
+            ActionDomain::Text => apply_text_action(&mut dm, self),
+            ActionDomain::Formatting => apply_formatting_action(&mut dm, self),
+            ActionDomain::Media => apply_media_action(&mut dm, self),
+            ActionDomain::Table => apply_table_action(&mut dm, self),
+            ActionDomain::Structure => apply_structure_action(&mut dm, self),
+            ActionDomain::Review => apply_review_action(&mut dm, self),
         }
         Ok(())
     }
