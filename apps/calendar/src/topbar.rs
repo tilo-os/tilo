@@ -13,7 +13,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
 use crate::app::{center_text, draw_chevron, draw_hamburger, draw_icon_button, draw_plus};
-use crate::draw_util::{fill_rect, fill_round, stroke_line, stroke_round};
+use crate::draw_util::{fill_rect, fill_round, selected_row};
+use ui::surface::card;
 use crate::{date, model::View};
 
 pub(crate) const HEIGHT: f64 = 60.0;
@@ -125,13 +126,13 @@ impl Topbar {
 
         let colors = &theme.tokens.colors;
         fill_rect(scene, transform, colors.surfaces.base, self.rect);
-        stroke_line(
-            scene,
+        // Bar role: one chrome hairline under the app bar (HIG §9.5).
+        scene.fill(
+            Fill::NonZero,
             transform,
-            colors.border_standard,
-            Point::new(self.rect.x0, self.rect.y1),
-            Point::new(self.rect.x1, self.rect.y1),
-            1.0,
+            ui::chrome::chrome_hairline(theme),
+            None,
+            &Rect::new(self.rect.x0, self.rect.y1 - 1.0, self.rect.x1, self.rect.y1),
         );
 
         let center_y = self.rect.center().y;
@@ -243,15 +244,11 @@ impl Topbar {
             let x1 = self.rect.x1 - 16.0;
             let x0 = x1 - SEGMENTED_WIDTH;
             let segmented = Rect::new(x0, center_y - 16.0, x1, center_y + 16.0);
-            fill_round(scene, transform, colors.surfaces.raised, segmented, 9.0);
-            stroke_round(
-                scene,
-                transform,
-                colors.border_standard,
-                segmented,
-                9.0,
-                1.0,
-            );
+            let track_radius = f64::from(theme.tokens.radii.lg);
+            // Segmented track (HIG §9.5): raised tier with its derived edge;
+            // the chosen view is the selection lift, never an accent fill.
+            card(scene, transform, segmented, track_radius, colors.surfaces.raised);
+            let seg_inset = f64::from(theme.tokens.spacing.s1) / 2.0 + 1.0;
             for (index, candidate) in View::ALL.iter().enumerate() {
                 let cell = Rect::new(
                     x0 + SEGMENT_WIDTH * index as f64,
@@ -259,30 +256,23 @@ impl Topbar {
                     x0 + SEGMENT_WIDTH * (index as f64 + 1.0),
                     segmented.y1,
                 );
-                if view == *candidate {
-                    fill_round(
-                        scene,
-                        transform,
-                        colors.accent[5],
-                        cell.inflate(-3.0, -3.0),
-                        7.0,
-                    );
-                } else if cell.contains(pointer) {
-                    fill_round(
-                        scene,
-                        transform,
-                        colors.lift(0.35),
-                        cell.inflate(-3.0, -3.0),
-                        7.0,
-                    );
-                }
+                selected_row(
+                    scene,
+                    transform,
+                    theme,
+                    colors.surfaces.raised,
+                    cell.inflate(-seg_inset, -seg_inset),
+                    track_radius - seg_inset,
+                    view == *candidate,
+                    cell.contains(pointer),
+                );
                 center_text(
                     scene,
                     text,
                     candidate.label(),
                     13.0,
                     if view == *candidate {
-                        colors.on_accent(4.5)
+                        colors.text_primary
                     } else {
                         colors.neutral[7]
                     },

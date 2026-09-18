@@ -268,7 +268,7 @@ pub fn render_to_path(
     viewport: (u32, u32),
     out: &Path,
     scenario: Option<&str>,
-    text_scale: Option<f32>,
+    theme: Theme,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Hermetic workspace root — unique per process so parallel shots
     // don't collide, cleaned up on exit.
@@ -281,20 +281,10 @@ pub fn render_to_path(
     let mut app = NotesApp::spawn(root.clone())?;
 
     let (w, h) = viewport;
-    // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme
-    // so the same frame can be graded in both light and dark (default dark).
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    }
-    // `LaunchSpec` normally threads these preferences into a generic shot
-    // root. Notes owns a custom shot renderer so it has to preserve that same
-    // contract itself: a `--text-scale` review must change both measurement
-    // and drawing, and reduced-motion shots must use the production theme
-    // policy rather than a private approximation.
-    .with_text_scale(text_scale.unwrap_or(1.0))
-    .with_reduce_motion(reduced_motion_requested());
+    // The theme is the one screenshot policy every app shares
+    // (`ui::launch::shot_theme`: `QOS_SHOTS_THEME`, `QOS_SHOTS_TEXT_SCALE`,
+    // `--text-scale`, reduced motion). Notes owns a custom renderer, so it
+    // takes that resolved theme rather than re-deriving a private one.
     // The `presence` scenario seeds two simulated peers so the shot shows
     // the live presence layer — labeled carets, a fading typing swipe,
     // a peer name pill, sidebar presence-in-nav mist, and an off-screen
@@ -633,20 +623,6 @@ fn dispatch_scenario(
     }
 }
 
-/// Keep the custom Notes renderer in lockstep with `ui::App` and the generic
-/// `LaunchSpec` screenshot path. Invalid values are intentionally ignored,
-/// matching the live app's preference parser.
-fn reduced_motion_requested() -> bool {
-    ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
-        .into_iter()
-        .filter_map(|key| std::env::var(key).ok())
-        .any(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-}
 
 /// Dispatch the events that drive `app` into the requested interaction
 /// state, against the settled `taffy`/`child` layout, before the frame is
