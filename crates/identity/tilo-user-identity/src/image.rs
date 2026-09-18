@@ -262,14 +262,19 @@ pub fn image_endorsement_signing_digest(
 ///
 /// # Errors
 ///
-/// Returns an error if the dedicated grant does not match the certified device,
-/// the key does not match it, or canonical serialization fails.
+/// Returns an error if the device certificate is invalid at issuance, the
+/// dedicated grant does not match it, the key does not match it, or canonical
+/// serialization fails.
 pub fn sign_image_endorsement(
     endorsement: &mut ImageEndorsement,
     device_key: &ed25519_dalek::SigningKey,
 ) -> Result<(), ImageEndorsementError> {
     if endorsement.generation == 0 {
         return Err(ImageEndorsementError::InvalidGeneration);
+    }
+    verify_device_cert_at(&endorsement.device_certificate, endorsement.issued_at_ns)?;
+    if endorsement.issued_at_ns < endorsement.device_certificate.issued_at_ns {
+        return Err(ImageEndorsementError::IssuedBeforeDeviceCertificate);
     }
     verify_image_signing_authorization_at(
         &endorsement.signing_authorization,
@@ -443,6 +448,25 @@ mod tests {
         assert_eq!(
             verify_image_endorsement_at(&image, &root, 50),
             Err(ImageEndorsementError::InvalidGeneration)
+        );
+    }
+
+    #[test]
+    fn signing_refuses_an_invalid_or_not_yet_valid_device_certificate() {
+        let (_root, device, mut image) = endorsement(DeviceCapabilities::primary(), true);
+        image.device_certificate.signature[0] ^= 1;
+        assert!(matches!(
+            sign_image_endorsement(&mut image, &device),
+            Err(ImageEndorsementError::DeviceCertificate(_))
+        ));
+
+        let (_root, device, mut image) = endorsement(DeviceCapabilities::primary(), true);
+        image.issued_at_ns = image.device_certificate.issued_at_ns - 1;
+        assert_eq!(
+            sign_image_endorsement(&mut image, &device),
+            Err(ImageEndorsementError::DeviceCertificate(
+                DeviceCertError::NotYetValid
+            ))
         );
     }
 
