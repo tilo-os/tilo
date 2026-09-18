@@ -63,8 +63,8 @@ Use the pinned Rust MSVC toolchain, Visual Studio C++ build tools for the host
 architecture, and the Cap'n Proto compiler (`capnp.exe` on `PATH`). The native
 ARM64 toolkit, Calculator, Notes, Calendar, Contacts, Sheets, Slides, Weather and
 Scratchpad, Files, Word Processor, Terminal, PDF Viewer, Books, Clocks, Image Editor,
-Photos, Hex Editor, Code Editor, API Tester, Diff and Merge and Snippets have been built
-and run on Windows.
+Photos, Hex Editor, Code Editor, API Tester, Diff and Merge, Snippets and Database
+Client have been built and run on Windows.
 Other apps are still being ported; a workspace-wide build currently includes
 Linux services and is not a Windows
 application build command.
@@ -295,6 +295,22 @@ actions through the same semantic interface used by Windows accessibility.
 cargo test --locked -p snippets --all-targets
 ./tools/install-windows-apps.ps1 -Apps snippets
 ```
+
+Database Client supports SQLite files, including Unicode Windows paths, and the
+PostgreSQL and MySQL drivers. Saved connection profiles and SQL editor text are
+restored on restart; reopening a profile explicitly reconnects it. Passwords stay
+in the running session and are not saved in the collaborative document. The
+network drivers currently use unencrypted connections, so use a local server or
+an existing trusted tunnel.
+
+```powershell
+cargo test --locked -p db-client --lib
+./tools/install-windows-apps.ps1 -Apps db-client
+```
+
+The live database tests require the server flags and connection settings described
+in `apps/db-client/tests/live_roundtrip.rs`. An ordinary test run without those
+flags does not verify PostgreSQL or MySQL connectivity.
 
 Unchanged shared fonts are preserved during installation, so a running Tilo app
 does not prevent installing another app. If font contents change, close running
