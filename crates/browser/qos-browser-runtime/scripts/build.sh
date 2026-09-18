@@ -1,16 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/../../../.." && pwd)
-out=${1:?usage: build.sh /absolute/output-directory}
+out=${1:?usage: build.sh /absolute/output-directory [--profile release|dev]}
+shift
+profile=release
+if [[ $# -gt 0 ]]; then
+  [[ $# == 2 && "$1" == --profile ]] || { echo 'usage: build.sh OUTPUT [--profile release|dev]' >&2; exit 2; }
+  profile=$2
+fi
+case "$profile" in release) artifact_profile=release ;; dev) artifact_profile=debug ;; *) echo "Unsupported profile: $profile" >&2; exit 2 ;; esac
+[[ "$out" == /* ]] || { echo 'Output must be an absolute directory' >&2; exit 2; }
+# Reusing an output with stale modules would make provenance ambiguous.
+[[ ! -d "$out" || -z "$(ls -A "$out")" ]] || { echo 'Output directory must be empty' >&2; exit 2; }
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-"$repo/target/browser"}
 cd "$repo"
 if [[ "${QOS_USE_ZIG:-0}" == 1 ]]; then
   export CC_wasm32_unknown_unknown="$repo/crates/hosting/qos-relay/scripts/wasm-cc.sh"
   export AR_wasm32_unknown_unknown="$repo/crates/hosting/qos-relay/scripts/wasm-ar.sh"
 fi
-cargo build --locked -j2 -p qos-browser-runtime --target wasm32-unknown-unknown
+revision=$(git rev-parse HEAD)
+source_status=$(git status --porcelain)
+cargo build --locked --profile "$profile" -j2 -p qos-browser-runtime --target wasm32-unknown-unknown
 mkdir -p "$out/pkg" "$out/fonts"
-"${WASM_BINDGEN:-wasm-bindgen}" "$CARGO_TARGET_DIR/wasm32-unknown-unknown/debug/qos_browser_runtime.wasm" --target web --out-dir "$out/pkg"
+"${WASM_BINDGEN:-wasm-bindgen}" "$CARGO_TARGET_DIR/wasm32-unknown-unknown/$artifact_profile/qos_browser_runtime.wasm" --target web --out-dir "$out/pkg"
 cp crates/browser/qos-browser-runtime/web/*.mjs crates/browser/qos-browser-runtime/web/*.d.ts "$out/"
 cp crates/browser/qos-browser-runtime/web/proof.html "$out/index.html"
 cp crates/browser/qos-browser-runtime/web/peer-proof.html "$out/peer-proof.html"
@@ -29,3 +41,13 @@ shutil.copytree(source/'LICENSES',out/'fonts/LICENSES',dirs_exist_ok=True)
 shutil.copy2(source/'manifest.toml',out/'fonts/manifest.toml')
 (out/'fonts.json').write_text(json.dumps(names))
 PY
+
+# Capture the actual tools/profile and output hashes; never infer a prebuilt profile.
+[[ "$(git rev-parse HEAD)" == "$revision" && "$(git status --porcelain)" == "$source_status" ]] || { echo 'Source changed during build; discard output' >&2; exit 1; }
+python3 - "$out" "$revision" "$source_status" "$profile" "$(rustc --version)" "$("${WASM_BINDGEN:-wasm-bindgen}" --version)" <<'PYMETA'
+import hashlib,json,pathlib,sys
+out=pathlib.Path(sys.argv[1])
+metadata=dict(revision=sys.argv[2],dirty=bool(sys.argv[3]),profile=sys.argv[4],rustc=sys.argv[5],wasmBindgen=sys.argv[6],target='wasm32-unknown-unknown',builtFromSource=True)
+metadata['files']={str(p.relative_to(out)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(out.rglob('*')) if p.is_file()}
+(out/'build.json').write_text(json.dumps(metadata,indent=2)+'\n')
+PYMETA
