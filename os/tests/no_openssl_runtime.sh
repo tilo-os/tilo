@@ -81,7 +81,7 @@ if rg -n -i '(/usr/bin/(openssl|sbsign|sbverify)|\b(openssl|sbsign|sbverify)\b)'
     "$development_signer" "$development_signer_setup" "$development_compiler" \
     "$development_trust" "$repo/os/dev/verify-development-loader.py" \
     "$repo/os/dev/development_boot.py" "$repo/os/dev/development_prediction.py" \
-    "$repo/os/dev/retain-development-rootfs.py" >/dev/null; then
+    "$repo/os/dev/retain-development-rootfs.py" "$repo/os/dev/signing_spool.py" >/dev/null; then
   bad 'development trust tooling still invokes OpenSSL or sbsigntools'
 elif grep -Eq 'dnf .*install.*(openssl|sbsigntools)' "$development_compile_container"; then
   bad 'retained development compiler still installs OpenSSL or sbsigntools'

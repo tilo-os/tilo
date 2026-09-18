@@ -254,15 +254,17 @@ def service_local_request(request_directory, policy_path, state_directory, respo
     if request['operation'] == 'sign-efi':
         import development_boot as boot
         boot.pe.verify(str(local_input), str(local_output))
-        listing = signer.run(['/usr/bin/sbverify', '--list', str(local_output)])
-        if not re.search(rb'^signature [1-9][0-9]*\s*$', listing, re.MULTILINE):
+        count = signer.run(['/usr/local/bin/tilo-crypto', 'efi-signature-count',
+                            str(local_output)]).strip()
+        if not count.isdigit() or int(count) < 1:
             raise ValueError('signed EFI lacks a recognized signature')
-        signer.run(['/usr/bin/sbverify', '--cert', str(public_path), str(local_output)])
+        signer.run(['/usr/local/bin/tilo-crypto', 'verify-efi', str(public_path),
+                    str(local_output)])
     else:
         if not 256 <= len(result) <= 1024:
             raise ValueError('RSA response size invalid')
-        signer.run(['/usr/bin/openssl', 'dgst', '-sha256', '-verify', str(public_path),
-                    '-sigopt', 'rsa_padding_mode:pkcs1', '-signature', str(local_output), str(local_input)])
+        signer.run(['/usr/local/bin/tilo-crypto', 'verify-rsa-sha256', str(public_path),
+                    str(local_input), str(local_output)])
     response = {k: request[k] for k in ('schema', 'request_id', 'context_sha256', 'operation', 'input_sha256')}
     response.update(output_sha256=digest(result), output_bytes=len(result))
     write_new(response_directory / 'output', result)
