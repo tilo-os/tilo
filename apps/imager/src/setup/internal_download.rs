@@ -3,6 +3,7 @@
 //! on the embedded catalog belonging to a genuinely signed application.
 
 use super::internal_bundle::{ComponentView, InternalBundle, MAX_MANIFEST_BYTES};
+use super::internal_cache::{self as cache, PreparedPrefix};
 use crate::release::InternalRelease;
 use reqwest::{Url, blocking::Client, header};
 use sha2::{Digest, Sha256};
@@ -263,7 +264,8 @@ impl InternalTransport {
             last: None,
             received: 0,
         };
-        let result = self.transfer_inner(selected, index, file, checkpoint, cancel, &mut events);
+        let result =
+            self.transfer_inner(selected, index, file, checkpoint, cancel, &mut events, None);
         if result.is_err() {
             events.emit(
                 if cancel.load(Ordering::Acquire) {
@@ -277,6 +279,76 @@ impl InternalTransport {
         }
         result
     }
+    /// Private provider seam. A successful result is still only invocation byte
+    /// proof; native final publication and coordinator readiness remain separate.
+    pub(super) fn transfer_persistent(
+        &self,
+        prepared: PreparedPrefix<'_>,
+        cancel: &AtomicBool,
+        pause: &AtomicBool,
+        progress: impl FnMut(Progress),
+    ) -> Result<PersistentOutcome, PersistentFailure> {
+        let cache::TransferParts {
+            selected,
+            index,
+            file,
+            observer,
+            id,
+            hashes,
+            committed,
+            final_candidate,
+        } = prepared.into_parts();
+        let mut events = Events {
+            callback: progress,
+            operation: id.operation,
+            component: index,
+            last: None,
+            received: hashes.length,
+        };
+        let mut durable = DurableTransfer {
+            observer,
+            id,
+            hashes,
+            committed,
+            final_candidate,
+            pause,
+            paused: false,
+            uncertain: false,
+        };
+        let result = self.transfer_inner(
+            selected,
+            index,
+            file,
+            None,
+            cancel,
+            &mut events,
+            Some(&mut durable),
+        );
+        if cancel.load(Ordering::Acquire) {
+            events.emit(Phase::Cancelled, 0, true);
+            return Ok(PersistentOutcome::Cancelled {
+                committed: durable.committed,
+                error: result.err().filter(|e| e != "Internal transfer cancelled"),
+                uncertain: durable.uncertain,
+            });
+        }
+        if durable.paused {
+            return Ok(PersistentOutcome::Paused {
+                committed: durable.committed,
+            });
+        }
+        match result {
+            Ok(done) => Ok(PersistentOutcome::Complete(done)),
+            Err(message) => {
+                events.emit(Phase::Failed, 0, true);
+                Err(PersistentFailure {
+                    message,
+                    committed: durable.committed,
+                    uncertain: durable.uncertain,
+                })
+            }
+        }
+    }
     fn transfer_inner(
         &self,
         selected: &SelectedManifest,
@@ -285,6 +357,7 @@ impl InternalTransport {
         checkpoint: Option<&ResumeCheckpoint>,
         cancel: &AtomicBool,
         events: &mut Events<impl FnMut(Progress)>,
+        mut durable: Option<&mut DurableTransfer<'_>>,
     ) -> Result<CompletedComponent, String> {
         cancelled(cancel)?;
         let component = selected.component(index)?;
@@ -299,13 +372,35 @@ impl InternalTransport {
             cancelled(cancel)?;
             events.received = regular_length(file, component.byte_size, cancel)?;
             events.emit(Phase::Prefix, 0, true);
-            let offset = validate_prefix(selected, component, file, checkpoint.as_deref(), cancel)?;
+            let offset = if let Some(d) = durable.as_deref_mut() {
+                d.id.attempt = attempt;
+                d.observer.begin_attempt(d.id, file)?;
+                if attempt > 0 {
+                    d.hashes.retry(file, cancel)?;
+                }
+                if regular_length(file, component.byte_size, cancel)? != d.hashes.length {
+                    return Err("Prepared prefix length changed".into());
+                }
+                d.hashes.length
+            } else {
+                validate_prefix(selected, component, file, checkpoint.as_deref(), cancel)?
+            };
+            if let Some(d) = durable.as_deref_mut() {
+                if d.stop(file, component.byte_size, cancel)? {
+                    return Err("Internal transfer paused".into());
+                }
+            }
             if offset == component.byte_size {
-                return finish(component, file, cancel, events);
+                return finish_persistent(component, file, cancel, events, durable.as_deref_mut());
             }
             cancelled(cancel)?;
             events.emit(Phase::Requesting, 0, true);
             cancelled(cancel)?;
+            if let Some(d) = durable.as_deref_mut() {
+                if d.stop(file, component.byte_size, cancel)? {
+                    return Err("Internal transfer paused".into());
+                }
+            }
             let mut response = match self.request(url.clone(), offset, cancel) {
                 Ok(response) => response,
                 Err(RequestError::Fatal(error)) => return Err(error),
@@ -346,7 +441,13 @@ impl InternalTransport {
             };
             let Some(expected) = expected else {
                 last_error = "Server ignored/rejected Range or sent invalid range bounds".into();
+                if let Some(d) = durable.as_deref_mut() {
+                    d.before_reset(file, cancel)?;
+                }
                 reset(file, cancel, events)?;
+                if let Some(d) = durable.as_deref_mut() {
+                    d.hashes = cache::Hashes::empty();
+                }
                 checkpoint = None;
                 continue;
             };
@@ -354,13 +455,42 @@ impl InternalTransport {
             file.seek(SeekFrom::Start(offset)).map_err(io_error)?;
             cancelled(cancel)?;
             events.emit(Phase::Receiving, 0, true);
-            let end = read_body(&mut response, expected, cancel, |chunk| {
-                write_chunk(file, chunk, cancel, events)
-            })?;
+            let pause = durable.as_ref().map(|d| d.pause);
+            let end = read_body_stoppable(
+                &mut response,
+                expected,
+                cancel,
+                || pause.is_some_and(|p| p.load(Ordering::Acquire)),
+                |chunk| {
+                    write_chunk(file, chunk, cancel, events)?;
+                    if let Some(d) = durable.as_deref_mut() {
+                        d.hashes.written(chunk);
+                        if d.hashes.pending() >= checkpoint_interval()
+                            && d.hashes.length < component.byte_size
+                        {
+                            d.commit(file, cancel, cache::Kind::Prefix)?;
+                        }
+                    }
+                    Ok(())
+                },
+            )?;
+            drop(response);
             let length = regular_length(file, component.byte_size, cancel)?;
             match end {
                 BodyEnd::Complete if length == component.byte_size => {
-                    return finish(component, file, cancel, events);
+                    return finish_persistent(
+                        component,
+                        file,
+                        cancel,
+                        events,
+                        durable.as_deref_mut(),
+                    );
+                }
+                BodyEnd::Paused => {
+                    if let Some(d) = durable.as_deref_mut() {
+                        d.stop(file, component.byte_size, cancel)?;
+                    }
+                    return Err("Internal transfer paused".into());
                 }
                 BodyEnd::Complete => {
                     last_error = "Partial range ended before complete component".into()
@@ -370,12 +500,24 @@ impl InternalTransport {
             // A full byte counter after a failed EOF is not a successful response.
             // Demand a fresh complete response within this invocation.
             if length == component.byte_size {
+                if let Some(d) = durable.as_deref_mut() {
+                    d.before_reset(file, cancel)?;
+                }
                 reset(file, cancel, events)?;
+                if let Some(d) = durable.as_deref_mut() {
+                    d.hashes = cache::Hashes::empty();
+                }
                 checkpoint = None;
             } else if attempt < 2 {
-                checkpoint = Some(Cow::Owned(capture_checkpoint(
-                    selected, index, file, cancel,
-                )?));
+                if let Some(d) = durable.as_deref_mut() {
+                    if d.hashes.pending() > 0 {
+                        d.commit(file, cancel, cache::Kind::Prefix)?;
+                    }
+                } else {
+                    checkpoint = Some(Cow::Owned(capture_checkpoint(
+                        selected, index, file, cancel,
+                    )?));
+                }
             }
             events.emit(Phase::Retrying, 0, true);
         }
@@ -419,6 +561,7 @@ fn decimal(value: &str) -> Option<u64> {
 }
 enum BodyEnd {
     Complete,
+    Paused,
     Interrupted(String),
 }
 /// Always consumes bounded EOF, including a sentinel read after the last expected byte.
@@ -426,12 +569,24 @@ fn read_body(
     reader: &mut impl Read,
     expected: u64,
     cancel: &AtomicBool,
+    chunk: impl FnMut(&[u8]) -> Result<(), String>,
+) -> Result<BodyEnd, String> {
+    read_body_stoppable(reader, expected, cancel, || false, chunk)
+}
+fn read_body_stoppable(
+    reader: &mut impl Read,
+    expected: u64,
+    cancel: &AtomicBool,
+    pause: impl Fn() -> bool,
     mut chunk: impl FnMut(&[u8]) -> Result<(), String>,
 ) -> Result<BodyEnd, String> {
     let mut buffer = [0; BUFFER];
     let mut received = 0;
     loop {
         cancelled(cancel)?;
+        if pause() {
+            return Ok(BodyEnd::Paused);
+        }
         let limit = ((expected - received + 1).min(BUFFER as u64)) as usize;
         let read = reader.read(&mut buffer[..limit]);
         cancelled(cancel)?;
@@ -547,15 +702,23 @@ fn hash_file(file: &mut File, length: u64, cancel: &AtomicBool) -> Result<String
     let mut hash = Sha256::new();
     #[cfg(test)]
     let mut count = 0;
-    let end = read_body(file, length, cancel, |chunk| {
-        hash.update(chunk);
+    let end = {
         #[cfg(test)]
-        {
-            count += chunk.len() as u64;
-            tests::event("hash", count);
-        }
-        cancelled(cancel)
-    })?;
+        let mut measured = tests::HashReader(file);
+        #[cfg(test)]
+        let reader = &mut measured;
+        #[cfg(not(test))]
+        let reader = &mut *file;
+        read_body(reader, length, cancel, |chunk| {
+            hash.update(chunk);
+            #[cfg(test)]
+            {
+                count += chunk.len() as u64;
+                tests::event("hash", count);
+            }
+            cancelled(cancel)
+        })
+    }?;
     if let BodyEnd::Interrupted(error) = end {
         return Err(error);
     }
@@ -722,3 +885,126 @@ fn finish(
 
 #[cfg(test)]
 mod tests;
+
+/// Last synchronously acknowledged prefix, never an inferred complete byte count.
+#[derive(Debug)]
+pub(super) enum PersistentOutcome {
+    Complete(CompletedComponent),
+    Paused {
+        committed: u64,
+    },
+    Cancelled {
+        committed: u64,
+        error: Option<String>,
+        uncertain: bool,
+    },
+}
+#[derive(Debug)]
+pub(super) struct PersistentFailure {
+    pub message: String,
+    pub committed: u64,
+    pub uncertain: bool,
+}
+struct DurableTransfer<'a> {
+    observer: &'a mut dyn cache::Observer,
+    id: cache::BoundaryId,
+    hashes: cache::Hashes,
+    committed: u64,
+    final_candidate: bool,
+    pause: &'a AtomicBool,
+    paused: bool,
+    uncertain: bool,
+}
+impl DurableTransfer<'_> {
+    fn acknowledge(&mut self, file: &mut File, candidate: cache::Candidate) -> Result<(), String> {
+        let expected = cache::BoundaryId {
+            generation: self
+                .id
+                .generation
+                .checked_add(1)
+                .ok_or("Checkpoint generation overflow")?,
+            epoch: self
+                .id
+                .epoch
+                .checked_add(u64::from(candidate.kind == cache::Kind::Reset))
+                .ok_or("Checkpoint epoch overflow")?,
+            ..self.id
+        };
+        self.uncertain = true;
+        let ack = self.observer.boundary(self.id, file, candidate)?;
+        if ack.id != expected {
+            return Err("Stale durable checkpoint acknowledgement".into());
+        }
+        self.id = ack.id;
+        self.uncertain = false;
+        Ok(())
+    }
+    fn commit(
+        &mut self,
+        file: &mut File,
+        cancel: &AtomicBool,
+        kind: cache::Kind,
+    ) -> Result<(), String> {
+        self.hashes.verify_tail(file, cancel)?;
+        cancelled(cancel)?;
+        self.acknowledge(
+            file,
+            cache::Candidate {
+                length: self.hashes.length,
+                digest: self.hashes.digest(),
+                kind,
+            },
+        )?;
+        self.committed = self.hashes.length;
+        cancelled(cancel)
+    }
+    fn before_reset(&mut self, file: &mut File, cancel: &AtomicBool) -> Result<(), String> {
+        cancelled(cancel)?;
+        self.acknowledge(
+            file,
+            cache::Candidate {
+                length: 0,
+                digest: Sha256::digest([]).into(),
+                kind: cache::Kind::Reset,
+            },
+        )?;
+        self.committed = 0;
+        Ok(())
+    }
+    fn stop(&mut self, file: &mut File, full: u64, cancel: &AtomicBool) -> Result<bool, String> {
+        cancelled(cancel)?;
+        if !self.pause.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        // Full bytes without successful response EOF must never become a candidate.
+        if self.hashes.pending() > 0 && self.hashes.length < full {
+            self.commit(file, cancel, cache::Kind::Prefix)?;
+        }
+        cancelled(cancel)?;
+        self.paused = true;
+        Ok(true)
+    }
+}
+fn checkpoint_interval() -> u64 {
+    #[cfg(test)]
+    if let Some(value) = tests::checkpoint_interval_override() {
+        return value;
+    }
+    cache::INTERVAL
+}
+fn finish_persistent(
+    component: ComponentView<'_>,
+    file: &mut File,
+    cancel: &AtomicBool,
+    events: &mut Events<impl FnMut(Progress)>,
+    durable: Option<&mut DurableTransfer<'_>>,
+) -> Result<CompletedComponent, String> {
+    let done = finish(component, file, cancel, events)?;
+    if let Some(d) = durable {
+        if !d.final_candidate {
+            d.commit(file, cancel, cache::Kind::Final)?;
+        }
+    }
+    cancelled(cancel)?;
+    Ok(done)
+}

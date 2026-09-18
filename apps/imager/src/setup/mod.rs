@@ -11,6 +11,7 @@ mod destination_security;
 pub mod folders;
 pub mod import_view;
 pub mod internal_bundle;
+mod internal_cache;
 pub mod internal_download;
 pub mod known_folders;
 pub mod migration;
