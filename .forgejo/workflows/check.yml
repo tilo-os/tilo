@@ -129,6 +129,9 @@ jobs:
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
 
+      - name: Repository layout guard
+        run: python3 tools/check_repository_layout.py
+
       # The image may lag a newly required check tool.
       - name: Ensure invariant test tooling
         run: |
