@@ -4,7 +4,7 @@
 > firewall, the per-workspace sandbox and the portal capability model, in more
 > detail than anywhere else. It predates the machine-scoped work, so on identity,
 > the boot chain and disk encryption it is superseded by
-> [docs/security/](../docs/security/README.md).
+> [docs/security/](../security/README.md).
 
 The security boundary is the **workspace**. Every workspace runs apps inside its own Bubblewrap sandbox with its own user namespace, mount namespace, seccomp-bpf filter, and a per-workspace Wayland bridge socket. Capabilities (filesystem, hardware, network) require explicit grants surfaced as inline prompts; grants persist in the workspace's CRDT and replicate to peers.
 
@@ -24,7 +24,7 @@ The scenarios we defend against:
 - Identity decisions carry the whole peer id (`PeerOrigin`), never a fold of it: an equality check a digest can be ground against is not an identity check.
 - The personal signing identity is the user root. It certifies each device key; workspace hosts accept only device certificates chaining to the configured user root and permitted by the workspace membership/revocation state.
 
-Invite tokens are signed ed25519 blobs scoped to a workspace; see `plan/collaboration.md §7` for the wire format and validation order.
+Invite tokens are signed ed25519 blobs scoped to a workspace; see `docs/architecture/collaboration.md §7` for the wire format and validation order.
 
 ## Sandbox: Bubblewrap profile
 
@@ -102,7 +102,7 @@ Replication semantics:
 - Grants replicate to peers as part of the room document.
 - **Only the owner can grant.** Non-owners see the grant rows in the Permissions tab but the Revoke button is disabled.
 - A grant revocation writes the removal to the CRDT; the next workspace start uses the updated profile.
-- **Only the owner can grant over the wire either.** A room document's owner and capability list are accepted only from the peer entitled to write them, so a guest cannot project its own cache into the room and let automerge's last-writer-wins decide who administers it. See `plan/collaboration.md §4` — "Write authority on a room's governance" — for the record that decides it, why the invite's signature is what makes it checkable by the receiver, and what it does not yet cover (a relayed or delegated governance change, which needs the op signed rather than the hop authenticated).
+- **Only the owner can grant over the wire either.** A room document's owner and capability list are accepted only from the peer entitled to write them, so a guest cannot project its own cache into the room and let automerge's last-writer-wins decide who administers it. See `docs/architecture/collaboration.md §4` — "Write authority on a room's governance" — for the record that decides it, why the invite's signature is what makes it checkable by the receiver, and what it does not yet cover (a relayed or delegated governance change, which needs the op signed rather than the hop authenticated).
 
 ### Inline prompt
 
