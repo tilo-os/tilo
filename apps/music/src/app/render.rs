@@ -19,7 +19,9 @@ use super::{
     is_live_playlist_id, lyrics, rrect,
 };
 
+use ui::surface;
 use ui::text_render::{NumericStyle, TextStyle};
+use ui::tokens::Spacing;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use vello::peniko::BlendMode;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
@@ -116,6 +118,25 @@ const BAR_SWIPE_PX: f64 = 56.0;
 /// pane's authored gutter (the body's local `pad = 28.0` values name the same
 /// distance) and is recorded as such in the 2026-09-16 alignment review.
 const CONTENT_GUTTER: f64 = 28.0;
+/// A `Spacing::BASE` step as the `f64` this painter's geometry uses.
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: `f64::from` is not const; f32 -> f64 is exact"
+)]
+const fn step(px: f32) -> f64 {
+    px as f64
+}
+/// The gap between two list rows' surfaces (HIG §7 "nothing touches"): a
+/// row's hover / selection fill stops this far short of its pitch, so two
+/// neighbouring rows never share an edge. The pitch itself is unchanged.
+const ROW_GAP: f64 = step(Spacing::BASE.s1);
+/// Inset of a cover tile inside a chip, so the chip's derived edge stays
+/// closed around the art instead of being painted over by it.
+const CHIP_ART_INSET: f64 = step(Spacing::BASE.s1);
+/// Siblings of equal weight (tab pills, management pills): HIG §7b `s3`.
+const SIBLING_GAP: f64 = step(Spacing::BASE.s3);
+/// A label's clearance from the glyph beside it: HIG §7b `s2`.
+const LABEL_GLYPH_GAP: f64 = step(Spacing::BASE.s2);
 /// The large-text (≥ 135 %) frame's bands, authored for 2× text: a 96 px
 /// header, 88 px rows (title + artist), a 116 px player (art beside a
 /// title + byline block, play button on the right). Each is a floor — the
@@ -2388,7 +2409,7 @@ impl MusicApp {
             header.y0 + (header_h + 56.0) / 2.0,
         );
         let hovered = self.push_hit(search, Action::FocusSearch);
-        fill_rrect(
+        surface::card(
             scene,
             t,
             search,
@@ -2398,10 +2419,11 @@ impl MusicApp {
         icon::draw(scene, t, Icon::Search, search.center(), 21.0, c.text);
         self.search_pill_rect = search;
         self.search_input.apply_layout_external(Rect::ZERO);
+        // The header sits on the body ground, so its rule derives from that.
         scene.fill(
             Fill::NonZero,
             t,
-            c.border,
+            surface::edge_on(c.bg),
             None,
             &Rect::new(body.x0, body.y0, body.x1, body.y0 + 1.0),
         );
@@ -2436,7 +2458,7 @@ impl MusicApp {
             let Some(track) = self.lib.track(id).cloned() else {
                 continue;
             };
-            let row = Rect::new(body.x0 + 16.0, y, body.x1 - 16.0, y + row_h);
+            let row = Rect::new(body.x0 + 16.0, y, body.x1 - 16.0, y + row_h - ROW_GAP);
             // Title + artist block centred on the row's midline (the old
             // literal 15 / 49 offsets matched the block only at exactly 2×).
             let title_top = row.y0 + (row_h - row_block_h) / 2.0;
@@ -2453,18 +2475,10 @@ impl MusicApp {
                     index,
                 },
             );
-            if hover || self.pb.current.as_deref() == Some(track.id.as_str()) {
-                fill_rrect(
-                    scene,
-                    t,
-                    row,
-                    14.0,
-                    if hover {
-                        c.white10
-                    } else {
-                        c.accent.multiply_alpha(0.15)
-                    },
-                );
+            if hover {
+                fill_rrect(scene, t, row, 14.0, c.white10);
+            } else if self.pb.current.as_deref() == Some(track.id.as_str()) {
+                surface::card(scene, t, row, 14.0, c.accent_wash);
             }
             let text_budget = (text_x1 - text_x) - 112.0;
             let title = elide(tr, &track.title, 12.0, TextWeight::Semibold, text_budget);
@@ -2626,7 +2640,7 @@ impl MusicApp {
         let btn = Rect::new(x0, y0, x0 + size, y0 + size);
         self.hamburger_rect = btn;
         let hover = btn.contains(self.mouse);
-        fill_rrect(
+        surface::card(
             scene,
             t,
             btn,
@@ -2764,9 +2778,13 @@ impl MusicApp {
         let playlists = self.gather_playlists();
         for p in playlists {
             let active = self.view == View::Playlist(p.id.clone());
-            let row = Rect::new(r.x0 + 12.0, y, r.x1 - 12.0, y + 34.0);
+            let row = Rect::new(r.x0 + 12.0, y, r.x1 - 12.0, y + 34.0 - ROW_GAP);
             let hover = self.push_hit(row, Action::Nav(View::Playlist(p.id.clone())));
-            if active || hover {
+            if active {
+                // Selection is a lift with a derived edge (HIG §9.3), not a
+                // bare wash that runs into the row below.
+                surface::card(scene, t, row, 8.0, c.white10);
+            } else if hover {
                 fill_rrect(scene, t, row, 8.0, c.white5);
             }
             let col = if active { c.text } else { c.dim };
@@ -2804,7 +2822,10 @@ impl MusicApp {
         let row = Rect::new(side.x0 + 12.0, y, side.x1 - 12.0, y + h);
         let hover = self.push_hit(row, Action::Nav(view));
         if active {
-            fill_rrect(scene, t, row, 10.0, c.accent.multiply_alpha(0.16));
+            // The selected destination is a lift with a derived edge (HIG
+            // §9.3 / §9.4): accent stays on the ink and the marker bar, where
+            // it means "you are here", not on the row's fill.
+            surface::card(scene, t, row, 10.0, c.white10);
             // Active marker bar.
             fill_rrect(
                 scene,
@@ -2843,7 +2864,7 @@ impl MusicApp {
             TextWeight::Medium,
             None,
         );
-        y + h + 2.0
+        y + h + ROW_GAP
     }
 
     // ---- header -----------------------------------------------------------
@@ -2871,7 +2892,7 @@ impl MusicApp {
         if !self.nav_back.is_empty() {
             let bz = Rect::new(x, r.y0 + 20.0, x + 32.0, r.y0 + 52.0);
             let hover = self.push_hit(bz, Action::Back);
-            fill_rrect(scene, t, bz, 16.0, if hover { c.white10 } else { c.white5 });
+            surface::card(scene, t, bz, 16.0, if hover { c.white10 } else { c.white5 });
             icon::draw(scene, t, Icon::ChevronLeft, bz.center(), 18.0, c.text);
             x += 44.0;
         }
@@ -2906,10 +2927,7 @@ impl MusicApp {
             );
             self.search_pill_rect = btn;
             let hover = self.push_hit(btn, Action::FocusSearch);
-            fill_rrect(scene, t, btn, 12.0, if hover { c.white10 } else { c.card });
-            if hover {
-                scene.stroke(&Stroke::new(1.0), t, c.border, None, &rrect(btn, 12.0));
-            }
+            surface::card(scene, t, btn, 12.0, if hover { c.white10 } else { c.card });
             icon::draw(scene, t, Icon::Search, btn.center(), 18.0, c.text);
             // Do not retain a stale wide text-field rect that could accept a
             // pointer event behind this compact button.
@@ -2934,11 +2952,9 @@ impl MusicApp {
         // Raised surface (like the home chips and cards), not the base panel
         // tone: in the light theme `panel` equals the header background, so the
         // field was invisible until hovered or focused.
-        fill_rrect(scene, t, pill, 18.0, c.card);
+        surface::card(scene, t, pill, 18.0, if hover { c.white10 } else { c.card });
         if focused {
             scene.stroke(&Stroke::new(1.5), t, c.accent, None, &rrect(pill, 18.0));
-        } else if hover {
-            scene.stroke(&Stroke::new(1.0), t, c.border, None, &rrect(pill, 18.0));
         }
         icon::draw(
             scene,
@@ -3132,21 +3148,24 @@ impl MusicApp {
             let cy = y + (i / cols) as f64 * (chip_h + gap);
             let chip = Rect::new(cx, cy, cx + chip_w, cy + chip_h);
             let hover = self.push_hit(chip, Action::Nav(View::Playlist(p.id.clone())));
-            fill_rrect(
+            surface::card(
                 scene,
                 t,
                 chip,
                 10.0,
-                if hover { c.card_hover } else { c.card },
+                if hover { c.white10 } else { c.card },
             );
+            // The cover sits inside the chip's edge rather than flush with
+            // it, so the derived edge stays closed on the art side too
+            // (kurbo's `inset` grows for positive values, hence the sign).
             self.draw_cover(
                 scene,
                 t,
-                Rect::new(cx, cy, cx + chip_h, cy + chip_h),
+                Rect::new(cx, cy, cx + chip_h, cy + chip_h).inset(-CHIP_ART_INSET),
                 &p.id,
                 &p.name,
                 tr,
-                10.0,
+                10.0 - CHIP_ART_INSET,
             );
             let name = elide(
                 tr,
@@ -3959,7 +3978,7 @@ impl MusicApp {
         let row_count = rows.len();
 
         for (i, tk) in rows.iter().enumerate() {
-            let rr = Rect::new(left, y, right, y + row_h);
+            let rr = Rect::new(left, y, right, y + row_h - ROW_GAP);
             let is_current = self.pb.current.as_deref() == Some(tk.id.as_str());
             let hovered = self.body_hit(
                 rr,
@@ -3988,7 +4007,7 @@ impl MusicApp {
                     .as_ref()
                     .is_some_and(|(owner, track)| owner == playlist && track == &tk.id)
             }) {
-                fill_rrect(scene, t, rr, 8.0, c.accent.multiply_alpha(0.16));
+                surface::card(scene, t, rr, 8.0, c.white10);
             }
             if rr.y1 >= body.y0 && rr.y0 <= body.y1 {
                 self.draw_track_row_content(
@@ -4377,7 +4396,11 @@ impl MusicApp {
                     CacheState::Streamed => "Keep offline".into(),
                 }
             };
-            let label = elide(tr, &label, 11.0, TextWeight::Medium, 96.0);
+            // The label ends a token step short of the glyph's left edge
+            // (icon size 16 → half-width 8), so "Retry · Network co…" can
+            // never run into the download icon it sits beside.
+            let label_max = (icon_center.x - 8.0 - LABEL_GLYPH_GAP - status_rect.x0).max(0.0);
+            let label = elide(tr, &label, 11.0, TextWeight::Medium, label_max);
             draw_text(
                 tr,
                 scene,
@@ -4586,7 +4609,7 @@ impl MusicApp {
 
         let shuf = Rect::new(play.x1 + 12.0, by, play.x1 + 12.0 + 44.0, by + 40.0);
         let sh = self.push_hit(shuf, Action::ToggleShuffle);
-        scene.stroke(&Stroke::new(1.0), t, c.border, None, &rrect(shuf, 20.0));
+        surface::card(scene, t, shuf, 20.0, if sh { c.white10 } else { c.card });
         icon::draw(
             scene,
             t,
@@ -4621,7 +4644,7 @@ impl MusicApp {
         let lib = Rect::new(px, by, px + pw, by + 40.0);
         let lh = self.push_hit(lib, Action::ToggleSaveAlbum(id));
         if saved {
-            fill_rrect(scene, t, lib, 20.0, c.success.multiply_alpha(0.18));
+            surface::card(scene, t, lib, 20.0, c.success_wash);
             icon::draw(
                 scene,
                 t,
@@ -4643,13 +4666,7 @@ impl MusicApp {
                 None,
             );
         } else {
-            scene.stroke(
-                &Stroke::new(1.0),
-                t,
-                if lh { c.text } else { c.border },
-                None,
-                &rrect(lib, 20.0),
-            );
+            surface::card(scene, t, lib, 20.0, if lh { c.white10 } else { c.card });
             icon::draw(
                 scene,
                 t,
@@ -4690,7 +4707,7 @@ impl MusicApp {
         let fol = Rect::new(px, by, px + pw, by + 40.0);
         let fh = self.push_hit(fol, Action::ToggleFollow(id));
         if following {
-            fill_rrect(scene, t, fol, 20.0, c.accent.multiply_alpha(0.16));
+            surface::card(scene, t, fol, 20.0, c.accent_wash);
             icon::draw(
                 scene,
                 t,
@@ -4712,13 +4729,7 @@ impl MusicApp {
                 None,
             );
         } else {
-            scene.stroke(
-                &Stroke::new(1.0),
-                t,
-                if fh { c.text } else { c.border },
-                None,
-                &rrect(fol, 20.0),
-            );
+            surface::card(scene, t, fol, 20.0, if fh { c.white10 } else { c.card });
             icon::draw(
                 scene,
                 t,
@@ -5521,12 +5532,7 @@ impl MusicApp {
             } else {
                 c.dim
             };
-            let stroke = if hov {
-                if danger { c.accent } else { c.text }
-            } else {
-                c.border
-            };
-            scene.stroke(&Stroke::new(1.0), t, stroke, None, &rrect(r, 16.0));
+            surface::card(scene, t, r, 16.0, if hov { c.white10 } else { c.card });
             draw_text(
                 tr,
                 scene,
@@ -5539,7 +5545,7 @@ impl MusicApp {
                 TextWeight::Medium,
                 None,
             );
-            mx = r.x1 + 10.0;
+            mx = r.x1 + SIBLING_GAP;
         }
     }
 
@@ -5650,8 +5656,15 @@ impl MusicApp {
         let y0 = (y1 - h).max(self.rect.y0 + 8.0);
         let panel = Rect::new(x0, y0, x1, y1);
 
-        fill_rrect(scene, t, panel, 12.0, c.panel);
-        scene.stroke(&Stroke::new(1.0), t, c.border, None, &rrect(panel, 12.0));
+        // A floating panel: Panel role ground + border (HIG §9.5).
+        fill_rrect(scene, t, panel, 12.0, c.panel_ground);
+        scene.stroke(
+            &Stroke::new(1.0),
+            t,
+            c.panel_border,
+            None,
+            &surface::edge_outline(panel, 12.0),
+        );
         // Swallow clicks landing on the card so they don't fall through to the
         // content behind it.
         self.push_hit(panel, Action::None);
@@ -5808,7 +5821,7 @@ impl MusicApp {
             return y;
         };
         let rr = Rect::new(body.x0 + pad, y, body.x1 - pad, y + 64.0);
-        fill_rrect(scene, t, rr, 10.0, c.accent.multiply_alpha(0.12));
+        surface::card(scene, t, rr, 10.0, c.accent_wash);
         self.draw_cover(
             scene,
             t,
@@ -5868,7 +5881,7 @@ impl MusicApp {
         let up_x = dn_x - 30.0;
         for (i, tk) in rows.iter().enumerate() {
             let abs = offset + i; // absolute queue index
-            let rr = Rect::new(left, y, right, y + row_h);
+            let rr = Rect::new(left, y, right, y + row_h - ROW_GAP);
             let hovered = self.body_hit(
                 rr,
                 Action::Play {
@@ -6005,7 +6018,7 @@ impl MusicApp {
             .count()
             .max(self.downloads.len() + self.offline_resolves.len());
         let banner = Rect::new(body.x0 + pad, y, body.x1 - pad, y + 64.0);
-        fill_rrect(scene, t, banner, 12.0, c.card);
+        surface::card(scene, t, banner, 12.0, c.card);
         icon::draw(
             scene,
             t,
@@ -6225,7 +6238,7 @@ impl MusicApp {
     ) -> f64 {
         let pad = 28.0;
         let dl = Rect::new(body.x0 + pad, y - 4.0, body.x0 + pad + 252.0, y + 28.0);
-        scene.stroke(&Stroke::new(1.0), t, c.border, None, &rrect(dl, 16.0));
+        surface::card(scene, t, dl, 16.0, c.card);
         icon::draw(
             scene,
             t,
@@ -6341,7 +6354,7 @@ impl MusicApp {
             body.x1 - pad,
             top + 18.0,
         );
-        fill_rrect(scene, t, pill, 9.0, c.accent.multiply_alpha(0.16));
+        surface::card(scene, t, pill, 9.0, c.accent_wash);
         draw_text(
             tr,
             scene,
@@ -6576,7 +6589,7 @@ impl MusicApp {
         {
             let message = elide(tr, error, 12.0, TextWeight::Regular, body.width() - 210.0);
             let banner = Rect::new(body.x0 + 28.0, y + 8.0, body.x1 - 28.0, y + 48.0);
-            fill_rrect(scene, t, banner, 10.0, c.accent.multiply_alpha(0.13));
+            surface::card(scene, t, banner, 10.0, c.accent_wash);
             draw_text(
                 tr,
                 scene,
@@ -7048,15 +7061,13 @@ impl MusicApp {
             let hov = self.push_hit(pill, Action::SelectSearchTab(tab));
             if active {
                 fill_rrect(scene, t, pill, tab_h / 2.0, c.text);
-            } else if hov {
-                fill_rrect(scene, t, pill, tab_h / 2.0, c.white10);
             } else {
-                scene.stroke(
-                    &Stroke::new(1.0),
+                surface::card(
+                    scene,
                     t,
-                    c.border,
-                    None,
-                    &rrect(pill, tab_h / 2.0),
+                    pill,
+                    tab_h / 2.0,
+                    if hov { c.white10 } else { c.card },
                 );
             }
             let ink = if active { c.bg } else { c.text };
@@ -7072,9 +7083,9 @@ impl MusicApp {
                 TextWeight::Semibold,
                 None,
             );
-            tab_x += tab_w + 10.0;
+            tab_x += tab_w + SIBLING_GAP;
         }
-        y + tab_h + 12.0
+        y + tab_h + SIBLING_GAP
     }
 
     /// The curated `All` mix: a top-result hero beside the top songs, then a
@@ -7259,13 +7270,7 @@ impl MusicApp {
         hero: &SearchHero,
     ) {
         let hov = self.push_hit(rect, hero.action.clone());
-        fill_rrect(
-            scene,
-            t,
-            rect,
-            14.0,
-            if hov { c.card_hover } else { c.card },
-        );
+        surface::card(scene, t, rect, 14.0, if hov { c.white10 } else { c.card });
         let art_d = rect.height() - 56.0;
         let ax = rect.x0 + 20.0;
         let ay = rect.y0 + 20.0;
@@ -7321,7 +7326,7 @@ impl MusicApp {
             rect.x0 + 20.0 + f64::from(pw) + 24.0,
             pill_y + 20.0,
         );
-        fill_rrect(scene, t, pill, 12.0, c.white10);
+        surface::card(scene, t, pill, 12.0, c.white10);
         draw_text(
             tr,
             scene,
@@ -7733,7 +7738,7 @@ impl MusicApp {
         );
         let track = Rect::new(bar_x0, bar_y, bar_x1, bar_y + 4.0);
         self.scrubber_rect = Rect::new(bar_x0, bar_y - 8.0, bar_x1, bar_y + 12.0);
-        fill_rrect(scene, t, track, 2.0, c.white10);
+        fill_rrect(scene, t, track, 2.0, c.track);
         let fillx = bar_x0 + (bar_x1 - bar_x0) * frac;
         if fillx > bar_x0 {
             fill_rrect(
@@ -7865,7 +7870,7 @@ impl MusicApp {
         let x0 = hit.x0;
         let x1 = hit.x1;
         let vtrack = Rect::new(x0, vbar_y - 2.0, x1, vbar_y + 2.0);
-        fill_rrect(scene, t, vtrack, 2.0, c.white10);
+        fill_rrect(scene, t, vtrack, 2.0, c.track);
         let vfill = x0 + (x1 - x0) * vol;
         if vfill > x0 {
             fill_rrect(
@@ -7911,8 +7916,15 @@ impl MusicApp {
         let y0 = y1 - ph;
         let panel = Rect::new(x0, y0, x0 + pw, y1);
         self.volume_popover_rect = panel;
-        fill_rrect(scene, t, panel, 12.0, c.toast_bg);
-        scene.stroke(&Stroke::new(1.0), t, c.border, None, &rrect(panel, 12.0));
+        // A floating panel: Panel role ground + border (HIG §9.5).
+        fill_rrect(scene, t, panel, 12.0, c.panel_ground);
+        scene.stroke(
+            &Stroke::new(1.0),
+            t,
+            c.panel_border,
+            None,
+            &surface::edge_outline(panel, 12.0),
+        );
         // Block clicks inside the panel from falling through.
         self.push_hit(panel, Action::None);
 
@@ -8008,7 +8020,7 @@ impl MusicApp {
         let track_bottom = r.y1 - 9.0;
         let track_top = track_bottom - track_h;
         let track = Rect::new(track_x0, track_top, track_x1, track_bottom);
-        fill_rrect(scene, t, track, track_h / 2.0, c.white10);
+        fill_rrect(scene, t, track, track_h / 2.0, c.track);
         let fillx = track_x0 + (track_x1 - track_x0) * frac;
         if fillx > track_x0 {
             fill_rrect(
@@ -8371,10 +8383,24 @@ struct Palette {
     accent: Color,
     accent_hover: Color,
     success: Color,
+    /// The 1 px rule on a `surfaces.base` panel (sidebar divider, the
+    /// now-playing bar's top hairline), derived against that ground so it
+    /// registers on every preset. Never stroked on a raised surface — that
+    /// is what [`Palette::edge`] is for (HIG §9.5).
     border: Color,
+    /// The opaque "live" wash (now-playing row, synced badge, following /
+    /// in-library pills): accent over the body ground, resolved so its edge
+    /// can be derived against what actually reaches the screen.
+    accent_wash: Color,
+    success_wash: Color,
+    /// Floating panel ground + border (queue preview, volume popover).
+    panel_ground: Color,
+    panel_border: Color,
+    /// Scrubber / volume track: a hairline-strength step on the bar's base
+    /// ground, so it registers in light themes where `lift` washes vanish.
+    track: Color,
     white5: Color,
     white10: Color,
-    toast_bg: Color,
     scrim: Color,
     reduce_motion: bool,
 }
@@ -8398,10 +8424,14 @@ impl Palette {
             accent: theme.accent_primary,
             accent_hover: theme.accent_hover,
             success: theme.status_success,
-            border: theme.border_standard,
+            border: surface::edge_on(col.surfaces.base),
+            accent_wash: ui::tokens::colors::over(col.neutral[0], theme.accent_primary, 0.16),
+            success_wash: ui::tokens::colors::over(col.neutral[0], theme.status_success, 0.18),
+            panel_ground: ui::chrome::panel_ground(theme),
+            panel_border: ui::chrome::panel_border(theme),
+            track: surface::edge_on(col.surfaces.base),
             white5: col.lift(0.35),
             white10: col.lift(0.72),
-            toast_bg: col.surfaces.raised,
             scrim: col.surfaces.overlay,
             reduce_motion: theme.reduce_motion,
         }
