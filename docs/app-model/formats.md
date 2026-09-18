@@ -10,7 +10,7 @@ Same packaging pipeline: your provider is a `.qpkg` with
 
 ## The WIT interface
 
-Straight from `crates/format/format-provider-wit/wit/format-provider.wit`:
+Straight from `crates/doc/format-provider-wit/wit/format-provider.wit`:
 
 ```wit
 package tilo:format-provider@1.0.0;
@@ -180,7 +180,7 @@ mod guest {
     use qdoc::{Document, FormatProvider, MarkdownCodec};
 
     wit_bindgen::generate!({
-        path: "../../format/format-provider-wit/wit",
+        path: "../format-provider-wit/wit",
         world: "provider",
     });
 

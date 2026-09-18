@@ -20,6 +20,8 @@ GENERATED_DIRECTORIES = frozenset(
 )
 
 RETIRED_SOURCE_ROOTS = {
+    "crates/format/": "crates/doc/",
+    "crates/identity/": "crates/collab/",
     "crates/system/windows-vm/": "crates/windows/windows-vm/",
     "fs/": "crates/system/fs/",
     "plan/": "docs/architecture/",

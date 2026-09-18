@@ -34,7 +34,7 @@ zeroize.workspace = true
 # manager and the codecs agree on what opens in the word processor).
 qdoc = { path = "../../crates/doc/qdoc" }
 collab-types = { path = "../../crates/collab/collab-types" }
-tilo-user-identity = { path = "../../crates/identity/tilo-user-identity" }
+tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 ed25519-dalek.workspace = true
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 tokio = { workspace = true, features = ["rt", "net", "io-util"] }

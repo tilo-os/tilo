@@ -8,9 +8,15 @@ conventions.
 Run these from the checkout on Linux (including WSL), using Python 3.11+:
 
 ```sh
+tools/run-repository-policy.sh
 python3 tools/dev.py check installer
 python3 tools/dev.py check app-packaging
 ```
+
+The repository-policy command is the same deterministic suite used by the
+fast-quality workflow. It checks live workflow triggers and timeouts in
+addition to running the policy unit tests, so testing a checker without
+auditing the current repository cannot produce a false-green result.
 
 The installer checks exercise target-mode logic, artifact materialization and the
 installer overlay. The app checks exercise selection, collection membership and
