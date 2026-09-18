@@ -1,8 +1,6 @@
 [Unit]
 Description=Tilo per-user verified local model manager
 Documentation=file:///usr/share/doc/tilo/system-extensions.md
-After=network-online.target
-Wants=network-online.target
 PartOf=tilo-graphical-session.target
 Requires=tilo-model-storage.service
 After=tilo-model-storage.service

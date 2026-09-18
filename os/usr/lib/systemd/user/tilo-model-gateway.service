@@ -1,12 +1,12 @@
 [Unit]
 Description=Tilo per-user hosted model gateway
 Documentation=file:///usr/share/doc/tilo/model-gateway.md
-After=network-online.target
-Wants=network-online.target
 PartOf=tilo-graphical-session.target
 Requires=tilo-model-storage.service
 After=tilo-model-storage.service
 # Started by tilo-model-gateway.socket only when Settings or Agent connects.
+# Network availability is handled by individual hosted-model requests; daemon
+# activation and local configuration access must remain available offline.
 
 [Service]
 Type=simple

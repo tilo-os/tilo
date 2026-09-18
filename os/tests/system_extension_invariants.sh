@@ -140,6 +140,9 @@ if grep -Fq '.output()' "$user_model_source"; then
     bad 'model manager can allocate unbounded helper output'
 fi
 need "$containerfile" 'systemctl --global enable tilo-models.socket' 'per-user model socket is not enabled in the image'
+if grep -Eq '^(After|Wants)=.*network-online\.target' "$user_model"; then
+    bad 'local model manager blocks socket activation on network readiness'
+fi
 if grep -Fq 'systemctl --global enable tilo-models.service' "$containerfile"; then
     bad 'model manager process still starts eagerly at every login'
 fi
@@ -160,8 +163,15 @@ need "$model_gateway" 'KeyringMode=private' 'hosted-model gateway shares the ses
 need "$model_gateway" 'SystemCallFilter=@system-service' 'hosted-model gateway lacks a syscall allowlist'
 need "$model_gateway" 'SystemCallFilter=~@clock @debug @keyring @module @mount @obsolete @raw-io @reboot @resources @swap' 'hosted-model gateway retains privileged syscall groups'
 need "$containerfile" 'systemctl --global enable tilo-model-gateway.socket' 'hosted-model socket is not enabled in the image'
+if grep -Eq '^(After|Wants)=.*network-online\.target' "$model_gateway"; then
+    bad 'hosted-model gateway blocks socket activation on network readiness'
+fi
 if grep -Fq 'systemctl --global enable tilo-model-gateway.service' "$containerfile"; then
     bad 'hosted-model process still starts eagerly at every login'
+fi
+if grep -Eq '^Wants=.*tilo-(models|model-gateway|app-host)\.service' \
+    "$repo/os/usr/lib/systemd/user/tilo-graphical-session.target"; then
+    bad 'graphical session target bypasses socket activation for app/model daemons'
 fi
 [ "$fail" -ne 0 ] || ok 'Settings reaches a confined per-user model manager through the app-service channel with fresh-user storage'
 
