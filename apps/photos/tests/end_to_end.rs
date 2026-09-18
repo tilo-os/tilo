@@ -142,8 +142,9 @@ fn populated_large_text_library_passes_native_accessibility_certification() {
     let audit = driver.native_app_audit();
     assert!(
         audit.is_certified(),
-        "populated large-text library native audit: {:?}",
-        audit.issues
+        "populated large-text library native audit: native={:?}, accessibility={:?}",
+        audit.issues,
+        audit.accessibility.issues
     );
     assert!(driver.accessibility_audit().is_clean());
 }
