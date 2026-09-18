@@ -412,6 +412,7 @@ fn timers_screen(state: &ui::LocalState<ClockState>) -> Element {
         for timer in &s.timers {
             let id = timer.id;
             let toggle = list_state.clone();
+            let add_minute = list_state.clone();
             let pin = list_state.clone();
             let remove = list_state.clone();
             let running = timer.ends_at_utc.is_some();
@@ -444,6 +445,35 @@ fn timers_screen(state: &ui::LocalState<ClockState>) -> Element {
                         ))
                         .push(Box::new(
                             Row::new()
+                                .push(Box::new(
+                                    Button::new(
+                                        &format!("clocks.timer.{id}.add-minute"),
+                                        "+1 min",
+                                        None,
+                                    )
+                                    .with_accessible_name(&format!(
+                                        "Add one minute to {}",
+                                        timer.label
+                                    ))
+                                    .fit_content(44.0)
+                                    .on_effect(move || {
+                                        add_minute.update(|s| {
+                                            if let Some(t) =
+                                                s.timers.iter_mut().find(|t| t.id == id)
+                                            {
+                                                let now = Utc::now();
+                                                let left = t
+                                                    .remaining(now)
+                                                    .saturating_add(Duration::from_secs(60));
+                                                t.paused_remaining_ms = Some(
+                                                    left.as_millis().try_into().unwrap_or(u64::MAX),
+                                                );
+                                                t.ends_at_utc = None;
+                                                t.start(now);
+                                            }
+                                        })
+                                    }),
+                                ))
                                 .push(Box::new(
                                     Button::new(
                                         &format!("clocks.timer.{id}.toggle"),
@@ -742,7 +772,19 @@ pub struct ClocksApp {
 impl ClocksApp {
     #[must_use]
     pub fn new() -> Self {
-        Self::scenario("timers")
+        let value = ClockState::load();
+        // Reopen on the activity that most likely brought the user back,
+        // while a quiet first launch begins with the useful at-a-glance view.
+        let mode = if !value.timers.is_empty() {
+            2
+        } else if value.stopwatch.started_at_utc.is_some() || value.stopwatch.accumulated_ms > 0 {
+            3
+        } else if !value.alarms.is_empty() {
+            1
+        } else {
+            0
+        };
+        Self::with_state(value, mode)
     }
     #[must_use]
     pub fn running_demo() -> Self {
@@ -770,6 +812,10 @@ impl ClocksApp {
             t.pinned_overlay = true;
             value.timers.push(t);
         }
+        Self::with_state(value, mode)
+    }
+
+    fn with_state(value: ClockState, mode: usize) -> Self {
         let state = ui::LocalState::new(value);
         Self {
             inner: surface(&ui::LocalState::new(mode), &state),
