@@ -2196,6 +2196,11 @@ pub struct ShellOverlayHost {
     local_status: Option<String>,
     local_status_origin: ui::StatusOrigin,
     status_draft: String,
+    /// Caret/selection for the inline presence status editor.  Keeping this
+    /// beside the draft lets the field use the same complete text-editing
+    /// contract as workspace names and Wi-Fi passwords instead of its former
+    /// append/pop-only special case.
+    status_selection: ui::text_selection::Selection,
     status_editing: bool,
     status_sharing: ui::StatusSharing,
     /// Owns the invite/connect prompt state, painting, hit-testing and input.
@@ -3419,6 +3424,7 @@ impl ShellOverlayHost {
             local_status: collaboration_preferences.manual_status,
             local_status_origin: ui::StatusOrigin::Manual,
             status_draft: String::new(),
+            status_selection: ui::text_selection::Selection::default(),
             status_editing: false,
             status_sharing: collaboration_preferences.sharing,
             peer_sync_overlay: PeerSyncOverlay::default(),
@@ -10614,37 +10620,61 @@ impl ShellOverlayHost {
             return true;
         }
         if self.status_editing {
-            match logical_key {
-                Key::Named(NamedKey::Escape) => {
+            let edit = if repeat
+                && matches!(logical_key, Key::Character(_) | Key::Named(NamedKey::Space))
+            {
+                // DRM synthesises repeat events for native widgets, but text
+                // insertion is edge-triggered: holding a printable key must
+                // not race through an unbounded status string. Navigation and
+                // deletion intentionally keep their conventional repeat.
+                crate::shell::text_entry::Edit::ConsumedQuiet
+            } else {
+                crate::shell::text_entry::apply(
+                    logical_key,
+                    crate::shell::text_entry::Mods::from_state(mstate),
+                    &mut self.status_draft,
+                    &mut self.status_selection,
+                )
+            };
+            match edit {
+                crate::shell::text_entry::Edit::Cancel => {
                     self.status_editing = false;
                     self.status_draft.clear();
+                    self.status_selection = ui::text_selection::Selection::default();
                 }
-                Key::Named(NamedKey::Enter) => {
+                crate::shell::text_entry::Edit::Submit => {
                     let text = self
                         .status_draft
                         .split_whitespace()
                         .collect::<Vec<_>>()
                         .join(" ");
-                    self.local_status = (!text.is_empty()).then_some(text);
-                    self.local_status_origin = ui::StatusOrigin::Manual;
+                    let status = (!text.is_empty()).then_some(text);
                     self.status_editing = false;
                     self.status_draft.clear();
-                    self.persist_collaboration_preferences();
-                    if self.status_sharing == ui::StatusSharing::Off {
-                        self.publish_local_status(None);
-                    } else {
-                        self.publish_local_status(self.local_status.clone());
+                    self.status_selection = ui::text_selection::Selection::default();
+                    if let Some(chrome) = self.chrome.as_ref() {
+                        chrome.borrow_mut().push_presence_request(
+                            crate::shell::chrome_state::PresenceRequest::SetManualStatus(status),
+                        );
                     }
                 }
-                Key::Named(NamedKey::Backspace) => {
-                    self.status_draft.pop();
+                crate::shell::text_entry::Edit::Changed => {
+                    let char_count = self.status_draft.chars().count();
+                    if char_count > ui::MAX_STATUS_CHARS {
+                        let mut byte_cap = self.status_draft.len();
+                        for (seen, (byte, _)) in self.status_draft.char_indices().enumerate() {
+                            if seen == ui::MAX_STATUS_CHARS {
+                                byte_cap = byte;
+                                break;
+                            }
+                        }
+                        self.status_draft.truncate(byte_cap);
+                        self.status_selection.anchor = self.status_selection.anchor.min(byte_cap);
+                        self.status_selection.cursor = self.status_selection.cursor.min(byte_cap);
+                    }
                 }
-                Key::Character(text) if !mstate.control_key() && !mstate.super_key() && !repeat => {
-                    let room =
-                        ui::MAX_STATUS_CHARS.saturating_sub(self.status_draft.chars().count());
-                    self.status_draft.extend(text.chars().take(room));
-                }
-                _ => {}
+                crate::shell::text_entry::Edit::Ignored
+                | crate::shell::text_entry::Edit::ConsumedQuiet => {}
             }
             *handled = true;
             return true;
@@ -11990,6 +12020,8 @@ impl ShellOverlayHost {
                 } else {
                     String::new()
                 };
+                self.status_selection =
+                    ui::text_selection::Selection::collapsed(self.status_draft.len());
                 self.status_editing = true;
                 *handled = true;
                 return;
@@ -22955,6 +22987,110 @@ mod palette_dispatch_tests {
         assert_eq!(
             published.borrow().as_slice(),
             &[Some("Preparing Q2 review".into())]
+        );
+    }
+
+    #[test]
+    fn inline_status_editor_uses_full_selection_and_navigation_contract() {
+        let (mut host, _) = host_with_chrome();
+        host.status_editing = true;
+        host.status_draft = "alpha beta".into();
+        host.status_selection = ui::text_selection::Selection::collapsed(host.status_draft.len());
+        let state = AutoCommit::new();
+        let mut handled = false;
+        let ctrl_shift = winit::event::Modifiers::from(
+            winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT,
+        );
+
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::ArrowLeft),
+            ctrl_shift,
+            false,
+            &state,
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert!(handled);
+        assert_eq!(
+            host.status_selection.range(),
+            6..10,
+            "Ctrl+Shift+Left selects the previous Unicode word"
+        );
+
+        handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Character("x".into()),
+            winit::event::Modifiers::default(),
+            false,
+            &state,
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert_eq!(host.status_draft, "alpha x");
+        assert_eq!(
+            host.status_selection,
+            ui::text_selection::Selection::collapsed(7)
+        );
+
+        handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Character("a".into()),
+            winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL),
+            false,
+            &state,
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert_eq!(host.status_selection.range(), 0..7);
+
+        handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::Backspace),
+            winit::event::Modifiers::default(),
+            false,
+            &state,
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert!(host.status_draft.is_empty());
+        assert_eq!(
+            host.status_selection,
+            ui::text_selection::Selection::collapsed(0)
+        );
+    }
+
+    #[test]
+    fn inline_status_editor_repeats_navigation_and_deletion_but_not_text_insertion() {
+        let (mut host, _) = host_with_chrome();
+        host.status_editing = true;
+        host.status_draft = "abcd".into();
+        host.status_selection = ui::text_selection::Selection::collapsed(4);
+        let state = AutoCommit::new();
+        let modifiers = winit::event::Modifiers::default();
+        let mut handled = false;
+
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::Backspace),
+            modifiers,
+            true,
+            &state,
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert_eq!(host.status_draft, "abc");
+
+        handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Character("z".into()),
+            modifiers,
+            true,
+            &state,
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert_eq!(
+            host.status_draft, "abc",
+            "a synthetic repeat press cannot duplicate printable text"
         );
     }
 
