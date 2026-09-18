@@ -220,8 +220,9 @@ Tilo-owned ELF outputs are independently rejected for either ABI, and Tilo-owned
 TLS and signing remain Rust-native. The sealed root also deletes OpenSSL's
 optional legacy-provider DSO and loadable ENGINE modules, plus GStreamer's
 OpenSSL-backed DTLS, curl, and Icecast/Shoutcast plugins (Tilo has none of
-those network media paths), and the offline ARM compatibility frontend's Qt
-OpenSSL TLS backend.
+those network media paths), the now-unusable WebRTC/ICE/SRTP companion
+plugins, and the offline ARM compatibility frontend's Qt OpenSSL TLS backend.
+The projector's required RTP/H.264 and HLS plugins remain installed.
 Foundational Fedora consumers retain only the built-in provider surface they
 require; the recurring security audit fails if any removed module reappears.
 
