@@ -270,6 +270,13 @@ impl Session {
                 self.credentials = Some(self.helper.execute(timeout)?);
                 continue;
             }
+            if response.status() == StatusCode::UNAUTHORIZED {
+                return Err(git2::Error::new(
+                    git2::ErrorCode::Auth,
+                    git2::ErrorClass::Net,
+                    "authentication failed: Git server rejected the supplied credentials",
+                ));
+            }
             if !response.status().is_success() {
                 return Err(failure(&format!(
                     "Git HTTP server returned status {}",
