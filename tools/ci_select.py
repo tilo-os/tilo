@@ -59,7 +59,7 @@ def run(*args: str, cwd: Path) -> str:
 
 
 def cargo_metadata(root: Path) -> dict:
-    return json.loads(run("cargo", "metadata", "--no-deps", "--format-version", "1", cwd=root))
+    return json.loads(run("cargo", "metadata", "--locked", "--no-deps", "--format-version", "1", cwd=root))
 
 
 def package_maps(metadata: dict, root: Path) -> tuple[dict[str, dict], dict[Path, str]]:
@@ -84,8 +84,16 @@ def changed_files(root: Path, base: str | None, head: str) -> list[str]:
         diff_range = f"{base}..{head}"
     else:
         diff_range = f"{merge_base}...{head}"
-    output = run("git", "diff", "--name-only", "--diff-filter=ACDMRTUXB", diff_range, cwd=root)
-    return [line for line in output.splitlines() if line]
+    # A move affects both the old owner and the new owner. Rename detection's
+    # name-only output reports only the destination, losing the old package's
+    # reverse dependants. NUL delimiters also avoid Git quoting Unicode paths
+    # or splitting valid filenames containing newlines/leading whitespace.
+    output = subprocess.check_output(
+        ["git", "diff", "--no-renames", "--name-only", "-z",
+         "--diff-filter=ACDMRTUXB", diff_range, "--"], cwd=root,
+    )
+    return [path.decode("utf-8", errors="surrogateescape")
+            for path in output.split(b"\0") if path]
 
 
 def owner_for(path: str, by_dir: dict[Path, str]) -> str | None:
