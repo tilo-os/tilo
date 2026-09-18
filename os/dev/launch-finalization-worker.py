@@ -24,7 +24,8 @@ SOURCES = {SOURCE: 1789690573, '8fff1d6001b64a80bc730e87d3ffc529d2d9e70a': 17897
            '36c58be61ef1b25f24ae130c5ab4dde5d2350d45': 1789748444,
            'b4f01a7d5437d015950c9b79be37e673b09b829c': 1789749860,
            '344257f56275919abc63181d8954e838f9b5303e': 1789753377,
-           'a89fe484328ff4206c35f842c07c3824b9df18ef': 1789761500}
+           'a89fe484328ff4206c35f842c07c3824b9df18ef': 1789761500,
+           '317eb82f7178b14623350f933088093cd3cdfd23': 1789765461}
 HEX = re.compile(r'[0-9a-f]{64}')
 DIRECTORY_MODES = {'/var/lib': 0o755, '/var/lib/containers': 0o755,
                    '/work': 0o755, '/evidence': 0o700}
