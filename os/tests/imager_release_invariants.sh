@@ -237,7 +237,9 @@ grep -Fq 'sha256sum --check --strict "$(basename "$path").sha256"' "$workflow" \
   && ok 'every required release sidecar is validated before publication' \
   || bad 'release digest sidecars are checked for existence but not content'
 
-grep -Fq 'bash os/tests/imager_linux_release_trust.sh' \
+grep -Fxq 'os/tests/imager_linux_release_trust.sh' \
+    "$repo/tools/security-boundary-invariants.txt" \
+  && grep -Fq 'bash tools/run-security-boundary-invariants.sh' \
     "$repo/.forgejo/workflows/check.yml" \
   && ok 'Linux release trust tamper test runs in required checks' \
   || bad 'Linux release trust tamper test is not wired into CI'
