@@ -299,16 +299,10 @@ fn render_shot_to_png(
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
-    // theme-driven chrome can be proven across palettes; defaults to dark.
-    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    let theme = text_scale.map_or_else(
-        || theme.clone(),
-        |scale| theme.clone().with_text_scale(scale),
+    let theme = shot_theme(
+        std::env::var("TILO_SHOTS_THEME").ok().as_deref(),
+        text_scale,
+        shot_motion_reduced(),
     );
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
@@ -348,6 +342,39 @@ fn render_shot_to_png(
     Ok(())
 }
 
+/// Resolve Calendar's offscreen theme through the same accessibility choices
+/// as its launched app. Keeping it pure makes visual audit flags testable and
+/// prevents a PNG from silently claiming a high-contrast or reduced-motion
+/// pass that never reached the widget tree.
+fn shot_theme(theme_name: Option<&str>, text_scale: Option<f32>, reduce_motion: bool) -> Theme {
+    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
+    // theme-driven chrome can be proven across palettes; defaults to dark.
+    let theme = match theme_name {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
+    let theme = text_scale.map_or_else(
+        || theme.clone(),
+        |scale| theme.clone().with_text_scale(scale),
+    );
+    theme.with_reduce_motion(reduce_motion)
+}
+
+/// The custom offscreen renderer does not instantiate [`ui::App`], so it must
+/// read the same preference names explicitly before rendering a review frame.
+fn shot_motion_reduced() -> bool {
+    ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .any(|value| motion_env_value_enabled(&value))
+}
+
+fn motion_env_value_enabled(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,6 +388,23 @@ mod tests {
         for value in ["0.74", "2.01", "NaN", "bad"] {
             let args = vec!["calendar".into(), format!("--text-scale={value}")];
             assert_eq!(parse_text_scale_arg(&args), None, "rejected {value}");
+        }
+    }
+
+    #[test]
+    fn offscreen_a11y_theme_inputs_reach_calendar_widgets() {
+        let theme = shot_theme(Some("high-contrast"), Some(2.0), true);
+        assert_eq!(theme.name, Theme::high_contrast().name);
+        assert_eq!(theme.text_scale, 2.0);
+        assert!(
+            theme.reduce_motion,
+            "the reduced-motion review frame must carry the actual preference"
+        );
+        for value in ["1", "true", " yes "] {
+            assert!(motion_env_value_enabled(value), "accepted {value:?}");
+        }
+        for value in ["", "0", "false", " FALSE "] {
+            assert!(!motion_env_value_enabled(value), "rejected {value:?}");
         }
     }
 }

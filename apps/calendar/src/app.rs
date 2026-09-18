@@ -203,8 +203,12 @@ enum Action {
     ToggleSidebarCollapsed,
     /// Pop the narrow detail screen, returning to the calendar.
     BackToCalendar,
-    /// Toggle whether a synced remote calendar's events are shown.
-    ToggleCalendarVisible(String),
+    /// Set whether a synced remote calendar's events are shown. This carries
+    /// the resulting absolute value, never a replay-unsafe toggle.
+    SetCalendarVisible {
+        id: String,
+        visible: bool,
+    },
     /// Collapse/expand one account's calendar list in the sidebar.
     ToggleAccountCollapsed(String),
     /// Pull events from the configured `CalDAV` calendars.
@@ -495,6 +499,13 @@ pub struct CalendarApp {
     /// [`ActionSpec`](tilo_actions::ActionSpec) build the identical action.
     actions: ui::ActionHost,
 
+    /// The exact encoded non-document operation an on-screen Calendar control
+    /// sent through the resource-operation boundary. This is test-only because
+    /// effect/view operation history is owned by the invocation host, rather
+    /// than by Calendar's shared-document [`ActionHost`](ui::ActionHost).
+    #[cfg(test)]
+    last_local_resource_operation: Option<tilo_actions::EncodedAction>,
+
     /// The document heads the in-memory [`Model`] was last derived from. When the
     /// document moves past this out of band — a Ctrl+K palette action, a peer's
     /// change merged in — the next `sync` re-reads the model so those mutations
@@ -651,6 +662,8 @@ impl CalendarApp {
             resource_import_invocation: None,
             resource_import_result: None,
             actions: ui::ActionHost::new(),
+            #[cfg(test)]
+            last_local_resource_operation: None,
             model_heads: Vec::new(),
         };
         app.observe_calendar_projection();
@@ -1608,6 +1621,42 @@ impl CalendarApp {
         );
     }
 
+    /// Send a local effect through the same typed resource-operation protocol
+    /// that agents, search, history, and collaboration-aware hosts invoke.
+    ///
+    /// Device-private operations such as collection visibility intentionally
+    /// do not enter the shared event CRDT, but must still have one canonical
+    /// encoded envelope and one handler. Otherwise a pointer retry could drift
+    /// from an agent or screen-reader invocation of the same resource action.
+    fn invoke_local_calendar_effect(
+        &mut self,
+        operation: crate::actions::CalendarOperation,
+        doc: &AutoCommit,
+    ) -> Result<(), String> {
+        let encoded = tilo_actions::EncodedAction::encode_operation(
+            crate::actions::CALENDAR_OPERATION_TYPE,
+            &operation,
+        )
+        .map_err(|error| error.to_string())?;
+        #[cfg(test)]
+        {
+            self.last_local_resource_operation = Some(encoded.clone());
+        }
+        let handled = Widget::invoke_resource_operation(
+            self,
+            tilo_actions::OperationKind::Effect,
+            &encoded.type_id,
+            &encoded.payload,
+            doc,
+            &automerge::ROOT,
+        )?;
+        if handled {
+            Ok(())
+        } else {
+            Err("Calendar does not handle its advertised visibility operation".into())
+        }
+    }
+
     /// The last [`EncodedAction`](tilo_actions::EncodedAction) an on-screen
     /// affordance dispatched, for the button == [`ActionSpec`](tilo_actions::ActionSpec)
     /// covenant test: a control and its Ctrl+K entry must build the identical
@@ -1615,6 +1664,11 @@ impl CalendarApp {
     #[cfg(test)]
     fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
+    }
+
+    #[cfg(test)]
+    fn last_local_resource_operation(&self) -> Option<&tilo_actions::EncodedAction> {
+        self.last_local_resource_operation.as_ref()
     }
 
     /// The source calendar id to queue a `CalDAV` delete for when an event is
@@ -2535,11 +2589,11 @@ impl CalendarApp {
 
     // --- event form model edits -----------------------------------------
 
-    /// Toggle a Settings-owned collection only after its new state has been
-    /// durably written to the canonical shared account store. The demo/test
-    /// store is intentionally in-memory, but live Calendar never presents an
-    /// unsaved visibility change as successful.
-    fn toggle_calendar_visibility(&mut self, id: &str) {
+    /// Commit an *absolute* collection visibility state to the Settings-owned
+    /// account store. Absolute intent means the screen-reader row, Ctrl+K
+    /// resource action, and an agent retry cannot accidentally invert a newer
+    /// user choice by replaying a toggle.
+    fn set_calendar_visibility(&mut self, id: &str, visible: bool) -> Result<(), String> {
         let mut updated = self.accounts.clone();
         let Some(calendar) = updated
             .accounts
@@ -2547,16 +2601,17 @@ impl CalendarApp {
             .flat_map(|account| account.calendars.iter_mut())
             .find(|calendar| calendar.id == id)
         else {
-            self.status = Some("That calendar is no longer configured".into());
-            return;
+            return Err("That calendar is no longer configured".into());
         };
-        calendar.visible = !calendar.visible;
+        if calendar.visible == visible {
+            return Ok(());
+        }
+        calendar.visible = visible;
 
         if !self.demo
             && let Err(error) = updated.persist()
         {
-            self.status = Some(format!("Couldn't save calendar visibility: {error}"));
-            return;
+            return Err(format!("Couldn't save calendar visibility: {error}"));
         }
 
         self.accounts = updated;
@@ -2564,6 +2619,7 @@ impl CalendarApp {
         // catalogue on its next pass without projecting notes again.
         self.observe_calendar_projection();
         self.dirty = true;
+        Ok(())
     }
 
     /// Persist a sidebar disclosure preference through the same shared account
@@ -3403,8 +3459,13 @@ impl CalendarApp {
                 // now-hidden title/location/notes.
                 self.blur_editor();
             }
-            Action::ToggleCalendarVisible(id) => {
-                self.toggle_calendar_visibility(&id);
+            Action::SetCalendarVisible { id, visible } => {
+                if let Err(error) = self.invoke_local_calendar_effect(
+                    crate::actions::CalendarOperation::SetCalendarVisible { id, visible },
+                    doc,
+                ) {
+                    self.status = Some(error);
+                }
             }
             Action::ToggleAccountCollapsed(id) => {
                 self.toggle_account_collapsed(&id);
@@ -3556,10 +3617,84 @@ impl CalendarApp {
             ),
             Action::ToggleSidebarCollapsed => (
                 "calendar.sidebar-width".into(),
-                "Expand calendars sidebar".into(),
+                if self.sidebar.is_collapsed() {
+                    "Expand calendars sidebar".into()
+                } else {
+                    "Collapse calendars sidebar".into()
+                },
+                Role::ToggleButton,
+                AccessState::new()
+                    .focusable(true)
+                    .checked(!self.sidebar.is_collapsed()),
+            ),
+            Action::DismissSidebar => (
+                "calendar.sidebar.dismiss".into(),
+                "Dismiss calendars sidebar".into(),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
+            Action::List(selection) => {
+                let (target, label) = match selection {
+                    ListSel::Inbox => ("calendar.list:inbox".to_string(), "Inbox".to_string()),
+                    ListSel::Today => ("calendar.list:today".to_string(), "Today".to_string()),
+                    ListSel::Upcoming => {
+                        ("calendar.list:upcoming".to_string(), "Upcoming".to_string())
+                    }
+                    ListSel::Completed => (
+                        "calendar.list:completed".to_string(),
+                        "Completed".to_string(),
+                    ),
+                    ListSel::Project(id) => (
+                        format!("{}:open", crate::actions::project_resource_id(*id)),
+                        self.model
+                            .projects
+                            .iter()
+                            .find(|project| project.id == *id)
+                            .map_or_else(|| "project".to_string(), |project| project.name.clone()),
+                    ),
+                };
+                (
+                    target,
+                    format!("Show tasks in {label}"),
+                    Role::RadioButton,
+                    AccessState::new()
+                        .focusable(true)
+                        .checked(self.list_sel == *selection),
+                )
+            }
+            Action::SetCalendarVisible { id, visible: _ } => {
+                let calendar = self
+                    .accounts
+                    .all_calendars()
+                    .find_map(|(_, calendar)| (calendar.id == *id).then_some(calendar));
+                let (name, current_visible) = calendar.map_or_else(
+                    || ("calendar".to_string(), false),
+                    |calendar| (calendar.name.clone(), calendar.visible),
+                );
+                (
+                    format!("{}:visibility", crate::actions::calendar_resource_id(id)),
+                    format!("Show calendar {name}"),
+                    Role::Checkbox,
+                    AccessState::new().focusable(true).checked(current_visible),
+                )
+            }
+            Action::ToggleAccountCollapsed(id) => {
+                let account = self
+                    .accounts
+                    .accounts
+                    .iter()
+                    .find(|account| account.id == *id);
+                let (name, expanded) = account.map_or_else(
+                    || ("calendar account".to_string(), false),
+                    |account| (account.label().to_string(), !account.collapsed),
+                );
+                (
+                    format!("calendar.account:{id}:expanded"),
+                    format!("{name} calendars"),
+                    Role::Button,
+                    AccessState::new().focusable(true).expanded(expanded),
+                )
+            }
             Action::BackToCalendar | Action::CloseDetail => (
                 "calendar.back".into(),
                 "Back to calendar".into(),
@@ -3595,6 +3730,24 @@ impl CalendarApp {
             Action::PickDate(day) | Action::OpenDay(day) => (
                 format!("calendar.date:{day}:open"),
                 format!("Open {}", date::fmt_day_long(*day)),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::MiniMonth(MiniMonthOutcome::SelectDate(day)) => (
+                format!("calendar.mini-date:{day}"),
+                format!("Select {}", date::fmt_day_long(*day)),
+                Role::Button,
+                AccessState::new()
+                    .focusable(true)
+                    .selected(self.anchor == *day),
+            ),
+            Action::MiniMonth(MiniMonthOutcome::ShiftMonth(months)) => (
+                format!("calendar.mini-month:{months}"),
+                if *months < 0 {
+                    "Previous month".into()
+                } else {
+                    "Next month".into()
+                },
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
@@ -4116,7 +4269,13 @@ impl CalendarApp {
                         t * Affine::translate((row.x0 + 32.0, row.center().y - 8.0)),
                         None,
                     );
-                    hits.push((row, Action::ToggleCalendarVisible(cal.id.clone())));
+                    hits.push((
+                        row,
+                        Action::SetCalendarVisible {
+                            id: cal.id.clone(),
+                            visible: !cal.visible,
+                        },
+                    ));
                     y += 32.0;
                 }
             }
@@ -4639,8 +4798,17 @@ impl CalendarApp {
         let c = &theme.tokens.colors;
         if modal {
             // Dim the calendar behind the card; a click on the dim closes the
-            // editor. The card is a floating panel, not a docked strip.
-            fill_rect(scene, t, c.surfaces.overlay, self.content_rect);
+            // editor. `surfaces.overlay` is an opaque token suitable for a
+            // full-screen drawer; here the calendar must remain legible as
+            // context, otherwise a desktop modal reads like it opened into an
+            // empty black window. The card is a floating panel, not a docked
+            // strip.
+            fill_rect(
+                scene,
+                t,
+                c.surfaces.overlay.with_alpha(0.58),
+                self.content_rect,
+            );
             hits.push((self.content_rect, Action::CloseDetail));
             let shadow = r.inflate(6.0, 10.0);
             fill_round(scene, t, Color::from_rgba8(0, 0, 0, 90), shadow, 18.0);
@@ -6247,6 +6415,17 @@ impl Widget for CalendarApp {
             }
             (tilo_actions::OperationKind::View, crate::actions::CalendarOperation::ShowAgenda) => {
                 self.view = View::Agenda;
+            }
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::CalendarOperation::SetCalendarVisible { id, visible },
+            ) => {
+                self.set_calendar_visibility(&id, visible)?;
+                self.status = Some(if visible {
+                    "Calendar is now visible".into()
+                } else {
+                    "Calendar is now hidden".into()
+                });
             }
             (tilo_actions::OperationKind::Effect, crate::actions::CalendarOperation::Sync) => {
                 if self.syncing {
@@ -7866,6 +8045,12 @@ mod tests {
         )
         .expect("collection resolves with a current child context");
         assert!(resource.actions.iter().any(|action| action.id == "open"));
+        let visibility_action = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "set-visibility")
+            .expect("collection exposes its Settings-owned visibility policy");
+        assert_eq!(visibility_action.label, "Hide calendar");
         let payload = serde_json::to_vec(&crate::actions::CalendarOperation::OpenCalendar {
             id: calendar.id.clone(),
         })
@@ -7882,6 +8067,40 @@ mod tests {
             .expect("collection operation is accepted")
         );
         assert_eq!(app.calendar_filter.as_deref(), Some(calendar.id.as_str()));
+
+        let payload = serde_json::to_vec(&crate::actions::CalendarOperation::SetCalendarVisible {
+            id: calendar.id.clone(),
+            visible: false,
+        })
+        .expect("operation serializes");
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                tilo_actions::OperationKind::Effect,
+                crate::actions::CALENDAR_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &ROOT,
+            )
+            .expect("visibility operation is accepted")
+        );
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                tilo_actions::OperationKind::Effect,
+                crate::actions::CALENDAR_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &ROOT,
+            )
+            .expect("replaying an absolute visibility operation is accepted")
+        );
+        assert!(
+            app.accounts
+                .all_calendars()
+                .find_map(|(_, item)| (item.id == calendar.id).then_some(item.visible))
+                .is_some_and(|visible| !visible)
+        );
     }
 
     #[test]
@@ -9136,6 +9355,164 @@ mod tests {
     }
 
     #[test]
+    fn accessibility_exposes_sidebar_lists_and_calendar_visibility_controls() {
+        use tilo_actions::ActionInput;
+
+        fn immediate(spec: &tilo_actions::ActionSpec) -> tilo_actions::EncodedAction {
+            match &spec.input {
+                ActionInput::Immediate(encoded) => encoded.clone(),
+                ActionInput::Prompted { .. } => panic!("{} must not prompt", spec.id),
+            }
+        }
+
+        let mut app = CalendarApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        app.rect = Rect::new(0.0, 0.0, 1_280.0, 800.0);
+        app.relayout();
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        app.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+
+        let tree = app.accessibility().expect("calendar has a semantic window");
+        let today = tree
+            .children
+            .iter()
+            .find(|node| node.action_target.as_deref() == Some("calendar.list:today"))
+            .expect("Today smart list is reachable to assistive technology");
+        assert_eq!(today.role, Role::RadioButton);
+        assert_eq!(today.state.checked, Some(true));
+
+        let (calendar_id, before) = app
+            .accounts
+            .accounts
+            .iter()
+            .flat_map(|account| account.calendars.iter())
+            .next()
+            .map(|calendar| (calendar.id.clone(), calendar.visible))
+            .expect("demo has one configured remote calendar");
+        let target = format!(
+            "{}:visibility",
+            crate::actions::calendar_resource_id(&calendar_id)
+        );
+        let visibility = tree
+            .children
+            .iter()
+            .find(|node| node.action_target.as_deref() == Some(target.as_str()))
+            .expect("calendar visibility is a semantic checkbox");
+        assert_eq!(visibility.role, Role::Checkbox);
+        assert_eq!(visibility.state.checked, Some(before));
+
+        let resource = <CalendarApp as tilo_actions::ResourceProvider>::resource(
+            &app,
+            &state,
+            &crate::actions::calendar_resource_id(&calendar_id),
+        )
+        .expect("configured calendar is an exact resource");
+        let pointer_spec = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "set-visibility")
+            .expect("calendar resource exposes the visibility operation");
+        let pointer_payload = immediate(pointer_spec);
+        app.apply_action(
+            Action::SetCalendarVisible {
+                id: calendar_id.clone(),
+                visible: !before,
+            },
+            &mut state,
+        );
+        assert_eq!(
+            app.last_local_resource_operation(),
+            Some(&pointer_payload),
+            "the pointer row sends the exact resource action envelope"
+        );
+        assert_eq!(
+            app.accounts
+                .all_calendars()
+                .find_map(|(_, item)| (item.id == calendar_id).then_some(item.visible)),
+            Some(!before),
+            "the pointer action reaches the Settings-owned absolute setter"
+        );
+
+        // Rebuild the hit map after the pointer action. Its newly published
+        // resource action carries the opposite absolute state for the
+        // screen-reader checkbox as well.
+        let resource = <CalendarApp as tilo_actions::ResourceProvider>::resource(
+            &app,
+            &state,
+            &crate::actions::calendar_resource_id(&calendar_id),
+        )
+        .expect("visibility change keeps the configured resource addressable");
+        let semantic_payload = immediate(
+            resource
+                .actions
+                .iter()
+                .find(|action| action.id == "set-visibility")
+                .expect("resource republishes the inverse absolute operation"),
+        );
+        let mut scene = Scene::new();
+        app.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        assert!(app.perform_semantic_action(
+            &target,
+            &A11yAction::ToggleCheck,
+            &mut state,
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            app.last_local_resource_operation(),
+            Some(&semantic_payload),
+            "the screen-reader checkbox sends the exact resource action envelope"
+        );
+        assert_eq!(
+            app.accounts
+                .accounts
+                .iter()
+                .flat_map(|account| account.calendars.iter())
+                .find(|item| item.id == calendar_id)
+                .map(|item| item.visible),
+            Some(before),
+            "screen-reader activation follows the same absolute Settings-backed operation as the row"
+        );
+
+        // Replaying this absolute payload must converge on the requested value
+        // rather than invert it as a toggle would.
+        for _ in 0..2 {
+            assert!(
+                Widget::invoke_resource_operation(
+                    &mut app,
+                    tilo_actions::OperationKind::Effect,
+                    &semantic_payload.type_id,
+                    &semantic_payload.payload,
+                    &state,
+                    &automerge::ROOT,
+                )
+                .expect("published visibility action is accepted")
+            );
+        }
+        assert_eq!(
+            app.accounts
+                .all_calendars()
+                .find_map(|(_, item)| (item.id == calendar_id).then_some(item.visible)),
+            Some(before),
+            "two replays retain the requested absolute visibility state"
+        );
+    }
+
+    #[test]
     fn escape_blurs_notes_before_dismissing_the_editor() {
         let mut h = Harness::new(1280, 800);
         h.app.title_input.set_focus(false);
@@ -9297,7 +9674,13 @@ mod tests {
             .unwrap()
             .1
             .visible;
-        app.apply_action(Action::ToggleCalendarVisible(id.clone()), &mut state);
+        app.apply_action(
+            Action::SetCalendarVisible {
+                id: id.clone(),
+                visible: false,
+            },
+            &mut state,
+        );
         let after = app
             .accounts
             .all_calendars()
@@ -10069,7 +10452,10 @@ mod tests {
         );
 
         app.apply_action(
-            Action::ToggleCalendarVisible("work/default".into()),
+            Action::SetCalendarVisible {
+                id: "work/default".into(),
+                visible: false,
+            },
             &mut state,
         );
         assert!(
@@ -10078,7 +10464,10 @@ mod tests {
         );
 
         app.apply_action(
-            Action::ToggleCalendarVisible("work/default".into()),
+            Action::SetCalendarVisible {
+                id: "work/default".into(),
+                visible: true,
+            },
             &mut state,
         );
         assert!(
@@ -10248,7 +10637,7 @@ mod tests {
             );
             app.hits
                 .iter()
-                .filter(|(_, a)| matches!(a, Action::ToggleCalendarVisible(_)))
+                .filter(|(_, a)| matches!(a, Action::SetCalendarVisible { .. }))
                 .count()
         }
 
