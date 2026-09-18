@@ -103,6 +103,36 @@ fn drive_text_input(
     );
 }
 
+/// Drive the retained shared menu from Chat's immediate-mode event host.
+/// The temporary layout node only satisfies `Widget::handle_event`; menu
+/// geometry is established synchronously by `open_at_clamped`.
+fn drive_context_menu(
+    menu: &mut ui::widget::ContextMenu,
+    event: &WindowEvent,
+    scale: f64,
+    modifiers: Modifiers,
+    doc: &mut AutoCommit,
+) -> bool {
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let Ok(node) = taffy.new_leaf(Style::default()) else {
+        return false;
+    };
+    let mut handled = false;
+    let mut focus_target = None;
+    menu.handle_event(
+        event,
+        scale,
+        &modifiers,
+        doc,
+        &automerge::ROOT,
+        &mut handled,
+        &mut focus_target,
+        node,
+        &taffy,
+    );
+    handled
+}
+
 impl ChatApp {
     pub(crate) fn dispatch_event(
         &mut self,
@@ -112,22 +142,9 @@ impl ChatApp {
         doc: &mut AutoCommit,
         handled: &mut bool,
     ) {
-        if matches!(
-            event,
-            WindowEvent::MouseWheel { .. }
-                | WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    ..
-                }
-                | WindowEvent::KeyboardInput {
-                    event: KeyEvent {
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                    ..
-                }
-        ) {
-            let _ = self.tooltips.dismiss();
+        if self.route_context_menu_event(event, scale, modifiers, doc) {
+            *handled = true;
+            return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -195,6 +212,49 @@ impl ChatApp {
             }
             _ => {}
         }
+    }
+
+    /// Give an open shared context menu first refusal. Its selection index is
+    /// translated back to Chat's typed action only after the widget closes,
+    /// keeping all mutation in the existing `ActionHost` path.
+    fn route_context_menu_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: Modifiers,
+        doc: &mut AutoCommit,
+    ) -> bool {
+        let Some(mut menu) = self.menu.take() else {
+            return false;
+        };
+        let widget_handled = drive_context_menu(&mut menu.widget, event, scale, modifiers, doc);
+        let selection = menu.widget.take_selection();
+        let selected = selection.and_then(|index| menu.items.get(index).copied());
+        let target = menu.target.clone();
+        let still_open = menu.widget.is_open();
+        if still_open {
+            self.menu = Some(menu);
+        }
+        if let Some(action) = selected {
+            if self.can_participate() {
+                self.apply_menu_action(target, action, doc);
+            }
+            return true;
+        }
+
+        // The menu is modal while open: typing, scrolling and left-button
+        // transitions must not leak into the composer or content beneath it.
+        widget_handled
+            || matches!(
+                event,
+                WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::Ime(_)
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::MouseInput {
+                        button: MouseButton::Left,
+                        ..
+                    }
+            )
     }
 
     /// A pointer move: live-drags the floating call overlay or an in-progress
@@ -582,27 +642,33 @@ impl ChatApp {
     /// under the cursor.
     fn on_right_click(&mut self, hit: Hit) {
         let menu = match hit {
-            Hit::Channel(id) | Hit::VoiceChannel(id) => Some(ContextMenu {
-                target: MenuTarget::Channel(id),
-                anchor: self.last_mouse,
-                items: MenuAction::for_channel().to_vec(),
-            }),
-            Hit::CategoryToggle(id) | Hit::AddChannel { category: id, .. } => Some(ContextMenu {
-                target: MenuTarget::Category(id),
-                anchor: self.last_mouse,
-                items: MenuAction::for_category().to_vec(),
-            }),
+            Hit::Channel(id) | Hit::VoiceChannel(id) => Some(ContextMenu::new(
+                MenuTarget::Channel(id),
+                self.last_mouse,
+                MenuAction::for_channel().to_vec(),
+                self.rect,
+            )),
+            Hit::CategoryToggle(id) | Hit::AddChannel { category: id, .. } => {
+                Some(ContextMenu::new(
+                    MenuTarget::Category(id),
+                    self.last_mouse,
+                    MenuAction::for_category().to_vec(),
+                    self.rect,
+                ))
+            }
             // One of your own messages — offer the message actions (Edit).
-            Hit::MessageMenu { msg } => Some(ContextMenu {
-                target: MenuTarget::Message(msg),
-                anchor: self.last_mouse,
-                items: MenuAction::for_message().to_vec(),
-            }),
-            _ => Some(ContextMenu {
-                target: MenuTarget::Workspace(self.active_ws.clone()),
-                anchor: self.last_mouse,
-                items: vec![MenuAction::NewCategory],
-            }),
+            Hit::MessageMenu { msg } => Some(ContextMenu::new(
+                MenuTarget::Message(msg),
+                self.last_mouse,
+                MenuAction::for_message().to_vec(),
+                self.rect,
+            )),
+            _ => Some(ContextMenu::new(
+                MenuTarget::Workspace(self.active_ws.clone()),
+                self.last_mouse,
+                vec![MenuAction::NewCategory],
+                self.rect,
+            )),
         };
         self.menu = menu;
     }
@@ -627,10 +693,8 @@ impl ChatApp {
         self.revealed_message = None;
         self.reveal_scroll_pending = false;
         self.revealed_person = None;
-        // Any click dismisses an open context menu unless it's a menu action.
-        if !matches!(hit, Hit::MenuAction { .. }) {
-            self.menu = None;
-        }
+        // Ordinary content activation dismisses the modal context menu.
+        self.menu = None;
         match hit {
             Hit::Inbox => {
                 self.inbox_open = true;
@@ -654,10 +718,6 @@ impl ChatApp {
             }
             Hit::EditSave => self.commit_edit(doc),
             Hit::EditCancel => self.cancel_edit(),
-            Hit::MenuAction { target, action } if self.can_participate() => {
-                self.menu = None;
-                self.apply_menu_action(target, action, doc);
-            }
             Hit::AddChannel {
                 workspace,
                 category,
@@ -1052,7 +1112,12 @@ impl ChatApp {
 
     // --- structure CRUD ---------------------------------------------------
 
-    fn apply_menu_action(&mut self, target: MenuTarget, action: MenuAction, doc: &mut AutoCommit) {
+    pub(crate) fn apply_menu_action(
+        &mut self,
+        target: MenuTarget,
+        action: MenuAction,
+        doc: &mut AutoCommit,
+    ) {
         match target {
             MenuTarget::Channel(id) => self.apply_channel_action(&id, action, doc),
             MenuTarget::Category(id) => self.apply_category_action(&id, action, doc),
@@ -1735,6 +1800,41 @@ mod tests {
         (app, doc)
     }
 
+    /// Exercise a domain action through the retained menu's semantic
+    /// activation channel—the same selection channel used by Enter/click.
+    fn activate_context_menu_action(
+        app: &mut ChatApp,
+        doc: &mut AutoCommit,
+        target: MenuTarget,
+        action: MenuAction,
+    ) {
+        let items = match &target {
+            MenuTarget::Channel(_) => MenuAction::for_channel().to_vec(),
+            MenuTarget::Category(_) => MenuAction::for_category().to_vec(),
+            MenuTarget::Message(_) => MenuAction::for_message().to_vec(),
+            MenuTarget::Workspace(_) => vec![MenuAction::NewCategory],
+        };
+        let index = items
+            .iter()
+            .position(|candidate| *candidate == action)
+            .expect("action belongs to this menu");
+        app.rect = vello::kurbo::Rect::new(0.0, 0.0, 900.0, 700.0);
+        app.menu = Some(ContextMenu::new(
+            target,
+            Point::new(120.0, 120.0),
+            items,
+            app.rect,
+        ));
+        assert!(ui::Widget::perform_semantic_action(
+            app,
+            &format!("context-menu:item:{index}"),
+            &ui::a11y::Action::Activate,
+            doc,
+            &automerge::ROOT,
+        ));
+        assert!(app.menu.is_none(), "selection closes the modal menu");
+    }
+
     /// Covenant — one source of truth: the on-screen "Delete channel" context-menu
     /// affordance builds the **byte-identical** [`EncodedAction`] the Ctrl+K
     /// palette's delete spec exports for the same channel. Drives the real menu →
@@ -1760,12 +1860,11 @@ mod tests {
         };
 
         // Drive the real on-screen affordance (right-click menu → Delete).
-        app.on_hit(
-            Hit::MenuAction {
-                target: MenuTarget::Channel("c_crit".into()),
-                action: MenuAction::Delete,
-            },
+        activate_context_menu_action(
+            &mut app,
             &mut doc,
+            MenuTarget::Channel("c_crit".into()),
+            MenuAction::Delete,
         );
         let dispatched = app
             .last_dispatched()
@@ -2065,16 +2164,63 @@ mod tests {
     fn context_menu_delete_removes_a_channel() {
         let (mut app, mut doc) = app_with_doc();
         assert!(app.channels.iter().any(|c| c.id == "c_random"));
-        app.on_hit(
-            Hit::MenuAction {
-                target: MenuTarget::Channel("c_random".into()),
-                action: MenuAction::Delete,
-            },
+        activate_context_menu_action(
+            &mut app,
             &mut doc,
+            MenuTarget::Channel("c_random".into()),
+            MenuAction::Delete,
         );
         assert!(
             !app.channels.iter().any(|c| c.id == "c_random"),
             "channel deleted via menu"
+        );
+    }
+
+    #[test]
+    fn context_menu_is_modal_keyboard_operable_and_accessible() {
+        let (mut app, mut doc) = app_with_doc();
+        app.rect = vello::kurbo::Rect::new(0.0, 0.0, 900.0, 700.0);
+        app.menu = Some(ContextMenu::new(
+            MenuTarget::Channel("c_random".into()),
+            Point::new(850.0, 680.0),
+            MenuAction::for_channel().to_vec(),
+            app.rect,
+        ));
+
+        let root = ui::Widget::accessibility(&app).expect("Chat semantic root");
+        let menu = root
+            .children
+            .iter()
+            .find(|node| node.role == ui::a11y::Role::Menu)
+            .expect("open shared menu is in Chat's semantic tree");
+        assert_eq!(menu.children.len(), MenuAction::for_channel().len());
+        assert_eq!(menu.children[0].name.as_deref(), Some("Delete"));
+        assert_eq!(
+            menu.children[1].name.as_deref(),
+            Some("Archive / unarchive")
+        );
+        assert!(
+            menu.children[1].state.focused,
+            "safe initial focus skips the destructive first action"
+        );
+        assert!(ui::Widget::traps_focus(&app));
+        let capture = ui::Widget::modal_capture(&app).expect("menu captures input");
+        assert!(app.rect.contains(capture.center()));
+
+        let mut handled = false;
+        app.dispatch_event(
+            &key_named(NamedKey::Enter),
+            1.0,
+            Modifiers::default(),
+            &mut doc,
+            &mut handled,
+        );
+        assert!(handled);
+        assert!(app.menu.is_none());
+        assert!(
+            app.channel("c_random")
+                .is_some_and(|channel| channel.archived),
+            "Enter activates the safely focused non-destructive action"
         );
     }
 
@@ -2358,12 +2504,11 @@ mod tests {
         assert!(!app.message("m_me1").unwrap().edited);
 
         // The right-click menu resolves to this action; invoke it directly.
-        app.on_hit(
-            Hit::MenuAction {
-                target: MenuTarget::Message("m_me1".into()),
-                action: MenuAction::EditMessage,
-            },
+        activate_context_menu_action(
+            &mut app,
             &mut doc,
+            MenuTarget::Message("m_me1".into()),
+            MenuAction::EditMessage,
         );
         assert!(
             app.editing.is_some(),
@@ -3833,12 +3978,11 @@ mod tests {
         let order =
             |app: &ChatApp, id: &str| app.channels.iter().find(|c| c.id == id).unwrap().order;
         assert!(order(&app, "c_crit") > order(&app, "c_general"));
-        app.on_hit(
-            Hit::MenuAction {
-                target: MenuTarget::Channel("c_crit".into()),
-                action: MenuAction::MoveUp,
-            },
+        activate_context_menu_action(
+            &mut app,
             &mut doc,
+            MenuTarget::Channel("c_crit".into()),
+            MenuAction::MoveUp,
         );
         assert!(
             order(&app, "c_crit") < order(&app, "c_general"),

@@ -901,6 +901,27 @@ impl VideoDoc {
         }
     }
 
+    /// Replace an effect stack together with the animation tracks whose
+    /// positional encoding follows that stack. Reorder/remove/clear actions
+    /// must use this pair so collaborators never observe an effect inheriting
+    /// another instance's amount curve.
+    pub fn set_clip_effects_and_animation(
+        doc: &mut AutoCommit,
+        id: Uuid,
+        effects: &[ClipEffect],
+        animation: &crate::param::ClipAnimation,
+    ) -> bool {
+        let Ok(Some((Value::Object(ObjType::Map), clips))) = doc.get(&ROOT, "clips") else {
+            return false;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), clip))) = doc.get(&clips, id.to_string()) else {
+            return false;
+        };
+        let effects = serde_json::to_string(effects).unwrap_or_else(|_| "[]".to_string());
+        let animation = serde_json::to_string(animation).unwrap_or_else(|_| "{}".to_string());
+        doc.put(&clip, "effects", effects).is_ok() && doc.put(&clip, "anim", animation).is_ok()
+    }
+
     /// Replace one existing clip scalar without materialising a stale clip map.
     /// The action layer owns the allowlist; this primitive only provides the
     /// narrow CRDT write used after that validation.
