@@ -174,6 +174,7 @@ RUN mkdir -p -m 0700 /work/module-signing \
 # ---- Merge our config fragment on top of Fedora's --------------------------
 COPY os/kernel/config-fragments/ /work/kernel-config/
 COPY os/kernel/build-support.sh /work/kernel-build-support.sh
+COPY os/kernel/check-config.py /work/check-config.py
 
 # The prepared source lands at /work/rpmbuild/BUILD/kernel-<VER>/linux-<VER>-<ARCH>/
 # with a resolved .config in place.  Use the in-tree merge_config.sh (the
@@ -224,23 +225,7 @@ RUN set -eux; \
         "/work/kernel-config/$ARCH.config" > /work/tilo-effective.config; \
     scripts/kconfig/merge_config.sh -m .config /work/tilo-effective.config; \
     make olddefconfig; \
-    fragment_missing=""; \
-    while IFS= read -r line; do \
-        symbol=""; want=""; \
-        case "$line" in \
-          CONFIG_*=n) symbol="${line%%=*}"; want="# $symbol is not set" ;; \
-          CONFIG_*=*) symbol="${line%%=*}"; want="$line" ;; \
-          \#\ CONFIG_*\ is\ not\ set) symbol="${line#\# }"; symbol="${symbol%% *}"; want="$line" ;; \
-          *) continue ;; \
-        esac; \
-        if ! grep -Fqx "$want" .config; then \
-          actual="$(grep -E "^(# )?${symbol}(=| is not set)" .config | head -1 || true)"; \
-          echo "  MISSING $want (resolved to: ${actual:-absent})"; \
-          fragment_missing="$fragment_missing $symbol"; \
-        fi; \
-    done < /work/tilo-effective.config; \
-    [ -z "$fragment_missing" ] \
-      || { echo "kernel config lost fragment settings:$fragment_missing"; exit 1; }; \
+    python3 /work/check-config.py .config --fragment /work/tilo-effective.config; \
     diff -u /work/fedora.config .config | head -200 > /work/config.diff || true; \
     echo "----- effective config diff (top 200 lines) -----"; \
     cat /work/config.diff; \
@@ -336,7 +321,7 @@ RUN set -eux; \
         '# CONFIG_TIPC is not set' \
         '# CONFIG_X25 is not set' \
     ; do \
-        if grep -qx "$opt" .config; then echo "  ok      $opt"; \
+        if python3 /work/check-config.py .config --expect "$opt"; then echo "  ok      $opt"; \
         else echo "  MISSING $opt (resolved to: $(grep -E "^(# )?${opt%%=*}[ =]" .config || echo 'absent'))"; missing="$missing $opt"; fi; \
     done; \
     if [ "$ARCH" = x86_64 ]; then \
@@ -351,14 +336,14 @@ RUN set -eux; \
           '# CONFIG_PARPORT is not set' '# CONFIG_BLK_DEV_FD is not set' \
           '# CONFIG_PCCARD is not set' \
           CONFIG_SCHED_MC_PRIO=y; do \
-        if grep -qx "$opt" .config; then echo "  ok      $opt"; \
+        if python3 /work/check-config.py .config --expect "$opt"; then echo "  ok      $opt"; \
         else echo "  MISSING $opt"; missing="$missing $opt"; fi; \
       done; \
     else \
       for opt in CONFIG_ARM64_PTR_AUTH=y CONFIG_ARM64_PTR_AUTH_KERNEL=y \
           CONFIG_ARM64_BTI=y CONFIG_RANDOMIZE_BASE=y \
           CONFIG_RANDOMIZE_MODULE_REGION_FULL=y; do \
-        if grep -qx "$opt" .config; then echo "  ok      $opt"; \
+        if python3 /work/check-config.py .config --expect "$opt"; then echo "  ok      $opt"; \
         else echo "  MISSING $opt"; missing="$missing $opt"; fi; \
       done; \
     fi; \
