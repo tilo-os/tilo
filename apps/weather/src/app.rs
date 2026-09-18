@@ -511,7 +511,7 @@ impl Widget for WeatherApp {
                 retry: RetryPolicy::Idempotent,
                 execution: ExecutionMode::Background { cancellable: false },
                 discovery: DiscoveryScope::Launchable,
-                result: ResultSpec::None,
+                result: ResultSpec::Job,
                 ..ActionContract::default()
             }));
         }
@@ -558,7 +558,7 @@ impl Widget for WeatherApp {
                             retry: RetryPolicy::Idempotent,
                             execution: ExecutionMode::Background { cancellable: false },
                             discovery: DiscoveryScope::Launchable,
-                            result: ResultSpec::None,
+                            result: ResultSpec::Job,
                             ..ActionContract::default()
                         }));
                     }
@@ -1916,7 +1916,33 @@ mod interaction_tests {
     #[test]
     fn location_resources_separate_view_default_and_reorder_actions() {
         let h = Harness::new(1280.0, 720.0);
-        let root = Widget::resources(&h.app, &h.state.doc).pop().unwrap();
+        let resources = Widget::resources(&h.app, &h.state.doc);
+        let handlers: std::collections::HashSet<String> = h
+            .app
+            .local_resource_operation_handlers()
+            .iter()
+            .map(|handler| (*handler).to_string())
+            .collect();
+        let mut registry = tilo_actions::ActionRegistry::default();
+        crate::actions::register(&mut registry);
+        let violations = tilo_actions::validate_surface(&resources, &registry, &handlers);
+        assert!(violations.is_empty(), "{violations:?}");
+        let root = &resources[0];
+        for resource in std::iter::once(root).chain(root.children.iter()) {
+            let refresh = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "refresh")
+                .unwrap();
+            assert_eq!(refresh.contract.result, ResultSpec::Job);
+            assert!(
+                refresh
+                    .contract
+                    .result
+                    .validate(&tilo_actions::ActionOutput::default())
+                    .is_ok()
+            );
+        }
         let first = &root.children[0];
         let second = &root.children[1];
         assert!(first.actions.iter().any(|action| action.id == "open"));
