@@ -58,6 +58,12 @@ pub const IMAGE_KIND: &str = "photos.image";
 pub const FAVORITES_KIND: &str = "photos.favorites";
 /// A derived collection of the explicitly shared photo locations.
 pub const PLACES_KIND: &str = "photos.places";
+/// The complete chronological browse surface. It is distinct from the
+/// library resource so an agent can open a position in time rather than an
+/// arbitrary insertion-ordered collection.
+pub const TIMELINE_KIND: &str = "photos.timeline";
+pub const TIMELINE_MONTH_KIND: &str = "photos.timeline.month";
+pub const TIMELINE_DAY_KIND: &str = "photos.timeline.day";
 pub const PHOTOS_OPERATION_TYPE: &str = "photos.operation";
 /// Contextual enumeration is intentionally small; callers resolve any stable
 /// id outside this window through `ResourceProvider::resource`.
@@ -66,6 +72,11 @@ const ALBUM_CONTEXT_LIMIT: usize = 24;
 const FOLDER_CONTEXT_LIMIT: usize = 24;
 const PERSON_CONTEXT_LIMIT: usize = 24;
 const TAG_CONTEXT_LIMIT: usize = 24;
+/// A resource survey remains small even when the library has years of daily
+/// photographs. Exact stable ids and the search catalogue still resolve any
+/// extant boundary.
+const TIMELINE_MONTH_CONTEXT_LIMIT: usize = 24;
+const TIMELINE_DAY_CONTEXT_LIMIT: usize = 48;
 const MAX_RESOURCE_ID_CHARS: usize = 4_096;
 const MAX_ALBUM_ID_CHARS: usize = 160;
 const MAX_NAME_CHARS: usize = 256;
@@ -75,6 +86,18 @@ const MAX_ANALYSIS_TEXT_CHARS: usize = crate::analysis::MAX_OCR_CHARS;
 const MAX_ANALYSIS_LABELS: usize = 64;
 const MAX_ANALYSIS_LABEL_CHARS: usize = 128;
 type LabelCounts = Vec<(String, usize)>;
+
+/// A stable, metadata-only position in the chronological timeline.
+///
+/// No timezone conversion or inferred capture date is involved: `Month` and
+/// `Day` occur only when an imported/shared capture value actually starts
+/// with that ISO calendar boundary. Non-calendar values are deliberately
+/// absent instead of being assigned an invented date.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TimelineAnchor {
+    Month { month: String },
+    Day { day: String },
+}
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PhotosOperation {
@@ -87,6 +110,12 @@ pub enum PhotosOperation {
     /// Reveal the Photos-owned browsing and management surface without
     /// opening a chooser or mutating the shared library.
     ViewLibrary,
+    /// Open the chronological timeline, optionally at one canonical calendar
+    /// boundary. This is device-local presentation; capture metadata remains
+    /// untouched and the same stable anchor is meaningful to every replica.
+    ViewTimeline {
+        anchor: Option<TimelineAnchor>,
+    },
     /// Open Photos' People collection and device-local review surface.
     ViewPeople,
     /// Open the signed local-model manager for face recognition.
@@ -201,6 +230,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         op,
         PhotosOperation::View
             | PhotosOperation::ViewLibrary
+            | PhotosOperation::ViewTimeline { .. }
             | PhotosOperation::ViewPeople
             | PhotosOperation::ViewFavorites
             | PhotosOperation::ViewPlaces
@@ -219,6 +249,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
     let tags = match op {
         PhotosOperation::View
         | PhotosOperation::ViewLibrary
+        | PhotosOperation::ViewTimeline { .. }
         | PhotosOperation::ViewPeople
         | PhotosOperation::ViewFavorites
         | PhotosOperation::ViewPlaces
@@ -297,6 +328,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
     Some(match op {
         PhotosOperation::View
         | PhotosOperation::ViewLibrary
+        | PhotosOperation::ViewTimeline { .. }
         | PhotosOperation::ViewPeople
         | PhotosOperation::ViewFavorites
         | PhotosOperation::ViewPlaces
@@ -1134,6 +1166,9 @@ impl ResourceProvider for PhotosResources {
         if id == "photos.library" {
             return Some(library_root_resource());
         }
+        if id == "photos.timeline" {
+            return Some(timeline_resource(&PhotosDoc::library(doc)));
+        }
         if id == "photos.favorites" {
             return Some(favorites_resource(
                 PhotosDoc::library(doc)
@@ -1159,6 +1194,9 @@ impl ResourceProvider for PhotosResources {
         // contextual children, an exact lookup is allowed to scan bounded
         // document metadata; it never touches images, files, or a network.
         let library = PhotosDoc::library(doc);
+        if let Some(resource) = timeline_resource_for_id(&library, id) {
+            return Some(resource);
+        }
         if let Some((key, label, count)) = place_counts(&library)
             .into_iter()
             .find(|(key, _, _)| place_resource_id(key) == id)
@@ -1264,6 +1302,7 @@ fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
     ));
     root = root.with_child(places_resource(&library));
     root = root.with_child(people_root_resource(&library));
+    root = root.with_child(timeline_resource(&library));
     for photo in library.photos.iter().take(LIBRARY_CONTEXT_LIMIT) {
         root = root.with_child(photo_resource(photo));
     }
@@ -1302,6 +1341,183 @@ pub(crate) fn library_root_resource() -> Resource {
         .with_action(create_album_spec())
         .with_action(set_favorites_spec());
     root
+}
+
+/// Compact, shared-metadata-only counts for timeline navigation.  The vectors
+/// are newest-first to match the rendered timeline, while every entry is
+/// still addressable by its stable id outside the contextual resource window.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TimelineBoundaries {
+    pub months: Vec<(String, usize)>,
+    pub days: Vec<(String, usize)>,
+}
+
+pub(crate) fn timeline_boundaries(library: &crate::model::PhotoLibrary) -> TimelineBoundaries {
+    let mut months = std::collections::BTreeMap::<String, usize>::new();
+    let mut days = std::collections::BTreeMap::<String, usize>::new();
+    for photo in &library.photos {
+        let Some(day) = photo
+            .captured_at
+            .as_deref()
+            .and_then(timeline_day_from_capture)
+        else {
+            continue;
+        };
+        let month = day[..7].to_owned();
+        *months.entry(month).or_default() += 1;
+        *days.entry(day).or_default() += 1;
+    }
+    TimelineBoundaries {
+        months: months.into_iter().rev().collect(),
+        days: days.into_iter().rev().collect(),
+    }
+}
+
+pub(crate) fn timeline_day_from_capture(captured_at: &str) -> Option<String> {
+    let day = captured_at.get(..10)?;
+    let bytes = day.as_bytes();
+    let month = std::str::from_utf8(&bytes[5..7]).ok()?.parse::<u8>().ok()?;
+    let day_of_month = std::str::from_utf8(&bytes[8..10])
+        .ok()?
+        .parse::<u8>()
+        .ok()?;
+    let year = std::str::from_utf8(&bytes[..4]).ok()?.parse::<u16>().ok()?;
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        _ => 0,
+    };
+    (bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| index == 4 || index == 7 || byte.is_ascii_digit())
+        && (1..=12).contains(&month)
+        && (1..=days_in_month).contains(&day_of_month))
+    .then(|| day.to_owned())
+}
+
+pub(crate) fn timeline_month_resource_id(month: &str) -> String {
+    format!("photos.timeline:month:{month}")
+}
+
+pub(crate) fn timeline_day_resource_id(day: &str) -> String {
+    format!("photos.timeline:day:{day}")
+}
+
+pub(crate) fn timeline_resource(library: &crate::model::PhotoLibrary) -> Resource {
+    let boundaries = timeline_boundaries(library);
+    timeline_resource_from_search(library.photos.len(), &boundaries)
+}
+
+pub(crate) fn timeline_resource_from_search(
+    total: usize,
+    boundaries: &TimelineBoundaries,
+) -> Resource {
+    let mut resource = Resource::new(
+        "photos.timeline",
+        TIMELINE_KIND,
+        crate::strings::tr("photos-timeline"),
+    )
+    .with_child(Resource::new(
+        "photos.timeline#count",
+        "photos.count",
+        format!("{total} {}", crate::strings::tr("photos-photographs")),
+    ));
+    if let Some(spec) = operation(
+        "open",
+        &crate::strings::tr("photos-open-timeline"),
+        &PhotosOperation::ViewTimeline { anchor: None },
+    ) {
+        resource = resource
+            .with_action(spec.with_description(crate::strings::tr("photos-timeline-description")));
+    }
+    for (month, count) in boundaries.months.iter().take(TIMELINE_MONTH_CONTEXT_LIMIT) {
+        resource = resource.with_child(timeline_month_resource(month, *count));
+    }
+    for (day, count) in boundaries.days.iter().take(TIMELINE_DAY_CONTEXT_LIMIT) {
+        resource = resource.with_child(timeline_day_resource(day, *count));
+    }
+    resource
+}
+
+pub(crate) fn timeline_month_resource(month: &str, count: usize) -> Resource {
+    let mut resource = Resource::new(
+        timeline_month_resource_id(month),
+        TIMELINE_MONTH_KIND,
+        month,
+    )
+    .with_child(Resource::new(
+        format!("{}#count", timeline_month_resource_id(month)),
+        "photos.count",
+        format!("{count} {}", crate::strings::tr("photos-photographs")),
+    ));
+    if let Some(spec) = operation(
+        "open",
+        &crate::strings::tr("photos-open-timeline-month"),
+        &PhotosOperation::ViewTimeline {
+            anchor: Some(TimelineAnchor::Month {
+                month: month.to_owned(),
+            }),
+        },
+    ) {
+        resource = resource.with_action(
+            spec.with_description(crate::strings::tr("photos-timeline-month-description")),
+        );
+    }
+    resource
+}
+
+pub(crate) fn timeline_day_resource(day: &str, count: usize) -> Resource {
+    let mut resource = Resource::new(timeline_day_resource_id(day), TIMELINE_DAY_KIND, day)
+        .with_child(Resource::new(
+            format!("{}#count", timeline_day_resource_id(day)),
+            "photos.count",
+            format!("{count} {}", crate::strings::tr("photos-photographs")),
+        ));
+    if let Some(spec) = operation(
+        "open",
+        &crate::strings::tr("photos-open-timeline-day"),
+        &PhotosOperation::ViewTimeline {
+            anchor: Some(TimelineAnchor::Day {
+                day: day.to_owned(),
+            }),
+        },
+    ) {
+        resource = resource.with_action(
+            spec.with_description(crate::strings::tr("photos-timeline-day-description")),
+        );
+    }
+    resource
+}
+
+fn timeline_resource_for_id(library: &crate::model::PhotoLibrary, id: &str) -> Option<Resource> {
+    let boundaries = timeline_boundaries(library);
+    if let Some(month) = id.strip_prefix("photos.timeline:month:") {
+        if let Some((_, count)) = boundaries
+            .months
+            .iter()
+            .find(|(candidate, _)| candidate == month)
+        {
+            return Some(timeline_month_resource(month, *count));
+        }
+        return None;
+    }
+    if let Some(day) = id.strip_prefix("photos.timeline:day:") {
+        if let Some((_, count)) = boundaries
+            .days
+            .iter()
+            .find(|(candidate, _)| candidate == day)
+        {
+            return Some(timeline_day_resource(day, *count));
+        }
+        return None;
+    }
+    None
 }
 
 fn directory_import_spec() -> ActionSpec {
@@ -2861,6 +3077,92 @@ mod tests {
                 .iter()
                 .any(|action| action.id == "import")
         );
+    }
+
+    #[test]
+    fn timeline_boundaries_are_canonical_actions_with_a_bounded_context_tree() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let mut library = crate::model::PhotoLibrary::default();
+        for index in 0..80 {
+            let mut photo = portable_photo(&format!("timeline-{index}.png"), 40, 20);
+            photo.captured_at = Some(format!("2026-{:02}-{:02}", index / 28 + 1, index % 28 + 1));
+            library.photos.push(photo);
+        }
+        // A non-calendar label remains in the library but is not made into a
+        // fake chronological boundary.
+        let mut undated = portable_photo("undated.png", 40, 20);
+        undated.captured_at = Some("summer holidays".into());
+        library.photos.push(undated);
+        PhotosDoc::set_library(&mut doc, &library);
+
+        let root = PhotosResources
+            .resources(&doc)
+            .pop()
+            .expect("library root is published");
+        let timeline = root
+            .children
+            .iter()
+            .find(|child| child.id.0 == "photos.timeline")
+            .expect("timeline is discoverable beneath the library");
+        assert_eq!(timeline.kind, TIMELINE_KIND);
+        assert!(
+            timeline.children.len()
+                <= 1 + TIMELINE_MONTH_CONTEXT_LIMIT + TIMELINE_DAY_CONTEXT_LIMIT
+        );
+        let open = timeline
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .expect("timeline has a stable open action");
+        let tilo_actions::ActionInput::Immediate(encoded) = &open.input else {
+            panic!("timeline opening is a presentation operation");
+        };
+        assert_eq!(
+            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(PhotosOperation::ViewTimeline { anchor: None })
+        );
+
+        let day_id = timeline_day_resource_id("2026-01-01");
+        let day = PhotosResources
+            .resource(&doc, &day_id)
+            .expect("late timeline day resolves outside the bounded root context");
+        let action = day
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .expect("day has a stable open action");
+        let tilo_actions::ActionInput::Immediate(encoded) = &action.input else {
+            panic!("timeline day opening is a presentation operation");
+        };
+        assert_eq!(
+            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(PhotosOperation::ViewTimeline {
+                anchor: Some(TimelineAnchor::Day {
+                    day: "2026-01-01".into(),
+                }),
+            })
+        );
+        assert!(
+            PhotosResources
+                .resource(&doc, "photos.timeline:day:summer holidays")
+                .is_none(),
+            "free-form metadata cannot masquerade as a chronological resource"
+        );
+    }
+
+    #[test]
+    fn timeline_boundaries_refuse_invalid_or_free_form_capture_dates() {
+        assert_eq!(
+            timeline_day_from_capture("2024-02-29 12:00"),
+            Some("2024-02-29".into())
+        );
+        for capture in ["2025-02-29", "2026-13-01", "2026-04-31", "summer 2026"] {
+            assert!(
+                timeline_day_from_capture(capture).is_none(),
+                "{capture} must not be published as a chronological boundary"
+            );
+        }
     }
 
     #[test]
