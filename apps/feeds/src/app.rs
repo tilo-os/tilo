@@ -62,6 +62,13 @@ fn opml_import_request() -> PickRequest {
         )
         .all_files()
 }
+
+fn opml_export_request() -> PickRequest {
+    PickRequest::save("Export OPML", "Export", "feeds-subscriptions.opml")
+        .thread_name("feeds-portal-export")
+        .filter(FileFilter::new("OPML").glob("*.opml"))
+        .all_files()
+}
 use crate::{opml, sample};
 
 const SIDEBAR_W: f64 = 256.0;
@@ -400,6 +407,9 @@ pub struct FeedsApp {
     /// In-flight import file-chooser: the portal worker's receiver, drained
     /// once per frame in `sync`. `None` when no picker is open.
     import_rx: Option<PortalChannel>,
+    /// Save chooser and the subscription snapshot captured when export began.
+    export_rx: Option<(PortalChannel, String)>,
+    background_poll_deadline: Cell<Option<Instant>>,
 
     // --- per-feed context menu ------------------------------------------
     /// Right-click menu over a sidebar feed. Uses the shared `ui` primitive so
@@ -528,6 +538,8 @@ impl FeedsApp {
             modal_structure_dirty: false,
             toast: None,
             import_rx: None,
+            export_rx: None,
+            background_poll_deadline: Cell::new(None),
             feed_menu: ContextMenu::new(),
             feed_menu_target: None,
             feed_menu_actions: Vec::new(),
@@ -1221,11 +1233,35 @@ impl FeedsApp {
     }
 
     fn export_opml(&mut self) {
+        if self.import_rx.is_some() || self.export_rx.is_some() {
+            return;
+        }
         let xml = opml::export(&self.store);
-        let path = std::env::temp_dir().join("feeds-subscriptions.opml");
-        match std::fs::write(&path, xml) {
-            Ok(()) => self.set_toast(format!("Exported OPML → {}", path.display())),
-            Err(e) => self.set_toast(format!("Export failed: {e}")),
+        self.export_rx = Some((opml_export_request().send(), xml));
+        self.set_toast("Choose where to save subscriptions…");
+    }
+
+    fn drain_export(&mut self) {
+        let Some((rx, _)) = &self.export_rx else {
+            return;
+        };
+        let outcome = match rx.try_recv() {
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                PortalOutcome::Failed("file chooser closed without a result".into())
+            }
+        };
+        let Some((_, xml)) = self.export_rx.take() else {
+            return;
+        };
+        match outcome {
+            PortalOutcome::Opened(path) => match std::fs::write(&path, xml) {
+                Ok(()) => self.set_toast(format!("Exported OPML → {}", path.display())),
+                Err(error) => self.set_toast(format!("Export failed: {error}")),
+            },
+            PortalOutcome::Cancelled => self.set_toast("Export cancelled"),
+            PortalOutcome::Failed(reason) => self.set_toast(format!("Export failed: {reason}")),
         }
     }
 
@@ -1236,7 +1272,7 @@ impl FeedsApp {
     /// arrives over a channel drained by [`Self::drain_import`]. An in-flight
     /// request is not re-opened.
     fn request_import(&mut self) {
-        if self.import_rx.is_some() {
+        if self.import_rx.is_some() || self.export_rx.is_some() {
             return;
         }
         self.import_rx = Some(opml_import_request().send());
@@ -4077,6 +4113,7 @@ impl Widget for FeedsApp {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+        self.background_poll_deadline.set(None);
         self.now = chrono::Utc::now().timestamp();
         if !self.synced {
             if FeedsDoc::is_empty(state) {
@@ -4114,6 +4151,7 @@ impl Widget for FeedsApp {
         // Drain an in-flight OPML import portal request (holds the doc so the
         // parsed subscriptions persist the moment the user picks a file).
         self.drain_import(state);
+        self.drain_export();
         // A Ctrl+K palette action (or any other out-of-band write) mutates the
         // document directly, not this widget's mirrored store. Once the fetch
         // backlog is drained — so the store isn't leading the document with
@@ -4158,6 +4196,12 @@ impl Widget for FeedsApp {
             return Ok(false);
         };
         match (kind, operation) {
+            (tilo_actions::OperationKind::View, crate::actions::FeedsOperation::ImportOpml) => {
+                self.request_import();
+            }
+            (tilo_actions::OperationKind::View, crate::actions::FeedsOperation::ExportOpml) => {
+                self.export_opml();
+            }
             (tilo_actions::OperationKind::Effect, crate::actions::FeedsOperation::RefreshAll) => {
                 if self.store.feeds.is_empty() {
                     return Err("there are no subscriptions to refresh".into());
@@ -4757,6 +4801,15 @@ impl Widget for FeedsApp {
                     .with_live(Politeness::Polite),
             );
         }
+        if let Some((message, since)) = &self.toast
+            && since.elapsed().as_secs_f32() < 4.0
+        {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(message.clone())
+                    .with_live(Politeness::Polite),
+            );
+        }
         Some(
             AccessNode::new(Role::Window)
                 .with_name("Feeds")
@@ -4917,6 +4970,26 @@ impl Widget for FeedsApp {
         true
     }
 
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        if self.import_rx.is_none()
+            && self.export_rx.is_none()
+            && !self
+                .worker
+                .as_ref()
+                .is_some_and(|worker| worker.pending() > 0)
+            && self.pending_doc_writes.is_empty()
+        {
+            return None;
+        }
+        let deadline = self.background_poll_deadline.get().unwrap_or_else(|| {
+            Instant::now()
+                .checked_add(std::time::Duration::from_millis(16))
+                .unwrap_or_else(Instant::now)
+        });
+        self.background_poll_deadline.set(Some(deadline));
+        Some(deadline)
+    }
+
     fn needs_animation_frame(&self) -> bool {
         // Keep frames flowing while the sidebar flap is mid-slide, while
         // network fetches are outstanding (so the per-frame `draw` drain keeps
@@ -4930,6 +5003,7 @@ impl Widget for FeedsApp {
             // Keep frames flowing while a file-chooser portal is open so its
             // outcome is drained (in `sync`) the moment the user picks a file.
             || self.import_rx.is_some()
+            || self.export_rx.is_some()
             || self
                 .toast
                 .as_ref()
@@ -5497,6 +5571,10 @@ mod tests {
         a.refresh_all();
         let total = a.refresh.total;
         assert_eq!(total, a.store.feeds.len());
+        let deadline = a
+            .next_wake_deadline()
+            .expect("network results must wake without animation");
+        assert_eq!(a.next_wake_deadline(), Some(deadline));
 
         // Every feed reports back (alternating success / failure).
         for (i, f) in a.store.feeds.clone().iter().enumerate() {
@@ -5521,6 +5599,11 @@ mod tests {
         assert!(a.refresh.finished_at.is_some(), "completion timestamped");
         // The completion summary lingers briefly, then frames can stop.
         assert!(a.refresh.visible());
+        a.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            a.next_wake_deadline().is_none(),
+            "completed work stops polling"
+        );
     }
 
     /// Changing a reading setting applies it (and persists), proving the
@@ -6333,6 +6416,97 @@ mod tests {
     }
 
     #[test]
+    fn portal_export_writes_the_snapshot_to_the_selected_unicode_path() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        let directory = std::env::temp_dir().join(format!("feeds-export-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("Subscriptions Grün 🌍.opml");
+        let xml = opml::export(&a.store);
+        a.export_rx = Some((
+            ui::portal::inject_for_test(PortalOutcome::Opened(path.clone())),
+            xml.clone(),
+        ));
+        let deadline = a
+            .next_wake_deadline()
+            .expect("export must wake without animation");
+        assert_eq!(a.next_wake_deadline(), Some(deadline));
+        assert!(!path.exists());
+        a.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), xml);
+        assert_eq!(opml::parse(&xml).len(), a.store.feeds.len());
+        assert!(a.export_rx.is_none());
+        assert!(a.next_wake_deadline().is_none());
+        assert!(a.toast.as_ref().unwrap().0.starts_with("Exported OPML"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn portal_export_cancel_and_failure_never_report_success() {
+        for outcome in [
+            PortalOutcome::Cancelled,
+            PortalOutcome::Failed("test denial".into()),
+        ] {
+            let mut a = app();
+            let mut doc = AutoCommit::new();
+            a.sync(&mut doc, &automerge::ROOT);
+            a.export_rx = Some((
+                ui::portal::inject_for_test(outcome.clone()),
+                opml::export(&a.store),
+            ));
+            a.sync(&mut doc, &automerge::ROOT);
+            assert!(a.export_rx.is_none());
+            let message = &a.toast.as_ref().unwrap().0;
+            assert!(
+                a.accessibility().unwrap().children.iter().any(|node| {
+                    node.name.as_deref() == Some(message.as_str())
+                        && node.live == Some(Politeness::Polite)
+                }),
+                "native accessibility must expose the transfer outcome"
+            );
+            match outcome {
+                PortalOutcome::Cancelled => assert_eq!(message, "Export cancelled"),
+                PortalOutcome::Failed(reason) => {
+                    assert_eq!(message, &format!("Export failed: {reason}"))
+                }
+                PortalOutcome::Opened(_) => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn portal_export_write_failure_is_visible() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        // A directory cannot be replaced by the export's file write on either host.
+        a.export_rx = Some((
+            ui::portal::inject_for_test(PortalOutcome::Opened(std::env::temp_dir())),
+            opml::export(&a.store),
+        ));
+        a.sync(&mut doc, &automerge::ROOT);
+        assert!(a.export_rx.is_none());
+        assert!(a.toast.as_ref().unwrap().0.starts_with("Export failed:"));
+    }
+
+    #[test]
+    fn portal_import_completion_has_a_fixed_non_animation_deadline() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        assert!(a.next_wake_deadline().is_none());
+        a.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Cancelled));
+        let deadline = a
+            .next_wake_deadline()
+            .expect("file completion must wake even with reduced motion");
+        assert_eq!(a.next_wake_deadline(), Some(deadline));
+        a.sync(&mut doc, &automerge::ROOT);
+        assert!(a.import_rx.is_none());
+        assert!(a.next_wake_deadline().is_none());
+    }
+
+    #[test]
     fn portal_import_drain_reads_file_and_subscribes() {
         let mut a = app();
         let mut doc = AutoCommit::new();
@@ -6716,6 +6890,35 @@ mod tests {
     fn add_subscription_modal_pastes_url_and_subscribes() {
         use winit::event::Modifiers;
         use winit::keyboard::ModifiersState;
+
+        // Exercise the host clipboard boundary and the real TextInput paste
+        // handler without touching the user's clipboard or requiring a desktop
+        // clipboard grant. Successful OS transport requires separate native verification.
+        #[derive(Default)]
+        struct TestClipboard(std::sync::Mutex<(Option<String>, Option<String>)>);
+        impl ui::clipboard::ClipboardBackend for TestClipboard {
+            fn set_text(&self, target: ui::clipboard::ClipboardTarget, text: &str) -> bool {
+                let mut values = self.0.lock().unwrap();
+                match target {
+                    ui::clipboard::ClipboardTarget::Clipboard => values.0 = Some(text.into()),
+                    ui::clipboard::ClipboardTarget::Primary => values.1 = Some(text.into()),
+                }
+                true
+            }
+
+            fn text(&self, target: ui::clipboard::ClipboardTarget) -> Option<String> {
+                let values = self.0.lock().unwrap();
+                match target {
+                    ui::clipboard::ClipboardTarget::Clipboard => values.0.clone(),
+                    ui::clipboard::ClipboardTarget::Primary => values.1.clone(),
+                }
+            }
+
+            fn name(&self) -> &'static str {
+                "feeds-test-clipboard"
+            }
+        }
+        ui::clipboard::install_clipboard_backend(std::sync::Arc::new(TestClipboard::default()));
 
         let mut a = app();
         let mut doc = AutoCommit::new();
