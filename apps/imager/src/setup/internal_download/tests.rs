@@ -1199,6 +1199,9 @@ thread_local! { static WRITE_REMAINING: std::cell::Cell<Option<usize>> = const {
 pub(super) struct FaultWriter<'a>(pub(super) &'a mut File);
 impl Write for FaultWriter<'_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if let Some(result) = scripted_write(self.0, bytes) {
+            return result;
+        }
         WRITE_REMAINING.with(|remaining| match remaining.get() {
             Some(0) => Err(std::io::Error::other("injected after real partial write")),
             Some(limit) => {
@@ -1316,4 +1319,206 @@ fn terminal_counter_includes_partial_real_file_write_before_error() {
     assert_eq!(terminal.verified, 0);
     assert_eq!(terminal.received, 1024);
     assert_eq!(server.requests.lock().unwrap().len(), 1);
+}
+
+#[derive(Clone, Copy)]
+enum WriteStep {
+    Interrupted,
+    Write(usize),
+}
+struct WriteScript {
+    steps: std::collections::VecDeque<WriteStep>,
+    always_interrupted: bool,
+    cancel_on_interrupt: Option<Arc<AtomicBool>>,
+    attempts: usize,
+    interrupted: usize,
+}
+thread_local! { static WRITE_SCRIPT: std::cell::RefCell<Option<WriteScript>> = const { std::cell::RefCell::new(None) }; }
+fn scripted_write(file: &mut File, bytes: &[u8]) -> Option<std::io::Result<usize>> {
+    WRITE_SCRIPT.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let script = slot.as_mut()?;
+        script.attempts += 1;
+        assert!(
+            script.attempts <= 64,
+            "interrupted writer exceeded test safety bound"
+        );
+        let step = script
+            .steps
+            .pop_front()
+            .or(script.always_interrupted.then_some(WriteStep::Interrupted));
+        Some(match step {
+            Some(WriteStep::Interrupted) => {
+                script.interrupted += 1;
+                if let Some(cancel) = &script.cancel_on_interrupt {
+                    cancel.store(true, Ordering::Release);
+                }
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "injected interrupted write",
+                ))
+            }
+            Some(WriteStep::Write(limit)) => file.write(&bytes[..bytes.len().min(limit)]),
+            None => file.write(bytes),
+        })
+    })
+}
+fn with_write_script(
+    steps: Vec<WriteStep>,
+    always_interrupted: bool,
+    cancel: Option<Arc<AtomicBool>>,
+    test: impl FnOnce(),
+) -> (usize, usize) {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            WRITE_SCRIPT.with(|s| *s.borrow_mut() = None);
+        }
+    }
+    WRITE_SCRIPT.with(|s| {
+        *s.borrow_mut() = Some(WriteScript {
+            steps: steps.into(),
+            always_interrupted,
+            cancel_on_interrupt: cancel,
+            attempts: 0,
+            interrupted: 0,
+        })
+    });
+    let _reset = Reset;
+    test();
+    WRITE_SCRIPT.with(|s| {
+        let s = s.borrow();
+        let s = s.as_ref().unwrap();
+        (s.attempts, s.interrupted)
+    })
+}
+#[test]
+fn interrupted_write_recovers_then_authenticates_exact_real_file_bytes() {
+    for interruptions in [1, 7] {
+        let server = Server::new(vec![response(200, "", &vec![b'E'; 4096])]);
+        let mut file = tempfile::tempfile().unwrap();
+        let mut events = Vec::new();
+        let (attempts, observed) = with_write_script(
+            vec![WriteStep::Interrupted; interruptions],
+            false,
+            None,
+            || {
+                let result = server
+                    .transport()
+                    .transfer(
+                        &context(&server),
+                        0,
+                        &mut file,
+                        None,
+                        &AtomicBool::new(false),
+                        51,
+                        |p| events.push(p),
+                    )
+                    .unwrap();
+                assert_eq!(result.byte_size(), 4096);
+            },
+        );
+        assert_eq!(contents(&mut file), vec![b'E'; 4096]);
+        assert_eq!(observed, interruptions);
+        assert!(attempts > interruptions);
+        let terminal = events.last().unwrap();
+        assert_eq!(terminal.phase, Phase::Complete);
+        assert_eq!(terminal.received, 4096);
+        assert_eq!(terminal.verified, 4096);
+        assert_eq!(server.requests.lock().unwrap().len(), 1);
+    }
+}
+#[test]
+fn interrupted_write_cancellation_prevents_retry_and_preserves_prefix() {
+    let server = Server::new(vec![response(
+        206,
+        "Content-Range: bytes 1024-4095/4096\r\n",
+        &vec![b'E'; 3072],
+    )]);
+    let selected = context(&server);
+    let mut file = tempfile::tempfile().unwrap();
+    file.write_all(&vec![b'E'; 1024]).unwrap();
+    let cp = capture_checkpoint(&selected, 0, &mut file, &AtomicBool::new(false)).unwrap();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut events = Vec::new();
+    let counts = with_write_script(
+        vec![WriteStep::Interrupted],
+        false,
+        Some(cancel.clone()),
+        || {
+            let error = server
+                .transport()
+                .transfer(&selected, 0, &mut file, Some(&cp), &cancel, 52, |p| {
+                    events.push(p)
+                })
+                .unwrap_err();
+            assert!(error.contains("cancelled"), "{error}");
+        },
+    );
+    assert_eq!(counts, (1, 1));
+    assert_eq!(contents(&mut file), vec![b'E'; 1024]);
+    let terminal = events.last().unwrap();
+    assert_eq!(terminal.phase, Phase::Cancelled);
+    assert_eq!(terminal.received, 1024);
+    assert_eq!(terminal.verified, 0);
+    assert_eq!(server.requests.lock().unwrap().len(), 1);
+}
+#[test]
+fn interrupted_write_exhaustion_stops_at_eight_and_preserves_prefix() {
+    let server = Server::new(vec![response(
+        206,
+        "Content-Range: bytes 1024-4095/4096\r\n",
+        &vec![b'E'; 3072],
+    )]);
+    let selected = context(&server);
+    let mut file = tempfile::tempfile().unwrap();
+    file.write_all(&vec![b'E'; 1024]).unwrap();
+    let cp = capture_checkpoint(&selected, 0, &mut file, &AtomicBool::new(false)).unwrap();
+    let mut events = Vec::new();
+    let counts = with_write_script(vec![], true, None, || {
+        assert!(
+            server
+                .transport()
+                .transfer(
+                    &selected,
+                    0,
+                    &mut file,
+                    Some(&cp),
+                    &AtomicBool::new(false),
+                    53,
+                    |p| events.push(p)
+                )
+                .is_err()
+        );
+    });
+    assert_eq!(counts, (8, 8));
+    assert_eq!(contents(&mut file), vec![b'E'; 1024]);
+    let terminal = events.last().unwrap();
+    assert_eq!(terminal.phase, Phase::Failed);
+    assert_eq!(terminal.received, 1024);
+    assert_eq!(terminal.verified, 0);
+    assert_eq!(server.requests.lock().unwrap().len(), 1);
+}
+#[test]
+fn interrupted_write_allowance_is_cumulative_across_successful_partial_writes() {
+    // Directly exercise one production chunk to avoid depending on TCP read boundaries.
+    let mut steps = Vec::new();
+    for _ in 0..7 {
+        steps.extend([WriteStep::Interrupted, WriteStep::Write(1)]);
+    }
+    steps.push(WriteStep::Interrupted);
+    let mut file = tempfile::tempfile().unwrap();
+    let mut events = Events {
+        callback: |_| {},
+        operation: 54,
+        component: 0,
+        last: None,
+        received: 0,
+    };
+    let counts = with_write_script(steps, false, None, || {
+        assert!(write_chunk(&mut file, &[b'E'; 32], &AtomicBool::new(false), &mut events).is_err());
+    });
+    assert_eq!(counts, (15, 8));
+    assert_eq!(contents(&mut file), vec![b'E'; 7]);
+    assert_eq!(events.received, 7);
 }
