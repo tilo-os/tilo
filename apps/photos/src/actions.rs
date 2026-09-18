@@ -370,6 +370,16 @@ pub enum PhotosAction {
     },
     /// Import metadata for bytes already staged in the content store.
     ImportPhoto { photo: LibraryPhoto },
+    /// Refresh metadata that can be re-read from the original bytes without
+    /// overwriting deliberate organization. Capture time fills an empty
+    /// value only; an EXIF location may replace only another EXIF location.
+    /// User/device locations, names, tags, favourites and albums are never
+    /// changed by a directory rescan.
+    RefreshImportedMetadata {
+        photo_id: String,
+        captured_at: Option<String>,
+        location: Option<PhotoLocation>,
+    },
     /// Select a stable library photo for editing.
     SelectPhoto { photo_id: String },
     /// Remove a photo and every album membership that points to it.
@@ -620,6 +630,38 @@ impl Action for PhotosAction {
                 // A duplicate content hash preserves its existing library
                 // metadata, and selection follows that canonical record too.
                 PhotosDoc::set_image(doc, Some(&selected.image));
+                Ok(())
+            }
+            Self::RefreshImportedMetadata {
+                photo_id,
+                captured_at,
+                location,
+            } => {
+                if validate_resource_id(photo_id).is_err()
+                    || !valid_metadata(None, &[], &[], captured_at.as_deref())
+                    || location
+                        .as_ref()
+                        .is_some_and(|value| !value.is_valid() || value.provenance.source != "exif")
+                {
+                    return Err(ActionError::Refused(
+                        "reindexed metadata must be valid local EXIF metadata".into(),
+                    ));
+                }
+                let mut library = PhotosDoc::library(doc);
+                let photo = library.photo_mut(photo_id).ok_or_else(|| {
+                    ActionError::Refused("that photograph is no longer in the library".into())
+                })?;
+                if photo.captured_at.is_none() {
+                    photo.captured_at.clone_from(captured_at);
+                }
+                if photo
+                    .location
+                    .as_ref()
+                    .is_none_or(|current| current.provenance.source == "exif")
+                {
+                    photo.location.clone_from(location);
+                }
+                PhotosDoc::set_library(doc, &library);
                 Ok(())
             }
             Self::SelectPhoto { photo_id } => {
@@ -1337,7 +1379,6 @@ pub(crate) fn library_root_resource() -> Resource {
         .with_action(file_operation("import", "Import photograph", true))
         .with_action(import_directory_spec(false))
         .with_action(import_directory_spec(true))
-        .with_action(directory_import_spec())
         .with_action(create_album_spec())
         .with_action(set_favorites_spec());
     root
@@ -1518,39 +1559,6 @@ fn timeline_resource_for_id(library: &crate::model::PhotoLibrary, id: &str) -> O
         return None;
     }
     None
-}
-
-fn directory_import_spec() -> ActionSpec {
-    ActionSpec::typed_operation(
-        "import-folder",
-        "Import photo folder",
-        "Choose a folder and import its supported photographs in the background",
-        OperationKind::Effect,
-        PHOTOS_OPERATION_TYPE,
-        vec![ActionParam::optional_owned(
-            "path",
-            ParamType::Text,
-            "Authorised folder path",
-        )],
-        |args: &ActionArgs| {
-            EncodedAction::encode_operation(
-                PHOTOS_OPERATION_TYPE,
-                &PhotosOperation::ImportDirectory {
-                    path: args
-                        .text("path")
-                        .filter(|path| !path.trim().is_empty())
-                        .map(str::to_owned),
-                    retain_exif_location: true,
-                },
-            )
-            .unwrap_or_else(|error| EncodedAction {
-                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                payload: format!("photos folder import could not be serialized: {error}")
-                    .into_bytes(),
-            })
-        },
-    )
-    .with_description("Imports supported photo files with progress; cancelling stops future files")
 }
 
 /// The stable virtual collection a person expects the star controls to feed.
@@ -2578,6 +2586,19 @@ fn import_directory_spec(reindex: bool) -> ActionSpec {
     } else {
         "Import photo folder"
     };
+    let path_param = if reindex {
+        ActionParam::required(
+            "path",
+            ParamType::Text,
+            "explicit authorised local folder path",
+        )
+    } else {
+        ActionParam::optional_owned(
+            "path",
+            ParamType::Text,
+            "authorised local folder path; omit to use the system folder picker",
+        )
+    };
     ActionSpec::typed_operation(
         id,
         label,
@@ -2585,7 +2606,7 @@ fn import_directory_spec(reindex: bool) -> ActionSpec {
         OperationKind::Effect,
         PHOTOS_OPERATION_TYPE,
         vec![
-            ActionParam::required("path", ParamType::Text, "explicit local folder path"),
+            path_param,
             ActionParam::optional(
                 "retain_exif_location",
                 ParamType::Boolean,
@@ -2599,7 +2620,7 @@ fn import_directory_spec(reindex: bool) -> ActionSpec {
                 PhotosOperation::ReindexDirectory { path, retain_exif_location }
             } else {
                 PhotosOperation::ImportDirectory {
-                    path: Some(path),
+                    path: (!path.is_empty()).then_some(path),
                     retain_exif_location,
                 }
             };
@@ -2733,6 +2754,58 @@ mod tests {
                 ..crate::model::AnalysisProvenance::default()
             },
         }
+    }
+
+    #[test]
+    fn reindex_refreshes_only_machine_metadata_and_preserves_user_work() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let mut photo = portable_photo("reindex.png", 40, 20);
+        let id = photo.id.clone();
+        photo.favorite = true;
+        photo.folder = Some("Family".into());
+        photo.people = vec!["Ada".into()];
+        photo.tags = vec!["birthday".into()];
+        photo.location = Some(PhotoLocation {
+            latitude: 1.0,
+            longitude: 2.0,
+            label: Some("Chosen place".into()),
+            provenance: crate::model::LocationProvenance {
+                source: "user".into(),
+                scope: "shared".into(),
+            },
+        });
+        PhotosAction::ImportPhoto { photo }.apply(&mut doc).unwrap();
+
+        PhotosAction::RefreshImportedMetadata {
+            photo_id: id.clone(),
+            captured_at: Some("2026:09:18 10:20:30".into()),
+            location: Some(PhotoLocation {
+                latitude: 50.0,
+                longitude: 4.0,
+                label: None,
+                provenance: crate::model::LocationProvenance {
+                    source: "exif".into(),
+                    scope: "shared".into(),
+                },
+            }),
+        }
+        .apply(&mut doc)
+        .unwrap();
+
+        let refreshed = PhotosDoc::photo(&doc, &id).unwrap();
+        assert_eq!(
+            refreshed.captured_at.as_deref(),
+            Some("2026:09:18 10:20:30")
+        );
+        assert_eq!(
+            refreshed.location.unwrap().label.as_deref(),
+            Some("Chosen place")
+        );
+        assert!(refreshed.favorite);
+        assert_eq!(refreshed.folder.as_deref(), Some("Family"));
+        assert_eq!(refreshed.people, ["Ada"]);
+        assert_eq!(refreshed.tags, ["birthday"]);
     }
 
     #[test]

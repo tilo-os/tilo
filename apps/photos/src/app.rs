@@ -18,8 +18,7 @@
 //! file, and what keeps the decoded buffer from being rebuilt on every frame.
 
 use std::cell::Cell;
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -92,13 +91,15 @@ const CANVAS_INSET: f32 = 10.0;
 const THUMBNAIL_MAX_W: u32 = 320;
 const THUMBNAIL_MAX_H: u32 = 180;
 const THUMBNAIL_QUEUE_LIMIT: usize = 4;
-const DIRECTORY_IMPORT_QUEUE: usize = 16;
 const DIRECTORY_IMPORT_PER_FRAME: usize = 2;
-const DIRECTORY_IMPORT_MAX_FILES: usize = 10_000;
 const ANALYSIS_QUEUE_LIMIT: usize = 2;
 /// One bounded materialized library page. This is intentionally independent
 /// of the number of cards that happen to fit in a particular window.
 const LIBRARY_PAGE_SIZE: usize = 24;
+/// People, places, and albums are projected one bounded page at a time. The
+/// backing vectors retain the full collection so “Browse all” is real rather
+/// than a prettier name for truncation.
+const COLLECTION_PAGE_SIZE: usize = 4;
 
 /// A four-column shelf is only useful while each photograph remains a
 /// recognisable, comfortably targetable card. At tablet widths a two-column
@@ -552,6 +553,16 @@ enum PlacesHit {
     Marker(String),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CollectionPageHit {
+    AlbumsPrevious,
+    AlbumsNext,
+    PeoplePrevious,
+    PeopleNext,
+    PlacesPrevious,
+    PlacesNext,
+}
+
 /// One chooser page always fits: six chips in a desktop row or a 3×2 compact
 /// grid. The complete album collection remains available through paging.
 const SELECTION_ALBUMS_PER_PAGE: usize = 6;
@@ -834,7 +845,11 @@ pub struct PhotosApp {
     /// Portal channel while a file chooser is open.
     picker: Option<ui::portal::PortalChannel>,
     directory_picker: Option<ui::portal::PortalChannel>,
+    directory_picker_retain_exif_location: bool,
     directory_import: Option<DirectoryImport>,
+    /// Last completed local job remains visible until the next one begins.
+    /// Paths stay device-local and are reduced to file names in presentation.
+    directory_import_receipt: Option<DirectoryImportReceipt>,
     resource_invocation: Option<tilo_actions::InvocationId>,
     resource_result: Option<tilo_actions::InvocationUpdate>,
     pending_resource_open: Option<(tilo_actions::InvocationId, String)>,
@@ -879,7 +894,11 @@ pub struct PhotosApp {
     places_list_mode: bool,
     places_viewport: crate::places::MapViewport,
     places_items: Vec<PlaceItem>,
+    places_page: usize,
     places_hits: Vec<(PlacesHit, Rect)>,
+    collection_page_hits: Vec<(CollectionPageHit, Rect, bool)>,
+    collection_page_buttons: Vec<(CollectionPageHit, Button)>,
+    collection_page_pending: Rc<Cell<Option<CollectionPageHit>>>,
     places_map_bounds: Rect,
     places_drag_origin: Option<Point>,
     /// Count for the always-addressable Favorites virtual collection. This is
@@ -888,6 +907,7 @@ pub struct PhotosApp {
     library_favorite_count: usize,
     library_offset: usize,
     library_albums: Vec<(String, String, usize)>,
+    albums_page: usize,
     active_album: Option<String>,
     /// Metadata browse filters originate from canonical folder/person
     /// resources. They are local presentation state, just like an album view;
@@ -909,6 +929,7 @@ pub struct PhotosApp {
     /// resource tree still resolve every stable id outside this shelf.
     library_folders: Vec<(String, usize)>,
     library_people: Vec<(String, usize)>,
+    people_page: usize,
     /// One bounded representative image per approved person, selected from
     /// the shared metadata projection and rendered from the existing cache.
     library_person_covers: HashMap<String, String>,
@@ -1023,15 +1044,42 @@ struct DirectoryImport {
     receiver: Receiver<DirectoryImportEvent>,
     cancel: Arc<AtomicBool>,
     invocation: Option<tilo_actions::InvocationId>,
+    mode: DirectoryImportMode,
     discovered: usize,
     imported: usize,
+    refreshed: usize,
+    unchanged: usize,
     skipped: usize,
-    done: bool,
+    sequence: u64,
+    pending: VecDeque<crate::import::IndexedPhoto>,
+    failures: Vec<crate::import::ImportFailure>,
+    worker_done: bool,
+    cancelled: bool,
+    limit_reached: bool,
+    produced_resources: Vec<String>,
 }
 
 enum DirectoryImportEvent {
-    Candidate(std::path::PathBuf),
-    Finished,
+    Progress(crate::import::ImportProgress),
+    Finished(Result<crate::import::ImportReport, String>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DirectoryImportMode {
+    Import,
+    Reindex,
+}
+
+#[derive(Clone, Debug)]
+struct DirectoryImportReceipt {
+    mode: DirectoryImportMode,
+    discovered: usize,
+    imported: usize,
+    refreshed: usize,
+    unchanged: usize,
+    failures: Vec<crate::import::ImportFailure>,
+    cancelled: bool,
+    limit_reached: bool,
 }
 
 impl Default for PhotosApp {
@@ -1168,6 +1216,7 @@ impl PhotosApp {
         let pending: Rc<Cell<Option<Hit>>> = Rc::new(Cell::new(None));
         let album_page_pending: Rc<Cell<Option<AlbumEditorHit>>> = Rc::new(Cell::new(None));
         let timeline_density_pending: Rc<Cell<Option<TimelineHit>>> = Rc::new(Cell::new(None));
+        let collection_page_pending: Rc<Cell<Option<CollectionPageHit>>> = Rc::new(Cell::new(None));
         let faces: Vec<Face> = TOOLBAR.iter().map(|t| t.3).collect();
         let mut buttons = Vec::new();
         for ((hit, key, icon, _), face) in TOOLBAR.iter().zip(faces.iter()) {
@@ -1196,7 +1245,9 @@ impl PhotosApp {
             compact_more_hits: Vec::new(),
             picker: None,
             directory_picker: None,
+            directory_picker_retain_exif_location: true,
             directory_import: None,
+            directory_import_receipt: None,
             resource_invocation: None,
             resource_result: None,
             pending_resource_open: None,
@@ -1224,12 +1275,17 @@ impl PhotosApp {
             places_list_mode: false,
             places_viewport: crate::places::MapViewport::default(),
             places_items: Vec::new(),
+            places_page: 0,
             places_hits: Vec::new(),
+            collection_page_hits: Vec::new(),
+            collection_page_buttons: build_collection_page_buttons(&collection_page_pending),
+            collection_page_pending,
             places_map_bounds: Rect::ZERO,
             places_drag_origin: None,
             library_favorite_count: 0,
             library_offset: 0,
             library_albums: Vec::new(),
+            albums_page: 0,
             active_album: None,
             active_folder: None,
             active_person: None,
@@ -1239,6 +1295,7 @@ impl PhotosApp {
             active_favorites: false,
             library_folders: Vec::new(),
             library_people: Vec::new(),
+            people_page: 0,
             library_person_covers: HashMap::new(),
             library_tags: Vec::new(),
             metadata_filter_cards: Vec::new(),
@@ -2213,6 +2270,38 @@ impl PhotosApp {
         }
     }
 
+    fn page_collection(&mut self, hit: CollectionPageHit) -> bool {
+        let (page, total, forward) = match hit {
+            CollectionPageHit::AlbumsPrevious => {
+                (&mut self.albums_page, self.library_albums.len(), false)
+            }
+            CollectionPageHit::AlbumsNext => {
+                (&mut self.albums_page, self.library_albums.len(), true)
+            }
+            CollectionPageHit::PeoplePrevious => {
+                (&mut self.people_page, self.library_people.len(), false)
+            }
+            CollectionPageHit::PeopleNext => {
+                (&mut self.people_page, self.library_people.len(), true)
+            }
+            CollectionPageHit::PlacesPrevious => {
+                (&mut self.places_page, self.places_items.len(), false)
+            }
+            CollectionPageHit::PlacesNext => (&mut self.places_page, self.places_items.len(), true),
+        };
+        let pages = total.max(1).div_ceil(COLLECTION_PAGE_SIZE);
+        let next = if forward {
+            page.saturating_add(1).min(pages.saturating_sub(1))
+        } else {
+            page.saturating_sub(1)
+        };
+        if next == *page {
+            return false;
+        }
+        *page = next;
+        true
+    }
+
     fn library_page_label(&self) -> String {
         if self.library_total == 0 {
             "Showing 0 of 0".to_owned()
@@ -2431,6 +2520,49 @@ impl PhotosApp {
         true
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn handle_collection_page_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        if !self.library_mode || self.collection_page_hits.is_empty() {
+            return false;
+        }
+        for (hit, button) in &mut self.collection_page_buttons {
+            if self
+                .collection_page_hits
+                .iter()
+                .any(|(visible, _, _)| visible == hit)
+            {
+                let mut sink = None;
+                button.handle_event(
+                    event,
+                    scale_factor,
+                    &modifiers,
+                    doc,
+                    path,
+                    handled,
+                    &mut sink,
+                    node_id,
+                    taffy,
+                );
+            }
+        }
+        if let Some(hit) = self.collection_page_pending.take() {
+            self.page_collection(hit);
+            *handled = true;
+            return true;
+        }
+        false
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "the metadata sheet embeds four shared TextInputs under the Widget event contract"
@@ -2552,7 +2684,11 @@ impl PhotosApp {
                         .send(),
                 );
             }
-            crate::actions::PhotosOperation::ImportDirectory { path: None, .. } => {
+            crate::actions::PhotosOperation::ImportDirectory {
+                path: None,
+                retain_exif_location,
+            } => {
+                self.directory_picker_retain_exif_location = retain_exif_location;
                 self.directory_picker = Some(
                     ui::portal::PickRequest::directory("Import photo folder", "Import folder")
                         .thread_name("photos-portal-directory-import")
@@ -2560,17 +2696,31 @@ impl PhotosApp {
                 );
             }
             crate::actions::PhotosOperation::ImportDirectory {
-                path: Some(path), ..
+                path: Some(path),
+                retain_exif_location,
             } => {
-                self.begin_directory_import(std::path::PathBuf::from(path), None);
+                self.begin_directory_import(
+                    std::path::PathBuf::from(path),
+                    None,
+                    DirectoryImportMode::Import,
+                    retain_exif_location,
+                );
             }
             crate::actions::PhotosOperation::ImportCameraMedia { media_id, name } => {
                 return Err(format!(
                     "Camera import requires document dispatch: {media_id} ({name})"
                 ));
             }
-            crate::actions::PhotosOperation::ReindexDirectory { .. } => {
-                return Err("directory indexing requires the Photos indexing job host".to_owned());
+            crate::actions::PhotosOperation::ReindexDirectory {
+                path,
+                retain_exif_location,
+            } => {
+                self.begin_directory_import(
+                    std::path::PathBuf::from(path),
+                    None,
+                    DirectoryImportMode::Reindex,
+                    retain_exif_location,
+                );
             }
             crate::actions::PhotosOperation::AnalyzeText { .. }
             | crate::actions::PhotosOperation::AnalyzeImage { .. }
@@ -3053,6 +3203,13 @@ impl PhotosApp {
                         })
                         .with_action_target(target)
                 }));
+                cards.extend(
+                    self.collection_page_hits
+                        .iter()
+                        .map(|(hit, bounds, enabled)| {
+                            collection_page_access_node(*hit, *bounds, *enabled)
+                        }),
+                );
                 AccessNode::new(Role::Group)
                     .with_name("Places")
                     .with_description("Offline map of explicitly shared photo locations. Arrow keys pan; plus and minus zoom; L changes to the list.")
@@ -3233,6 +3390,13 @@ impl PhotosApp {
                             )
                         })
                 }));
+                cards.extend(
+                    self.collection_page_hits
+                        .iter()
+                        .map(|(hit, bounds, enabled)| {
+                            collection_page_access_node(*hit, *bounds, *enabled)
+                        }),
+                );
                 for (hit, bounds) in &self.timeline_density_hits {
                     let (name, target) = match hit {
                         TimelineHit::ZoomOut => {
@@ -3550,6 +3714,44 @@ impl PhotosApp {
                     .with_hashed_key("photos:status"),
             );
         }
+        if let Some(receipt) = self.directory_import_receipt.as_ref() {
+            let issue_names = receipt
+                .failures
+                .iter()
+                .take(3)
+                .map(|failure| {
+                    failure
+                        .source
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("Unavailable item")
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(if receipt.mode == DirectoryImportMode::Reindex {
+                        "Photo folder reindex result"
+                    } else {
+                        "Photo folder import result"
+                    })
+                    .with_description(format!(
+                        "{} imported, {} refreshed, {} unchanged, {} issues{}",
+                        receipt.imported,
+                        receipt.refreshed,
+                        receipt.unchanged,
+                        receipt.failures.len(),
+                        if issue_names.is_empty() {
+                            String::new()
+                        } else {
+                            format!(": {issue_names}")
+                        }
+                    ))
+                    .with_live(Politeness::Polite)
+                    .with_bounds(self.status_rect)
+                    .with_hashed_key("photos:directory-import-result"),
+            );
+        }
         AccessNode::new(Role::Group)
             .with_name(tr("photos-app"))
             .with_bounds(self.rect)
@@ -3606,6 +3808,24 @@ impl PhotosApp {
         action: &AccessAction,
         doc: &mut AutoCommit,
     ) -> bool {
+        if let Some(command) = target.strip_prefix("photos:collection-page:") {
+            if !matches!(action, AccessAction::Activate | AccessAction::Focus) {
+                return false;
+            }
+            let hit = match command {
+                "albums-previous" => CollectionPageHit::AlbumsPrevious,
+                "albums-next" => CollectionPageHit::AlbumsNext,
+                "people-previous" => CollectionPageHit::PeoplePrevious,
+                "people-next" => CollectionPageHit::PeopleNext,
+                "places-previous" => CollectionPageHit::PlacesPrevious,
+                "places-next" => CollectionPageHit::PlacesNext,
+                _ => return false,
+            };
+            if matches!(action, AccessAction::Activate) {
+                self.page_collection(hit);
+            }
+            return true;
+        }
         if target.starts_with("photos:timeline-index:") {
             if matches!(action, AccessAction::Focus) {
                 self.timeline_index.set_focus(true);
@@ -3831,116 +4051,317 @@ impl PhotosApp {
         &mut self,
         path: std::path::PathBuf,
         invocation: Option<tilo_actions::InvocationId>,
+        mode: DirectoryImportMode,
+        retain_exif_location: bool,
     ) {
-        let (sender, receiver) = std::sync::mpsc::sync_channel(DIRECTORY_IMPORT_QUEUE);
+        if self.directory_import.is_some() {
+            self.notice = Some("A photo folder job is already running".into());
+            return;
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
-        let _ = std::thread::Builder::new()
+        let spawn = std::thread::Builder::new()
             .name("photos-directory-import".into())
             .spawn(move || {
-                let mut pending = vec![path];
-                let mut seen = 0usize;
-                while let Some(directory) = pending.pop() {
-                    if worker_cancel.load(Ordering::Relaxed) || seen >= DIRECTORY_IMPORT_MAX_FILES {
-                        break;
-                    }
-                    let Ok(entries) = std::fs::read_dir(directory) else {
-                        continue;
-                    };
-                    for entry in entries.flatten() {
-                        if worker_cancel.load(Ordering::Relaxed)
-                            || seen >= DIRECTORY_IMPORT_MAX_FILES
-                        {
-                            break;
-                        }
-                        let path = entry.path();
-                        if path.is_dir() {
-                            pending.push(path);
-                            continue;
-                        }
-                        if !path.is_file() || !is_importable_photo(&path) {
-                            continue;
-                        }
-                        seen = seen.saturating_add(1);
-                        if sender.send(DirectoryImportEvent::Candidate(path)).is_err() {
-                            return;
-                        }
-                    }
-                }
-                let _ = sender.send(DirectoryImportEvent::Finished);
+                let result = crate::import::index_directory(
+                    &path,
+                    crate::import::ImportOptions {
+                        retain_exif_location,
+                        ..crate::import::ImportOptions::default()
+                    },
+                    &worker_cancel,
+                    |progress| {
+                        let _ = sender.send(DirectoryImportEvent::Progress(progress));
+                    },
+                );
+                let _ = sender.send(DirectoryImportEvent::Finished(result));
             });
+        if spawn.is_err() {
+            self.notice = Some("Photos could not start the folder indexing job".into());
+            if let Some(invocation) = invocation {
+                self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: "photos.directory_worker_unavailable".into(),
+                        message: "Photos could not start the folder indexing job".into(),
+                        details: None,
+                        retryable: true,
+                    },
+                });
+            }
+            return;
+        }
+        self.directory_import_receipt = None;
         self.directory_import = Some(DirectoryImport {
             receiver,
             cancel,
             invocation,
+            mode,
             discovered: 0,
             imported: 0,
+            refreshed: 0,
+            unchanged: 0,
             skipped: 0,
-            done: false,
+            sequence: 0,
+            pending: VecDeque::new(),
+            failures: Vec::new(),
+            worker_done: false,
+            cancelled: false,
+            limit_reached: false,
+            produced_resources: Vec::new(),
         });
-        self.notice = Some("Preparing folder import…".into());
+        self.notice = Some(match mode {
+            DirectoryImportMode::Import => "Preparing folder import…".into(),
+            DirectoryImportMode::Reindex => "Preparing folder reindex…".into(),
+        });
     }
 
     fn drain_directory_import(&mut self, doc: &mut AutoCommit) {
         if self.directory_import.is_none() {
             return;
         }
-        for _ in 0..DIRECTORY_IMPORT_PER_FRAME {
+        loop {
             let event = self
                 .directory_import
                 .as_ref()
-                .map(|import| import.receiver.try_recv());
+                .map(|job| job.receiver.try_recv());
             match event {
                 None => return,
-                Some(Ok(DirectoryImportEvent::Candidate(path))) => {
-                    if let Some(import) = self.directory_import.as_mut() {
-                        import.discovered = import.discovered.saturating_add(1);
-                    }
-                    let before = PhotosDoc::library(doc).photos.len();
-                    self.open_path(doc, &path.to_string_lossy());
-                    let imported = PhotosDoc::library(doc).photos.len() > before;
-                    if let Some(import) = self.directory_import.as_mut() {
-                        if imported {
-                            import.imported = import.imported.saturating_add(1);
-                        } else {
-                            import.skipped = import.skipped.saturating_add(1);
-                        }
+                Some(Ok(DirectoryImportEvent::Progress(progress))) => {
+                    let Some(job) = self.directory_import.as_mut() else {
+                        return;
+                    };
+                    job.discovered = progress.discovered;
+                    job.skipped = progress.skipped;
+                    job.sequence = job.sequence.saturating_add(1);
+                    if let Some(invocation) = job.invocation {
+                        self.resource_result = Some(tilo_actions::InvocationUpdate::Progress {
+                            invocation,
+                            sequence: job.sequence,
+                            phase: "indexing".into(),
+                            completed: Some(progress.indexed as u64),
+                            total: None,
+                            message: Some(format!(
+                                "{} photographs discovered; {} could not be indexed",
+                                progress.discovered, progress.skipped
+                            )),
+                        });
                     }
                 }
-                Some(Ok(DirectoryImportEvent::Finished)) => {
-                    if let Some(import) = self.directory_import.as_mut() {
-                        import.done = true;
+                Some(Ok(DirectoryImportEvent::Finished(Ok(report)))) => {
+                    if let Some(job) = self.directory_import.as_mut() {
+                        job.discovered = report.discovered;
+                        job.skipped = report.failures.len();
+                        let cancellation_was_requested = job.cancelled;
+                        job.cancelled |= report.cancelled;
+                        job.limit_reached = report.limit_reached;
+                        job.failures = report.failures;
+                        if !cancellation_was_requested {
+                            job.pending = report.photos.into();
+                        }
+                        job.worker_done = true;
                     }
+                    break;
+                }
+                Some(Ok(DirectoryImportEvent::Finished(Err(message)))) => {
+                    let Some(mut job) = self.directory_import.take() else {
+                        return;
+                    };
+                    self.notice = Some(message.clone());
+                    if let Some(invocation) = job.invocation.take() {
+                        self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: tilo_actions::ActionFailure {
+                                code: "photos.directory_index_failed".into(),
+                                message,
+                                details: None,
+                                retryable: true,
+                            },
+                        });
+                    }
+                    return;
                 }
                 Some(Err(std::sync::mpsc::TryRecvError::Empty)) => break,
                 Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
-                    if let Some(import) = self.directory_import.as_mut() {
-                        import.done = true;
+                    let Some(mut job) = self.directory_import.take() else {
+                        return;
+                    };
+                    let message = "The photo folder worker stopped before returning a result";
+                    self.notice = Some(message.into());
+                    if let Some(invocation) = job.invocation.take() {
+                        self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: tilo_actions::ActionFailure {
+                                code: "photos.directory_worker_stopped".into(),
+                                message: message.into(),
+                                details: None,
+                                retryable: true,
+                            },
+                        });
+                    }
+                    return;
+                }
+            }
+        }
+
+        for _ in 0..DIRECTORY_IMPORT_PER_FRAME {
+            let indexed = self
+                .directory_import
+                .as_mut()
+                .and_then(|job| job.pending.pop_front());
+            let Some(indexed) = indexed else { break };
+            let existing = PhotosDoc::photo(doc, &indexed.photo.id);
+            let mode = self
+                .directory_import
+                .as_ref()
+                .map_or(DirectoryImportMode::Import, |job| job.mode);
+            let (action, changed) = match (mode, existing.as_ref()) {
+                (DirectoryImportMode::Reindex, Some(current)) => {
+                    let capture_changes =
+                        current.captured_at.is_none() && indexed.photo.captured_at.is_some();
+                    let location_changes = current.location.as_ref().is_none_or(|location| {
+                        location.provenance.source == "exif"
+                            && current.location != indexed.photo.location
+                    });
+                    (
+                        crate::actions::PhotosAction::RefreshImportedMetadata {
+                            photo_id: indexed.photo.id.clone(),
+                            captured_at: indexed.photo.captured_at.clone(),
+                            location: indexed.photo.location.clone(),
+                        },
+                        capture_changes || location_changes,
+                    )
+                }
+                (_, Some(_)) => (
+                    crate::actions::PhotosAction::ImportPhoto {
+                        photo: indexed.photo.clone(),
+                    },
+                    false,
+                ),
+                (_, None) => (
+                    crate::actions::PhotosAction::ImportPhoto {
+                        photo: indexed.photo.clone(),
+                    },
+                    true,
+                ),
+            };
+            if !changed {
+                if let Some(job) = self.directory_import.as_mut() {
+                    job.unchanged = job.unchanged.saturating_add(1);
+                }
+                continue;
+            }
+            match self.actions.try_dispatch_with_context(
+                doc,
+                crate::actions::PHOTOS_ACTION_TYPE,
+                &action,
+                tilo_actions::ActionContext::for_action("org.tilo.Photos", "Photos", &action),
+            ) {
+                Ok(()) => {
+                    if let Some(job) = self.directory_import.as_mut() {
+                        if existing.is_some() {
+                            job.refreshed = job.refreshed.saturating_add(1);
+                        } else {
+                            job.imported = job.imported.saturating_add(1);
+                        }
+                        job.produced_resources.push(indexed.photo.id);
+                    }
+                }
+                Err(error) => {
+                    if let Some(job) = self.directory_import.as_mut() {
+                        job.skipped = job.skipped.saturating_add(1);
+                        job.failures.push(crate::import::ImportFailure {
+                            source: indexed.source,
+                            message: error.to_string(),
+                            retryable: false,
+                        });
                     }
                 }
             }
         }
-        let Some(import) = self.directory_import.as_ref() else {
-            return;
-        };
-        if import.done {
+
+        let finished = self
+            .directory_import
+            .as_ref()
+            .is_some_and(|job| job.worker_done && job.pending.is_empty());
+        if finished {
+            let mut job = self.directory_import.take().expect("checked above");
+            let noun = if job.mode == DirectoryImportMode::Import {
+                "import"
+            } else {
+                "reindex"
+            };
             let message = format!(
-                "Folder import finished: {} imported, {} skipped",
-                import.imported, import.skipped
+                "Folder {noun} finished: {} imported · {} refreshed · {} unchanged · {} issue{}",
+                job.imported,
+                job.refreshed,
+                job.unchanged,
+                job.failures.len(),
+                if job.failures.len() == 1 { "" } else { "s" }
             );
-            let invocation = import.invocation;
-            self.notice = Some(message.clone());
-            self.directory_import = None;
-            if let Some(invocation) = invocation {
-                self.resource_result = Some(tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
+            self.notice = Some(message);
+            self.directory_import_receipt = Some(DirectoryImportReceipt {
+                mode: job.mode,
+                discovered: job.discovered,
+                imported: job.imported,
+                refreshed: job.refreshed,
+                unchanged: job.unchanged,
+                failures: job.failures.clone(),
+                cancelled: job.cancelled,
+                limit_reached: job.limit_reached,
+            });
+            if let Some(invocation) = job.invocation.take() {
+                let failures: Vec<_> = job
+                    .failures
+                    .iter()
+                    .take(50)
+                    .map(|failure| serde_json::json!({
+                        "name": failure.source.file_name().and_then(|name| name.to_str()).unwrap_or("Unavailable item"),
+                        "message": failure.message,
+                        "retryable": failure.retryable,
+                    }))
+                    .collect();
+                self.resource_result = Some(if job.cancelled {
+                    tilo_actions::InvocationUpdate::Cancelled {
+                        invocation,
+                        message: Some(
+                            "Folder indexing was cancelled; completed photographs were kept".into(),
+                        ),
+                    }
+                } else {
+                    tilo_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: tilo_actions::ActionOutput {
+                            value: Some(serde_json::json!({
+                                "operation": noun,
+                                "discovered": job.discovered,
+                                "imported": job.imported,
+                                "refreshed": job.refreshed,
+                                "unchanged": job.unchanged,
+                                "failed": job.failures.len(),
+                                "limit_reached": job.limit_reached,
+                                "failures": failures,
+                            })),
+                            resources: job.produced_resources,
+                        },
+                    }
                 });
             }
-        } else {
+            self.resource_invocation = None;
+        } else if let Some(job) = self.directory_import.as_ref() {
             self.notice = Some(format!(
-                "Importing folder: {} found · {} imported · {} skipped",
-                import.discovered, import.imported, import.skipped
+                "{} folder: {} found · {} imported · {} refreshed · {} issue{}",
+                if job.mode == DirectoryImportMode::Import {
+                    "Importing"
+                } else {
+                    "Reindexing"
+                },
+                job.discovered,
+                job.imported,
+                job.refreshed,
+                job.failures.len(),
+                if job.failures.len() == 1 { "" } else { "s" }
             ));
         }
     }
@@ -3952,7 +4373,12 @@ impl PhotosApp {
                 Ok(ui::portal::PortalOutcome::Opened(path)) => {
                     self.directory_picker = None;
                     let invocation = self.resource_invocation.take();
-                    self.begin_directory_import(path, invocation);
+                    self.begin_directory_import(
+                        path,
+                        invocation,
+                        DirectoryImportMode::Import,
+                        self.directory_picker_retain_exif_location,
+                    );
                 }
                 Ok(ui::portal::PortalOutcome::Cancelled) => {
                     self.directory_picker = None;
@@ -4420,6 +4846,180 @@ impl PhotosApp {
     /// A deliberately calm People home: approved shared identities are a
     /// collection, while local face work is a private review queue. It never
     /// paints a made-up suggestion when no signed face model is installed.
+    fn draw_collection_pager(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        bounds: Rect,
+        page: usize,
+        total: usize,
+        previous: CollectionPageHit,
+        next: CollectionPageHit,
+    ) {
+        self.collection_page_hits.clear();
+        let pages = total.max(1).div_ceil(COLLECTION_PAGE_SIZE);
+        if pages <= 1 {
+            return;
+        }
+        let previous_enabled = page > 0;
+        let next_enabled = page + 1 < pages;
+        let button_w = 88.0;
+        let label_w = 104.0;
+        let previous_rect = Rect::new(bounds.x0, bounds.y0, bounds.x0 + button_w, bounds.y1);
+        let next_rect = Rect::new(bounds.x1 - button_w, bounds.y0, bounds.x1, bounds.y1);
+        let presence = PresenceCtx::empty();
+        for (hit, rect, enabled) in [
+            (previous, previous_rect, previous_enabled),
+            (next, next_rect, next_enabled),
+        ] {
+            if let Some((_, button)) = self
+                .collection_page_buttons
+                .iter_mut()
+                .find(|(candidate, _)| *candidate == hit)
+            {
+                button.set_enabled(enabled);
+                button.apply_layout_external(rect);
+                button.draw(scene, transform, text_renderer, theme, &presence);
+            }
+            self.collection_page_hits.push((hit, rect, enabled));
+        }
+        text_renderer.draw_text_weighted(
+            scene,
+            &format!("Page {} of {pages}", page + 1),
+            12.0,
+            theme.text_dim,
+            transform * Affine::translate((bounds.center().x - label_w * 0.5, bounds.y0 + 12.0)),
+            Some(label_w as f32),
+            TextWeight::Regular,
+        );
+    }
+
+    fn draw_directory_import_status(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        use vello::peniko::Fill;
+        let (title, summary, issues) = if let Some(job) = self.directory_import.as_ref() {
+            (
+                if job.mode == DirectoryImportMode::Import {
+                    "Importing photo folder"
+                } else {
+                    "Reindexing photo folder"
+                }
+                .to_owned(),
+                format!(
+                    "{} found · {} imported · {} refreshed · {} issue{}",
+                    job.discovered,
+                    job.imported,
+                    job.refreshed,
+                    job.failures.len(),
+                    if job.failures.len() == 1 { "" } else { "s" }
+                ),
+                &job.failures,
+            )
+        } else if let Some(receipt) = self.directory_import_receipt.as_ref() {
+            let noun = if receipt.mode == DirectoryImportMode::Reindex {
+                "Reindex complete"
+            } else {
+                "Import complete"
+            };
+            (
+                noun.to_owned(),
+                format!(
+                    "{} found · {} imported · {} refreshed · {} unchanged · {} issue{}{}{}",
+                    receipt.discovered,
+                    receipt.imported,
+                    receipt.refreshed,
+                    receipt.unchanged,
+                    receipt.failures.len(),
+                    if receipt.failures.len() == 1 { "" } else { "s" },
+                    if receipt.cancelled {
+                        " · cancelled"
+                    } else {
+                        ""
+                    },
+                    if receipt.limit_reached {
+                        " · folder limit reached"
+                    } else {
+                        ""
+                    },
+                ),
+                &receipt.failures,
+            )
+        } else {
+            return;
+        };
+        let bounds = Rect::new(
+            self.canvas_rect.x0 + 16.0,
+            (self.canvas_rect.y1 - 94.0).max(self.canvas_rect.y0 + 8.0),
+            self.canvas_rect.x1 - 16.0,
+            self.canvas_rect.y1 - 12.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &RoundedRect::from_rect(bounds, 10.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &RoundedRect::from_rect(bounds, 10.0),
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            &title,
+            14.0,
+            theme.text_primary,
+            transform * Affine::translate((bounds.x0 + 16.0, bounds.y0 + 13.0)),
+            Some((bounds.width() - 32.0) as f32),
+            TextWeight::Semibold,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            &summary,
+            12.0,
+            theme.text_dim,
+            transform * Affine::translate((bounds.x0 + 16.0, bounds.y0 + 37.0)),
+            Some((bounds.width() - 32.0) as f32),
+            TextWeight::Regular,
+        );
+        if !issues.is_empty() {
+            let first = &issues[0];
+            let name = first
+                .source
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("Unavailable item");
+            let more = issues.len().saturating_sub(1);
+            text_renderer.draw_text_weighted(
+                scene,
+                &format!(
+                    "Needs attention: {name} — {}{}",
+                    first.message,
+                    if more == 0 {
+                        String::new()
+                    } else {
+                        format!(" · {more} more")
+                    }
+                ),
+                12.0,
+                theme.text_primary,
+                transform * Affine::translate((bounds.x0 + 16.0, bounds.y0 + 59.0)),
+                Some((bounds.width() - 32.0) as f32),
+                TextWeight::Regular,
+            );
+        }
+    }
+
     fn draw_people(
         &mut self,
         scene: &mut Scene,
@@ -4517,7 +5117,28 @@ impl PhotosApp {
             TextWeight::Medium,
         );
         y += 28.0;
-        let people: Vec<_> = self.library_people.iter().take(8).collect();
+        self.draw_collection_pager(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            Rect::new(
+                (content.x1 - 292.0).max(content.x0),
+                y - 42.0,
+                content.x1,
+                y - 2.0,
+            ),
+            self.people_page,
+            self.library_people.len(),
+            CollectionPageHit::PeoplePrevious,
+            CollectionPageHit::PeopleNext,
+        );
+        let people: Vec<_> = self
+            .library_people
+            .iter()
+            .skip(self.people_page * COLLECTION_PAGE_SIZE)
+            .take(COLLECTION_PAGE_SIZE)
+            .collect();
         if people.is_empty() {
             text_renderer.draw_text_weighted(
                 scene,
@@ -4598,7 +5219,10 @@ impl PhotosApp {
             y + 44.0
         } else {
             let columns = if content.width() < 620.0 { 2 } else { 4 };
-            y + (self.library_people.len().min(8).div_ceil(columns) as f64) * 184.0 + 12.0
+            y + (people_page_len(self.library_people.len(), self.people_page).div_ceil(columns)
+                as f64)
+                * 184.0
+                + 12.0
         };
         text_renderer.draw_text_weighted(
             scene,
@@ -4681,6 +5305,7 @@ impl PhotosApp {
         self.timeline_density_hits.clear();
         self.library_details_cards.clear();
         self.places_hits.clear();
+        self.collection_page_hits.clear();
         if self.library_items.is_empty() {
             let (title, body) = if self.library_query.trim().is_empty() {
                 (
@@ -4914,23 +5539,36 @@ impl PhotosApp {
                     format!("All photos ({})", self.library_total)
                 },
             )];
-            albums.extend(self.library_albums.iter().map(|(id, name, count)| {
-                (
-                    Some(id.clone()),
-                    if large_text {
-                        compact_label(name, 12)
-                    } else {
-                        format!("{name} ({count})")
-                    },
-                )
-            }));
+            albums.extend(
+                self.library_albums
+                    .iter()
+                    .skip(self.albums_page * COLLECTION_PAGE_SIZE)
+                    .take(COLLECTION_PAGE_SIZE)
+                    .map(|(id, name, count)| {
+                        (
+                            Some(id.clone()),
+                            if large_text {
+                                compact_label(name, 12)
+                            } else {
+                                format!("{name} ({count})")
+                            },
+                        )
+                    }),
+            );
+            let album_pages = self
+                .library_albums
+                .len()
+                .max(1)
+                .div_ceil(COLLECTION_PAGE_SIZE);
+            let album_chip_limit =
+                bounds.x1 - f64::from(PAD) - if album_pages > 1 { 308.0 } else { 0.0 };
             for (album_id, label) in albums {
                 let width = if large_text {
                     (label.chars().count() as f64 * 13.0 + 22.0).clamp(64.0, 190.0)
                 } else {
                     (label.chars().count() as f64 * 7.2 + 18.0).min(150.0)
                 };
-                if x + width > bounds.x1 - f64::from(PAD) {
+                if x + width > album_chip_limit {
                     break;
                 }
                 let chip = Rect::new(x, y, x + width, y + if large_text { 44.0 } else { 26.0 });
@@ -4969,6 +5607,22 @@ impl PhotosApp {
                 self.album_cards.push((album_id, chip));
                 x += width + 8.0;
             }
+            self.draw_collection_pager(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                Rect::new(
+                    bounds.x1 - f64::from(PAD) - 292.0,
+                    y - 7.0,
+                    bounds.x1 - f64::from(PAD),
+                    y + 33.0,
+                ),
+                self.albums_page,
+                self.library_albums.len(),
+                CollectionPageHit::AlbumsPrevious,
+                CollectionPageHit::AlbumsNext,
+            );
         }
         // Metadata filters are deliberately in the shelf rather than hidden
         // behind global search: folders and people are an everyday browse
@@ -5773,6 +6427,7 @@ impl PhotosApp {
     ) {
         use vello::peniko::Fill;
         self.places_hits.clear();
+        self.collection_page_hits.clear();
         let bounds = Rect::new(
             self.canvas_rect.x0 + 10.0,
             self.canvas_rect.y0 + 10.0,
@@ -6043,8 +6698,24 @@ impl PhotosApp {
         map: Rect,
     ) {
         use vello::peniko::Fill;
+        self.draw_collection_pager(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            Rect::new(map.x0 + 12.0, map.y0 + 8.0, map.x1 - 124.0, map.y0 + 48.0),
+            self.places_page,
+            self.places_items.len(),
+            CollectionPageHit::PlacesPrevious,
+            CollectionPageHit::PlacesNext,
+        );
         let mut y = map.y0 + 64.0;
-        for item in self.places_items.iter().take(8) {
+        for item in self
+            .places_items
+            .iter()
+            .skip(self.places_page * COLLECTION_PAGE_SIZE)
+            .take(COLLECTION_PAGE_SIZE)
+        {
             if y + 58.0 > map.y1 {
                 break;
             }
@@ -7715,6 +8386,56 @@ fn build_library_album_buttons() -> Vec<(AlbumEditorHit, Button)> {
     .collect()
 }
 
+fn build_collection_page_buttons(
+    pending: &Rc<Cell<Option<CollectionPageHit>>>,
+) -> Vec<(CollectionPageHit, Button)> {
+    [
+        (
+            CollectionPageHit::AlbumsPrevious,
+            "photos-albums-previous",
+            "Previous albums",
+        ),
+        (
+            CollectionPageHit::AlbumsNext,
+            "photos-albums-next",
+            "More albums",
+        ),
+        (
+            CollectionPageHit::PeoplePrevious,
+            "photos-people-previous",
+            "Previous people",
+        ),
+        (
+            CollectionPageHit::PeopleNext,
+            "photos-people-next",
+            "More people",
+        ),
+        (
+            CollectionPageHit::PlacesPrevious,
+            "photos-places-previous",
+            "Previous places",
+        ),
+        (
+            CollectionPageHit::PlacesNext,
+            "photos-places-next",
+            "More places",
+        ),
+    ]
+    .into_iter()
+    .map(|(hit, id, label)| {
+        let slot = pending.clone();
+        (
+            hit,
+            Button::new(id, label, None)
+                .with_size(88.0, 40.0)
+                .tooltip(label)
+                .with_accessible_name(label)
+                .on_effect(move || slot.set(Some(hit))),
+        )
+    })
+    .collect()
+}
+
 /// Shared retained controls placed over the custom timeline geometry.  The
 /// timeline owns placement, while Button owns its visual states, names and
 /// minimum target treatment.
@@ -7806,6 +8527,33 @@ fn timeline_date_label(captured_at: &str) -> String {
     }
 }
 
+fn people_page_len(total: usize, page: usize) -> usize {
+    total
+        .saturating_sub(page.saturating_mul(COLLECTION_PAGE_SIZE))
+        .min(COLLECTION_PAGE_SIZE)
+}
+
+fn collection_page_access_node(hit: CollectionPageHit, bounds: Rect, enabled: bool) -> AccessNode {
+    let (name, target) = match hit {
+        CollectionPageHit::AlbumsPrevious => ("Previous albums", "albums-previous"),
+        CollectionPageHit::AlbumsNext => ("More albums", "albums-next"),
+        CollectionPageHit::PeoplePrevious => ("Previous people", "people-previous"),
+        CollectionPageHit::PeopleNext => ("More people", "people-next"),
+        CollectionPageHit::PlacesPrevious => ("Previous places", "places-previous"),
+        CollectionPageHit::PlacesNext => ("More places", "places-next"),
+    };
+    AccessNode::new(Role::Button)
+        .with_name(name)
+        .with_description("Browse the complete collection one bounded page at a time")
+        .with_bounds(bounds)
+        .with_state(AccessState {
+            focusable: enabled,
+            disabled: !enabled,
+            ..Default::default()
+        })
+        .with_action_target(format!("photos:collection-page:{target}"))
+}
+
 /// Preserve a capture day as the timeline's chronological identity. Display
 /// formatting must never become the sort/group key: doing so would collapse
 /// every "Jun" from different years into one ambiguous bucket.
@@ -7857,17 +8605,6 @@ fn timeline_index_markers(items: &[LibraryItem], columns: usize) -> Vec<DateInde
 /// enforce its decoded-pixel limit.
 fn bounded_file_bytes(path: &str) -> Option<Vec<u8>> {
     pixels::read_bounded(std::fs::File::open(path).ok()?, pixels::MAX_ENCODED_BYTES)
-}
-
-fn is_importable_photo(path: &std::path::Path) -> bool {
-    path.extension()
-        .and_then(|value| value.to_str())
-        .is_some_and(|extension| {
-            matches!(
-                extension.to_ascii_lowercase().as_str(),
-                "png" | "jpg" | "jpeg" | "webp"
-            )
-        })
 }
 
 impl PhotosApp {
@@ -8287,13 +9024,18 @@ impl Widget for PhotosApp {
             // caller has cancelled the action.
             self.picker = None;
             self.directory_picker = None;
-            if let Some(import) = self.directory_import.take() {
+            if let Some(import) = self.directory_import.as_mut() {
                 import.cancel.store(true, Ordering::Relaxed);
+                import.invocation = None;
+                import.cancelled = true;
+                import.pending.clear();
             }
             self.resource_invocation = None;
             return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
-                message: Some("photo selection was cancelled".into()),
+                message: Some(
+                    "folder indexing was cancelled; completed photographs are kept".into(),
+                ),
             });
         }
         if self
@@ -8506,7 +9248,6 @@ impl Widget for PhotosApp {
         self.library_albums = library
             .albums
             .iter()
-            .take(24)
             .map(|album| (album.id.clone(), album.name.clone(), album.photo_ids.len()))
             .collect();
         let mut folders = std::collections::BTreeMap::<String, usize>::new();
@@ -8524,9 +9265,23 @@ impl Widget for PhotosApp {
             }
         }
         self.library_folders = folders.into_iter().take(6).collect();
-        self.library_people = people.into_iter().take(6).collect();
+        self.library_people = people.into_iter().collect();
+        self.albums_page = self
+            .albums_page
+            .min(self.library_albums.len().saturating_sub(1) / COLLECTION_PAGE_SIZE);
+        self.people_page = self
+            .people_page
+            .min(self.library_people.len().saturating_sub(1) / COLLECTION_PAGE_SIZE);
+        self.places_page = self
+            .places_page
+            .min(self.places_items.len().saturating_sub(1) / COLLECTION_PAGE_SIZE);
         self.library_person_covers.clear();
-        for (person, _) in &self.library_people {
+        for (person, _) in self
+            .library_people
+            .iter()
+            .skip(self.people_page * COLLECTION_PAGE_SIZE)
+            .take(COLLECTION_PAGE_SIZE)
+        {
             if let Some(photo) = library
                 .photos
                 .iter()
@@ -8776,6 +9531,7 @@ impl Widget for PhotosApp {
             } else {
                 self.draw_library(scene, transform, text_renderer, theme, presence);
             }
+            self.draw_directory_import_status(scene, transform, text_renderer, theme);
         } else if let Some(v) = self.viewer.as_mut() {
             v.draw(scene, transform, text_renderer, theme, presence);
         } else {
@@ -9193,6 +9949,19 @@ impl Widget for PhotosApp {
                 taffy,
             )
         {
+            return;
+        }
+
+        if self.handle_collection_page_event(
+            event,
+            scale_factor,
+            *modifiers,
+            doc,
+            path,
+            handled,
+            node_id,
+            taffy,
+        ) {
             return;
         }
 
@@ -10736,6 +11505,59 @@ mod tests {
             app.thumbnail_generation
                 .is_some_and(|generation| generation > 0)
         );
+    }
+
+    #[test]
+    fn people_places_and_albums_keep_complete_paged_collections() {
+        let mut app = PhotosApp::new();
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let mut library = crate::model::PhotoLibrary::default();
+        for index in 0..29 {
+            let mut photo = LibraryPhoto::from_image(OpenImage::from_path(
+                &format!("/photos/{index}.png"),
+                40,
+                20,
+            ));
+            photo.people = vec![format!("Person {index:02}")];
+            photo.location = Some(crate::model::PhotoLocation {
+                latitude: 10.0 + index as f64 / 100.0,
+                longitude: 20.0,
+                label: Some(format!("Place {index:02}")),
+                provenance: crate::model::LocationProvenance::default(),
+            });
+            library.photos.push(photo);
+            library.albums.push(crate::model::Album {
+                id: format!("photos.album:album-{index:02}"),
+                name: format!("Album {index:02}"),
+                photo_ids: Vec::new(),
+            });
+        }
+        PhotosDoc::set_library(&mut doc, &library);
+        app.sync(&mut doc, &ROOT);
+
+        assert_eq!(app.library_people.len(), 29);
+        assert_eq!(app.places_items.len(), 29);
+        assert_eq!(app.library_albums.len(), 29);
+        assert!(app.page_collection(CollectionPageHit::PeopleNext));
+        assert!(app.page_collection(CollectionPageHit::PlacesNext));
+        assert!(app.page_collection(CollectionPageHit::AlbumsNext));
+        assert_eq!(
+            (app.people_page, app.places_page, app.albums_page),
+            (1, 1, 1)
+        );
+        assert!(app.perform_library_semantic_action(
+            "photos:collection-page:people-next",
+            &AccessAction::Activate,
+            &mut doc,
+        ));
+        assert_eq!(app.people_page, 2);
+        assert!(app.perform_library_semantic_action(
+            "photos:collection-page:people-previous",
+            &AccessAction::Activate,
+            &mut doc,
+        ));
+        assert_eq!(app.people_page, 1);
     }
 
     #[test]
