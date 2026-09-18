@@ -118,7 +118,13 @@ TARGET_SHA256=$(sha256sum -- "$TARGET_REAL" | cut -d' ' -f1)
 } >"$ATTEST_TMP" || die "cannot record developer-session attestation"
 chmod 600 -- "$ATTEST_TMP" || die "cannot protect developer-session attestation"
 mv -f -- "$ATTEST_TMP" "$ATTEST_DIR/active" || die "cannot publish developer-session attestation"
-# --firstboot for the same reason as the production wrapper: a host has no
-# unit that prepares the user's config directories. Identity creation remains
-# an interactive compositor-owned step.
-exec "$TARGET_REAL" --host-desktop-session --firstboot --backend drm "$@"
+
+# From this point on the developer session has the exact same lifecycle as the
+# installed session: graphical targets and services, activation environment,
+# logout request channel, signal forwarding, journaling, and cleanup. The
+# package-owned runner accepts the canonical path only after this wrapper has
+# completed every developer-build security check above.
+SELF_REAL=$(realpath -e -- "$0") || die "cannot resolve developer-session wrapper"
+SESSION_RUNNER=$(dirname -- "$SELF_REAL")/tilo-session-runner
+[ -x "$SESSION_RUNNER" ] || die "the package-owned lifecycle runner is missing"
+exec "$SESSION_RUNNER" "$TARGET_REAL" "$@"
