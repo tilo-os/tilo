@@ -36,7 +36,10 @@ use ui::icons::{Icon, draw_icon};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Button, EmptyState, ImageViewer, SearchField, TextInput, Widget};
+use ui::widget::{
+    Button, DateIndexIntent, DateIndexMarker, DateIndexMarkerKind, DateIndexedScrollbar,
+    EmptyState, ImageViewer, ScrollMetrics, SearchField, TextInput, Widget,
+};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::doc::PhotosDoc;
@@ -733,6 +736,12 @@ pub struct PhotosApp {
     /// materialised slice still advances only when its leading row changes.
     timeline_scroll_row: f64,
     timeline_last_columns: usize,
+    /// Shared chronological navigation face.  It owns no library data: the
+    /// current row offset/density remain private presentation state, while
+    /// date boundaries are a bounded projection of canonical photo metadata.
+    timeline_index: DateIndexedScrollbar,
+    timeline_index_markers: Vec<DateIndexMarker>,
+    timeline_index_metrics: ScrollMetrics,
     library_details_cards: Vec<(String, Rect)>,
     album_cards: Vec<(Option<String>, Rect)>,
     album_editor: bool,
@@ -982,6 +991,9 @@ impl PhotosApp {
             timeline_density: 1,
             timeline_scroll_row: 0.0,
             timeline_last_columns: 1,
+            timeline_index: DateIndexedScrollbar::new("photos:timeline-index"),
+            timeline_index_markers: Vec::new(),
+            timeline_index_metrics: ScrollMetrics::new(0.0, 0.0, 0.0),
             library_details_cards: Vec::new(),
             album_cards: Vec::new(),
             album_editor: false,
@@ -1897,6 +1909,34 @@ impl PhotosApp {
 
     fn scroll_timeline_rows(&mut self, delta: f64) {
         self.timeline_scroll_row = (self.timeline_scroll_row + delta).max(0.0);
+    }
+
+    /// Apply every chronological-index input through the same local scroll
+    /// and density helpers used by the ordinary timeline.  The index never
+    /// owns a second offset, which is what keeps a pinch anchor and a dragged
+    /// date thumb in agreement.
+    fn apply_timeline_index_intent(&mut self, intent: DateIndexIntent) -> bool {
+        match intent {
+            DateIndexIntent::ScrollTo { position } => {
+                self.timeline_scroll_row =
+                    DateIndexedScrollbar::offset_for(self.timeline_index_metrics, position);
+                true
+            }
+            DateIndexIntent::AdjustDensity { delta } => {
+                if delta > 0 {
+                    self.adjust_timeline_density(true)
+                } else if delta < 0 {
+                    self.adjust_timeline_density(false)
+                } else {
+                    false
+                }
+            }
+            // A preview is presentation only. The widget has retained it for
+            // paint and AT's current value; it must not make collaboration
+            // history noisy by changing a collection just because it was
+            // hovered.
+            DateIndexIntent::PreviewChanged(_) => true,
+        }
     }
 
     #[allow(
@@ -3032,6 +3072,14 @@ impl PhotosApp {
                     .with_hashed_key("photos:destination-album-dialog")
                     .with_children(cards)
             } else {
+                if !self.album_editor && !self.metadata_editor {
+                    cards.push(
+                        self.timeline_index.accessibility(
+                            self.timeline_index_metrics,
+                            &self.timeline_index_markers,
+                        ),
+                    );
+                }
                 AccessNode::new(Role::List)
                     .with_name(tr("photos-library"))
                     .with_description(format!("{} photographs", self.library_total))
@@ -3112,6 +3160,21 @@ impl PhotosApp {
         action: &AccessAction,
         doc: &mut AutoCommit,
     ) -> bool {
+        if target.starts_with("photos:timeline-index:") {
+            if matches!(action, AccessAction::Focus) {
+                self.timeline_index.set_focus(true);
+                return true;
+            }
+            if let Some(intent) = self.timeline_index.perform_access_action(
+                target,
+                action,
+                self.timeline_index_metrics,
+                &self.timeline_index_markers,
+            ) {
+                return self.apply_timeline_index_intent(intent);
+            }
+            return false;
+        }
         if let Some(direction) = target.strip_prefix("photos:timeline:density-") {
             return match (direction, action) {
                 ("in", AccessAction::Activate) => self.adjust_timeline_density(true),
@@ -4355,6 +4418,22 @@ impl PhotosApp {
                 76.0
             };
         let rows = ((bounds.y1 - top - f64::from(PAD)).max(0.0) / (card_h + gap)).floor() as usize;
+        // The index speaks in chronological *rows*, the exact continuous
+        // coordinate used by the virtualised timeline. It is not derived from
+        // `library_items.len()`: that is just the 120-item materialisation
+        // window and would make the thumb lie about a large collection.
+        let content_rows = self.library_total.div_ceil(columns.max(1));
+        self.timeline_index_metrics = ScrollMetrics::new(
+            f64::from(u32::try_from(content_rows).unwrap_or(u32::MAX)),
+            f64::from(u32::try_from(rows.max(1)).unwrap_or(u32::MAX)),
+            self.timeline_scroll_row,
+        );
+        self.timeline_index.set_rect(Rect::new(
+            bounds.x1 - f64::from(PAD) - ui::widget::date_indexed_scrollbar::DEFAULT_TRACK_WIDTH,
+            top + 4.0,
+            bounds.x1 - f64::from(PAD),
+            bounds.y1 - f64::from(PAD),
+        ));
         // The editor is modal at large text: leaving a partially visible
         // ultra-wide thumbnail behind it creates a false second target and
         // can make its action row look clipped. The local grid decision still
@@ -4669,6 +4748,16 @@ impl PhotosApp {
             }
         }
         scene.pop_layer();
+        if !self.album_editor && !self.metadata_editor && !self.selection_album_chooser {
+            self.timeline_index.paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                self.timeline_index_metrics,
+                &self.timeline_index_markers,
+            );
+        }
         self.draw_album_editor(scene, transform, text_renderer, theme, presence);
         self.draw_metadata_editor(scene, transform, text_renderer, theme, presence);
         self.draw_selection_destination_sheet(scene, transform, text_renderer, theme, bounds);
@@ -6361,6 +6450,40 @@ fn timeline_date_label(captured_at: &str) -> String {
         .to_owned()
 }
 
+/// Materialise lightweight chronological boundaries for the shared index.
+/// The collection stays virtual: this walks metadata already projected during
+/// `sync`, creates at most one marker per visible capture day, and the widget
+/// later paints/exports only a bounded sample.  Newest-first remains position
+/// zero so the date index and the timeline use the same direction.
+fn timeline_index_markers(items: &[LibraryItem], columns: usize) -> Vec<DateIndexMarker> {
+    let denominator = items.len().saturating_sub(1).max(1) as f64;
+    let columns = columns.max(1);
+    let mut markers = Vec::new();
+    let mut previous_day = "";
+    let mut previous_year = "";
+    for (index, item) in items.iter().enumerate() {
+        if item.captured_at == previous_day {
+            continue;
+        }
+        let year = item.captured_at.get(..4).unwrap_or_default();
+        let kind = if year.len() == 4 && year != previous_year {
+            previous_year = year;
+            DateIndexMarkerKind::Major
+        } else {
+            DateIndexMarkerKind::Minor
+        };
+        let row = index / columns;
+        markers.push(DateIndexMarker::new(
+            format!("{}:{}", item.captured_at, row),
+            item.captured_at.clone(),
+            index as f64 / denominator,
+            kind,
+        ));
+        previous_day = &item.captured_at;
+    }
+    markers
+}
+
 /// Read at most the encoded-image budget plus one sentinel byte. A hostile
 /// file can otherwise exhaust memory before the decoder gets a chance to
 /// enforce its decoded-pixel limit.
@@ -6861,6 +6984,7 @@ impl Widget for PhotosApp {
                 .then_with(|| right.captured_at.cmp(&left.captured_at))
                 .then_with(|| left.id.cmp(&right.id))
         });
+        self.timeline_index_markers = timeline_index_markers(&timeline_items, timeline_columns);
         self.library_items = timeline_items
             .into_iter()
             .skip(browse_offset)
@@ -7238,6 +7362,41 @@ impl Widget for PhotosApp {
             );
             if *handled {
                 return;
+            }
+        }
+
+        // Give the shared chronological index first refusal only while its
+        // narrow track/preview lane owns the pointer (or it holds a drag / AT
+        // focus). Ordinary scrolling anywhere else remains the timeline's
+        // smooth wheel path below.
+        if self.library_mode && !self.album_editor && !self.metadata_editor {
+            let index_owns_event = self.timeline_index.contains_interaction_point(self.pointer)
+                || self.timeline_index.is_dragging()
+                || self.timeline_index.is_focused();
+            if index_owns_event
+                && matches!(
+                    event,
+                    winit::event::WindowEvent::CursorMoved { .. }
+                        | winit::event::WindowEvent::MouseInput { .. }
+                        | winit::event::WindowEvent::MouseWheel { .. }
+                        | winit::event::WindowEvent::KeyboardInput { .. }
+                )
+            {
+                let was_dragging = self.timeline_index.is_dragging();
+                if let Some(intent) = self.timeline_index.handle_event(
+                    event,
+                    scale_factor,
+                    self.timeline_index_metrics,
+                    &self.timeline_index_markers,
+                ) {
+                    let _ = self.apply_timeline_index_intent(intent);
+                    *handled = true;
+                    return;
+                }
+                if was_dragging || self.timeline_index.is_dragging() {
+                    *handled = true;
+                    return;
+                }
             }
         }
 
@@ -7974,6 +8133,50 @@ mod tests {
             (app.timeline_scroll_row * app.timeline_last_columns as f64 - 30.0).abs()
                 < f64::EPSILON
         );
+    }
+
+    #[test]
+    fn date_index_uses_timeline_rows_and_preserves_virtual_scroll_anchor() {
+        let mut app = PhotosApp::new();
+        app.timeline_index_metrics = ScrollMetrics::new(100.0, 10.0, 20.0);
+        assert!(app.apply_timeline_index_intent(DateIndexIntent::ScrollTo { position: 0.5 }));
+        assert!((app.timeline_scroll_row - 45.0).abs() < f64::EPSILON);
+        // A hover preview may redraw a label but must never mutate the scroll
+        // anchor or create an accidental shared action.
+        assert!(app.apply_timeline_index_intent(DateIndexIntent::PreviewChanged(None)));
+        assert!((app.timeline_scroll_row - 45.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn date_index_boundaries_are_chronological_and_mark_year_changes() {
+        let items = vec![
+            LibraryItem {
+                id: "new".into(),
+                name: "new".into(),
+                favorite: false,
+                metadata: String::new(),
+                captured_at: "2026-02-03".into(),
+            },
+            LibraryItem {
+                id: "same-day".into(),
+                name: "same-day".into(),
+                favorite: false,
+                metadata: String::new(),
+                captured_at: "2026-02-03".into(),
+            },
+            LibraryItem {
+                id: "old".into(),
+                name: "old".into(),
+                favorite: false,
+                metadata: String::new(),
+                captured_at: "2025-12-31".into(),
+            },
+        ];
+        let markers = timeline_index_markers(&items, 2);
+        assert_eq!(markers.len(), 2, "one boundary per capture day");
+        assert_eq!(markers[0].kind, DateIndexMarkerKind::Major);
+        assert_eq!(markers[1].kind, DateIndexMarkerKind::Major);
+        assert!(markers[0].position < markers[1].position);
     }
 
     #[test]
