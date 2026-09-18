@@ -1,0 +1,27 @@
+name: Immutable builder resolution pilot
+on:
+  push:
+    branches: [codex/ci-immutable-builder]
+jobs:
+  resolver:
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: code.podesta.ai/qos/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Resolve actual authenticated builder manifest
+        id: resolve
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: python3 tools/resolve_ci_builder.py
+      - name: Verify native resolver and manual override contracts
+        run: |
+          python3 tools/tests/test_resolve_ci_builder.py
+          python3 os/tests/test_builder_candidate_workflow.py
+          python3 tools/tests/test_ci_queue_relief.py
