@@ -377,11 +377,26 @@ struct PersonalMediaTransferState {
 fn discard_personal_media_transfer(
     state: &mut PersonalMediaTransferState,
     key: &(crate::shell::personal_continuity::DeviceId, [u8; 16]),
-) {
+) -> bool {
+    let mut removed = state.authorized.remove(key);
     if let Some(transfer) = state.incoming.remove(key) {
         let _ = std::fs::remove_file(transfer.part_path);
+        removed = true;
     }
-    state.authorized.remove(key);
+    if let Some(path) = state.completed.remove(key) {
+        state.completed_order.retain(|candidate| candidate != key);
+        state.expire_media_leases();
+        let still_referenced = state.completed.values().any(|candidate| candidate == &path)
+            || state.leased_until.contains_key(&path);
+        if !still_referenced {
+            let _ = std::fs::remove_file(&path);
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::remove_dir(parent);
+            }
+        }
+        removed = true;
+    }
+    removed
 }
 
 impl PersonalMediaTransferState {
@@ -3430,10 +3445,26 @@ impl ShellNetwork {
         } = &envelope.action
             && let Ok(mut transfers) = self.personal_media_transfers.lock()
         {
-            transfers
-                .authorized
-                .remove(&(envelope.source.clone(), *transfer_id));
+            discard_personal_media_transfer(
+                &mut transfers,
+                &(envelope.source.clone(), *transfer_id),
+            );
         }
+    }
+
+    /// Revoke one exact certified sender/transfer binding and any receiver
+    /// spool state it created. A verified object remains on disk while another
+    /// binding or an active player lease still references it.
+    pub(crate) fn discard_personal_media_transfer(
+        &self,
+        source: &crate::shell::personal_continuity::DeviceId,
+        transfer_id: [u8; 16],
+    ) -> bool {
+        self.personal_media_transfers
+            .lock()
+            .is_ok_and(|mut transfers| {
+                discard_personal_media_transfer(&mut transfers, &(source.clone(), transfer_id))
+            })
     }
 
     /// Install one exact mirror route after target-local consent.
@@ -5981,6 +6012,75 @@ mod tests {
         assert!(
             net.completed_personal_media_transfer(&source, transfer_id)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn personal_media_discard_is_exact_and_preserves_referenced_objects() {
+        let (mut net, _commands) =
+            shell_network_for_test(WorkspaceTree::default().shared(), 0xCA16);
+        let cache = tempfile::tempdir().expect("cache");
+        net.personal_media_cache_root = Some(cache.path().to_path_buf());
+        let source = test_device(0x71);
+        let sibling = test_device(0x72);
+        let transfer_id = [0x73; 16];
+        {
+            let mut state = net.personal_media_transfers.lock().expect("transfer state");
+            state.authorized.insert((source.clone(), transfer_id));
+            state.authorized.insert((sibling.clone(), transfer_id));
+        }
+        net.dispatch_personal_media_transfer(
+            source.clone(),
+            PersonalMediaTransferFrame::Start {
+                transfer_id,
+                file_name: "partial.webm".into(),
+                total_bytes: 8,
+            },
+        );
+        let part_path = cache.path().join("incoming").join(format!(
+            "{}-{}.part",
+            source.as_str(),
+            hex::encode(transfer_id)
+        ));
+        assert!(part_path.exists());
+        assert!(net.discard_personal_media_transfer(&source, transfer_id));
+        assert!(!part_path.exists());
+        let state = net.personal_media_transfers.lock().expect("transfer state");
+        assert!(!state.authorized.contains(&(source.clone(), transfer_id)));
+        assert!(state.authorized.contains(&(sibling.clone(), transfer_id)));
+        drop(state);
+
+        let object_dir = cache.path().join("objects").join("44".repeat(32));
+        ensure_private_dir(&object_dir).unwrap();
+        let object = object_dir.join("shared.webm");
+        std::fs::write(&object, b"verified").unwrap();
+        let source_key = (source.clone(), transfer_id);
+        let sibling_key = (sibling.clone(), transfer_id);
+        {
+            let mut state = net.personal_media_transfers.lock().expect("transfer state");
+            state.completed.insert(source_key.clone(), object.clone());
+            state.completed.insert(sibling_key.clone(), object.clone());
+            state.completed_order.push_back(source_key.clone());
+            state.completed_order.push_back(sibling_key.clone());
+            state.leased_until.insert(
+                object.clone(),
+                std::time::Instant::now()
+                    .checked_add(PERSONAL_MEDIA_LEASE)
+                    .unwrap(),
+            );
+        }
+        assert!(net.discard_personal_media_transfer(&source, transfer_id));
+        assert!(
+            object.exists(),
+            "sibling mapping and player lease protect bytes"
+        );
+        assert!(
+            net.completed_personal_media_transfer(&source, transfer_id)
+                .is_none()
+        );
+        assert!(
+            net.completed_personal_media_transfer(&sibling, transfer_id)
+                .is_some()
         );
     }
 
