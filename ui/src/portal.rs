@@ -287,6 +287,14 @@ impl PickRequest {
     /// through [`send_multiple`](Self::send_multiple) instead, so every pick
     /// is delivered.
     pub fn send(self) -> PortalChannel {
+        self.send_on_platform(cfg!(not(target_arch = "wasm32")))
+    }
+    fn send_on_platform(self, native: bool) -> PortalChannel {
+        if !native {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(PortalOutcome::Failed("File picker unavailable in this host".into()));
+            return rx;
+        }
         if suppressed() {
             return inject_for_test(PortalOutcome::Cancelled);
         }
@@ -305,6 +313,14 @@ impl PickRequest {
     /// This is valid only for a single-file Open request. Calling it for Save
     /// or multi-select requests reports a normal failed outcome.
     pub fn send_open_file(self) -> OpenFileChannel {
+        self.send_open_file_on_platform(cfg!(not(target_arch = "wasm32")))
+    }
+    fn send_open_file_on_platform(self, native: bool) -> OpenFileChannel {
+        if !native {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(OpenFileOutcome::Failed("File picker unavailable in this host".into()));
+            return rx;
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         let name = self.thread_name.clone();
         spawn_worker(&name, move || {
@@ -315,6 +331,14 @@ impl PickRequest {
 
     /// Multi-select counterpart of [`send`](Self::send).
     pub fn send_multiple(self) -> MultiChannel {
+        self.send_multiple_on_platform(cfg!(not(target_arch = "wasm32")))
+    }
+    fn send_multiple_on_platform(self, native: bool) -> MultiChannel {
+        if !native {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(MultiOutcome::Failed("File picker unavailable in this host".into()));
+            return rx;
+        }
         if suppressed() {
             return inject_multi_for_test(MultiOutcome::Cancelled);
         }
@@ -730,6 +754,13 @@ mod tests {
         url::Url::parse(s).unwrap()
     }
 
+    #[test]
+    fn portable_review_unavailable_pickers_deliver_failed_outcomes_without_workers() {
+        let request = || PickRequest::open("Open", "Open").thread_name("invalid\0worker");
+        assert!(matches!(request().send_on_platform(false).try_recv(), Ok(PortalOutcome::Failed(_))));
+        assert!(matches!(request().send_open_file_on_platform(false).try_recv(), Ok(OpenFileOutcome::Failed(_))));
+        assert!(matches!(request().send_multiple_on_platform(false).try_recv(), Ok(MultiOutcome::Failed(_))));
+    }
     #[test]
     fn directory_request_is_single_select_and_has_no_filename() {
         let request = PickRequest::directory("Choose folder", "Choose");

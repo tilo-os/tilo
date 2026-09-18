@@ -5376,103 +5376,17 @@ impl App {
     }
 
     fn update_focusable_order(&mut self) {
-        fn collect_focusable(
-            node_id: NodeId,
-            widget: &dyn Widget,
-            taffy: &TaffyTree<()>,
-            order: &mut Vec<NodeId>,
-        ) {
-            let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
-                return;
-            };
-            if widget.is_focusable() && widget.is_enabled() {
-                order.push(node_id);
-            }
-            let children = widget.children();
-            if let Ok(child_nodes) = taffy.children(node_id) {
-                for (child_widget, &child_node) in children.iter().zip(child_nodes.iter()) {
-                    collect_focusable(child_node, *child_widget, taffy, order);
-                }
-            }
-        }
-        // The deepest trapping widget wins (a modal opened from within one).
-        fn find_trap_focusables(
-            node_id: NodeId,
-            widget: &dyn Widget,
-            taffy: &TaffyTree<()>,
-        ) -> Option<Vec<NodeId>> {
-            let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
-                return None;
-            };
-            let children = widget.children();
-            let child_nodes = taffy.children(node_id).ok();
-            // Recurse first so a nested trap takes precedence.
-            if let Some(child_nodes) = &child_nodes {
-                for (child_widget, &child_node) in children.iter().zip(child_nodes.iter()) {
-                    if let Some(inner) = find_trap_focusables(child_node, *child_widget, taffy) {
-                        return Some(inner);
-                    }
-                }
-            }
-            if widget.traps_focus() {
-                let mut order = Vec::new();
-                collect_focusable(node_id, widget, taffy, &mut order);
-                return Some(order);
-            }
-            None
-        }
-
         if self.history.is_some() || crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref()) { self.update_history_focus_order(); return; }
         self.focusable_order.clear();
         let Some(root) = self.root_node else { return };
 
-        let trap = find_trap_focusables(root, self.root_widget.as_ref(), &self.taffy);
-        let trap_active = trap.is_some();
+        let (order, trap_active) = crate::focus_navigation::order(root, self.root_widget.as_ref(), &self.taffy);
+        self.focusable_order = order;
+        if let Some(next) = crate::focus_navigation::reconcile_trap(
+            &mut self.focus_trap_active, &mut self.focus_before_trap,
+            self.focused_node, &self.focusable_order, trap_active,
+        ) { self.set_focused_node(next); }
 
-        if let Some(trapped) = trap {
-            self.focusable_order = trapped;
-        } else {
-            collect_focusable(
-                root,
-                self.root_widget.as_ref(),
-                &self.taffy,
-                &mut self.focusable_order,
-            );
-        }
-
-        match (self.focus_trap_active, trap_active) {
-            (false, true) => {
-                // Modal just opened: remember prior focus, move into the trap.
-                self.focus_before_trap = self.focused_node;
-                if let Some(&first) = self.focusable_order.first() {
-                    self.set_focused_node(Some(first));
-                } else {
-                    // No focusable content — drop focus so Tab can't reach
-                    // the content behind the backdrop.
-                    self.set_focused_node(None);
-                }
-            }
-            (true, false) => {
-                // Modal closed: restore only if that element still exists.
-                let restore = self
-                    .focus_before_trap
-                    .take()
-                    .filter(|id| self.focusable_order.contains(id));
-                self.set_focused_node(restore);
-            }
-            (true, true) => {
-                // Still trapped: pull focus back if a rebuild dropped it
-                // outside the modal.
-                let inside = self
-                    .focused_node
-                    .is_some_and(|id| self.focusable_order.contains(&id));
-                if !inside {
-                    self.set_focused_node(self.focusable_order.first().copied());
-                }
-            }
-            (false, false) => {}
-        }
-        self.focus_trap_active = trap_active;
     }
 
     /// The decode lives on [`crate::presence::PresenceCtx`] so the
@@ -5865,7 +5779,7 @@ impl App {
     /// pointer click-through — gating Tab on it instead either froze focus
     /// inside a dialog or let it escape with no capture.
     fn keyboard_nav_allowed(&self, modal_rect: Option<vello::kurbo::Rect>) -> bool {
-        modal_rect.is_none() || self.focus_trap_active
+        crate::focus_navigation::keyboard_nav_allowed(modal_rect, self.focus_trap_active)
     }
 
     /// Tab normally belongs to the host's focus order. A focused editor-like
@@ -5884,24 +5798,7 @@ impl App {
         if len == 0 {
             return false;
         }
-        let current_idx = self
-            .focused_node
-            .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
-        let next_idx = match current_idx {
-            Some(idx) => {
-                if shift {
-                    if idx == 0 {
-                        len.saturating_sub(1)
-                    } else {
-                        idx.saturating_sub(1)
-                    }
-                } else {
-                    let next = idx.saturating_add(1);
-                    if next >= len { 0 } else { next }
-                }
-            }
-            None => 0,
-        };
+        let next_idx = crate::focus_navigation::tab_index(&self.focusable_order, self.focused_node, shift).unwrap();
         if let Some(&id) = self.focusable_order.get(next_idx) {
             self.set_focused_node(Some(id));
         }

@@ -412,6 +412,10 @@ pub struct FrameOutput<'a> {
     pub device_size: (u32, u32),
     pub semantics: InspectionSnapshot,
     pub needs_redraw: bool,
+    /// Independent continuous-update demand, even while pixels are clean.
+    pub needs_animation_frame: bool,
+    /// Earliest future update across the active presentation roots.
+    pub next_wake_deadline: Option<crate::clock::Instant>,
     pub ime: Option<crate::ime::ImeWindowState>,
 }
 
@@ -454,6 +458,8 @@ pub struct FrameHarness {
     /// every `relayout` by scanning for `is_focused()`: widget instances
     /// survive a relayout, their taffy ids do not.
     focused: Option<NodeId>,
+    focus_trap_active: bool,
+    focus_before_trap: Option<crate::widget::layout::CompositionFocus>,
     /// Identity the driver's commits and undos are attributed to. Mirrors
     /// [`crate::app::App`]'s `local_author` so a scenario exercises the same
     /// author-scoped history a user does.
@@ -806,6 +812,8 @@ impl FrameHarness {
             last_layout_viewport: None,
             input_scale: 1.0,
             focused: None,
+            focus_trap_active: false,
+            focus_before_trap: None,
             author: author(),
             action_registry: qos_actions::ActionRegistry::new(),
             action_transport: Box::new(qos_actions::LocalTransport::new()),
@@ -1066,14 +1074,18 @@ impl FrameHarness {
                           (f64::from(self.viewport.1) * self.input_scale).ceil() as u32),
             semantics: self.inspection(),
             ime: self.focused.and_then(|id| self.inspect_node(id, crate::ime::ImeWindowState::from_widget).ok().flatten()),
-            needs_redraw: self.root.needs_redraw() || !self.bound_invocations.is_empty() || !self.pending_control_invocations.is_empty() || self.component_wake.as_ref().is_some_and(|wake| wake.dirty.get()),
+            needs_animation_frame: self.presentation_roots().iter().any(|root| root.needs_animation_frame()),
+            next_wake_deadline: self.presentation_roots().iter().filter_map(|root| root.next_wake_deadline()).min(),
+            needs_redraw: self.presentation_roots().iter().any(|root| root.needs_redraw()) || !self.bound_invocations.is_empty() || !self.pending_control_invocations.is_empty() || self.component_wake.as_ref().is_some_and(|wake| wake.dirty.get()),
         }
     }
 
     /// Pump component wakes and animate using the production update/layout/draw passes.
     /// Returns whether a new scene was produced. The host schedules this on its frame clock.
     pub fn poll_frame(&mut self) -> Result<bool, crate::widget::WidgetLayoutError> {
-        if !self.frame_output().needs_redraw { return Ok(false); }
+        let frame = self.frame_output();
+        if !frame.needs_redraw && !frame.needs_animation_frame
+            && !frame.next_wake_deadline.is_some_and(|deadline| deadline <= crate::clock::Instant::now()) { return Ok(false); }
         self.host_tick();
         self.try_relayout()?;
         Ok(true)
@@ -1339,30 +1351,6 @@ impl FrameHarness {
         }
         if let Some(focus) = unsafe { crate::history_mode::embedded::restore_focus(self.root.as_mut(), &self.node_map, &self.bindings) } { self.focused = Some(focus); }
 
-        // After layout (so a control built this pass is in `node_map`) and
-        // before draw and any accessibility read — a shot must show the
-        // enabled state the user would see.
-        self.publish_undo_status();
-
-        let t_draw = self.profiler.as_ref().map(|_| crate::clock::Instant::now());
-        self.scene.reset();
-        if let Some(history) = &mut self.history {
-            history.draw(&mut self.scene, Affine::IDENTITY, &mut self.text, &self.theme, &self.presence);
-        }
-        if self.history.as_ref().is_none_or(|history| history.live_visible()) {
-        self.root.draw_with_presence(
-            &mut self.scene,
-            Affine::IDENTITY,
-            &mut self.text,
-            &self.theme,
-            &self.presence,
-            &self.permissions,
-        );
-        }
-        if let Some(p) = self.profiler.as_mut() {
-            p.record_since(crate::profiling::Pass::Draw, t_draw);
-        }
-
         // The taffy tree was rebuilt, so the previous `focused` NodeId is
         // stale; recover it by scanning the fresh node map for whichever
         // widget still reports `is_focused()`.
@@ -1376,6 +1364,36 @@ impl FrameHarness {
         }).collect();
         // SAFETY: these maps describe this exclusive runner's current tree.
         self.focused = unsafe { CompositionFocus::current(&self.node_map, &self.bindings, Some(&allowed)) };
+        }
+
+        self.update_focus_trap();
+
+        // After layout (so a control built this pass is in `node_map`) and
+        // before draw and any accessibility read — a shot must show the
+        // enabled state the user would see.
+        self.publish_undo_status();
+
+        let t_draw = self.profiler.as_ref().map(|_| crate::clock::Instant::now());
+        self.scene.reset();
+        if let Some(history) = &mut self.history {
+            history.draw(&mut self.scene, Affine::IDENTITY, &mut self.text, &self.theme, &self.presence);
+            history.mark_drawn();
+        }
+        if self.history.as_ref().is_none_or(|history| history.live_visible()) {
+        self.root.draw_with_presence(
+            &mut self.scene,
+            Affine::IDENTITY,
+            &mut self.text,
+            &self.theme,
+            &self.presence,
+            &self.permissions,
+        );
+        // Match native App: the scene now contains this damage. Subsequent
+        // frame demand comes from new damage, animation, or a wake deadline.
+        self.root.mark_drawn();
+        }
+        if let Some(p) = self.profiler.as_mut() {
+            p.record_since(crate::profiling::Pass::Draw, t_draw);
         }
 
         // One `relayout` is one rendered frame; commit it, folding in any
@@ -1444,21 +1462,44 @@ impl FrameHarness {
 
     /// The keyboard-focusable widgets in tree order — the same DFS
     /// `crate::app::App::update_focusable_order` walks, so a Tab that
-    /// reaches a widget here reaches it in the live app too. Focus-trap
-    /// (modal) confinement is not modelled.
+    /// reaches a widget here reaches it in the live app too. The deepest modal
+    /// focus trap confines this order using the same policy as the native host.
     pub fn focus_order(&self) -> Vec<NodeId> {
         self.drain_component_wakes();
         let mut order = Vec::new();
         if self.history.is_some() || crate::history_mode::embedded::has_surfaces(self.root.as_ref()) {
-            let mut pending = vec![self.child_node];
+            let root = self.history.as_ref().and_then(|history| history.review_layout_node()).unwrap_or(self.child_node);
+            let mut pending = vec![root];
             while let Some(node) = pending.pop() {
-                if crate::history_mode::embedded::allows_focus(self.root.as_ref(), node, &self.taffy) && self.inspect_node(node, |widget| widget.is_focusable() && widget.is_enabled()).unwrap_or(false) { order.push(node); }
+                if crate::history_mode::embedded::allows_focus(self.root.as_ref(), node, &self.taffy)
+                    && self.history.as_ref().is_none_or(|history| !history.captures_input() || history.owns_node(node, &self.taffy))
+                    && self.inspect_node(node, |widget| widget.is_focusable() && widget.is_enabled()).unwrap_or(false) { order.push(node); }
                 pending.extend(self.taffy.children(node).unwrap_or_default().into_iter().rev());
             }
         } else {
-            collect_focus_order(self.child_node, self.root.as_ref(), &self.taffy, &mut order);
+            order = crate::focus_navigation::order(self.child_node, self.root.as_ref(), &self.taffy).0;
         }
         order
+    }
+
+    fn update_focus_trap(&mut self) {
+        if self.history.is_some() || crate::history_mode::embedded::has_surfaces(self.root.as_ref()) {
+            self.focus_trap_active = self.history.as_ref().is_some_and(|history| history.review_is_open());
+            self.focus_before_trap = None;
+            return;
+        }
+        let (order, trapped) = crate::focus_navigation::order(self.child_node, self.root.as_ref(), &self.taffy);
+        if !self.focus_trap_active && trapped {
+            // Capture a stable semantic/owner identity, never carry a stale Taffy id
+            // through the portable host's complete layout rebuilds.
+            self.focus_before_trap = unsafe { crate::widget::layout::CompositionFocus::capture(self.focused, &self.node_map, &self.bindings) };
+        }
+        let mut before = if self.focus_trap_active && !trapped {
+            self.focus_before_trap.take().and_then(|saved| unsafe { saved.restore(&self.node_map, &self.bindings, Some(&order)) })
+        } else { None };
+        if let Some(next) = crate::focus_navigation::reconcile_trap(&mut self.focus_trap_active, &mut before, self.focused, &order, trapped) {
+            self.set_focused(next);
+        }
     }
 
     /// The taffy node holding keyboard focus, if any.
@@ -1525,34 +1566,7 @@ impl FrameHarness {
         if order.is_empty() {
             return None;
         }
-        // `order` is non-empty (checked above), so `order.len() - 1` never
-        // underflows and `next` always lands in `0..order.len()`; the
-        // arithmetic is still spelled with saturating/wrapping-safe ops so
-        // clippy can see that too.
-        let next = match self
-            .focused
-            .and_then(|f| order.iter().position(|&x| x == f))
-        {
-            Some(idx) => {
-                if back {
-                    if idx == 0 {
-                        order.len().saturating_sub(1)
-                    } else {
-                        idx.saturating_sub(1)
-                    }
-                } else {
-                    let next = idx.saturating_add(1);
-                    if next < order.len() { next } else { 0 }
-                }
-            }
-            None => {
-                if back {
-                    order.len().saturating_sub(1)
-                } else {
-                    0
-                }
-            }
-        };
+        let next = crate::focus_navigation::tab_index(&order, self.focused, back)?;
         // `next` is constructed above from `0..order.len()` in every branch.
         let target = *order.get(next)?;
         let framework = crate::history_mode::embedded::owns_node(self.root.as_ref(), target, &self.taffy) || self.history.as_ref().is_some_and(|history| history.owns_node(target, &self.taffy));
@@ -2218,15 +2232,23 @@ impl FrameHarness {
         if let WindowEvent::ModifiersChanged(modifiers) = event {
             self.modifiers = *modifiers;
         }
+        // Framework presentations own captured keyboard input before global
+        // host navigation, matching native App's early History dispatch.
+        let history_input = self.history.as_ref().is_some_and(|history| history.controls_event(event, self.input_scale))
+            || matches!(event, WindowEvent::KeyboardInput { .. })
+                && crate::history_mode::embedded::keyboard_captured(self.root.as_ref(), self.focused, &self.taffy);
+        if history_input { self.send(event); return; }
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == ElementState::Pressed {
+            let modal = self.root.modal_capture();
+            let navigation = crate::focus_navigation::keyboard_nav_allowed(modal, self.focus_trap_active);
             if key.logical_key == Key::Named(winit::keyboard::NamedKey::Tab)
-                && !self.focused_widget_wants_tab_input() {
-                self.tab(self.modifiers.state().shift_key());
+                && navigation && !self.focused_widget_wants_tab_input()
+                && self.tab(self.modifiers.state().shift_key()).is_some() {
                 self.relayout();
                 return;
             }
-            if self.modifiers.state().alt_key()
+            if navigation && self.modifiers.state().alt_key()
                 && let Key::Named(named) = key.logical_key
                 && let Some(direction) = crate::focus_navigation::Direction::from_key(named) {
                 let order = self.focus_order();
@@ -2239,7 +2261,7 @@ impl FrameHarness {
                 if let Some(next) = next { self.set_focused(Some(next)); self.relayout(); }
                 return;
             }
-            if let Key::Character(character) = &key.logical_key {
+            if modal.is_none() && let Key::Character(character) = &key.logical_key {
                 let mods = self.modifiers.state();
                 if let Some(request) = crate::undo::shortcut(character,
                     self.platform.command_modifier_down(mods), mods.shift_key()) {
@@ -3028,29 +3050,6 @@ fn role_name(role: crate::a11y::Role) -> &'static str {
         Role::Terminal => "terminal",
         Role::Canvas => "canvas",
         Role::Unknown => "unknown",
-    }
-}
-
-/// DFS the widget tree collecting the taffy node of every keyboard-focusable
-/// widget, in the order [`crate::app::App::update_focusable_order`] uses. The
-/// widget's taffy children come from `taffy.children(node)`, zipped against
-/// `widget.children()` — the two must line up, which every container upholds.
-fn collect_focus_order(
-    node: NodeId,
-    widget: &dyn Widget,
-    taffy: &TaffyTree<()>,
-    out: &mut Vec<NodeId>,
-) {
-    let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
-        return;
-    };
-    if widget.is_focusable() && widget.is_enabled() {
-        out.push(node);
-    }
-    if let Ok(children) = taffy.children(node) {
-        for (child_widget, &child_node) in widget.children().iter().zip(children.iter()) {
-            collect_focus_order(child_node, *child_widget, taffy, out);
-        }
     }
 }
 
@@ -6138,3 +6137,6 @@ mod history_input_frame_tests {
         assert!(!flag.get());
     }
 }
+
+#[cfg(test)]
+mod portable_host_tests;

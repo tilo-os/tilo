@@ -1551,6 +1551,7 @@ mod tests {
                 run_with_args(&spec, &strings(&["app"])).unwrap();
             }
             assert_eq!(COMMANDS.load(Ordering::SeqCst), usize::from(mode != "resumed"));
+            println!("reexec child assertions completed: {mode}");
             return;
         }
         for mode in ["initial", "resumed", "local", "descendant"] {
@@ -1558,7 +1559,8 @@ mod tests {
             let (identity, _identity_peer) = UnixStream::pair().unwrap();
             let fds = [collab.as_raw_fd(), identity.as_raw_fd()];
             let mut child = std::process::Command::new(std::env::current_exe().unwrap());
-            child.args(["--exact", "launch::tests::automatic_reexec_skips_only_the_already_run_command_handler", "--nocapture"])
+            let selector = format!("{}::automatic_reexec_skips_only_the_already_run_command_handler", module_path!().split_once("::").unwrap().1);
+            child.args(["--exact", &selector, "--nocapture"])
                 .env("QOS_LAUNCH_REEXEC_TEST", mode)
                 .env("QOS_SVC_COLLAB_FD", fds[0].to_string())
                 .env("QOS_SVC_IDENTITY_FD", fds[1].to_string())
@@ -1568,7 +1570,10 @@ mod tests {
             // SAFETY: only fcntl runs after fork; both sockets stay owned by
             // this parent until the isolated assertion process exits.
             unsafe { child.pre_exec(move || { for fd in fds { if libc::fcntl(fd, libc::F_SETFD, 0) < 0 { return Err(std::io::Error::last_os_error()); } } Ok(()) }); }
-            assert!(child.status().unwrap().success());
+            let output = child.output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(stdout.contains(&format!("reexec child assertions completed: {mode}")), "child did not execute {mode}: {stdout}");
         }
     }
 
