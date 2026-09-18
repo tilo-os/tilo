@@ -35,7 +35,7 @@
 //!
 //! - [`DEVCERT_PREIMAGE_TAG`] — `tilo-devcert-v1\0`
 //! - [`REVOCATION_PREIMAGE_TAG`] — `tilo-revocation-v1\0`
-//! - [`ENROLLMENT_PREIMAGE_TAG`] — `tilo-enrollment-v1\0`
+//! - [`ENROLLMENT_PREIMAGE_TAG`] — `tilo-enrollment-v2\0`
 //! - [`APPROVAL_REQUEST_TAG`] — `tilo-device-approval-request-v1\0`
 //! - [`APPROVAL_RESPONSE_TAG`] — `tilo-device-approval-response-v1\0`
 //!
@@ -97,8 +97,9 @@ pub use directory::{
     DirectoryError, DirectoryUpdate, WorkspaceDirectory, WorkspaceId, WorkspaceMeta,
 };
 pub use enrollment::{
-    ENROLLMENT_PREIMAGE_TAG, EnrollmentError, EnrollmentToken, decode_enrollment_token,
-    encode_enrollment_token, mint_enrollment_token, verify_enrollment_token,
+    ENROLLMENT_PREIMAGE_TAG, EnrollmentError, EnrollmentToken, MAX_ENROLLMENT_TOKEN_LIFETIME_NS,
+    decode_enrollment_token, encode_enrollment_token, mint_enrollment_token,
+    verify_enrollment_token,
 };
 pub use image::{
     IMAGE_ENDORSEMENT_PREIMAGE_TAG, IMAGE_SIGNING_AUTHORIZATION_PREIMAGE_TAG, ImageEndorsement,
@@ -247,8 +248,8 @@ mod tests {
         assert_eq!(revocation::REVOCATION_PREIMAGE_TAG, b"qos-revocation-v1\0");
         assert_eq!(revocation::REVOCATION_PREIMAGE_TAG.len(), 18);
 
-        assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG, b"qos-enrollment-v1\0");
-        assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG.len(), 18);
+        assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG, b"tilo-enrollment-v2\0");
+        assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG.len(), 19);
 
         assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG, b"qos-dir-delta-v1\0");
         assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG.len(), 17);

@@ -165,6 +165,7 @@ impl DeviceFleetStore {
         &self,
         identity_id: &str,
         capabilities: DeviceCapabilities,
+        issued_at_ns: u64,
         expires_at_ns: u64,
     ) -> io::Result<String> {
         let (_, profile) = self.identity(identity_id)?;
@@ -190,6 +191,7 @@ impl DeviceFleetStore {
         let token = mint_enrollment_token(
             profile.user_public_key,
             capabilities,
+            issued_at_ns,
             expires_at_ns,
             nonce,
             &device,
@@ -416,7 +418,7 @@ mod tests {
         let before = store.load(&identity_id).expect("fleet");
         assert_eq!(before.certificates.len(), 1);
         let token = store
-            .mint_enrollment(&identity_id, DeviceCapabilities::member(), 10_000)
+            .mint_enrollment(&identity_id, DeviceCapabilities::member(), 5_000, 10_000)
             .expect("token");
         let phone = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
         let cert = store

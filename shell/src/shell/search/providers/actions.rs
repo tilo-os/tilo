@@ -716,6 +716,7 @@ impl Action {
                         store.mint_enrollment(
                             &profile.id,
                             tilo_user_identity::DeviceCapabilities::member(),
+                            now,
                             expires,
                         )
                     })
@@ -741,6 +742,7 @@ impl Action {
                         store.mint_enrollment(
                             &profile.id,
                             tilo_user_identity::DeviceCapabilities::host(),
+                            now,
                             expires,
                         )
                     })
