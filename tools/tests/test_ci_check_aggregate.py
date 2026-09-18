@@ -62,6 +62,8 @@ class CheckAggregateTests(unittest.TestCase):
     def test_wiring_and_failed_selector_pipeline(self):
         affected = section(self.workflow, "affected", 2)
         self.assertIn("if: needs.select.outputs.rust_required == 'true'", affected)
+        self.assertIn("fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.matrix ||", affected)
+        self.assertIn('{"include":[{"runner":"runner"}]}', affected)
         checks = section(self.workflow, "checks", 2)
         self.assertIn("if: always()", checks)
         self.assertIn("needs: [select, security, affected]", checks)
