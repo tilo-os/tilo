@@ -7,7 +7,6 @@ use std::{
     time::Duration,
 };
 use taffy::{NodeId, TaffyTree};
-use tilo_actions::ResourceProvider;
 use ui::icons::Icon;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
@@ -35,15 +34,15 @@ fn primary_button(id: &str, label: &str, f: impl FnMut() + 'static) -> Element {
 }
 
 fn quick_start_button(id: &str, label: &str, f: impl FnMut() + 'static) -> Element {
-    // A common width makes the wrapping deterministic: four presets form one
-    // calm row on desktop and a balanced 2×2 group on a phone.
+    // A common, generous width keeps the two-column grid legible at 200% text
+    // while still fitting inside the phone content rail.
     Box::new(
         Button::new(id, label, None)
-            .with_size(136.0, 44.0)
+            .with_size(200.0, 44.0)
             .on_effect(f),
     )
 }
-fn duration(ms: u64) -> String {
+pub(crate) fn duration(ms: u64) -> String {
     let seconds = ms / 1_000;
     if seconds >= 3_600 {
         format!(
@@ -92,7 +91,7 @@ const WEEKDAYS: [(WeekdayKey, &str); 7] = [
     (WeekdayKey::Sun, "Sun"),
 ];
 
-fn repeat_summary(days: &BTreeSet<WeekdayKey>) -> String {
+pub(crate) fn repeat_summary(days: &BTreeSet<WeekdayKey>) -> String {
     if days.is_empty() {
         return "Once".into();
     }
@@ -107,7 +106,7 @@ fn city_time(zone: &str) -> String {
         .map(|z| {
             Utc::now()
                 .with_timezone(&z)
-                .format("%H:%M, %a %-d %b")
+                .format("%H:%M · %a %-d %b · %Z · UTC%:z")
                 .to_string()
         })
         .unwrap_or_else(|_| "Time unavailable".into())
@@ -327,8 +326,9 @@ fn alarms_screen(state: &ui::LocalState<ClockState>) -> Element {
                         .push(Box::new(ModelView::from_state(
                             &draft_repeat,
                             move |selected| {
-                                let mut days = Row::new();
-                                for (day, label) in WEEKDAYS {
+                                let mut first_row = Row::new();
+                                let mut second_row = Row::new();
+                                for (index, (day, label)) in WEEKDAYS.into_iter().enumerate() {
                                     let selection = repeat_controls.clone();
                                     let mut day_button = Button::new(
                                         &format!("clocks.alarm.repeat.{}", label.to_lowercase()),
@@ -336,6 +336,7 @@ fn alarms_screen(state: &ui::LocalState<ClockState>) -> Element {
                                         None,
                                     )
                                     .with_size(44.0, 44.0)
+                                    .with_accessible_name(&format!("Repeat on {label}"))
                                     .on_effect(move || {
                                         selection.update(|days| {
                                             if !days.remove(&day) {
@@ -346,9 +347,20 @@ fn alarms_screen(state: &ui::LocalState<ClockState>) -> Element {
                                     if selected.contains(&day) {
                                         day_button = day_button.primary();
                                     }
-                                    days = days.push(Box::new(day_button));
+                                    if index < 4 {
+                                        first_row = first_row.push(Box::new(day_button));
+                                    } else {
+                                        second_row = second_row.push(Box::new(day_button));
+                                    }
                                 }
-                                Box::new(days)
+                                Box::new(
+                                    Column::new()
+                                        .with_no_padding()
+                                        .with_intrinsic_height()
+                                        .with_gap(8.0)
+                                        .push(Box::new(first_row))
+                                        .push(Box::new(second_row)),
+                                )
                             },
                         )))
                         .push(primary_button("clocks.alarm.add", "Add alarm", move || {
@@ -376,26 +388,37 @@ fn alarms_screen(state: &ui::LocalState<ClockState>) -> Element {
     )
 }
 
-fn timers_screen(state: &ui::LocalState<ClockState>) -> Element {
+fn timers_screen(
+    state: &ui::LocalState<ClockState>,
+    validation_error: &ui::LocalState<Option<String>>,
+) -> Element {
     let custom = ui::LocalState::new(TimeValue::new(0, 10).with_seconds(0));
     let custom_label = ui::LocalState::new(String::new());
-    let mut presets = Row::new();
-    for (label, button_label, secs) in [
-        ("Tea", "Tea, 5 min", 300),
-        ("Break", "Break, 10 min", 600),
-        ("Focus", "Focus, 25 min", 1500),
-        ("Laundry", "Laundry, 45 min", 2700),
-    ] {
-        let st = state.clone();
-        presets = presets.push(quick_start_button(
-            &format!("clocks.preset.{secs}"),
-            button_label,
-            move || {
-                let mut t = Timer::new(label, Duration::from_secs(secs));
-                t.start(Utc::now());
-                st.update(|s| s.timers.push(t));
-            },
-        ));
+    let preset_specs = [
+        ("Tea", "Tea · 5m", 300),
+        ("Break", "Break · 10m", 600),
+        ("Focus", "Focus · 25m", 1500),
+        ("Laundry", "Laundry · 45m", 2700),
+    ];
+    let mut presets = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_gap(8.0);
+    for preset_row in preset_specs.chunks(2) {
+        let mut row = Row::new();
+        for &(label, button_label, secs) in preset_row {
+            let st = state.clone();
+            row = row.push(quick_start_button(
+                &format!("clocks.preset.{secs}"),
+                button_label,
+                move || {
+                    let mut t = Timer::new(label, Duration::from_secs(secs));
+                    t.start(Utc::now());
+                    st.update(|s| s.timers.push(t));
+                },
+            ));
+        }
+        presets = presets.push(Box::new(row));
     }
     let list_state = state.clone();
     let list = ModelView::from_state(state, move |s| {
@@ -549,6 +572,18 @@ fn timers_screen(state: &ui::LocalState<ClockState>) -> Element {
     let add_state = state.clone();
     let add_custom = custom.clone();
     let add_label = custom_label.clone();
+    let add_error = validation_error.clone();
+    let error = ModelView::from_state(validation_error, |message| {
+        message.as_ref().map_or_else(
+            || Box::new(Spacer::new()) as Element,
+            |message| {
+                Box::new(Card::titled(
+                    "Timer needs a duration",
+                    Box::new(Text::new(message)),
+                ))
+            },
+        )
+    });
     Box::new(
         Column::new()
             .with_gap(18.0)
@@ -594,9 +629,16 @@ fn timers_screen(state: &ui::LocalState<ClockState>) -> Element {
                                     t.start(Utc::now());
                                     add_state.update(|s| s.timers.push(t));
                                     add_label.set(String::new());
+                                    add_error.set(None);
+                                } else {
+                                    add_error.set(Some(
+                                        "Choose a duration greater than zero before starting a timer."
+                                            .into(),
+                                    ));
                                 }
                             },
-                        )),
+                        ))
+                        .push(Box::new(error)),
                 ),
             ))),
     )
@@ -697,9 +739,15 @@ fn stopwatch_screen(state: &ui::LocalState<ClockState>) -> Element {
     )
 }
 
-fn surface(mode: &ui::LocalState<usize>, state: &ui::LocalState<ClockState>) -> Element {
+fn surface(
+    mode: &ui::LocalState<usize>,
+    state: &ui::LocalState<ClockState>,
+    notice: &ui::LocalState<Option<(String, String)>>,
+    validation_error: &ui::LocalState<Option<String>>,
+) -> Element {
     let select = mode.clone();
     let st = state.clone();
+    let timer_validation_error = validation_error.clone();
     let nav = ToggleGroup::new(
         vec![
             Segment::new("World"),
@@ -727,7 +775,27 @@ fn surface(mode: &ui::LocalState<usize>, state: &ui::LocalState<ClockState>) -> 
         0 => world_screen(&st),
         1 => alarms_screen(&st),
         3 => stopwatch_screen(&st),
-        _ => timers_screen(&st),
+        _ => timers_screen(&st, &timer_validation_error),
+    });
+    let dismiss_notice = notice.clone();
+    let due_notice = ModelView::from_state(notice, move |notice| {
+        notice.as_ref().map_or_else(
+            || Box::new(Spacer::new()) as Element,
+            |(title, body)| {
+                Box::new(Card::titled(
+                    title,
+                    Box::new(
+                        Row::new()
+                            .push(Box::new(Text::new(body)))
+                            .push(Box::new(Spacer::new()))
+                            .push(button("clocks.notice.dismiss", "Dismiss", {
+                                let dismiss_notice = dismiss_notice.clone();
+                                move || dismiss_notice.set(None)
+                            })),
+                    ),
+                ))
+            },
+        )
     });
     let header = Column::new()
         .with_no_padding()
@@ -742,6 +810,7 @@ fn surface(mode: &ui::LocalState<usize>, state: &ui::LocalState<ClockState>) -> 
     let content = Column::new()
         .with_gap(16.0)
         .push(Box::new(header))
+        .push(Box::new(due_notice))
         .push(Box::new(nav))
         .push(Box::new(
             Scrollable::new_vertical()
@@ -768,6 +837,7 @@ pub struct ClocksApp {
     generation: u64,
     last_saved: String,
     last_notification: Option<(uuid::Uuid, String, String)>,
+    notice: ui::LocalState<Option<(String, String)>>,
 }
 impl ClocksApp {
     #[must_use]
@@ -800,7 +870,7 @@ impl ClocksApp {
         };
         let mut value = if matches!(
             name,
-            "empty" | "running" | "world" | "alarms" | "stopwatch" | "timers"
+            "empty" | "running" | "ringing" | "world" | "alarms" | "stopwatch" | "timers"
         ) {
             ClockState::default()
         } else {
@@ -812,17 +882,32 @@ impl ClocksApp {
             t.pinned_overlay = true;
             value.timers.push(t);
         }
-        Self::with_state(value, mode)
+        let mut app = Self::with_state(value, mode);
+        if name == "ringing" {
+            app.remember_due(DueEvent::Timer {
+                id: Uuid::new_v4(),
+                label: "Tea".into(),
+            });
+        }
+        app
     }
 
     fn with_state(value: ClockState, mode: usize) -> Self {
         let state = ui::LocalState::new(value);
+        let notice = ui::LocalState::new(None);
+        let validation_error = ui::LocalState::new(None);
         Self {
-            inner: surface(&ui::LocalState::new(mode), &state),
+            inner: surface(
+                &ui::LocalState::new(mode),
+                &state,
+                &notice,
+                &validation_error,
+            ),
             state,
             generation: 0,
             last_saved: String::new(),
             last_notification: None,
+            notice,
         }
     }
 
@@ -838,6 +923,11 @@ impl ClocksApp {
             DueEvent::Timer { label, .. } => ("Timer finished".to_owned(), label),
         };
         self.last_notification = Some((uuid::Uuid::new_v4(), title, body));
+        self.notice.set(
+            self.last_notification
+                .as_ref()
+                .map(|(_, title, body)| (title.clone(), body.clone())),
+        );
     }
 }
 impl Default for ClocksApp {
@@ -871,8 +961,40 @@ impl Widget for ClocksApp {
                 t.start(Utc::now());
                 self.state.update(|s| s.timers.push(t));
             }
-            crate::actions::ClockOperation::ToggleTimer => self.state.update(|s| {
-                if let Some(t) = s.timers.first_mut() {
+            crate::actions::ClockOperation::NewAlarm {
+                hours,
+                minutes,
+                label,
+            } => self.state.update(|s| {
+                if let Some(local_time) = NaiveTime::from_hms_opt(hours.into(), minutes.into(), 0) {
+                    s.alarms.push(Alarm {
+                        id: Uuid::new_v4(),
+                        label: alarm_label(&label),
+                        local_time,
+                        weekdays: BTreeSet::new(),
+                        enabled: true,
+                        last_fired_local_date: None,
+                    });
+                }
+            }),
+            crate::actions::ClockOperation::AddWorldClock { city, timezone } => {
+                self.state.update(|s| {
+                    if timezone.parse::<chrono_tz::Tz>().is_ok()
+                        && !s
+                            .world_clocks
+                            .iter()
+                            .any(|clock| clock.timezone == timezone)
+                    {
+                        s.world_clocks.push(WorldClock {
+                            id: Uuid::new_v4(),
+                            city,
+                            timezone,
+                        });
+                    }
+                })
+            }
+            crate::actions::ClockOperation::ToggleTimer { id } => self.state.update(|s| {
+                if let Some(t) = s.timers.iter_mut().find(|t| t.id == id) {
                     if t.ends_at_utc.is_some() {
                         t.pause(Utc::now())
                     } else {
@@ -880,8 +1002,8 @@ impl Widget for ClocksApp {
                     }
                 }
             }),
-            crate::actions::ClockOperation::AddMinute => self.state.update(|s| {
-                if let Some(t) = s.timers.first_mut() {
+            crate::actions::ClockOperation::AddMinute { id } => self.state.update(|s| {
+                if let Some(t) = s.timers.iter_mut().find(|t| t.id == id) {
                     let left = t
                         .remaining(Utc::now())
                         .saturating_add(Duration::from_secs(60));
@@ -890,9 +1012,32 @@ impl Widget for ClocksApp {
                     t.start(Utc::now())
                 }
             }),
-            crate::actions::ClockOperation::ToggleOverlay => self.state.update(|s| {
-                if let Some(t) = s.timers.first_mut() {
-                    t.pinned_overlay = !t.pinned_overlay
+            crate::actions::ClockOperation::SetTimerOverlay { id, pinned } => {
+                self.state.update(|s| {
+                    if let Some(t) = s.timers.iter_mut().find(|t| t.id == id) {
+                        t.pinned_overlay = pinned;
+                    }
+                })
+            }
+            crate::actions::ClockOperation::RemoveTimer { id } => {
+                self.state.update(|s| s.timers.retain(|t| t.id != id))
+            }
+            crate::actions::ClockOperation::ToggleAlarm { id } => self.state.update(|s| {
+                if let Some(alarm) = s.alarms.iter_mut().find(|alarm| alarm.id == id) {
+                    alarm.enabled = !alarm.enabled;
+                }
+            }),
+            crate::actions::ClockOperation::RemoveAlarm { id } => self
+                .state
+                .update(|s| s.alarms.retain(|alarm| alarm.id != id)),
+            crate::actions::ClockOperation::RemoveWorldClock { id } => self
+                .state
+                .update(|s| s.world_clocks.retain(|clock| clock.id != id)),
+            crate::actions::ClockOperation::ToggleStopwatch => self.state.update(|s| {
+                if s.stopwatch.started_at_utc.is_some() {
+                    s.stopwatch.pause(Utc::now());
+                } else {
+                    s.stopwatch.start(Utc::now());
                 }
             }),
             crate::actions::ClockOperation::ResetStopwatch => {
@@ -901,11 +1046,33 @@ impl Widget for ClocksApp {
             crate::actions::ClockOperation::Lap => {
                 self.state.update(|s| s.stopwatch.lap(Utc::now()))
             }
+            crate::actions::ClockOperation::SetStopwatchOverlay { pinned } => {
+                self.state.update(|s| s.stopwatch.pinned_overlay = pinned)
+            }
         };
         Ok(true)
     }
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        crate::actions::ClockResources.resources(doc)
+        let _ = doc;
+        self.state.with(crate::actions::provide_resources)
+    }
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        fn find(
+            resources: Vec<tilo_actions::Resource>,
+            id: &str,
+        ) -> Option<tilo_actions::Resource> {
+            for resource in resources {
+                if resource.id.as_str() == id {
+                    return Some(resource);
+                }
+                if let Some(found) = find(resource.children.clone(), id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        self.state
+            .with(|state| find(crate::actions::provide_resources(state), id))
     }
     fn sync(&mut self, d: &mut AutoCommit, p: &ObjId) {
         let now = Utc::now();
