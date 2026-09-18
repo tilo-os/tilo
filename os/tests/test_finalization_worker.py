@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""Cheap contract checks for the actual CI launcher; no engine or network."""
+import hashlib
+import importlib.util
+import io
+import json
+from pathlib import Path
+import subprocess
+import tarfile
+import unittest
+from unittest.mock import patch
+
+path = Path(__file__).parents[1] / 'dev/launch-finalization-worker.py'
+spec = importlib.util.spec_from_file_location('worker', path)
+worker = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(worker)
+
+
+class WorkerContract(unittest.TestCase):
+    def request(self):
+        return {'source_revision': worker.SOURCE, 'helpers_revision': 'a' * 40,
+                'source_dir': '/work/source', 'architecture': 'aarch64',
+                'receipt': '/work/inputs/retained-rootfs.json',
+                'public_bundle': '/work/inputs/original-public',
+                'new_public_bundle': '/work/inputs/new-public',
+                'signer': '/var/lib/tilo-signing-bridge/remote-development-signer.py'}
+
+    def check(self, request, helpers='a' * 40):
+        raw = json.dumps(request)
+        return worker.request_bytes(raw, hashlib.sha256(raw.encode()).hexdigest(), helpers)
+
+    def test_exact_public_contract(self):
+        self.assertEqual(json.loads(self.check(self.request())), self.request())
+
+    def test_driver_evidence_is_owner_only_and_varlib_traversable(self):
+        self.assertEqual(worker.DIRECTORY_MODES['/evidence'], 0o700)
+        self.assertEqual(worker.DIRECTORY_MODES['/var/lib'], 0o755)
+        self.assertEqual(worker.DIRECTORY_MODES['/var/lib/containers'], 0o755)
+
+    def test_wrong_revision_or_path_rejected(self):
+        for key, value in [('source_revision', 'b' * 40), ('helpers_revision', 'b' * 40),
+                           ('receipt', '/etc/passwd'), ('architecture', 'x86_64'),
+                           ('signer', '/work/untrusted.py')]:
+            request = self.request()
+            request[key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                self.check(request)
+
+    def test_duplicates_and_unbounded_inputs_rejected(self):
+        for raw in ('{"x":1,"x":2}', 'x' * 65537):
+            with self.assertRaises(ValueError):
+                worker.request_bytes(raw, hashlib.sha256(raw.encode()).hexdigest(), 'a' * 40)
+        with self.assertRaises(ValueError):
+            worker.request_bytes(json.dumps(self.request()), '0' * 64, 'a' * 40)
+        with self.assertRaises(ValueError):
+            self.check(self.request(), 'main')
+
+    def test_actual_create_argv_uses_only_owned_guest_volumes(self):
+        argv = worker.create_argv('tilo-finalization-123-1')
+        mounts = [argv[i + 1] for i, value in enumerate(argv) if value == '--mount']
+        self.assertEqual(len(mounts), 4)
+        self.assertTrue(all(v.startswith('type=volume,src=tilo-finalization-123-1-') for v in mounts))
+        self.assertIn('type=volume,src=tilo-finalization-123-1-scratch,dst=/var/lib', mounts)
+        self.assertEqual(argv[-3:], [worker.TOOLS, '/work/controller/os/dev/launch-finalization-worker.py', '--inside'])
+        self.assertFalse(any('socket' in v or 'type=bind' in v or '--device' in v for v in argv))
+        self.assertNotIn('compile-development-os.py', ' '.join(argv))
+
+    def test_evidence_has_no_bulk_or_private_exports(self):
+        self.assertIn('07-verified.json', worker.EVIDENCE)
+        self.assertIn('signing-pending.json', worker.EVIDENCE)
+        self.assertTrue(all('/' not in name and name.endswith('.json') for name in worker.EVIDENCE))
+        self.assertFalse(any(word in name for name in worker.EVIDENCE for word in ('key', 'auth', 'log')))
+
+    def archive(self, kind=tarfile.REGTYPE, size=2, count=1):
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode='w') as archive:
+            for i in range(count):
+                info = tarfile.TarInfo('receipt' + str(i))
+                info.type = kind
+                info.size = size
+                archive.addfile(info, io.BytesIO(b'{}' + b' ' * max(0, size - 2)))
+        return buffer.getvalue()
+
+    def test_receipt_rejects_links_multiple_members_and_oversize(self):
+        self.assertEqual(worker.receipt_from_tar(self.archive()), {})
+        for raw in (self.archive(kind=tarfile.SYMTYPE), self.archive(count=2),
+                    self.archive(size=1024 * 1024 + 1)):
+            with self.assertRaises(ValueError):
+                worker.receipt_from_tar(raw)
+
+    def test_cleanup_attempts_each_owned_resource_after_timeout(self):
+        with patch.object(worker.subprocess, 'run', side_effect=[
+                subprocess.TimeoutExpired('docker', 30),
+                subprocess.CompletedProcess([], 1), subprocess.CompletedProcess([], 0)]) as run:
+            failures = worker.cleanup_owned('a' * 64, ['owned-work', 'owned-storage'])
+        self.assertEqual(failures, ['a' * 64, 'owned-work'])
+        self.assertEqual([call.args[0] for call in run.call_args_list], [
+            ['docker', 'rm', '--force', 'a' * 64], ['docker', 'volume', 'rm', 'owned-work'],
+            ['docker', 'volume', 'rm', 'owned-storage']])
+
+
+if __name__ == '__main__':
+    unittest.main()
