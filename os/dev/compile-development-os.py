@@ -26,10 +26,15 @@ import signal
 import shutil
 import subprocess
 import stat
+import sys
 import tempfile
 import time
 
+sys.dont_write_bytecode = True
+
 REPO = Path(__file__).resolve().parents[2]
+CONTROLLER = REPO
+RECONSTRUCTION_SOURCE = '4583a44c4056c67cfd1ebc4f1e02c7fa4aff3ffc'
 PRIVATE = Path('/var/lib/tilo-provisional-compile')
 EVIDENCE = Path('/evidence')
 BUILDER = 'code.podesta.ai/qos/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9'
@@ -50,7 +55,9 @@ def validate_inputs(wpe, generation, revision, branch, mode='full-build',
                     wpe_adoption_receipt=None, wpe_adoption_sha256='',
                     fex_payload_candidate='', windows_guest_candidate='', hardware_profile='generic',
                     firmware_candidate='', firmware_manifest_sha256='', require_firmware_artifact=False,
-                    native_builder_receipt=None, native_builder_sha256=''):
+                    native_builder_receipt=None, native_builder_sha256='',
+                    reconstructed_native_receipt=None, reconstructed_native_sha256='',
+                    approved_reconstruction_sha256='', resume_checkpoint=None):
     validate_firmware_selection(mode, hardware_profile, firmware_candidate, firmware_manifest_sha256,
                                 require_firmware_artifact)
     hardware_definition(hardware_profile, architecture)
@@ -73,6 +80,18 @@ def validate_inputs(wpe, generation, revision, branch, mode='full-build',
         if (mode != 'full-build' or not native_builder_receipt
                 or not re.fullmatch(r'[0-9a-f]{64}', native_builder_sha256)):
             raise ValueError('native builder reuse requires full-build and independently pinned receipt')
+    reconstructed = bool(reconstructed_native_receipt or reconstructed_native_sha256 or approved_reconstruction_sha256)
+    if reconstructed:
+        if (mode != 'full-build' or architecture != 'aarch64' or revision != RECONSTRUCTION_SOURCE
+                or native_builder_receipt or native_builder_sha256 or not reconstructed_native_receipt
+                or not re.fullmatch(r'[0-9a-f]{64}', reconstructed_native_sha256)
+                or not re.fullmatch(r'[0-9a-f]{64}', approved_reconstruction_sha256)):
+            raise ValueError('reconstructed native adoption requires frozen ARM full-build and both independent approvals')
+    if resume_checkpoint:
+        if (mode != 'native-payload' or architecture != 'aarch64' or revision != RECONSTRUCTION_SOURCE
+                or reconstructed or native_builder_receipt or native_builder_sha256 or not 1 <= len(resume_checkpoint) <= 4
+                or any(len(pair) != 2 or not re.fullmatch(r'[0-9a-f]{64}', pair[1]) for pair in resume_checkpoint)):
+            raise ValueError('partial resume requires frozen ARM native-payload and bounded pinned checkpoints')
     adopting = bool(wpe_adoption_receipt or wpe_adoption_sha256)
     if adopting and (mode not in ('full-build', 'native-payload') or not wpe_adoption_receipt
             or not re.fullmatch(r'[0-9a-f]{64}', wpe_adoption_sha256)
@@ -173,6 +192,54 @@ def run(*command, env=None, capture=True, timeout=None):
 
 def write_receipt(name, value):
     (EVIDENCE / name).write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
+
+
+def select_source(source_dir, revision, controller_revision):
+    """Application source and controller are separate clean, committed inputs."""
+    global REPO
+    if source_dir is None:
+        if controller_revision:
+            raise ValueError('controller revision requires explicit source directory')
+        return None
+    if not re.fullmatch(r'[0-9a-f]{40}', controller_revision or ''):
+        raise ValueError('separate controller requires immutable revision')
+    source = Path(source_dir).resolve()
+    if source == CONTROLLER:
+        raise ValueError('explicit source must be separate from controller')
+    for directory, expected in ((CONTROLLER, controller_revision), (source, revision)):
+        actual = subprocess.check_output(['git', '-C', str(directory), 'rev-parse', 'HEAD'], text=True).strip()
+        dirty = subprocess.check_output(['git', '-C', str(directory), 'status', '--porcelain', '--untracked-files=all'], text=True).strip()
+        if actual != expected or dirty:
+            raise ValueError('source/controller must be clean and match independent revisions')
+    REPO = source
+    return {'schema': 1, 'source_revision': revision, 'controller_revision': controller_revision,
+            'source_recipe_sha256': hashlib.sha256((source / 'os/Containerfile').read_bytes()).hexdigest(),
+            'controller_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+
+
+def import_selected_native(native, args, inputs):
+    if args.reconstructed_native_receipt:
+        import native_resume
+        return native_resume.import_reconstructed(native, args.reconstructed_native_receipt,
+            args.reconstructed_native_sha256, inputs, args.approved_reconstruction_sha256)
+    return native.import_artifact(args.native_builder_receipt, args.native_builder_sha256, inputs)
+
+
+def resume_selected_native(args, inputs, environment):
+    """Prepare private controller state, then enter the explicit producer once."""
+    paths = []
+    for name, value in (('resume-inputs.json', inputs), ('resume-environment.json', environment)):
+        path = PRIVATE / name
+        with path.open('x', encoding='utf-8') as stream:
+            os.chmod(path, 0o600)
+            json.dump(value, stream, sort_keys=True)
+        paths.append(path)
+    command = ['python3', str(CONTROLLER / 'os/dev/resume-native-payload.py'), '--source', str(REPO),
+        '--inputs', str(paths[0]), '--environment', str(paths[1]), '--evidence', str(EVIDENCE / 'reconstruction'),
+        '--run-id', os.environ['GITHUB_RUN_ID'], '--attempt', os.environ.get('GITHUB_RUN_ATTEMPT', '1')]
+    for receipt, digest in args.resume_checkpoint:
+        command += ['--checkpoint', str(receipt), digest]
+    run(*command, capture=False)
 
 
 def completed_wpe_receipt(path, buildroot, architecture='x86_64'):
@@ -531,7 +598,7 @@ def build_environment(wpe, generation, revision, manifest, signer, cache,
     # settings can change this from a complete, local, source build.
     allowed = ('PATH', 'HOME', 'CARGO_HOME', 'RUSTUP_HOME', 'REGISTRY_AUTH_FILE')
     env = {name: os.environ[name] for name in allowed if name in os.environ}
-    env.update(LANG='C.UTF-8', TILO_DISTROBOX='',
+    env.update(LANG='C.UTF-8', PYTHONDONTWRITEBYTECODE='1', TILO_DISTROBOX='',
                TILO_IMAGE='localhost/tilo-development:compile-' + revision[:12],
                TILO_OUTPUT='/work/output', TMPDIR='/work/tmp',
                TILO_INSTALLER_SCRATCH=str(PRIVATE),
@@ -619,6 +686,12 @@ def main(argv=None):
     parser.add_argument('--mode', choices=('cache-only', 'native-payload', 'full-build'), default='cache-only')
     parser.add_argument('--native-builder-receipt', type=Path)
     parser.add_argument('--native-builder-sha256', default='')
+    parser.add_argument('--reconstructed-native-receipt', type=Path)
+    parser.add_argument('--reconstructed-native-sha256', default='')
+    parser.add_argument('--approved-reconstruction-sha256', default='')
+    parser.add_argument('--resume-checkpoint', nargs=2, action='append', metavar=('RECEIPT', 'SHA256'))
+    parser.add_argument('--source-dir', type=Path)
+    parser.add_argument('--controller-revision', default='')
     parser.add_argument('--wpe-stage-receipt', type=Path)
     parser.add_argument('--wpe-adoption-receipt', type=Path)
     parser.add_argument('--wpe-adoption-sha256', default='')
@@ -637,12 +710,18 @@ def main(argv=None):
     for name in ('revision', 'branch'):
         parser.add_argument('--' + name, required=True)
     args = parser.parse_args(argv)
+    os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
+    controller_source = select_source(args.source_dir, args.revision, args.controller_revision)
     validate_inputs(args.wpe, args.generation, args.revision, args.branch, args.mode, args.architecture, args.kernel_candidate,
                     args.wpe_stage_receipt, args.wpe_adoption_receipt, args.wpe_adoption_sha256,
                     args.fex_payload_candidate, args.windows_guest_candidate, args.hardware_profile,
                     args.firmware_candidate, args.firmware_manifest_sha256,
                     native_builder_receipt=args.native_builder_receipt,
-                    native_builder_sha256=args.native_builder_sha256)
+                    native_builder_sha256=args.native_builder_sha256,
+                    reconstructed_native_receipt=args.reconstructed_native_receipt,
+                    reconstructed_native_sha256=args.reconstructed_native_sha256,
+                    approved_reconstruction_sha256=args.approved_reconstruction_sha256,
+                    resume_checkpoint=args.resume_checkpoint)
     for candidate in (args.rpms_candidate, args.builder_candidate):
         if candidate:
             immutable_candidate(candidate)
@@ -664,6 +743,8 @@ def main(argv=None):
     os.umask(0o077)
     PRIVATE.mkdir(mode=0o700)
     EVIDENCE.mkdir(mode=0o755)
+    if controller_source is not None:
+        write_receipt('controller-source.json', controller_source)
     if firmware_import is not None:
         write_receipt('firmware-import.json', firmware_import)
     cache = cache_configuration(os.environ)
@@ -740,21 +821,31 @@ def main(argv=None):
                             args.fex_payload_candidate, args.windows_guest_candidate, args.hardware_profile)
     epoch = int(run('git', 'show', '-s', '--format=%ct', args.revision))
     env['SOURCE_DATE_EPOCH'] = str(epoch)
-    if args.mode == 'native-payload' or args.native_builder_receipt:
-        import native_builder_artifact as native_builder
+    if args.mode == 'native-payload' or args.native_builder_receipt or args.reconstructed_native_receipt:
+        spec = importlib.util.spec_from_file_location('compile_source_native', REPO / 'os/dev/native_builder_artifact.py')
+        native_builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(native_builder)
         receipt_bytes = adoption_raw if adopted is not None else args.wpe_stage_receipt.read_bytes()
         # Stage receipts bind the completed WPE payload, not merely its buildroot.
         wpe_reference = adopted['reference'] if adopted is not None else stage['reference']
         native_inputs = native_builder.expected_inputs(REPO, args.revision, args.architecture,
             pins['BASE_REF'], pins['RPMS_REF'], wpe_reference,
             hashlib.sha256(receipt_bytes).hexdigest(), epoch)
-        if args.native_builder_receipt:
-            native_id = native_builder.import_artifact(args.native_builder_receipt,
-                args.native_builder_sha256, native_inputs)
+        if args.native_builder_receipt or args.reconstructed_native_receipt:
+            native_id = import_selected_native(native_builder, args, native_inputs)
             env['TILO_NATIVE_BUILDER_IMAGE_ID'] = native_id
+            if args.reconstructed_native_receipt:
+                write_receipt('reconstructed-native-adoption.json', {
+                    'schema': 1, 'source_revision': args.revision, 'image_id': native_id,
+                    'receipt_sha256': args.reconstructed_native_sha256,
+                    'approved_reconstruction_sha256': args.approved_reconstruction_sha256,
+                    'inventory_verified': True, 'installable': False})
         else:
             env['TILO_NATIVE_BUILDER_ONLY'] = '1'
             env['TILO_NATIVE_BUILDER_IIDFILE'] = str(EVIDENCE / 'native-builder.iid')
+    if args.resume_checkpoint:
+        resume_selected_native(args, native_inputs, env)
+        return
     compile_with_capacity_watchdog(env)
     if args.mode == 'native-payload':
         identity = (EVIDENCE / 'native-builder.iid').read_text().strip()
