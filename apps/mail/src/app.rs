@@ -224,6 +224,20 @@ struct LocalPreferences {
     compose_format: String,
 }
 
+struct PendingSetupValidation {
+    config: AccountConfig,
+    editing: Option<usize>,
+    receiver: std::sync::mpsc::Receiver<crate::validate::ValidationState>,
+    cancellation: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for PendingSetupValidation {
+    fn drop(&mut self) {
+        self.cancellation
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "the bools split across three unrelated concerns (shell layout flags, the setup-sheet's own transient UI state, and engine-request bookkeeping); grouping them would need a real design pass (e.g. a SetupSheetState sub-struct), left for a follow-up rather than forced here"
@@ -258,6 +272,7 @@ pub struct MailApp {
     /// The most recent validation message from a save attempt (shown inline in
     /// the sheet); cleared when the sheet is (re)opened.
     setup_error: Option<String>,
+    setup_validation: Option<PendingSetupValidation>,
 
     engine: Option<EngineHandle>,
     pending_send: Option<PendingSend>,
@@ -407,6 +422,7 @@ impl MailApp {
             setup_auth: cfg.auth,
             setup_provider: None,
             setup_error: None,
+            setup_validation: None,
             engine,
             pending_send: None,
             accounts_persist,
@@ -1203,6 +1219,7 @@ impl MailApp {
     // ---- account-setup sheet ---------------------------------------------
 
     fn open_setup_edit(&mut self, idx: Option<usize>) {
+        self.setup_validation = None;
         let cfg = match idx {
             Some(i) => self
                 .shared
@@ -1231,6 +1248,7 @@ impl MailApp {
     }
 
     fn close_setup(&mut self) {
+        self.setup_validation = None;
         self.setup_open = false;
         self.setup_error = None;
         self.focus_setup(None);
@@ -1504,8 +1522,71 @@ impl MailApp {
         self.dirty = true;
     }
 
-    fn save_setup(&mut self, doc: &mut AutoCommit) {
-        self.save_setup_with(doc, &default_probe());
+    fn save_setup(&mut self, _doc: &mut AutoCommit) {
+        if self.setup_validation.is_some() {
+            return;
+        }
+        self.maybe_autofill();
+        let config = self.read_setup_config();
+        if let Some((_, message)) = config.validate().into_iter().next() {
+            self.finish_setup_validation(
+                config,
+                crate::validate::ValidationState::Invalid(message),
+            );
+            return;
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_cancellation = Arc::clone(&cancellation);
+        let worker_config = config.clone();
+        if let Err(error) = std::thread::Builder::new()
+            .name("mail-account-validation".into())
+            .spawn(move || {
+                let outcome = crate::validate::validate_account_cancellable(
+                    &worker_config,
+                    &worker_cancellation,
+                );
+                let _ = sender.send(outcome);
+            })
+        {
+            self.setup_error = Some(format!("Couldn’t start account verification: {error}"));
+            self.dirty = true;
+            return;
+        }
+        self.setup_validation = Some(PendingSetupValidation {
+            config,
+            editing: self.setup_editing,
+            receiver,
+            cancellation,
+        });
+        self.setup_error = None;
+        self.dirty = true;
+    }
+
+    fn drain_setup_validation(&mut self) {
+        let Some(pending) = self.setup_validation.as_ref() else {
+            return;
+        };
+        let outcome = match pending.receiver.try_recv() {
+            Ok(outcome) => outcome,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => crate::validate::ValidationState::Failed(
+                "Account verification ended without a result".into(),
+            ),
+        };
+        let Some(pending) = self.setup_validation.take() else {
+            return;
+        };
+        if !self.setup_open {
+            return;
+        }
+        if self.setup_editing != pending.editing || self.read_setup_config() != pending.config {
+            self.setup_error =
+                Some("Account settings changed; verify them again before saving".into());
+            self.dirty = true;
+            return;
+        }
+        self.finish_setup_validation(pending.config.clone(), outcome);
     }
 
     /// Save the account, but only after its credentials pass a live IMAP login
@@ -1513,6 +1594,7 @@ impl MailApp {
     /// a specific error; on success the account is persisted and connected. The
     /// `probe` seam makes the persist-on-success / keep-on-failure behaviour
     /// unit-testable without a network.
+    #[cfg(test)]
     fn save_setup_with(
         &mut self,
         _doc: &mut AutoCommit,
@@ -1521,6 +1603,14 @@ impl MailApp {
         self.maybe_autofill();
         let cfg = self.read_setup_config();
         let outcome = crate::validate::validate_account(&cfg, probe);
+        self.finish_setup_validation(cfg, outcome);
+    }
+
+    fn finish_setup_validation(
+        &mut self,
+        cfg: AccountConfig,
+        outcome: crate::validate::ValidationState,
+    ) {
         if !outcome.persisted() {
             let msg = outcome.message();
             self.setup_error = Some(msg.clone());
@@ -2720,7 +2810,11 @@ impl MailApp {
                         9.0,
                         if hov { c.accent[4] } else { c.accent[5] },
                     );
-                    let label = "Save & verify";
+                    let label = if self.setup_validation.is_some() {
+                        "Verifying…"
+                    } else {
+                        "Save & verify"
+                    };
                     let (w, _) = tr.measure_weighted(label, 13.5, None, TextWeight::Semibold);
                     tr.draw_text_weighted(
                         scene,
@@ -3036,19 +3130,6 @@ fn avatar_fetcher() -> ui::Fetcher {
     noop_avatar_fetcher()
 }
 
-/// The account-verification probe used on save. A real IMAP login + SMTP
-/// handshake under `--features live`; a no-op offline probe otherwise, so
-/// `--shots` and headless tests still persist an account after the config-level
-/// checks pass.
-#[cfg(feature = "live")]
-fn default_probe() -> crate::validate::LiveProbe {
-    crate::validate::LiveProbe
-}
-#[cfg(not(feature = "live"))]
-fn default_probe() -> crate::validate::OfflineProbe {
-    crate::validate::OfflineProbe
-}
-
 /// Mozilla autoconfig discovery for a typed email. Real HTTP under
 /// `--features live`; `None` offline (the caller falls back to the heuristic).
 #[cfg(feature = "live")]
@@ -3154,6 +3235,7 @@ impl Widget for MailApp {
         // Drain any engine results first so freshly-fetched messages are present
         // before layout/draw.
         self.drain_engine(state);
+        self.drain_setup_validation();
         // The host Save dialog runs off-thread; its outcome is applied here
         // so attachment export never blocks the frame loop or claims success
         // before the chosen file is actually written.
@@ -3856,7 +3938,12 @@ impl Widget for MailApp {
                 AccessNode::new(Role::Button)
                     .with_name("Save and verify")
                     .with_action_target("mail.setup:save")
-                    .with_state(AccessState::new().focusable(true)),
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .busy(self.setup_validation.is_some())
+                            .disabled(self.setup_validation.is_some()),
+                    ),
                 AccessNode::new(Role::Button)
                     .with_name("Cancel")
                     .with_action_target("mail.setup:cancel")
@@ -3868,6 +3955,13 @@ impl Widget for MailApp {
                         .with_name("Remove account")
                         .with_action_target("mail.setup:remove")
                         .with_state(AccessState::new().focusable(true)),
+                );
+            }
+            if let Some(message) = &self.setup_error {
+                controls.push(
+                    AccessNode::new(Role::StaticText)
+                        .with_name(message.clone())
+                        .with_live(Politeness::Polite),
                 );
             }
             return Some(
@@ -4352,6 +4446,7 @@ impl Widget for MailApp {
         // Worker and native-picker completions are not animation. Keep their
         // deadline fixed until sync consumes a tick, even with reduced motion.
         let pending = self.awaiting_engine
+            || self.setup_validation.is_some()
             || self.attachment_save_rx.is_some()
             || self.compose_attachment_rx.is_some();
         let background = pending.then(|| {
@@ -6595,6 +6690,112 @@ mod tests {
 
     // ---- test-before-save state machine (persist on success only) --------
 
+    #[test]
+    fn closing_setup_cancels_pending_verification_and_discards_late_results() {
+        let (mut app, mut doc) = app();
+        app.open_setup_edit(None);
+        let accounts_before = app.shared.borrow().accounts.accounts.len();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        app.setup_validation = Some(PendingSetupValidation {
+            config: app.read_setup_config(),
+            editing: None,
+            receiver,
+            cancellation: Arc::clone(&cancellation),
+        });
+        let deadline = app.next_wake_deadline().unwrap();
+        assert_eq!(app.next_wake_deadline(), Some(deadline));
+        app.close_setup();
+        assert!(cancellation.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(sender.send(crate::validate::ValidationState::Ok).is_err());
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(app.shared.borrow().accounts.accounts.len(), accounts_before);
+        assert!(app.setup_validation.is_none());
+        assert_eq!(app.next_wake_deadline(), app.toast_deadline);
+    }
+
+    #[test]
+    fn edited_setup_cannot_persist_an_earlier_successful_verification() {
+        let (mut app, mut doc) = app();
+        app.open_setup_edit(Some(0));
+        let original = app.shared.borrow().accounts.accounts[0].config.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.setup_validation = Some(PendingSetupValidation {
+            config: app.read_setup_config(),
+            editing: Some(0),
+            receiver,
+            cancellation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        });
+        app.set_setup_input(4, "changed-after-verification.example");
+        sender.send(crate::validate::ValidationState::Ok).unwrap();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.setup_open);
+        assert!(
+            app.setup_error
+                .as_deref()
+                .unwrap()
+                .contains("settings changed")
+        );
+        assert_eq!(app.shared.borrow().accounts.accounts[0].config, original);
+        assert!(app.setup_validation.is_none());
+    }
+
+    #[test]
+    fn disconnected_setup_worker_keeps_the_sheet_open_without_saving() {
+        let (mut app, mut doc) = app();
+        app.open_setup_edit(Some(0));
+        let original = app.shared.borrow().accounts.accounts[0].config.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.setup_validation = Some(PendingSetupValidation {
+            config: app.read_setup_config(),
+            editing: Some(0),
+            receiver,
+            cancellation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        });
+        drop(sender);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.setup_open);
+        assert!(
+            app.setup_error
+                .as_deref()
+                .unwrap()
+                .contains("without a result")
+        );
+        assert_eq!(app.shared.borrow().accounts.accounts[0].config, original);
+        assert!(app.setup_validation.is_none());
+    }
+
+    #[test]
+    fn successful_setup_worker_persists_only_its_verified_snapshot() {
+        let (mut app, mut doc) = app();
+        app.open_setup_edit(Some(0));
+        app.set_setup_input(0, "Verified fixture account");
+        let verified = app.read_setup_config();
+        let root = app.accounts_persist_root().unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.setup_validation = Some(PendingSetupValidation {
+            config: verified.clone(),
+            editing: Some(0),
+            receiver,
+            cancellation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        });
+        sender.send(crate::validate::ValidationState::Ok).unwrap();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(!app.setup_open);
+        assert!(app.setup_validation.is_none());
+        assert!(app.setup_error.is_none());
+        let restored = AccountStore::load_in(&root);
+        assert_eq!(
+            restored
+                .accounts
+                .iter()
+                .find(|account| account.id == verified.email)
+                .unwrap()
+                .config,
+            verified,
+        );
+    }
+
     struct FixedProbe {
         imap_ok: bool,
     }
@@ -6646,6 +6847,25 @@ mod tests {
         );
         assert!(!app.setup_open, "the sheet closes on success");
         assert!(app.setup_error.is_none());
+    }
+
+    #[test]
+    fn setup_verification_failure_is_exposed_to_assistive_technology() {
+        let (mut app, mut doc) = app();
+        app.open_setup_edit(None);
+        app.set_setup_input(1, "new@host.example");
+        app.set_setup_input(2, "new@host.example");
+        app.set_setup_input(4, "imap.host.example");
+        app.set_setup_input(6, "smtp.host.example");
+        app.save_setup_with(&mut doc, &FixedProbe { imap_ok: false });
+        let dialog = app.accessibility().expect("setup dialog stays available");
+        assert!(
+            dialog.children.iter().any(|node| {
+                node.name.as_deref() == Some("IMAP login failed: 535 auth rejected")
+                    && node.live == Some(ui::a11y::Politeness::Polite)
+            }),
+            "a visible verification error must also be announced in the setup dialog"
+        );
     }
 
     #[test]
