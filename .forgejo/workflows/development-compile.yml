@@ -61,7 +61,7 @@ on:
         required: false
         type: string
       source_revision:
-        description: Optional immutable application source; controller remains this workflow commit
+        description: Optional immutable application source; helpers_revision can independently pin its compatible controller
         required: false
         type: string
       helpers_revision:

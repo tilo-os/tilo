@@ -41,17 +41,18 @@ from main. Reconstructed frozen-source assembly requires an explicit helper pin.
 Existing callers selecting neither source nor helpers retain main's behavior.
 
 For the current source4583 assembly, coherent helpers
-`2d135c71fb687ce05a8d01e0b4613c3e7a56e545` preserve the compatible OpenSSL signing
-setup and reconstructed import. Newer main's controller compiles a newer crypto
+`5a410e5303f11b4f5ff27aefc4ba9fc26df5c77c` preserve the compatible OpenSSL signing
+setup, reconstructed import and native-only kernel independence. Newer main's controller compiles a newer crypto
 CLI, so choosing only source4583 while executing main's controller is insufficient.
 The tools recipe is independently verified against the **application source**
 Git blob, retaining its required OpenSSL/sbsigntools dependencies. Public evidence
 includes `tools-source.json`, `controller-source.json` and
 `reconstructed-native-adoption.json`.
 
-Native8077 separately builds the original tools image. Reusing that exact image
-later would require retaining and independently verifying its immutable identity;
-it is not currently an available input and this workflow does not invent one.
+Native8077's attempted run used the original tools recipe but is terminal.
+Reusing a tools image from any producer later would require retaining and
+independently verifying its immutable identity; it is not currently an available
+input and this workflow does not invent one.
 
 ## Shared producer preparation
 
