@@ -2389,12 +2389,19 @@ impl RemoteInputSink for State {
 impl State {
     fn prepare_pending_foreign_capture(&self, surface: &WlSurface) {
         let surface_id = crate::compositor::state::surface_id(surface);
-        let captured_here = {
-            let tree = self.workspace_tree.read();
-            tab_binding::group_id_for_surface(&tree, surface_id).is_some()
-                || self.osk_surface == Some(surface_id)
-                || self.is_floating_toplevel(surface_id)
-        };
+        // `new_toplevel` registers the protocol surface before adopting it
+        // into the shared workspace tree.  A client is allowed to attach its
+        // first buffer immediately after acknowledging configure, and that
+        // pre-commit hook can therefore run in the narrow interval where the
+        // surface is live but its tab lookup has not become observable yet.
+        // Treat every registered toplevel as capture-eligible here.  Popup and
+        // subsurface objects are registered through different paths, so this
+        // does not turn arbitrary child commits into tiled windows.
+        let captured_here = self.client_input.is_known(surface_id)
+            || self.osk_surface == Some(surface_id)
+            || self.is_floating_toplevel(surface_id)
+            || self.is_output_presentation_surface(surface_id)
+            || self.is_transient_surface(surface_id);
         if !captured_here {
             return;
         }
