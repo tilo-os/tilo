@@ -42,6 +42,23 @@ pub struct QpkgMeta {
     pub store: MemoryBlobStore,
 }
 
+/// Enforce the application materialization and entry-count budgets without
+/// writing the payload to disk.
+pub fn validate_payload_shape(meta: &QpkgMeta) -> Result<()> {
+    let signed_bytes = meta
+        .store
+        .get(&BlobHash(*meta.package_id.as_bytes()))?
+        .ok_or_else(|| anyhow!("signed-root blob missing"))?;
+    let signed = SignedRoot::decode(&signed_bytes)?;
+    let collection_bytes = meta
+        .store
+        .get(&signed.payload_root_hash)?
+        .ok_or_else(|| anyhow!("payload collection missing"))?;
+    let collection = pkg::Collection::decode(&collection_bytes)?;
+    pkg::validate_materialized_payload(&meta.manifest, &collection, &meta.store)?;
+    Ok(())
+}
+
 /// Parse a `.qpkg` tar into its blobs + manifest. Does NOT verify the
 /// signature — call [`verify_bytes`] for that.
 ///
