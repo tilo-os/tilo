@@ -144,7 +144,7 @@ where
             }
             let Ok(entry) = entry else { continue };
             let path = entry.path();
-            let Ok(meta) = entry.metadata() else {
+            let Ok(meta) = fs::symlink_metadata(&path) else {
                 report.failures.push(ImportFailure {
                     source: path,
                     message: "Could not inspect this item".to_owned(),
@@ -152,9 +152,8 @@ where
                 });
                 continue;
             };
-            // DirEntry::metadata follows neither an entry symlink nor a
-            // symlinked directory here; refusing them also closes traversal
-            // loops and avoids silently importing an unrelated tree.
+            // Refusing links closes traversal loops and avoids silently
+            // importing an unrelated tree through a selected directory.
             if meta.file_type().is_symlink() {
                 continue;
             }
