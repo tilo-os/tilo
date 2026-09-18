@@ -19,6 +19,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::a11y::{AccessNode, AccessState, Action, Role};
+use crate::num::{f32_of_f64, f64_of_usize};
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::{PressOutcome, ScrollMetrics, Scrollbar};
@@ -221,51 +222,58 @@ impl DateIndexedScrollbar {
         }
 
         let mut selected = vec![false; ordered.len()];
-        selected[0] = true;
-        selected[ordered.len().saturating_sub(1)] = true;
+        if let Some(first) = selected.first_mut() {
+            *first = true;
+        }
+        if let Some(last) = selected.last_mut() {
+            *last = true;
+        }
         let mut used = selected.iter().filter(|chosen| **chosen).count();
-        for (index, marker) in ordered.iter().enumerate() {
+        for (chosen, marker) in selected.iter_mut().zip(&ordered) {
             if used >= limit {
                 break;
             }
-            if marker.kind == DateIndexMarkerKind::Major && !selected[index] {
-                selected[index] = true;
-                used += 1;
+            if marker.kind == DateIndexMarkerKind::Major && !*chosen {
+                *chosen = true;
+                used = used.saturating_add(1);
             }
         }
-        // Evenly sample unchosen markers, retaining chronology.  Round to a
-        // bounded index only after clamping the ratio, so huge lists cannot
-        // turn a float conversion into an out-of-range index.
+        // Evenly sample unchosen markers with integer arithmetic. This avoids
+        // precision loss for huge virtual collections and always yields a
+        // bounded index because `step <= slots` and the denominator is larger.
         if used < limit {
-            let slots = limit - used;
+            let slots = limit.saturating_sub(used);
+            let denominator = slots.saturating_add(1);
+            let last_index = ordered.len().saturating_sub(1);
             for step in 1..=slots {
-                let ratio = step as f64 / (slots + 1) as f64;
-                let index = (ratio * (ordered.len().saturating_sub(1)) as f64)
-                    .round()
-                    .clamp(0.0, ordered.len().saturating_sub(1) as f64)
-                    as usize;
-                if !selected[index] {
-                    selected[index] = true;
-                    used += 1;
+                let rounded_numerator = step
+                    .saturating_mul(last_index)
+                    .saturating_add(denominator / 2);
+                let index = rounded_numerator.checked_div(denominator).unwrap_or(0);
+                if let Some(chosen) = selected.get_mut(index)
+                    && !*chosen
+                {
+                    *chosen = true;
+                    used = used.saturating_add(1);
                 }
             }
             // Duplicated rounded samples are possible in a tiny collection;
             // fill the remaining bounded budget in input order.
-            for index in 0..ordered.len() {
+            for chosen in &mut selected {
                 if used >= limit {
                     break;
                 }
-                if !selected[index] {
-                    selected[index] = true;
-                    used += 1;
+                if !*chosen {
+                    *chosen = true;
+                    used = used.saturating_add(1);
                 }
             }
         }
         ordered
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| selected[*index])
-            .map(|(_, marker)| ProjectedDateMarker {
+            .into_iter()
+            .zip(selected)
+            .filter(|(_, chosen)| *chosen)
+            .map(|(marker, _)| ProjectedDateMarker {
                 id: marker.id.clone(),
                 label: marker.label.clone(),
                 kind: marker.kind,
@@ -310,7 +318,7 @@ impl DateIndexedScrollbar {
         if self.preview == preview {
             None
         } else {
-            self.preview = preview.clone();
+            self.preview.clone_from(&preview);
             Some(DateIndexIntent::PreviewChanged(preview))
         }
     }
@@ -479,11 +487,10 @@ impl DateIndexedScrollbar {
     /// one focus target; projected major/minor boundaries are discoverable
     /// jump buttons, bounded with the same projection as paint.
     pub fn accessibility(&self, metrics: ScrollMetrics, markers: &[DateIndexMarker]) -> AccessNode {
-        let value = self
-            .preview
-            .as_ref()
-            .map(|preview| preview.label.clone())
-            .unwrap_or_else(|| format!("{:.0}%", Self::position(metrics) * 100.0));
+        let value = self.preview.as_ref().map_or_else(
+            || format!("{:.0}%", Self::position(metrics) * 100.0),
+            |preview| preview.label.clone(),
+        );
         let mut children = vec![AccessNode::new(Role::Slider)
             .with_name("Timeline position")
             .with_description(
@@ -571,9 +578,24 @@ impl DateIndexedScrollbar {
         if !metrics.overflows() || self.rect.is_zero_area() {
             return;
         }
-        let colors = &theme.tokens.colors;
         let lane = self.preview_lane();
         let active = self.hovered || self.focused || self.bar.is_active();
+        self.paint_track(scene, transform, theme, lane, active);
+        let projected = self.project_markers(markers, MAX_PROJECTED_MARKERS);
+        self.paint_markers(scene, transform, theme, &projected);
+        self.paint_thumb(scene, transform, theme, metrics, active);
+        self.paint_preview(scene, transform, text_renderer, theme, lane, &projected);
+    }
+
+    fn paint_track(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        lane: Rect,
+        active: bool,
+    ) {
+        let colors = &theme.tokens.colors;
         if active {
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -601,8 +623,16 @@ impl DateIndexedScrollbar {
             None,
             &RoundedRect::from_rect(self.rect, self.rect.width() / 2.0),
         );
-        let projected = self.project_markers(markers, MAX_PROJECTED_MARKERS);
-        for marker in &projected {
+    }
+
+    fn paint_markers(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        markers: &[ProjectedDateMarker],
+    ) {
+        for marker in markers {
             let width = if marker.kind == DateIndexMarkerKind::Major {
                 9.0
             } else {
@@ -620,12 +650,23 @@ impl DateIndexedScrollbar {
                 if marker.kind == DateIndexMarkerKind::Major {
                     theme.accent_primary
                 } else {
-                    colors.border_white_20
+                    theme.tokens.colors.border_white_20
                 },
                 None,
                 &tick,
             );
         }
+    }
+
+    fn paint_thumb(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        metrics: ScrollMetrics,
+        active: bool,
+    ) {
+        let colors = &theme.tokens.colors;
         if let Some(thumb) = self.bar.thumb_rect(self.rect, metrics) {
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -646,44 +687,66 @@ impl DateIndexedScrollbar {
                 &RoundedRect::from_rect(thumb, thumb.width() / 2.0),
             );
         }
-        if let Some(preview) = &self.preview {
-            if let Some(marker) = projected.iter().find(|marker| marker.id == preview.id) {
-                let label_w = (preview.label.chars().count() as f64 * 7.2 + 22.0)
-                    .clamp(72.0, PREVIEW_LANE_WIDTH - 8.0);
-                let label_h = 26.0;
-                let x1 = self.rect.x0 - 10.0;
-                let label = Rect::new(
-                    x1 - label_w,
-                    (marker.axis - label_h / 2.0).clamp(lane.y0, lane.y1 - label_h),
-                    x1,
-                    (marker.axis + label_h / 2.0).clamp(lane.y0 + label_h, lane.y1),
-                );
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    colors.surfaces.raised,
-                    None,
-                    &RoundedRect::from_rect(label, 6.0),
-                );
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    transform,
-                    theme.border_standard,
-                    None,
-                    &RoundedRect::from_rect(label, 6.0),
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    &preview.label,
-                    11.0,
-                    theme.text_primary,
-                    transform * Affine::translate((label.x0 + 9.0, label.y0 + 7.0)),
-                    Some((label.width() - 18.0) as f32),
-                    TextWeight::Medium,
-                );
-            }
-        }
     }
+
+    fn paint_preview(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        lane: Rect,
+        markers: &[ProjectedDateMarker],
+    ) {
+        let Some(preview) = &self.preview else {
+            return;
+        };
+        let Some(marker) = markers.iter().find(|marker| marker.id == preview.id) else {
+            return;
+        };
+        let label_w = (f64_of_usize(preview.label.chars().count()) * 7.2 + 22.0)
+            .clamp(72.0, PREVIEW_LANE_WIDTH - 8.0);
+        let label_h = 26.0;
+        let x1 = self.rect.x0 - 10.0;
+        let label = Rect::new(
+            x1 - label_w,
+            (marker.axis - label_h / 2.0).clamp(lane.y0, lane.y1 - label_h),
+            x1,
+            (marker.axis + label_h / 2.0).clamp(lane.y0 + label_h, lane.y1),
+        );
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &RoundedRect::from_rect(label, 6.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &RoundedRect::from_rect(label, 6.0),
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            &preview.label,
+            11.0,
+            theme.text_primary,
+            translated(transform, label.x0 + 9.0, label.y0 + 7.0),
+            Some(f32_of_f64(label.width() - 18.0)),
+            TextWeight::Medium,
+        );
+    }
+}
+
+/// `kurbo::Affine` composition is infallible floating-point matrix math.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine multiplication composes two 2D transforms and cannot panic or overflow"
+)]
+fn translated(transform: Affine, x: f64, y: f64) -> Affine {
+    transform * Affine::translate((x, y))
 }
 
 #[cfg(test)]
@@ -718,7 +781,7 @@ mod tests {
             input.push(DateIndexMarker::new(
                 format!("m{index}"),
                 format!("Month {index}"),
-                index as f64 / 119.0,
+                f64::from(index) / 119.0,
                 if index % 12 == 0 {
                     DateIndexMarkerKind::Major
                 } else {
@@ -727,7 +790,7 @@ mod tests {
             ));
         }
         let projected = bar.project_markers(&input, 12);
-        assert!(projected.len() <= 12);
+        assert_eq!(projected.len(), 12);
         assert_eq!(
             projected.first().map(|marker| marker.id.as_str()),
             Some("m0")
