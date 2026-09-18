@@ -443,6 +443,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "audio")]
+    #[serial_test::serial(audio_backend)]
     fn fully_prerolled_finite_source_resume_waits_for_confirmed_playing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("one-buffer.wav");
@@ -529,6 +530,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "audio")]
+    #[serial_test::serial(audio_backend)]
     fn switching_to_cached_source_uses_new_output_baseline() {
         check_cached_source_switch(false);
         check_cached_source_switch(true);
@@ -617,12 +619,14 @@ mod tests {
 
     #[test]
     #[cfg(feature = "audio")]
+    #[serial_test::serial(audio_backend)]
     fn paused_queue_removal_retires_old_audio_before_resuming_selected_uri() {
         check_replaced_paused_source(false);
     }
 
     #[test]
     #[cfg(feature = "audio")]
+    #[serial_test::serial(audio_backend)]
     fn continuation_retires_old_audio_before_resuming_selected_uri() {
         check_replaced_paused_source(true);
     }
@@ -795,6 +799,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "audio")]
+    #[serial_test::serial(audio_backend)]
     fn positional_local_file_uses_live_factory_without_polluting_shared_library() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("local song.wav");
@@ -891,6 +896,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "audio")]
+    #[serial_test::serial(audio_backend)]
     fn exported_file_effect_settles_only_after_real_pcm_and_preserves_document() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("effect.wav");
@@ -961,6 +967,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "audio")]
+    #[serial_test::serial(audio_backend)]
     fn restored_file_resumes_saved_position_and_missing_file_fails_the_effect() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("resume.wav");
@@ -1036,6 +1043,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "audio")]
+    #[serial_test::serial(audio_backend)]
     fn already_decoded_local_source_settles_after_late_invocation_registration() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("short.wav");
@@ -1102,6 +1110,7 @@ mod tests {
 
     #[test]
     #[cfg(feature = "audio")]
+    #[serial_test::serial(audio_backend)]
     fn undecodable_file_fails_the_actual_operation_without_fake_playback() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("corrupt.wav");
