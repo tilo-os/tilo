@@ -73,6 +73,7 @@ pub mod auth;
 pub mod client;
 pub mod coedit;
 pub mod compute;
+pub mod compute_session;
 pub mod compute_transport;
 pub mod config;
 pub mod daemon;
@@ -96,9 +97,10 @@ pub use compute::{
     ComputeSandbox, ComputeSandboxInvocation, ComputeWorker, InstalledComputeCatalogue,
     LauncherComputeSandbox, admit_compute_job,
 };
+pub use compute_session::{ComputeClient, ComputeDelivery, ComputeSessionError};
 pub use compute_transport::{
-    ComputeJobBinding, ComputeResultUpdate, ComputeRouteOutcome, ComputeStatusUpdate,
-    ComputeTransportError, ComputeWorkerAdvertisement,
+    ComputeEnvelope, ComputeJobBinding, ComputeResultUpdate, ComputeRouteOutcome,
+    ComputeStatusUpdate, ComputeTransportError, ComputeWorkerAdvertisement,
 };
 pub use config::{PeerRelayConfig, RelayConfig, WorkspaceBinding};
 pub use daemon::{Relay, RelayError, RelayHandle};
