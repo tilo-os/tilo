@@ -283,6 +283,134 @@ mod device_fabric_ui_tests {
     }
 
     #[test]
+    fn continuity_providers_register_in_either_order_and_replace_stale_bridges() {
+        use crate::shell::search::action_api::AllVisible;
+        use crate::shell::search::providers::continuity::{CALL_PROVIDER_ID, DEVICE_PROVIDER_ID};
+
+        let realtime: RealtimeContinuityBridge =
+            Rc::new(|_| Ok(RealtimeContinuityUiView::default()));
+        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        host.set_realtime_continuity_bridge(Rc::clone(&realtime));
+        assert_eq!(
+            host.search_registry
+                .providers_iter()
+                .filter(|provider| provider.id() == CALL_PROVIDER_ID)
+                .count(),
+            0
+        );
+
+        let (old_view, _) = fixture();
+        host.set_device_fabric_bridge(Rc::new(move |_| Ok(old_view.clone())));
+        for id in [DEVICE_PROVIDER_ID, CALL_PROVIDER_ID] {
+            assert_eq!(
+                host.search_registry
+                    .providers_iter()
+                    .filter(|provider| provider.id() == id)
+                    .count(),
+                1,
+                "{id} must be registered exactly once"
+            );
+        }
+
+        let (mut current_view, _) = fixture();
+        current_view.local_media[0].title = "Replacement film".into();
+        host.set_device_fabric_bridge(Rc::new(move |_| Ok(current_view.clone())));
+        for id in [DEVICE_PROVIDER_ID, CALL_PROVIDER_ID] {
+            assert_eq!(
+                host.search_registry
+                    .providers_iter()
+                    .filter(|provider| provider.id() == id)
+                    .count(),
+                1,
+                "rebinding must replace {id}, not append it"
+            );
+        }
+
+        let tree = WorkspaceTree::bootstrap_demo();
+        let chrome = ChromeState::new(tree);
+        let state = chrome.borrow();
+        let doc = AutoCommit::new();
+        let catalog = host.action_catalog(
+            "Replacement film",
+            &state,
+            &doc,
+            &automerge::ROOT,
+            &AllVisible,
+        );
+        assert!(
+            catalog
+                .enumerate()
+                .iter()
+                .any(|action| action.title.contains("Replacement film"))
+        );
+
+        let (view, _) = fixture();
+        let mut reverse = ShellOverlayHost::new(Box::new(Container::new()));
+        reverse.set_device_fabric_bridge(Rc::new(move |_| Ok(view.clone())));
+        reverse.set_realtime_continuity_bridge(realtime);
+        assert_eq!(
+            reverse
+                .search_registry
+                .providers_iter()
+                .filter(|provider| provider.id() == CALL_PROVIDER_ID)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn headless_continuity_catalog_lists_and_resolves_beyond_palette_page() {
+        use crate::shell::search::action_api::{AllVisible, ResourceRef};
+        use crate::shell::search::providers::continuity::DEVICE_PROVIDER_ID;
+
+        let (mut view, _) = fixture();
+        view.devices = (0..60)
+            .map(|index| FabricDeviceView {
+                id: DeviceId::new(format!("certified-screen-{index}")).unwrap(),
+                label: format!("Screen {index}"),
+                kind: DeviceKind::Laptop,
+                is_local: false,
+                online: true,
+                audio_output: true,
+                video_output: true,
+                display: true,
+                controls_local: false,
+                local_can_control: false,
+            })
+            .collect();
+        view.local_media[0].targets = view
+            .devices
+            .iter()
+            .map(|device| device.id.clone())
+            .collect();
+        view.local_media[0].title = "Paging proof".into();
+        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        host.set_device_fabric_bridge(Rc::new(move |_| Ok(view.clone())));
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
+        let state = chrome.borrow();
+        let doc = AutoCommit::new();
+
+        let catalog =
+            host.action_catalog("Paging proof", &state, &doc, &automerge::ROOT, &AllVisible);
+        let actions = catalog
+            .enumerate()
+            .into_iter()
+            .filter(|action| action.resource.provider == DEVICE_PROVIDER_ID)
+            .collect::<Vec<_>>();
+        assert_eq!(actions.len(), 60);
+        let last = actions.last().unwrap().resource.clone();
+        let exact = host.exact_action_catalog(
+            &last.provider,
+            &last.id,
+            &state,
+            &doc,
+            &automerge::ROOT,
+            &AllVisible,
+        );
+        assert!(exact.contains(&ResourceRef::new(&last.provider, &last.id)));
+    }
+
+    #[test]
     fn device_pane_routes_local_audio_and_exact_remote_media() {
         let (view, remote) = fixture();
         let actions = Rc::new(RefCell::new(Vec::new()));
@@ -1294,6 +1422,8 @@ pub struct DeviceFabricView {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeviceFabricUiAction {
     Snapshot,
+    /// Bypass presentation caching for semantic action revalidation.
+    SnapshotFresh,
     HandoffMedia {
         session_id: String,
         target: crate::shell::personal_continuity::DeviceId,
@@ -4134,13 +4264,38 @@ impl ShellOverlayHost {
     /// Attach the authenticated personal-device and local-output control
     /// surface. An absent bridge renders an honest unprovisioned state.
     pub fn set_device_fabric_bridge(&mut self, bridge: DeviceFabricBridge) {
-        self.device_fabric_bridge = Some(bridge);
+        self.device_fabric_bridge = Some(std::rc::Rc::clone(&bridge));
+        self.search_registry.register_or_replace(std::rc::Rc::new(
+            crate::shell::search::providers::DeviceContinuityActionsProvider::new(
+                std::rc::Rc::clone(&bridge),
+            ),
+        ));
+        if let Some(realtime) = self.realtime_continuity_bridge.as_ref() {
+            self.search_registry.register_or_replace(std::rc::Rc::new(
+                crate::shell::search::providers::CallContinuityActionsProvider::new(
+                    std::rc::Rc::clone(realtime),
+                    bridge,
+                ),
+            ));
+        }
+        self.last_search_query = "\0continuity-provider-rebound\0".into();
+        self.last_search_revision.clear();
     }
 
     /// Attach trusted shell-only call handoff controls. The app sees semantic
     /// lifecycle edges, never the certified-device picker or raw source IDs.
     pub fn set_realtime_continuity_bridge(&mut self, bridge: RealtimeContinuityBridge) {
-        self.realtime_continuity_bridge = Some(bridge);
+        self.realtime_continuity_bridge = Some(std::rc::Rc::clone(&bridge));
+        if let Some(devices) = self.device_fabric_bridge.as_ref() {
+            self.search_registry.register_or_replace(std::rc::Rc::new(
+                crate::shell::search::providers::CallContinuityActionsProvider::new(
+                    bridge,
+                    std::rc::Rc::clone(devices),
+                ),
+            ));
+        }
+        self.last_search_query = "\0call-continuity-provider-rebound\0".into();
+        self.last_search_revision.clear();
     }
 
     fn realtime_continuity_call(
