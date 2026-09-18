@@ -92,8 +92,10 @@ has "$workflow" 'needs: signing-preflight' \
   'expensive native snapshot builds wait for signing-authority preflight'
 has "$workflow" 'python3 os/dev/promote-native-index.py' \
   'snapshot promotion verifies signed native children'
-has "$workflow" 'test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"' \
-  'snapshot pin updates reject source changes during the build'
+has "$workflow" 'git diff --quiet "$GITHUB_SHA" FETCH_HEAD -- "${snapshot_inputs[@]}"' \
+  'snapshot pin updates reject build-input changes while allowing unrelated commits'
+has "$workflow" 'git checkout --detach FETCH_HEAD' \
+  'snapshot promotion applies its pin on the current branch tip'
 has "$workflow" 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' \
   'snapshot signing requires a non-exportable key'
 has "$workflow" '. os/dev/configure-cosign-kms.sh' \
