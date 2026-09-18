@@ -583,8 +583,12 @@ pub fn acknowledge_peer_storage_batch(id:u32,raw:String)->Result<(),JsValue>{
 fn health(peer:&Peer,state:&StatePeer,ready:bool,reported_error:Option<&str>)->serde_json::Value{
     let journal_status=peer.cache.status(&StorageKey::Admission{workspace:state.room().into()});
     let journal=journal_status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(_,bytes)|Journal::decode(&bytes.bytes).ok());
-    let permission_failure=state.permissions(peer._key.verifying_key().to_bytes(),SystemTime::now()).err();
-    let durable_failure=state.incomplete_reason().or_else(||peer.admission_failure.borrow().clone()).or(permission_failure.clone());
+    let durable_failure=crate::admission_health::durable_admission_failure(
+        state,
+        peer._key.verifying_key().to_bytes(),
+        SystemTime::now(),
+        peer.admission_failure.borrow().clone(),
+    );
     let failure=durable_failure.as_deref().or(reported_error);
     let failures=failure.map(|text|{
         let (code,message,recovery)=if text.contains("revoked"){("identity-revoked","This device no longer has access.","review-permissions")}else if text.contains("MLS")||text.contains("crypto"){("crypto-unavailable","Encrypted content is waiting for its security prerequisites.","refresh-checkpoint")}else if text.contains("timestamp")||text.contains("expired"){("checkpoint-expired","A fresh copy of the shared state is required.","refresh-checkpoint")}else if text.contains("forbidden")||text.contains("permission"){("permission-required","Access to this record needs permission.","review-permissions")}else if !peer.transport_connected.get(){("transport-ended","The connection was interrupted. Saved work is retained.","retry-connection")}else{("record-install-failed","Shared state could not be loaded yet.","refresh-checkpoint")};

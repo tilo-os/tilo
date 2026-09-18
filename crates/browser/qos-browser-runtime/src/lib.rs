@@ -19,6 +19,9 @@ pub use fixture::{fixture_seed,fixture_writer_insert};
 mod admitted_records;
 
 #[cfg(any(target_arch = "wasm32", test))]
+mod admission_health;
+
+#[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn revision_wire_value(revision: u64) -> String {
     revision.to_string()
 }
