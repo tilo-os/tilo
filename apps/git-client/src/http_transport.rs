@@ -515,6 +515,7 @@ impl Helper {
 #[allow(
     clippy::unwrap_used,
     clippy::expect_used,
+    clippy::panic,
     reason = "owned configuration fixtures"
 )]
 mod tests {
@@ -671,6 +672,97 @@ mod tests {
             "timeout"
         )));
     }
+
+    #[test]
+    fn native_helper_executables_preserve_quotes_spaces_and_backslashes() {
+        for (command, expected) in [
+            (
+                r#""C:\Program Files\Git\git-credential-custom.exe" --mode='owned fixture'"#,
+                r"C:\Program Files\Git\git-credential-custom.exe",
+            ),
+            (
+                r"C:\Tools\git-credential-custom.exe --mode='owned fixture'",
+                r"C:\Tools\git-credential-custom.exe",
+            ),
+            (
+                r"\\server\share\git-credential-custom.exe --mode='owned fixture'",
+                r"\\server\share\git-credential-custom.exe",
+            ),
+        ] {
+            let parsed = parse_helper_command(command).unwrap();
+            let HelperCommand::Process {
+                executable,
+                arguments,
+                shell_command,
+            } = parsed
+            else {
+                panic!("expected process")
+            };
+            assert_eq!(executable, expected);
+            assert_eq!(arguments, vec!["--mode=owned fixture"]);
+            assert!(shell_command.starts_with(&format!("'{expected}'")));
+            assert!(!requires_shell(&shell_command));
+        }
+    }
+
+    #[test]
+    fn relative_helpers_keep_git_prefix_and_posix_argument_quoting() {
+        let command = r#"store --file='C:/user'\''s credential store'"#;
+        let HelperCommand::Process {
+            executable,
+            arguments,
+            shell_command,
+        } = parse_helper_command(command).unwrap()
+        else {
+            panic!("expected process")
+        };
+        assert_eq!(executable, "git");
+        assert_eq!(
+            arguments,
+            vec!["credential-store", "--file=C:/user's credential store"]
+        );
+        assert_eq!(shell_command, format!("git credential-{command}"));
+        assert!(!requires_shell(&shell_command));
+    }
+
+    #[test]
+    fn posix_absolute_helpers_keep_their_shell_paths_on_every_platform() {
+        for command in [
+            "/mingw64/bin/git-credential-custom.exe --mode=test",
+            "'/mingw64/bin/git-credential-custom.exe' --mode=test",
+        ] {
+            let HelperCommand::Process {
+                executable,
+                arguments,
+                shell_command,
+            } = parse_helper_command(command).unwrap()
+            else {
+                panic!("expected process")
+            };
+            assert_eq!(executable, "/mingw64/bin/git-credential-custom.exe");
+            assert_eq!(arguments, vec!["--mode=test"]);
+            assert_eq!(shell_command, command);
+        }
+    }
+
+    #[test]
+    fn configured_shell_scripts_and_expansion_are_preserved() {
+        let script = r#"f() { printf '%s\n' "$HOME"; }; f"#;
+        assert_eq!(
+            parse_helper_command(&format!("!{script}")).unwrap(),
+            HelperCommand::Shell(script.into())
+        );
+        let command = r#"store --file="$HOME/.git-credentials""#;
+        let HelperCommand::Process { shell_command, .. } = parse_helper_command(command).unwrap()
+        else {
+            panic!("expected process")
+        };
+        assert_eq!(shell_command, format!("git credential-{command}"));
+        assert!(requires_shell(&shell_command));
+        assert!(!requires_shell(
+            "git credential-store --file='$HOME/literal'"
+        ));
+    }
 }
 
 #[derive(Clone)]
@@ -680,6 +772,127 @@ struct Helper {
     protocol: String,
     host: String,
     path: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum HelperCommand {
+    Shell(String),
+    Process {
+        executable: String,
+        arguments: Vec<String>,
+        shell_command: String,
+    },
+}
+
+fn native_absolute_path(value: &str) -> bool {
+    value.starts_with("\\\\")
+        || value.starts_with("//")
+        || matches!(value.as_bytes(), [drive, b':', b'\\' | b'/', ..] if drive.is_ascii_alphabetic())
+}
+
+fn parse_helper_command(command: &str) -> Result<HelperCommand, git2::Error> {
+    if let Some(script) = command.strip_prefix('!') {
+        return Ok(HelperCommand::Shell(script.to_owned()));
+    }
+    let command = command.trim();
+    let quote = command
+        .chars()
+        .next()
+        .filter(|character| matches!(character, '\'' | '"'));
+    let candidate = if quote.is_some() {
+        command.get(1..).unwrap_or_default()
+    } else {
+        command
+    };
+    let mut native_shell_command = None;
+    let words = if native_absolute_path(candidate) {
+        // A native Windows executable is a path, not POSIX escape syntax.
+        // Only its argument tail uses the Git helper's shell-style quoting.
+        let end = if let Some(quote) = quote {
+            candidate
+                .find(quote)
+                .ok_or_else(|| failure("unterminated Git helper executable quote"))?
+        } else {
+            candidate
+                .find(char::is_whitespace)
+                .unwrap_or(candidate.len())
+        };
+        let executable = candidate
+            .get(..end)
+            .ok_or_else(|| failure("invalid Git helper executable"))?;
+        let tail_start = end.saturating_add(usize::from(quote.is_some()));
+        let tail = candidate.get(tail_start..).unwrap_or_default();
+        if quote.is_some() && !tail.is_empty() && !tail.starts_with(char::is_whitespace) {
+            return Err(failure(
+                "Git helper executable quote must end at an argument boundary",
+            ));
+        }
+        native_shell_command = Some(format!("'{}'{tail}", executable.replace('\'', "'\\''")));
+        let mut words = vec![executable.to_owned()];
+        words.extend(
+            shlex::split(tail)
+                .ok_or_else(|| failure("invalid quoting in Git credential helper"))?,
+        );
+        words
+    } else {
+        shlex::split(command).ok_or_else(|| failure("invalid quoting in Git credential helper"))?
+    };
+    let mut words = words.into_iter();
+    let executable = words
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| failure("empty Git credential helper"))?;
+    let mut arguments: Vec<_> = words.collect();
+    if native_absolute_path(&executable)
+        || executable.starts_with('/')
+        || std::path::Path::new(&executable).is_absolute()
+    {
+        Ok(HelperCommand::Process {
+            executable,
+            arguments,
+            shell_command: native_shell_command.unwrap_or_else(|| command.to_owned()),
+        })
+    } else {
+        arguments.insert(0, format!("credential-{executable}"));
+        Ok(HelperCommand::Process {
+            executable: "git".into(),
+            arguments,
+            shell_command: format!("git credential-{command}"),
+        })
+    }
+}
+
+fn requires_shell(command: &str) -> bool {
+    let mut quote = None;
+    let mut escaped = false;
+    for character in command.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if character == '\\' && quote != Some('\'') {
+            escaped = true;
+            continue;
+        }
+        if quote == Some('\'') {
+            if character == '\'' {
+                quote = None;
+            }
+        } else if character == '"' {
+            quote = if quote == Some('"') { None } else { Some('"') };
+        } else if character == '\'' && quote.is_none() {
+            quote = Some('\'');
+        } else if matches!(character, '$' | '`')
+            || (quote.is_none()
+                && matches!(
+                    character,
+                    '*' | '?' | '[' | '~' | '|' | '&' | ';' | '<' | '>' | '(' | ')'
+                ))
+        {
+            return true;
+        }
+    }
+    false
 }
 
 impl Helper {
@@ -705,52 +918,57 @@ impl Helper {
                 input.push_str(&format!("username={}\n", username.as_str()));
             }
             input.push('\n');
-            // Only trusted repository configuration forms shell code. Remote
-            // protocol/host/path/username are supplied separately through stdin.
-            let executable = if let Some(script) = command.strip_prefix('!') {
-                script.to_owned()
-            } else if std::path::Path::new(command).is_absolute() {
-                command.clone()
-            } else {
-                format!("git credential-{command}")
-            };
-            let script = format!("{executable} get");
             let remaining = deadline
                 .checked_duration_since(Instant::now())
                 .ok_or_else(|| failure("Git credential helper timed out"))?;
-            let result = bounded_command::run(
-                "sh",
-                &["-c", &script],
-                Some(input.as_bytes()),
-                64 * 1024,
-                remaining,
-            );
-            // Match git2's direct-executable fallback on hosts without sh.
-            // A shell snippet still requires a shell; never reinterpret it.
-            let result = match result {
-                Err(bounded_command::Error::Process(error))
-                    if error.kind() == io::ErrorKind::NotFound && !command.starts_with('!') =>
-                {
-                    let parts = shlex::split(&executable)
-                        .ok_or_else(|| failure("invalid quoting in Git credential helper"))?;
-                    let mut parts = parts.iter().map(String::as_str);
-                    let program = parts
-                        .next()
-                        .ok_or_else(|| failure("empty Git credential helper"))?;
-                    let mut arguments: Vec<_> = parts.collect();
-                    arguments.push("get");
-                    let remaining = deadline
-                        .checked_duration_since(Instant::now())
-                        .ok_or_else(|| failure("Git credential helper timed out"))?;
-                    bounded_command::run(
-                        program,
-                        &arguments,
+            // Preserve trusted Git helper shell syntax where a shell exists.
+            // Remote protocol/host/path/username are supplied only via stdin.
+            let result = match parse_helper_command(command)? {
+                HelperCommand::Shell(script) => bounded_command::run(
+                    "sh",
+                    &["-c", &format!("{script} get")],
+                    Some(input.as_bytes()),
+                    64 * 1024,
+                    remaining,
+                ),
+                HelperCommand::Process {
+                    executable,
+                    arguments,
+                    shell_command,
+                } => {
+                    let result = bounded_command::run(
+                        "sh",
+                        &["-c", &format!("{shell_command} get")],
                         Some(input.as_bytes()),
                         64 * 1024,
                         remaining,
-                    )
+                    );
+                    match result {
+                        Err(bounded_command::Error::Process(error))
+                            if error.kind() == io::ErrorKind::NotFound =>
+                        {
+                            if requires_shell(&shell_command) {
+                                return Err(failure(
+                                    "configured Git credential helper requires an installed shell for expansion",
+                                ));
+                            }
+                            let mut arguments: Vec<_> =
+                                arguments.iter().map(String::as_str).collect();
+                            arguments.push("get");
+                            let remaining = deadline
+                                .checked_duration_since(Instant::now())
+                                .ok_or_else(|| failure("Git credential helper timed out"))?;
+                            bounded_command::run(
+                                &executable,
+                                &arguments,
+                                Some(input.as_bytes()),
+                                64 * 1024,
+                                remaining,
+                            )
+                        }
+                        result => result,
+                    }
                 }
-                result => result,
             };
             let output = match result {
                 Ok(output) => output,
