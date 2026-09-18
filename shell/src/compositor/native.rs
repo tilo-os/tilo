@@ -1933,7 +1933,7 @@ fn execute_invoke_action(
     // it, a revoked capability wouldn't stop a caller who got past it once.
     let catalog = match with_action_gate(&chrome_handle, |chrome, gate| {
         fb.host()
-            .action_catalog("", chrome, &ctx.doc, &ctx.root_obj, gate)
+            .exact_action_catalog(provider, id, chrome, &ctx.doc, &ctx.root_obj, gate)
     }) {
         Ok(catalog) => catalog,
         Err(why) => {
