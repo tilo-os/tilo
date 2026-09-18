@@ -111,6 +111,9 @@ struct ModelSource {
     required_memory_mib: u64,
     required_accelerator_mib: u64,
     context_window: u32,
+    /// Signed declaration: this exact release accepts bounded image input.
+    #[serde(default)]
+    vision: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -318,6 +321,7 @@ fn compile(
             required_memory_mib: model.required_memory_mib,
             required_accelerator_mib: model.required_accelerator_mib,
             context_window: model.context_window,
+            vision: model.vision,
         };
         release
             .artifact
@@ -576,6 +580,7 @@ mod tests {
                 required_memory_mib: 1024,
                 required_accelerator_mib: 0,
                 context_window: 4096,
+                vision: true,
             }],
         }
     }
@@ -603,6 +608,7 @@ mod tests {
         let second = compile(source(temp.path()), temp.path(), &key).unwrap();
         assert_eq!(first, second);
         let payload = catalog_signing_bytes(&first.0.payload).unwrap();
+        assert!(first.0.payload.models[0].vision);
         let signature = Signature::from_slice(&first.0.signature).unwrap();
         key.verifying_key().verify(&payload, &signature).unwrap();
         let trust_json = serde_json::to_string(&first.1).unwrap();

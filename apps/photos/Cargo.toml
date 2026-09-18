@@ -22,6 +22,7 @@ ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
 tilo-reference = { path = "../../crates/collab/reference" }
 qdoc = { path = "../../crates/doc/qdoc" }
+tilo-vision = { path = "../../crates/media/vision" }
 atomic-file = { path = "../../crates/system/atomic-file" }
 automerge.workspace = true
 serde.workspace = true

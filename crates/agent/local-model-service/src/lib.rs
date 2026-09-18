@@ -943,6 +943,7 @@ mod tests {
             required_memory_mib: 1,
             required_accelerator_mib: 0,
             context_window: 1,
+            vision: false,
         }
     }
 
