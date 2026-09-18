@@ -2081,27 +2081,7 @@ impl WorkspaceTree {
     }
 
     fn workspace_tasks_of(doc: &AutoCommit) -> Vec<WorkspaceTask> {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-
-        let Some((_, tasks_id)) = doc.get(&ROOT, Self::ROOM_TASKS_KEY).ok().flatten() else {
-            return Vec::new();
-        };
-        let mut tasks = Vec::new();
-        for key in doc.keys(&tasks_id) {
-            if let Some((Value::Scalar(value), _)) = doc.get(&tasks_id, key.as_str()).ok().flatten()
-                && let ScalarValue::Bytes(blob) = value.as_ref()
-                && let Ok(task) = serde_json::from_slice::<WorkspaceTask>(blob)
-            {
-                tasks.push(task);
-            }
-        }
-        tasks.sort_by(|left, right| {
-            right
-                .updated_at
-                .cmp(&left.updated_at)
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        tasks
+        qos_desktop::projection::workspace_tasks_of(doc)
     }
 
     fn project_effect_receipts(doc: &mut AutoCommit, receipts: &[WorkspaceEffectReceipt]) {
@@ -2139,28 +2119,7 @@ impl WorkspaceTree {
     }
 
     fn workspace_effect_receipts_of(doc: &AutoCommit) -> Vec<WorkspaceEffectReceipt> {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-        let Some((_, object)) = doc
-            .get(&ROOT, Self::ROOM_EFFECT_RECEIPTS_KEY)
-            .ok()
-            .flatten()
-        else {
-            return Vec::new();
-        };
-        let mut receipts = doc
-            .keys(&object)
-            .filter_map(|key| {
-                let (Value::Scalar(value), _) = doc.get(&object, key).ok().flatten()? else {
-                    return None;
-                };
-                let ScalarValue::Bytes(blob) = value.as_ref() else {
-                    return None;
-                };
-                serde_json::from_slice(blob).ok()
-            })
-            .collect::<Vec<_>>();
-        receipts.sort_by_key(|receipt: &WorkspaceEffectReceipt| receipt.completed_at);
-        receipts
+        qos_desktop::projection::workspace_effect_receipts_of(doc)
     }
 
     /// Project "who the peers in this room are", as Iroh `EndpointId`

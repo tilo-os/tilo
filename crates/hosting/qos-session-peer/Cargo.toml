@@ -30,6 +30,11 @@ notes = { path = "../../../apps/notes" }
 word-processor = { path = "../../../apps/word-processor" }
 chat = { path = "../../../apps/chat", default-features = false }
 collab-types = { path = "../../collab/collab-types" }
+qos-action-broker = { path = "../../collab/qos-action-broker" }
+qos-actions = { path = "../../collab/actions" }
+runtime-collab = { path = "../../runtime/runtime-collab" }
+runtime-identity = { path = "../../runtime/runtime-identity" }
 [dev-dependencies]
+qdoc = { path = "../../doc/qdoc" }
 tempfile.workspace = true
 qos-browser-runtime = { path = "../../browser/qos-browser-runtime" }

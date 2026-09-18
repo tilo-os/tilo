@@ -857,3 +857,50 @@ impl RoomProjection {
         Ok(changed || renamed)
     }
 }
+
+/// Canonical task projection, preserving native tolerant reads.
+pub fn workspace_tasks_of(doc: &AutoCommit) -> Vec<crate::WorkspaceTask> {
+    use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+
+    let Some((_, tasks_id)) = doc.get(&ROOT, "tasks_v1").ok().flatten() else {
+        return Vec::new();
+    };
+    let mut tasks = Vec::new();
+    for key in doc.keys(&tasks_id) {
+        if let Some((Value::Scalar(value), _)) = doc.get(&tasks_id, key.as_str()).ok().flatten()
+            && let ScalarValue::Bytes(blob) = value.as_ref()
+            && let Ok(task) = serde_json::from_slice::<crate::WorkspaceTask>(blob)
+        {
+            tasks.push(task);
+        }
+    }
+    tasks.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    tasks
+}
+
+/// Canonical redacted effect receipts, preserving native tolerant reads.
+pub fn workspace_effect_receipts_of(doc: &AutoCommit) -> Vec<crate::WorkspaceEffectReceipt> {
+    use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+    let Some((_, object)) = doc.get(&ROOT, "effect_receipts_v1").ok().flatten() else {
+        return Vec::new();
+    };
+    let mut receipts = doc
+        .keys(&object)
+        .filter_map(|key| {
+            let (Value::Scalar(value), _) = doc.get(&object, key).ok().flatten()? else {
+                return None;
+            };
+            let ScalarValue::Bytes(blob) = value.as_ref() else {
+                return None;
+            };
+            serde_json::from_slice(blob).ok()
+        })
+        .collect::<Vec<_>>();
+    receipts.sort_by_key(|receipt: &crate::WorkspaceEffectReceipt| receipt.completed_at);
+    receipts
+}

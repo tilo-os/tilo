@@ -879,6 +879,11 @@ impl App {
         Ok(app)
     }
 
+    /// Current SDK transport health, including fail-closed publication errors.
+    pub fn collaboration_is_connected(&self) -> bool {
+        self.collab_manager.is_connected()
+    }
+
     /// Capture/close embedded components while the host still owns their trees.
     /// Recovery reports stay owned by this host until explicitly transferred.
     pub fn close_components(&mut self) {

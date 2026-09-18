@@ -1386,14 +1386,37 @@ struct SdkJoinIdentity {
 #[derive(Clone)]
 pub struct CertifiedEndpointIdentity {
     presentation: Vec<u8>,
-    device_key: ed25519_dalek::SigningKey,
+    signer: EndpointDocumentSigner,
+}
+
+#[derive(Clone)]
+enum EndpointDocumentSigner {
+    Device(ed25519_dalek::SigningKey),
+    Host(std::sync::Arc<dyn HostDocumentCommitter>),
 }
 
 impl CertifiedEndpointIdentity {
     pub fn new(presentation: Vec<u8>, device_key: ed25519_dalek::SigningKey) -> Self {
         Self {
             presentation,
-            device_key,
+            signer: EndpointDocumentSigner::Device(device_key),
+        }
+    }
+    /// Explicit owner-bound host publication. The host retains signing custody;
+    /// this hook must return only after the exact document is durably committed.
+    pub fn with_host_documents(
+        presentation: Vec<u8>,
+        documents: std::sync::Arc<dyn HostDocumentCommitter>,
+    ) -> Self {
+        Self {
+            presentation,
+            signer: EndpointDocumentSigner::Host(documents),
+        }
+    }
+    fn document_signer(&self) -> SdkDocumentSigner {
+        match &self.signer {
+            EndpointDocumentSigner::Host(host) => SdkDocumentSigner::Host(host.clone()),
+            EndpointDocumentSigner::Device(key) => SdkDocumentSigner::Harness(Box::new(key.clone())),
         }
     }
 }
@@ -1410,7 +1433,20 @@ impl std::fmt::Debug for CertifiedEndpointIdentity {
     }
 }
 
+/// Host-local capability, never selected by a wire peer. Called on the SDK
+/// shovel thread, while the application's ordinary owner thread keeps pumping.
+/// Implementations bind an exact route and revalidate current authority.
+/// Native launcher and explicit-key endpoints retain their existing signer.
+pub trait HostDocumentCommitter: Send + Sync {
+    fn commit(
+        &self,
+        route: &RouteSpec,
+        mutation: collab_types::DocumentMutation,
+    ) -> Result<SignedOp, String>;
+}
+
 enum SdkDocumentSigner {
+    Host(std::sync::Arc<dyn HostDocumentCommitter>),
     #[cfg(unix)]
     Certified(Box<runtime_identity::SigningIdentity>),
     /// Explicit-FD harnesses have no launcher identity service. Their
@@ -1594,9 +1630,9 @@ impl CollaborationManager {
             record,
             handle,
             Some(SdkJoinIdentity {
-                presentation: identity.presentation,
+                presentation: identity.presentation.clone(),
                 participant_kind: "person",
-                signer: SdkDocumentSigner::Harness(Box::new(identity.device_key)),
+                signer: identity.document_signer(),
             }),
             "person",
         )
@@ -1754,9 +1790,9 @@ impl CollaborationManager {
             record,
             Some(agent_id.into()),
             Some(SdkJoinIdentity {
-                presentation: identity.presentation,
+                presentation: identity.presentation.clone(),
                 participant_kind: "agent",
-                signer: SdkDocumentSigner::Harness(Box::new(identity.device_key)),
+                signer: identity.document_signer(),
             }),
             "agent",
         )
@@ -3105,6 +3141,34 @@ async fn send_document_mutation(
     mutation: collab_types::DocumentMutation,
     inbound: &InboundBridge,
 ) {
+    if let SdkDocumentSigner::Host(host) = signer {
+        // The standalone owner admits cleartext state. Never bypass an MLS
+        // requirement or produce a signed cleartext replacement for ciphertext.
+        if !route
+            .encryption
+            .lock()
+            .is_ok_and(|encryption| encryption.is_none())
+        {
+            inbound.state.fail_closed("host document encryption unavailable");
+            return;
+        }
+        let result = host
+            .commit(&route.spec, mutation)
+            .and_then(|op| postcard::to_stdvec(&op).map_err(|e| e.to_string()));
+        match result {
+            Ok(bytes) => {
+                if let Err(error) = route.channel.send(&bytes).await {
+                    tracing::warn!(%error, "collab: precommitted host document handoff failed; outcome unknown");
+                    inbound.state.fail_closed("host document receipt handoff");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "collab: host document commit failed; outcome unknown");
+                inbound.state.fail_closed("host document commit");
+            }
+        }
+        return;
+    }
     let workspace_id = route.spec.cluster_id.to_string();
     let record_id = route.spec.record.as_deref().unwrap_or("");
     let cleartext = match mutation.encode() {
@@ -3123,6 +3187,7 @@ async fn send_document_mutation(
     };
     let now = crate::clock::SystemTime::now();
     let author = match signer {
+        SdkDocumentSigner::Host(_) => unreachable!("host commits above"),
         #[cfg(unix)]
         SdkDocumentSigner::Certified(identity) => identity.signing_public_key(),
         SdkDocumentSigner::Harness(key) => key.verifying_key().to_bytes(),
@@ -3162,6 +3227,7 @@ async fn send_document_mutation(
         }
     };
     let signature = match signer {
+        SdkDocumentSigner::Host(_) => unreachable!("host commits above"),
         #[cfg(unix)]
         SdkDocumentSigner::Certified(identity) => match identity.sign_collaboration_op(
             &workspace_id,

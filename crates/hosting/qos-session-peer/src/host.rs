@@ -10,12 +10,22 @@ use qos_relay::{
 };
 use qos_user_identity::RevocationList;
 use serde_json::json;
+use std::sync::Arc;
 use std::{net::Ipv4Addr, path::Path, time::Duration};
 use tokio::{io::AsyncBufReadExt, net::TcpListener};
 
 pub struct NativeSubscription {
-    session: RelayCoeditSession,
+    session: Arc<RelayCoeditSession>,
+    actions: Option<AttachedActions>,
     ready: bool,
+}
+struct AttachedActions(Option<tokio::task::JoinHandle<Result<(), ()>>>);
+impl Drop for AttachedActions {
+    fn drop(&mut self) {
+        if let Some(task) = &self.0 {
+            task.abort();
+        }
+    }
 }
 impl std::ops::Deref for NativeSubscription {
     type Target = RelayCoeditSession;
@@ -35,7 +45,41 @@ impl NativeSubscription {
         event
     }
     pub fn into_client(self) -> RelayClient {
-        self.session.into_client()
+        Arc::try_unwrap(self.session)
+            .unwrap_or_else(|_| panic!("active session attachment must be closed asynchronously"))
+            .into_client()
+    }
+    async fn close(mut self) {
+        if let Some(mut attached) = self.actions.take() {
+            if let Some(task) = attached.0.take() {
+                task.abort();
+                let _ = task.await;
+            }
+        }
+        // Each native attempt owns its endpoint. After joining the only
+        // attachment, consume the client and flush CONNECTION_CLOSE before
+        // dropping that endpoint, so the relay retires its subscriber.
+        Arc::try_unwrap(self.session)
+            .unwrap_or_else(|_| panic!("joined native attachment retained its session"))
+            .into_client()
+            .close()
+            .await;
+    }
+    fn attach(&mut self, actions: &crate::action_host::ActionHost, room: uuid::Uuid) -> Result<()> {
+        if self.actions.is_some() {
+            return Ok(());
+        }
+        let (queue, host) = actions
+            .broker
+            .app_action_broker()
+            .context("broker unavailable")?
+            .peer_action_attachment()
+            .map_err(anyhow::Error::msg)?;
+        let session = self.session.clone();
+        self.actions = Some(AttachedActions(Some(tokio::spawn(async move {
+            queue.serve(session, room, host).await
+        }))));
+        Ok(())
     }
 }
 pub struct LocalHost {
@@ -55,7 +99,7 @@ impl Reconnect {
             let _ = cancel.send(());
         }
         if let Ok(Ok(session)) = (&mut self.task).await {
-            session.into_client().close().await;
+            session.close().await;
         }
     }
 }
@@ -173,7 +217,7 @@ impl LocalHost {
                 .await?;
             let attempt = async {
                 endpoint.online().await;
-                let client = RelayClient::connect_to_enrolled_home_peer(
+                let client = RelayClient::connect_v2_to_enrolled_home_peer(
                     endpoint.clone(),
                     address,
                     root,
@@ -188,7 +232,8 @@ impl LocalHost {
                 // The relay streams pending events BEFORE Ready. Admit them in the
                 // ordinary serialized owner loop, with transport backpressure.
                 Ok(NativeSubscription {
-                    session,
+                    session: Arc::new(session),
+                    actions: None,
                     ready: false,
                 })
             };
@@ -276,6 +321,15 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
         tokio::sync::mpsc::channel::<crate::enrollment_http::EnrollmentCommand>(64);
     let mut enrollment = crate::enrollment::EnrollmentAuthority::default();
     let mut session: Option<NativeSubscription> = None;
+    let authority = crate::action_host::Authority::default();
+    let (commit_handle, mut commits) = crate::owner_commit::OwnerCommitMailbox::bounded(32);
+    let (signing, mut signatures) = crate::host_signing::HostSigning::new(commit_handle);
+    let (network_sender, mut network) =
+        tokio::sync::mpsc::channel::<qos_peer_state::NeighbourMsg>(64);
+    let mut actions: Option<crate::action_host::ActionHost> = None;
+    let mut pump = tokio::time::interval(Duration::from_millis(10));
+    let mut action_error: Option<String> = None;
+    let mut subscription_generation = 0u64;
     let mut error = None;
     let mut reconnect: Option<Reconnect> = None;
     let mut delay = Duration::ZERO;
@@ -288,12 +342,54 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
             .parent()
             .context("ready file requires parent directory")?,
     )?;
+    let run_result: Result<()> = async {
     loop {
         if session.is_none() && reconnect.is_none() && owner.permits_publication() {
             reconnect = Some(host.begin_connection(&owner, delay)?);
         }
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
+            _ = pump.tick() => {
+                if let Some(runtime) = actions.as_mut() {
+                    if let Err(problem) = runtime.pump(&owner) { action_error.get_or_insert(problem); }
+                    if action_error.is_none() && runtime.ready() {
+                        if let Some(current) = session.as_mut().filter(|s| s.is_ready()) {
+                            if let Err(problem) = current.attach(runtime, owner.peer().room().parse()?) { action_error = Some(problem.to_string()); }
+                            if current.actions.as_ref().is_some_and(|attached| attached.0.as_ref().is_some_and(|task| task.is_finished())) { action_error = Some("private broker attachment stopped; outcome unknown".into()); }
+                        }
+                    }
+                }
+                if action_error.is_some() {
+                    *authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))? = None;
+                    if session.as_ref().is_some_and(|s| s.actions.is_some()) { if let Some(old) = session.take() { old.close().await; } }
+                }
+            }
+            pending = commits.recv() => if let Some(pending) = pending {
+                let mut current = authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))?;
+                let result = pending.apply(&mut owner);
+                *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
+                let published = session.as_ref().filter(|s| s.is_ready()).ok_or_else(|| anyhow::anyhow!("owner committed while disconnected; publication pending")).and_then(|s| publish(&owner, s));
+                if let Some(runtime) = actions.as_ref() { if let Err(problem) = runtime.committed(&owner) { action_error = Some(signing.fail(problem)); } }
+                if let Err(problem) = result { action_error = Some(problem); }
+                if let Err(problem) = published { action_error = Some(signing.fail(problem.to_string())); }
+                *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
+            },
+            pending = signatures.recv() => if let Some(pending) = pending {
+                let mut current = authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))?;
+                let (complete, result) = pending.apply(&mut owner);
+                *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
+                let published = session.as_ref().filter(|s| s.is_ready()).ok_or_else(|| anyhow::anyhow!("signed commit publication pending; native peer unavailable")).and_then(|s| publish(&owner, s));
+                if let Some(runtime) = actions.as_ref() { if let Err(problem) = runtime.committed(&owner) { action_error = Some(signing.fail(problem)); } }
+                if let Err(problem) = result { action_error = Some(problem); }
+                if let Err(problem) = published { action_error = Some(signing.fail(problem.to_string())); }
+                *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
+                complete();
+            },
+            message = network.recv() => if let Some(message) = message {
+                if let Some(current) = session.as_ref().filter(|s| s.is_ready()) {
+                    if let Err(problem) = current.publish_presence(postcard::to_stdvec(&message)?) { action_error = Some(signing.fail(problem.to_string())); }
+                }
+            },
             connection = async { match reconnect.as_mut() {Some(attempt)=>(&mut attempt.task).await.context("native reconnect task failed")?,None=>std::future::pending().await} }, if reconnect.is_some() => {
                 reconnect.take();
                 match connection {
@@ -306,11 +402,21 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
             inbound = async { match session.as_mut() { Some(current) => current.recv().await, None => std::future::pending().await } } => {
                 match inbound {
                     Some(Inbound::Ready {..}) => {
+                        subscription_generation = subscription_generation.checked_add(1).context("native subscription generation exhausted")?;
                         owner.refresh_checkpoint()?;
+                        if action_error.is_none() {
+                            *authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))? = Some(owner.peer().clone());
+                            if actions.is_none() {
+                                match crate::action_host::ActionHost::start(&owner, authority.clone(), signing.clone(), network_sender.clone()) {
+                                    Ok(runtime) => actions = Some(runtime),
+                                    Err(problem) => { action_error = Some(signing.fail(problem.to_string())); *authority.0.lock().unwrap() = None; }
+                                }
+                            }
+                        }
                         if let Some(current)=session.as_ref() {
                             match publish(&owner,current) {
                                 Ok(())=>error=None,
-                                Err(problem)=>{error=Some(problem.to_string());if let Some(old)=session.take(){old.into_client().close().await;}}
+                                Err(problem)=>{error=Some(problem.to_string());if let Some(old)=session.take(){old.close().await;}}
                             }
                         }
                     },
@@ -320,15 +426,22 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                             Inbound::Presence {author,payload} => (qos_peer_state::TransportOrigin::UntrustedPresence(author),payload),
                             Inbound::Ready {..} => unreachable!(),
                         };
-                        match postcard::from_bytes(&bytes).map_err(anyhow::Error::from).and_then(|message|owner.receive(origin,message)) {
+                        let received = {
+                            let mut current = authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))?;
+                            let received = postcard::from_bytes(&bytes).map_err(anyhow::Error::from).and_then(|message|owner.receive(origin,message));
+                            *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
+                            received
+                        };
+                        if received.as_ref().is_ok_and(|receipt| receipt.is_some()) { if let Some(runtime) = actions.as_ref() { runtime.committed(&owner).map_err(anyhow::Error::msg)?; } host.update_membership(&owner).await?; }
+                        match received {
                             Ok(receipt) => {
-                                if !owner.permits_publication() {error=owner.peer().incomplete_reason();if let Some(old)=session.take(){old.into_client().close().await;}}
-                                else if receipt.is_some() { if let Some(current) = session.as_ref().filter(|current|current.is_ready()) { if let Err(problem) = publish(&owner,current) { error = Some(problem.to_string()); if let Some(old)=session.take(){ old.into_client().close().await; } } } }
+                                if !owner.permits_publication() {error=owner.peer().incomplete_reason();if let Some(old)=session.take(){old.close().await;}}
+                                else if receipt.is_some() { if let Some(current) = session.as_ref().filter(|current|current.is_ready()) { if let Err(problem) = publish(&owner,current) { error = Some(problem.to_string()); if let Some(old)=session.take(){ old.close().await; } } } }
                             },
-                            Err(problem) => { error = Some(problem.to_string()); if !owner.permits_publication() { if let Some(old)=session.take(){old.into_client().close().await;} } }
+                            Err(problem) => { error = Some(problem.to_string()); if !owner.permits_publication() { if let Some(old)=session.take(){old.close().await;} } }
                         }
                     }
-                    None => { error=Some("native subscription disconnected; reconnecting with durable state".into()); if let Some(old)=session.take(){old.into_client().close().await;} }
+                    None => { error=Some("native subscription disconnected; reconnecting with durable state".into()); if let Some(old)=session.take(){old.close().await;} }
                 }
             }
             command = enrollments.recv() => {
@@ -339,7 +452,13 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         match command.request {
                             crate::enrollment_http::EnrollmentRequest::Challenge(request)=>enrollment.challenge(&owner,request,qos_relay::clock::now_ns()).and_then(|response|serde_json::to_vec(&response).map_err(|error|crate::enrollment::EnrollmentError::new(503,error.to_string()))),
                             crate::enrollment_http::EnrollmentRequest::Complete(request)=>{
-                                match enrollment.complete(&mut owner,request,qos_relay::clock::now_ns()) {
+                                let enrolled = {
+                                    let mut current = authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))?;
+                                    let enrolled = enrollment.complete(&mut owner,request,qos_relay::clock::now_ns());
+                                    *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
+                                    enrolled
+                                };
+                                match enrolled {
                                     Err(error)=>Err(error),
                                     Ok(certificate)=>match host.update_membership(&owner).await {
                                         Err(error)=>Err(crate::enrollment::EnrollmentError::new(503,format!("committed enrollment awaits relay membership reconciliation: {error}"))),
@@ -356,7 +475,10 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 }
             }
             result = listener.accept() => {
-                let (socket,_)=result?; let status=public_status(&owner,session.as_ref().is_some_and(|current|current.is_ready()),&error);
+                let (socket,_)=result?; let mut status=public_status(&owner,session.as_ref().is_some_and(|current|current.is_ready()),&error);
+                status["actions"] = json!(if action_error.is_some() { "unavailable" } else if actions.as_ref().is_some_and(|runtime| runtime.ready()) && session.as_ref().is_some_and(|s| s.actions.is_some()) { "ready" } else { "starting" });
+                status["action_error"] = json!(action_error);
+                status["native_subscription_generation"] = json!(subscription_generation);
                 let authorization=authorization.clone();let commands=enrollment_commands.clone();
                 tokio::spawn(async move { let _=crate::enrollment_http::serve(socket,authorization,commands,status).await; });
             }
@@ -364,7 +486,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 match line? {
                     None => stdin_open=false,
                     Some(line) if line == "shutdown" => break,
-                    Some(line) if line == "reconnect" => { if let Some(old)=session.take(){old.into_client().close().await;} delay=Duration::ZERO; },
+                    Some(line) if line == "reconnect" => { if let Some(old)=session.take(){old.close().await;} delay=Duration::ZERO; },
                     Some(line) if line == "status" => println!("{}",public_status(&owner,session.as_ref().is_some_and(|current|current.is_ready()),&error)),
                     Some(line) if line == "flush" => println!("{}",serde_json::to_string(&owner.flush()?)?),
                     Some(line) if line.starts_with("export ") => { match owner.export(Path::new(&line[7..])) {Ok(())=>println!("Export committed"),Err(problem)=>eprintln!("Export failed: {problem}")} },
@@ -373,15 +495,27 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
             }
         }
     }
+        Ok(())
+    }.await;
     if let Some(attempt) = reconnect.take() {
         attempt.cancel().await;
     }
+    *authority
+        .0
+        .lock()
+        .map_err(|_| anyhow::anyhow!("authority unavailable"))? = None;
+    let workers_closed = actions
+        .as_mut()
+        .map(|runtime| runtime.close(&owner))
+        .transpose();
     let flushed = owner.flush();
     if let Some(current) = session {
-        current.into_client().close().await;
+        current.close().await;
     }
     host.shutdown().await?;
     std::fs::remove_file(ready_path)?;
+    workers_closed.map_err(anyhow::Error::msg)?;
+    run_result?;
     flushed?;
     Ok(())
 }
