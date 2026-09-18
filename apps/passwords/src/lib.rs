@@ -80,6 +80,9 @@ impl PasswordsModel {
             store: SecretStore::open_in(root),
         }
     }
+    pub fn recovery_error(&self) -> Option<&str> {
+        self.store.recovery_error()
+    }
     pub fn items(&self) -> Vec<SecretItem> {
         self.store.list()
     }
