@@ -3427,6 +3427,7 @@ fn write_directory_row(
     out.set_resource(&row.resource);
     out.set_resource_kind(&row.resource_kind);
     out.set_resource_label(&row.resource_label);
+    out.set_resource_presentation_json(&row.resource_presentation_json);
     out.set_action(row.action.as_deref().unwrap_or(""));
     out.set_has_children(row.has_children);
     out.set_visibility_action(row.visibility_action.as_deref().unwrap_or(""));
