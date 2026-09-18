@@ -1537,18 +1537,35 @@ fn build_launch_command_for(
     if std::env::var_os("TILO_LAUNCH_NO_SERVICES").is_some() {
         args.push("--no-services".to_string());
     }
+    let mut env: Vec<(String, String)> = std::iter::once((
+        "XDG_RUNTIME_DIR".to_string(),
+        runtime_dir().display().to_string(),
+    ))
+    .chain(
+        continuity_tab_id
+            .map(|tab_id| ("TILO_CONTINUITY_INSTANCE".to_string(), tab_id.to_string())),
+    )
+    .collect();
+    // The developer session wrapper validates these paths and exports them as
+    // one matched registry/payload/runtime overlay. Production builds do not
+    // read or forward the variables at all: a normal user's environment must
+    // never be able to replace package authority for a shipped compositor.
+    if crate::compositor::dev_env::DEV_ENV_OVERRIDES {
+        for name in [
+            "TILO_APPS_SYSTEM_DIR",
+            "TILO_APPS_SYSTEM_PAYLOAD_DIR",
+            "TILO_RUNTIME_BUNDLE_DIR",
+            "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
+        ] {
+            if let Some(value) = std::env::var_os(name).filter(|value| !value.is_empty()) {
+                env.push((name.to_string(), value.to_string_lossy().into_owned()));
+            }
+        }
+    }
     LaunchCommand {
         program: launcher_bin.to_path_buf(),
         args,
-        env: std::iter::once((
-            "XDG_RUNTIME_DIR".to_string(),
-            runtime_dir().display().to_string(),
-        ))
-        .chain(
-            continuity_tab_id
-                .map(|tab_id| ("TILO_CONTINUITY_INSTANCE".to_string(), tab_id.to_string())),
-        )
-        .collect(),
+        env,
         service_identity: Some(ServiceLaunchIdentity {
             app_id: app.package_id.clone(),
             workspace_id: room.to_string(),
@@ -3039,6 +3056,58 @@ mod tests {
             "/dev/dri/renderD128",
             "the app must be pointed at THIS compositor's GPU"
         );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn debug_launch_forwards_only_the_matched_developer_app_overlay() {
+        let names = [
+            "TILO_APPS_SYSTEM_DIR",
+            "TILO_APPS_SYSTEM_PAYLOAD_DIR",
+            "TILO_RUNTIME_BUNDLE_DIR",
+            "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
+        ];
+        let previous: Vec<_> = names.iter().map(|name| std::env::var_os(name)).collect();
+        // SAFETY: guarded by the process_env serial group.
+        unsafe {
+            for (index, name) in names.iter().enumerate() {
+                std::env::set_var(name, format!("/developer/overlay/{index}"));
+            }
+        }
+        let command = build_launch_command(
+            &test_app("dev.tilo.settings"),
+            Path::new("/usr/bin/tilo-launcher"),
+            Path::new("/run/user/1000/wayland-3"),
+            RoomId::new(),
+            None,
+            None,
+            None,
+            None,
+        );
+        if crate::compositor::dev_env::DEV_ENV_OVERRIDES {
+            for (index, name) in names.iter().enumerate() {
+                assert!(
+                    command
+                        .env
+                        .contains(&((*name).to_string(), format!("/developer/overlay/{index}")))
+                );
+            }
+        } else {
+            assert!(
+                command
+                    .env
+                    .iter()
+                    .all(|(name, _)| !names.contains(&name.as_str()))
+            );
+        }
+        unsafe {
+            for (name, value) in names.iter().zip(previous) {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
     }
 
     #[test]
