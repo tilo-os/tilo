@@ -125,6 +125,9 @@ jobs:
           python3 os/tests/test_development_compile.py
           python3 os/tests/test_compile_retention.py
           python3 os/tests/test_native_builder_artifact.py
+          if [ "$COMPILE_MODE" != cache-only ]; then
+            bash os/tests/app_store.sh
+          fi
           python3 -c 'import importlib.util,os; s=importlib.util.spec_from_file_location("compile", "os/dev/compile-development-os.py"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.validate_inputs(os.environ["WPE_CANDIDATE"], os.environ["TEST_GENERATION"], os.environ["GITHUB_SHA"], os.environ["GITHUB_REF"], os.environ["COMPILE_MODE"], os.environ["ARCHITECTURE"], os.environ["KERNEL_CANDIDATE"], wpe_adoption_receipt=os.environ["WPE_ADOPTION_RECEIPT"] or None, wpe_adoption_sha256=os.environ["WPE_ADOPTION_SHA256"], fex_payload_candidate=os.environ["FEX_PAYLOAD_CANDIDATE"], windows_guest_candidate=os.environ["WINDOWS_GUEST_CANDIDATE"], hardware_profile=os.environ["HARDWARE_PROFILE"], firmware_candidate=os.environ["FIRMWARE_CANDIDATE"], firmware_manifest_sha256=os.environ["FIRMWARE_MANIFEST_SHA256"], require_firmware_artifact=True, native_builder_receipt=os.environ["NATIVE_BUILDER_RECEIPT"] or None, native_builder_sha256=os.environ["NATIVE_BUILDER_SHA256"])'
           python3 - <<'PY'
           import os, re
