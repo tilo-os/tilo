@@ -10416,6 +10416,7 @@ dependencies = [
 name = "photos"
 version = "0.1.0"
 dependencies = [
+ "agent-provider-config",
  "atomic-file",
  "automerge",
  "image",

@@ -140,6 +140,13 @@ pub enum PhotosOperation {
         resource_id: String,
         language: String,
     },
+    /// Run the selected signed local vision model against bounded local pixels.
+    /// This is distinct from OCR: it may return a concise description and
+    /// generic labels as well as text, and it is never substituted with a
+    /// hosted provider.
+    AnalyzeImage {
+        resource_id: String,
+    },
 }
 
 /// Decode an operation payload owned by the Photos app.
@@ -195,7 +202,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         PhotosOperation::Copy | PhotosOperation::ShareReference { .. } => {
             vec!["device-local".into(), "clipboard".into()]
         }
-        PhotosOperation::AnalyzeText { .. } => vec![
+        PhotosOperation::AnalyzeText { .. } | PhotosOperation::AnalyzeImage { .. } => vec![
             "device-local".into(),
             "privacy-sensitive".into(),
             "local-analysis".into(),
@@ -206,6 +213,16 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         ActionContract {
             tags,
             ..ActionContract::view()
+        }
+    } else if matches!(
+        op,
+        PhotosOperation::AnalyzeText { .. } | PhotosOperation::AnalyzeImage { .. }
+    ) {
+        ActionContract {
+            tags,
+            execution: ExecutionMode::Background { cancellable: true },
+            result: ResultSpec::Job,
+            ..ActionContract::default()
         }
     } else {
         ActionContract {
@@ -231,7 +248,8 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         | PhotosOperation::ShareReference { .. } => spec.retry_policy(RetryPolicy::Idempotent),
         PhotosOperation::Save { .. }
         | PhotosOperation::ImportCameraMedia { .. }
-        | PhotosOperation::AnalyzeText { .. } => spec.retry_policy(RetryPolicy::AtMostOnce),
+        | PhotosOperation::AnalyzeText { .. }
+        | PhotosOperation::AnalyzeImage { .. } => spec.retry_policy(RetryPolicy::AtMostOnce),
     })
 }
 
@@ -422,9 +440,20 @@ fn valid_analysis(analysis: &ImageAnalysis) -> bool {
         && matches!(provenance.scope.as_str(), "shared")
         && matches!(
             provenance.source.as_str(),
-            "local-ocr" | "local-description" | "user"
+            "local-ocr" | "local-vision" | "local-description" | "user"
         )
         && compact_text(&provenance.engine, 128)
+        && compact_text(&provenance.model_id, 128)
+        && (provenance.model_revision.is_empty()
+            || (matches!(provenance.model_revision.len(), 40 | 64)
+                && provenance
+                    .model_revision
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())))
+        && (provenance.source != "local-vision"
+            || (!provenance.model_id.is_empty()
+                && !provenance.model_revision.is_empty()
+                && provenance.engine == "tilo-vision"))
         && compact_text(&provenance.language, 16)
         && (provenance.content.is_empty()
             || (provenance.content.len() == CONTENT_HEX_LEN
@@ -1256,6 +1285,23 @@ pub(crate) fn photo_resource(photo: &LibraryPhoto) -> Resource {
     photo_resource_from_seed(&PhotoResourceSeed::from(photo))
 }
 
+/// Return the human-safe reason the explicit local-vision operation cannot be
+/// admitted on this device. This reads only Settings' non-secret provider
+/// description; discovery never probes an endpoint and never falls back to a
+/// remote provider.
+pub(crate) fn local_vision_unavailable_reason() -> Option<String> {
+    tilo_vision::discover_local_capability(&agent_provider_config::ProviderConfig::load())
+        .is_none()
+        .then(|| {
+            "No verified local image-analysis model is ready. Install and start one in Settings."
+                .to_owned()
+        })
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the complete context action surface stays adjacent to its resource declaration"
+)]
 pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
     let mut item = Resource::new(&photo.id, "photos.photo", &photo.name).with_child(Resource::new(
         format!("{}#size", photo.id),
@@ -1326,6 +1372,25 @@ pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
         item = item.with_action(spec.with_description(
             "Run local OCR and explicitly share only bounded text and provenance",
         ));
+    }
+    if let Some(spec) = operation(
+        "analyze-image",
+        "Analyze image locally",
+        &PhotosOperation::AnalyzeImage {
+            resource_id: photo.id.clone(),
+        },
+    ) {
+        let unavailable = local_vision_unavailable_reason();
+        let description = if let Some(reason) = unavailable.as_deref() {
+            format!("Unavailable: {reason}")
+        } else {
+            "Use the signed local model to describe this image, extract generic labels and recognize text; explicitly share only the bounded result".to_owned()
+        };
+        let spec = spec.with_description(description);
+        item = item.with_action(match unavailable {
+            Some(reason) => spec.unavailable("local_vision_unavailable", reason),
+            None => spec,
+        });
     }
     if photo.analysis.is_some()
         && let Some(spec) = direct_spec(
@@ -1796,6 +1861,7 @@ mod tests {
                 language: "eng".to_owned(),
                 content,
                 scope: "shared".to_owned(),
+                ..crate::model::AnalysisProvenance::default()
             },
         }
     }
@@ -1853,6 +1919,86 @@ mod tests {
             PhotosAction::SetImageAnalysis {
                 photo_id: id,
                 analysis: Some(local),
+            }
+            .apply(&mut doc)
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn image_analysis_is_a_cancellable_background_operation() {
+        let spec = operation(
+            "analyze-image",
+            "Analyze image locally",
+            &PhotosOperation::AnalyzeImage {
+                resource_id: "photos.photo:abc".to_owned(),
+            },
+        )
+        .expect("operation serializes");
+        assert_eq!(spec.kind, OperationKind::Effect);
+        assert_eq!(
+            spec.contract.execution,
+            ExecutionMode::Background { cancellable: true }
+        );
+        assert_eq!(spec.contract.result, ResultSpec::Job);
+        assert_eq!(spec.contract.retry, RetryPolicy::AtMostOnce);
+        for tag in [
+            "device-local",
+            "privacy-sensitive",
+            "local-analysis",
+            "explicit-share",
+        ] {
+            assert!(spec.contract.tags.iter().any(|candidate| candidate == tag));
+        }
+    }
+
+    #[test]
+    fn vision_analysis_requires_a_pinned_model_provenance() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let photo = portable_photo("vision.png", 40, 20);
+        let id = photo.id.clone();
+        let content = photo.image.content.clone().unwrap();
+        PhotosAction::ImportPhoto { photo }.apply(&mut doc).unwrap();
+        let analysis = ImageAnalysis {
+            description: "A bicycle outside".to_owned(),
+            objects: vec!["bicycle".to_owned()],
+            provenance: crate::model::AnalysisProvenance {
+                source: "local-vision".to_owned(),
+                engine: "tilo-vision".to_owned(),
+                model_id: "signed-vision-model".to_owned(),
+                model_revision: "a".repeat(64),
+                content,
+                scope: "shared".to_owned(),
+                ..crate::model::AnalysisProvenance::default()
+            },
+            ..ImageAnalysis::default()
+        };
+        PhotosAction::SetImageAnalysis {
+            photo_id: id.clone(),
+            analysis: Some(analysis),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let stored = PhotosDoc::photo(&doc, &id).unwrap().analysis.unwrap();
+        assert_eq!(stored.provenance.model_id, "signed-vision-model");
+        assert_eq!(stored.provenance.model_revision, "a".repeat(64));
+
+        let rejected = ImageAnalysis {
+            description: "A bicycle outside".to_owned(),
+            provenance: crate::model::AnalysisProvenance {
+                source: "local-vision".to_owned(),
+                engine: "tilo-vision".to_owned(),
+                content: stored.provenance.content,
+                scope: "shared".to_owned(),
+                ..crate::model::AnalysisProvenance::default()
+            },
+            ..ImageAnalysis::default()
+        };
+        assert!(
+            PhotosAction::SetImageAnalysis {
+                photo_id: id,
+                analysis: Some(rejected),
             }
             .apply(&mut doc)
             .is_err()

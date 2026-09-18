@@ -192,7 +192,18 @@ struct AnalysisJob {
     photo_id: String,
     content: Option<String>,
     image: OpenImage,
-    language: String,
+    kind: AnalysisJobKind,
+}
+
+/// All pixel intelligence shares exactly one bounded worker. Adding a new
+/// analysis kind must not create another request thread or bypass the queue.
+enum AnalysisJobKind {
+    Ocr {
+        language: String,
+    },
+    Vision {
+        capability: tilo_vision::LocalVisionCapability,
+    },
 }
 
 fn analysis_failure(
@@ -217,7 +228,14 @@ fn analysis_worker(rx: &Receiver<AnalysisJob>, tx: &SyncSender<AnalysisResult>) 
                 invocation: job.invocation,
                 photo_id: job.photo_id,
                 content: job.content,
-                result: crate::analysis::recognize_text(&job.image, &job.language),
+                result: match job.kind {
+                    AnalysisJobKind::Ocr { language } => {
+                        crate::analysis::recognize_text(&job.image, &language)
+                    }
+                    AnalysisJobKind::Vision { capability } => {
+                        crate::analysis::analyze_image(&job.image, &capability)
+                    }
+                },
             })
             .is_err()
         {
@@ -756,7 +774,7 @@ impl PhotosApp {
                     error: tilo_actions::ActionFailure {
                         code: "photos.analysis_stale".into(),
                         message:
-                            "This photograph changed before text recognition finished. Retry it."
+                            "This photograph changed before local analysis finished. Retry it."
                                 .into(),
                         details: None,
                         retryable: true,
@@ -765,7 +783,7 @@ impl PhotosApp {
             } else {
                 match completed.result {
                     Ok(mut analysis) => {
-                        analysis.provenance.scope = "shared".to_owned();
+                        "shared".clone_into(&mut analysis.provenance.scope);
                         let action = crate::actions::PhotosAction::SetImageAnalysis {
                             photo_id: completed.photo_id,
                             analysis: Some(analysis),
@@ -782,7 +800,8 @@ impl PhotosApp {
                         ) {
                             Ok(()) => {
                                 self.notice = Some(
-                                    "Recognized text was shared with this photo library".to_owned(),
+                                    "Local image analysis was shared with this photo library"
+                                        .to_owned(),
                                 );
                                 tilo_actions::InvocationUpdate::Succeeded {
                                     invocation: completed.invocation,
@@ -2058,8 +2077,9 @@ impl PhotosApp {
                     "Camera import requires document dispatch: {media_id} ({name})"
                 ));
             }
-            crate::actions::PhotosOperation::AnalyzeText { .. } => {
-                return Err("text recognition requires document dispatch".to_owned());
+            crate::actions::PhotosOperation::AnalyzeText { .. }
+            | crate::actions::PhotosOperation::AnalyzeImage { .. } => {
+                return Err("local image analysis requires document dispatch".to_owned());
             }
             crate::actions::PhotosOperation::Copy => {
                 self.copy_to_clipboard();
@@ -6423,10 +6443,38 @@ impl Widget for PhotosApp {
                     photo_id: resource_id,
                     content: photo.image.content.clone(),
                     image: photo.image,
-                    language,
+                    kind: AnalysisJobKind::Ocr { language },
                 })
                 .map_err(|_| {
                     "text recognition is busy; wait for the current photos to finish".to_owned()
+                })?;
+            self.active_analysis.insert(invocation);
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if let crate::actions::PhotosOperation::AnalyzeImage { resource_id } = operation {
+            let photo = PhotosDoc::photo(doc, &resource_id)
+                .ok_or_else(|| "that photograph is no longer in the library".to_owned())?;
+            let capability = tilo_vision::discover_local_capability(
+                &agent_provider_config::ProviderConfig::load(),
+            )
+            .ok_or_else(|| {
+                "No verified local image-analysis model is ready. Install and start one in Settings."
+                    .to_owned()
+            })?;
+            let sender = self
+                .analysis_tx
+                .as_ref()
+                .ok_or_else(|| "local image analysis is unavailable on this device".to_owned())?;
+            sender
+                .try_send(AnalysisJob {
+                    invocation,
+                    photo_id: resource_id,
+                    content: photo.image.content.clone(),
+                    image: photo.image,
+                    kind: AnalysisJobKind::Vision { capability },
+                })
+                .map_err(|_| {
+                    "local image analysis is busy; wait for the current photos to finish".to_owned()
                 })?;
             self.active_analysis.insert(invocation);
             return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
@@ -6472,7 +6520,7 @@ impl Widget for PhotosApp {
             self.cancelled_analysis.insert(invocation);
             return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
-                message: Some("local text recognition was cancelled".into()),
+                message: Some("local image analysis was cancelled".into()),
             });
         }
         if cancellation_requested
@@ -7713,6 +7761,83 @@ mod tests {
             app.timeline_scroll_row * app.timeline_last_columns as f64,
             30.0
         );
+    }
+
+    #[test]
+    fn every_local_analysis_kind_uses_the_same_bounded_queue() {
+        let (sender, _receiver) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
+        let image = OpenImage::from_path("queue.png", 2, 2);
+        for language in ["eng", "deu"] {
+            sender
+                .try_send(AnalysisJob {
+                    invocation: tilo_actions::InvocationId::new(),
+                    photo_id: "photos.photo:queue".to_owned(),
+                    content: None,
+                    image: image.clone(),
+                    kind: AnalysisJobKind::Ocr {
+                        language: language.to_owned(),
+                    },
+                })
+                .unwrap();
+        }
+        assert!(
+            sender
+                .try_send(AnalysisJob {
+                    invocation: tilo_actions::InvocationId::new(),
+                    photo_id: "photos.photo:queue".to_owned(),
+                    content: None,
+                    image,
+                    kind: AnalysisJobKind::Ocr {
+                        language: "fra".to_owned(),
+                    },
+                })
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn cancelled_or_stale_analysis_can_never_persist() {
+        let mut app = PhotosApp::new();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
+        app.analysis_rx = receiver;
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+
+        let cancelled = tilo_actions::InvocationId::new();
+        app.cancelled_analysis.insert(cancelled);
+        sender
+            .send(AnalysisResult {
+                invocation: cancelled,
+                photo_id: "photos.photo:missing".to_owned(),
+                content: None,
+                result: Ok(crate::model::ImageAnalysis {
+                    ocr_text: "must not persist".to_owned(),
+                    ..crate::model::ImageAnalysis::default()
+                }),
+            })
+            .unwrap();
+        app.drain_analysis_results(&mut doc);
+        assert!(app.resource_result.is_none());
+
+        let stale = tilo_actions::InvocationId::new();
+        sender
+            .send(AnalysisResult {
+                invocation: stale,
+                photo_id: "photos.photo:missing".to_owned(),
+                content: None,
+                result: Ok(crate::model::ImageAnalysis {
+                    ocr_text: "also must not persist".to_owned(),
+                    ..crate::model::ImageAnalysis::default()
+                }),
+            })
+            .unwrap();
+        app.drain_analysis_results(&mut doc);
+        assert!(matches!(
+            app.resource_result,
+            Some(tilo_actions::InvocationUpdate::Failed { error, .. })
+                if error.code == "photos.analysis_stale"
+        ));
+        assert!(PhotosDoc::library(&doc).photos.is_empty());
     }
 
     #[test]

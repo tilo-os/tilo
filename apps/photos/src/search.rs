@@ -696,6 +696,7 @@ mod tests {
                 language: "eng".into(),
                 content,
                 scope: "shared".into(),
+                ..crate::model::AnalysisProvenance::default()
             },
         });
         PhotosDoc::set_library(&mut doc, &library);
