@@ -84,6 +84,9 @@ pub struct CalculatorApp {
     drag_last: Point,
     /// A drag-select is in progress inside a math field.
     field_dragging: bool,
+    /// Host focus selects this component's record for undo/redo and keyboard
+    /// delivery. Individual custom-painted controls remain semantic children.
+    host_focused: bool,
     /// Time + position of the last press, for double-click detection.
     last_click: Option<std::time::Instant>,
     last_click_pos: Point,
@@ -115,6 +118,15 @@ impl CalculatorApp {
     /// is adopted from the CRDT on the first [`Widget::sync`].
     pub fn new() -> Self {
         Self::with_model(CalcModel::default())
+    }
+
+    /// Project an already admitted Calculator record without authoring schema
+    /// or replacing malformed content. The checked component initializes New
+    /// records before calling this constructor; Existing records stay read-only.
+    pub fn from_document(doc: &AutoCommit) -> Result<Self, String> {
+        let mut app = Self::with_model(crate::doc::load_existing(doc)?);
+        app.seeded = true;
+        Ok(app)
     }
 
     /// A lived-in demo instance (populated history / plots / surface) used by
@@ -153,6 +165,7 @@ impl CalculatorApp {
             dragging: false,
             drag_last: Point::ZERO,
             field_dragging: false,
+            host_focused: false,
             last_click: None,
             last_click_pos: Point::ZERO,
             seeded: false,
@@ -1100,6 +1113,18 @@ fn key_accessible_name(key: &model::Key) -> String {
 }
 
 impl Widget for CalculatorApp {
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.host_focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.host_focused
+    }
+
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         Some(&crate::framework_history::HISTORY)
     }
@@ -1140,7 +1165,10 @@ impl Widget for CalculatorApp {
             if crate::doc::is_seeded(state) {
                 let _ = crate::doc::load_into(state, &mut self.model);
             } else {
-                crate::doc::store(state, &self.model);
+                // Keep standalone native and checked component roots on the
+                // same schema initializer. The explicit model preserves the
+                // separate screenshot/demo fixture path.
+                let _ = crate::doc::initialize(state, &self.model);
             }
             self.seeded = true;
             return;
@@ -1693,6 +1721,26 @@ impl Widget for CalculatorApp {
 
     fn get_rect(&self) -> Rect {
         self.area
+    }
+}
+
+impl ui::widget::AppWidget for CalculatorApp {
+    fn app_kind(&self) -> ui::widget::AppKind {
+        // The hosted glyph vocabulary has no Utility variant. Calculator is
+        // an interactive expression editor, which is the closest existing kind.
+        ui::widget::AppKind::Editor
+    }
+
+    fn app_title(&self) -> &'static str {
+        "Calculator"
+    }
+
+    fn app_icon(&self) -> ui::widget::IconDescriptor {
+        ui::widget::IconDescriptor::Named("calculator".into())
+    }
+
+    fn permission_hint(&self) -> Option<ui::widget::AppKind> {
+        None
     }
 }
 
