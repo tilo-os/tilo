@@ -3804,7 +3804,9 @@ impl ShellOverlayHost {
         let st = chrome.borrow_mut();
         // A widget change since its last harvested/canonical selection is a
         // local gesture; stamp `active_strip`/`active_group` after the
-        // writeback, or Ctrl+K's scope stays on the old group.
+        // writeback, or Ctrl+K's scope stays on the old group. A newer
+        // workspace switch takes precedence over an outgoing gesture.
+        let mut selection_changed = false;
         let mut focus_writes: Vec<(WorkspaceId, StripId, GroupId)> = Vec::new();
         // A FileReference card is inert until the person explicitly selects
         // its tab.  Capture that activation while holding the tree, then
@@ -3813,6 +3815,7 @@ impl ShellOverlayHost {
         let mut activated_file_tabs = Vec::new();
         {
             let mut tree = st.tree_mut();
+            let active_workspace = tree.active;
             for w in &writes {
                 for ws in &mut tree.workspaces {
                     for strip in &mut ws.strips {
@@ -3831,17 +3834,19 @@ impl ShellOverlayHost {
                                 continue;
                             }
                             group.active_tab = w.tab;
-                            focus_writes.push((ws.id, w.strip, w.group));
-                            activated_file_tabs.push(w.tab);
+                            selection_changed = true;
+                            if ws.id == active_workspace {
+                                focus_writes.push((ws.id, w.strip, w.group));
+                                activated_file_tabs.push(w.tab);
+                            }
                         }
                     }
                 }
             }
         }
-        if !focus_writes.is_empty() {
+        if selection_changed {
             let mut tree = st.tree_mut();
             for (ws_id, strip_id, group_id) in focus_writes {
-                tree.active = ws_id;
                 tree.active_strip.insert(ws_id, strip_id);
                 tree.active_group.insert(strip_id, group_id);
             }
@@ -26235,6 +26240,82 @@ mod resync_strips_tests {
             chrome.borrow().tree().workspaces[0].strips[0].window_groups[0].active_tab,
             2
         );
+    }
+
+    fn review_outgoing_selection_preserves_newer_workspace_switch(structure_only: bool) {
+        let (mut host, chrome, outgoing_strip, outgoing_group, _directory, path) =
+            review_selection_fixture();
+        let next_workspace = WorkspaceId::new();
+        let next_strip = StripId::new();
+        let next_group = 200;
+        let mut next = Workspace::new(next_workspace, "Next workspace");
+        let next_room = next.room;
+        next.strips = vec![Strip {
+            id: next_strip,
+            name: "Next strip".into(),
+            window_groups: vec![make_stub_group(next_group, "Next window")],
+        }];
+        {
+            let state = chrome.borrow_mut();
+            let mut tree = state.tree_mut();
+            tree.workspaces.push(next);
+            tree.active_strip.insert(next_workspace, next_strip);
+            tree.active_group.insert(next_strip, next_group);
+        }
+        assert!(host.focus_window_widget(outgoing_strip, outgoing_group, 2));
+        assert!(chrome.borrow_mut().switch_workspace(1));
+        assert_eq!(chrome.borrow().tree().active, next_workspace);
+        if structure_only {
+            host.take_structure_dirty();
+        } else {
+            host.update(&mut AutoCommit::new(), &automerge::ROOT);
+        }
+        assert_eq!(
+            chrome.borrow().tree().active,
+            next_workspace,
+            "an outgoing gesture must not undo the later workspace switch"
+        );
+        let surface = host
+            .content
+            .as_any()
+            .unwrap()
+            .downcast_ref::<qos_desktop::composition::DesktopSurface>()
+            .unwrap();
+        assert_eq!(
+            surface.workspace_context(),
+            Some((next_workspace, next_room))
+        );
+        assert_eq!(surface.strip_ids(), vec![next_strip]);
+        assert_eq!(
+            host.group_at_for_tests(next_strip, 0).unwrap().id,
+            next_group
+        );
+        assert!(host.group_at_for_tests(outgoing_strip, 0).is_none());
+        let restored = crate::shell::persist::load_tree_from(&path).unwrap();
+        assert_eq!(restored.active, next_workspace);
+        assert_eq!(
+            restored.active_strip.get(&next_workspace),
+            Some(&next_strip)
+        );
+        assert_eq!(restored.active_group_for(next_strip), Some(next_group));
+        assert_eq!(
+            restored.workspaces[0].strips[0].window_groups[0].active_tab, 2,
+            "retain the outgoing tab choice without restoring its workspace"
+        );
+        assert_eq!(
+            restored.active_group_for(outgoing_strip),
+            Some(outgoing_group)
+        );
+    }
+
+    #[test]
+    fn review_outgoing_selection_preserves_workspace_switch_during_update() {
+        review_outgoing_selection_preserves_newer_workspace_switch(false);
+    }
+
+    #[test]
+    fn review_outgoing_selection_preserves_workspace_switch_during_structure_dirty() {
+        review_outgoing_selection_preserves_newer_workspace_switch(true);
     }
 
     #[allow(
