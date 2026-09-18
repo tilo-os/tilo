@@ -99,6 +99,11 @@ Passwords is available as an explicit Windows preview with
 default verified-app set: native backup/import/export and failure reporting are
 verified, but successful Windows clipboard copying still needs verification.
 The automated session currently receives an access-denied error from Windows.
+Mail is available as an explicit preview with
+`./tools/install-windows-apps.ps1 -Apps mail`. Native empty-state setup, protected
+password fields, responsive provider discovery, and cancellation of stalled
+credential verification are verified. Configured-account reading and sending
+still need native end-to-end verification, so Mail remains outside the default set.
 Typst is also available as an explicit preview with
 `./tools/install-windows-apps.ps1 -Apps typst-editor`; native source editing,
 Save/Open, and PDF export have been verified, including reduced-motion settings
