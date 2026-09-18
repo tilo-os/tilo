@@ -41,6 +41,7 @@ use system_extension::{
     AcceptedExtension, ArtifactReceipt, ExtensionKind, ExtensionManifest, ImageConstraint,
     PinnedArtifact as ExtensionArtifact, SignedExtensionManifest,
 };
+use zeroize::Zeroizing;
 
 const CATALOG_SCHEMA: u16 = 1;
 const CATALOG_SIGNATURE_DOMAIN: &str = "tilo.local-model.catalog.v1";
@@ -550,7 +551,7 @@ fn read_signing_key(path: &Path) -> Result<SigningKey, String> {
             ));
         }
     }
-    let mut text = String::new();
+    let mut text = Zeroizing::new(String::new());
     file.take(130)
         .read_to_string(&mut text)
         .map_err(|error| format!("could not read signing key {}: {error}", path.display()))?;
@@ -561,10 +562,13 @@ fn read_signing_key(path: &Path) -> Result<SigningKey, String> {
     if encoded.bytes().any(|byte| byte.is_ascii_uppercase()) {
         return Err("signing key must use canonical lowercase hexadecimal".into());
     }
-    let decoded = hex::decode(encoded).map_err(|_| "signing key is not hexadecimal")?;
-    let bytes: [u8; 32] = decoded
-        .try_into()
-        .map_err(|_| "signing key must contain exactly 32 bytes")?;
+    let decoded =
+        Zeroizing::new(hex::decode(encoded).map_err(|_| "signing key is not hexadecimal")?);
+    if decoded.len() != 32 {
+        return Err("signing key must contain exactly 32 bytes".into());
+    }
+    let mut bytes = Zeroizing::new([0_u8; 32]);
+    bytes.copy_from_slice(&decoded);
     Ok(SigningKey::from_bytes(&bytes))
 }
 
