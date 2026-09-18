@@ -15,7 +15,9 @@ spec = importlib.util.spec_from_file_location('rebind', DEV / 'rebind-developmen
 rebind = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rebind)
 
-@unittest.skipUnless(hasattr(os, 'getuid') and os.getuid() == 0 and shutil.which('openssl'), 'native root fixture required')
+@unittest.skipUnless(hasattr(os, 'getuid') and os.getuid() == 0
+                     and shutil.which('cosign') and fixtures.trust.CRYPTO.is_file(),
+                     'native root Rust-crypto fixture required')
 class RebindTests(unittest.TestCase):
     setUpClass = classmethod(fixtures.PublicBundleTests.setUpClass.__func__)
 

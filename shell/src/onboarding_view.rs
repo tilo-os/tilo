@@ -63,6 +63,10 @@ const FOOTER_HEIGHT: f32 = 57.0;
 /// acknowledgement above the ordinary action row so large text and compact
 /// displays never hide the gate inside scrolling explanatory copy.
 const ACKNOWLEDGEMENT_FOOTER_EXTRA_HEIGHT: f32 = 72.0;
+/// The recovery form is the primary task on Backup. Reserve its two 40 px
+/// fields, action row, and compact gaps outside the explanatory scroller so a
+/// short display never opens on the opt-out path while hiding recovery.
+const BACKUP_FORM_HEIGHT: f32 = 144.0;
 /// Eyebrow row, gap, padded 8 px progress track, and gap below the sticky header.
 const PROGRESS_HEADER_HEIGHT: f32 = 58.0;
 const PROGRESS_FILE: &str = ".onboarding-progress.json";
@@ -934,7 +938,7 @@ impl OnboardingView {
         let backup_in_scroll = self.flow.screen() == Screen::Done && !self.identity_ready_page;
         let acknowledgement_footer = matches!(self.flow.screen(), Screen::NoRecovery);
         let footer_height = if backup_in_scroll {
-            FOOTER_HEIGHT + ACKNOWLEDGEMENT_FOOTER_EXTRA_HEIGHT
+            FOOTER_HEIGHT + ACKNOWLEDGEMENT_FOOTER_EXTRA_HEIGHT + BACKUP_FORM_HEIGHT
         } else {
             FOOTER_HEIGHT
                 + if acknowledgement_footer {
@@ -956,8 +960,15 @@ impl OnboardingView {
             // pages retain the viewport stop for Page/Home/End navigation.
             scroll = scroll.without_sequential_focus();
         }
+        let mut scroll = scroll.with_content_gutter(spacing.s3);
+        if !backup_in_scroll {
+            // This is first-run guidance, not an incidental list. Keep the
+            // thumb visible whenever content overflows so compact and large
+            // text users have an unmistakable cue that more explanation is
+            // available below the sticky footer.
+            scroll = scroll.always_visible();
+        }
         let scroll = scroll
-            .with_content_gutter(spacing.s3)
             // Keep a clean terminal edge even on Backup's in-flow decision
             // block, so the last control is not painted against the clip.
             .with_bottom_content_inset(spacing.s3)
@@ -978,10 +989,55 @@ impl OnboardingView {
             .push(Box::new(progress))
             .push(Box::new(scroll));
         if backup_in_scroll {
-            Box::new(composition.push(self.backup_decision_footer(theme)))
+            Box::new(
+                composition
+                    .push(self.backup_form(theme))
+                    .push(self.backup_decision_footer(theme)),
+            )
         } else {
             Box::new(composition.push(self.identity_footer(theme)))
         }
+    }
+
+    /// Keep the real recovery operation above the skip acknowledgement and
+    /// outside Backup's explanatory scroller so it is present on frame one.
+    fn backup_form(&self, theme: &Theme) -> Box<dyn Widget> {
+        let fields = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(theme.tokens.spacing.s2)
+            .push(Box::new(secret_input(
+                "onboarding.backup.passphrase",
+                &self.backup_passphrase,
+                "New backup passphrase",
+                "Long, unique passphrase — 12+ characters",
+            )))
+            .push(Box::new(secret_input(
+                "onboarding.backup.confirmation",
+                &self.backup_confirmation,
+                "Confirm new backup passphrase",
+                "Confirm passphrase",
+            )));
+        let action = Button::new(
+            "onboarding.backup.button",
+            if self.backup_was_verified {
+                "Save another copy"
+            } else {
+                "Choose location and save backup…"
+            },
+            Some(KEY_BACKUP_BROWSE),
+        )
+        .fit_content(40.0)
+        .with_style(ui::widget::ButtonStyle::Primary);
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_horizontal_padding(theme.tokens.spacing.s3, theme.tokens.spacing.s3)
+                .with_gap(theme.tokens.spacing.s2)
+                .push(Box::new(fields))
+                .push(footer_actions(vec![Box::new(action)])),
+        )
     }
 
     fn backup_decision_footer(&self, theme: &Theme) -> Box<dyn Widget> {
@@ -1200,6 +1256,10 @@ impl OnboardingView {
                     Scrollable::new_vertical()
                         .with_max_height(scroll_height)
                         .with_content_gutter(theme.tokens.spacing.s3)
+                        // Tour pages intentionally teach several concepts;
+                        // expose overflow persistently instead of making a
+                        // first-time user wait for a transient wheel hint.
+                        .always_visible()
                         .with_bottom_content_inset(theme.tokens.spacing.s3)
                         .with_child(Box::new(content)),
                 ))
@@ -1512,26 +1572,6 @@ impl OnboardingView {
             );
         }
         let compact = self.rect.height() <= 540.0;
-        let backup_fields = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(if compact {
-                theme.tokens.spacing.s2
-            } else {
-                theme.tokens.spacing.s3
-            })
-            .push(Box::new(secret_input(
-                "onboarding.backup.passphrase",
-                &self.backup_passphrase,
-                "New backup passphrase",
-                "Long, unique passphrase — 12+ characters",
-            )))
-            .push(Box::new(secret_input(
-                "onboarding.backup.confirmation",
-                &self.backup_confirmation,
-                "Confirm new backup passphrase",
-                "Confirm passphrase",
-            )));
         let mut backup = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
@@ -1543,8 +1583,7 @@ impl OnboardingView {
             .push(paragraph(
                 "Save an encrypted copy somewhere other than this device. Keep the file and its passphrase separately; together they can restore this identity. Tilo verifies the finished file before reporting success.",
                 theme,
-            ))
-            .push(Box::new(backup_fields));
+            ));
         if let Some(error) = &self.backup_error {
             backup = backup.push(spaced_banner(
                 Banner::error("The backup was not saved").with_message(error.clone()),
@@ -1566,30 +1605,6 @@ impl OnboardingView {
                 theme,
             ));
         }
-        let backup_button = Button::new(
-            "onboarding.backup.button",
-            if self.backup_was_verified {
-                "Save another copy"
-            } else {
-                "Choose location and save backup…"
-            },
-            Some(KEY_BACKUP_BROWSE),
-        )
-        .fit_content(40.0);
-        // The form's action is visually distinct from the confirmation field.
-        // In a text-only accessibility scale, the card can otherwise shrink
-        // the column gap until the button appears to touch that field.
-        backup = backup.push(Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                // Keep the action visually separate from the confirmation
-                // field at every density. Compact pages save space in the
-                // surrounding column gaps, not by merging form controls.
-                .with_vertical_padding(theme.tokens.spacing.s2)
-                .push(actions(vec![Box::new(backup_button)])),
-        ));
-
         let mut page = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
@@ -1833,48 +1848,10 @@ impl OnboardingView {
                 None,
                 &self.rect,
             );
-            if let Some(page) = self.tour_page {
-                let focus = match page {
-                    TourPage::Navigate => Rect::new(
-                        self.rect.x0 + 16.0,
-                        self.rect.y0 + 10.0,
-                        self.rect.x1 - 16.0,
-                        (self.rect.y0 + 68.0).min(self.rect.y1),
-                    ),
-                    TourPage::Organise => Rect::new(
-                        self.rect.x0 + 12.0,
-                        self.rect.y0 + 82.0,
-                        (self.rect.x0 + 208.0).min(self.rect.x1),
-                        self.rect.y1 - 20.0,
-                    ),
-                    TourPage::Collaborate => Rect::new(
-                        (self.rect.x1 - 340.0).max(self.rect.x0),
-                        self.rect.y0 + 78.0,
-                        self.rect.x1 - 16.0,
-                        (self.rect.y0 + 286.0).min(self.rect.y1),
-                    ),
-                    TourPage::Start => Rect::new(
-                        self.rect.x0 + self.rect.width() * 0.22,
-                        self.rect.y1 - 92.0,
-                        self.rect.x1 - self.rect.width() * 0.22,
-                        self.rect.y1 - 18.0,
-                    ),
-                };
-                let shape = RoundedRect::from_rect(focus, f64::from(theme.tokens.radii.lg));
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(
-                        if theme.name.eq_ignore_ascii_case("high contrast") {
-                            4.0
-                        } else {
-                            2.5
-                        },
-                    ),
-                    transform,
-                    colors.accent[5],
-                    None,
-                    &shape,
-                );
-            }
+            // The desktop is deliberately hidden while the tour is modal.
+            // Do not paint a focus target from the covered desktop behind the
+            // card: a full-width ring reads as a second, interactive surface
+            // and competes with the tour's own keyboard focus.
             return;
         }
         scene.fill(Fill::NonZero, transform, theme.bg_app, None, &self.rect);
@@ -4572,6 +4549,22 @@ mod tests {
     }
 
     #[test]
+    fn tour_backdrop_only_scrims_the_covered_desktop() {
+        for theme in [Theme::dark(), Theme::high_contrast()] {
+            let mut view = OnboardingView::new_tour();
+            view.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            let mut scene = Scene::new();
+            view.draw_backdrop(&mut scene, Affine::IDENTITY, &theme);
+
+            assert_eq!(
+                scene.encoding().n_paths,
+                1,
+                "a modal tour backdrop must not add a detached desktop focus target"
+            );
+        }
+    }
+
+    #[test]
     fn introduction_uses_a_compact_panel_on_a_large_display() {
         let (mut view, _) = view();
         let theme = Theme::dark();
@@ -4713,6 +4706,72 @@ mod tests {
             action.y0 - confirmation.y1 >= f64::from(theme.tokens.spacing.s2) - 0.5,
             "backup action must not visually merge with confirmation input: confirmation={confirmation:?}, action={action:?}"
         );
+    }
+
+    #[test]
+    fn backup_recovery_controls_are_first_frame_visible_at_review_sizes() {
+        for (width, height, theme) in [
+            (1280.0, 800.0, Theme::dark()),
+            (960.0, 540.0, Theme::dark().with_text_scale(1.3)),
+        ] {
+            let (mut view, _) = view();
+            view.set_visual_state_for_snapshot(OnboardingVisualState::Backup);
+            let mut text = ui::text_render::TextRenderer::new();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+            let measure_map = node_map.clone();
+            taffy
+                .compute_layout_with_measure(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(width),
+                        height: taffy::AvailableSpace::Definite(height),
+                    },
+                    |known, available, node_id, _, _| {
+                        measure_map
+                            .get(&node_id)
+                            .map_or(taffy::Size::ZERO, |&pointer| unsafe {
+                                (*pointer).measure(known, available, &mut text)
+                            })
+                    },
+                )
+                .expect("backup review-size layout");
+            view.apply_layout(&taffy, node, Point::ZERO);
+            let rect = |id: &str| {
+                node_map
+                    .values()
+                    .find_map(|&pointer| unsafe {
+                        ((*pointer).test_id() == Some(id)).then(|| (*pointer).get_rect())
+                    })
+                    .unwrap_or_else(|| panic!("backup page exposes {id}"))
+            };
+            let passphrase = rect("onboarding.backup.passphrase");
+            let confirmation = rect("onboarding.backup.confirmation");
+            let save = rect("onboarding.backup.button");
+            let skip = rect("onboarding.backup.skip-acknowledged.row");
+            for (id, control) in [
+                ("passphrase", passphrase),
+                ("confirmation", confirmation),
+                ("save", save),
+                ("skip", skip),
+            ] {
+                assert!(
+                    control.area() > 0.0
+                        && control.x0 >= 0.0
+                        && control.x1 <= f64::from(width)
+                        && control.y0 >= 0.0
+                        && control.y1 <= f64::from(height),
+                    "{id} must be fully visible at {width}x{height}: {control:?}"
+                );
+            }
+            assert!(passphrase.y1 <= confirmation.y0);
+            assert!(confirmation.y1 <= save.y0);
+            assert!(
+                save.y1 <= skip.y0,
+                "recovery stays primary and must not overlap skip at {width}x{height}: save={save:?}, skip={skip:?}"
+            );
+        }
     }
 
     #[test]

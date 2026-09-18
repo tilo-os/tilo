@@ -89,7 +89,7 @@ use crate::compositor::foreign;
 use crate::compositor::frame::{FrameBuilder, FramePaint};
 use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
 use crate::compositor::lock_auth;
-use crate::compositor::lock_controller::{LockController, UnlockOutcome};
+use crate::compositor::lock_controller::{LockController, LockKey, UnlockOutcome};
 use crate::compositor::lock_screen::{self, LockOutput, LockView};
 use crate::compositor::metrics;
 use crate::compositor::output_globals;
@@ -5186,6 +5186,10 @@ pub fn run() {
                                 ) if !lock.is_verifying() => {
                                     lock.clear_input();
                                     lock.push_str(value);
+                                    session_changed = true;
+                                }
+                                (ui::accesskit::Action::Click, None) if !lock.is_verifying() => {
+                                    let _ = lock.handle_key(LockKey::Submit);
                                     session_changed = true;
                                 }
                                 _ => {}
