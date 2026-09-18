@@ -518,6 +518,7 @@ fn baseline_commit_has_one_durable_visibility_point() {
     assert!(store.load_baseline(record.id).unwrap().entries().is_none());
     store
         .append(Change::BaselineCommit {
+            existing_ancestors: None,
             connection: record.id.0,
             expected: current.revision,
             root,
@@ -891,6 +892,7 @@ fn commit_test_baseline(store: &mut ConnectionStore, id: ConnectionId) -> [u8; 3
     .unwrap();
     store
         .append(Change::BaselineCommit {
+            existing_ancestors: None,
             connection: id.0,
             expected: current.revision,
             root,
@@ -1073,6 +1075,7 @@ fn intent_or_preserved_record_is_not_publication_authority() {
     assert!(
         store
             .append(Change::BaselineCommit {
+                existing_ancestors: None,
                 connection: record.id.0,
                 expected: current.revision,
                 root: None,
@@ -1207,6 +1210,7 @@ fn baseline_fault_boundaries_never_expose_mixed_pages() {
         let result = (|| {
             let root = storage::build_pages(&store.storage, rows)?;
             store.append(Change::BaselineCommit {
+                existing_ancestors: None,
                 connection: record.id.0,
                 expected: current.revision,
                 root,
@@ -1347,6 +1351,7 @@ fn baseline_candidate_survives_automatic_checkpoint_before_commit() {
     let generation = store.current.generation;
     store
         .append(Change::BaselineCommit {
+            existing_ancestors: None,
             connection: record.id.0,
             expected: current.revision,
             root,
@@ -3252,6 +3257,7 @@ fn native_baseline_patch_cannot_drop_an_unprocessed_path() {
         store
             .append_native(
                 Change::BaselineCommit {
+                    existing_ancestors: None,
                     connection: record.id.0,
                     expected: live.revision,
                     root,
@@ -3330,6 +3336,7 @@ fn native_baseline_patches_advance_two_paths_separately_and_reopen() {
         store
             .append_native(
                 Change::BaselineCommit {
+                    existing_ancestors: None,
                     connection: record.id.0,
                     expected: live.revision,
                     root,
@@ -3580,6 +3587,7 @@ fn native_baseline_checkpoint_second_reduction_pays_again_and_pins_candidate() {
     store
         .append_native(
             Change::BaselineCommit {
+                existing_ancestors: None,
                 connection: record.id.0,
                 expected: live.revision,
                 root,
@@ -3798,6 +3806,7 @@ fn native_initial_baseline_boolean_cannot_replace_review_fact() {
     assert!(matches!(
         store.append_native(
             Change::BaselineCommit {
+                existing_ancestors: None,
                 connection: record.id.0,
                 expected: live.revision,
                 root,
@@ -5087,6 +5096,7 @@ fn native_selected_action_retains_exact_history_and_rejects_ordinary_resume_afte
     .unwrap();
     store
         .append(Change::BaselineCommit {
+            existing_ancestors: None,
             connection: record.id.0,
             expected,
             root,
@@ -6308,6 +6318,7 @@ fn reviewed_restore_case(boundary: u8) {
         .unwrap();
         store
             .append(Change::BaselineCommit {
+                existing_ancestors: None,
                 connection: record.id.0,
                 expected,
                 root,
@@ -7168,6 +7179,7 @@ fn reviewed_restore_case(boundary: u8) {
                 store
                     .append_native(
                         Change::BaselineCommit {
+                            existing_ancestors: None,
                             connection: record.id.0,
                             expected: other.revision(),
                             root,
@@ -7283,6 +7295,7 @@ fn reviewed_restore_case(boundary: u8) {
                 assert!(matches!(
                     store.append_checked_with_baseline(
                         Change::BaselineCommit {
+                            existing_ancestors: None,
                             connection: record.id.0,
                             expected: equality.revision(),
                             root,
@@ -7313,6 +7326,7 @@ fn reviewed_restore_case(boundary: u8) {
                 store
                     .append_native(
                         Change::BaselineCommit {
+                            existing_ancestors: None,
                             connection: record.id.0,
                             expected: equality.revision(),
                             root,
@@ -7415,6 +7429,7 @@ fn native_reviewed_restore_selection_refuses_same_revision_reopen_and_fence() {
         .unwrap();
         store
             .append(Change::BaselineCommit {
+                existing_ancestors: None,
                 connection: record.id.0,
                 expected,
                 root,
@@ -7550,6 +7565,7 @@ fn native_selected_reader_reopens_with_paid_inspection_only() {
     .unwrap();
     store
         .append(Change::BaselineCommit {
+            existing_ancestors: None,
             connection: record.id.0,
             expected,
             root,
@@ -7730,6 +7746,7 @@ fn selected_collision_case(stopped: bool) {
     .unwrap();
     store
         .append(Change::BaselineCommit {
+            existing_ancestors: None,
             connection: record.id.0,
             expected,
             root,
@@ -9379,7 +9396,7 @@ fn selected_tombstone_case(stopped: u8) {
         ),
         "only exact chosen absence and the bound current conflict revision authorize candidate consideration"
     );
-    store.append_native(Change::BaselineCommit { connection: record.id.0, expected: equality.revision(), root: None, count: 0,
+    store.append_native(Change::BaselineCommit { existing_ancestors: None, connection: record.id.0, expected: equality.revision(), root: None, count: 0,
         source: record.source.identity.into(), destination: record.destination.identity.into(), initial_review: true }, &paid)
         .expect("fresh absence comparison clears the attention barrier only after paid retained-version verification");
     assert!(
@@ -10236,9 +10253,9 @@ fn native_verified_equality_refuses_even_an_uncreated_namespace() {
 #[test]
 #[expect(
     clippy::too_many_lines,
-    reason = "Keep real-state boundary setup, continuation/refusal and exact retained-byte assertions together."
+    reason = "Keep exact existing-parent fixture setup, durable boundaries and retained-byte assertions together."
 )]
-fn native_executor_keeps_missing_baseline_ancestors_pending() {
+fn native_executor_plans_existing_missing_baseline_ancestors() {
     use super::super::{
         model::{Encoding, Endpoint, NamePolicy, Observation, ObservedTree},
         transaction::{RegularPlan, plan_regular},
@@ -10285,6 +10302,7 @@ fn native_executor_keeps_missing_baseline_ancestors_pending() {
         .unwrap();
         store
             .append(Change::BaselineCommit {
+                existing_ancestors: None,
                 connection: record.id.0,
                 expected: current.revision,
                 root,
@@ -10325,14 +10343,10 @@ fn native_executor_keeps_missing_baseline_ancestors_pending() {
         .unwrap();
         let baseline = store.load_baseline(record.id).unwrap();
         let plan = plan_regular(&store, record.id, &baseline, source, destination).unwrap();
-        if baselined_parent {
-            assert!(matches!(plan, RegularPlan::Ready(ref intent) if intent.path == path));
-        } else {
-            assert!(
-                matches!(plan, RegularPlan::StructuralPending(ref reason) if reason.path == path && reason.missing_baseline_ancestor == RelativePath::unix(b"folder").unwrap()),
-                "missing baseline directory must remain structural pending before Intent"
-            );
-        }
+        assert!(
+            matches!(plan, RegularPlan::Ready(ref intent) if intent.path == path),
+            "safe existing parents must permit the regular leaf proposal"
+        );
         assert_eq!(store.sequence, sequence);
         assert_eq!(store.load_connection(record.id).unwrap(), current);
         assert!(store.connection(record.id).unwrap().pending.is_none());
@@ -10348,7 +10362,7 @@ fn native_executor_keeps_missing_baseline_ancestors_pending() {
 }
 
 #[test]
-fn native_executor_reviewed_nested_initial_requires_baseline_ancestor_before_intent() {
+fn native_executor_reviewed_nested_initial_accepts_existing_ancestors_before_intent() {
     use super::super::{
         model::{Encoding, Endpoint, NamePolicy, Observation, ObservedTree},
         transaction::initial_preview_for_test,
@@ -10380,18 +10394,19 @@ fn native_executor_reviewed_nested_initial_requires_baseline_ancestor_before_int
     .unwrap();
     let destination = ObservedTree::new(
         endpoint(record.destination.identity),
-        [(parent.clone(), EntryState::Directory)],
+        [(parent, EntryState::Directory)],
         Observation::Complete,
     )
     .unwrap();
     let preview = initial_preview_for_test(&store, record.id, source, destination).unwrap();
     let mut proposal = intent(&record);
-    proposal.path = file.clone();
+    proposal.path = file;
     proposal.source_before = Some(value);
     let reviewed = preview.accept(proposal).unwrap();
-    let reason = reviewed.regular_prerequisite(&store).unwrap().unwrap();
-    assert_eq!(reason.path, file);
-    assert_eq!(reason.missing_baseline_ancestor, parent);
+    assert!(
+        reviewed.regular_prerequisite(&store).unwrap().is_none(),
+        "reviewed leaf already has Directory ancestors on both endpoints"
+    );
     assert_eq!(store.sequence, sequence);
     assert_eq!(store.load_connection(record.id).unwrap(), record);
     assert!(store.connection(record.id).unwrap().pending.is_none());
@@ -10485,6 +10500,7 @@ fn native_baseline_final_validation_refuses_before_event_after_checkpoint_prepar
             }
             let result = store.append_checked_with_baseline(
                 Change::BaselineCommit {
+                    existing_ancestors: None,
                     connection: record.id.0,
                     expected: live.revision,
                     root,
@@ -10551,4 +10567,263 @@ fn native_baseline_final_validation_refuses_before_event_after_checkpoint_prepar
             }
         }
     }
+}
+
+// A present, exact receipt authorizes only the two missing strict prefixes.
+// Removing the reducer receipt join must make this successful commit fail.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep exact existing-parent fixture setup, durable boundaries and retained-byte assertions together."
+)]
+fn existing_ancestor_receipt_commits_exact_closure_and_replays() {
+    for initial in [false, true] {
+        for commit in [false, true] {
+            let (_temp, path) = fixture();
+            let mut store = ConnectionStore::open_at(&path).unwrap();
+            let record = create(&mut store, 830);
+            if !initial {
+                commit_test_baseline(&mut store, record.id);
+            }
+            let record = store.load_connection(record.id).unwrap();
+            let connection = store.connection(record.id).unwrap();
+            let mut proposal = intent(&record);
+            proposal.path = RelativePath::unix(b"a/b/file").unwrap();
+            proposal.expected_baseline = record.baseline_revision;
+            proposal.destination_before = proposal.source_before.clone();
+            proposal.decision = Decision::VerifyEqual;
+            let mut operation =
+                format::Operation::new(proposal, connection.serial + 1, &connection).unwrap();
+            operation.native_budget = Some(format::NativeBudget::initial());
+            let mut admission = native_admission_facts(&operation, connection.fence);
+            for chain in &mut admission.chains {
+                let root = chain[0].clone();
+                let mut first = root.clone();
+                first.ino += 10;
+                let mut second = root;
+                second.ino += 20;
+                chain.extend([first, second]);
+            }
+            let admission = admission.encode().unwrap();
+            operation.native_identity = Some(admission.clone());
+            if initial {
+                operation.initial_review = Some(format::InitialReviewFact {
+                    preview: [9; 32],
+                    selection: format::digest(&format::encode(&operation).unwrap()),
+                    revision: operation.expected,
+                });
+            }
+            let id = operation.decode().unwrap().id;
+            store.append(Change::Intent { operation }).unwrap();
+            let session = store.transaction_session(record.id).unwrap();
+            let mut live = store.resume_native_for_test(id, &session).unwrap();
+            let cancel = AtomicBool::new(false);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            store
+                .reserve_native_reads(&mut live, &session, 64 * 1024 * 1024, deadline, &cancel)
+                .unwrap();
+            let context = store.native_read_context(&live, deadline, &cancel).unwrap();
+            let current = store.load_connection(record.id).unwrap();
+            store
+                .append_native(
+                    Change::Verified {
+                        connection: record.id.0,
+                        serial: id.serial,
+                        expected: current.revision,
+                        source: record.source.identity.into(),
+                        destination: record.destination.identity.into(),
+                    },
+                    &context,
+                )
+                .unwrap();
+            let current = store.load_connection(record.id).unwrap();
+            let mut entries = store
+                .load_baseline(record.id)
+                .unwrap()
+                .entries()
+                .cloned()
+                .unwrap_or_default();
+            entries.insert(RelativePath::unix(b"a").unwrap(), EntryState::Directory);
+            entries.insert(RelativePath::unix(b"a/b").unwrap(), EntryState::Directory);
+            entries.insert(
+                RelativePath::unix(b"a/b/file").unwrap(),
+                intent(&record).source_before.unwrap(),
+            );
+            let root = storage::build_pages(
+                &store.storage,
+                entries.iter().enumerate().map(|(ordinal, (path, state))| {
+                    Ok(Row::Baseline(format::BaselineEntry {
+                        connection: record.id.0,
+                        revision: current.revision + 1,
+                        ordinal: ordinal as u32,
+                        path: path.clone().into(),
+                        state: state.clone().into(),
+                    }))
+                }),
+            )
+            .unwrap();
+            let wire = serde_json::json!({"event": "BaselineCommit",
+                "connection": record.id.0, "expected": current.revision, "root": root, "count": entries.len(),
+                "source": storage::Identity::from(record.source.identity),
+                "destination": storage::Identity::from(record.destination.identity), "initial_review": initial,
+                "existing_ancestors": {"version": 1, "admission": format::digest(&admission), "prefixes": 6_u64}
+            });
+            let live = store.resume_native_for_test(id, &session).unwrap();
+            let context = store.native_read_context(&live, deadline, &cancel).unwrap();
+            let before = store.load_connection(record.id).unwrap();
+            let old = store.load_baseline(record.id).unwrap();
+            let mut bad_receipts = Vec::new();
+            for bitmap in [0_u64, 1, 2, 4, 8, 14, u64::MAX] {
+                let mut bad = wire.clone();
+                bad["existing_ancestors"]["prefixes"] = bitmap.into();
+                bad_receipts.push(bad);
+            }
+            let mut bad = wire.clone();
+            bad["existing_ancestors"]["version"] = 2.into();
+            bad_receipts.push(bad);
+            let mut bad = wire.clone();
+            bad["existing_ancestors"]["admission"] = serde_json::json!([0_u8; 32].to_vec());
+            bad_receipts.push(bad);
+            let mut bad = wire.clone();
+            bad.as_object_mut().unwrap().remove("existing_ancestors");
+            bad_receipts.push(bad);
+            let mut bad = wire.clone();
+            bad["existing_ancestors"] = serde_json::Value::Null;
+            bad_receipts.push(bad);
+            let mut bad = wire.clone();
+            bad["existing_ancestors"]["extra"] = true.into();
+            bad_receipts.push(bad);
+            for bad in bad_receipts {
+                if let Ok(change) = serde_json::from_value::<Change>(bad) {
+                    assert!(store.append_native(change, &context).is_err());
+                }
+                assert_eq!(store.load_connection(record.id).unwrap(), before);
+                assert_eq!(
+                    store.load_baseline(record.id).unwrap().entries(),
+                    old.entries()
+                );
+            }
+            let encoded = serde_json::to_string(&wire).unwrap();
+            let duplicate = encoded.replace("\"prefixes\":6", "\"prefixes\":6,\"prefixes\":6");
+            assert_ne!(encoded, duplicate);
+            assert!(serde_json::from_str::<Change>(&duplicate).is_err());
+            let receipt_size = serde_json::to_vec(&wire["existing_ancestors"])
+                .unwrap()
+                .len();
+            let change: Change =
+                serde_json::from_value(wire.clone()).expect("versioned existing-ancestor receipt");
+            let event_size = format::encode(&Event {
+                schema: 1,
+                predecessor: [0; 32],
+                change: change.clone(),
+            })
+            .unwrap()
+            .len();
+            eprintln!(
+                "existing ancestor receipt JSON={receipt_size} bytes; representative event JSON={event_size} bytes"
+            );
+            assert!(event_size < format::MAX_BYTES);
+            let mut extra = entries.clone();
+            extra.insert(
+                RelativePath::unix(b"unrelated").unwrap(),
+                EntryState::Directory,
+            );
+            let extra_root = storage::build_pages(
+                &store.storage,
+                extra.iter().enumerate().map(|(ordinal, (path, state))| {
+                    Ok(Row::Baseline(format::BaselineEntry {
+                        connection: record.id.0,
+                        revision: current.revision + 1,
+                        ordinal: ordinal as u32,
+                        path: path.clone().into(),
+                        state: state.clone().into(),
+                    }))
+                }),
+            )
+            .unwrap();
+            let mut wrong_candidate = wire;
+            wrong_candidate["root"] = serde_json::json!(extra_root);
+            wrong_candidate["count"] = serde_json::json!(extra.len());
+            assert!(
+                store
+                    .append_native(serde_json::from_value(wrong_candidate).unwrap(), &context)
+                    .is_err()
+            );
+            assert_eq!(
+                store.load_baseline(record.id).unwrap().entries(),
+                old.entries()
+            );
+
+            if !commit {
+                drop(store);
+                let store = ConnectionStore::open_at(&path).unwrap();
+                assert_eq!(
+                    store.load_baseline(record.id).unwrap().entries(),
+                    old.entries()
+                );
+                assert_eq!(store.load_connection(record.id).unwrap(), before);
+                continue;
+            }
+
+            let live = store.resume_native_for_test(id, &session).unwrap();
+            let context = store.native_read_context(&live, deadline, &cancel).unwrap();
+            store.append_native(change, &context).unwrap();
+            assert_eq!(
+                store.load_baseline(record.id).unwrap().entries(),
+                Some(&entries)
+            );
+            drop(store);
+            let store = ConnectionStore::open_at(&path).unwrap();
+            assert_eq!(
+                store.load_baseline(record.id).unwrap().entries(),
+                Some(&entries)
+            );
+        }
+    }
+}
+
+#[test]
+fn existing_ancestor_preflight_capacity_refuses_without_durable_changes() {
+    let (_temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let record = create(&mut store, 831);
+    let mut proposal = intent(&record);
+    proposal.path = RelativePath::unix(b"a/b/file").unwrap();
+    let baseline = VerifiedBaseline::absent(
+        record.id,
+        record.source.identity,
+        record.destination.identity,
+    );
+    assert_eq!(
+        store
+            .preflight_regular_baseline(&proposal, &baseline)
+            .unwrap(),
+        3
+    );
+    let rows = (0..4096).map(|index| {
+        (
+            RelativePath::unix(format!("old-{index:04}").as_bytes()).unwrap(),
+            EntryState::Directory,
+        )
+    });
+    let baseline = VerifiedBaseline::from_verified(
+        record.id,
+        record.source.identity,
+        record.destination.identity,
+        rows,
+    )
+    .unwrap();
+    assert!(matches!(
+        store.preflight_regular_baseline(&proposal, &baseline),
+        Err(StoreError::LimitExceeded)
+    ));
+    assert_eq!(store.load_connection(record.id).unwrap(), record);
+    assert_eq!(store.executor_position(record.id).unwrap(), (None, None));
+    assert!(
+        store
+            .recovery_page(record.id, None, 128)
+            .unwrap()
+            .entries
+            .is_empty()
+    );
 }

@@ -200,8 +200,17 @@ pub(in crate::setup::connection) struct NativeDeletion<'a, 'e> {
     descriptor: Vec<u8>,
 }
 
+/// Original retained chains plus one immutable comparison stability window.
+/// The durable receipt is deliberately separate from this nonserializable owner.
+#[cfg(target_os = "linux")]
+struct ExistingAncestorProof {
+    admission: descriptor::Admission,
+    parents: [linux::ParentGuard; 2],
+    stability: Option<[Vec<linux::Stamp>; 2]>,
+}
 #[cfg(target_os = "linux")]
 pub(in crate::setup::connection) struct VerifiedComparison<'a> {
+    existing_ancestors: Option<crate::setup::connection::store::ExistingAncestorPatchV1>,
     evidence: &'a mut dyn CompletionEvidence,
     id: crate::setup::connection::store::OperationId,
     revision: u64,
