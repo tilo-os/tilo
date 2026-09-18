@@ -6,7 +6,7 @@ use std::path::Path;
 
 use tilo_user_identity::persist::{
     DeviceKeyOutcome, IdentityPaths, adopt_device_key, load_or_create_device_key, read_device_cert,
-    read_device_key,
+    read_device_key, read_legacy_device_key,
 };
 
 fn main() {
@@ -38,7 +38,7 @@ fn migrate_legacy_key(
     if !legacy.try_exists()? {
         return Ok(());
     }
-    let old = read_device_key(legacy)?;
+    let old = read_legacy_device_key(legacy)?;
 
     if paths.device_cert.try_exists()? {
         let certificate = read_device_cert(&paths.device_cert)?;
