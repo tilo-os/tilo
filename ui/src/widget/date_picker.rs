@@ -360,17 +360,27 @@ impl Widget for DatePicker {
         );
 
         // A Control at rest carries an edge derived from its own surface
-        // (HIG §9.5); focus keeps `border_focus`. Both ride the same
-        // half-pixel-inset outline so the ring sits exactly where the rest
-        // edge was. Without it the calendar was a raised rectangle that
-        // vanished on a raised card.
+        // (HIG §9.5) — without it the calendar was a raised rectangle that
+        // vanished on a raised card. Focus adds `border_focus` on the same
+        // half-pixel-inset outline, so the ring sits exactly over the rest
+        // edge and a focused picker is the rest picker plus one stroke.
         let outline = crate::surface::edge_outline(self.rect, radius);
-        let (width, color) = if self.is_focused {
-            (2.0, tokens.colors.border_focus)
-        } else {
-            (1.0, crate::surface::edge_on(fill))
-        };
-        scene.stroke(&Stroke::new(width), transform, color, None, &outline);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            crate::surface::edge_on(fill),
+            None,
+            &outline,
+        );
+        if self.is_focused {
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                tokens.colors.border_focus,
+                None,
+                &outline,
+            );
+        }
 
         self.draw_header(scene, transform, text_renderer, theme);
         self.draw_weekday_labels(scene, transform, text_renderer, theme);

@@ -12,7 +12,6 @@
 //! Pixel readback stays in the compositor; this widget emits semantic intents.
 
 use crate::text_metrics::renderer_type_size;
-use crate::tokens::Shadow;
 use crate::{
     ColorCompat,
     icons::{self, Icon},
@@ -37,15 +36,6 @@ use winit::{
     event::{ElementState, KeyEvent, MouseButton, WindowEvent},
     keyboard::{Key, NamedKey},
 };
-
-/// An elevation token whose strength follows an animation's `fade` (0..=1):
-/// the shadow of a pill sliding in or out fades with the pill itself.
-fn faded(token: Shadow, fade: f32) -> Shadow {
-    Shadow {
-        color: token.color.multiply_alpha(fade),
-        ..token
-    }
-}
 
 const OPEN_DURATION: Duration = Duration::from_millis(180);
 const RECORDING_HOLD: Duration = Duration::from_millis(240);
@@ -3724,7 +3714,7 @@ impl CaptureStudio {
             transform,
             pill,
             radius,
-            &faded(theme.tokens.elevation.e3, background_alpha),
+            &theme.tokens.elevation.e3.with_alpha_scaled(background_alpha),
         );
         scene.fill(
             Fill::NonZero,
@@ -3876,7 +3866,7 @@ impl CaptureStudio {
             transform,
             pill,
             radius,
-            &faded(theme.tokens.elevation.e3, alpha),
+            &theme.tokens.elevation.e3.with_alpha_scaled(alpha),
         );
         scene.fill(
             Fill::NonZero,
