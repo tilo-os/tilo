@@ -35,7 +35,7 @@ private_bus() {
         'printf "dbus-activation:%s:%s\\n" "$XDG_CURRENT_DESKTOP" "$XDG_SESSION_TYPE" >>"$TILO_SESSION_TEST_LOG"' \
         >"$root/dbus-probe"
     chmod 0755 "$root/systemctl" "$root/tilo-shell" "$root/dbus-probe"
-    for probe_name in Initial Tilo Empty Gnome; do
+    for probe_name in Initial Tilo Empty EmptyLogout Gnome; do
         printf '[D-BUS Service]\nName=org.tilo.SessionProbe%s\nExec=%s\n' \
             "$probe_name" "$root/dbus-probe" \
             >"$XDG_DATA_HOME/dbus-1/services/org.tilo.SessionProbe${probe_name}.service"
@@ -79,6 +79,29 @@ private_bus() {
     kill -TERM "$wrapper_pid"
     wait "$wrapper_pid" || [[ $? == 143 ]]
     probe Empty
+    await_probe 'dbus-activation::'
+
+    # Repeat the lifecycle through the compositor's ordinary Power → Log out
+    # channel. The first half above proves display-manager termination; this
+    # half proves a user-requested logout also clears D-Bus activation before
+    # a different desktop starts activating services.
+    printf '%s\n' \
+        '#!/bin/sh' \
+        'case "${TILO_SESSION_LOGOUT_REQUEST:-}" in /*) ;; *) exit 42 ;; esac' \
+        'printf "tilo-shell:%s:%s\\n" "$XDG_CURRENT_DESKTOP" "$XDG_SESSION_TYPE" >>"$TILO_SESSION_TEST_LOG"' \
+        'printf "%s\\n" "$TILO_SESSION_LOGOUT_REQUEST" >"$TILO_SESSION_TEST_LOG.logout-path"' \
+        'printf "logout\\n" >"$TILO_SESSION_LOGOUT_REQUEST"' \
+        'exit 19' \
+        >"$root/tilo-shell"
+    chmod 0755 "$root/tilo-shell"
+    set +e
+    "$root/tilo-session"
+    logout_status=$?
+    set -e
+    [[ $logout_status == 0 ]]
+    logout_path=$(cat "$TILO_SESSION_TEST_LOG.logout-path")
+    [[ ! -e $logout_path ]]
+    probe EmptyLogout
     await_probe 'dbus-activation::'
 
     export XDG_CURRENT_DESKTOP=GNOME XDG_SESSION_TYPE=wayland
