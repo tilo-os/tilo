@@ -249,7 +249,6 @@ impl MailShortcutsOverlay {
                 }
                 true
             }
-            WindowEvent::KeyboardInput { .. } => true,
             _ => true,
         }
     }
