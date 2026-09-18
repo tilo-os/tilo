@@ -204,7 +204,7 @@ else
   warn "procfs still exposes pagemap, smaps, or clear_refs interfaces"
 fi
 for interface in \
-  DEVKMEM PROC_KCORE COREDUMP FW_LOADER_USER_HELPER \
+  DEVKMEM PROC_KCORE COREDUMP FW_LOADER_USER_HELPER FANOTIFY DNOTIFY \
   FW_LOADER_USER_HELPER_FALLBACK TLS CRYPTO_USER_API; do
   if grep -Fqx "# CONFIG_${interface} is not set" "$running_kernel_config" 2>/dev/null; then
     ok "unused privileged kernel interface $interface is not compiled"
