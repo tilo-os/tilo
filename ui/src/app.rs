@@ -7759,7 +7759,7 @@ pub(crate) fn prepare_native_renderer() -> Option<RendererPreparation> {
                     .devices
                     .get(device_id)
                     .ok_or_else(|| "prepared drawing device index out of range".to_string())?;
-                let renderer = create_native_renderer(&device.device)?;
+                let renderer = create_native_renderer(device)?;
                 tilo_startup_metrics::mark("native-render-prepare-done");
                 Ok(PreparedRenderer {
                     context,
@@ -7827,13 +7827,14 @@ fn create_window_render_prepared(
     // if necessary. Never use pipelines built for a different device.
     let renderer = match prepared_renderer {
         Some((device_id, renderer)) if device_id == surface.dev_id => renderer,
-        _ => create_native_renderer(&device_handle.device)?,
+        _ => create_native_renderer(device_handle)?,
     };
     // After this, every GPU call happens on its render worker.
     spawn_render_thread(render_cx, surface, renderer)
 }
 
-fn create_native_renderer(device: &vello::wgpu::Device) -> Result<Renderer, String> {
+fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Renderer, String> {
+    let device = &device_handle.device;
     tilo_startup_metrics::mark("window-vello-init-start");
     let renderer = Renderer::new(
         device,
@@ -7853,6 +7854,8 @@ fn create_native_renderer(device: &vello::wgpu::Device) -> Result<Renderer, Stri
     )
     .map_err(|e| format!("could not create the renderer: {e}"))?;
     tilo_startup_metrics::mark("window-vello-init-done");
+    #[cfg(windows)]
+    device_handle.finish_shader_cache();
     Ok(renderer)
 }
 
