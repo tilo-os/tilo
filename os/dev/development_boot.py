@@ -4,7 +4,6 @@ import importlib.util
 import os
 from pathlib import Path
 import re
-import shutil
 import tempfile
 
 import hardware_profile as hardware
@@ -153,10 +152,10 @@ def validate_mounted_boot(root, public_bundle, manifest_sha256, architecture, ge
     if not isinstance(manifest_sha256, str) or not re.fullmatch(r'[0-9a-f]{64}', manifest_sha256):
         raise ValueError('independent public manifest SHA256 is required')
     root = Path(root)
-    # The shared public-key validator invokes openssl by name. Require that name
-    # to resolve to the trusted host binary, never to an image-provided tool.
-    if Path(shutil.which('openssl') or '/missing').resolve() != Path('/usr/bin/openssl').resolve():
-        raise ValueError('public validation requires trusted host OpenSSL')
+    # Public trust is parsed only by the host's root-installed Rust helper,
+    # never by an image-provided binary or process-controlled PATH entry.
+    if not Path('/usr/local/bin/tilo-crypto').is_file():
+        raise ValueError('public validation requires host tilo-crypto')
     metadata = trust.validate(public_bundle, manifest_sha256)
     receipts, total = [], 0
     with tempfile.TemporaryDirectory(prefix='tilo-boot-validation-') as temporary:
@@ -167,8 +166,9 @@ def validate_mounted_boot(root, public_bundle, manifest_sha256, architecture, ge
             raise ValueError('mounted generation differs from expected generation')
         certificate = scratch / 'certificate.pem'
         loader.snapshot(Path(public_bundle) / 'efi-signing.crt', certificate, 65536)
-        der = loader.command(['/usr/bin/openssl', 'x509', '-in', str(certificate), '-outform', 'DER'])
-        if hashlib.sha256(der).hexdigest() != metadata['identities']['efi-signing.crt']:
+        certificate_identity = loader.command(
+            ['/usr/local/bin/tilo-crypto', 'certificate-sha256', str(certificate)]).decode().strip()
+        if certificate_identity != metadata['identities']['efi-signing.crt']:
             raise ValueError('EFI certificate changed after public bundle validation')
         for relative in _uki_paths(root):
             path = hardware.trusted_path(root, relative, regular=True)
@@ -180,10 +180,12 @@ def validate_mounted_boot(root, public_bundle, manifest_sha256, architecture, ge
             sections = uki_sections(data, architecture)
             validate_cmdline(sections['.cmdline'], generation, composefs_digest)
             pe.normalized_image(str(snapshot), require_certificate=True)
-            listing = loader.command(['/usr/bin/sbverify', '--list', str(snapshot)]).decode('utf-8', 'replace')
-            if not re.search(r'^signature [1-9][0-9]*\s*$', listing, re.MULTILINE):
+            signature_count = loader.command(
+                ['/usr/local/bin/tilo-crypto', 'efi-signature-count', str(snapshot)]).decode().strip()
+            if not signature_count.isdigit() or int(signature_count) < 1:
                 raise ValueError('UKI has no recognized Authenticode signature')
-            loader.command(['/usr/bin/sbverify', '--cert', str(certificate), str(snapshot)])
+            loader.command(['/usr/local/bin/tilo-crypto', 'verify-efi',
+                            str(certificate), str(snapshot)])
             receipts.append({'path': relative.as_posix(), 'sha256': hashlib.sha256(data).hexdigest(),
                              'size_bytes': len(data)})
     return {'schema': 1, 'purpose': 'tilo-development-offline-boot-validation',

@@ -103,11 +103,11 @@ class PredictionTests(unittest.TestCase):
 
                 def command(argv):
                     calls.append(argv)
-                    if argv[1] == 'pkey':
-                        return b'public DER'
-                    if argv[1] == 'dgst':
-                        message = Path(argv[-1]).read_bytes()
-                        if argv[-1].endswith('policy-message'):
+                    if argv[1] == 'rsa-public-key-info':
+                        return f'2048 {key_hash}\n'.encode()
+                    if argv[1] == 'verify-rsa-sha256':
+                        message = Path(argv[3]).read_bytes()
+                        if argv[3].endswith('policy-message'):
                             if failure == 'policy_signature':
                                 raise ValueError('invalid policy signature')
                             self.assertEqual(message, b'p' * 32 + struct.pack('>Q', 7))
@@ -115,8 +115,7 @@ class PredictionTests(unittest.TestCase):
                             if failure == 'uki_signature':
                                 raise ValueError('invalid detached UKI signature')
                             self.assertEqual(message, data)
-                        self.assertIn('rsa_padding_mode:pkcs1', argv)
-                        return b'Verified OK'
+                        return b''
                     if argv[1] == '--version':
                         return b'systemd 259 (259.8-1.fc44)\n'
                     self.assertEqual(argv[0], prediction.MEASURE)
@@ -141,7 +140,7 @@ class PredictionTests(unittest.TestCase):
                         self.assertEqual(receipt['target_uki_sha256'], target_hash)
                         self.assertFalse(receipt['installable'])
                         self.assertFalse(receipt['proof']['live_pcr'])
-                        self.assertEqual(sum(argv[1] == 'dgst' for argv in calls), 2)
+                        self.assertEqual(sum(argv[1] == 'verify-rsa-sha256' for argv in calls), 2)
 
 
 if __name__ == '__main__':

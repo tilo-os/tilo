@@ -66,17 +66,18 @@ def verify(original, signed, certificate, certificate_sha256, architecture):
             raise ValueError('native loader must use PE32+')
         if envelope.u16(original_bytes, pe + 24 + 68) != 10:
             raise ValueError('loader must be an EFI application')
-        der = command(['/usr/bin/openssl', 'x509', '-in', str(certificate_copy),
-                       '-outform', 'DER'])
-        if hashlib.sha256(der).hexdigest() != certificate_sha256:
+        actual_certificate = command(['/usr/local/bin/tilo-crypto', 'certificate-sha256',
+                                      str(certificate_copy)]).decode().strip()
+        if actual_certificate != certificate_sha256:
             raise ValueError('loader certificate does not match independently pinned identity')
-        # sbverify can report success for no signatures. A certificate-table
-        # envelope alone is insufficient: require a recognized signature too.
-        listing = command(['/usr/bin/sbverify', '--list', str(signed_copy)]).decode(
-            'utf-8', errors='replace')
-        if not re.search(r'^signature [1-9][0-9]*\s*$', listing, re.MULTILINE):
+        # A certificate-table envelope alone is insufficient: require a
+        # recognized signature and verify it with the pinned certificate.
+        count = command(['/usr/local/bin/tilo-crypto', 'efi-signature-count',
+                         str(signed_copy)]).decode().strip()
+        if not count.isdigit() or int(count) < 1:
             raise ValueError('loader has no recognized Authenticode signature')
-        command(['/usr/bin/sbverify', '--cert', str(certificate_copy), str(signed_copy)])
+        command(['/usr/local/bin/tilo-crypto', 'verify-efi',
+                 str(certificate_copy), str(signed_copy)])
         return {'architecture': architecture, 'certificate_sha256': certificate_sha256,
                 'original_sha256': hashlib.sha256(original_bytes).hexdigest(),
                 'signed_sha256': hashlib.sha256(signed_bytes).hexdigest()}
