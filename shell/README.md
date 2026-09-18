@@ -16,7 +16,7 @@ cargo run --release --bin shell
 The native window uses the existing shell chrome, workspace tree, command
 palette, UI event loop and Metal rendering. Option-Space or Command-K opens the palette;
 Escape dismisses it. Files starts at your home directory. Workspace state and
-shell records persist in `~/Library/Application Support/qos/macos-shell`.
+shell records persist in `~/Library/Application Support/tilo/macos-shell`.
 The profile is locked while open, and malformed state is refused rather than
 overwritten. A new profile starts with one empty Home workspace.
 
