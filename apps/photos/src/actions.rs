@@ -68,6 +68,7 @@ const MAX_RESOURCE_ID_CHARS: usize = 4_096;
 const MAX_ALBUM_ID_CHARS: usize = 160;
 const MAX_NAME_CHARS: usize = 256;
 const MAX_ALBUM_MEMBERS: usize = 4_096;
+const MAX_BATCH_PHOTOS: usize = 4_096;
 type LabelCounts = Vec<(String, usize)>;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -226,6 +227,13 @@ pub enum PhotosAction {
     RemovePhoto { photo_id: String },
     /// Toggle a durable favourite marker.
     SetFavorite { photo_id: String, favorite: bool },
+    /// Replace the favourite state for a bounded, explicitly addressed batch.
+    /// The selection that produced this list is device-local presentation;
+    /// this resulting change is the one shared, replayable document action.
+    SetFavorites {
+        photo_ids: Vec<String>,
+        favorite: bool,
+    },
     /// Replace the complete small metadata record for one photograph.  One
     /// absolute payload avoids a concurrent series of add/remove operations
     /// exposing a half-edited tag list to collaborators.
@@ -416,6 +424,37 @@ impl Action for PhotosAction {
                         ActionError::Refused("that photograph is no longer in the library".into())
                     })?;
                 photo.favorite = *favorite;
+                PhotosDoc::set_library(doc, &library);
+                Ok(())
+            }
+            Self::SetFavorites {
+                photo_ids,
+                favorite,
+            } => {
+                if photo_ids.is_empty()
+                    || photo_ids.len() > MAX_BATCH_PHOTOS
+                    || photo_ids.iter().any(|id| validate_resource_id(id).is_err())
+                    || photo_ids.iter().enumerate().any(|(index, id)| {
+                        photo_ids
+                            .get(..index)
+                            .is_some_and(|previous| previous.contains(id))
+                    })
+                {
+                    return Err(ActionError::Refused(
+                        "favorite batch must contain unique, valid photograph ids".into(),
+                    ));
+                }
+                let mut library = PhotosDoc::library(doc);
+                if !photo_ids.iter().all(|id| library.photo(id).is_some()) {
+                    return Err(ActionError::Refused(
+                        "a selected photograph is no longer in the library".into(),
+                    ));
+                }
+                for photo in &mut library.photos {
+                    if photo_ids.contains(&photo.id) {
+                        photo.favorite = *favorite;
+                    }
+                }
                 PhotosDoc::set_library(doc, &library);
                 Ok(())
             }
@@ -832,7 +871,8 @@ pub(crate) fn library_root_resource() -> Resource {
     }
     root = root
         .with_action(file_operation("import", "Import photograph", true))
-        .with_action(create_album_spec());
+        .with_action(create_album_spec())
+        .with_action(set_favorites_spec());
     root
 }
 
@@ -1244,6 +1284,34 @@ fn create_album_spec() -> ActionSpec {
     )
     .reversible()
     .with_description("Create an album and its initial photograph membership atomically")
+}
+
+/// The agent/search counterpart of the visible library selection command.
+/// Selection never leaks into the shared document; callers name exactly the
+/// resources whose durable favorite markers should change.
+fn set_favorites_spec() -> ActionSpec {
+    ActionSpec::typed(
+        "set-favorites",
+        "Set favorites",
+        "Photograph ids and desired favorite state",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required(
+                "photo_ids",
+                ParamType::Text,
+                "comma-separated stable photograph resource ids",
+            ),
+            ActionParam::required("favorite", ParamType::Boolean, "whether to mark favorite"),
+        ],
+        |args| {
+            encode(&PhotosAction::SetFavorites {
+                photo_ids: membership_ids(args),
+                favorite: args.boolean("favorite").unwrap_or(false),
+            })
+        },
+    )
+    .reversible()
+    .with_description("Set the favorite marker for a bounded batch of selected photographs")
 }
 
 fn album_save_spec(album_id: &str) -> ActionSpec {
@@ -2135,6 +2203,69 @@ mod tests {
             root.children
                 .iter()
                 .any(|child| child.id.0 == "photos.favorites")
+        );
+        let batch = root
+            .actions
+            .iter()
+            .find(|action| action.id == "set-favorites")
+            .expect("the library publishes the batch operation agents and selection use");
+        assert!(batch.contract.reversible);
+        assert_eq!(batch.params().len(), 2);
+    }
+
+    #[test]
+    fn favorite_batch_is_atomic_replayable_and_refuses_a_stale_selection() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let first = portable_photo("/photos/first.png", 20, 10);
+        let second = portable_photo("/photos/second.png", 20, 10);
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos: vec![first.clone(), second.clone()],
+                albums: Vec::new(),
+            },
+        );
+        let initial = PhotosDoc::library(&doc);
+        let batch = PhotosAction::SetFavorites {
+            photo_ids: vec![first.id.clone(), second.id.clone()],
+            favorite: true,
+        };
+        batch
+            .apply(&mut doc)
+            .expect("both known ids apply together");
+        assert!(
+            PhotosDoc::library(&doc)
+                .photos
+                .iter()
+                .all(|photo| photo.favorite)
+        );
+
+        let before = PhotosDoc::library(&doc);
+        PhotosAction::SetFavorites {
+            photo_ids: vec![first.id, "photos.photo:gone".into()],
+            favorite: false,
+        }
+        .apply(&mut doc)
+        .expect_err("a stale selection cannot partially change favorites");
+        assert_eq!(PhotosDoc::library(&doc), before);
+
+        let encoded = encode(&batch);
+        let mut replica = AutoCommit::new();
+        PhotosDoc::seed(&mut replica);
+        PhotosDoc::set_library(&mut replica, &initial);
+        let mut registry = ActionRegistry::new();
+        register(&mut registry);
+        registry
+            .decode(&encoded)
+            .expect("the canonical registry decodes the selection result")
+            .apply(&mut replica)
+            .expect("replaying an absolute favorite state succeeds");
+        assert!(
+            PhotosDoc::library(&replica)
+                .photos
+                .iter()
+                .all(|photo| photo.favorite)
         );
     }
 
