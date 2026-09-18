@@ -14,6 +14,11 @@ Kernel, base-image, RPM and WPE buildroot snapshots remain input-promotion
 workflows. They run only when their pinned input set changes; an OS release
 consumes their immutable digests.
 
+Automatic RPM snapshots cancel an obsolete run when a newer snapshot input
+lands. Explicit snapshot publication is non-cancellable, verifies that its
+input paths stayed unchanged, and rebases its resulting pin across unrelated
+`main` commits before promotion.
+
 ## Fast validation versus release gates
 
 Pull requests use the cheapest lane that proves the affected boundary:
