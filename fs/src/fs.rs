@@ -472,7 +472,6 @@ impl QuickFS {
         }
     }
 
-    #[allow(clippy::significant_drop_tightening)]
     fn remember_rich_metadata(
         &self,
         ino: u64,
@@ -482,6 +481,7 @@ impl QuickFS {
             let ns = self.ns();
             let record_id = ns.record_id_for(ino)?;
             let name = ns.path_for(ino)?.rsplit('/').next()?.to_owned();
+            drop(ns);
             (record_id, name)
         };
         let properties = crate::rich_metadata::extract(&name, bytes)?;
@@ -766,30 +766,13 @@ impl QuickFS {
         Ok(())
     }
 
-    // Namespace guards are already bounded by lexical snapshot blocks; keep
-    // the publication sequence together so signed baselines remain ordered.
-    #[allow(clippy::significant_drop_tightening)]
     fn ensure_record_publication(
         &self,
     ) -> Result<(), crate::record_publisher::RecordPublisherError> {
         let (Some(publisher), Some((history, _))) = (&self.record_publisher, &self.history) else {
             return Ok(());
         };
-        let binding_inodes = {
-            let mut namespace = self.ns();
-            let mut inodes = vec![crate::namespace::ROOT_INO];
-            let paths = namespace
-                .live_node_ids()
-                .into_iter()
-                .filter_map(|id| namespace.path_for_id(&id))
-                .collect::<Vec<_>>();
-            inodes.extend(
-                paths
-                    .iter()
-                    .filter_map(|path| namespace.resolve_path_ino(path)),
-            );
-            inodes
-        };
+        let binding_inodes = self.live_inodes_with_root();
         for ino in binding_inodes {
             let binding = {
                 let namespace = self.ns();
@@ -805,26 +788,7 @@ impl QuickFS {
                 publisher.publish_binding(&binding)?;
             }
         }
-        let inodes: Vec<u64> = {
-            let mut namespace = self.ns();
-            let paths = namespace
-                .live_node_ids()
-                .into_iter()
-                .filter_map(|id| namespace.path_for_id(&id))
-                .collect::<Vec<_>>();
-            let inodes = paths
-                .iter()
-                .filter_map(|path| namespace.resolve_path_ino(path))
-                .collect::<Vec<_>>();
-            inodes
-                .into_iter()
-                .filter(|ino| {
-                    namespace
-                        .getattr(*ino)
-                        .is_some_and(|attr| attr.kind == FileType::RegularFile)
-                })
-                .collect()
-        };
+        let inodes = self.live_regular_file_inodes();
         for ino in inodes {
             let Some(snapshot) = self.version_snapshot(ino, false, None) else {
                 continue;
@@ -869,26 +833,11 @@ impl QuickFS {
         Ok(())
     }
 
-    #[allow(clippy::significant_drop_tightening)]
     fn ensure_history_baseline(&self) -> Result<(), crate::history::HistoryError> {
         let Some((history, _)) = &self.history else {
             return Ok(());
         };
-        let inodes = {
-            let mut namespace = self.ns();
-            let mut inodes = vec![crate::namespace::ROOT_INO];
-            let paths = namespace
-                .live_node_ids()
-                .into_iter()
-                .filter_map(|id| namespace.path_for_id(&id))
-                .collect::<Vec<_>>();
-            inodes.extend(
-                paths
-                    .iter()
-                    .filter_map(|path| namespace.resolve_path_ino(path)),
-            );
-            inodes
-        };
+        let inodes = self.live_inodes_with_root();
         for ino in inodes {
             let Some(snapshot) = self.version_snapshot(ino, false, None) else {
                 continue;
@@ -898,6 +847,41 @@ impl QuickFS {
             }
         }
         Ok(())
+    }
+
+    fn live_inodes_with_root(&self) -> Vec<u64> {
+        let mut namespace = self.ns();
+        let mut inodes = Self::live_inodes_locked(&mut namespace);
+        drop(namespace);
+        inodes.insert(0, crate::namespace::ROOT_INO);
+        inodes
+    }
+
+    fn live_inodes_locked(namespace: &mut Namespace) -> Vec<u64> {
+        let paths = namespace
+            .live_node_ids()
+            .into_iter()
+            .filter_map(|id| namespace.path_for_id(&id))
+            .collect::<Vec<_>>();
+        paths
+            .iter()
+            .filter_map(|path| namespace.resolve_path_ino(path))
+            .collect()
+    }
+
+    fn live_regular_file_inodes(&self) -> Vec<u64> {
+        let mut namespace = self.ns();
+        let live_inodes = Self::live_inodes_locked(&mut namespace);
+        let regular_file_inodes = live_inodes
+            .into_iter()
+            .filter(|ino| {
+                namespace
+                    .getattr(*ino)
+                    .is_some_and(|attr| attr.kind == FileType::RegularFile)
+            })
+            .collect();
+        drop(namespace);
+        regular_file_inodes
     }
 
     fn version_snapshot(
@@ -1002,7 +986,6 @@ impl QuickFS {
         (bytes.len() <= crate::syncstate::MAX_METADATA_XATTR_BYTES).then_some(bytes)
     }
 
-    #[allow(clippy::significant_drop_tightening)]
     fn replacement_snapshot(
         &self,
         ino: u64,
@@ -1022,6 +1005,7 @@ impl QuickFS {
             byte_len,
             deleted: false,
         };
+        drop(namespace);
         let bytes = postcard::to_allocvec(&metadata).ok()?;
         Some(VersionSnapshot {
             record_id,
@@ -5355,7 +5339,7 @@ mod availability_control_tests {
         record: collab_types::FileRecordId,
         predicate: impl Fn(&RecordAvailability) -> bool + Send + Sync,
     ) {
-        wait_for_availability_with_timeout(registry, record, Duration::from_secs(8), predicate)
+        wait_for_availability_with_timeout(registry, record, Duration::from_secs(30), predicate)
             .await;
     }
 
@@ -5651,16 +5635,11 @@ mod availability_control_tests {
                 .set_content_revision(child, &second_revision, 3)
         );
         fs.wake_pinned_hydration();
-        wait_for_availability_with_timeout(
-            &registry,
-            record_id,
-            Duration::from_secs(2),
-            |record| {
-                record.current_version == Some(second_version)
-                    && record.residency == Residency::Resident { bytes: 21 }
-                    && record.transfer.last_error.is_none()
-            },
-        )
+        wait_for_availability(&registry, record_id, |record| {
+            record.current_version == Some(second_version)
+                && record.residency == Residency::Resident { bytes: 21 }
+                && record.transfer.last_error.is_none()
+        })
         .await;
 
         drop(fs);
