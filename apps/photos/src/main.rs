@@ -218,7 +218,7 @@ fn render_scenario(
         // The live view fills a four-item bounded queue per sync. A small
         // deterministic settle budget exercises hydration without making
         // offscreen acceptance render dozens of complete frames per shelf.
-        16
+        8
     } else {
         2
     };
