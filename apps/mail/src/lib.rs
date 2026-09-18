@@ -127,6 +127,7 @@ pub fn app_root_scenario(scenario: &str) -> Box<dyn Widget> {
         "bulk" => app.prime_bulk_shot(),
         "bulk_purge_confirmation" => app.prime_bulk_purge_confirmation_shot(),
         "reply" => app.prime_reply_shot(),
+        "context_menu" => app.prime_context_menu_shot(),
         "empty" => app.prime_empty_shot(),
         "loading" => app.prime_loading_shot(),
         "offline" => app.prime_offline_shot(),
