@@ -17,7 +17,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use qdoc::model::Region;
 use qdoc::snapshot::{AttrVal, BlockView, CommentView, NoteView};
-use ui::chrome::{self, LabelCue, ToolbarItem};
+use ui::chrome::{self, ToolbarItem};
 use ui::gesture::{DragSelect, Granularity};
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::TextRenderer;
@@ -64,6 +64,7 @@ use ui::portal;
 mod block_layout;
 mod image_layout;
 mod text_runs;
+mod toolbar;
 
 #[cfg(test)]
 use block_layout::LIST_MARKER_TEXT_GAP;
@@ -88,6 +89,12 @@ use text_runs::{
     block_change_decos, block_change_ranges, block_comment_ranges, block_note_refs,
     block_runs_markup, char_font_family, char_font_size, char_highlight, note_numbering, note_text,
     parse_hex_rgb, running_head_runs, running_head_runs_editing,
+};
+#[cfg(test)]
+use toolbar::TOOLBAR_RIGHT_PAD;
+use toolbar::{
+    COMPACT_TOOLBAR_BREAKPOINT, HIGHLIGHT_PALETTE, STYLE_PALETTE, ToolAction, item as toolbar_item,
+    pack_rows as pack_toolbar_rows, swatch_reserve_width,
 };
 
 /// Convert the model's `(block, start, end)` ranges into serializable
@@ -313,117 +320,9 @@ const NOTE_FONT: f32 = 11.0;
 const NOTE_AREA_GAP: f64 = 10.0;
 
 // Panel + guide chrome colours are theme-driven — see `ChromeColors`, not new consts.
-/// A small color palette for the style-colour picker.
-const STYLE_PALETTE: [[u8; 3]; 7] = [
-    [0x1c, 0x1c, 0x20], // ink
-    [0x55, 0x57, 0x60], // muted grey
-    [0xb0, 0x3a, 0x2e], // red
-    [0x1a, 0x56, 0xc4], // blue
-    [0x2e, 0x7d, 0x46], // green
-    [0xb5, 0x7e, 0x10], // amber
-    [0x7a, 0x3a, 0xa0], // purple
-];
-/// A small palette of highlight (text background) colours for the swatch row.
-/// Familiar word-processor highlighter hues (yellow, green, cyan, pink, orange).
-const HIGHLIGHT_PALETTE: [[u8; 3]; 5] = [
-    [0xff, 0xf3, 0x5c], // yellow
-    [0x9b, 0xf0, 0x6a], // green
-    [0x6c, 0xe0, 0xf0], // cyan
-    [0xff, 0x9a, 0xd0], // pink
-    [0xff, 0xb1, 0x4d], // orange
-];
 // Layout guides + handles use the theme accent — see `chrome.accent`/`chrome.accent_faint`.
 /// How close (px) the pointer must be to a guide line to grab it.
 const GUIDE_GRAB: f64 = 7.0;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum ToolAction {
-    Bold,
-    Italic,
-    Underline,
-    Strike,
-    FontCycle,
-    /// Nudge the selection's font size down one step (a per-run `size` character
-    /// mark). Direct formatting on the selection — the style's *default* size
-    /// lives separately in the side panel's "Paragraph style" Size field.
-    FontSizeDec,
-    /// Nudge the selection's font size up one step (per-run `size` mark).
-    FontSizeInc,
-    /// Apply a per-run text colour (the toolbar swatch row). `None` is the
-    /// neutral/default — it clears any `color` run mark over the selection.
-    TextColor(Option<[u8; 3]>),
-    /// Apply a per-run highlight / background colour (the highlight swatch row).
-    /// `None` is the neutral/default — it clears any `highlight` run mark.
-    Highlight(Option<[u8; 3]>),
-    /// Toggle superscript (`super` run mark) over the selection; clears `sub`.
-    Super,
-    /// Toggle subscript (`sub` run mark) over the selection; clears `super`.
-    Sub,
-    /// Open the shared action argument surface for a hyperlink over the current
-    /// non-empty selection.
-    Hyperlink,
-    // NB: paragraph-level controls (alignment, line spacing) are NOT toolbar
-    // actions — they live in the side panel's "This paragraph" section, so the
-    // toolbar carries only direct character formatting + structural actions.
-    /// Insert an image at the caret via the host file-chooser portal (an OS
-    /// picker; drag-and-drop is the secondary insert path).
-    InsertImage,
-    InsertTable,
-    TableRowAdd,
-    TableRowDel,
-    TableColAdd,
-    TableColDel,
-    TableDelete,
-    ToggleStyles,
-    /// Toggle the horizontal ruler band (margins / indents / tab stops).
-    ToggleRuler,
-    /// Toggle the document outline / navigation pane (left side).
-    ToggleOutline,
-    /// Toggle the version-history strip under the canvas.
-    ToggleHistory,
-    /// Generate (or regenerate) a table of contents from the document headings.
-    InsertToc,
-    /// Open the "New ▾" template picker menu (lists every [`crate::Template`];
-    /// a selection replaces the open document with the chosen template in place).
-    NewMenu,
-    /// Compact-toolbar overflow. Its visible label, accessible name and menu
-    /// keep lower-frequency tools reachable without turning a narrow editor
-    /// into a multi-row ribbon.
-    More,
-}
-
-fn toolbar_item(
-    action: ToolAction,
-    label: impl Into<String>,
-    width: f64,
-    active: bool,
-) -> (ToolAction, ToolbarItem) {
-    let cue = match action {
-        ToolAction::Bold => LabelCue::Bold,
-        ToolAction::Underline => LabelCue::Underline,
-        ToolAction::Strike => LabelCue::Strike,
-        _ => LabelCue::None,
-    };
-    let group_start = matches!(
-        action,
-        ToolAction::NewMenu
-            | ToolAction::Bold
-            | ToolAction::FontCycle
-            | ToolAction::InsertTable
-            | ToolAction::InsertImage
-            | ToolAction::TableRowAdd
-            | ToolAction::ToggleStyles
-            | ToolAction::ToggleOutline
-            | ToolAction::More
-    );
-    (
-        action,
-        ToolbarItem::new(label, width)
-            .active(active)
-            .cue(cue)
-            .group_start(group_start),
-    )
-}
 
 /// Width of the toolbar's right-aligned zoom stepper cluster `[−] [100%] [+]`
 /// (= `bw + gap + val_w + gap + bw` in `draw_zoom_control`). Reserved on the
@@ -793,59 +692,6 @@ pub(crate) struct RemoteCaretOverlay {
 pub(crate) struct RemoteSelectionOverlay {
     pub user: UserId,
     pub rects: Vec<Rect>,
-}
-
-/// Combined width the right-aligned colour + highlight swatch strips occupy on
-/// the toolbar's last row. The strips are painted directly (not as chrome
-/// `ToolbarItem`s), so the packer can't see them — it reserves this width as a
-/// trailing phantom item instead, keeping button rows from extending under the
-/// swatches. Mirrors the geometry in `draw_color_swatches` / `draw_highlight_swatches`.
-fn swatch_reserve_width(text_scale: f64) -> f64 {
-    let sw = 20.0 * text_scale;
-    let gap = 5.0 * text_scale;
-    let n_color = num::f64_of_usize(STYLE_PALETTE.len() + 1); // +1 neutral/default swatch
-    let n_hl = num::f64_of_usize(HIGHLIGHT_PALETTE.len() + 1); // +1 "no highlight" swatch
-    let color = n_color * sw + (n_color - 1.0) * gap;
-    let hl = n_hl * sw + (n_hl - 1.0) * gap;
-    // right edge margin + colour strip + inter-strip gap + highlight strip
-    14.0 * text_scale + color + 10.0 * text_scale + hl
-}
-/// Right margin reserved when packing rows (room for the colour-swatch strip /
-/// breathing space at the toolbar's right edge).
-const TOOLBAR_RIGHT_PAD: f64 = 18.0;
-/// Below this width the toolbar becomes a single focused writing row. Less
-/// frequent structure/review/view controls move into the labeled More menu.
-const COMPACT_TOOLBAR_BREAKPOINT: f64 = 720.0;
-
-/// Pack toolbar items into rows that each fit within `avail_w` (the toolbar's
-/// usable width). Returns the index ranges `[start, end)` for each row. The
-/// width model mirrors `chrome::toolbar::draw` exactly so a row that this packer
-/// admits is one that `draw` lays out without clipping. Every row holds at least
-/// one item (an over-wide single item simply occupies its own row).
-fn pack_toolbar_rows(
-    widths: &[f64],
-    group_starts: &[bool],
-    avail_w: f64,
-    text_scale: f64,
-) -> Vec<(usize, usize)> {
-    let metrics = ui::chrome::toolbar::metrics(text_scale as f32);
-    let mut rows = Vec::new();
-    let usable = (avail_w - metrics.left_padding - TOOLBAR_RIGHT_PAD * text_scale).max(1.0);
-    let mut row_start = 0usize;
-    let mut x = 0.0f64; // running width consumed within the current row (post-pad)
-    for (i, (&w, &group_start)) in widths.iter().zip(group_starts.iter()).enumerate() {
-        let sep = if group_start { metrics.group_gap } else { 0.0 };
-        let item_w = sep + w * text_scale + metrics.item_gap;
-        // If this isn't the first item on the row and it would overflow, wrap.
-        if i > row_start && x + item_w > usable {
-            rows.push((row_start, i));
-            row_start = i;
-            x = 0.0;
-        }
-        x += item_w;
-    }
-    rows.push((row_start, widths.len()));
-    rows
 }
 
 /// A measured table row within [`WordProcessorWidget::paginate_blocks`]'s
