@@ -112,9 +112,10 @@ impl Source {
     }
 }
 
-/// Turn a path into a `file://` URI with percent-encoded path segments.
-/// Hand-rolled (no `url` dep) because the encoding rules here are narrow: keep
-/// the unreserved set + `/`, percent-encode everything else.
+/// Turn a platform path into a `file://` URI with percent-encoded path segments.
+/// Drive letters, UNC authorities and native separators follow the platform's
+/// file-URL rules. An unrepresentable path produces an empty (invalid) URI,
+/// which the decoder rejects rather than opening a different file.
 ///
 /// A relative path is resolved against the current directory first. `file://`
 /// requires an absolute path — the text after the `//` is a *hostname*, so
@@ -129,28 +130,9 @@ pub fn path_to_file_uri(path: &Path) -> String {
         absolute = std::env::current_dir().map_or_else(|_| path.to_path_buf(), |d| d.join(path));
         &absolute
     };
-    let s = path.to_string_lossy();
-    let mut out = String::with_capacity(s.len().saturating_add(8));
-    out.push_str("file://");
-    for b in s.as_bytes() {
-        let c = *b;
-        let keep = c.is_ascii_alphanumeric() || matches!(c, b'/' | b'-' | b'_' | b'.' | b'~');
-        if keep {
-            out.push(c as char);
-        } else {
-            out.push('%');
-            out.push(hex_digit(c >> 4));
-            out.push(hex_digit(c & 0x0f));
-        }
-    }
-    out
-}
-
-fn hex_digit(n: u8) -> char {
-    match n {
-        0..=9 => (b'0'.saturating_add(n)) as char,
-        _ => (b'A'.saturating_add(n.saturating_sub(10))) as char,
-    }
+    url::Url::from_file_path(path)
+        .map(String::from)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -170,10 +152,34 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn local_file_uri_is_percent_encoded() {
         let s = Source::LocalFile(PathBuf::from("/home/a/My Clip.mp4"));
         assert_eq!(s.to_uri(), "file:///home/a/My%20Clip.mp4");
         assert!(s.abs_path().unwrap().ends_with("My Clip.mp4"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_file_uris_preserve_drives_unicode_and_network_authorities() {
+        for (path, expected) in [
+            (
+                r"C:\Media\My Clip #1%.webm",
+                "file:///C:/Media/My%20Clip%20%231%25.webm",
+            ),
+            (
+                r"C:\Media\日本語.webm",
+                "file:///C:/Media/%E6%97%A5%E6%9C%AC%E8%AA%9E.webm",
+            ),
+            (
+                r"\\server\share\My Clip.webm",
+                "file://server/share/My%20Clip.webm",
+            ),
+            (r"\\?\C:\Media\clip.webm", "file:///C:/Media/clip.webm"),
+        ] {
+            let source = Source::LocalFile(PathBuf::from(path));
+            assert_eq!(source.to_uri(), expected);
+        }
     }
 
     #[test]
@@ -214,10 +220,9 @@ mod tests {
 
     #[test]
     fn workspace_absolute_path_is_left_as_is() {
-        let abs = Source::Workspace(PathBuf::from("/var/workspace/media/x.mov"));
-        assert_eq!(
-            abs.abs_path().unwrap(),
-            PathBuf::from("/var/workspace/media/x.mov")
-        );
+        let path = std::env::temp_dir().join("workspace/media/x.mov");
+        assert!(path.is_absolute());
+        let abs = Source::Workspace(path.clone());
+        assert_eq!(abs.abs_path().unwrap(), path);
     }
 }

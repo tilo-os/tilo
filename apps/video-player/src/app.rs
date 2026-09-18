@@ -544,6 +544,10 @@ impl PlayerApp {
     }
 
     fn new_with_preferences(preferences: PlaybackPreferences) -> Self {
+        // Tests inject picker outcomes while exercising the same request and
+        // completion paths; they must never open a desktop file chooser.
+        #[cfg(test)]
+        ui::portal::suppress_for_tests();
         let player = configured_player(preferences.autoplay, preferences.loop_enabled);
         let recent = crate::preferences::load_recent_history()
             .into_iter()
