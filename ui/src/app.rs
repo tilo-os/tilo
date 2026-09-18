@@ -2100,7 +2100,13 @@ impl App {
                 let Some(semantic_id) = path.last() else {
                     continue;
                 };
-                let semantic_address = address.resource == format!("ui:{}", semantic_id.as_str())
+                // Match the canonical ResourceId emitted by SemanticTree.
+                // Semantic node ids contain punctuation and address delimiters.
+                let encoded_node_id = percent_encoding::utf8_percent_encode(
+                    semantic_id.as_str(),
+                    percent_encoding::NON_ALPHANUMERIC,
+                );
+                let semantic_address = address.resource == format!("ui:{encoded_node_id}")
                     && self
                         .semantic_tree
                         .action(semantic_id, &address.action)
@@ -3429,7 +3435,6 @@ impl App {
         confirmed_by_broker: bool,
         confirmation_evidence: Option<&serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        let before = self.state.doc.get_heads();
         let encoded = Self::encode_resource_action(resources, address, typed_arguments, argument)?;
         let action = self
             .action_registry
@@ -3443,6 +3448,10 @@ impl App {
                 confirmation_evidence,
             );
         }
+        // Only admitted local document execution owns a new change boundary.
+        // Encoding failures and broker routing must leave the caller's pending
+        // edit intact; the executor still receives the same committed baseline.
+        let before = self.state.doc.get_heads();
         let started = crate::bound_dispatch::execute_resource_operation(
             self.root_widget.as_mut(),
             &mut self.state.doc,
@@ -3841,7 +3850,11 @@ impl App {
                 }
                 return Err(tilo_actions::DoorError::Unknown(address.clone()));
             }
-            self.commit_action();
+            // Focus/selection/navigation belong to private view state. A view
+            // command must not finalize an unrelated in-progress document edit.
+            if kind != tilo_actions::OperationKind::View {
+                self.commit_action();
+            }
             self.needs_sync = true;
             self.layout_dirty = true;
             if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
@@ -12555,6 +12568,48 @@ mod action_palette_tests {
     }
 
     #[test]
+    fn projected_view_preserves_pending_edit_and_eventual_attribution() {
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(Button::new("focus-me", "Focus me", None)),
+        );
+        app.init_layout();
+        app.set_focused_node(None);
+        assert!(!app.root_widget.is_focused());
+        let before = app.state.doc.get_heads();
+        app.state.doc.put(ROOT, "draft", "unfinished").unwrap();
+        let pending = app.state.doc.pending_ops();
+        app.open_action_palette();
+        app.action_palette.as_mut().unwrap().set_query("focus");
+        assert!(app.action_palette_handle_key(&synth_enter()));
+        assert!(app.root_widget.is_focused());
+        assert_eq!(app.state.doc.pending_ops(), pending);
+        assert_eq!(app.state.doc.base_heads(), before);
+        assert!(app.state.peek_last_undo().is_none());
+
+        app.state.doc.put(ROOT, "draft", "finished").unwrap();
+        let context = tilo_actions::ActionContext::for_resource(
+            "Finish draft",
+            "test.draft",
+            "note",
+            "Draft",
+        );
+        assert!(app.state.commit_action_authored_with_context(
+            None,
+            None,
+            Some(app.local_author.clone()),
+            Some(context),
+        ));
+        let changes = app.state.doc.get_changes(&before);
+        assert_eq!(changes.len(), 1, "view must not split the pending edit");
+        let context = changes[0]
+            .message()
+            .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
+            .unwrap();
+        assert_eq!(context.action_label, "Finish draft");
+    }
+
+    #[test]
     fn ctrl_k_invokes_a_projected_semantic_view_control() {
         let button = Button::new("drive-me", "Drive me", None);
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(button));
@@ -13788,6 +13843,89 @@ mod semantic_tree_app_tests {
             Some(&crate::permissions::UserId("agent:Scribe".into())),
             "undo attribution and durable history use the same actor"
         );
+    }
+
+    #[test]
+    fn undecodable_document_action_preserves_pending_edit() {
+        let resource = Resource::new("test.invalid", "test.invalid", "Invalid action").with_action(
+            ActionSpec::immediate(
+                "decode",
+                "Decode",
+                "test.unregistered",
+                &CounterAction::Bump,
+            )
+            .unwrap(),
+        );
+        let mut app = lazy_app(resource);
+        let before = app.state.doc.get_heads();
+        app.state.doc.put(ROOT, "draft", "unfinished").unwrap();
+        let pending = app.state.doc.pending_ops();
+        let result = app.invoke_resource_action(
+            &tilo_actions::ActionAddress::new("test.invalid", "decode"),
+            None,
+            &app.local_author.0.clone(),
+            false,
+            false,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            matches!(result, Err(tilo_actions::DoorError::UnregisteredType(ref id))
+            if id == "test.unregistered"),
+            "unexpected result: {result:?}"
+        );
+        assert_eq!(app.state.doc.pending_ops(), pending);
+        assert_eq!(app.state.doc.base_heads(), before);
+        assert!(app.state.peek_last_undo().is_none());
+    }
+
+    #[test]
+    fn refused_and_routed_actions_preserve_pending_edit() {
+        let mut app = app();
+        let before = app.state.doc.get_heads();
+        app.state.doc.put(ROOT, "draft", "unfinished").unwrap();
+        let pending = app.state.doc.pending_ops();
+        for (action, actor) in [
+            ("host-bump", app.local_author.0.clone()),
+            ("inspect", "agent:Scribe".to_string()),
+            ("missing", app.local_author.0.clone()),
+        ] {
+            let result = app.invoke_resource_action(
+                &tilo_actions::ActionAddress::new("test.counter", action),
+                None,
+                &actor,
+                false,
+                false,
+                None,
+                None,
+                None,
+            );
+            assert!(result.is_err(), "unadmitted action must fail: {action}");
+            assert_eq!(app.state.doc.pending_ops(), pending, "{action}");
+            assert_eq!(app.state.doc.base_heads(), before, "{action}");
+            assert!(app.state.peek_last_undo().is_none());
+        }
+        app.state.doc.put(ROOT, "draft", "finished").unwrap();
+        let context = tilo_actions::ActionContext::for_resource(
+            "Finish draft",
+            "test.draft",
+            "note",
+            "Draft",
+        );
+        assert!(app.state.commit_action_authored_with_context(
+            None,
+            None,
+            Some(app.local_author.clone()),
+            Some(context),
+        ));
+        let changes = app.state.doc.get_changes(&before);
+        assert_eq!(changes.len(), 1, "refusal must not split the pending edit");
+        let context = changes[0]
+            .message()
+            .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
+            .unwrap();
+        assert_eq!(context.action_label, "Finish draft");
     }
 
     #[test]
