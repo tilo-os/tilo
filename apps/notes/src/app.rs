@@ -23,7 +23,6 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
 use ui::collaboration::PresencePayload;
-use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
@@ -630,10 +629,11 @@ impl NotesApp {
             self.topbar_rect.x1,
             self.topbar_rect.y1,
         );
+        // Bar role: one chrome hairline under the app bar (HIG §9.5).
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            tokens.colors.border_standard,
+            ui::chrome::chrome_hairline(theme),
             None,
             &hairline,
         );
@@ -642,12 +642,24 @@ impl NotesApp {
         // the button hit rect. Highlight the button while the drawer is
         // open so the toggle state reads.
         if self.drawer.is_open() {
+            // The open toggle is a chosen control: a selection lift (HIG §9.3)
+            // off the bar's raised ground, with its derived hairline — not an
+            // accent wash, and not `raised` painted on `raised`.
+            let radius = f64::from(tokens.radii.md);
+            let lifted = crate::sidebar::selection_fill_on_raised(theme);
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.accent_primary.with_alpha_factor(0.18),
+                lifted,
                 None,
-                &self.menu_btn_rect,
+                &vello::kurbo::RoundedRect::from_rect(self.menu_btn_rect, radius),
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                ui::surface::edge_on(lifted),
+                None,
+                &ui::surface::edge_outline(self.menu_btn_rect, radius),
             );
         }
         let cx = self.menu_btn_rect.center().x;

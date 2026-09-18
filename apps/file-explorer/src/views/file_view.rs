@@ -29,7 +29,7 @@ use std::sync::Arc;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -42,11 +42,13 @@ use crate::model::{
     SortOrder, SyncState, TransferPhase, ViewMode, format_modified, human_size,
 };
 use ui::SelectionModel;
+use ui::chrome::{SelectionState, selection_tier};
 use ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon, icon_for_path};
 use ui::image_store::paint_image_cover;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tokens::spacing::Spacing;
 use ui::widget::Widget;
 
 /// The file manager's handle onto the shared thumbnail system: the off-thread
@@ -67,6 +69,20 @@ const LIST_HEADER_H: f64 = 30.0;
 const LIST_ICON: f64 = 18.0;
 const CONTENT_PAD_X: f64 = 10.0;
 const ROW_RADIUS: f64 = 8.0;
+/// One rhythm for the list (HIG §7b): the row highlight backs off the row's
+/// horizontal edges by `s2`, and off its top and bottom by half an `s1` — so
+/// two adjacent highlighted rows keep an `s1` gap between them instead of
+/// fusing into one slab. The focus ring and the in-place rename field share
+/// these insets, so all three agree on where a row's face is.
+const ROW_HL_INSET_X: f64 = Spacing::BASE.s2 as f64;
+const ROW_HL_INSET_Y: f64 = Spacing::BASE.s1 as f64 / 2.0;
+/// Gap between a row's leading icon and its name (`s3`), and between the name
+/// column's left edge and the icon (`s1`). The name gap is a sibling step
+/// rather than the icon-label step because the in-place rename field backs
+/// off the name by the shared field's `padding_standard` (`s2`): with `s3`
+/// the field's edge still clears the icon by an `s1` instead of touching it.
+const ICON_LABEL_GAP: f64 = Spacing::BASE.s3 as f64;
+const ICON_LEAD: f64 = Spacing::BASE.s1 as f64;
 /// Fixed (pre-scale) widths of the trailing list columns.
 const SIZE_COL_W: f64 = 96.0;
 const MOD_COL_W: f64 = 158.0;
@@ -109,7 +125,6 @@ pub type DropTargets = Rc<RefCell<Vec<FolderDropTarget>>>;
 struct FileVisual<'a> {
     rect: Rect,
     entry: &'a Entry,
-    selected: bool,
     glyph_color: Color,
     grid: bool,
 }
@@ -123,7 +138,6 @@ struct RowTextLayout {
     row: Rect,
     name_rect: Rect,
     name_x: f64,
-    selected: bool,
 }
 
 /// A list column the header exposes for click-to-sort. `sort_col` is the index
@@ -590,18 +604,68 @@ impl FileView {
         }
     }
 
-    fn cell_text(theme: &Theme, selected: bool) -> Color {
-        if selected {
-            Color::WHITE
-        } else {
-            theme.tokens.colors.text_primary
-        }
+    /// Selection is a lift, not an accent wash (HIG §9.3), so the text keeps
+    /// its ordinary colours on a selected row: the lifted face is still the
+    /// theme's own surface and `text_primary`/`text_dim` were built for it.
+    fn cell_text(theme: &Theme) -> Color {
+        theme.tokens.colors.text_primary
     }
-    fn cell_dim(theme: &Theme, selected: bool) -> Color {
-        if selected {
-            Color::from_rgba8(255, 255, 255, 0xd0)
-        } else {
-            theme.tokens.colors.text_dim
+    fn cell_dim(theme: &Theme) -> Color {
+        theme.tokens.colors.text_dim
+    }
+
+    /// The rect a list row's face (highlight, focus ring, rename field)
+    /// occupies inside its full-width band.
+    fn list_row_face(row: Rect) -> Rect {
+        Rect::new(
+            row.x0 + ROW_HL_INSET_X,
+            row.y0 + ROW_HL_INSET_Y,
+            row.x1 - ROW_HL_INSET_X,
+            row.y1 - ROW_HL_INSET_Y,
+        )
+    }
+
+    /// Paint a row's or cell's "which one is chosen" state as the shared lift
+    /// tier (HIG §9.3): hover is `lift(0.5)`, selected is `lift(1.0)` with the
+    /// derived hairline and inner glow. Never an accent fill — the accent
+    /// stays free to mean live state (a drop target, a sync in flight).
+    fn paint_selection(
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        rect: Rect,
+        radius: f64,
+        selected: bool,
+        hovered: bool,
+    ) {
+        if !(selected || hovered) {
+            return;
+        }
+        let tier = selection_tier(theme, SelectionState::new(selected, hovered, false));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tier.fill,
+            None,
+            &RoundedRect::from_rect(rect, radius),
+        );
+        if let Some(border) = tier.border {
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                border,
+                None,
+                &ui::surface::edge_outline(rect, radius),
+            );
+        }
+        if let Some(glow) = tier.inner_glow {
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                glow,
+                None,
+                &ui::surface::edge_outline(rect.inset(-1.0), radius - 1.0),
+            );
         }
     }
 
@@ -684,16 +748,16 @@ impl FileView {
                 );
             }
         }
-        // Quiet header separator along the band's bottom edge.
-        scene.stroke(
-            &Stroke::new(1.0),
+        // Quiet header separator along the band's bottom edge, derived against
+        // the band it sits on (HIG §9.5) and inset like every other rule.
+        ui::surface::separator(
+            scene,
             transform,
-            ui::tokens::colors::Colors::hairline_on(tokens.colors.surfaces.raised, 26),
-            None,
-            &Line::new(
-                (self.rect.x0 + self.pad_x(), top + header_h),
-                (self.rect.x1 - self.pad_x(), top + header_h),
-            ),
+            self.rect.x0,
+            self.rect.x1,
+            top + header_h - 0.5,
+            self.pad_x(),
+            tokens.colors.surfaces.base,
         );
     }
 
@@ -737,30 +801,22 @@ impl FileView {
         let row = self.list_row_rect(i);
         let selected = self.selection.is_selected(i);
         let hovered = self.hover == Some(i) && !selected;
-        // Row highlight — inset so it reads as a pill with breathing room.
-        if selected || hovered {
-            let hl = Rect::new(row.x0 + 6.0, row.y0 + 2.0, row.x1 - 6.0, row.y1 - 2.0);
-            let bg = if selected {
-                tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX]
-            } else {
-                tokens.colors.lift(0.72)
-            };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                bg,
-                None,
-                &RoundedRect::from_rect(hl, ROW_RADIUS),
-            );
-        }
+        // Row highlight — inset so adjacent chosen rows keep an `s1` gap.
+        Self::paint_selection(
+            scene,
+            transform,
+            theme,
+            Self::list_row_face(row),
+            ROW_RADIUS,
+            selected,
+            hovered,
+        );
 
         // Icon + name.
         let name_rect = self.header_col_rect(0);
-        let icon_x = name_rect.x0 + 4.0;
+        let icon_x = name_rect.x0 + ICON_LEAD;
         let icon_y = row.y0 + (row.height() - icon_size_px) / 2.0;
-        let icon_color = if selected {
-            Color::WHITE
-        } else if entry.is_dir {
+        let icon_color = if entry.is_dir {
             tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX]
         } else {
             tokens.colors.text_dim
@@ -776,7 +832,6 @@ impl FileView {
             FileVisual {
                 rect: file_icon_rect,
                 entry,
-                selected,
                 glyph_color: icon_color,
                 grid: false,
             },
@@ -794,7 +849,7 @@ impl FileView {
         } else if let Some(state) = entry.sync_state {
             draw_sync_badge(scene, transform, file_icon_rect, state, self.scale, theme);
         }
-        let name_x = icon_x + icon_size_px + 10.0;
+        let name_x = icon_x + icon_size_px + ICON_LABEL_GAP;
         self.draw_list_row_text(
             scene,
             transform,
@@ -806,7 +861,6 @@ impl FileView {
                 row,
                 name_rect,
                 name_x,
-                selected,
             },
         );
     }
@@ -828,7 +882,6 @@ impl FileView {
             row,
             name_rect,
             name_x,
-            selected,
         } = layout;
         let size = self.body_text(theme);
         // Centre the measured line box on the row, level with the icon, which
@@ -843,11 +896,12 @@ impl FileView {
             // backs off by exactly that: the editable name starts where the
             // static name was painted instead of jumping 8px to the right.
             if let Some(sink) = &self.rename_rect {
+                let face = Self::list_row_face(row);
                 sink.set(Some(Rect::new(
                     name_x - f64::from(theme.padding_standard),
-                    row.y0 + 3.0,
-                    name_rect.x1 - 4.0,
-                    row.y1 - 3.0,
+                    face.y0,
+                    name_rect.x1 - ICON_LEAD,
+                    face.y1,
                 )));
             }
         } else {
@@ -856,13 +910,13 @@ impl FileView {
             } else {
                 entry.name.clone()
             };
-            let avail = (name_rect.x1 - name_x - 6.0).max(0.0);
+            let avail = (name_rect.x1 - name_x - ICON_LABEL_GAP).max(0.0);
             let label = truncate(tr, &label, size, avail);
             tr.draw_text(
                 scene,
                 &label,
                 size,
-                Self::cell_text(theme, selected),
+                Self::cell_text(theme),
                 transform * Affine::translate((name_x, text_y)),
                 None,
             );
@@ -874,7 +928,7 @@ impl FileView {
                 scene,
                 &human_size(entry),
                 size,
-                Self::cell_dim(theme, selected),
+                Self::cell_dim(theme),
                 transform * Affine::translate((size_rect.x0, text_y)),
                 None,
             );
@@ -886,7 +940,7 @@ impl FileView {
                 scene,
                 &format_modified(entry.modified),
                 size,
-                Self::cell_dim(theme, selected),
+                Self::cell_dim(theme),
                 transform * Affine::translate((mod_rect.x0, text_y)),
                 None,
             );
@@ -990,7 +1044,6 @@ impl FileView {
         let FileVisual {
             rect,
             entry,
-            selected,
             glyph_color,
             grid,
         } = visual;
@@ -1001,7 +1054,7 @@ impl FileView {
         }
         let Some(ctx) = self.thumbs.clone() else {
             if grid {
-                self.draw_type_badge(scene, transform, tr, rect, entry, selected);
+                self.draw_type_badge(scene, transform, tr, rect, entry);
             } else {
                 self.draw_glyph(scene, transform, rect, entry, glyph_color);
             }
@@ -1017,20 +1070,22 @@ impl FileView {
                 4.0 * self.scale
             };
             paint_image_cover(scene, transform, rect, &img, radius);
-            // A hairline frame gives a light-on-light photo a defined edge.
-            let border = theme.tokens.colors.lift(0.72);
+            // A derived hairline seats the photo against the row it sits on
+            // (HIG §9.5): derived from the row ground and stroked just outside
+            // the image, on that ground, so a dark photo on a light row and a
+            // light photo on a dark row both get a frame that registers.
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                border,
+                ui::surface::edge_on(theme.tokens.colors.surfaces.base),
                 None,
-                &RoundedRect::from_rect(rect, radius),
+                &RoundedRect::from_rect(rect.inset(0.5), radius + 0.5),
             );
             return;
         }
         // No real preview (yet): a badge in grid, a compact glyph in the list.
         if grid {
-            self.draw_type_badge(scene, transform, tr, rect, entry, selected);
+            self.draw_type_badge(scene, transform, tr, rect, entry);
         } else {
             self.draw_glyph(scene, transform, rect, entry, glyph_color);
         }
@@ -1066,26 +1121,22 @@ impl FileView {
         tr: &mut TextRenderer,
         rect: Rect,
         entry: &Entry,
-        selected: bool,
     ) {
         let category = category_for_path(&entry.path);
         let tint = category_tint(category);
         let radius = 8.0 * self.scale;
         let card = RoundedRect::from_rect(rect, radius);
-        // Soft fill + hairline border. On a selected (accent-filled) cell, use a
-        // translucent white so the badge stays legible on the accent.
-        let (fill, fg) = if selected {
-            (Color::from_rgba8(255, 255, 255, 46), Color::WHITE)
-        } else {
-            (tint.with_alpha(0.16), tint)
-        };
+        // Soft category-tinted fill with a crisp tinted edge. Selection is a
+        // lift of the cell beneath (HIG §9.3), so the badge keeps its own
+        // colours in both states and never needs a white veneer.
+        let (fill, fg) = (tint.with_alpha(0.16), tint);
         scene.fill(Fill::NonZero, transform, fill, None, &card);
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            fg.with_alpha(if selected { 0.7 } else { 0.5 }),
+            fg.with_alpha(0.5),
             None,
-            &card,
+            &ui::surface::edge_outline(rect, radius),
         );
         // Glyph in the upper portion.
         let pad = rect.height() * 0.14;
@@ -1137,20 +1188,15 @@ impl FileView {
             let cell = self.cell_rect(i);
             let selected = self.selection.is_selected(i);
             let hovered = self.hover == Some(i) && !selected;
-            if selected || hovered {
-                let bg = if selected {
-                    tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX]
-                } else {
-                    tokens.colors.lift(0.72)
-                };
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    bg,
-                    None,
-                    &RoundedRect::from_rect(cell, ROW_RADIUS * self.scale),
-                );
-            }
+            Self::paint_selection(
+                scene,
+                transform,
+                theme,
+                cell,
+                ROW_RADIUS * self.scale,
+                selected,
+                hovered,
+            );
             // A preview tile centred in the upper portion — larger than the bare
             // glyph so a real thumbnail reads well; directories keep the glyph,
             // centred in the same slot so their labels stay level with their
@@ -1163,9 +1209,7 @@ impl FileView {
             };
             let icon_x = cell.x0 + (cell.width() - preview_px) / 2.0;
             let icon_y = slot_y + (slot_px - preview_px) / 2.0;
-            let icon_color = if selected {
-                Color::WHITE
-            } else if entry.is_dir {
+            let icon_color = if entry.is_dir {
                 tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX]
             } else {
                 tokens.colors.text_primary
@@ -1180,7 +1224,6 @@ impl FileView {
                 FileVisual {
                     rect: file_icon_rect,
                     entry,
-                    selected,
                     glyph_color: icon_color,
                     grid: true,
                 },
@@ -1218,7 +1261,7 @@ impl FileView {
                     scene,
                     &label,
                     size,
-                    Self::cell_text(theme, selected),
+                    Self::cell_text(theme),
                     transform * Affine::translate((lx, ly)),
                     None,
                 );
@@ -1365,10 +1408,7 @@ impl Widget for FileView {
             && let Some(i) = self.selection.primary()
         {
             let r = match self.mode {
-                ViewMode::List => {
-                    let row = self.list_row_rect(i);
-                    Rect::new(row.x0 + 6.0, row.y0 + 2.0, row.x1 - 6.0, row.y1 - 2.0)
-                }
+                ViewMode::List => Self::list_row_face(self.list_row_rect(i)),
                 ViewMode::Grid => self.cell_rect(i),
             };
             if !cull(vp, r) {
@@ -3091,5 +3131,38 @@ mod tests {
                 cell.y1
             );
         }
+    }
+
+    /// HIG §7 "Nothing touches": two adjacent chosen rows keep an `s1` gap
+    /// between their faces, two grid cells keep the grid gap, and the header
+    /// rule is inset from the pane edge like every other separator.
+    #[test]
+    fn neighbouring_faces_keep_a_token_gap() {
+        let sink = new_sink();
+        let s1 = f64::from(Spacing::BASE.s1);
+        let mut list = FileView::new(&items(4), &SelectionModel::new(), &sink);
+        list.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+        for i in 0..3 {
+            let a = FileView::list_row_face(list.list_row_rect(i));
+            let b = FileView::list_row_face(list.list_row_rect(i + 1));
+            let gap = b.y0 - a.y1;
+            assert!(
+                gap >= s1 && (gap - s1).abs() < 0.01,
+                "list rows {i} and {} are {gap}px apart, want s1 ({s1})",
+                i + 1
+            );
+            assert!(a.x0 > list.rect.x0 && a.x1 < list.rect.x1);
+        }
+        assert!(list.pad_x() >= s1, "header rule inset is a token step");
+
+        let mut grid = FileView::new(&items(6), &SelectionModel::new(), &sink).mode(ViewMode::Grid);
+        grid.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+        grid.columns = grid.columns_for_width(800.0);
+        assert!(grid.columns >= 2);
+        let a = grid.cell_rect(0);
+        let b = grid.cell_rect(1);
+        let below = grid.cell_rect(grid.columns);
+        assert!(b.x0 - a.x1 >= s1, "grid columns touch: {}", b.x0 - a.x1);
+        assert!(below.y0 - a.y1 >= s1, "grid rows touch: {}", below.y0 - a.y1);
     }
 }

@@ -14,7 +14,7 @@ use vello::peniko::{Color, Fill};
 use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Avatar;
+use ui::widget::{Avatar, Button, ButtonFace};
 
 use crate::model::ChangeKind;
 
@@ -29,17 +29,32 @@ pub fn fill_round(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: 
     scene.fill(Fill::NonZero, t, color, None, &r);
 }
 
-/// Stroke a rounded rectangle outline.
-pub fn stroke_round(
+/// A card, row or control face with its derived rest edge (HIG §9.5): the
+/// fill plus a crisp 1 px inset hairline measured against that fill, so the
+/// edge registers on the dark preset where a declared `border_standard`
+/// stroke on a raised surface vanished.
+pub fn card(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, fill: Color) {
+    ui::surface::card(scene, t, rect, radius, fill);
+}
+
+/// The derived hairline for a surface painted in `fill` — what a divider
+/// between that surface and its neighbour is stroked in.
+#[must_use]
+pub fn edge(fill: Color) -> Color {
+    ui::surface::edge_on(fill)
+}
+
+/// Paint a button through the shared face so rest, hover, disabled and
+/// primary/danger looks come from one painter. The caller keeps its own hit
+/// rect; this only paints.
+pub fn button(
     scene: &mut Scene,
+    tr: &mut TextRenderer,
     t: Affine,
-    rect: Rect,
-    radius: f64,
-    width: f64,
-    color: Color,
+    theme: &Theme,
+    face: &ButtonFace<'_>,
 ) {
-    let r = RoundedRect::from_rect(rect, radius);
-    scene.stroke(&Stroke::new(width), t, color, None, &r);
+    Button::paint(scene, t, tr, theme, face);
 }
 
 /// Draw a horizontal hairline separator.
@@ -218,6 +233,16 @@ pub fn elide_mono(tr: &mut TextRenderer, s: &str, size: f32, max_width: f64) -> 
     best
 }
 
+/// How a [`pill`] closes its edge (HIG §9.5 rest edges).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PillEdge {
+    /// A quiet pill on a neutral fill: the hairline is derived from the fill
+    /// (`ui::surface::edge_on`), so it reads on every theme.
+    Derived,
+    /// An accent or semantic fill is self-defining and carries no edge.
+    Bare,
+}
+
 /// A small rounded "pill" with a label — used for ref decorations, badges,
 /// ahead/behind counts. The label is painted at `size`; the pill is
 /// [`pill_height`] tall. Returns the advance width consumed (pill + gap).
@@ -232,7 +257,7 @@ pub fn pill(
     label: &str,
     fg: Color,
     bg: Color,
-    border: Option<Color>,
+    edge: PillEdge,
 ) -> f64 {
     let pad = pill_pad();
     let height = pill_height(tr, size);
@@ -242,9 +267,9 @@ pub fn pill(
     let (tw, th) = tr.measure_weighted(label, size, None, TextWeight::Medium);
     let w = f64::from(tw) + pad * 2.0;
     let rect = Rect::new(x, y, x + w, y + height);
-    fill_round(scene, t, rect, height / 2.0, bg);
-    if let Some(bc) = border {
-        stroke_round(scene, t, rect, height / 2.0, 1.0, bc);
+    match edge {
+        PillEdge::Derived => card(scene, t, rect, height / 2.0, bg),
+        PillEdge::Bare => fill_round(scene, t, rect, height / 2.0, bg),
     }
     text_weighted(
         scene,

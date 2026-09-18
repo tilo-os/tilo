@@ -77,19 +77,21 @@ pub fn stroke_rrect(
     );
 }
 
-/// Draw a raised, bordered card and return the padded inner content rect.
+/// Draw a raised card with its derived rest edge (HIG §7, §9.5) and return
+/// the padded inner content rect. Routed through [`ui::surface::card`] so the
+/// edge is measured against the card itself — the declared `border_standard`
+/// it replaced is three shades from the dark `raised` tier and vanished.
 pub fn panel(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme, pad: f64) -> Rect {
     let radius = f64::from(theme.tokens.radii.md) + 2.0;
-    fill_rrect(scene, t, rect, radius, theme.tokens.colors.surfaces.raised);
-    stroke_rrect(
-        scene,
-        t,
-        rect,
-        radius,
-        theme.tokens.colors.border_standard,
-        1.0,
-    );
+    ui::surface::card(scene, t, rect, radius, theme.tokens.colors.surfaces.raised);
     Rect::new(rect.x0 + pad, rect.y0 + pad, rect.x1 - pad, rect.y1 - pad)
+}
+
+/// A faint rule or track *inside* a raised card (chart grid, gauge track,
+/// scrollbar groove): the card's hairline polarity at `alpha`, so it reads on
+/// dark and light alike instead of a declared border at a fixed alpha.
+pub fn inner_rule(theme: &Theme, alpha: u8) -> Color {
+    ui::surface::edge_on_with(theme.tokens.colors.surfaces.raised, alpha)
 }
 
 /// A single data series for [`area_chart`].
@@ -151,7 +153,7 @@ pub fn area_chart(
     // Plot area sits below the header.
     let plot = Rect::new(inner.x0, inner.y0 + 22.0, inner.x1, inner.y1);
     // Grid: four horizontal rules.
-    let grid = with_alpha(colors.border_standard, 90);
+    let grid = inner_rule(theme, 26);
     for i in 0..=4 {
         let y = plot.y0 + plot.height() * (f64::from(i) / 4.0);
         scene.stroke(
@@ -236,7 +238,7 @@ pub fn ring_gauge(
     scene.stroke(
         &Stroke::new(thickness),
         t,
-        with_alpha(colors.border_standard, 150),
+        inner_rule(theme, 56),
         None,
         &Circle::new(center, radius),
     );
@@ -329,7 +331,7 @@ pub fn bar_gauge(
         t,
         track,
         bar_h / 2.0,
-        with_alpha(colors.border_standard, 150),
+        inner_rule(theme, 56),
     );
     let frac = f64::from(frac.clamp(0.0, 1.0));
     if frac > 0.0 {

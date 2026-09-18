@@ -6,7 +6,6 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Color, Fill};
 
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -14,7 +13,8 @@ use ui::theme::Theme;
 use crate::app::{
     center_text, draw_chevron, draw_cross, draw_download, draw_icon_button, draw_upload,
 };
-use crate::draw_util::{fill_rect, fill_round, stroke_line, stroke_round};
+use crate::draw_util::{fill_rect, fill_round, hairline, selected_row};
+use ui::surface::card;
 use crate::model::View;
 
 const WIDTH: f64 = 252.0;
@@ -166,23 +166,18 @@ impl Sidebar {
         }
 
         let rect = self.rect;
-        fill_rect(scene, transform, colors.surfaces.raised, rect);
         if overlay {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                Color::from_rgba8(0, 0, 0, 70),
-                None,
-                &Rect::new(rect.x1, rect.y0, rect.x1 + 8.0, rect.y1),
-            );
+            // The drawer's elevation over the dimmed content: the theme's
+            // shadow token, not a literal black band.
+            ui::surface::elevation(scene, transform, rect, &theme.tokens.elevation.e3);
         }
-        stroke_line(
+        fill_rect(scene, transform, colors.surfaces.raised, rect);
+        hairline(
             scene,
             transform,
-            colors.border_standard,
+            colors.surfaces.raised,
             Point::new(rect.x1, rect.y0),
             Point::new(rect.x1, rect.y1),
-            1.0,
         );
 
         let pad = 18.0;
@@ -264,17 +259,14 @@ impl Sidebar {
         hits: &mut Vec<(Rect, Action)>,
     ) -> f64 {
         let colors = &theme.tokens.colors;
-        let segmented = Rect::new(rect.x0 + 12.0, y, rect.x1 - 12.0, y + 36.0);
-        fill_round(scene, transform, colors.surfaces.base, segmented, 9.0);
-        stroke_round(
-            scene,
-            transform,
-            colors.border_standard,
-            segmented,
-            9.0,
-            1.0,
-        );
+        let inset = f64::from(theme.tokens.spacing.s3);
+        let segmented = Rect::new(rect.x0 + inset, y, rect.x1 - inset, y + 36.0);
+        let track_radius = f64::from(theme.tokens.radii.lg);
+        // Segmented track (HIG §9.5): the base tier with its derived edge; the
+        // chosen segment is the selection lift, never an accent fill.
+        card(scene, transform, segmented, track_radius, colors.surfaces.base);
         let cell_width = segmented.width() / View::ALL.len() as f64;
+        let seg_inset = f64::from(theme.tokens.spacing.s1) / 2.0 + 1.0;
         for (index, candidate) in View::ALL.iter().enumerate() {
             let cell = Rect::new(
                 segmented.x0 + cell_width * index as f64,
@@ -282,30 +274,23 @@ impl Sidebar {
                 segmented.x0 + cell_width * (index as f64 + 1.0),
                 segmented.y1,
             );
-            if view == *candidate {
-                fill_round(
-                    scene,
-                    transform,
-                    colors.accent[5],
-                    cell.inflate(-3.0, -3.0),
-                    7.0,
-                );
-            } else if cell.contains(pointer) {
-                fill_round(
-                    scene,
-                    transform,
-                    colors.lift(0.35),
-                    cell.inflate(-3.0, -3.0),
-                    7.0,
-                );
-            }
+            selected_row(
+                scene,
+                transform,
+                theme,
+                colors.surfaces.base,
+                cell.inflate(-seg_inset, -seg_inset),
+                track_radius - seg_inset,
+                view == *candidate,
+                cell.contains(pointer),
+            );
             center_text(
                 scene,
                 text,
                 candidate.label(),
                 13.0,
                 if view == *candidate {
-                    Color::WHITE
+                    colors.text_primary
                 } else {
                     colors.neutral[7]
                 },

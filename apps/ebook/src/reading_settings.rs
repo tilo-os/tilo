@@ -8,7 +8,6 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Color;
 use winit::event::{Modifiers, WindowEvent};
 
 use ui::text_render::{TextRenderer, TextWeight};
@@ -145,6 +144,17 @@ impl ReadingSettings {
                 )
             })
             .collect::<Vec<_>>();
+        // One node per action target: the outside-click dismiss is registered
+        // as several bands around the panel, and the tree reports the last
+        // (largest) one rather than four "Close" buttons.
+        let mut seen = std::collections::HashSet::new();
+        nodes.reverse();
+        nodes.retain(|node| {
+            node.action_target
+                .clone()
+                .is_none_or(|target| seen.insert(target))
+        });
+        nodes.reverse();
         nodes.extend(self.numbers.accessibility_nodes());
         nodes
     }
@@ -297,9 +307,6 @@ impl ReadingSettings {
             return;
         }
 
-        // The page remains an undimmed live preview. The viewport hit below
-        // is only a modal outside-click target; later panel hits win.
-        self.push_hit(viewport, ReadingSettingsAction::Dismiss);
         let layout = Self::layout(
             text,
             viewport,
@@ -310,6 +317,22 @@ impl ReadingSettings {
             default_font_id,
             schemes,
         );
+        // The page remains an undimmed live preview. The outside-click
+        // dismiss target is the viewport *around* the panel, registered as
+        // the four bands beside it rather than one rect under it, so its
+        // semantic bounds never overlap the panel's own controls. The band
+        // pushed last is the one the accessibility tree reports.
+        let panel = layout.panel;
+        for band in [
+            Rect::new(viewport.x0, viewport.y0, viewport.x1, panel.y0),
+            Rect::new(viewport.x0, panel.y1, viewport.x1, viewport.y1),
+            Rect::new(panel.x1, panel.y0, viewport.x1, panel.y1),
+            Rect::new(viewport.x0, panel.y0, panel.x0, panel.y1),
+        ] {
+            if band.width() > 0.0 && band.height() > 0.0 {
+                self.push_hit(band, ReadingSettingsAction::Dismiss);
+            }
+        }
         self.draw_panel_background(scene, transform, theme, layout.panel);
 
         let mut y = layout.panel.y0 + layout.pad;
@@ -394,22 +417,8 @@ impl ReadingSettings {
         theme: &Theme,
         panel: Rect,
     ) {
-        let colors = &theme.tokens.colors;
-        paint::fill_round(
-            scene,
-            transform,
-            panel,
-            f64::from(theme.tokens.radii.lg),
-            colors.surfaces.raised,
-        );
-        paint::stroke_round(
-            scene,
-            transform,
-            panel,
-            f64::from(theme.tokens.radii.lg),
-            colors.border_standard,
-            1.0,
-        );
+        // A floating Panel: elevation, ground and the derived Panel border.
+        crate::chrome::panel(scene, transform, theme, panel);
         self.push_hit(panel, ReadingSettingsAction::Swallow);
     }
 
@@ -891,24 +900,32 @@ impl ReadingSettings {
         let width = Self::pill_width(text, label, 12.5);
         let rect = Rect::new(x, y, x + width, y + height);
         let colors = &theme.tokens.colors;
-        let background = if active {
-            theme.accent_primary
-        } else if rect.contains(self.cursor) {
-            theme.bg_hover
+        // Chip quiet (HIG §9.5): a raised face with its derived edge at rest;
+        // the chosen chip is the accent fill with no edge, inked for contrast.
+        if active {
+            paint::fill_round(scene, transform, rect, height / 2.0, theme.accent_primary);
         } else {
-            colors.surfaces.overlay
-        };
-        paint::fill_round(scene, transform, rect, height / 2.0, background);
+            crate::chrome::quiet_pill(
+                scene,
+                transform,
+                theme,
+                rect,
+                height / 2.0,
+                colors.surfaces.raised,
+                rect.contains(self.cursor),
+            );
+        }
+        let (_, label_h) = text.measure_weighted(label, 12.5, None, TextWeight::Medium);
         text.draw_text_weighted(
             scene,
             label,
             12.5,
             if active {
-                Color::from_rgb8(248, 248, 252)
+                theme.on_surface(theme.accent_primary).ink
             } else {
                 colors.text_primary
             },
-            transform * Affine::translate((x + 12.0, y + (height - 12.5) / 2.0)),
+            transform * Affine::translate((x + 12.0, y + (height - f64::from(label_h)) / 2.0)),
             None,
             TextWeight::Medium,
         );

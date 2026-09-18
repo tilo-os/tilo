@@ -506,7 +506,8 @@ impl Widget for ContextMenu {
         // point-placed one keeps its origin and reference width but grows
         // its rows (and, past the reference width, its width) to the text.
         self.layout_within(text_renderer, theme);
-        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
+        let radius = f64::from(theme.tokens.radii.md);
+        let shape = RoundedRect::from_rect(self.rect, radius);
         // The near-black overlay tier, so the menu reads as an opaque
         // raised sheet, never bleeding the content beneath.
         scene.fill(
@@ -516,12 +517,16 @@ impl Widget for ContextMenu {
             None,
             &shape,
         );
+        // Panel role (HIG §9.1): the edge is derived against the ground,
+        // painted as a crisp 1 px inset stroke. The declared
+        // `border_standard` sat three shades off the overlay tier on the
+        // dark preset and read as no edge at all.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.tokens.colors.border_standard,
+            crate::chrome::panel_border(theme),
             None,
-            &shape,
+            &crate::surface::edge_outline(self.rect, radius),
         );
 
         // One style for measuring (`layout_within`) and painting, in both
@@ -532,7 +537,9 @@ impl Widget for ContextMenu {
         let style =
             text_renderer.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
         let label_x = self.rect.x0 + label_inset(theme);
-        let separator_inset = f64::from(theme.tokens.spacing.s2);
+        // HIG §9.5: a separator inside a Panel is inset `spacing.s3` from
+        // the panel edge, never running into the corner radius.
+        let separator_inset = f64::from(theme.tokens.spacing.s3);
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -594,18 +601,14 @@ impl Widget for ContextMenu {
                 }
                 MenuItem::Separator => {
                     let sep_y = y + SEPARATOR_HEIGHT / 2.0;
-                    let line = Rect::new(
-                        self.rect.x0 + separator_inset,
-                        sep_y - 0.5,
-                        self.rect.x1 - separator_inset,
-                        sep_y + 0.5,
-                    );
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
+                    crate::surface::separator(
+                        scene,
                         transform,
-                        theme.tokens.colors.border_standard,
-                        None,
-                        &line,
+                        self.rect.x0,
+                        self.rect.x1,
+                        sep_y,
+                        separator_inset,
+                        theme.tokens.colors.surfaces.overlay,
                     );
                     y += SEPARATOR_HEIGHT;
                 }

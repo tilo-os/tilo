@@ -66,7 +66,8 @@ impl InputDeviceGlyph {
         let colors = &theme.tokens.colors;
         let stroke = Stroke::new(1.5);
         let ink = colors.text_primary;
-        let quiet = colors.neutral[2];
+        // A lift off the ground, not a ramp slot (HIG §9.2).
+        let quiet = colors.lift(1.0);
         if matches!(
             family,
             ControllerFamily::JoyConLeft | ControllerFamily::JoyConRight
@@ -610,15 +611,9 @@ fn paint_token(
         HintShape::Gesture => 11.0,
         HintShape::Keycap => 5.0,
     };
-    let outline = RoundedRect::from_rect(rect, radius);
-    scene.fill(Fill::NonZero, transform, colors.neutral[2], None, &outline);
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        colors.neutral[5],
-        None,
-        &outline,
-    );
+    // Keycap body is a lift off the ground with an edge derived from it
+    // (HIG §9.2, §9.5) — ramp slots were one fixed grey per theme.
+    crate::surface::card(scene, transform, rect, radius, colors.lift(1.0));
     let size = token_text_size(label, theme, text_renderer);
     let (tw, th) = text_renderer.measure(label, size, None);
     text_renderer.draw_text_weighted(

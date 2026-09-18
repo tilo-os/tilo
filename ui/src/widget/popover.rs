@@ -372,20 +372,24 @@ impl Widget for Popover {
             &theme.tokens.elevation.e4,
         );
 
+        // Panel role (HIG §9.1): the panel ground, walked clear of both the
+        // desktop and the window card, with the derived panel edge as a
+        // crisp 1 px inset stroke — never a declared `border_standard`,
+        // which is invisible on the dark preset's raised tier.
         let shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            c.surfaces.raised,
+            crate::chrome::panel_ground(theme),
             None,
             &shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            c.border_standard,
+            crate::chrome::panel_border(theme),
             None,
-            &shape,
+            &crate::surface::edge_outline(self.rect, radius),
         );
 
         let fs = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);

@@ -331,6 +331,21 @@ pub struct ApiTesterApp {
     kv_height: Option<f64>,
     variable_color: [u8; 3],
     control_height: f64,
+    /// Gap between stacked rail controls (environment picker, buttons, the
+    /// action disclosures and their rows): one `s2` step for one relationship
+    /// (HIG §7b), read from the theme where the rail used to mix 8 and 4 px.
+    rail_row_gap: f64,
+    /// Gap between the rows inside an expanded action group (`s1`): rows
+    /// that read as one group under their disclosure sit closer than the
+    /// stacked top-level controls do (HIG §7b), so an open group of five
+    /// still fits a short window.
+    rail_group_gap: f64,
+    /// Rail top inset (`s6`, the page gutter) and the measured line boxes of
+    /// the two rail captions ("ENV" at 9 px, "COLLECTIONS" at 10 px), so each
+    /// caption sits one `s1` above what it labels instead of in a fixed band.
+    rail_inset: f64,
+    env_caption_h: f64,
+    caption_h: f64,
     text_sm: f32,
     text_scale: f64,
     disclosures: Vec<NavRow>,
@@ -538,6 +553,11 @@ impl ApiTesterApp {
             kv_height: None,
             variable_color: [0, 0, 0],
             control_height: 34.0,
+            rail_row_gap: f64::from(ui::tokens::spacing::Spacing::BASE.s2),
+            rail_group_gap: f64::from(ui::tokens::spacing::Spacing::BASE.s1),
+            rail_inset: f64::from(ui::tokens::spacing::Spacing::BASE.s6),
+            env_caption_h: 12.0,
+            caption_h: 13.0,
             text_sm: 13.0,
             text_scale: 1.0,
             disclosures: [
@@ -1548,9 +1568,13 @@ impl ApiTesterApp {
         // --- Sidebar rows ---
         if self.rail.reveal() > 0.001 && l.sidebar.width() > 1.0 {
             let s = l.sidebar;
+            let rail_gap = self.rail_row_gap;
+            let group_gap = self.rail_group_gap;
             // No app-name wordmark (the OS titlebar shows "API Tester"); the ENV
             // picker leads the sidebar. Keep room above it for the ENV caption.
-            let mut y = s.y0 + (PAD + 8.0).max(14.0 * self.text_scale + 4.0);
+            // The rail opens with its `s6` gutter, grown only when the ENV
+            // caption plus its `s1` gap to the picker needs more.
+            let mut y = s.y0 + self.rail_inset.max(self.env_caption_h + 2.0 * group_gap);
             let control_x = s.x0 + PAD;
             let control_w = s.width() - PAD * 2.0;
             if let Some(form) = self.form {
@@ -1582,7 +1606,7 @@ impl ApiTesterApp {
             } else {
                 l.env = Rect::new(control_x, y, s.x1 - PAD, y + self.control_height);
                 l.sidebar_items.push((SidebarItem::Environment, l.env));
-                y = l.env.y1 + 8.0;
+                y = l.env.y1 + rail_gap;
             }
             let h = self.control_height;
             let row = self.row_height;
@@ -1593,7 +1617,7 @@ impl ApiTesterApp {
                 _ => &[],
             };
             let footer_h = if self.form.is_none() {
-                (4 + footer_actions.len()) as f64 * (h + 4.0) + 8.0
+                4.0 * (h + rail_gap) + footer_actions.len() as f64 * (h + group_gap) + rail_gap
             } else {
                 0.0
             };
@@ -1605,11 +1629,20 @@ impl ApiTesterApp {
             };
             if self.form.is_none() {
                 add(SidebarItem::Manage(0), y, h);
-                y += h + 4.0;
+                y += h + rail_gap;
             }
-            l.collections_label = Point::new(control_x, y);
-            y += 24.0_f64.max(13.0 * self.text_scale + 5.0);
-            let bottom = (s.y1 - PAD - footer_h).max(y);
+            // The "COLLECTIONS" caption only labels a list that has room for
+            // at least one row above the footer; a height-starved rail (an
+            // open action group in a short window) hands that band to the
+            // footer instead of reserving it for nothing (HIG §7a: empty
+            // docks do not reserve area).
+            let label_h = self.caption_h + group_gap;
+            let footer_top = s.y1 - PAD - footer_h;
+            if footer_top - y >= label_h + row {
+                l.collections_label = Point::new(control_x, y);
+                y += label_h;
+            }
+            let bottom = footer_top.max(y);
             let paging = (self.nav_meta.len() as f64 * row) > bottom - y;
             let nav_bottom = if paging {
                 (bottom - h - 4.0).max(y)
@@ -1628,37 +1661,40 @@ impl ApiTesterApp {
             if paging && bottom - l.nav_viewport.y0 >= h {
                 // Both directions stay available to keyboard users, including
                 // when a disclosure temporarily reduces the list viewport.
-                let half = (s.width() - PAD * 2.0 - 4.0) / 2.0;
+                let half = (s.width() - PAD * 2.0 - rail_gap) / 2.0;
                 l.sidebar_items.push((
                     SidebarItem::Manage(13),
                     Rect::new(control_x, bottom - h, control_x + half, bottom),
                 ));
                 l.sidebar_items.push((
                     SidebarItem::Manage(14),
-                    Rect::new(control_x + half + 4.0, bottom - h, s.x1 - PAD, bottom),
+                    Rect::new(control_x + half + rail_gap, bottom - h, s.x1 - PAD, bottom),
                 ));
             }
             if self.form.is_none() {
-                y = if paging { bottom + 8.0 } else { y + 8.0 };
+                y = if paging { bottom + rail_gap } else { y + rail_gap };
                 l.sidebar_items.push((
                     SidebarItem::Manage(1),
                     Rect::new(control_x, y, s.x1 - PAD, y + h),
                 ));
-                y += h + 4.0;
+                y += h + rail_gap;
                 for group in 0..3 {
                     l.sidebar_items.push((
                         SidebarItem::Disclosure(group),
                         Rect::new(control_x, y, s.x1 - PAD, y + h),
                     ));
-                    y += h + 4.0;
+                    y += h + rail_gap;
                     if self.management == Some(group) {
                         for &i in footer_actions {
                             l.sidebar_items.push((
                                 SidebarItem::Manage(i),
                                 Rect::new(control_x, y, s.x1 - PAD, y + h),
                             ));
-                            y += h + 4.0;
+                            y += h + group_gap;
                         }
+                        // The next top-level control sits a full step below
+                        // the group, not a group step.
+                        y += rail_gap - group_gap;
                     }
                 }
             }
@@ -1713,8 +1749,9 @@ impl ApiTesterApp {
         let c = &theme.tokens.colors;
         let area = l.sidebar;
         scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &area);
+        // The rail's edge is derived against the rail itself (HIG §9.5).
         let div = Rect::new(area.x1 - 1.0, area.y0, area.x1, area.y1);
-        scene.fill(Fill::NonZero, t, c.border_standard, None, &div);
+        scene.fill(Fill::NonZero, t, ui::surface::edge_on(c.surfaces.raised), None, &div);
 
         // ENV label above the picker.
         if self.form.is_none() {
@@ -1723,7 +1760,10 @@ impl ApiTesterApp {
                 "ENV",
                 9.0,
                 c.text_dim,
-                t * Affine::translate((l.env.x0, l.env.y0 - 14.0 * self.text_scale)),
+                t * Affine::translate((
+                    l.env.x0,
+                    l.env.y0 - (self.env_caption_h + self.rail_group_gap),
+                )),
                 None,
                 TextWeight::Bold,
             );
@@ -1799,7 +1839,7 @@ impl ApiTesterApp {
         // URL bar background + divider.
         scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &l.urlbar);
         let bar_div = Rect::new(area.x0, l.urlbar.y1 - 1.0, area.x1, l.urlbar.y1);
-        scene.fill(Fill::NonZero, t, c.border_standard, None, &bar_div);
+        scene.fill(Fill::NonZero, t, ui::surface::edge_on(c.surfaces.raised), None, &bar_div);
 
         if self.rail.layout() == SplitLayout::Overlay {
             self.rail_button.draw(scene, t, tr, theme, presence);
@@ -1810,23 +1850,14 @@ impl ApiTesterApp {
         self.method_dropdown.draw(scene, t, tr, theme, presence);
 
         // URL field box + the plain TextInput inside it.
-        let url_shape = RoundedRect::from_rect(l.url, f64::from(theme.tokens.radii.md));
-        scene.fill(Fill::NonZero, t, c.surfaces.base, None, &url_shape);
-        scene.stroke(
-            &Stroke::new(if self.url_input.is_focused() {
-                2.0
-            } else {
-                1.0
-            }),
-            t,
-            if self.url_input.is_focused() {
-                theme.border_focus
-            } else {
-                c.border_standard
-            },
-            None,
-            &url_shape,
-        );
+        // Rest: a base-toned field with its derived edge; focus: the ring.
+        if self.url_input.is_focused() {
+            let url_shape = RoundedRect::from_rect(l.url, f64::from(theme.tokens.radii.md));
+            scene.fill(Fill::NonZero, t, c.surfaces.base, None, &url_shape);
+            scene.stroke(&Stroke::new(2.0), t, theme.border_focus, None, &url_shape);
+        } else {
+            ui::surface::card(scene, t, l.url, f64::from(theme.tokens.radii.md), c.surfaces.base);
+        }
         self.url_input.draw(scene, t, tr, theme, presence);
 
         // Send button draws itself.
@@ -2105,7 +2136,7 @@ impl ApiTesterApp {
                 scene.stroke(
                     &Stroke::new(1.0),
                     t,
-                    c.border_standard.with_alpha_factor(0.5),
+                    ui::surface::edge_on(c.surfaces.base),
                     None,
                     &RoundedRect::from_rect(row.checkbox(), 4.0),
                 );
@@ -2145,7 +2176,7 @@ impl ApiTesterApp {
             scene.fill(
                 Fill::NonZero,
                 t,
-                c.border_standard.with_alpha_factor(0.4),
+                ui::surface::edge_on(c.surfaces.base),
                 None,
                 &Rect::new(row.rect.x0, row.rect.y1 - 1.0, row.rect.x1, row.rect.y1),
             );
@@ -2187,19 +2218,22 @@ impl ApiTesterApp {
                 None,
             );
             let chip = Rect::new(cx, y, cx + f64::from(lw) + 24.0, y + self.row_height);
-            let shape = RoundedRect::from_rect(chip, f64::from(theme.tokens.radii.full));
             if active {
+                let shape = RoundedRect::from_rect(chip, f64::from(theme.tokens.radii.full));
                 scene.fill(Fill::NonZero, t, theme.accent_primary, None, &shape);
             } else {
-                scene.fill(Fill::NonZero, t, c.lift(0.35), None, &shape);
-                scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
+                ui::surface::card(scene, t, chip, f64::from(theme.tokens.radii.full), c.lift(0.35));
             }
             tr.draw_text_weighted(
                 scene,
                 label,
                 tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
                     .size,
-                if active { Color::WHITE } else { c.text_dim },
+                if active {
+                    c.on_surface(theme.accent_primary).ink
+                } else {
+                    c.text_dim
+                },
                 t * Affine::translate((cx + 12.0, y + 8.0)),
                 None,
                 TextWeight::Semibold,
@@ -2229,9 +2263,7 @@ impl ApiTesterApp {
                 area.x1 - PAD,
                 y + 16.0 * self.text_scale + self.control_height,
             );
-            let shape = RoundedRect::from_rect(field, f64::from(theme.tokens.radii.md));
-            scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &shape);
-            scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
+            ui::surface::card(scene, t, field, f64::from(theme.tokens.radii.md), c.surfaces.raised);
             let shown = if secret && !value.is_empty() {
                 "\u{2022}".repeat(value.chars().count().min(24))
             } else {
@@ -2323,7 +2355,7 @@ impl ApiTesterApp {
                 );
                 scene.stroke(&Stroke::new(1.0), t, theme.accent_primary, None, &shape);
             } else {
-                scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
+                ui::surface::card(scene, t, chip, f64::from(theme.tokens.radii.md), c.lift(0.35));
             }
             tr.draw_text_weighted(
                 scene,
@@ -2361,29 +2393,19 @@ impl ApiTesterApp {
             }
             BodyMode::Json | BodyMode::Raw => {
                 let field = l.body;
-                let shape = RoundedRect::from_rect(field, f64::from(theme.tokens.radii.md));
-                scene.fill(
-                    Fill::NonZero,
-                    t,
-                    theme.tokens.colors.neutral[1],
-                    None,
-                    &shape,
-                );
-                scene.stroke(
-                    &Stroke::new(if self.body_input.is_focused() {
-                        2.0
-                    } else {
-                        1.0
-                    }),
-                    t,
-                    if self.body_input.is_focused() {
-                        theme.border_focus
-                    } else {
-                        c.border_standard
-                    },
-                    None,
-                    &shape,
-                );
+                if self.body_input.is_focused() {
+                    let shape = RoundedRect::from_rect(field, f64::from(theme.tokens.radii.md));
+                    scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &shape);
+                    scene.stroke(&Stroke::new(2.0), t, theme.border_focus, None, &shape);
+                } else {
+                    ui::surface::card(
+                        scene,
+                        t,
+                        field,
+                        f64::from(theme.tokens.radii.md),
+                        c.surfaces.raised,
+                    );
+                }
                 self.body_input.draw(scene, t, tr, theme, presence);
             }
         }
@@ -2402,7 +2424,7 @@ impl ApiTesterApp {
         let area = l.response;
         scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &area);
         let top_div = Rect::new(area.x0, area.y0, area.x1, area.y0 + 1.0);
-        scene.fill(Fill::NonZero, t, c.border_standard, None, &top_div);
+        scene.fill(Fill::NonZero, t, ui::surface::edge_on(c.surfaces.raised), None, &top_div);
 
         let row = l.resp_status;
         let x0 = area.x0 + PAD;
@@ -2462,15 +2484,9 @@ impl ApiTesterApp {
                 .draw(scene, t, tr, theme, presence);
 
             let body_area = l.resp_body;
-            scene.fill(
-                Fill::NonZero,
-                t,
-                theme.tokens.colors.neutral[1],
-                None,
-                &body_area,
-            );
+            scene.fill(Fill::NonZero, t, c.surfaces.base, None, &body_area);
             let body_div = Rect::new(area.x0, body_area.y0, area.x1, body_area.y0 + 1.0);
-            scene.fill(Fill::NonZero, t, c.border_standard, None, &body_div);
+            scene.fill(Fill::NonZero, t, ui::surface::edge_on(c.surfaces.raised), None, &body_div);
 
             match self.response_view {
                 ResponseView::Pretty => {
@@ -2487,13 +2503,7 @@ impl ApiTesterApp {
             }
         } else if let Some(err) = &self.error {
             let body_area = l.resp_body;
-            scene.fill(
-                Fill::NonZero,
-                t,
-                theme.tokens.colors.neutral[1],
-                None,
-                &body_area,
-            );
+            scene.fill(Fill::NonZero, t, c.surfaces.base, None, &body_area);
             self.response_error.draw(scene, t, tr, theme, presence);
             // Preserve the transport's actual detail below the shared recovery
             // treatment; the CTA remains visible and keyboard-accessible.
@@ -2508,13 +2518,7 @@ impl ApiTesterApp {
             );
         } else {
             let body_area = l.resp_body;
-            scene.fill(
-                Fill::NonZero,
-                t,
-                theme.tokens.colors.neutral[1],
-                None,
-                &body_area,
-            );
+            scene.fill(Fill::NonZero, t, c.surfaces.base, None, &body_area);
             self.response_empty.draw(scene, t, tr, theme, presence);
         }
     }
@@ -2722,13 +2726,7 @@ impl ApiTesterApp {
                 Some((area.width() - PAD * 2.0 - key_w) as f32),
             );
             let sep = Rect::new(x0, y + row_h - 1.0, area.x1 - PAD, y + row_h);
-            scene.fill(
-                Fill::NonZero,
-                t,
-                c.border_standard.with_alpha_factor(0.4),
-                None,
-                &sep,
-            );
+            scene.fill(Fill::NonZero, t, ui::surface::edge_on(c.surfaces.base), None, &sep);
             y += row_h;
         }
     }
@@ -3158,6 +3156,9 @@ impl Widget for ApiTesterApp {
         // their taffy geometry is unused — the nodes exist only so each
         // control is registered in `node_map` (a11y + focus + hit-testing).
         self.text_sm = theme.tokens.typography.scale.sm;
+        self.rail_row_gap = f64::from(theme.tokens.spacing.s2);
+        self.rail_group_gap = f64::from(theme.tokens.spacing.s1);
+        self.rail_inset = f64::from(theme.tokens.spacing.s6);
         let accent = theme.accent_primary.to_rgba8();
         self.variable_color = [accent.r, accent.g, accent.b];
         let mut child_nodes: Vec<NodeId> = Vec::new();
@@ -3201,6 +3202,10 @@ impl Widget for ApiTesterApp {
         let (_, label) = tr.measure("Environment actions", 14.0, None);
         let row = f64::from(line).ceil() + 12.0;
         let control = f64::from(label).ceil() + 14.0;
+        let (_, env_caption) = tr.measure_weighted("ENV", 9.0, None, TextWeight::Bold);
+        let (_, caption) = tr.measure_weighted("COLLECTIONS", 10.0, None, TextWeight::Bold);
+        self.env_caption_h = f64::from(env_caption).ceil();
+        self.caption_h = f64::from(caption).ceil();
         let changed = self.row_height != row.max(ROW_H) || self.control_height != control.max(34.0);
         self.row_height = row.max(ROW_H);
         self.control_height = control.max(34.0);
@@ -3754,6 +3759,55 @@ impl ApiTesterApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rail's stacked controls share one rhythm step (HIG §7b): the
+    /// named gap is the `s2` token, and every stacked pair in the computed
+    /// layout is separated by exactly that step.
+    #[test]
+    fn rail_controls_share_one_token_gap() {
+        let mut app = ApiTesterApp::new();
+        let rail_gap = app.rail_row_gap;
+        assert!((rail_gap - f64::from(ui::tokens::spacing::Spacing::BASE.s2)).abs() < 0.01);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.snap_rail(true);
+        let l = app.compute_layout();
+        let mut stacked: Vec<Rect> = l.sidebar_items.iter().map(|(_, r)| *r).collect();
+        stacked.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+        let controls: Vec<Rect> = stacked
+            .into_iter()
+            .filter(|r| (r.height() - app.control_height).abs() < 0.01)
+            .collect();
+        assert!(controls.len() >= 4, "the rail lays out its controls");
+        for pair in controls.windows(2) {
+            let gap = pair[1].y0 - pair[0].y1;
+            // Consecutive stacked controls: one step; a larger gap is the
+            // collections section between the groups, never a smaller one.
+            assert!(
+                (gap - rail_gap).abs() < 0.01 || gap > rail_gap,
+                "stacked rail controls keep the s2 step, got {gap}"
+            );
+            assert!(gap >= 4.0, "rail controls never touch: gap {gap}");
+        }
+        // An open action group: its rows sit one `s1` apart and the group
+        // still ends a full `s2` above whatever follows.
+        let group_gap = app.rail_group_gap;
+        assert!((group_gap - f64::from(ui::tokens::spacing::Spacing::BASE.s1)).abs() < 0.01);
+        app.management = Some(1);
+        let l = app.compute_layout();
+        let rows: Vec<Rect> = l
+            .sidebar_items
+            .iter()
+            .filter_map(|(item, r)| match item {
+                SidebarItem::Manage(3 | 4 | 10 | 11 | 12) => Some(*r),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rows.len(), 5, "the environment group lays out its five rows");
+        for pair in rows.windows(2) {
+            let gap = pair[1].y0 - pair[0].y1;
+            assert!((gap - group_gap).abs() < 0.01, "group rows keep the s1 step, got {gap}");
+        }
+    }
     use crate::model::KeyValue;
 
     fn app() -> ApiTesterApp {

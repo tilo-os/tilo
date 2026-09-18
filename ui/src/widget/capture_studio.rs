@@ -62,7 +62,9 @@ const TOP_GROUP_PAD: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 const TOP_GROUP_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 const TOP_BAR_H: f64 = crate::tokens::Metrics::BASE.bar_height as f64 + TOP_GROUP_PAD * 2.0;
 const TOP_BUTTON_W: f64 = TOP_BAR_H;
-const TOP_BUTTON_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64 / 2.0;
+/// Neighbouring buttons in a group keep one `s1`: the smallest token step,
+/// so two lifted faces never read as one bar (HIG §7 "nothing touches").
+const TOP_BUTTON_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64;
 const MIN_REGION: f64 = 12.0;
 
 /// Height of one line of `size`-px text exactly as the renderer paints it.
@@ -1742,15 +1744,7 @@ impl CaptureStudio {
             tooltip_x0 + tooltip_width,
             anchor.y1 + 36.0,
         );
-        surface::soft_shadow(
-            scene,
-            transform,
-            tooltip,
-            colors.neutral[0],
-            16.0,
-            7.0,
-            0.38,
-        );
+        surface::shadow(scene, transform, tooltip, 14.0, &theme.tokens.elevation.e2);
         scene.fill(
             Fill::NonZero,
             transform,
@@ -2356,19 +2350,27 @@ impl CaptureStudio {
         active_fill: Color,
     ) {
         let c = &theme.tokens.colors;
-        scene.fill(
-            Fill::NonZero,
-            t,
-            if active {
-                active_fill
-            } else if hovered {
-                c.lift(0.72)
-            } else {
-                c.lift(0.35)
-            },
-            None,
-            &RoundedRect::from_rect(r, 10.0),
-        );
+        let fill = if active {
+            active_fill
+        } else if hovered {
+            c.lift(0.72)
+        } else {
+            c.lift(0.35)
+        };
+        // A resting face keeps a derived edge (HIG §9.5 Button Neutral): the
+        // 0.35 lift alone is a whisper on a white group. The active face is
+        // its own contrast step.
+        if active {
+            scene.fill(
+                Fill::NonZero,
+                t,
+                fill,
+                None,
+                &RoundedRect::from_rect(r, 10.0),
+            );
+        } else {
+            surface::card(scene, t, r, 10.0, fill);
+        }
         icons::draw_icon(
             scene,
             t,
@@ -2397,19 +2399,24 @@ impl CaptureStudio {
         icon: Icon,
     ) {
         let c = &theme.tokens.colors;
-        scene.fill(
-            Fill::NonZero,
-            t,
-            if on {
-                c.accent[5]
-            } else if hovered {
-                c.lift(0.72)
-            } else {
-                c.lift(0.35)
-            },
-            None,
-            &RoundedRect::from_rect(r, 10.0),
-        );
+        let fill = if on {
+            c.accent[5]
+        } else if hovered {
+            c.lift(0.72)
+        } else {
+            c.lift(0.35)
+        };
+        if on {
+            scene.fill(
+                Fill::NonZero,
+                t,
+                fill,
+                None,
+                &RoundedRect::from_rect(r, 10.0),
+            );
+        } else {
+            surface::card(scene, t, r, 10.0, fill);
+        }
         icons::draw_icon(
             scene,
             t,
@@ -2620,7 +2627,7 @@ impl CaptureStudio {
         let colors = &theme.tokens.colors;
         let width = 430.0_f64.min(bounds.width() - 40.0);
         let card = Rect::from_center_size(bounds.center(), (width, 132.0));
-        surface::soft_shadow(scene, transform, card, colors.neutral[0], 28.0, 12.0, 0.52);
+        surface::shadow(scene, transform, card, 18.0, &theme.tokens.elevation.e4);
         scene.fill(
             Fill::NonZero,
             transform,
@@ -2711,19 +2718,24 @@ impl CaptureStudio {
     ) {
         let colors = &theme.tokens.colors;
         let active = seconds > 0;
-        scene.fill(
-            Fill::NonZero,
-            t,
-            if active {
-                colors.accent[5]
-            } else if hovered {
-                colors.lift(0.72)
-            } else {
-                colors.lift(0.35)
-            },
-            None,
-            &RoundedRect::from_rect(rect, 10.0),
-        );
+        let fill = if active {
+            colors.accent[5]
+        } else if hovered {
+            colors.lift(0.72)
+        } else {
+            colors.lift(0.35)
+        };
+        if active {
+            scene.fill(
+                Fill::NonZero,
+                t,
+                fill,
+                None,
+                &RoundedRect::from_rect(rect, 10.0),
+            );
+        } else {
+            surface::card(scene, t, rect, 10.0, fill);
+        }
         icons::draw_icon(
             scene,
             t,
@@ -2783,19 +2795,24 @@ impl CaptureStudio {
         } else {
             c.text_dim
         };
-        scene.fill(
-            Fill::NonZero,
-            t,
-            if active {
-                c.accent[5]
-            } else if hovered {
-                c.lift(0.72)
-            } else {
-                c.lift(0.35)
-            },
-            None,
-            &RoundedRect::from_rect(rect, 9.0),
-        );
+        let fill = if active {
+            c.accent[5]
+        } else if hovered {
+            c.lift(0.72)
+        } else {
+            c.lift(0.35)
+        };
+        if active {
+            scene.fill(
+                Fill::NonZero,
+                t,
+                fill,
+                None,
+                &RoundedRect::from_rect(rect, 9.0),
+            );
+        } else {
+            surface::card(scene, t, rect, 9.0, fill);
+        }
         let font_size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
         let (text_w, text_h) = tr.measure_weighted(label, font_size, None, TextWeight::Medium);
         let icon_size = 15.0;
@@ -2906,7 +2923,7 @@ impl CaptureStudio {
             CaptureMode::Screenshot => colors.accent[4],
             CaptureMode::Pip => colors.semantic.info,
         };
-        surface::soft_shadow(scene, transform, pill, colors.neutral[0], 22.0, 10.0, 0.44);
+        surface::shadow(scene, transform, pill, pill.height() / 2.0, &theme.tokens.elevation.e3);
         scene.fill(
             Fill::NonZero,
             transform,
@@ -3113,7 +3130,7 @@ impl CaptureStudio {
         let pill = self.recording_indicator_rects_at(0.0).0;
         let colors = &theme.tokens.colors;
         let radius = pill.height() / 2.0;
-        surface::soft_shadow(scene, transform, pill, colors.neutral[0], 20.0, 9.0, 0.42);
+        surface::shadow(scene, transform, pill, radius, &theme.tokens.elevation.e3);
         scene.fill(
             Fill::NonZero,
             transform,
@@ -3326,7 +3343,7 @@ impl CaptureStudio {
         let (pill, pause, stop) = self.recording_indicator_rects_at(p);
         let colors = &theme.tokens.colors;
         let radius = pill.height() / 2.0;
-        surface::soft_shadow(scene, transform, pill, colors.neutral[0], 20.0, 9.0, 0.42);
+        surface::shadow(scene, transform, pill, radius, &theme.tokens.elevation.e3);
         scene.fill(
             Fill::NonZero,
             transform,
@@ -3692,14 +3709,12 @@ impl CaptureStudio {
         } else {
             alpha
         };
-        surface::soft_shadow(
+        surface::shadow(
             scene,
             transform,
             pill,
-            colors.neutral[0],
-            18.0,
-            8.0,
-            0.36 * background_alpha,
+            radius,
+            &theme.tokens.elevation.e3.with_alpha_scaled(background_alpha),
         );
         scene.fill(
             Fill::NonZero,
@@ -3846,14 +3861,12 @@ impl CaptureStudio {
             self.screenshot_receipt_rects_at(p, receipt.origin);
         let colors = &theme.tokens.colors;
         let radius = 12.0 + (pill.height() / 2.0 - 12.0) * p;
-        surface::soft_shadow(
+        surface::shadow(
             scene,
             transform,
             pill,
-            colors.neutral[0],
-            20.0,
-            9.0,
-            0.40 * alpha,
+            radius,
+            &theme.tokens.elevation.e3.with_alpha_scaled(alpha),
         );
         scene.fill(
             Fill::NonZero,
@@ -4107,7 +4120,7 @@ impl CaptureStudio {
         let (pill, save, stop) = self.replay_indicator_rects_at(p);
         let colors = &theme.tokens.colors;
         let radius = pill.height() / 2.0;
-        surface::soft_shadow(scene, transform, pill, colors.neutral[0], 20.0, 9.0, 0.40);
+        surface::shadow(scene, transform, pill, radius, &theme.tokens.elevation.e3);
         scene.fill(
             Fill::NonZero,
             transform,
@@ -4640,14 +4653,10 @@ impl Widget for CaptureStudio {
         }
         let top = self.top_bar();
         for group in [self.mode_group_rect(), self.source_group_rect()] {
-            surface::soft_shadow(s, top_t, group, c.neutral[0], 30.0, 14.0, 0.55);
-            s.fill(
-                Fill::NonZero,
-                top_t,
-                c.surfaces.raised,
-                None,
-                &RoundedRect::from_rect(group, 14.0),
-            );
+            surface::shadow(s, top_t, group, 14.0, &theme.tokens.elevation.e4);
+            // Raised group under an edge derived from it (HIG §9.5): over the
+            // scrim the fill alone had no closed edge on the light preset.
+            surface::card(s, top_t, group, 14.0, c.surfaces.raised);
         }
         let [m0, m1, m2] = self.mode_rects();
         Self::symbol_button(
@@ -4877,14 +4886,9 @@ impl Widget for CaptureStudio {
             );
         }
         let bottom = self.bottom_bar();
-        surface::soft_shadow(s, bottom_t, bottom, c.neutral[0], 30.0, 14.0, 0.55);
-        s.fill(
-            Fill::NonZero,
-            bottom_t,
-            c.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(bottom, 14.0),
-        );
+        surface::shadow(s, bottom_t, bottom, 14.0, &theme.tokens.elevation.e4);
+        // Raised bar under an edge derived from it (HIG §9.5).
+        surface::card(s, bottom_t, bottom, 14.0, c.surfaces.raised);
         if matches!(self.source, SourceMode::Window | SourceMode::Multi) {
             let option_labels = if self.source == SourceMode::Multi {
                 ["Auto", "Grid", "Stack"]
@@ -6717,5 +6721,127 @@ mod tests {
             f64::from(top as u32) >= pill.y0.floor() && f64::from(bottom as u32) < pill.y1.ceil(),
             "timer ink rows {top}..={bottom} leave the pill {pill:?} at 2x"
         );
+    }
+
+    /// Relative luminance of the composited pixel at (`x`, `y`).
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "probe coordinates are non-negative pixel positions inside the test surface"
+    )]
+    fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
+        let (r, g, b, _) =
+            crate::offscreen::OffscreenRenderer::sample(rgba, w, x.floor() as u32, y.floor() as u32);
+        crate::a11y::relative_luminance(Color::from_rgb8(r, g, b))
+    }
+
+    /// `$UX1X_F4_OUT/<theme>/<name>` when the 1× review asked for evidence.
+    fn ux1x_out(theme: &Theme, name: &str) -> Option<std::path::PathBuf> {
+        let dir = std::path::PathBuf::from(std::env::var_os("UX1X_F4_OUT")?)
+            .join(theme.name.to_lowercase());
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir.join(name))
+    }
+
+    /// The studio open over an empty desktop in screenshot mode: both
+    /// top-bar groups, the bottom bar with its option and action buttons.
+    fn ux1x_fixture() -> CaptureStudio {
+        let mut s = CaptureStudio::default();
+        s.open();
+        s.set_mode(CaptureMode::Screenshot);
+        s.set_source_mode(SourceMode::Window);
+        s
+    }
+
+    /// The floating groups and every resting button inside them keep a
+    /// **visible derived edge** at 1× on both presets, and neighbouring
+    /// buttons keep one `s1` between them (HIG §7, §9.5). Before, the groups
+    /// were bare raised fills over the scrim and the buttons a 0.35 lift
+    /// 2 px apart; on the light preset the shadow tint was `neutral[0]` —
+    /// that palette's paper — so the groups floated with no shadow either.
+    ///
+    /// Writes `$UX1X_F4_OUT/<theme>/capture_studio.png` plus the harness
+    /// inspection when that variable is set; asserts regardless.
+    #[test]
+    fn ux1x_groups_and_resting_buttons_keep_a_derived_edge_on_both_presets() {
+        use crate::offscreen::OffscreenRenderer;
+        const EDGE_MIN: f64 = 0.008;
+        let (w, h) = (1400.0, 900.0);
+        // Evidence first, for both presets, so a failing assertion on one
+        // preset still leaves the other's PNG and inspection on disk.
+        for theme in [Theme::dark(), Theme::light()] {
+            let theme = theme.with_reduce_motion(true);
+            if let Some(png) = ux1x_out(&theme, "capture_studio.png") {
+                let harness = crate::headless::FrameHarness::new_with_theme(
+                    crate::State::new(),
+                    Box::new(ux1x_fixture()),
+                    (1400, 900),
+                    theme.clone(),
+                );
+                harness.render_window_png(&png);
+                if let Ok(json) = harness.inspection_json() {
+                    std::fs::write(png.with_extension("inspection.json"), json)
+                        .expect("write inspection");
+                }
+            }
+        }
+        for theme in [Theme::dark(), Theme::light()] {
+            let theme = theme.with_reduce_motion(true);
+            let mut s = ux1x_fixture();
+            s.rect = Rect::new(0.0, 0.0, w, h);
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let mut scene = Scene::new();
+            Widget::draw(&mut s, &mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a 1400x900 test surface"
+            )]
+            let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a 1400x900 test surface"
+            )]
+            let lum = |x: f64, y: f64| lum_at(&rgba, w as u32, x, y);
+
+            // Group: its left edge against its own fill, on the group's centre
+            // line (clear of the 14 px corner arcs; the first button starts
+            // one `TOP_GROUP_PAD` in, so the columns beside the edge are fill).
+            let group = s.mode_group_rect();
+            let y = group.center().y;
+            let edge = lum(group.x0, y);
+            let fill = lum(group.x0 + 3.0, y);
+            assert!(
+                (edge - fill).abs() >= EDGE_MIN,
+                "{}: group edge {edge:.4} vs fill {fill:.4} did not register",
+                theme.name
+            );
+
+            // Resting button: the second mode button (recording, not the
+            // active screenshot one) — its left edge against its own face.
+            let button = s.mode_rects()[1];
+            let bedge = lum(button.x0, button.center().y);
+            let face = lum(button.x0 + 3.0, button.center().y);
+            assert!(
+                (bedge - face).abs() >= EDGE_MIN,
+                "{}: button edge {bedge:.4} vs face {face:.4} did not register",
+                theme.name
+            );
+
+            // Nothing touches: neighbours keep the smallest token step.
+            let s1 = f64::from(theme.tokens.spacing.s1);
+            for pair in s.mode_rects().windows(2) {
+                let gap = pair[1].x0 - pair[0].x1;
+                assert!(gap >= s1 - 1e-9, "{}: mode buttons {gap} px apart", theme.name);
+            }
+            for pair in s.source_rects().windows(2) {
+                let gap = pair[1].x0 - pair[0].x1;
+                assert!(gap >= s1 - 1e-9, "{}: source buttons {gap} px apart", theme.name);
+            }
+            let (mode, source) = (s.mode_group_rect(), s.source_group_rect());
+            assert!(source.x0 - mode.x1 >= s1 - 1e-9, "{}: groups touch", theme.name);
+        }
     }
 }

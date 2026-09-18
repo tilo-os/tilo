@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, Stroke};
 use winit::event::WindowEvent;
 
 use crate::text_metrics::renderer_type_size;
@@ -434,13 +434,12 @@ impl Widget for NativeView {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            self.mount_error
-                .as_ref()
-                .map_or(theme.tokens.colors.border_standard, |_| {
-                    theme.tokens.colors.semantic.danger
-                }),
+            self.mount_error.as_ref().map_or(
+                crate::surface::edge_on(theme.tokens.colors.surfaces.base),
+                |_| theme.tokens.colors.semantic.danger,
+            ),
             None,
-            &RoundedRect::from_rect(self.rect, radius),
+            &crate::surface::edge_outline(self.rect, radius),
         );
         let label = self
             .mount_error

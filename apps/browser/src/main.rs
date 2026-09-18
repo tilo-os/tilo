@@ -55,7 +55,6 @@ use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
-use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
@@ -343,7 +342,7 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             size,
             std::path::Path::new(out),
             args.has("--probe-pip"),
-            args.text_scale,
+            args,
         )
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
@@ -384,17 +383,17 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             Box::new(tabs),
             size,
             std::path::Path::new(out),
-            args.text_scale,
+            args,
         )
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
     }
     if let Some(out) = args.value("--shots-suggestions") {
-        render_suggestions_shot(std::path::Path::new(out), args.text_scale);
+        render_suggestions_shot(std::path::Path::new(out), args);
         return Ok(true);
     }
     if let Some(out) = args.value("--shots-overlay") {
-        render_overlay_shot(std::path::Path::new(out), args.text_scale)
+        render_overlay_shot(std::path::Path::new(out), args)
             .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
     }
@@ -410,7 +409,7 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             Box::new(widget),
             size,
             std::path::Path::new(out),
-            args.text_scale,
+            args,
         )
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
@@ -427,7 +426,7 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             Box::new(widget),
             size,
             std::path::Path::new(out),
-            args.text_scale,
+            args,
         )
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
@@ -444,7 +443,7 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             Box::new(widget),
             size,
             std::path::Path::new(out),
-            args.text_scale,
+            args,
         )
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
@@ -461,7 +460,7 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             Box::new(widget),
             size,
             std::path::Path::new(out),
-            args.text_scale,
+            args,
         )
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
@@ -478,7 +477,7 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             Box::new(widget),
             size,
             std::path::Path::new(out),
-            args.text_scale,
+            args,
         )
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
@@ -495,7 +494,7 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             Box::new(widget),
             size,
             std::path::Path::new(out),
-            args.text_scale,
+            args,
         )
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
@@ -511,7 +510,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     }
     let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
     widget.debug_set_viewport_width(viewport.0);
-    render_shot_to_png(Box::new(widget), viewport, out, args.text_scale)
+    render_shot_to_png(Box::new(widget), viewport, out, args)
         .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
@@ -522,7 +521,7 @@ fn parse_size(value: &str) -> Option<(u32, u32)> {
 
 fn render_overlay_shot(
     out: &std::path::Path,
-    text_scale: Option<f32>,
+    args: &LaunchArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use browser::history::HistoryEntry;
     let mut widget = BrowserWidget::new_headless();
@@ -546,17 +545,17 @@ fn render_overlay_shot(
             visit_count: 2,
         },
     ]);
-    render_shot_to_png(Box::new(widget), (1000, 650), out, text_scale)
+    render_shot_to_png(Box::new(widget), (1000, 650), out, args)
 }
 
 /// Render the address-suggestion overlay with sample entries, to inspect
 /// its rows + selection highlight (it paints in the overlay pass, which
 /// the normal shot path doesn't drive).
-fn render_suggestions_shot(out: &std::path::Path, text_scale: Option<f32>) {
+fn render_suggestions_shot(out: &std::path::Path, args: &LaunchArgs) {
     use browser::address_overlay::AddressSuggestions;
     use browser::history::HistoryEntry;
     let (w, h) = (900u32, 360u32);
-    let theme = shot_theme(text_scale);
+    let theme = ui::launch::shot_theme(args);
     let presence = PresenceCtx::empty();
     let mut text_renderer = TextRenderer::new();
 
@@ -601,40 +600,6 @@ fn render_suggestions_shot(out: &std::path::Path, text_scale: Option<f32>) {
     println!("browser: wrote suggestions shot to {}", out.display());
 }
 
-/// `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
-/// theme-driven chrome can be proven across palettes; defaults to dark.
-/// `QOS_SHOTS_REDUCE_MOTION=1` drives a deterministic review override; the
-/// live accessibility preferences are honoured too.
-fn shot_theme(text_scale: Option<f32>) -> Theme {
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    // `--text-scale` is a common launch option.  Browser owns its custom
-    // screenshot handlers, so it must thread that value through explicitly
-    // rather than silently capturing normal-sized text for an a11y review.
-    let theme = match text_scale {
-        Some(scale) => theme.with_text_scale(scale),
-        None => theme,
-    };
-    theme.with_reduce_motion(shot_motion_reduced())
-}
-
-fn shot_motion_reduced() -> bool {
-    [
-        "QOS_SHOTS_REDUCE_MOTION",
-        "QOS_A11Y_REDUCE_MOTION",
-        "QOS_REDUCE_MOTION",
-    ]
-    .into_iter()
-    .filter_map(|key| std::env::var(key).ok())
-    .any(|value| {
-        let value = value.trim();
-        !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
-    })
-}
-
 /// The resource dispatcher forwards a claimed URI as one opaque positional
 /// argument. Browser deliberately accepts only the schemes it declares.
 fn launch_target(args: &[String]) -> Option<String> {
@@ -658,7 +623,7 @@ fn render_live_shot_to_png(
     viewport: (u32, u32),
     out: &std::path::Path,
     probe_pip: bool,
-    text_scale: Option<f32>,
+    args: &LaunchArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::time::{Duration, Instant};
     use ui::webview::{SharedEngine, WebViewCommand};
@@ -677,7 +642,7 @@ fn render_live_shot_to_png(
     engine.send(WebViewCommand::Navigate(url.to_string()));
 
     let (w, h) = viewport;
-    let theme = shot_theme(text_scale);
+    let theme = ui::launch::shot_theme(args);
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
@@ -787,10 +752,10 @@ fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
     out: &std::path::Path,
-    text_scale: Option<f32>,
+    args: &LaunchArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let theme = shot_theme(text_scale);
+    let theme = ui::launch::shot_theme(args);
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();

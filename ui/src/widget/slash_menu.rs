@@ -41,10 +41,10 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::text_metrics::renderer_type_size;
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::query_text::{QueryComposition, QueryEventChange};
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::text_selection::Selection;
 use crate::theme::Theme;
@@ -480,6 +480,55 @@ impl SlashMenu {
         }
     }
 
+    /// The menu card and the filter field's box — the chrome under the
+    /// filter text and the rows.
+    fn draw_chrome(
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        rect: Rect,
+        filter_rect: Rect,
+    ) {
+        let colors = &theme.tokens.colors;
+        let radius = 6.0;
+        // Panel role (HIG §9.1): the panel ground so the menu reads as
+        // floating above the document, with the derived panel edge as a
+        // crisp 1 px inset stroke — a declared `border_standard` was
+        // invisible against `raised` on the dark preset.
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            crate::chrome::panel_ground(theme),
+            None,
+            &RoundedRect::from_rect(rect, radius),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            crate::chrome::panel_border(theme),
+            None,
+            &crate::surface::edge_outline(rect, radius),
+        );
+        // A field reads as a field on every preset: its rest edge derives
+        // from its own fill (HIG §9.5), painted as a crisp 1 px inset stroke;
+        // on the light preset `base` and the panel ground are a shade apart.
+        let filter_radius = 4.0;
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            colors.surfaces.base,
+            None,
+            &RoundedRect::from_rect(filter_rect, filter_radius),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            crate::surface::edge_on(colors.surfaces.base),
+            None,
+            &crate::surface::edge_outline(filter_rect, filter_radius),
+        );
+    }
+
     /// Paint the popover into `scene`. Called by the parent AFTER its
     /// main draw pass so the menu lands on top of everything else.
     pub fn draw_overlay(
@@ -494,38 +543,13 @@ impl SlashMenu {
         }
         let tokens = &theme.tokens;
         let rect = self.rect();
-        let shape = RoundedRect::from_rect(rect, 6.0);
-        // Drop a soft surface-raised body so the menu reads as
-        // floating above the document.
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            tokens.colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            tokens.colors.border_standard,
-            None,
-            &shape,
-        );
-
         let filter_rect = Rect::new(
             rect.x0 + 6.0,
             rect.y0 + PADDING_Y,
             rect.x1 - 6.0,
             rect.y0 + PADDING_Y + FILTER_HEIGHT,
         );
-        let filter_shape = RoundedRect::from_rect(filter_rect, 4.0);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            tokens.colors.surfaces.base,
-            None,
-            &filter_shape,
-        );
+        Self::draw_chrome(scene, transform, theme, rect, filter_rect);
         self.filter_composition.draw(
             scene,
             transform,

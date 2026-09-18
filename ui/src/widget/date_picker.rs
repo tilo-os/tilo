@@ -349,21 +349,36 @@ impl Widget for DatePicker {
     ) {
         let tokens = &theme.tokens;
 
+        let radius = f64::from(tokens.radii.md);
+        let fill = tokens.colors.surfaces.raised;
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            tokens.colors.surfaces.raised,
+            fill,
             None,
-            &self.rect,
+            &RoundedRect::from_rect(self.rect, radius),
         );
 
+        // A Control at rest carries an edge derived from its own surface
+        // (HIG §9.5) — without it the calendar was a raised rectangle that
+        // vanished on a raised card. Focus adds `border_focus` on the same
+        // half-pixel-inset outline, so the ring sits exactly over the rest
+        // edge and a focused picker is the rest picker plus one stroke.
+        let outline = crate::surface::edge_outline(self.rect, radius);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            crate::surface::edge_on(fill),
+            None,
+            &outline,
+        );
         if self.is_focused {
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
                 tokens.colors.border_focus,
                 None,
-                &RoundedRect::from_rect(self.rect, f64::from(tokens.radii.md)),
+                &outline,
             );
         }
 

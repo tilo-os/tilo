@@ -79,16 +79,21 @@ const INPUT_H: f64 = 42.0;
 const PAD: f64 = 28.0;
 /// Authored 1× sizes the measured rules fall back to (and never go below).
 const CARD_MIN_H: f64 = 56.0;
-const CARD_GAP: f64 = 10.0;
+/// Gap between the two import-method cards — siblings, so `s3` (HIG §7b),
+/// spelled from `Spacing::BASE` because layout runs without a theme.
+const CARD_GAP: f64 = ui::tokens::spacing::Spacing::BASE.s3 as f64;
+/// Gap between chips inside the Algorithm / Digits segmented rows (`s2`).
+const CHIP_GAP: f64 = ui::tokens::spacing::Spacing::BASE.s2 as f64;
 const LABEL_GAP_MIN: f64 = 18.0;
-/// Space between one field's bottom and the next label's band (authored,
-/// off the spacing scale on purpose: `s3` crowds the labels, `s4` reads as a
-/// section break).
-const ROW_GAP: f64 = 14.0;
+/// Space between one field's bottom and the next label's band: the fields
+/// are siblings of equal weight, so the `s3` step (HIG §7b); the label band
+/// above each field already carries its own `s1` of air.
+const ROW_GAP: f64 = ui::tokens::spacing::Spacing::BASE.s3 as f64;
 const ADV_HEADER_MIN_H: f64 = 26.0;
 const TITLE_BLOCK_MIN_H: f64 = 74.0;
 const FOOTER_MIN_H: f64 = 44.0;
-const FOOTER_GAP: f64 = 18.0;
+/// The footer is the next group after the form body, so `s6`.
+const FOOTER_GAP: f64 = ui::tokens::spacing::Spacing::BASE.s6 as f64;
 const DIVIDER_BLOCK_MIN_H: f64 = 30.0;
 /// Authored footer button width at 1×: the pair shares it, growing only when
 /// the wider measured label needs more.
@@ -854,7 +859,7 @@ impl AddAccountPanel {
         body_natural += (label_gap + input_h + row_gap) * 3.0; // issuer/label/secret
         body_natural += adv_header_h;
         if self.advanced_open {
-            body_natural += row_gap + label_gap + input_h + s2; // through the algorithm row
+            body_natural += row_gap + label_gap + input_h + row_gap; // through the algorithm row
             body_natural += label_gap + input_h; // digits + period row
         }
 
@@ -960,20 +965,23 @@ impl AddAccountPanel {
     ) {
         if self.advanced_open {
             let scale = self.metrics().scale;
+            // The same `ROW_GAP` the fields above use between one row and the
+            // next label band, and `CHIP_GAP` between the chips of one
+            // segmented row — one rhythm for the whole form (HIG §7b).
             let y = y + ROW_GAP;
             let chip_y = y + label_gap;
-            let alg_w = (content_w - 12.0) / 3.0;
+            let alg_w = (content_w - 2.0 * CHIP_GAP) / 3.0;
             for (i, r) in self.alg_rects.iter_mut().enumerate() {
-                let cx = left + i as f64 * (alg_w + 6.0);
+                let cx = left + i as f64 * (alg_w + CHIP_GAP);
                 *r = Rect::new(cx, chip_y, cx + alg_w, chip_y + input_h);
             }
-            let y = chip_y + input_h + 8.0;
+            let y = chip_y + input_h + ROW_GAP;
             let row_y = y + label_gap;
             // The digit chips and the period field hold two-digit numbers;
             // their widths follow the text scale.
             let dig_w = 56.0 * scale;
             for (i, r) in self.digit_rects.iter_mut().enumerate() {
-                let cx = left + i as f64 * (dig_w + 6.0);
+                let cx = left + i as f64 * (dig_w + CHIP_GAP);
                 *r = Rect::new(cx, row_y, cx + dig_w, row_y + input_h);
             }
             let period_w = 88.0 * scale;
@@ -1176,21 +1184,23 @@ impl AddAccountPanel {
             None,
             &self.window,
         );
-        // Modal card.
-        let card = RoundedRect::from_rect(self.modal, f64::from(theme.tokens.radii.xl));
+        // Modal card: a floating Panel, so its edge is the derived panel
+        // border (HIG §9.5) — `border_standard` on `raised` is invisible on
+        // the dark preset — stroked crisp on the outermost pixel row.
+        let radius = f64::from(theme.tokens.radii.xl);
         scene.fill(
             Fill::NonZero,
             transform,
             theme.tokens.colors.surfaces.raised,
             None,
-            &card,
+            &RoundedRect::from_rect(self.modal, radius),
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.tokens.colors.border_standard,
+            ui::chrome::panel_border(theme),
             None,
-            &card,
+            &ui::surface::edge_outline(self.modal, radius),
         );
 
         let left = self.modal.x0 + PAD;
@@ -1503,7 +1513,7 @@ impl AddAccountPanel {
         hovered: bool,
         primary: bool,
     ) {
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.lg));
+        let radius = f64::from(theme.tokens.radii.lg);
         let bg = if primary {
             if hovered {
                 theme.accent_hover
@@ -1511,34 +1521,40 @@ impl AddAccountPanel {
                 theme.accent_primary
             }
         } else if hovered {
-            theme.tokens.colors.lift(0.72)
+            theme.bg_hover
         } else {
             theme.tokens.colors.surfaces.base
         };
-        scene.fill(Fill::NonZero, transform, bg, None, &shape);
-        if !primary {
-            scene.stroke(
-                &Stroke::new(1.0),
+        if primary {
+            // The accent fill is its own contrast step; no edge (HIG §9.5).
+            scene.fill(
+                Fill::NonZero,
                 transform,
-                theme.tokens.colors.border_standard,
+                bg,
                 None,
-                &shape,
+                &RoundedRect::from_rect(rect, radius),
             );
+        } else {
+            // A base-filled card on the raised modal: fill + derived edge.
+            ui::surface::card(scene, transform, rect, radius, bg);
         }
 
+        // Ink on the accent card is resolved against that fill (the accent is
+        // themeable, so literal white is not always readable on it).
         let on_primary = primary;
+        let on_accent = theme.on_surface(bg);
         let title_color = if on_primary {
-            Color::WHITE
+            on_accent.ink
         } else {
             theme.tokens.colors.text_primary
         };
         let sub_color = if on_primary {
-            Color::WHITE.with_alpha_factor(0.82)
+            on_accent.ink_dim
         } else {
             theme.tokens.colors.text_dim
         };
         let icon_color = if on_primary {
-            Color::WHITE
+            on_accent.ink
         } else {
             theme.accent_primary
         };
@@ -1733,9 +1749,12 @@ impl AddAccountPanel {
         let right = self.modal.x1 - PAD;
         let (tw, th) = text_renderer.measure(text, DIVIDER_SIZE, None);
         let cx = f64::midpoint(left, right);
-        let line = theme.tokens.colors.border_standard.with_alpha_factor(0.6);
-        let l1 = Rect::new(left, y, cx - f64::from(tw) / 2.0 - 10.0, y + 1.0);
-        let l2 = Rect::new(cx + f64::from(tw) / 2.0 + 10.0, y, right, y + 1.0);
+        // The rule is derived against the modal it is drawn on (HIG §9.5) and
+        // stops an `s2` short of the caption on both sides.
+        let line = ui::surface::edge_on(theme.tokens.colors.surfaces.raised);
+        let caption_gap = f64::from(theme.tokens.spacing.s2);
+        let l1 = Rect::new(left, y, cx - f64::from(tw) / 2.0 - caption_gap, y + 1.0);
+        let l2 = Rect::new(cx + f64::from(tw) / 2.0 + caption_gap, y, right, y + 1.0);
         scene.fill(Fill::NonZero, transform, line, None, &l1);
         scene.fill(Fill::NonZero, transform, line, None, &l2);
         // Caption centred on the rule from its measured line box.

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Cap, Join, Line, Point, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{Affine, Cap, Join, Line, Point, Rect, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -966,14 +966,13 @@ impl NavShell {
         }
         let rect = self.affordance_rect;
 
-        let bg = RoundedRect::from_rect(rect, theme.radius_standard);
-        scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &bg);
-        scene.stroke(
-            &Stroke::new(1.0),
+        // Neutral control face (HIG §9.5): its fill with a crisp derived edge.
+        crate::surface::card(
+            scene,
             transform,
-            theme.border_standard,
-            None,
-            &bg,
+            rect,
+            theme.radius_standard,
+            theme.bg_primary,
         );
 
         // The glyph is icon-sized: the 1× chip square grown with `ui_scale`
@@ -1569,22 +1568,27 @@ impl NavShell {
         theme: &Theme,
     ) {
         if self.mode() == ShellMode::Wide {
+            // Pane dividers derive from the surface they are painted on (HIG
+            // §9.5), centred on the last pixel column of the pane they close:
+            // the sidebar's on `fill_panel`'s `bg_primary`, the overview's on
+            // the shell's base ground, which is what a content pane sits on
+            // unless it paints its own.
             let stroke = Stroke::new(1.0);
             if self.sidebar_visible() {
-                let x = self.sidebar_rect.x1;
+                let x = self.sidebar_rect.x1 - 0.5;
                 scene.stroke(
                     &stroke,
                     transform,
-                    theme.border_standard,
+                    crate::surface::edge_on(theme.bg_primary),
                     None,
                     &Line::new(Point::new(x, self.rect.y0), Point::new(x, self.rect.y1)),
                 );
             }
-            let x = self.overview_rect.x1;
+            let x = self.overview_rect.x1 - 0.5;
             scene.stroke(
                 &stroke,
                 transform,
-                theme.border_standard,
+                crate::surface::edge_on(theme.tokens.colors.surfaces.base),
                 None,
                 &Line::new(Point::new(x, self.rect.y0), Point::new(x, self.rect.y1)),
             );

@@ -538,10 +538,12 @@ impl WorkspaceSettings {
             footer,
             ui::chrome::ChromeRole::Control.radius(theme, footer_h),
         );
+        // The footer row's edge is derived against the sidebar lift it sits
+        // on (HIG §9.5), not a declared border over a lifted surface.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            ui::surface::edge_on(colors.lift(0.35)),
             None,
             &footer_rr,
         );
@@ -598,7 +600,14 @@ fn tab_focus_id(tab: WsTab) -> u64 {
 // Shared chrome — cards, chips, section headers
 
 const PANE_PAD_X: f64 = 16.0;
-const PANE_PAD_TOP: f64 = 12.0;
+/// The pane's lead-in under the lens body top. The body already starts `s2`
+/// under the tab strip (`WorkspaceSettingsOverlay::body_rect_for`), so this
+/// completes the `s4` section step (HIG §7b) from the strip to the intro card.
+const PANE_PAD_TOP: f64 = ui::tokens::Spacing::BASE.s2 as f64;
+/// The pane's bottom inset: the row-overflow guard and the footer copy keep
+/// one `s3` clear of the lens body's bottom edge. Only the top lead-in shrank
+/// to complete the section step; the bottom keeps its authored step.
+const PANE_PAD_BOTTOM: f64 = ui::tokens::Spacing::BASE.s3 as f64;
 const PANE_INTRO_HEIGHT: f64 = 64.0;
 const PANE_INTRO_GAP: f64 = 12.0;
 /// Two lines of text plus breathing room.
@@ -668,20 +677,15 @@ fn draw_section_header(
 
 /// Paint a row card — the surface every subject row sits on.
 fn draw_row_card(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
-    let card = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.lg));
-    scene.fill(
-        Fill::NonZero,
+    // Derived rest edge (HIG §9.5): measured against the card's own fill,
+    // so it registers on the raised tier in every palette — a declared
+    // `border_standard` is three shades from `raised` on the dark preset.
+    ui::surface::card(
+        scene,
         transform,
+        rect,
+        f64::from(theme.tokens.radii.lg),
         theme.tokens.colors.surfaces.raised,
-        None,
-        &card,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        theme.tokens.colors.border_standard,
-        None,
-        &card,
     );
 }
 
@@ -713,20 +717,12 @@ fn draw_pane_intro(
         pane.x1 - PANE_PAD_X,
         pane.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT,
     );
-    let surface = RoundedRect::from_rect(rect, f64::from(tokens.radii.lg));
-    scene.fill(
-        Fill::NonZero,
+    ui::surface::card(
+        scene,
         transform,
+        rect,
+        f64::from(tokens.radii.lg),
         colors.surfaces.raised,
-        None,
-        &surface,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        colors.border_standard,
-        None,
-        &surface,
     );
 
     let icon_rect = Rect::new(
@@ -934,10 +930,12 @@ fn draw_cycler(
         None,
         &track,
     );
+    // The field's rest edge derives from its own fill (HIG §9.5) and
+    // fades with the disabled face so rest and disabled never look alike.
     scene.stroke(
         &Stroke::new(1.0),
         transform,
-        colors.border_standard.with_alpha_factor(alpha),
+        ui::surface::edge_on(colors.surfaces.raised).with_alpha_factor(alpha),
         None,
         &track,
     );
@@ -1078,6 +1076,12 @@ fn draw_empty_state(
     let cx = rect.center().x;
     let stack_height = glyph + 58.0;
     let top = rect.y0 + ((rect.height() - stack_height) / 2.0).clamp(12.0, 48.0);
+    // A region too short for the stack (the lens at its height floor) paints
+    // nothing rather than running the glyph and two lines past its bottom
+    // edge into whatever sits below (HIG §7: nothing overlaps).
+    if top + stack_height > rect.y1 {
+        return;
+    }
     draw_icon(
         scene,
         transform,
@@ -1900,7 +1904,7 @@ pub fn agents_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<AgentRow> {
             pane_rect.x1 - PANE_PAD_X,
             cursor_y + ROW_HEIGHT,
         );
-        if row_rect.y1 > pane_rect.y1 - PANE_PAD_TOP {
+        if row_rect.y1 > pane_rect.y1 - PANE_PAD_BOTTOM {
             break;
         }
         let remove_rect = Rect::new(
@@ -1975,7 +1979,7 @@ pub fn members_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<MemberRow> {
             pane_rect.x1 - PANE_PAD_X,
             cursor_y + ROW_HEIGHT,
         );
-        if row_rect.y1 > pane_rect.y1 - PANE_PAD_TOP {
+        if row_rect.y1 > pane_rect.y1 - PANE_PAD_BOTTOM {
             break;
         }
         let remove_rect = Rect::new(
@@ -2606,6 +2610,13 @@ pub struct DefaultAppRow {
     pub row_rect: Rect,
 }
 
+/// Top of the first default-app row: under the intro card, the section
+/// header and the column-label line. The pane's empty state starts here
+/// too, so it can never paint over that header block.
+fn default_app_rows_top(pane: Rect) -> f64 {
+    pane.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + 44.0
+}
+
 pub fn default_app_rows(
     pane: Rect,
     candidates: &[desktop_policy::AppCandidate],
@@ -2631,12 +2642,7 @@ pub fn default_app_rows(
                 clippy::cast_precision_loss,
                 reason = "index is a small row position bounded by the resource-kind list, well under 2^53"
             )]
-            let y0 = pane.y0
-                + PANE_PAD_TOP
-                + PANE_INTRO_HEIGHT
-                + PANE_INTRO_GAP
-                + 44.0
-                + index as f64 * row_step;
+            let y0 = default_app_rows_top(pane) + index as f64 * row_step;
             let row_rect = Rect::new(x0, y0, x1, y0 + row_h);
             let (workspace_rect, user_rect) = if compact {
                 let gap = 8.0;
@@ -2721,10 +2727,14 @@ pub fn draw_default_apps_pane(
     let can_admin = ws.may_administer(local_user);
     draw_default_apps_rows(scene, transform, pane, ctx, can_admin, text_renderer, theme);
     if candidates.iter().all(|a| a.resources.is_empty()) {
+        // The empty state owns the row region only: centred in the whole
+        // pane it painted across the intro card, the section header and the
+        // column labels (HIG §7: nothing overlaps).
+        let rows = Rect::new(pane.x0, default_app_rows_top(pane), pane.x1, pane.y1);
         draw_empty_state(
             scene,
             transform,
-            pane,
+            rows,
             Icon::LayoutGrid,
             (
                 "No file handlers installed",
@@ -2949,7 +2959,7 @@ fn draw_authority_footnote(
         at(
             transform,
             pane_rect.x0 + PANE_PAD_X,
-            pane_rect.y1 - PANE_PAD_TOP - 14.0,
+            pane_rect.y1 - PANE_PAD_BOTTOM - 14.0,
         ),
         None,
     );
@@ -3192,7 +3202,7 @@ fn layout_capability_rows(
     // Keep a dedicated footer band for overflow/authority copy. Rows must
     // never consume that space and then have explanatory text painted over
     // their final line.
-    let footer_top = pane_rect.y1 - PANE_PAD_TOP - 34.0;
+    let footer_top = pane_rect.y1 - PANE_PAD_BOTTOM - 34.0;
     let mut cursor_y = card.y1 + 16.0;
     let mut last_kind: Option<SubjectKind> = None;
     let mut placed = 0usize;
@@ -3345,7 +3355,7 @@ pub fn draw_permissions_pane(
             at(
                 transform,
                 pane_rect.x0 + PANE_PAD_X,
-                pane_rect.y1 - PANE_PAD_TOP - 14.0,
+                pane_rect.y1 - PANE_PAD_BOTTOM - 14.0,
             ),
             None,
         );
@@ -3457,20 +3467,12 @@ fn draw_permission_composer(
         theme,
     );
     let card = permission_composer_card(pane_rect);
-    let card_rr = RoundedRect::from_rect(card, f64::from(tokens.radii.lg));
-    scene.fill(
-        Fill::NonZero,
+    ui::surface::card(
+        scene,
         transform,
+        card,
+        f64::from(tokens.radii.lg),
         colors.surfaces.raised,
-        None,
-        &card_rr,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        colors.border_standard,
-        None,
-        &card_rr,
     );
 
     draw_who_what_pickers(
@@ -5111,5 +5113,50 @@ mod default_app_authority_tests {
             next_user_default(None, &pdf, &candidates),
             desktop_policy::UserWorkspaceChoice::PersonalDefault
         );
+    }
+}
+
+#[cfg(test)]
+mod rest_edge_tests {
+    //! HIG §9.5 rest edges: every card class this file paints derives its
+    //! edge from the fill it sits on and must register on every palette.
+
+    use super::*;
+
+    #[test]
+    fn pane_cards_and_footer_keep_an_edge_on_every_palette() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let colors = &theme.tokens.colors;
+            for (what, fill) in [
+                ("row / intro / composer card", colors.surfaces.raised),
+                ("sidebar footer row", colors.lift(0.35)),
+            ] {
+                let delta = ui::surface::edge_delta(ui::surface::edge_on(fill), fill);
+                assert!(
+                    delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                    "{}: the {what} edge must separate it from its fill (Δ luminance {delta:.4})",
+                    theme.name
+                );
+            }
+        }
+    }
+
+    /// The default-apps empty state starts where the first row would, under
+    /// the column-label line, instead of centring itself over the header.
+    #[test]
+    fn default_apps_empty_state_starts_below_the_header_block() {
+        let pane = Rect::new(0.0, 0.0, 508.0, 560.0);
+        let heading_y = pane.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP;
+        let label_line_bottom = heading_y + 22.0 + 14.0;
+        assert!(default_app_rows_top(pane) >= label_line_bottom + 4.0);
+        assert!(default_app_rows(pane, &[]).is_empty());
+    }
+
+    /// The pane lead-in and the lens body lead-in add up to one `s4` step.
+    #[test]
+    fn pane_lead_in_completes_the_section_step() {
+        let s4 = f64::from(ui::tokens::Spacing::BASE.s4);
+        let s2 = f64::from(ui::tokens::Spacing::BASE.s2);
+        assert_eq!(PANE_PAD_TOP + s2, s4);
     }
 }

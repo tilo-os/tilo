@@ -262,3 +262,79 @@ fn open_form_rebases_reordered_rows_by_identity_before_save() {
 }
 
 fn test_root() -> Box<dyn ui::widget::Widget> { crate::app_root() }
+
+/// The frozen address-book preview at 1× in dark and light: rendered to
+/// `target/ux1x/a6/contacts/after/<theme>/history_preview.png` as the visual
+/// evidence for the 1× polish audit, and checked for the two things a bare
+/// draw call cannot prove — the avatar keeps a whole page gutter (`s6`) from
+/// the preview's edge and its first field starts an `s3` under the avatar, so
+/// the preview shares the detail card's rhythm rather than a private 20/76
+/// pixel offset.
+#[test]
+fn history_preview_renders_on_the_token_rhythm_in_dark_and_light() {
+    use ui::offscreen::OffscreenRenderer;
+    use ui::text_render::TextRenderer;
+    use ui::theme::Theme;
+    use vello::Scene;
+    use vello::kurbo::{Affine, Rect};
+
+    let (doc, selected, name) = fixture();
+    let out_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/ux1x/a6/contacts/after");
+    let (w, h) = (900u32, 600u32);
+    for theme in [Theme::dark(), Theme::light()] {
+        let mut p = preview(&doc, selected, PreviewSide::After);
+        assert!(p.accessibility().description.contains(&name));
+        let bounds = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
+        p.layout(bounds, &mut tr, &theme).unwrap();
+        let mut scene = Scene::new();
+        p.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let mut renderer = OffscreenRenderer::new(w, h);
+        // A first Vello submission can drop geometry while its bump budget
+        // grows; the resilient render retries until a frame confirmably fits.
+        let rgba = renderer.render_rgba_resilient(&scene);
+        assert_eq!(rgba.len(), (w * h * 4) as usize);
+        let ground = theme.bg_primary.to_rgba8();
+        let is_ground = |x: u32, y: u32| {
+            let (r, g, b, _) = OffscreenRenderer::sample(&rgba, w, x, y);
+            (r, g, b) == (ground.r, ground.g, ground.b)
+        };
+        // The gutter is a page gutter (`s6`): nothing is painted into it.
+        let sp = &theme.tokens.spacing;
+        let gutter = sp.s6 as u32;
+        for y in 0..h {
+            for x in 0..gutter {
+                assert!(
+                    is_ground(x, y),
+                    "{}: pixel ({x},{y}) inside the s6 gutter is painted",
+                    theme.name
+                );
+            }
+        }
+        // The avatar (`s16`) sits at the gutter; the first field starts one
+        // `s3` below it, so the middle of that gap is ground across the
+        // avatar's width.
+        let avatar = sp.s16 as u32;
+        let gap_y = gutter + avatar + (sp.s3 as u32) / 2;
+        for x in gutter..gutter + avatar {
+            assert!(
+                is_ground(x, gap_y),
+                "{}: the s3 gap under the avatar is painted at ({x},{gap_y})",
+                theme.name
+            );
+        }
+        // And the avatar itself is there: its centre is not the ground.
+        assert!(
+            !is_ground(gutter + avatar / 2, gutter + avatar / 2),
+            "{}: no avatar painted at the gutter",
+            theme.name
+        );
+        let out = out_root
+            .join(theme.name.to_lowercase())
+            .join("history_preview.png");
+        std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+        renderer.render_png(&scene, theme.bg_app, &out);
+    }
+}

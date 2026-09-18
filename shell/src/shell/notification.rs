@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -426,21 +426,12 @@ impl NotificationStack {
     ) -> Rect {
         let title_size = ctx.theme.tokens.typography.scale.sm;
         let card_rect = Rect::new(x0, y, x0 + width, y + TOAST_HEIGHT);
-        let shape = RoundedRect::from_rect(card_rect, radius);
-        ctx.scene.fill(
-            Fill::NonZero,
-            ctx.transform,
-            ctx.theme.tokens.colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        ctx.scene.stroke(
-            &Stroke::new(1.0),
-            ctx.transform,
-            ctx.theme.tokens.colors.border_standard,
-            None,
-            &shape,
-        );
+        // The locked card is a Panel-role floater like the toasts it stands
+        // in for (HIG §9.5): the same `panel_ground` + `panel_border` the
+        // toolkit toast paints, so one column is one material. The declared
+        // border it replaced was three shades off `raised` on dark and
+        // vanished.
+        ui::surface::panel(ctx.scene, ctx.transform, card_rect, radius, ctx.theme);
         let label = lock_suppressed_label(count);
         // Centre on the measured line, not the font size (HIG §7a).
         let max_width = f64_to_f32_lossy(width - CARD_PADDING_X * 2.0);
@@ -496,21 +487,8 @@ impl NotificationStack {
         let pill_h = SELECTOR_HEIGHT
             .max(f64::from(label_h) + f64::from(ctx.theme.tokens.spacing.s2));
         let pill_rect = Rect::new(x0, y, x0 + width, y + pill_h);
-        let shape = RoundedRect::from_rect(pill_rect, radius);
-        ctx.scene.fill(
-            Fill::NonZero,
-            ctx.transform,
-            ctx.theme.tokens.colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        ctx.scene.stroke(
-            &Stroke::new(1.0),
-            ctx.transform,
-            ctx.theme.tokens.colors.border_standard,
-            None,
-            &shape,
-        );
+        // Panel role, like the toasts it holds back (HIG §9.5).
+        ui::surface::panel(ctx.scene, ctx.transform, pill_rect, radius, ctx.theme);
         // A `Point` rather than two `dot_c{x,y}` locals — same value,
         // but doesn't read as two near-identical bindings in one scope.
         let dot_center = Point::new(
@@ -944,7 +922,8 @@ mod tests {
                 assert!(path.is_file(), "notification fixture missing: {}", path.display());
                 // The rendered pixels, not just the file: the first surface
                 // in the column (pill, locked card or toast card) is the
-                // raised surface at its plain bottom-right interior.
+                // Panel ground at its plain bottom-right interior — the
+                // toolkit toast and the two shell cards share one material.
                 let first = Widget::get_rect(&stack);
                 let first_h = if state == "live" { TOAST_HEIGHT } else { first.height() };
                 let probe = Point::new(first.x1 - 12.0, first.y0 + first_h - 8.0);
@@ -959,10 +938,10 @@ mod tests {
                     probe.x as u32,
                     probe.y as u32,
                 );
-                let e = theme.tokens.colors.surfaces.raised.to_rgba8();
+                let e = ui::chrome::panel_ground(&theme).to_rgba8();
                 assert!(
                     r.abs_diff(e.r) <= 2 && g.abs_diff(e.g) <= 2 && b.abs_diff(e.b) <= 2,
-                    "{name}-{state}: surface interior ({r},{g},{b}) is the raised surface ({},{},{})",
+                    "{name}-{state}: surface interior ({r},{g},{b}) is the panel ground ({},{},{})",
                     e.r,
                     e.g,
                     e.b

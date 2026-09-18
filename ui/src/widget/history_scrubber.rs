@@ -63,6 +63,23 @@ const POPOVER_PAD_Y: f64 = crate::tokens::Spacing::BASE.s1 as f64 / 2.0;
 const NATURAL_H_PLAIN: f64 = 140.0;
 const NATURAL_H_GROUPED: f64 = 168.0;
 
+/// The strip paints on its own `surfaces.raised` fill, where `Colors::lift`
+/// (base → raised) has nowhere left to go, so every tier inside it —
+/// segment, track, button hover — is **one ordered ramp** of translucent
+/// steps against that fill, polarity chosen the way `hairline_on` chooses
+/// it (HIG §9.3 caveat, §9.5). Ascending: odd segment, even segment, track,
+/// the segment under the handle / a hovered button.
+const WASH_FAINT: u8 = 20;
+const WASH_LOW: u8 = 36;
+const WASH_TRACK: u8 = 48;
+const WASH_MID: u8 = 64;
+
+/// One step of the strip's own ramp: `alpha` of white or black, whichever
+/// moves `surface` further.
+fn wash(surface: Color, alpha: u8) -> Color {
+    crate::tokens::colors::Colors::hairline_on(surface, alpha)
+}
+
 /// A tick index or entry count, widened for pixel-space layout math.
 /// Lossless in practice — a history never approaches `u32::MAX` entries —
 /// but `usize -> f64` cannot express that to the compiler, so this goes
@@ -800,14 +817,16 @@ impl HistoryScrubber {
             }
             let named = g.label.is_some();
             let contains_handle = self.current_tick >= g.start && self.current_tick <= g.end;
+            // Unnamed segments step up the strip's own ramp; the declared
+            // white veneers they replace were one fixed colour per theme.
             let fill = if named {
                 colors.accent[if contains_handle { 4 } else { 6 }]
             } else if contains_handle {
-                colors.surface_white_20
+                wash(colors.surfaces.raised, WASH_MID)
             } else if i % 2 == 0 {
-                colors.surface_white_10
+                wash(colors.surfaces.raised, WASH_LOW)
             } else {
-                colors.surface_white_5
+                wash(colors.surfaces.raised, WASH_FAINT)
             };
             let shape = RoundedRect::from_rect(seg, 3.0);
             scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
@@ -850,7 +869,7 @@ impl HistoryScrubber {
                 if named {
                     colors.accent[4]
                 } else {
-                    colors.border_white_20
+                    wash(colors.surfaces.raised, WASH_MID)
                 },
                 None,
                 &vello::kurbo::Line::new(
@@ -884,33 +903,44 @@ impl HistoryScrubber {
         hovered: bool,
         primary: bool,
     ) {
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
+        let radius = f64::from(theme.tokens.radii.sm);
+        let shape = RoundedRect::from_rect(rect, radius);
+        let colors = &theme.tokens.colors;
+        // Primary: accent, ink chosen against it; the accent face is its own
+        // contrast step, so no edge (HIG §9.5 "selected accent, no edge").
+        // Neutral: the Button Neutral rest — the strip's raised fill under a
+        // derived edge — and one step up the strip's ramp on hover.
         let (fill, border, text_color) = if primary {
-            let fill = if hovered {
-                theme.tokens.colors.accent[4]
-            } else {
-                theme.tokens.colors.accent[5]
-            };
+            let fill = colors.accent[if hovered { 4 } else { 5 }];
             (
                 fill,
-                theme.tokens.colors.border_focus,
-                theme.tokens.colors.text_primary,
+                None,
+                colors.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST),
             )
         } else if hovered {
+            let fill = wash(colors.surfaces.raised, WASH_MID);
             (
-                theme.tokens.colors.surface_white_20,
-                theme.tokens.colors.border_white_20,
-                theme.tokens.colors.text_primary,
+                fill,
+                Some(crate::surface::edge_on(colors.surfaces.raised)),
+                colors.text_primary,
             )
         } else {
             (
-                theme.tokens.colors.surface_white_10,
-                theme.tokens.colors.border_white_20,
-                theme.tokens.colors.text_primary,
+                colors.surfaces.raised,
+                Some(crate::surface::edge_on(colors.surfaces.raised)),
+                colors.text_primary,
             )
         };
         scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
-        scene.stroke(&Stroke::new(1.0), transform, border, None, &shape);
+        if let Some(border) = border {
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                border,
+                None,
+                &crate::surface::edge_outline(rect, radius),
+            );
+        }
         let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let shown = fit(text_renderer, label, size, rect.width() - 10.0);
         let (w, h) = text_renderer.measure(&shown, size, None);
@@ -967,10 +997,14 @@ impl HistoryScrubber {
     ) {
         let track = self.track_rect();
         let track_shape = RoundedRect::from_rect(track, 3.0);
+        // The unfilled track is a step of the strip's own ramp, not a ramp
+        // slot (`neutral[3]` is a shade the theme author never measured
+        // against this fill), under a derived edge like a Slider's.
+        let surface = theme.tokens.colors.surfaces.raised;
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.neutral[3],
+            wash(surface, WASH_TRACK),
             None,
             &track_shape,
         );
@@ -990,6 +1024,17 @@ impl HistoryScrubber {
         self.draw_band(scene, transform, text_renderer, theme);
         self.draw_ticks(scene, transform, theme);
 
+        // The track's edge goes on last, after the played range and the
+        // ticks, so one outline encloses the whole track — played and
+        // unplayed alike — instead of stopping where the accent begins.
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            crate::surface::edge_on(surface),
+            None,
+            &crate::surface::edge_outline(track, 3.0),
+        );
+
         let live_dot = Circle::new(self.live_state_dot_center(), 3.0);
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -1008,17 +1053,20 @@ impl HistoryScrubber {
             HANDLE_RADIUS
         };
         let handle_shape = Circle::new(handle, radius);
+        let handle_fill = theme.tokens.colors.text_primary;
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.text_primary,
+            handle_fill,
             None,
             &handle_shape,
         );
+        // The ring derives from the handle's own fill, so it seats a light
+        // thumb on a dark strip and a dark thumb on a light one alike.
         scene.stroke(
             &Stroke::new(1.5),
             transform,
-            theme.tokens.colors.border_white_20,
+            crate::surface::edge_on(handle_fill),
             None,
             &handle_shape,
         );
@@ -1033,20 +1081,14 @@ impl HistoryScrubber {
         theme: &Theme,
     ) {
         let pop = self.popover_rect();
-        let pop_shape = RoundedRect::from_rect(pop, f64::from(theme.tokens.radii.sm));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        // Overlay surface under an edge derived from it (HIG §9.5); the
+        // white veneer it replaces was invisible on a light overlay.
+        crate::surface::card(
+            scene,
             transform,
+            pop,
+            f64::from(theme.tokens.radii.sm),
             theme.tokens.colors.surfaces.overlay,
-            None,
-            &pop_shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_white_20,
-            None,
-            &pop_shape,
         );
         let Some(entry) = self.current_entry() else {
             return;
@@ -1229,20 +1271,15 @@ impl Widget for HistoryScrubber {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        // The strip's own card: raised fill under an edge derived from it.
+        // The declared `border_standard` this replaces is three shades from
+        // the dark preset's raised surface and vanished there (HIG §9.5).
+        crate::surface::card(
+            scene,
             transform,
+            self.rect,
+            f64::from(theme.tokens.radii.md),
             theme.tokens.colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &shape,
         );
 
         if self.entries.is_empty() {
@@ -1811,6 +1848,130 @@ mod version_tests {
             derived: format!("{} edits", end.saturating_add(1).saturating_sub(start)),
             record_id: label.map(|_| format!("qos:group:{start}")),
             open: false,
+        }
+    }
+
+    /// Relative luminance of the composited pixel at (`x`, `y`).
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "probe coordinates are non-negative pixel positions inside the test surface"
+    )]
+    fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
+        let (r, g, b, _) =
+            crate::offscreen::OffscreenRenderer::sample(rgba, w, x.floor() as u32, y.floor() as u32);
+        crate::a11y::relative_luminance(Color::from_rgb8(r, g, b))
+    }
+
+    /// `$UX1X_F4_OUT/<theme>/<name>` when the 1× review asked for evidence.
+    fn ux1x_out(theme: &Theme, name: &str) -> Option<std::path::PathBuf> {
+        let dir = std::path::PathBuf::from(std::env::var_os("UX1X_F4_OUT")?)
+            .join(theme.name.to_lowercase());
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir.join(name))
+    }
+
+    /// The strip, its neutral buttons and its track keep a **visible derived
+    /// edge** at 1× on both presets (HIG §9.5). Before, the strip wore
+    /// `border_standard` (three shades from the dark raised surface), the
+    /// buttons and segments literal white veneers, the track `neutral[3]`.
+    ///
+    /// Writes `$UX1X_F4_OUT/<theme>/history_scrubber.png` plus the harness
+    /// inspection when that variable is set; asserts regardless.
+    #[test]
+    fn ux1x_strip_buttons_and_track_edges_register_on_both_presets() {
+        use crate::offscreen::OffscreenRenderer;
+        const EDGE_MIN: f64 = 0.008;
+        let margin = 16.0;
+        // Evidence first, for both presets, so a failing assertion on one
+        // preset still leaves the other's PNG and inspection on disk.
+        for theme in [Theme::dark(), Theme::light()] {
+            let theme = theme.with_reduce_motion(true);
+            if let Some(png) = ux1x_out(&theme, "history_scrubber.png") {
+                let mut mounted = with_versions(1000.0);
+                mounted.set_current_tick(19);
+                let h = mounted.natural_height() + 2.0 * margin;
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a small test viewport"
+                )]
+                let harness = crate::headless::FrameHarness::new_with_theme(
+                    crate::State::new(),
+                    Box::new(mounted),
+                    (1000, h as u32),
+                    theme.clone(),
+                );
+                harness.render_window_png(&png);
+                if let Ok(json) = harness.inspection_json() {
+                    std::fs::write(png.with_extension("inspection.json"), json)
+                        .expect("write inspection");
+                }
+            }
+        }
+        for theme in [Theme::dark(), Theme::light()] {
+            let theme = theme.with_reduce_motion(true);
+            let mut s = with_versions(1000.0);
+            s.set_current_tick(19);
+            let strip = Rect::new(margin, margin, margin + 1000.0, margin + s.natural_height());
+            s.set_rect(strip);
+            let (w, h) = (strip.x1 + margin, strip.y1 + margin);
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            s.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a small test surface"
+            )]
+            let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a small test surface"
+            )]
+            let lum = |x: f64, y: f64| lum_at(&rgba, w as u32, x, y);
+
+            // Strip edge against its own fill, on the track's centre line
+            // (clear of the corner arcs; the track starts one `TRACK_INSET`
+            // in, so the columns beside the edge are bare fill).
+            let y = s.track_rect().center().y;
+            let edge = lum(strip.x0, y);
+            let fill = lum(strip.x0 + 3.0, y);
+            assert!(
+                (edge - fill).abs() >= EDGE_MIN,
+                "{}: strip edge {edge:.4} vs fill {fill:.4} did not register",
+                theme.name
+            );
+
+            // Neutral button (Preview): its left edge against its face.
+            let preview = s
+                .button_rect(ScrubButton::Preview)
+                .expect("the wide strip offers Preview");
+            let bedge = lum(preview.x0, preview.center().y);
+            let face = lum(preview.x0 + 3.0, preview.center().y);
+            assert!(
+                (bedge - face).abs() >= EDGE_MIN,
+                "{}: button edge {bedge:.4} vs face {face:.4} did not register",
+                theme.name
+            );
+
+            // Track: the unfilled track does not exist at tick 19 (fully
+            // played), so probe the band's odd segment against the strip.
+            let band = s.band_rect();
+            let seg = lum(band.x0 + 8.0, band.center().y + 6.0);
+            let beside = lum(band.x0 + 8.0, band.y1 + 3.0);
+            assert!(
+                (seg - beside).abs() >= EDGE_MIN,
+                "{}: band segment {seg:.4} vs strip {beside:.4} did not register",
+                theme.name
+            );
         }
     }
 

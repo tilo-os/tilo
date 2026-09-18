@@ -63,9 +63,13 @@ const NAME_BOX_W: f64 = 92.0;
 const TAB_STRIP_BOTTOM_INSET: f64 = 2.0;
 /// Thickness of a sheet tab's colour / active underline.
 const TAB_UNDERLINE_H: f64 = 3.0;
-/// Deliberately off-scale: menu rows leave a 2 px seam so the hover fill of
-/// adjacent rows never merges into one block.
-const MENU_ROW_SEAM: f64 = 2.0;
+/// Menu rows leave an `s1` seam so the lifted fill of adjacent rows never
+/// merges into one block — a token step, never a touch (HIG §7).
+const MENU_ROW_SEAM: f64 = ui::tokens::Spacing::BASE.s1 as f64;
+/// The name box's inline editor sits 2 px inside the box's top and bottom
+/// edges: an authored inset for the shared `TextInput`, not a gap between
+/// two elements.
+const NAME_BOX_EDITOR_INSET: f64 = 2.0;
 /// Colour swatches in the sheet-tab menu are square targets of this side.
 const TAB_COLOUR_SWATCH: f64 = 20.0;
 /// Classic 1× bounds of a sheet tab (touch-target floor, long-name ceiling);
@@ -82,6 +86,9 @@ const TAB_MENU_MIN_W: f64 = 188.0;
 /// The document-settings panel's preferred width, and the floor it shrinks to
 /// on a narrow viewport (chip rows wrap inside it).
 const SETTINGS_PANEL_W: f64 = 440.0;
+/// How far the document-settings dialog dims the sheet behind it
+/// (`ui::chrome::fill_scrim` strength).
+const SETTINGS_SCRIM_STRENGTH: f32 = 0.45;
 const SETTINGS_PANEL_MIN_W: f64 = 300.0;
 /// Reference label the name box is sized for, so it never resizes with the
 /// selection and always fits a two-corner range reference.
@@ -3814,7 +3821,7 @@ impl SheetsApp {
         let mut y = y0 + pad;
         for act in TAB_MENU_ACTIONS {
             self.tab_menu_rows.push((
-                Rect::new(x0 + pad, y, x0 + width - pad, y + row_h - MENU_ROW_SEAM),
+                Rect::new(x0 + pad, y, x0 + width - pad, y + row_h),
                 act,
             ));
             y += row_h;
@@ -3879,7 +3886,7 @@ impl SheetsApp {
         self.dropdown_rect = Rect::new(x0, y0, x0 + width, y0 + h);
         let mut y = y0 + pad;
         for (_, item) in items {
-            let rect = Rect::new(x0 + pad, y, x0 + width - pad, y + row_h - MENU_ROW_SEAM);
+            let rect = Rect::new(x0 + pad, y, x0 + width - pad, y + row_h);
             self.dropdown_rows.push(ClickRow {
                 rect,
                 item: item.clone(),
@@ -3992,32 +3999,33 @@ impl SheetsApp {
         style: ChipStyle,
     ) {
         let colors = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
-        let bg = if style.active {
-            colors.accent[5]
-        } else if style.accent {
-            colors.accent[5].with_alpha_factor(0.18)
+        let radius = f64::from(theme.tokens.radii.sm);
+        // Rest: the raised face with its derived edge (HIG §9.5 "Button
+        // Neutral"); the AutoSum chip composites its accent wash over that
+        // face first so the edge is measured against what is on screen.
+        // Active: the accent fill alone — a chosen accent carries no hairline.
+        if style.active {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.accent[5],
+                None,
+                &RoundedRect::from_rect(rect, radius),
+            );
         } else {
-            colors.surfaces.raised
-        };
-        scene.fill(Fill::NonZero, transform, bg, None, &shape);
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            if style.active {
-                colors.accent[5]
+            let face = if style.accent {
+                colors.accent_chip_on(colors.surfaces.raised, ui::tokens::colors::NON_TEXT_MIN_CONTRAST).fill
             } else {
-                colors.border_standard
-            },
-            None,
-            &shape,
-        );
+                colors.surfaces.raised
+            };
+            ui::surface::card(scene, transform, rect, radius, face);
+        }
         let size = metrics.sm;
         let (tw, _) = tr.measure(label, size, None);
         let tx = rect.center().x - f64::from(tw) / 2.0;
         let tyy = ChromeMetrics::centred_top(rect, metrics.lh_sm);
         let color = if style.active {
-            Color::WHITE
+            colors.on_accent(ui::tokens::colors::NON_TEXT_MIN_CONTRAST)
         } else {
             colors.text_primary
         };
@@ -4088,14 +4096,19 @@ impl SheetsApp {
             );
         }
 
-        scene.stroke(
-            &Stroke::new(1.0),
+        // Bar rule: the bar's own derived edge on its last pixel row (a
+        // stroke centred on the boundary straddled two rows and blurred; the
+        // declared `border_standard` was invisible on the dark raised bar).
+        scene.fill(
+            Fill::NonZero,
             transform,
-            colors.border_standard,
+            ui::surface::edge_on(colors.surfaces.raised),
             None,
-            &Line::new(
-                (self.menubar_rect.x0, self.menubar_rect.y1),
-                (self.menubar_rect.x1, self.menubar_rect.y1),
+            &Rect::new(
+                self.menubar_rect.x0,
+                self.menubar_rect.y1 - 1.0,
+                self.menubar_rect.x1,
+                self.menubar_rect.y1,
             ),
         );
     }
@@ -4119,25 +4132,19 @@ impl SheetsApp {
         );
         let name_box = self.name_box_rect;
         let nb_editing = self.name_box_edit.is_some();
-        let nb_shape = RoundedRect::from_rect(name_box, f64::from(theme.tokens.radii.sm));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &nb_shape,
-        );
-        scene.stroke(
-            &Stroke::new(if nb_editing { 2.0 } else { 1.0 }),
-            transform,
-            if nb_editing {
-                colors.accent[5]
-            } else {
-                colors.border_standard
-            },
-            None,
-            &nb_shape,
-        );
+        let nb_radius = f64::from(theme.tokens.radii.sm);
+        // Rest: the raised face with its derived edge; editing: the accent
+        // ring (focus state, not a second edge).
+        ui::surface::card(scene, transform, name_box, nb_radius, colors.surfaces.raised);
+        if nb_editing {
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                colors.accent[5],
+                None,
+                &RoundedRect::from_rect(name_box.inset(-1.0), (nb_radius - 1.0).max(0.0)),
+            );
+        }
         let sm = self.metrics.sm;
         let nb_text_x = name_box.x0 + self.metrics.s2;
         let nb_text_y = ChromeMetrics::centred_top(name_box, self.metrics.lh_sm);
@@ -4150,9 +4157,9 @@ impl SheetsApp {
             input.set_font_size(sm);
             input.apply_layout_external(Rect::new(
                 nb_text_x,
-                name_box.y0 + MENU_ROW_SEAM,
+                name_box.y0 + NAME_BOX_EDITOR_INSET,
                 name_box.x1 - self.metrics.s1,
-                name_box.y1 - MENU_ROW_SEAM,
+                name_box.y1 - NAME_BOX_EDITOR_INSET,
             ));
             input.draw(scene, transform, tr, theme, &PresenceCtx::default());
         } else {
@@ -4247,24 +4254,20 @@ impl SheetsApp {
         editing: bool,
     ) {
         let colors = &theme.tokens.colors;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.base,
-            None,
-            &ff_shape,
-        );
-        scene.stroke(
-            &Stroke::new(if editing { 2.0 } else { 1.0 }),
-            transform,
-            if editing {
-                colors.accent[5]
-            } else {
-                colors.border_standard
-            },
-            None,
-            &ff_shape,
-        );
+        // A text field: its fill with the derived rest edge (HIG §9.5
+        // "TextInput"); editing takes the accent ring instead.
+        let field = ff_shape.rect();
+        let radius = ff_shape.radii().top_left;
+        ui::surface::card(scene, transform, field, radius, colors.surfaces.base);
+        if editing {
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                colors.accent[5],
+                None,
+                &RoundedRect::from_rect(field.inset(-1.0), (radius - 1.0).max(0.0)),
+            );
+        }
     }
 
     /// Selection highlight behind the text (drawn whenever editing).
@@ -4374,25 +4377,28 @@ impl SheetsApp {
             None,
             &self.tabs_rect,
         );
-        scene.stroke(
-            &Stroke::new(1.0),
+        // Bar rule on the strip's first pixel row: the strip's derived edge.
+        scene.fill(
+            Fill::NonZero,
             transform,
-            colors.border_standard,
+            ui::surface::edge_on(colors.surfaces.raised),
             None,
-            &Line::new(
-                (self.tabs_rect.x0, self.tabs_rect.y0),
-                (self.tabs_rect.x1, self.tabs_rect.y0),
+            &Rect::new(
+                self.tabs_rect.x0,
+                self.tabs_rect.y0,
+                self.tabs_rect.x1,
+                self.tabs_rect.y0 + 1.0,
             ),
         );
         for (rect, idx) in &self.tab_rects {
             let active = *idx == self.active_sheet;
-            let shape = RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.sm));
-            let bg = if active {
-                colors.surfaces.base
-            } else {
-                colors.surfaces.raised
-            };
-            scene.fill(Fill::NonZero, transform, bg, None, &shape);
+            // Sheet tabs are selectors (HIG §9.5): idle is the bare label on
+            // the strip, the active one lifts to the base tier — a contrast
+            // step against the raised strip — under its accent underline.
+            if active {
+                let shape = RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.sm));
+                scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &shape);
+            }
             // The tab's colour underline: its assigned palette colour when it
             // has one, otherwise the accent bar for the active tab.
             let tab_color = self
@@ -4447,20 +4453,14 @@ impl SheetsApp {
                 weight,
             );
         }
-        let add_shape = RoundedRect::from_rect(self.add_tab_rect, f64::from(theme.tokens.radii.sm));
-        scene.fill(
-            Fill::NonZero,
+        // The add-sheet button is a Neutral control: its face with the
+        // derived rest edge.
+        ui::surface::card(
+            scene,
             transform,
+            self.add_tab_rect,
+            f64::from(theme.tokens.radii.sm),
             colors.surfaces.base,
-            None,
-            &add_shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &add_shape,
         );
         // The "+" is centred on its measured glyph box, not nudged by hand.
         let (add_w, add_h) = m.add_glyph;
@@ -4618,35 +4618,32 @@ impl SheetsApp {
         // Rows follow the measured `sm`/`xs` line boxes (1× floors), so a
         // scaled title never paints under the action band below it.
         let rows = self.metrics.chart_card_rows();
+        // The cards float over the sheet body, `s3` inside the header bands
+        // and the scrollbar lane (never on either), stacked `s3` apart.
+        let (body_top, body_right) = self.annotation_body_bounds();
+        let pad = self.metrics.s3;
         for (index, chart) in self.sheet_charts.iter().take(max_cards).enumerate() {
             let width = self.grid_rect.width().clamp(180.0, 300.0);
             let height = rows.height;
-            let x1 = self.grid_rect.x1 - 14.0;
-            let y0 = self.grid_rect.y0 + 14.0 + index as f64 * (height + 10.0);
+            let x1 = body_right - pad;
+            let y0 = body_top + pad + index as f64 * (height + pad);
             if y0 + height > self.grid_rect.y1 {
                 break;
             }
             let card = Rect::new(x1 - width, y0, x1, y0 + height);
-            scene.fill(
-                Fill::NonZero,
+            ui::surface::card(
+                scene,
                 transform,
+                card,
+                f64::from(theme.tokens.radii.md),
                 theme.tokens.colors.surfaces.raised,
-                None,
-                &RoundedRect::from_rect(card, 8.0),
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.tokens.colors.border_standard,
-                None,
-                &RoundedRect::from_rect(card, 8.0),
             );
             // The title is elided to the card so a long or scaled name ends
             // inside the frame rather than over the sheet beside it.
             let title = tr.elide_to_width_weighted(
                 &chart.title,
                 self.metrics.sm,
-                (card.width() - 24.0) as f32,
+                (card.width() - 2.0 * pad) as f32,
                 TextWeight::Regular,
             );
             tr.draw_text(
@@ -4654,13 +4651,13 @@ impl SheetsApp {
                 &title,
                 self.metrics.sm,
                 theme.tokens.colors.text_primary,
-                transform * Affine::translate((card.x0 + 12.0, card.y0 + rows.title_top)),
+                transform * Affine::translate((card.x0 + pad, card.y0 + rows.title_top)),
                 None,
             );
             let controls = Rect::new(
-                card.x0 + 12.0,
+                card.x0 + pad,
                 card.y0 + rows.controls_y0,
-                card.x1 - 12.0,
+                card.x1 - pad,
                 card.y0 + rows.controls_y1,
             );
             let actions = [
@@ -4692,9 +4689,9 @@ impl SheetsApp {
                 self.annotation_clicks.push((button, action));
             }
             let plot = Rect::new(
-                card.x0 + 14.0,
+                card.x0 + pad,
                 card.y0 + rows.plot_y0,
-                card.x1 - 14.0,
+                card.x1 - pad,
                 card.y0 + rows.plot_y1,
             );
             let mut points = Vec::new();
@@ -4790,26 +4787,23 @@ impl SheetsApp {
         // heading, body and detail lines stay clear of each other and of the
         // action band at every text scale.
         let rows = self.metrics.comment_card_rows();
-        let card = Rect::new(
-            self.grid_rect.x0 + 14.0,
-            self.grid_rect.y0 + 14.0,
-            self.grid_rect.x0 + 14.0 + width,
-            self.grid_rect.y0 + 14.0 + rows.height,
-        );
-        let text_w = (card.width() - 24.0) as f32;
-        scene.fill(
-            Fill::NonZero,
+        // The card floats over the sheet body, `s3` inside the row and column
+        // header bands, so it never covers a header label.
+        let (body_top, _) = self.annotation_body_bounds();
+        let pad = self.metrics.s3;
+        let x0 = self.grid_rect.x0 + self.metrics.grid.row_header_w() + pad;
+        let y0 = body_top + pad;
+        let card = Rect::new(x0, y0, x0 + width, y0 + rows.height);
+        let text_w = (card.width() - 2.0 * pad) as f32;
+        // A card like any other: raised face, derived edge. The accent stays
+        // on the live parts (the reply count / resolve affordance), not on
+        // the frame — accent means live, not selected (HIG §9.4).
+        ui::surface::card(
+            scene,
             transform,
+            card,
+            f64::from(theme.tokens.radii.md),
             theme.tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(card, 8.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.accent[5],
-            None,
-            &RoundedRect::from_rect(card, 8.0),
         );
         let range = if thread.start == thread.end {
             crate::model::addr_to_a1(thread.start.0, thread.start.1)
@@ -4834,7 +4828,7 @@ impl SheetsApp {
             &heading,
             self.metrics.sm,
             theme.tokens.colors.text_primary,
-            transform * Affine::translate((card.x0 + 12.0, card.y0 + rows.heading_top)),
+            transform * Affine::translate((card.x0 + pad, card.y0 + rows.heading_top)),
             None,
         );
         let body: String = thread.body.chars().take(56).collect();
@@ -4844,7 +4838,7 @@ impl SheetsApp {
             &body,
             self.metrics.sm,
             theme.tokens.colors.text_tertiary,
-            transform * Affine::translate((card.x0 + 12.0, card.y0 + rows.body_top)),
+            transform * Affine::translate((card.x0 + pad, card.y0 + rows.body_top)),
             None,
         );
         let detail = format!(
@@ -4862,13 +4856,13 @@ impl SheetsApp {
             &detail,
             self.metrics.xs,
             theme.tokens.colors.accent[5],
-            transform * Affine::translate((card.x0 + 12.0, card.y0 + rows.detail_top)),
+            transform * Affine::translate((card.x0 + pad, card.y0 + rows.detail_top)),
             None,
         );
         let controls = Rect::new(
-            card.x0 + 12.0,
+            card.x0 + pad,
             card.y0 + rows.controls_y0,
-            card.x1 - 12.0,
+            card.x1 - pad,
             card.y0 + rows.controls_y0 + ANNOTATION_ACTION_H,
         );
         let actions = [
@@ -4905,13 +4899,80 @@ impl SheetsApp {
         // distinct from the action band (it ends where that band begins).
         self.annotation_clicks.push((
             Rect::new(
-                card.x0 + 12.0,
+                card.x0 + pad,
                 card.y0 + rows.toggle_y0,
-                card.x1 - 12.0,
+                card.x1 - pad,
                 card.y0 + rows.toggle_y1,
             ),
             AnnotationClick::ToggleComment(thread.id.clone(), !thread.resolved),
         ));
+    }
+
+    /// Where a floating annotation card may sit: the top of the sheet body
+    /// (below the column-header band) and its right edge (left of the
+    /// vertical scrollbar lane). Cards keep `s3` inside both.
+    fn annotation_body_bounds(&self) -> (f64, f64) {
+        (
+            self.grid_rect.y0 + self.metrics.grid.col_header_h(),
+            self.grid_rect.x1 - Grid::scrollbar_thickness(),
+        )
+    }
+
+    /// Paint a floating menu / dialog panel (HIG §9.1 Panel role): elevation,
+    /// the panel ground and the panel border — never a raised fill under a
+    /// declared `border_standard` with a literal black shadow.
+    fn paint_panel(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect, radius: f64) {
+        ui::chrome::panel_shadow(scene, transform, rect, radius, theme, 1.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            ui::chrome::panel_ground(theme),
+            None,
+            &RoundedRect::from_rect(rect, radius),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            ui::chrome::panel_border(theme),
+            None,
+            &ui::surface::edge_outline(rect, radius),
+        );
+    }
+
+    /// Paint a menu row's chosen / hovered state as a lift (HIG §9.3): the
+    /// selection tier's fill and, when lifted, its hairline — never an
+    /// accent wash, which is reserved for live state. `rect` is the row's
+    /// full hit rect; the lift is inset half the row seam top and bottom so
+    /// neighbouring lifts stay `s1` apart while the hit rects stay contiguous.
+    fn paint_row_state(
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        rect: Rect,
+        state: ui::chrome::SelectionState,
+    ) {
+        let tier = ui::chrome::selection_tier(theme, state);
+        if tier.fill.components[3] <= 0.0 {
+            return;
+        }
+        let rect = rect.inset((0.0, -MENU_ROW_SEAM / 2.0));
+        let radius = f64::from(theme.tokens.radii.sm);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tier.fill,
+            None,
+            &RoundedRect::from_rect(rect, radius),
+        );
+        if let Some(border) = tier.border {
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                border,
+                None,
+                &ui::surface::edge_outline(rect, radius),
+            );
+        }
     }
 
     fn draw_dropdown(
@@ -4925,59 +4986,29 @@ impl SheetsApp {
             return;
         }
         let colors = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(self.dropdown_rect, f64::from(theme.tokens.radii.md));
-        // Subtle shadow then panel.
-        scene.fill(
-            Fill::NonZero,
+        Self::paint_panel(
+            scene,
             transform,
-            Color::from_rgba8(0, 0, 0, 60),
-            None,
-            &RoundedRect::from_rect(
-                self.dropdown_rect + vello::kurbo::Vec2::new(0.0, 3.0),
-                f64::from(theme.tokens.radii.md),
-            ),
-        );
-        // Solid raised base first, then the overlay tint — keeps the panel
-        // fully opaque so the grid never bleeds through.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.overlay,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &shape,
+            theme,
+            self.dropdown_rect,
+            f64::from(theme.tokens.radii.md),
         );
         let sm = self.metrics.sm;
         let active_cat = self.current_active_format.category();
         for row in &self.dropdown_rows {
             let hovered = row.rect.contains(self.last_mouse);
-            // Highlight the matching format row.
+            // The row matching the active cell's format is the chosen one.
             let matches_active = match &row.item {
                 MenuItem::SetFormat(f) => f.category() == active_cat,
                 _ => false,
             };
-            if hovered || matches_active {
-                let rs = RoundedRect::from_rect(row.rect, f64::from(theme.tokens.radii.sm));
-                let bg = if hovered {
-                    colors.accent[5].with_alpha_factor(0.22)
-                } else {
-                    colors.accent[5].with_alpha_factor(0.10)
-                };
-                scene.fill(Fill::NonZero, transform, bg, None, &rs);
-            }
+            Self::paint_row_state(
+                scene,
+                transform,
+                theme,
+                row.rect,
+                ui::chrome::SelectionState::new(matches_active, hovered, false),
+            );
             let label = menu_item_label(&row.item);
             tr.draw_text(
                 scene,
@@ -5005,35 +5036,14 @@ impl SheetsApp {
             return;
         }
         let colors = &theme.tokens.colors;
-        // Dim the backdrop.
-        scene.fill(
-            Fill::NonZero,
+        // Dim the backdrop in the theme's own scrim, then the dialog panel.
+        ui::chrome::fill_scrim(scene, transform, self.rect, SETTINGS_SCRIM_STRENGTH, theme);
+        Self::paint_panel(
+            scene,
             transform,
-            Color::from_rgba8(0, 0, 0, 110),
-            None,
-            &self.rect,
-        );
-        let shape = RoundedRect::from_rect(self.panel_rect, f64::from(theme.tokens.radii.lg));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.overlay,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &shape,
+            theme,
+            self.panel_rect,
+            f64::from(theme.tokens.radii.lg),
         );
 
         let m = &self.metrics;
@@ -5096,31 +5106,27 @@ impl SheetsApp {
         sm: f32,
     ) {
         let colors = &theme.tokens.colors;
+        let radius = f64::from(theme.tokens.radii.sm);
         for chip in &self.setting_chips {
             let (label, selected) = self.chip_label_and_state(chip.kind);
-            let shape = RoundedRect::from_rect(chip.rect, f64::from(theme.tokens.radii.sm));
-            let bg = if selected {
-                colors.accent[5].with_alpha_factor(0.85)
+            // Quiet chip: raised face with its derived edge; selected: the
+            // accent fill, no edge (HIG §9.5 "Chip quiet").
+            if selected {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.accent[5],
+                    None,
+                    &RoundedRect::from_rect(chip.rect, radius),
+                );
             } else {
-                colors.surfaces.raised
-            };
-            scene.fill(Fill::NonZero, transform, bg, None, &shape);
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                if selected {
-                    colors.accent[5]
-                } else {
-                    colors.border_standard
-                },
-                None,
-                &shape,
-            );
+                ui::surface::card(scene, transform, chip.rect, radius, colors.surfaces.raised);
+            }
             let (tw, _) = tr.measure(&label, sm, None);
             let tx = chip.rect.center().x - f64::from(tw) / 2.0;
             let ty = ChromeMetrics::centred_top(chip.rect, self.metrics.lh_sm);
             let color = if selected {
-                Color::WHITE
+                colors.on_accent(ui::tokens::colors::NON_TEXT_MIN_CONTRAST)
             } else {
                 colors.text_primary
             };
@@ -5175,51 +5181,23 @@ impl SheetsApp {
             return;
         }
         let colors = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(self.tab_menu_rect, f64::from(theme.tokens.radii.md));
-        scene.fill(
-            Fill::NonZero,
+        Self::paint_panel(
+            scene,
             transform,
-            Color::from_rgba8(0, 0, 0, 70),
-            None,
-            &RoundedRect::from_rect(
-                self.tab_menu_rect + vello::kurbo::Vec2::new(0.0, 3.0),
-                f64::from(theme.tokens.radii.md),
-            ),
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.overlay,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &shape,
+            theme,
+            self.tab_menu_rect,
+            f64::from(theme.tokens.radii.md),
         );
 
         let sm = self.metrics.sm;
         for (rect, act) in &self.tab_menu_rows {
-            if rect.contains(self.last_mouse) {
-                let rs = RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.sm));
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.accent[5].with_alpha_factor(0.22),
-                    None,
-                    &rs,
-                );
-            }
+            Self::paint_row_state(
+                scene,
+                transform,
+                theme,
+                *rect,
+                ui::chrome::SelectionState::new(false, rect.contains(self.last_mouse), false),
+            );
             let color = if matches!(act, TabAction::Delete) {
                 colors.semantic.danger
             } else {
@@ -5271,17 +5249,11 @@ impl SheetsApp {
             .tab_menu_target
             .and_then(|t| self.sheet_colors.get(t).copied().flatten());
         for (rect, color_opt) in &self.tab_menu_swatches {
-            let shape = RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.sm));
+            let radius = f64::from(theme.tokens.radii.sm);
+            let shape = RoundedRect::from_rect(*rect, radius);
             match color_opt {
                 None => {
-                    scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &shape);
-                    scene.stroke(
-                        &Stroke::new(1.0),
-                        transform,
-                        colors.border_standard,
-                        None,
-                        &shape,
-                    );
+                    ui::surface::card(scene, transform, *rect, radius, colors.surfaces.base);
                     scene.stroke(
                         &Stroke::new(1.0),
                         transform,
@@ -5305,11 +5277,14 @@ impl SheetsApp {
             }
             let selected = current == *color_opt && color_opt.is_some();
             if selected || rect.contains(self.last_mouse) {
+                // The chosen swatch's ring is the chrome ink, which contrasts
+                // the panel on both palettes (a literal white ring vanished
+                // on the light panel); hover keeps the accent.
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
                     if selected {
-                        Color::WHITE
+                        colors.text_primary
                     } else {
                         colors.accent[5]
                     },

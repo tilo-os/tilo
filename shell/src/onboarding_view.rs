@@ -63,8 +63,10 @@ const FOOTER_HEIGHT: f32 = 57.0;
 /// acknowledgement above the ordinary action row so large text and compact
 /// displays never hide the gate inside scrolling explanatory copy.
 const ACKNOWLEDGEMENT_FOOTER_EXTRA_HEIGHT: f32 = 72.0;
-/// Eyebrow row, gap, padded 8 px progress track, and gap below the sticky header.
-const PROGRESS_HEADER_HEIGHT: f32 = 58.0;
+/// `s3` top pad, eyebrow row, gap, padded 8 px progress track, and gap below
+/// the sticky header. The pad keeps the eyebrow off the panel's top edge
+/// (HIG §7: nothing touches the container it sits in).
+const PROGRESS_HEADER_HEIGHT: f32 = 70.0;
 const PROGRESS_FILE: &str = ".onboarding-progress.json";
 const PROGRESS_VERSION: u32 = 1;
 const PROGRESS_MAX_BYTES: u64 = 4096;
@@ -807,13 +809,17 @@ impl OnboardingView {
         };
         let progress = Column::new()
             .with_no_padding()
+            // The header clears the panel's top edge by `s3`, and the
+            // progress track stays `s3` inside both panel edges (HIG §9.5: a
+            // rule inside a Panel never runs full-bleed into the corner
+            // radius). The labels add their own `s3` so they sit on the
+            // body's `s6` gutter.
+            .with_extra_top_padding(spacing.s3)
+            .with_horizontal_padding(spacing.s3, spacing.s3)
             .with_intrinsic_height()
             .with_gap(spacing.s3)
             .push(Box::new(
                 Row::new()
-                    // Keep both labels away from the rounded card edge. The
-                    // progress rule spans the content width below; its text
-                    // should not visually collide with the panel outline.
                     .with_padding(spacing.s3, 0.0)
                     .push(Box::new(
                         Text::new("qOS identity setup")
@@ -1037,10 +1043,16 @@ impl OnboardingView {
         };
         let progress = Column::new()
             .with_no_padding()
+            // Same header rhythm as the identity pages: `s3` off the panel's
+            // top edge, the track `s3` inside both edges, labels on the `s6`
+            // gutter.
+            .with_extra_top_padding(theme.tokens.spacing.s3)
+            .with_horizontal_padding(theme.tokens.spacing.s3, theme.tokens.spacing.s3)
             .with_intrinsic_height()
             .with_gap(theme.tokens.spacing.s3)
             .push(Box::new(
                 Row::new()
+                    .with_padding(theme.tokens.spacing.s3, 0.0)
                     .push(Box::new(
                         Text::new("qOS  •  DESKTOP TOUR")
                             .with_role(ui::tokens::typography::TextRole::Label)

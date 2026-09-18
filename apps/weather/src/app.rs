@@ -1214,8 +1214,10 @@ mod interaction_tests {
             "sample forecast is taller than 620px"
         );
         assert_eq!(h.app.core.borrow().scroll(), 0.0);
-        // Point over the detail (right) panel, not the overview list.
-        h.move_to(900.0, 400.0);
+        // Point over the detail (right) panel's hero card — not the overview
+        // list, and not the hourly strip, whose band owns the wheel for its
+        // own horizontal scroll.
+        h.move_to(900.0, 200.0);
         h.dispatch(&WindowEvent::MouseWheel {
             device_id: synth_device(),
             delta: MouseScrollDelta::LineDelta(0.0, -1.0),
@@ -1321,7 +1323,7 @@ mod interaction_tests {
         // The draw pass sets `overview_collapsible` and builds the chip's
         // hotspot; click the collapse chip (top-right of the overview panel).
         h.redraw();
-        let cx = over.x1 - 35.0; // chip spans x+w-30..x+w, RP=20 → over.x1-50..-20
+        let cx = over.x1 - 39.0; // chip spans x+w-30..x+w, RP=s6 → over.x1-54..-24
         let cy = over.y0 + 28.0;
         h.click(cx, cy);
         assert!(

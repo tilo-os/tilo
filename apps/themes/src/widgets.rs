@@ -134,24 +134,33 @@ impl ThemeRow {
     }
     fn paint(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let radius = theme.radius_standard.min(12.0);
-        // Row background: selected → accent-tinted; else hover / raised —
-        // the same tiering weather's saved-place chip uses.
-        let bg = if self.view.selected {
-            lerp(theme.bg_app, theme.accent_primary, 0.18)
-        } else if self.view.hover {
+        // Row background: the raised card surface, hover a step up. The
+        // selected row keeps the same surface — no accent wash (HIG §9.4:
+        // accent means live, not selected) — and says "this is the theme
+        // being edited" with one ring (HIG §7). It is a ring rather than the
+        // shell's lift because these rows are already raised cards: a
+        // `lift(1.0)` fill is the card's own colour and would not register.
+        let bg = if self.view.hover {
             theme.bg_hover
         } else {
             theme.bg_primary
         };
-        draw::fill_rrect(scene, t, self.rect, radius, bg);
-        let (border, bw) = if self.view.selected {
-            (theme.accent_primary, 1.5)
-        } else {
-            (theme.border_standard.multiply_alpha(0.6), 1.0)
-        };
-        draw::stroke_rrect(scene, t, self.rect, radius, border, bw);
+        // The rest and hover edge derives from the row's own fill
+        // (`ui::surface::card`, HIG §7/§9.5): a declared `border_standard`
+        // at 60 % vanished against the raised row on the dark preset.
+        ui::surface::card(scene, t, self.rect, radius, bg);
+        if self.view.selected {
+            draw::stroke_rrect(
+                scene,
+                t,
+                self.rect.inset(-0.75),
+                (radius - 0.75).max(0.0),
+                theme.accent_primary,
+                1.5,
+            );
+        }
 
-        let sw = self.draw_swatch(scene, t, theme);
+        let sw = self.draw_swatch(scene, t);
         self.draw_name_and_tag(scene, t, tr, theme, sw);
         self.draw_active_badge(scene, t, tr, theme);
     }
@@ -310,7 +319,7 @@ impl ThemeRow {
     /// centred in the row, so a row that grows for its text keeps the
     /// swatch's proportions. Returns its rect so the name/tag text can
     /// anchor beside it.
-    fn draw_swatch(&self, scene: &mut Scene, t: Affine, theme: &Theme) -> Rect {
+    fn draw_swatch(&self, scene: &mut Scene, t: Affine) -> Rect {
         let cy = self.rect.center().y;
         let sw = Rect::new(
             self.rect.x0 + ROW_INSET,
@@ -318,15 +327,11 @@ impl ThemeRow {
             self.rect.x0 + ROW_INSET + SWATCH,
             cy + SWATCH / 2.0,
         );
-        draw::fill_rrect(scene, t, sw, 7.0, model::color(self.swatch[0]));
-        draw::stroke_rrect(
-            scene,
-            t,
-            sw,
-            7.0,
-            theme.border_standard.multiply_alpha(0.5),
-            1.0,
-        );
+        // The swatch is the previewed theme's base surface, so its edge is
+        // measured against *that* colour, not the app theme's declared
+        // border: a light preset's swatch on a dark row (and the reverse)
+        // keeps a visible rim either way.
+        ui::surface::card(scene, t, sw, 7.0, model::color(self.swatch[0]));
         let inset = Rect::new(
             sw.x0 + 5.0,
             sw.y0 + 5.0,

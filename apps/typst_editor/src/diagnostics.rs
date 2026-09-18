@@ -132,10 +132,11 @@ impl DiagnosticsPanel {
             None,
             &self.rect,
         );
+        // Bar role: the panel's one derived hairline against the editor.
         scene.fill(
             Fill::NonZero,
             transform,
-            c.border_standard,
+            ui::chrome::chrome_hairline(theme),
             None,
             &Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y0 + 1.0),
         );

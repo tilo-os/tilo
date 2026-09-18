@@ -578,10 +578,11 @@ impl DiffMergeApp {
         self.toolbar_h = toolbar_h;
         let bar = Rect::new(r.x0, r.y0, r.x1, r.y0 + toolbar_h);
         scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &bar);
+        // The bar's bottom rule is derived against the bar (HIG §9.5).
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            c.border_standard,
+            ui::surface::edge_on(c.surfaces.raised),
             None,
             &Line::new(Point::new(r.x0, bar.y1), Point::new(r.x1, bar.y1)),
         );

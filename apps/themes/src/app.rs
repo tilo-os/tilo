@@ -422,13 +422,10 @@ impl ThemesApp {
         let x1 = vp.x1 - 3.0;
         let x0 = x1 - 6.0;
         let track = Rect::new(x0, vp.y0 + 4.0, x1, vp.y1 - 4.0);
-        draw::fill_rrect(
-            scene,
-            t,
-            track,
-            3.0,
-            theme.border_standard.multiply_alpha(0.35),
-        );
+        // The track is a half lift of the content ground — measured against
+        // it, so it shows on dark and light alike — rather than a declared
+        // border colour washed to 35 %.
+        draw::fill_rrect(scene, t, track, 3.0, theme.tokens.colors.lift(0.5));
         let ratio = (self.scroll_viewport_h / self.scroll_content_h).clamp(0.08, 1.0);
         let thumb_h = (track.height() * ratio).max(28.0);
         let max_scroll = (self.scroll_content_h - self.scroll_viewport_h).max(1.0);
@@ -1788,12 +1785,14 @@ impl Widget for ThemesApp {
         // Top bar over the panes, at its measured height.
         let tb = self.topbar_band();
         draw::fill_rect(scene, t, tb, theme.bg_primary);
+        // Bar role: one hairline derived from the bar's own fill (HIG §9.5),
+        // half a pixel up so the rule occupies the bar's last pixel row.
         draw::line(
             scene,
             t,
-            Point::new(tb.x0, tb.y1),
-            Point::new(tb.x1, tb.y1),
-            theme.border_standard,
+            Point::new(tb.x0, tb.y1 - 0.5),
+            Point::new(tb.x1, tb.y1 - 0.5),
+            ui::surface::edge_on(theme.bg_primary),
             1.0,
         );
 
@@ -1815,14 +1814,17 @@ impl Widget for ThemesApp {
             let tw = f64::from(w) + pad * 2.0;
             let cx = tb.center().x - tw / 2.0;
             let pill = Rect::new(cx, tb.y0 + 14.0, cx + tw, tb.y0 + 40.0);
-            draw::fill_rrect(scene, t, pill, 13.0, theme.tokens.colors.semantic.success);
+            let fill = theme.tokens.colors.semantic.success;
+            draw::fill_rrect(scene, t, pill, 13.0, fill);
             draw::text_center(
                 tr,
                 scene,
                 t,
                 &self.status,
                 12.0,
-                vello::peniko::Color::WHITE,
+                // Ink measured against the pill, not a literal white: a light
+                // preset's success green needs dark ink to stay legible.
+                theme.on_surface(fill).ink,
                 pill.x0,
                 pill.x1,
                 pill.y0,

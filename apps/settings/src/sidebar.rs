@@ -31,6 +31,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::chrome::{SelectionState, selection_tier};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
@@ -87,16 +88,14 @@ fn header_inset_x() -> f32 {
     spacing().s2 + spacing().s3
 }
 
-/// Text and icon ink for a sidebar row. A selected row is painted with the
-/// accent fill, whose luminance varies by theme; primary surface text is not
-/// guaranteed to remain legible on it. Keep this selection in the shared row
-/// primitive so its icon and label always use the same contrast-safe ink.
-fn row_ink(theme: &Theme, active: bool) -> vello::peniko::Color {
-    if active {
-        theme.tokens.colors.on_accent(4.5)
-    } else {
-        theme.text_primary
-    }
+/// Text and icon ink for a sidebar row, in every state. Selection is a lift
+/// of the sidebar surface (`ui::chrome::selection_tier`, HIG §9.3), never an
+/// accent fill, so the primary text colour stays legible on the chosen row
+/// too; the function stays the one place both the icon and the label take
+/// their ink from, and the contrast test below proves it against the lifted
+/// fill on every preset.
+fn row_ink(theme: &Theme) -> vello::peniko::Color {
+    theme.text_primary
 }
 
 /// The resolved on-screen geometry of one sidebar row: the selection pill and
@@ -161,8 +160,8 @@ impl RowGeometry {
 
 /// One selectable category row in the sidebar.
 ///
-/// Fills the available width, left-aligns its icon + full label, and paints an
-/// accent background + bar when it is the active category. Clicking it emits
+/// Fills the available width, left-aligns its icon + full label, and paints
+/// the shared selection lift when it is the active category. Clicking it emits
 /// a local selection request which [`crate::SettingsApp::sync`] consumes to
 /// change panes without writing presentation state into the document.
 #[allow(
@@ -334,11 +333,12 @@ impl Widget for SidebarRow {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // Active row: a filled accent pill. Hover/press: a subtle raised tint.
-        // Otherwise nothing, so inactive rows read flat against the sidebar
-        // surface. The pill is inset from the panel edges and given a little
-        // vertical breathing room so the highlight reads as a deliberate
-        // selection chip rather than a full-bleed band.
+        // Active row: the shared selection lift — a raised fill with a derived
+        // hairline and inner glow (HIG §9.3), never an accent wash. Hover: the
+        // half lift. Otherwise nothing, so inactive rows read flat against the
+        // sidebar surface. The pill is inset from the panel edges and given a
+        // little vertical breathing room so the highlight reads as a
+        // deliberate selection chip rather than a full-bleed band.
         let radius = f64::from(theme.tokens.radii.md);
         let icon_size = 18.0;
         // All positions come from one geometry pass so the drawn layout and the
@@ -358,18 +358,46 @@ impl Widget for SidebarRow {
         let (_, line_height) = text_renderer.measure(label, label_size, Some(label_max_w));
         let geo = RowGeometry::compute(self.rect, icon_size, f64::from(line_height), &spacing());
 
-        let highlight = if self.active {
-            Some(theme.accent_primary)
-        } else if self.is_pressed {
-            Some(theme.bg_active)
-        } else if self.is_hovered {
-            Some(theme.bg_hover)
+        // The shared four-tier lift: idle transparent, hover a half lift,
+        // active a full lift with a derived hairline and inner glow, pressed
+        // the active look scaled down about the pill's centre (the press cue
+        // the tier carries in `scale`, applied the way the tab strip does).
+        let tier = selection_tier(
+            theme,
+            SelectionState::new(self.active, self.is_hovered, self.is_pressed),
+        );
+        let pill_transform = if (tier.scale - 1.0).abs() > f64::EPSILON {
+            let centre = geo.pill.center();
+            transform
+                * Affine::translate((centre.x, centre.y))
+                * Affine::scale(tier.scale)
+                * Affine::translate((-centre.x, -centre.y))
         } else {
-            None
+            transform
         };
-        if let Some(color) = highlight {
+        if tier.fill.components[3] > 0.0 {
             let pill = RoundedRect::from_rect(geo.pill, radius);
-            scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &pill);
+            scene.fill(vello::peniko::Fill::NonZero, pill_transform, tier.fill, None, &pill);
+        }
+        if let Some(border) = tier.border {
+            // A crisp 1 px edge half a pixel inside the pill, so it covers the
+            // pill's own outermost pixel row and never bleeds onto the sidebar.
+            scene.stroke(
+                &Stroke::new(1.0),
+                pill_transform,
+                border,
+                None,
+                &ui::surface::edge_outline(geo.pill, radius),
+            );
+        }
+        if let Some(glow) = tier.inner_glow {
+            scene.stroke(
+                &Stroke::new(1.0),
+                pill_transform,
+                glow,
+                None,
+                &RoundedRect::from_rect(geo.pill.inset(-1.5), (radius - 1.5).max(0.0)),
+            );
         }
         if self.is_focused {
             let pill = RoundedRect::from_rect(geo.pill, radius);
@@ -382,10 +410,10 @@ impl Widget for SidebarRow {
             );
         }
 
-        // Icon + label, left-aligned, vertically centred. The active row uses
-        // a bright on-accent foreground; inactive rows use the primary text
-        // colour so they stay legible against the sidebar surface.
-        let fg = row_ink(theme, self.active);
+        // Icon + label, left-aligned, vertically centred, in the primary text
+        // colour on every state: a lift keeps the ink legible where an accent
+        // fill would not.
+        let fg = row_ink(theme);
 
         let icon_y = self.rect.center().y - icon_size / 2.0;
         self.category.icon().draw(
@@ -809,12 +837,43 @@ mod tests {
     }
 
     #[test]
-    fn active_row_ink_meets_text_contrast_on_the_accent_fill() {
-        for theme in [Theme::dark(), Theme::light()] {
-            let ink = row_ink(&theme, true);
+    fn active_row_ink_meets_text_contrast_on_the_lifted_fill() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let ink = row_ink(&theme);
+            let tier = selection_tier(&theme, SelectionState::active(true));
+            // `Colors::lift(1.0)` is an opaque mix, so the fill the eye sees is
+            // the fill the tier hands back — no compositing step to fake.
             assert!(
-                ui::a11y::contrast_ratio(ink, theme.accent_primary) >= 4.5,
-                "active sidebar ink must remain readable on the accent fill for {}",
+                tier.fill.components[3] >= 1.0,
+                "the active lift must be an opaque fill for {}",
+                theme.name
+            );
+            assert!(
+                tier.border.is_some() && tier.inner_glow.is_some(),
+                "the active row must carry a derived edge and glow for {}",
+                theme.name
+            );
+            assert!(
+                ui::a11y::contrast_ratio(ink, tier.fill) >= 4.5,
+                "active sidebar ink must remain readable on the lifted fill for {}",
+                theme.name
+            );
+            let hover = selection_tier(&theme, SelectionState::new(false, true, false));
+            assert!(
+                hover.fill.components[3] > 0.0 && hover.border.is_none(),
+                "hover is the half lift without an edge for {}",
+                theme.name
+            );
+            let pressed = selection_tier(&theme, SelectionState::new(false, false, true));
+            assert!(
+                pressed.scale < 1.0,
+                "a press carries its own cue (scale) for {}",
+                theme.name
+            );
+            let idle = selection_tier(&theme, SelectionState::new(false, false, false));
+            assert!(
+                idle.fill.components[3] == 0.0,
+                "an idle row paints nothing for {}",
                 theme.name
             );
         }

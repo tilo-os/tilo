@@ -22,7 +22,24 @@ pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
     scene.fill(Fill::NonZero, t, color, None, &rect);
 }
 
-/// Stroke a rounded-rect border.
+/// A crisp 1 px edge on `rect`'s outermost pixel row: strokes
+/// [`ui::surface::edge_outline`] (half a pixel *inside* the rect — kurbo's
+/// `Rect::inset(+x)` grows a rect, so this is the one place that geometry
+/// lives). For a surface whose fill and edge cannot go through
+/// [`ui::surface::card`] in one call (the code card paints its gutter
+/// between fill and edge; the modal strokes `panel_border`).
+pub fn stroke_edge(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: Color) {
+    scene.stroke(
+        &Stroke::new(1.0),
+        t,
+        color,
+        None,
+        &ui::surface::edge_outline(rect, radius),
+    );
+}
+
+/// Stroke a rounded-rect border (focus rings and the selected row's accent
+/// outline; rest edges come from [`ui::surface::card`] / [`stroke_edge`]).
 pub fn stroke_round(
     scene: &mut Scene,
     t: Affine,
@@ -166,7 +183,9 @@ pub fn pill(
     let (text_w, text_h) = tr.measure(label, size, None);
     let w = f64::from(text_w) + pad_x * 2.0;
     let rect = Rect::new(x, y, x + w, y + height);
-    fill_round(scene, t, rect, height / 2.0, bg);
+    // A capsule with its derived rest edge: a tinted pill on the same
+    // ground as its neighbours otherwise reads as bare text on a wash.
+    ui::surface::pill(scene, t, rect, bg, Some(ui::surface::edge_on(bg)), None);
     // Centre the measured line box in the capsule, not the bare font size.
     let ty = y + (height - f64::from(text_h)) / 2.0;
     text(

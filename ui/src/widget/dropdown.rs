@@ -768,12 +768,24 @@ impl Widget for Dropdown {
                 &shape,
             );
         }
+        // Rest edge derived from the field's raised fill, as a Neutral
+        // button (HIG §9.5); open / focus keep `border_focus`.
         let (bw, bc) = if self.open || self.is_focused {
             (2.0, theme.border_focus)
         } else {
-            (1.0, theme.border_standard)
+            (
+                1.0,
+                crate::surface::edge_on(theme.tokens.colors.surfaces.raised),
+            )
         };
-        scene.stroke(&Stroke::new(bw), transform, bc, None, &shape);
+        // Rest edge and focus ring share one half-pixel-inset outline.
+        scene.stroke(
+            &Stroke::new(bw),
+            transform,
+            bc,
+            None,
+            &crate::surface::edge_outline(self.rect, f64::from(theme.tokens.radii.md)),
+        );
 
         if self.open {
             self.filter_composition.draw(
@@ -862,19 +874,21 @@ impl Widget for Dropdown {
         let list = self.list_rect(filtered.len());
         let shape = RoundedRect::from_rect(list, f64::from(theme.tokens.radii.md));
 
+        // The open list is a Panel (HIG §9.1 / §9.5): panel ground and
+        // panel edge, so it separates from the raised field it drops from.
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.raised,
+            crate::chrome::panel_ground(theme),
             None,
             &shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.border_standard,
+            crate::chrome::panel_border(theme),
             None,
-            &shape,
+            &crate::surface::edge_outline(list, f64::from(theme.tokens.radii.md)),
         );
 
         // Clip rows to the rounded list box.

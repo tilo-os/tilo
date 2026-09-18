@@ -43,6 +43,13 @@ const MIN_TARGET: f64 = 32.0;
 /// ink `Theme::on_surface` picks for it to clear contrast over any frame.
 const CONTROLS_SCRIM_ALPHA: f32 = 0.67;
 const SCRUB_TRACK_HEIGHT: f64 = 5.0;
+/// The unfilled scrub / volume track is the bar's own dim ink at this
+/// alpha: derived from the scrim like every other mark on the bar, so it
+/// reads on both themes' scrims where a declared `border_standard` did not.
+const TRACK_INK_ALPHA: f32 = 0.35;
+/// The selected menu option's lift: one translucent step off the panel
+/// ground, polarity chosen the way `hairline_on` chooses it (HIG §9.3).
+const MENU_SELECTED_ALPHA: u8 = 56;
 const SCRUB_THUMB_RADIUS: f64 = 7.0;
 const VOLUME_WIDTH: f64 = 78.0;
 const KEY_SEEK_STEP: Duration = Duration::from_secs(5);
@@ -1116,13 +1123,13 @@ impl VideoPlayer {
         };
         self.paint_volume_time_track(scene, transform, text_renderer, theme, &layout, &time);
 
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &bar,
-        );
+        // Bar role (HIG §9.1): one crisp top hairline, derived from the scrim
+        // the bar is made of (§9.5) and covering exactly the bar's top pixel
+        // row. A Bar runs edge to edge, so no inset. The declared
+        // `border_standard` it replaces was a fixed colour neither theme's
+        // scrim had been measured against, stroked as a half-covered ring
+        // around all four sides.
+        crate::surface::separator(scene, transform, bar.x0, bar.x1, bar.y0 + 0.5, 0.0, scrim);
 
         self.paint_menu(scene, transform, text_renderer, theme);
     }
@@ -1408,7 +1415,7 @@ impl VideoPlayer {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                colors.border_standard,
+                layout.ink_dim.multiply_alpha(TRACK_INK_ALPHA),
                 None,
                 &shape,
             );
@@ -1464,7 +1471,7 @@ impl VideoPlayer {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.border_standard,
+            layout.ink_dim.multiply_alpha(TRACK_INK_ALPHA),
             None,
             &RoundedRect::from_rect(track, SCRUB_TRACK_HEIGHT * 0.5),
         );
@@ -1476,10 +1483,13 @@ impl VideoPlayer {
                 track.x0 + track.width() * buf_frac,
                 track.y1,
             );
+            // Buffered range in the bar's own dim ink: `text_dim` is chosen
+            // against the app surface, not the scrim, and vanished on the
+            // light theme's dark scrim.
             scene.fill(
                 Fill::NonZero,
                 transform,
-                colors.text_dim,
+                layout.ink_dim,
                 None,
                 &RoundedRect::from_rect(buffered, SCRUB_TRACK_HEIGHT * 0.5),
             );
@@ -1609,14 +1619,24 @@ impl VideoPlayer {
         let y0 = y1 - panel_h;
         let panel_rect = Rect::new(x0, y0, x1, y1);
 
-        let bg = RoundedRect::from_rect(panel_rect, f64::from(theme.tokens.radii.md));
-        scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &bg);
+        // Panel role (HIG §9.1): a settings menu floats over the video, so it
+        // takes the panel ground and the panel edge — the declared
+        // `border_standard` this replaces vanished on the dark preset.
+        let radius = f64::from(theme.tokens.radii.md);
+        let bg = RoundedRect::from_rect(panel_rect, radius);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            crate::chrome::shell::panel_ground(theme),
+            None,
+            &bg,
+        );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            crate::chrome::shell::panel_border(theme),
             None,
-            &bg,
+            &crate::surface::edge_outline(panel_rect, radius),
         );
 
         let mut y = y0 + pad * 0.5;
@@ -1787,21 +1807,30 @@ impl VideoPlayer {
             10.0
         };
         if selected {
-            let hl = RoundedRect::from_rect(
-                Rect::new(
-                    row_rect.x0 + 2.0,
-                    y + 1.0,
-                    row_rect.x1 - 2.0,
-                    y + row_h - 3.0,
-                ),
-                6.0,
+            // Selection is a lift, not an accent wash (HIG §9.3): one step
+            // off the panel it sits on under an edge derived from the panel.
+            // `Colors::lift` is measured against the desktop and has no
+            // purchase on a panel, so the step derives from the panel itself.
+            let hl_rect = Rect::new(
+                row_rect.x0 + 2.0,
+                y + 1.0,
+                row_rect.x1 - 2.0,
+                y + row_h - 3.0,
             );
+            let panel = crate::chrome::shell::panel_ground(theme);
             scene.fill(
                 Fill::NonZero,
                 transform,
-                accent.multiply_alpha(0.22),
+                crate::tokens::colors::Colors::hairline_on(panel, MENU_SELECTED_ALPHA),
                 None,
-                &hl,
+                &RoundedRect::from_rect(hl_rect, 6.0),
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                crate::surface::edge_on(panel),
+                None,
+                &crate::surface::edge_outline(hl_rect, 6.0),
             );
         }
         let label = options.get(oi).cloned().unwrap_or_default();
@@ -3849,5 +3878,143 @@ mod tests {
              (WCAG AA is 4.5:1): near-black text_primary on the dark scrim; ink must be \
              chosen against the scrim"
         );
+    }
+
+    /// Relative luminance of the composited pixel at (`x`, `y`).
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "probe coordinates are non-negative pixel positions inside a small test surface"
+    )]
+    fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
+        let (r, g, b, _) =
+            crate::offscreen::OffscreenRenderer::sample(rgba, w, x.floor() as u32, y.floor() as u32);
+        crate::a11y::relative_luminance(Color::from_rgb8(r, g, b))
+    }
+
+    /// `$UX1X_F4_OUT/<theme>/<name>` when the 1× review asked for evidence.
+    fn ux1x_out(theme: &Theme, name: &str) -> Option<std::path::PathBuf> {
+        let dir = std::path::PathBuf::from(std::env::var_os("UX1X_F4_OUT")?)
+            .join(theme.name.to_lowercase());
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir.join(name))
+    }
+
+    /// A player with the controls shown, a partly buffered track and the
+    /// settings menu open on an expanded choice — every surface the bar
+    /// paints, in one frame.
+    fn ux1x_fixture() -> VideoPlayer {
+        let mut vp = VideoPlayer::new();
+        vp.buffering = 40;
+        vp.set_setting(PlayerSetting::toggle(
+            "captions",
+            Icon::FileText,
+            "Captions",
+            0,
+            true,
+        ));
+        vp.set_setting(PlayerSetting::choice(
+            "speed",
+            Icon::Settings2,
+            "Speed",
+            0,
+            vec!["0.5×".into(), "1×".into(), "1.5×".into()],
+            1,
+        ));
+        vp.show_controls();
+        vp.open_settings_menu(Some("speed"));
+        vp
+    }
+
+    /// The controls bar's top hairline, its unfilled track and the open
+    /// settings menu keep a **visible derived edge** at 1× on both presets
+    /// (HIG §9.5). Before, all three wore `border_standard` — one fixed
+    /// colour per theme, measured against neither theme's scrim, three
+    /// shades from the dark raised menu — and the light theme's track was
+    /// `text_dim` (near-black) on a near-black scrim.
+    ///
+    /// Writes `$UX1X_F4_OUT/<theme>/video_player.png` plus the harness
+    /// inspection when that variable is set; asserts regardless.
+    #[test]
+    fn ux1x_controls_bar_and_menu_edges_register_on_both_presets() {
+        use crate::offscreen::OffscreenRenderer;
+        const EDGE_MIN: f64 = 0.008;
+        let (w, h) = (640.0, 360.0);
+        // Evidence first, for both presets, so a failing assertion on one
+        // preset still leaves the other's PNG and inspection on disk.
+        for theme in [Theme::dark(), Theme::light()] {
+            let theme = theme.with_reduce_motion(true);
+            if let Some(png) = ux1x_out(&theme, "video_player.png") {
+                let harness = crate::headless::FrameHarness::new_with_theme(
+                    crate::State::new(),
+                    Box::new(ux1x_fixture()),
+                    (640, 360),
+                    theme.clone(),
+                );
+                harness.render_window_png(&png);
+                if let Ok(json) = harness.inspection_json() {
+                    std::fs::write(png.with_extension("inspection.json"), json)
+                        .expect("write inspection");
+                }
+            }
+        }
+        for theme in [Theme::dark(), Theme::light()] {
+            let theme = theme.with_reduce_motion(true);
+            let mut vp = ux1x_fixture();
+            vp.rect = Rect::new(0.0, 0.0, w, h);
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let mut scene = Scene::new();
+            vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a 640x360 test surface"
+            )]
+            let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a 640x360 test surface"
+            )]
+            let lum = |x: f64, y: f64| lum_at(&rgba, w as u32, x, y);
+
+            // Bar: the top hairline against the scrim two rows under it.
+            let bar = vp.controls_bar_rect();
+            let hairline = lum(bar.x0 + 2.0, bar.y0);
+            let scrim = lum(bar.x0 + 2.0, bar.y0 + 3.0);
+            assert!(
+                (hairline - scrim).abs() >= EDGE_MIN,
+                "{}: bar hairline {hairline:.4} vs scrim {scrim:.4} did not register",
+                theme.name
+            );
+
+            // Track: the unfilled end (past the 40 % buffered range) against
+            // the bare scrim beside it.
+            let hit = vp.scrub_track_rect;
+            let track = lum(hit.x1 - 3.0, hit.center().y);
+            let beside = lum(hit.x1 - 3.0, hit.center().y - 7.0);
+            assert!(
+                (track - beside).abs() >= EDGE_MIN,
+                "{}: unfilled track {track:.4} vs scrim {beside:.4} did not register",
+                theme.name
+            );
+
+            // Menu: the panel edge (the row hit rects sit 3 px inside the
+            // panel) against the panel ground just inside it.
+            let first_row = vp
+                .menu_hit_rects
+                .first()
+                .map(|(_, rect)| *rect)
+                .expect("the open menu painted rows");
+            let panel_x0 = first_row.x0 - 3.0;
+            let edge = lum(panel_x0, first_row.center().y);
+            let ground = lum(panel_x0 + 2.0, first_row.center().y);
+            assert!(
+                (edge - ground).abs() >= EDGE_MIN,
+                "{}: menu edge {edge:.4} vs panel {ground:.4} did not register",
+                theme.name
+            );
+        }
     }
 }

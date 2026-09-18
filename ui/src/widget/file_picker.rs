@@ -1011,19 +1011,22 @@ impl Widget for FilePicker {
         let tokens = &theme.tokens;
         let radius = f64::from(tokens.radii.md);
         let frame = RoundedRect::from_rect(self.rect, radius);
+        // Panel role (HIG §9.1): panel ground + the derived panel edge as
+        // a crisp 1 px inset stroke; the declared `border_standard` sat
+        // within rounding distance of `raised` on the dark preset.
         scene.fill(
             Fill::NonZero,
             transform,
-            tokens.colors.surfaces.raised,
+            crate::chrome::panel_ground(theme),
             None,
             &frame,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            tokens.colors.border_standard,
+            crate::chrome::panel_border(theme),
             None,
-            &frame,
+            &crate::surface::edge_outline(self.rect, radius),
         );
 
         self.draw_header_and_breadcrumbs(scene, transform, text_renderer, theme);
@@ -1419,15 +1422,27 @@ impl FilePicker {
             let i = *i;
             let is_selected = self.selection.is_selected(i);
             let is_hover = self.hover_entry == Some(i) && !is_selected;
+            // HIG §9.3: an idle row is transparent and hover is a lift; only
+            // the selected row carries a fill. The lift is a hairline wash
+            // measured against the panel ground the row sits on (a
+            // base-relative `Colors::lift` lands below `panel_ground` on the
+            // dark preset and would darken the hovered row). A `raised` idle
+            // fill was invisible on the old `raised` panel and read as a
+            // stack of bands once the panel took its own ground.
             let bg = if is_selected {
-                tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX]
+                Some(tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX])
             } else if is_hover {
-                theme.bg_hover
+                Some(crate::tokens::Colors::hairline_on(
+                    crate::chrome::panel_ground(theme),
+                    crate::chrome::HAIRLINE_ALPHA,
+                ))
             } else {
-                tokens.colors.surfaces.raised
+                None
             };
             let row_shape = RoundedRect::from_rect(*rect, f64::from(tokens.radii.sm));
-            scene.fill(Fill::NonZero, transform, bg, None, &row_shape);
+            if let Some(bg) = bg {
+                scene.fill(Fill::NonZero, transform, bg, None, &row_shape);
+            }
             let list_cursor = self
                 .selection
                 .primary()
@@ -1555,13 +1570,15 @@ impl FilePicker {
             None,
             &s,
         );
+        // Rest edge derived from the field fill (HIG §9.5); focus keeps
+        // `border_focus`.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
             if self.has_keyboard_focus && self.focus == Some(PickerFocus::Filename) {
                 tokens.colors.border_focus
             } else {
-                tokens.colors.border_standard
+                crate::surface::edge_on(tokens.colors.surfaces.base)
             },
             None,
             &s,
@@ -1614,21 +1631,17 @@ impl FilePicker {
         let tokens = &theme.tokens;
         let hovered = self.filter_rect.contains(self.last_cursor);
         let s = RoundedRect::from_rect(self.filter_rect, f64::from(tokens.radii.sm));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            if hovered {
-                theme.bg_hover
-            } else {
-                tokens.colors.surfaces.base
-            },
-            None,
-            &s,
-        );
+        let fill = if hovered {
+            theme.bg_hover
+        } else {
+            tokens.colors.surfaces.base
+        };
+        scene.fill(Fill::NonZero, transform, fill, None, &s);
+        // Rest edge derived from the face actually painted (HIG §9.5).
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            tokens.colors.border_standard,
+            crate::surface::edge_on(fill),
             None,
             &s,
         );

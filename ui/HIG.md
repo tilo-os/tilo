@@ -196,6 +196,18 @@ this section the way you grade correctness against the tests.
   jammed edge-to-edge, controls are not scattered. A clear reading order and a
   single primary action per screen. Groups are separated by space and hierarchy,
   not by hairlines and boxes-within-boxes.
+- **Nothing touches.** Every neighbouring pair keeps a token-step gap (`s1`+). A
+  fixed offset that produces a touch, an overlap or a clipped glyph at 1× is a
+  defect regardless of how it was authored — the screenshot decides, not the
+  byte-identical frame. Content is centred in its container: icon + label
+  blocks in tiles, leading icons and trailing controls on the row's centre
+  line, text on its measured line box.
+- **An edge you draw is derived.** Where an app paints its own card, row or
+  pill edge, it comes from `ui::surface::{card, edge_on, separator}` or
+  `ui::chrome::panel_border`, measured against the surface it sits on;
+  `border_standard` is a rule on `surfaces.base`, never a stroke on `raised`
+  or `overlay` (on the dark preset the two are three shades apart and the
+  edge vanishes).
 - **Real typographic hierarchy.** Size / weight / color establish
   title → section → body → caption; digits that line up use tabular figures. No
   wall of same-size text; no illegible low-contrast label on a colored fill
@@ -323,6 +335,10 @@ Rhythm inside a group versus between groups:
 | Section padding, gap between Panel sections | `s4` | panel body, card gutter |
 | Before the next group; page gutter | `s6` (the `Column` default inset) | form sections, page edge |
 | Between major regions | `s8`+ | header block ↔ content |
+
+One rhythm per panel or screen: the same relationship always gets the same
+step. A section gap of 30 px beside one of 18 px for the same relationship is
+a defect even when both are "authored".
 
 The framework supplies the values so callers state the relationship, not the
 number:
@@ -533,6 +549,8 @@ active strip, selected row, chosen scope chip, current power profile — uses th
 This is `ui::chrome::selection_tier` (promoted out of `widget::tabs`, where it
 was `pub(crate)` and therefore unreachable from the shell — which is precisely
 why the shell grew its own incompatible answers). Call it; do not restate it.
+This includes toolkit list selection: `TreeView`, `Table`, `DataTable` and
+`Sidebar` rows are a lift, never an accent wash.
 
 **One caveat the tier cannot absorb for you.** `Colors::lift` interpolates from
 `surfaces.base` toward `surfaces.raised`, and where those two are close it
@@ -630,6 +648,59 @@ cannot fix: the name says white while the value is a veneer, and the strength is
 *declared* rather than measured against the ground the surface actually lands
 on. `lift` and `hairline_on` take that measurement, so a hairline stays a
 hairline on a palette their author never saw. Reach for those.
+
+#### Rest edges (toolkit and shell)
+
+At rest (idle, enabled) every control, card and popup has a **visible derived
+edge or a clear contrast step** against the surface it sits on, at 1× in dark
+and light alike. "Edge" is `ui::surface::edge_on(fill)` painted as a crisp
+inset 1 px stroke (`ui::surface::card`, `pill`, or the same geometry inline);
+chosen states use `selection_tier` (Controls) or `glass_selector` (Selectors);
+focus stays `border_focus`; disabled is the rest face under
+`widget::DISABLED_ALPHA`, so rest and disabled never look the same.
+
+| Control | Rest fill | Rest edge |
+|---|---|---|
+| Button Neutral / Disabled, Dropdown field | `surfaces.raised` | `edge_on(raised)` |
+| Card / Container / ContentCard | as today | `edge_on(fill)`; a section inside a card gets space, not a second edge |
+| TextInput / NumberInput / SearchField | field fill | `edge_on(fill)`; focus `border_focus` |
+| Dropdown list, ContextMenu, Popover, SlashMenu, Autocomplete, LinkPopover, CommandPalette, FilePicker, PermissionPrompt, Toast, ModalDialog, ModalFrame | `panel_ground` (or `surfaces.overlay` where already used) | `panel_border`; separators `separator(.., s3, ..)`, never full-bleed |
+| Tooltip | as today | `edge_on(fill)` |
+| Segmented / ToggleGroup track | `surfaces.raised` | `edge_on(track)`; active segment `glass_selector` |
+| Chip quiet | `surfaces.raised` | `edge_on(raised)`; selected accent, no edge |
+| Toggle | off `lift(1.0)`, on `accent_primary` | `edge_on(track)`; one knob colour for both states |
+| Slider | unfilled `lift(1.0)`, filled `accent_primary` | `edge_on(unfilled)`; thumb contrasts against both halves |
+| Checkbox | unchecked `surfaces.raised` | `edge_on(raised)` |
+| Table / DataTable rules | — | `edge_on(table_fill)`, never into a rounded corner |
+| TreeView / Sidebar / VirtualList rows | transparent | none; selection is `selection_tier` |
+| Divider | — | `border_standard` only on `surfaces.base`; `Divider::on(surface)` elsewhere |
+| App chrome Toolbar / StatusBar | as today | `chrome_hairline` |
+| Selectors (tab pills, tray pill, scope chip) | idle none | none (`glass_selector`) |
+
+A declared border or ramp token (`border_standard`, `border_strong`,
+`overlay_border_strong`, `colors.neutral[..]`) on a chrome surface is a defect;
+`tests/design_token_audit.rs::declared_borders_in_chrome_do_not_grow` ratchets
+their count against `tests/chrome_declared_border_baseline.txt`.
+
+**One painter per row of that table.** `ui::surface::card(fill)` is the edged
+opaque surface; `ui::surface::panel(theme)` is the Panel row (`panel_ground`
+fill + `panel_border`) so no app spells the pair; `ui::surface::card_on(fill,
+ground)` is for a translucent wash (an accent tint, a hover film) — the edge
+derives from what the eye sees, the wash composited over its ground, because a
+hairline judged by a 16 % wash's own RGB flips polarity on light and vanishes.
+`edge_on` assumes an opaque fill. All three snap their rect to whole logical
+pixels and `separator` lands on one device-pixel row (`separator_rect`): a 1 px
+edge on a fractional coordinate is two half-covered rows that fall under
+`HAIRLINE_MIN_DELTA` even when the colour registers.
+
+**Selection lifts from the ground it sits on.** `chrome::selection_tier` measures
+its lift against `surfaces.base`; a row on `panel_ground`, a raised sidebar or a
+card is within rounding distance of that lift on dark and high-contrast (Δ
+0.008 / 0.002). Use `chrome::selection_tier_on(theme, state, ground)` there — it
+keeps the base lift where it registers and otherwise walks `LIFT_ALPHA_STEPS`
+until the active fill clears the ground by `HAIRLINE_MIN_DELTA`, with hover
+halfway between. The same rule for one control never yields a different fill
+depending on which panel hosts it, because the ground is the input.
 
 ### 9.6 Type and density
 
@@ -840,6 +911,9 @@ Grep a chrome diff for these; each hit is a role you skipped:
 - `surface_white_` / `border_white_` (any suffix) — a declared strength, never
   measured against its ground (§9.5)
 - `colors.neutral[` in chrome (use `surfaces.*`)
+- `.border_standard` / `.border_strong` / `overlay_border_strong` stroked on a
+  raised or overlay surface — a declared edge (§9.5); ratcheted by
+  `design_token_audit.rs::declared_borders_in_chrome_do_not_grow`
 - a numeric literal passed as a corner radius
 - `Duration::from_millis(` with a literal in an animation
 - a `Command::new` / blocking read reachable from `draw`

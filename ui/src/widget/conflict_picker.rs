@@ -396,28 +396,23 @@ fn draw_card(
 ) {
     let card = chrome.card;
 
-    // Hovered cards lift via accent border.
-    let body = RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md));
-    scene.fill(
-        vello::peniko::Fill::NonZero,
-        transform,
-        theme.tokens.colors.surfaces.base,
-        None,
-        &body,
-    );
-    let border = if chrome.hovered {
-        theme.tokens.colors.border_focus
+    // Hovered cards lift via accent border; at rest the edge derives from
+    // the card fill (HIG §9.5) as a crisp 1 px inset stroke.
+    let radius = f64::from(theme.tokens.radii.md);
+    let fill = theme.tokens.colors.surfaces.base;
+    if chrome.hovered {
+        let body = RoundedRect::from_rect(card, radius);
+        scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &body);
+        scene.stroke(
+            &Stroke::new(2.0),
+            transform,
+            theme.tokens.colors.border_focus,
+            None,
+            &body,
+        );
     } else {
-        theme.tokens.colors.border_standard
-    };
-    let border_stroke_w = if chrome.hovered { 2.0 } else { 1.0 };
-    scene.stroke(
-        &Stroke::new(border_stroke_w),
-        transform,
-        border,
-        None,
-        &body,
-    );
+        crate::surface::card(scene, transform, card, radius, fill);
+    }
 
     let inner = Rect::new(
         card.x0 + CARD_PAD_X,
@@ -812,26 +807,16 @@ impl ConflictPicker {
         theme: &Theme,
     ) {
         let keep = self.keep_current_rect();
-        let keep_shape = RoundedRect::from_rect(keep, f64::from(theme.tokens.radii.sm));
+        let keep_radius = f64::from(theme.tokens.radii.sm);
+        // A Neutral button face (HIG §9.5): the raised tier at rest, the
+        // theme's hover fill when hovered, edge derived from the face — not
+        // a white veneer that is invisible on a light palette.
         let keep_body = if self.hover_keep {
-            theme.tokens.colors.surface_white_20
+            theme.bg_hover
         } else {
-            theme.tokens.colors.surface_white_10
+            theme.tokens.colors.surfaces.raised
         };
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            keep_body,
-            None,
-            &keep_shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_white_20,
-            None,
-            &keep_shape,
-        );
+        crate::surface::card(scene, transform, keep, keep_radius, keep_body);
         let keep_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         // Centre on the measurement the button was sized from (see
         // `adjust_layout_with_measure`); a host that laid out without the

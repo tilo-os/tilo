@@ -2268,12 +2268,8 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             let row_rect = Rect::new(self.rect.x0, y0, self.rect.x1, y1);
 
             if matches!(key, TreeRowKey::Node(id) if self.selection.is_selected(&id)) {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    accent.with_alpha_factor(0.3 * opacity),
-                    None,
-                    &row_rect,
+                crate::widget::data_table::paint_selected_row(
+                    scene, transform, theme, row_rect, opacity,
                 );
             }
 
@@ -2369,12 +2365,8 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             let y0 = self.rect.y0 + visual.geometry.top;
             let row_rect = Rect::new(self.rect.x0, y0, self.rect.x1, y0 + visual.geometry.height);
             if payload.selected {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    accent.with_alpha_factor(0.3 * opacity),
-                    None,
-                    &row_rect,
+                crate::widget::data_table::paint_selected_row(
+                    scene, transform, theme, row_rect, opacity,
                 );
             }
             let glyph_x = self.rect.x0 + idx_to_f64(payload.depth) * indent_px;
