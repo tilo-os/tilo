@@ -157,6 +157,7 @@ members = [
     "crates/runtime/cli",
     "crates/runtime/runtime",
     "crates/runtime/runtime-collab",
+    "crates/runtime/runtime-connected",
     # Opt-in dynamic SDK; excluded from default-members.
     "crates/runtime/runtime-dylib",
     "crates/runtime/runtime-fs",
@@ -168,6 +169,7 @@ members = [
     # Session
     "crates/session/greeter",
     "crates/session/installer",
+    "crates/session/tilo-connected-protocol",
     "crates/session/tilo-unlock-helper",
 
     # System
