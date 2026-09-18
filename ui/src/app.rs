@@ -14085,6 +14085,54 @@ mod semantic_tree_app_tests {
     }
 
     #[test]
+    fn nav_shell_accessible_autocomplete_edits_and_selects_through_host_dispatch() {
+        let search = crate::widget::Autocomplete::new()
+            .with_id("city-search")
+            .with_placeholder("Search city")
+            .with_suggester(|query| {
+                if query == "Ber" {
+                    vec![crate::widget::Suggestion::new("Berlin")]
+                } else {
+                    Vec::new()
+                }
+            });
+        let nav =
+            crate::widget::NavShell::new(Box::new(search), Box::new(crate::widget::Column::new()));
+        let mut app = App::new(State::new(), Box::new(nav));
+        app.init_layout();
+        let update = app.build_a11y_tree_update(1.0);
+        let field = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Search city"))
+            .unwrap()
+            .0;
+        app.dispatch_a11y_action(field, &crate::a11y::Action::SetValue("Ber".into()));
+        let update = app.build_a11y_tree_update(1.0);
+        let result = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Berlin"))
+            .expect("native edit must publish a result")
+            .0;
+        app.dispatch_a11y_action(result, &crate::a11y::Action::Activate);
+        let update = app.build_a11y_tree_update(1.0);
+        let field = &update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Search city"))
+            .unwrap()
+            .1;
+        assert_eq!(field.value(), Some("Berlin"));
+        assert!(
+            !update
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Berlin"))
+        );
+    }
+
+    #[test]
     fn retained_tree_delegate_is_nested_once_and_keeps_its_own_action() {
         let presses = std::rc::Rc::new(std::cell::Cell::new(0_usize));
         let captured = std::rc::Rc::clone(&presses);

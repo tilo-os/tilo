@@ -108,15 +108,16 @@ impl WeatherApp {
     /// Replay every user-owned mutation reported by the core through the
     /// framework action host. The core has already updated its render model;
     /// this is the authoritative history/collaboration write.
-    fn flush_durable_actions(&mut self, doc: &mut AutoCommit) {
+    fn flush_durable_actions(&mut self, doc: &mut AutoCommit) -> bool {
         let actions = self.core.borrow_mut().take_durable_actions();
         if actions.is_empty() {
-            return;
+            return false;
         }
         for action in actions {
             self.dispatch_durable_action(doc, &action);
         }
         self.doc_heads = doc.get_heads();
+        true
     }
 
     /// Create first-run state through the canonical action route, including
@@ -294,8 +295,16 @@ impl WeatherApp {
         if self.service.is_none() {
             self.service = Some(WeatherService::spawn());
         }
-        if !self.initial_fetch_done {
-            self.core.borrow_mut().refresh_all();
+        if !self.initial_fetch_done
+            && self.seeded_doc
+            && !self.core.borrow().model.locations.is_empty()
+        {
+            // The record may arrive after the first empty sync. Do not spend
+            // its initial refresh before its saved locations are available.
+            // A freshly selected search result already has a fetch queued.
+            if !self.core.borrow().is_fetching() {
+                self.core.borrow_mut().refresh_all();
+            }
             self.initial_fetch_done = true;
         }
     }
@@ -713,6 +722,17 @@ impl Widget for WeatherApp {
         )
     }
 
+    fn update(&mut self, state: &mut AutoCommit, _path: &ObjId) -> bool {
+        // Semantic actions reach the owning pane directly, so finish their
+        // canonical writes and navigation here as well as on pointer input.
+        let changed = self.flush_durable_actions(state);
+        let navigate = self.core.borrow_mut().take_nav_request();
+        if let Some(NavIntent::ShowDetail) = navigate {
+            self.nav.show_detail();
+        }
+        changed || navigate.is_some()
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         if !self.seeded_doc {
             if !WeatherDoc::is_initialised(state) {
@@ -916,6 +936,15 @@ impl Widget for WeatherApp {
             core.is_fetching() || core.search_pending()
         };
         core_busy || self.nav.needs_idle_sync()
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.core
+            .borrow()
+            .search_deadline()
+            .into_iter()
+            .chain(self.nav.next_wake_deadline())
+            .min()
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -1241,6 +1270,55 @@ mod interaction_tests {
             "onboarding clears air quality"
         );
         assert!(core.status.is_empty(), "onboarding shows no spinner");
+    }
+
+    #[test]
+    fn accessible_city_selection_commits_and_navigates_without_pointer_input() {
+        let mut h = Harness::new(420.0, 720.0);
+        let results = crate::sample::sample_geocode_results();
+        let chosen = results[1].id;
+        h.app
+            .core
+            .borrow_mut()
+            .seed_search_highlighted("Par", results);
+        let tree = h.app.nav.children()[0].accessibility().unwrap();
+        let target = tree.children[0].children[1]
+            .action_target
+            .as_deref()
+            .unwrap();
+        assert!(h.app.nav.children_mut()[0].perform_semantic_action(
+            target,
+            &ui::a11y::Action::Activate,
+            &mut h.state.doc,
+            &h.state.root,
+        ));
+        assert!(h.app.update(&mut h.state.doc, &h.state.root));
+        let persisted = WeatherDoc::read_model(&h.state.doc);
+        assert_eq!(persisted.selected_location().unwrap().id, chosen);
+        assert!(h.app.nav.is_detail_shown());
+        assert!(!h.app.update(&mut h.state.doc, &h.state.root));
+    }
+
+    #[test]
+    fn initial_refresh_waits_for_restored_locations() {
+        let mut app = WeatherApp::live();
+        app.seeded_doc = true;
+        app.ensure_service();
+        assert!(!app.initial_fetch_done);
+        assert!(app.core.borrow_mut().take_outbox().is_empty());
+        app.core.borrow_mut().model = crate::sample::sample_model();
+        app.ensure_service();
+        assert!(app.initial_fetch_done);
+        let requests = app.core.borrow_mut().take_outbox();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| matches!(r, Request::Forecast { .. }))
+                .count(),
+            4
+        );
+        app.ensure_service();
+        assert!(app.core.borrow_mut().take_outbox().is_empty());
     }
 
     #[test]
