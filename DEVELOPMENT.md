@@ -135,7 +135,12 @@ The installer verifies the real Windows Start catalog and reports an error if
 Windows has not indexed the shortcut, even when the executable was copied.
 
 Install the currently verified native apps into your Windows user profile, with
-Start menu entries under **Tilo**:
+Start menu entries under **Tilo**. Run the installer from an ordinary,
+unpackaged PowerShell session: packaged terminals or agents can redirect
+AppData writes into their private package cache. Such files look installed
+inside that process but are invisible to Explorer. Check the actual executable
+and shortcut paths from outside the packaged process before diagnosing a stale
+Start catalog; restarting Explorer cannot expose private package files.
 
 ```powershell
 ./tools/install-windows-apps.ps1
@@ -171,9 +176,9 @@ Close an installed app before updating its executable. Application documents
 remain in their normal user data locations; the installer does not move them.
 The installer also checks both Windows' application catalog and `Get-StartApps`
 against the installed executable paths and intended app names. A shortcut on disk alone is insufficient:
-Explorer can retain a stale catalog. If this check fails after copying succeeds,
-restart Windows Explorer when no file operations are running, or sign out and
-back in, then run `./tools/check-windows-start-apps.ps1 -Apps hex-editor` (substitute
+First rule out redirected AppData writes as described above. If the real files
+exist, investigate Explorer's catalog, then run
+`./tools/check-windows-start-apps.ps1 -Apps hex-editor` (substitute
 the affected package names). The installer does not restart the desktop shell.
 
 Private identity files and local account-vault keys use the shared `private-fs`
