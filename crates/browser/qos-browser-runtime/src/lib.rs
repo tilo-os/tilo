@@ -56,3 +56,6 @@ mod storage_key;
 
 #[cfg(any(target_arch = "wasm32", test))]
 mod action_palette;
+
+#[cfg(any(target_arch = "wasm32", test))]
+mod viewport;
