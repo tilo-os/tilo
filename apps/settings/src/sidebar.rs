@@ -532,11 +532,7 @@ pub fn build(
 /// An uppercase, dimmed section header line. Kept at 12 px so the category
 /// groups remain comfortably readable instead of becoming low-contrast chrome.
 fn section_header(label: &str) -> Box<dyn Widget> {
-    Box::new(
-        Text::new(&label.to_uppercase())
-            .with_size(12.0)
-            .with_color(Theme::dark().text_dim),
-    )
+    Box::new(Text::new(&label.to_uppercase()).with_size(12.0).dimmed())
 }
 
 #[cfg(test)]

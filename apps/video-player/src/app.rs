@@ -19,7 +19,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -2183,7 +2183,17 @@ impl PlayerApp {
             LibraryTab::Shared => Vec::new(),
         };
         let mut y = panel.y0 + rows_top;
-        let row_h = if large_text { 100.0 } else { 70.0 };
+        // At 200% text scale a narrow panel needs to reserve a whole action
+        // row. Keeping controls inline makes the title and privacy metadata
+        // compete for a few glyphs, which is neither legible nor reachable.
+        let narrow_large = large_text && panel.width() < 520.0;
+        let row_h = if narrow_large {
+            152.0
+        } else if large_text {
+            100.0
+        } else {
+            70.0
+        };
         if entries.is_empty() {
             panel_text(
                 scene,
@@ -2211,7 +2221,11 @@ impl PlayerApp {
             let rect = Rect::new(panel.x0 + 12.0, y, panel.x1 - 12.0, y + row_h - 4.0);
             let action_w = if large_text { 86.0 } else { 50.0 };
             let action_h = if large_text { 64.0 } else { 44.0 };
-            let action_y = rect.y0 + (rect.height() - action_h) * 0.5;
+            let action_y = if narrow_large {
+                rect.y1 - action_h - 6.0
+            } else {
+                rect.y0 + (rect.height() - action_h) * 0.5
+            };
             let remove = (self.library_tab == LibraryTab::Queue).then_some(Rect::new(
                 rect.x1 - action_w * 2.0 - 10.0,
                 action_y,
@@ -2238,7 +2252,14 @@ impl PlayerApp {
             let label = text_renderer.elide_to_width(
                 &entry.title,
                 14.0,
-                (rect.width() - if large_text { 202.0 } else { 120.0 }) as f32,
+                (rect.width()
+                    - if narrow_large {
+                        24.0
+                    } else if large_text {
+                        202.0
+                    } else {
+                        120.0
+                    }) as f32,
             );
             panel_text(
                 scene,
@@ -2247,7 +2268,11 @@ impl PlayerApp {
                 Rect::new(
                     rect.x0 + 12.0,
                     rect.y0 + 8.0,
-                    remove.map_or(play.x0, |remove| remove.x0) - 8.0,
+                    if narrow_large {
+                        rect.x1 - 12.0
+                    } else {
+                        remove.map_or(play.x0, |remove| remove.x0) - 8.0
+                    },
                     rect.y0 + if large_text { 44.0 } else { 29.0 },
                 ),
                 &label,
@@ -2266,8 +2291,16 @@ impl PlayerApp {
                 Rect::new(
                     rect.x0 + 12.0,
                     rect.y0 + if large_text { 48.0 } else { 29.0 },
-                    remove.map_or(play.x0, |remove| remove.x0) - 8.0,
-                    rect.y1 - 4.0,
+                    if narrow_large {
+                        rect.x1 - 12.0
+                    } else {
+                        remove.map_or(play.x0, |remove| remove.x0) - 8.0
+                    },
+                    if narrow_large {
+                        action_y - 6.0
+                    } else {
+                        rect.y1 - 4.0
+                    },
                 ),
                 if active {
                     "Playing on this device"
@@ -2377,6 +2410,18 @@ impl PlayerApp {
                 panel.x1 - 12.0,
                 row_y + row_h - 4.0,
             );
+            let row = Rect::new(panel.x0 + 12.0, row_y, panel.x1 - 12.0, row_y + row_h);
+            // Shared entries must retain a visible grouping boundary in every
+            // theme, particularly high contrast where an unfilled text row
+            // reads as sparse decoration rather than an actionable item.
+            fill_rect(scene, transform, row, colors.surfaces.base);
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                colors.border_standard,
+                None,
+                &row,
+            );
             panel_text(
                 scene,
                 text_renderer,
@@ -2463,6 +2508,29 @@ impl PlayerApp {
                     annotation.time_ms as f64 / 1000.0
                 )
             };
+            let row = Rect::new(panel.x0 + 12.0, *row_y, panel.x1 - 12.0, *row_y + row_h);
+            fill_rect(scene, transform, row, theme.tokens.colors.surfaces.base);
+            // Keep the grouping visible even on renderers whose hairline
+            // rectangle stroke lands between device pixels at scaled output.
+            fill_rect(
+                scene,
+                transform,
+                Rect::new(row.x0, row.y0, row.x1, row.y0 + 1.0),
+                theme.tokens.colors.border_standard,
+            );
+            fill_rect(
+                scene,
+                transform,
+                Rect::new(row.x0, row.y1 - 1.0, row.x1, row.y1),
+                theme.tokens.colors.border_standard,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.tokens.colors.border_standard,
+                None,
+                &row,
+            );
             panel_text(
                 scene,
                 text_renderer,

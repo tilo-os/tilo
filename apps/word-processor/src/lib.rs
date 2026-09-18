@@ -43,6 +43,7 @@ mod find_bar;
 pub mod history_panel;
 pub mod i18n;
 mod outline_pane;
+mod paint_context;
 mod recovery_banner;
 mod review_overlay;
 mod ruler;

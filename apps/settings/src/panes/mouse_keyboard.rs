@@ -1,3 +1,8 @@
+#![allow(
+    clippy::unreachable,
+    reason = "static control builders accept only their matching closed InputOperation variant"
+)]
+
 //! Mouse & Keyboard pane — pointer behaviour and keyboard layout.
 //!
 //! Every control drives real, durable state:
@@ -31,6 +36,34 @@ use crate::input_sources::{CatalogEntry, installed_catalog};
 use crate::prefs::{InputPrefs, SystemPrefs};
 use crate::widgets::{caption, card, choice_row, rows, setting_row, setting_row_described};
 
+fn bool_action(id: &str) -> tilo_actions::ActionBinding<bool> {
+    match crate::actions::input_bool_binding(id) {
+        Some(binding) => binding,
+        None => unreachable!("Mouse & Keyboard action must be published"),
+    }
+}
+
+fn number_action(id: &str) -> tilo_actions::ActionBinding<f64> {
+    match crate::actions::input_number_binding(id) {
+        Some(binding) => binding,
+        None => unreachable!("Mouse & Keyboard action must be published"),
+    }
+}
+
+fn text_action(id: &str) -> tilo_actions::ActionBinding<String> {
+    match crate::actions::input_text_binding(id) {
+        Some(binding) => binding,
+        None => unreachable!("Mouse & Keyboard action must be published"),
+    }
+}
+
+fn source_action_binding(source: &str, action: &str) -> tilo_actions::ActionBinding<()> {
+    match crate::actions::keyboard_source_binding(source, action) {
+        Some(binding) => binding,
+        None => unreachable!("keyboard source action must be published"),
+    }
+}
+
 pub const POINTER_SPEED_KEY: &str = "input.pointer_speed";
 pub const TOUCHPAD_POINTER_SPEED_KEY: &str = "input.touchpad_pointer_speed";
 pub const MOUSE_POINTER_SPEED_KEY: &str = "input.mouse_pointer_speed";
@@ -57,6 +90,10 @@ pub const AUTO_CORRECT_KEY: &str = "text.auto_correct";
     reason = "each flag is one independently-toggled preference paired with its \
               initial value for dirty-tracking; no combination is invalid"
 )]
+#[allow(
+    dead_code,
+    reason = "legacy latch helpers remain documented while local effects own input state"
+)]
 pub struct MouseKeyboardPane {
     initial: InputPrefs,
     last: InputPrefs,
@@ -80,6 +117,10 @@ impl Default for MouseKeyboardPane {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "legacy latch helpers remain documented while local effects own input state"
+)]
 impl MouseKeyboardPane {
     #[must_use]
     pub fn with_operation_status(
@@ -187,35 +228,39 @@ impl MouseKeyboardPane {
     fn build_composition(&self) -> Box<dyn Widget> {
         crate::widgets::cards(vec![
             self.keyboard_card(),
-            Self::spell_checker_card(),
+            self.spell_checker_card(),
             self.input_sources_card(),
-            Self::pointer_card(),
+            self.pointer_card(),
             self.pointer_options_card(),
             Self::pen_card(),
         ])
     }
 
-    fn pointer_card() -> Box<dyn Widget> {
+    fn pointer_card(&self) -> Box<dyn Widget> {
         card(
             "Pointer",
             rows(vec![
                 setting_row(
                     "Touchpad speed",
                     Box::new(
-                        Slider::new(
-                            "settings.input.touchpad_pointer_speed",
-                            TOUCHPAD_POINTER_SPEED_KEY,
-                        )
+                        Slider::from_state(&ui::LocalState::new(
+                            self.last
+                                .touchpad_pointer_speed
+                                .unwrap_or(self.last.pointer_speed),
+                        ))
+                        .on_action(number_action("touchpad-speed"))
                         .with_id("input.touchpad_pointer_speed"),
                     ),
                 ),
                 setting_row(
                     "Mouse speed",
                     Box::new(
-                        Slider::new(
-                            "settings.input.mouse_pointer_speed",
-                            MOUSE_POINTER_SPEED_KEY,
-                        )
+                        Slider::from_state(&ui::LocalState::new(
+                            self.last
+                                .mouse_pointer_speed
+                                .unwrap_or(self.last.pointer_speed),
+                        ))
+                        .on_action(number_action("mouse-speed"))
                         .with_id("input.mouse_pointer_speed"),
                     ),
                 ),
@@ -223,10 +268,12 @@ impl MouseKeyboardPane {
                     "Touchpad natural scrolling",
                     "Content tracks finger movement",
                     Box::new(
-                        Toggle::new(
-                            "settings.input.touchpad_natural_scroll",
-                            TOUCHPAD_NATURAL_SCROLL_KEY,
-                        )
+                        Toggle::from_state(&ui::LocalState::new(
+                            self.last
+                                .touchpad_natural_scroll
+                                .unwrap_or(self.last.natural_scroll),
+                        ))
+                        .on_action(bool_action("touchpad-natural-scroll"))
                         .with_id("input.touchpad_natural_scroll"),
                     ),
                 ),
@@ -234,10 +281,12 @@ impl MouseKeyboardPane {
                     "Mouse natural scrolling",
                     "Content moves in the wheel direction",
                     Box::new(
-                        Toggle::new(
-                            "settings.input.mouse_natural_scroll",
-                            MOUSE_NATURAL_SCROLL_KEY,
-                        )
+                        Toggle::from_state(&ui::LocalState::new(
+                            self.last
+                                .mouse_natural_scroll
+                                .unwrap_or(self.last.natural_scroll),
+                        ))
+                        .on_action(bool_action("mouse-natural-scroll"))
                         .with_id("input.mouse_natural_scroll"),
                     ),
                 ),
@@ -245,7 +294,8 @@ impl MouseKeyboardPane {
                     "Tap to click",
                     "Tap the touchpad to register a click",
                     Box::new(
-                        Toggle::new("settings.input.tap_click", TAP_CLICK_KEY)
+                        Toggle::from_state(&ui::LocalState::new(self.last.tap_to_click))
+                            .on_action(bool_action("tap-to-click"))
                             .with_id("input.tap_click"),
                     ),
                 ),
@@ -253,7 +303,8 @@ impl MouseKeyboardPane {
                     "Tap-and-drag",
                     "Hold after a tap, then move to drag",
                     Box::new(
-                        Toggle::new("settings.input.tap_drag", TAP_DRAG_KEY)
+                        Toggle::from_state(&ui::LocalState::new(self.last.tap_drag))
+                            .on_action(bool_action("tap-drag"))
                             .with_id("input.tap_drag"),
                     ),
                 ),
@@ -261,7 +312,8 @@ impl MouseKeyboardPane {
                     "Disable while typing",
                     "Prevents accidental palm input",
                     Box::new(
-                        Toggle::new("settings.input.dwt", DWT_KEY)
+                        Toggle::from_state(&ui::LocalState::new(self.last.disable_while_typing))
+                            .on_action(bool_action("disable-while-typing"))
                             .with_id("input.disable_while_typing"),
                     ),
                 ),
@@ -269,7 +321,8 @@ impl MouseKeyboardPane {
                     "Touchpad gestures",
                     "Three-finger navigation; app gestures still receive other gestures",
                     Box::new(
-                        Toggle::new("settings.input.gestures", GESTURES_KEY)
+                        Toggle::from_state(&ui::LocalState::new(self.last.touchpad_gestures))
+                            .on_action(bool_action("touchpad-gestures"))
                             .with_id("input.touchpad_gestures"),
                     ),
                 ),
@@ -288,7 +341,8 @@ impl MouseKeyboardPane {
                     "Left-handed",
                     "Swap primary and secondary buttons",
                     Box::new(
-                        Toggle::new("settings.input.left_handed", LEFT_HANDED_KEY)
+                        Toggle::from_state(&ui::LocalState::new(self.last.left_handed))
+                            .on_action(bool_action("left-handed"))
                             .with_id("input.left_handed"),
                     ),
                 ),
@@ -296,20 +350,31 @@ impl MouseKeyboardPane {
                     "Middle-button emulation",
                     "Press left and right together for middle-click",
                     Box::new(
-                        Toggle::new("settings.input.middle", MIDDLE_EMULATION_KEY)
+                        Toggle::from_state(&ui::LocalState::new(self.last.middle_emulation))
+                            .on_action(bool_action("middle-emulation"))
                             .with_id("input.middle_emulation"),
                     ),
                 ),
                 choice_row(
                     "Acceleration",
                     Box::new(
-                        Dropdown::new(vec!["Adaptive".into(), "Flat".into()], ACCEL_PROFILE_KEY)
-                            .with_id("input.accel_profile")
-                            .with_placeholder(if self.initial.accel_profile == "flat" {
+                        Dropdown::from_state(
+                            vec!["Adaptive".into(), "Flat".into()],
+                            &ui::LocalState::new(if self.last.accel_profile == "flat" {
+                                "Flat".into()
+                            } else {
+                                "Adaptive".into()
+                            }),
+                        )
+                        .on_action(text_action("acceleration-profile"))
+                        .with_id("input.accel_profile")
+                        .with_placeholder(
+                            if self.initial.accel_profile == "flat" {
                                 "Flat"
                             } else {
                                 "Adaptive"
-                            }),
+                            },
+                        ),
                     ),
                 ),
             ]),
@@ -329,15 +394,20 @@ impl MouseKeyboardPane {
                 choice_row(
                     "Active input source",
                     Box::new(
-                        Dropdown::new(active_sources, LAYOUT_KEY)
-                            .with_id("input.layout")
-                            .with_placeholder(&self.source_label(&self.last.keyboard_layout)),
+                        Dropdown::from_state(
+                            active_sources,
+                            &ui::LocalState::new(self.source_label(&self.last.keyboard_layout)),
+                        )
+                        .on_action(text_action("active-source"))
+                        .with_id("input.layout")
+                        .with_placeholder(&self.source_label(&self.last.keyboard_layout)),
                     ),
                 ),
                 setting_row(
                     "Key repeat speed",
                     Box::new(
-                        Slider::new("settings.input.key_repeat", KEY_REPEAT_KEY)
+                        Slider::from_state(&ui::LocalState::new(self.last.key_repeat))
+                            .on_action(number_action("key-repeat"))
                             .with_id("input.key_repeat"),
                     ),
                 ),
@@ -347,7 +417,7 @@ impl MouseKeyboardPane {
                 choice_row(
                     "Compose key",
                     Box::new(
-                        Dropdown::new(
+                        Dropdown::from_state(
                             vec![
                                 "Disabled".into(),
                                 "Right Alt".into(),
@@ -356,8 +426,16 @@ impl MouseKeyboardPane {
                                 "Right Super".into(),
                                 "Left Super".into(),
                             ],
-                            COMPOSE_KEY,
+                            &ui::LocalState::new(match self.last.compose_key.as_deref() {
+                                Some("ralt") => "Right Alt".into(),
+                                Some("menu") => "Menu".into(),
+                                Some("caps") => "Caps Lock".into(),
+                                Some("rwin") => "Right Super".into(),
+                                Some("lwin") => "Left Super".into(),
+                                _ => "Disabled".into(),
+                            }),
                         )
+                        .on_action(text_action("compose-key"))
                         .with_id("input.compose_key")
                         .with_placeholder(
                             match self.initial.compose_key.as_deref() {
@@ -375,7 +453,7 @@ impl MouseKeyboardPane {
         )
     }
 
-    fn spell_checker_card() -> Box<dyn Widget> {
+    fn spell_checker_card(&self) -> Box<dyn Widget> {
         card(
             "Spell checker",
             rows(vec![
@@ -383,7 +461,8 @@ impl MouseKeyboardPane {
                     "Check spelling while typing",
                     "Underline possible misspellings in natural-language fields",
                     Box::new(
-                        Toggle::new("settings.text.check_spelling", CHECK_SPELLING_KEY)
+                        Toggle::from_state(&ui::LocalState::new(self.check_spelling))
+                            .on_action(bool_action("spell-checking"))
                             .with_id("text.check_spelling"),
                     ),
                 ),
@@ -391,7 +470,8 @@ impl MouseKeyboardPane {
                     "Auto-correct obvious misspellings",
                     "Apply only high-confidence corrections after Space, punctuation, or Enter",
                     Box::new(
-                        Toggle::new("settings.text.auto_correct", AUTO_CORRECT_KEY)
+                        Toggle::from_state(&ui::LocalState::new(self.auto_correct))
+                            .on_action(bool_action("auto-correct"))
                             .with_id("text.auto_correct"),
                     ),
                 ),
@@ -409,33 +489,35 @@ impl MouseKeyboardPane {
                 .push(Box::new(Text::new(&self.source_label(id)).with_size(13.0)))
                 .push(Box::new(Spacer::new()));
             if id == &self.last.keyboard_layout {
-                row = row.push(Box::new(
-                    Text::new("Active")
-                        .with_size(12.0)
-                        .with_color(Theme::dark().accent_primary),
-                ));
+                row = row.push(Box::new(Text::new("Active").with_size(12.0)));
             }
             let up = format!("input.source.{index}.up");
             let down = format!("input.source.{index}.down");
             let remove = format!("input.source.{index}.remove");
+            let mut up_button = Button::new(&up, "↑", Some(&up))
+                .with_size(36.0, 34.0)
+                .with_accessible_name("Move input source up")
+                .with_enabled(index > 0);
+            if index > 0 {
+                up_button = up_button.on_action(source_action_binding(id, "move-up"));
+            }
+            let mut down_button = Button::new(&down, "↓", Some(&down))
+                .with_size(36.0, 34.0)
+                .with_accessible_name("Move input source down")
+                .with_enabled(index + 1 < self.last.keyboard_layouts.len());
+            if index + 1 < self.last.keyboard_layouts.len() {
+                down_button = down_button.on_action(source_action_binding(id, "move-down"));
+            }
+            let mut remove_button = Button::new(&remove, "Remove", Some(&remove))
+                .with_size(84.0, 34.0)
+                .with_enabled(self.last.keyboard_layouts.len() > 1);
+            if self.last.keyboard_layouts.len() > 1 {
+                remove_button = remove_button.on_action(source_action_binding(id, "remove"));
+            }
             row = row
-                .push(Box::new(
-                    Button::new(&up, "↑", Some(&up))
-                        .with_size(36.0, 34.0)
-                        .with_accessible_name("Move input source up")
-                        .with_enabled(index > 0),
-                ))
-                .push(Box::new(
-                    Button::new(&down, "↓", Some(&down))
-                        .with_size(36.0, 34.0)
-                        .with_accessible_name("Move input source down")
-                        .with_enabled(index + 1 < self.last.keyboard_layouts.len()),
-                ))
-                .push(Box::new(
-                    Button::new(&remove, "Remove", Some(&remove))
-                        .with_size(84.0, 34.0)
-                        .with_enabled(self.last.keyboard_layouts.len() > 1),
-                ));
+                .push(Box::new(up_button))
+                .push(Box::new(down_button))
+                .push(Box::new(remove_button));
             source_rows.push(Box::new(row) as Box<dyn Widget>);
         }
         let available: Vec<String> = self
@@ -450,18 +532,15 @@ impl MouseKeyboardPane {
             source_rows.push(choice_row(
                 "Add a language or layout",
                 Box::new(
-                    Dropdown::new(available, ADD_SOURCE_PICKER_KEY)
-                        .with_id("input.source.add_picker")
-                        .with_placeholder("Choose a source"),
+                    Dropdown::from_state(
+                        available.clone(),
+                        &ui::LocalState::new(available.first().cloned().unwrap_or_default()),
+                    )
+                    .on_action(text_action("add-source"))
+                    .with_id("input.source.add_picker")
+                    .with_placeholder("Choose a source"),
                 ),
             ));
-            source_rows.push(Box::new(Row::new().push(Box::new(Spacer::new())).push(
-                Box::new(Button::new(
-                    "input.source.add",
-                    "Add input source",
-                    Some(ADD_SOURCE_KEY),
-                )),
-            )));
         } else {
             source_rows.push(caption(
                 "Up to four input sources can be active at once, matching the interoperable XKB group limit.",
@@ -529,9 +608,22 @@ pub fn build() -> Box<dyn Widget> {
     Box::new(MouseKeyboardPane::new())
 }
 
+#[allow(
+    dead_code,
+    reason = "legacy latch helpers remain documented while local effects own input state"
+)]
 impl MouseKeyboardPane {
     fn seed_if_needed(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if self.needs_seed {
+            // Hardware preferences are deliberately never seeded into the
+            // collaborative document. Their durable local source is the
+            // input section of settings.json and all mutations arrive as
+            // typed device-local effects.
+            let _ = state.put(root, CHECK_SPELLING_KEY, self.initial_check_spelling);
+            let _ = state.put(root, AUTO_CORRECT_KEY, self.initial_auto_correct);
+            self.needs_seed = false;
+        }
+        /* Legacy CRDT seeding removed: input hardware preferences are local effects.
             let _ = state.put(
                 root,
                 TOUCHPAD_POINTER_SPEED_KEY,
@@ -618,7 +710,7 @@ impl MouseKeyboardPane {
             let _ = state.put(root, AUTO_CORRECT_KEY, self.initial_auto_correct);
             self.last = self.initial.clone();
             self.needs_seed = false;
-        }
+        */
     }
 
     fn sync_simple_fields(&mut self, state: &AutoCommit, root: &ObjId) {
@@ -634,86 +726,88 @@ impl MouseKeyboardPane {
             self.auto_correct = value;
             Self::persist_text_preference(ui::text_assistance::AUTO_CORRECT_KEY, value);
         }
-        if let Some(v) = read_f64(state, root, TOUCHPAD_POINTER_SPEED_KEY)
-            && self
-                .last
-                .touchpad_pointer_speed
-                .is_none_or(|last| (v - last).abs() > 0.001)
-        {
-            self.last.touchpad_pointer_speed = Some(v);
-            Self::persist_input(|i| i.touchpad_pointer_speed = Some(v));
-        }
-        if let Some(v) = read_f64(state, root, MOUSE_POINTER_SPEED_KEY)
-            && self
-                .last
-                .mouse_pointer_speed
-                .is_none_or(|last| (v - last).abs() > 0.001)
-        {
-            self.last.mouse_pointer_speed = Some(v);
-            Self::persist_input(|i| i.mouse_pointer_speed = Some(v));
-        }
-        if let Some(v) = read_f64(state, root, KEY_REPEAT_KEY)
-            && (v - self.last.key_repeat).abs() > 0.001
-        {
-            self.last.key_repeat = v;
-            Self::persist_input(|i| {
-                i.key_repeat = v;
-                i.key_repeat_delay_ms = None;
-                i.key_repeat_rate_hz = None;
-            });
-        }
-        if let Some(b) = read_bool(state, root, TOUCHPAD_NATURAL_SCROLL_KEY)
-            && Some(b) != self.last.touchpad_natural_scroll
-        {
-            self.last.touchpad_natural_scroll = Some(b);
-            Self::persist_input(|i| i.touchpad_natural_scroll = Some(b));
-        }
-        if let Some(b) = read_bool(state, root, MOUSE_NATURAL_SCROLL_KEY)
-            && Some(b) != self.last.mouse_natural_scroll
-        {
-            self.last.mouse_natural_scroll = Some(b);
-            Self::persist_input(|i| i.mouse_natural_scroll = Some(b));
-        }
-        if let Some(b) = read_bool(state, root, TAP_CLICK_KEY)
-            && b != self.last.tap_to_click
-        {
-            self.last.tap_to_click = b;
-            Self::persist_input(|i| i.tap_to_click = b);
-        }
-        for (key, current, apply) in [
-            (TAP_DRAG_KEY, self.last.tap_drag, 0u8),
-            (DWT_KEY, self.last.disable_while_typing, 1),
-            (MIDDLE_EMULATION_KEY, self.last.middle_emulation, 2),
-            (LEFT_HANDED_KEY, self.last.left_handed, 3),
-            (GESTURES_KEY, self.last.touchpad_gestures, 4),
-        ] {
-            if let Some(value) = read_bool(state, root, key)
-                && value != current
+        /* Legacy CRDT readers removed: a remote document never applies input hardware state.
+            if let Some(v) = read_f64(state, root, TOUCHPAD_POINTER_SPEED_KEY)
+                && self
+                    .last
+                    .touchpad_pointer_speed
+                    .is_none_or(|last| (v - last).abs() > 0.001)
             {
-                match apply {
-                    0 => {
-                        self.last.tap_drag = value;
-                        Self::persist_input(|i| i.tap_drag = value);
-                    }
-                    1 => {
-                        self.last.disable_while_typing = value;
-                        Self::persist_input(|i| i.disable_while_typing = value);
-                    }
-                    2 => {
-                        self.last.middle_emulation = value;
-                        Self::persist_input(|i| i.middle_emulation = value);
-                    }
-                    3 => {
-                        self.last.left_handed = value;
-                        Self::persist_input(|i| i.left_handed = value);
-                    }
-                    _ => {
-                        self.last.touchpad_gestures = value;
-                        Self::persist_input(|i| i.touchpad_gestures = value);
+                self.last.touchpad_pointer_speed = Some(v);
+                Self::persist_input(|i| i.touchpad_pointer_speed = Some(v));
+            }
+            if let Some(v) = read_f64(state, root, MOUSE_POINTER_SPEED_KEY)
+                && self
+                    .last
+                    .mouse_pointer_speed
+                    .is_none_or(|last| (v - last).abs() > 0.001)
+            {
+                self.last.mouse_pointer_speed = Some(v);
+                Self::persist_input(|i| i.mouse_pointer_speed = Some(v));
+            }
+            if let Some(v) = read_f64(state, root, KEY_REPEAT_KEY)
+                && (v - self.last.key_repeat).abs() > 0.001
+            {
+                self.last.key_repeat = v;
+                Self::persist_input(|i| {
+                    i.key_repeat = v;
+                    i.key_repeat_delay_ms = None;
+                    i.key_repeat_rate_hz = None;
+                });
+            }
+            if let Some(b) = read_bool(state, root, TOUCHPAD_NATURAL_SCROLL_KEY)
+                && Some(b) != self.last.touchpad_natural_scroll
+            {
+                self.last.touchpad_natural_scroll = Some(b);
+                Self::persist_input(|i| i.touchpad_natural_scroll = Some(b));
+            }
+            if let Some(b) = read_bool(state, root, MOUSE_NATURAL_SCROLL_KEY)
+                && Some(b) != self.last.mouse_natural_scroll
+            {
+                self.last.mouse_natural_scroll = Some(b);
+                Self::persist_input(|i| i.mouse_natural_scroll = Some(b));
+            }
+            if let Some(b) = read_bool(state, root, TAP_CLICK_KEY)
+                && b != self.last.tap_to_click
+            {
+                self.last.tap_to_click = b;
+                Self::persist_input(|i| i.tap_to_click = b);
+            }
+            for (key, current, apply) in [
+                (TAP_DRAG_KEY, self.last.tap_drag, 0u8),
+                (DWT_KEY, self.last.disable_while_typing, 1),
+                (MIDDLE_EMULATION_KEY, self.last.middle_emulation, 2),
+                (LEFT_HANDED_KEY, self.last.left_handed, 3),
+                (GESTURES_KEY, self.last.touchpad_gestures, 4),
+            ] {
+                if let Some(value) = read_bool(state, root, key)
+                    && value != current
+                {
+                    match apply {
+                        0 => {
+                            self.last.tap_drag = value;
+                            Self::persist_input(|i| i.tap_drag = value);
+                        }
+                        1 => {
+                            self.last.disable_while_typing = value;
+                            Self::persist_input(|i| i.disable_while_typing = value);
+                        }
+                        2 => {
+                            self.last.middle_emulation = value;
+                            Self::persist_input(|i| i.middle_emulation = value);
+                        }
+                        3 => {
+                            self.last.left_handed = value;
+                            Self::persist_input(|i| i.left_handed = value);
+                        }
+                        _ => {
+                            self.last.touchpad_gestures = value;
+                            Self::persist_input(|i| i.touchpad_gestures = value);
+                        }
                     }
                 }
             }
-        }
+        */
     }
 
     fn sync_choice_fields(&mut self, state: &AutoCommit, root: &ObjId) {
@@ -835,9 +929,6 @@ impl Widget for MouseKeyboardPane {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         self.seed_if_needed(state, root);
         self.sync_simple_fields(state, root);
-        self.sync_choice_fields(state, root);
-        self.sync_add_source(state, root);
-        self.sync_source_order(state, root);
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
         }
@@ -980,16 +1071,6 @@ impl Widget for MouseKeyboardPane {
     }
 }
 
-fn read_f64(state: &AutoCommit, root: &ObjId, key: &str) -> Option<f64> {
-    match state.get(root, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::F64(f) => Some(*f),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
     match state.get(root, key) {
         Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
@@ -1044,7 +1125,7 @@ mod tests {
     }
 
     #[test]
-    fn active_source_selection_is_per_user_and_durable() {
+    fn document_active_source_selection_is_ignored() {
         let _cfg = crate::prefs::test_env::ConfigGuard::new("mk_layout");
         let initial = InputPrefs {
             keyboard_layouts: vec!["us".into(), "de".into()],
@@ -1056,13 +1137,13 @@ mod tests {
         pane.sync(&mut doc, &root);
         let _ = doc.put(&root, LAYOUT_KEY, "German");
         pane.sync(&mut doc, &root);
-        assert_eq!(pane.last.keyboard_layout, "de");
-        assert_eq!(SystemPrefs::load().input.keyboard_layout, "de");
-        assert!(pane.take_structure_dirty());
+        assert_eq!(pane.last.keyboard_layout, "us");
+        assert_eq!(SystemPrefs::load().input.keyboard_layout, "us");
+        assert!(!pane.take_structure_dirty());
     }
 
     #[test]
-    fn add_reorder_and_remove_preserve_a_valid_active_source() {
+    fn document_source_latches_are_ignored() {
         let _cfg = crate::prefs::test_env::ConfigGuard::new("mk_sources");
         let mut pane = MouseKeyboardPane::with_catalog(InputPrefs::default(), catalog());
         let mut doc = AutoCommit::new();
@@ -1072,13 +1153,13 @@ mod tests {
         let _ = doc.put(&root, ADD_SOURCE_PICKER_KEY, "German");
         let _ = doc.put(&root, ADD_SOURCE_KEY, true);
         pane.sync(&mut doc, &root);
-        assert_eq!(pane.last.keyboard_layouts, ["us", "de"]);
-        assert_eq!(pane.last.keyboard_layout, "de", "new source becomes active");
+        assert_eq!(pane.last.keyboard_layouts, ["us"]);
+        assert_eq!(pane.last.keyboard_layout, "us");
 
         let _ = doc.put(&root, MouseKeyboardPane::source_action(1, "up"), true);
         pane.sync(&mut doc, &root);
-        assert_eq!(pane.last.keyboard_layouts, ["de", "us"]);
-        assert_eq!(pane.last.keyboard_layout, "de");
+        assert_eq!(pane.last.keyboard_layouts, ["us"]);
+        assert_eq!(pane.last.keyboard_layout, "us");
 
         let _ = doc.put(&root, MouseKeyboardPane::source_action(0, "remove"), true);
         pane.sync(&mut doc, &root);
@@ -1086,10 +1167,9 @@ mod tests {
         assert_eq!(pane.last.keyboard_layout, "us");
     }
 
-    /// Both device-class speed sliders are consumed by `sync` (live controls,
-    /// not static mocks) without collapsing them back into one value.
+    /// Device class speed sliders only travel through local effect actions.
     #[test]
-    fn pointer_speed_changes_are_consumed_independently() {
+    fn document_pointer_speed_changes_are_ignored() {
         let _cfg = crate::prefs::test_env::ConfigGuard::new("mk_pointer");
         let mut pane = MouseKeyboardPane::with_catalog(InputPrefs::default(), catalog());
         let mut doc = AutoCommit::new();
@@ -1106,7 +1186,7 @@ mod tests {
             automerge::ScalarValue::F64(0.2),
         );
         pane.sync(&mut doc, &root);
-        assert_eq!(pane.last.touchpad_pointer_speed, Some(0.9));
-        assert_eq!(pane.last.mouse_pointer_speed, Some(0.2));
+        assert_eq!(pane.last.touchpad_pointer_speed, None);
+        assert_eq!(pane.last.mouse_pointer_speed, None);
     }
 }

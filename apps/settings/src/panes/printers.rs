@@ -1,3 +1,8 @@
+#![allow(
+    clippy::struct_excessive_bools,
+    reason = "loading, discovery, local-document isolation, and dirty states are independent"
+)]
+
 //! Daily printer/scanner control backed by the shared typed CUPS/SANE service.
 //!
 //! Settings owns discovery, adding a driverless queue, defaults, queue health
@@ -20,7 +25,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
-use crate::widgets::{El, caption, card, card_with_action, rows, status_pill};
+use crate::widgets::{El, StatusTone, caption, card, card_with_action, rows, semantic_status_pill};
 
 pub(crate) const REFRESH_KEY: &str = "settings.printers.refresh";
 pub(crate) const SCAN_KEY: &str = "settings.printers.discover";
@@ -143,6 +148,9 @@ pub struct PrintersPane {
     confirm_remove: Option<String>,
     error: Option<String>,
     operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
+    command_state: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
+    local_doc: AutoCommit,
+    isolate_document: bool,
     structure_dirty: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
@@ -182,6 +190,9 @@ impl PrintersPane {
             confirm_remove: None,
             error: None,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
+            command_state: ui::LocalState::new(None),
+            local_doc: AutoCommit::new(),
+            isolate_document: false,
             structure_dirty: false,
             composed: None,
             rect: Rect::ZERO,
@@ -207,6 +218,9 @@ impl PrintersPane {
             confirm_remove: None,
             error: None,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
+            command_state: ui::LocalState::new(None),
+            local_doc: AutoCommit::new(),
+            isolate_document: false,
             structure_dirty: false,
             composed: None,
             rect: Rect::ZERO,
@@ -324,6 +338,15 @@ impl PrintersPane {
         self.operation_status = status.clone();
         self
     }
+    #[must_use]
+    pub fn with_command_state(
+        mut self,
+        commands: &ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
+    ) -> Self {
+        self.command_state = commands.clone();
+        self.isolate_document = true;
+        self
+    }
 
     fn build_composition(&self) -> Box<dyn Widget> {
         let mut cards: Vec<El> = Vec::new();
@@ -390,11 +413,7 @@ impl PrintersPane {
                                 .with_no_padding()
                                 .with_intrinsic_height()
                                 .push(Box::new(Text::new(&s.description).with_size(13.0)))
-                                .push(Box::new(
-                                    Text::new(&s.device)
-                                        .with_size(11.0)
-                                        .with_color(Theme::dark().text_dim),
-                                )),
+                                .push(Box::new(Text::new(&s.device).with_size(11.0).dimmed())),
                         ) as El
                     })
                     .collect(),
@@ -412,9 +431,9 @@ impl PrintersPane {
         let mut top = Row::new()
             .push(Box::new(Text::new(&printer.name).with_size(13.0)))
             .push(Box::new(Spacer::new()))
-            .push(status_pill(
+            .push(semantic_status_pill(
                 state_label(printer.state),
-                state_color(printer.state),
+                state_tone(printer.state),
             ));
         if !printer.default {
             top = top.push(Box::new(Button::new(
@@ -486,16 +505,8 @@ impl PrintersPane {
                 .with_no_padding()
                 .with_intrinsic_height()
                 .push(Box::new(top))
-                .push(Box::new(
-                    Text::new(&detail)
-                        .with_size(11.0)
-                        .with_color(Theme::dark().text_dim),
-                ))
-                .push(Box::new(
-                    Text::new(&supplies)
-                        .with_size(11.0)
-                        .with_color(Theme::dark().text_dim),
-                )),
+                .push(Box::new(Text::new(&detail).with_size(11.0).dimmed()))
+                .push(Box::new(Text::new(&supplies).with_size(11.0).dimmed())),
         )
     }
 }
@@ -513,10 +524,10 @@ fn state_label(state: QueueState) -> &'static str {
     }
 }
 
-fn state_color(state: QueueState) -> vello::peniko::Color {
+fn state_tone(state: QueueState) -> StatusTone {
     match state {
-        QueueState::Ready | QueueState::Printing => Theme::dark().status_success,
-        QueueState::Paused | QueueState::Offline => Theme::dark().text_dim,
+        QueueState::Ready | QueueState::Printing => StatusTone::Success,
+        QueueState::Paused | QueueState::Offline => StatusTone::Neutral,
     }
 }
 
@@ -547,7 +558,7 @@ fn discovered_row(p: &DiscoveredPrinter) -> El {
             .push(Box::new(
                 Text::new(p.location.as_deref().unwrap_or("Driverless IPP"))
                     .with_size(11.0)
-                    .with_color(Theme::dark().text_dim),
+                    .dimmed(),
             )),
     )
 }
@@ -598,12 +609,12 @@ fn job_row(job: &PrintJob) -> El {
             .push(Box::new(
                 Text::new(&format!("{} · {} · {}", job.owner, size, job.submitted))
                     .with_size(11.0)
-                    .with_color(Theme::dark().text_dim),
+                    .dimmed(),
             ))
             .push(Box::new(
                 Text::new(&format!("{state} · {progress}{reason}"))
                     .with_size(11.0)
-                    .with_color(Theme::dark().text_dim),
+                    .dimmed(),
             )),
     )
 }
@@ -630,63 +641,99 @@ fn take_bool(state: &mut AutoCommit, root: &ObjId, key: &str) -> bool {
 }
 
 impl Widget for PrintersPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        self.poll_background();
-        if self.last_refresh.elapsed() >= Duration::from_secs(3) {
-            self.request_refresh();
+    fn sync(&mut self, shared: &mut AutoCommit, _root: &ObjId) {
+        let isolated = self.isolate_document;
+        let mut state = if isolated {
+            std::mem::take(&mut self.local_doc)
+        } else {
+            std::mem::take(shared)
+        };
+        let root = automerge::ROOT;
+        if let Some(crate::actions::LocalPaneCommand::Printer(operation)) = self.command_state.get()
+        {
+            self.command_state.set(None);
+            let key = match operation {
+                crate::actions::PrinterOperation::Refresh => REFRESH_KEY.into(),
+                crate::actions::PrinterOperation::Discover => SCAN_KEY.into(),
+                crate::actions::PrinterOperation::SetDefault { name } => {
+                    queue_action_key("default", &name)
+                }
+                crate::actions::PrinterOperation::SetEnabled { name, .. } => {
+                    queue_action_key("enabled", &name)
+                }
+                crate::actions::PrinterOperation::Remove { name } => {
+                    queue_action_key("remove", &name)
+                }
+                crate::actions::PrinterOperation::CancelJob { id } => job_action_key("cancel", &id),
+                crate::actions::PrinterOperation::RetryJob { id } => job_action_key("retry", &id),
+            };
+            let _ = state.put(&root, key, true);
         }
-        if take_bool(state, root, REFRESH_KEY) {
-            self.request_refresh();
-        }
-        if take_bool(state, root, SCAN_KEY) {
-            self.request_discovery();
-        }
-        for p in self.discovered.clone() {
-            let key = format!("settings.printers.add.{}", slug(&p.uri));
-            if take_bool(state, root, &key) {
-                let result = self.service.add(&p);
-                self.apply(result);
+        {
+            let state = &mut state;
+            let root = &root;
+            self.poll_background();
+            if self.last_refresh.elapsed() >= Duration::from_secs(3) {
+                self.request_refresh();
+            }
+            if take_bool(state, root, REFRESH_KEY) {
+                self.request_refresh();
+            }
+            if take_bool(state, root, SCAN_KEY) {
+                self.request_discovery();
+            }
+            for p in self.discovered.clone() {
+                let key = format!("settings.printers.add.{}", slug(&p.uri));
+                if take_bool(state, root, &key) {
+                    let result = self.service.add(&p);
+                    self.apply(result);
+                }
+            }
+            for p in self.printers.clone() {
+                let default = queue_action_key("default", &p.name);
+                let enabled = queue_action_key("enabled", &p.name);
+                let remove = queue_action_key("remove", &p.name);
+                let confirm = format!("settings.printers.confirm_remove.{}", slug(&p.name));
+                if take_bool(state, root, &default) {
+                    let result = self.service.set_default(&p.name);
+                    self.apply(result);
+                }
+                if take_bool(state, root, &enabled) {
+                    let result = self
+                        .service
+                        .set_enabled(&p.name, p.state == QueueState::Paused);
+                    self.apply(result);
+                }
+                if take_bool(state, root, &remove) {
+                    self.confirm_remove = Some(p.name.clone());
+                    self.structure_dirty = true;
+                }
+                if take_bool(state, root, &confirm) {
+                    self.confirm_remove = None;
+                    let result = self.service.remove(&p.name);
+                    self.apply(result);
+                }
+            }
+            for job in self.jobs.clone() {
+                let cancel = job_action_key("cancel", &job.id);
+                let retry = job_action_key("retry", &job.id);
+                if take_bool(state, root, &cancel) {
+                    let result = self.service.cancel(&job.id);
+                    self.apply(result);
+                }
+                if take_bool(state, root, &retry) {
+                    let result = self.service.retry(&job.id);
+                    self.apply(result);
+                }
+            }
+            if let Some(c) = &mut self.composed {
+                c.sync(state, root);
             }
         }
-        for p in self.printers.clone() {
-            let default = queue_action_key("default", &p.name);
-            let enabled = queue_action_key("enabled", &p.name);
-            let remove = queue_action_key("remove", &p.name);
-            let confirm = format!("settings.printers.confirm_remove.{}", slug(&p.name));
-            if take_bool(state, root, &default) {
-                let result = self.service.set_default(&p.name);
-                self.apply(result);
-            }
-            if take_bool(state, root, &enabled) {
-                let result = self
-                    .service
-                    .set_enabled(&p.name, p.state == QueueState::Paused);
-                self.apply(result);
-            }
-            if take_bool(state, root, &remove) {
-                self.confirm_remove = Some(p.name.clone());
-                self.structure_dirty = true;
-            }
-            if take_bool(state, root, &confirm) {
-                self.confirm_remove = None;
-                let result = self.service.remove(&p.name);
-                self.apply(result);
-            }
-        }
-        for job in self.jobs.clone() {
-            let cancel = job_action_key("cancel", &job.id);
-            let retry = job_action_key("retry", &job.id);
-            if take_bool(state, root, &cancel) {
-                let result = self.service.cancel(&job.id);
-                self.apply(result);
-            }
-            if take_bool(state, root, &retry) {
-                let result = self.service.retry(&job.id);
-                self.apply(result);
-            }
-        }
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
+        if isolated {
+            self.local_doc = state;
+        } else {
+            *shared = state;
         }
     }
 
