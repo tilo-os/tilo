@@ -48,7 +48,7 @@ pub(crate) struct DesktopHandle {
     pub navigation: Rc<RefCell<serde_json::Value>>,
     pub navigation_revision: Rc<std::cell::Cell<u64>>,
     pub navigation_command: Rc<RefCell<Option<crate::desktop_navigation::Command>>>,
-    pub navigation_result: Rc<RefCell<Option<Result<(), String>>>>,
+    pub navigation_result: Rc<RefCell<Option<Result<Option<String>, String>>>>,
     generation: String,
 
 }
@@ -420,7 +420,7 @@ impl DesktopRoot {
             let workspaces: Vec<_> = tree.workspaces.iter().map(|w| json!({"id":w.id.0.to_string(),"label":w.name,"room":w.room.to_string(),"owner":w.owner,"strips":w.strips.iter().map(|s| json!({"id":s.id.0.to_string(),"label":s.name})).collect::<Vec<_>>()})).collect();
             let group = active.as_ref().and_then(|r| r.ids().ok()).and_then(|(_,s,g,_)| tree.workspaces.iter().flat_map(|w| &w.strips).find(|v|v.id==s)?.window_groups.iter().find(|v|v.id==g));
             let applications = [word_processor::definition(), chat::definition(), notes::definition(), calculator::definition()].iter().map(|d|json!({"id":d.app_id,"label":d.title})).collect::<Vec<_>>();
-            let next = json!({"version":1,"generation":self.handle.generation,"entries":entries,"workspaces":workspaces,"applications":applications,"activeWorkspace":tree.active.0.to_string(),"activeStrip":tree.active_workspace().and_then(|w| tree.active_strip.get(&w.id).copied().or_else(||w.strips.first().map(|s|s.id))).map(|s|s.0.to_string()),"active":active,"widthPermille":group.map(|g|g.width.permille()),"maximized":group.is_some_and(|g|g.maximized),"capabilities":{"select":true,"width":true,"maximize":true,"strips":true,"commands":true},"history":snapshot.get("history").cloned().unwrap_or(serde_json::Value::Null),"scroll":snapshot.get("scroll").cloned().unwrap_or(serde_json::Value::Null),"desktopPan":snapshot.get("desktopPan").cloned().unwrap_or(serde_json::Value::Null)});
+            let next = json!({"version":1,"generation":self.handle.generation,"entries":entries,"workspaces":workspaces,"applications":applications,"activeWorkspace":tree.active.0.to_string(),"activeStrip":tree.active_workspace().and_then(|w| tree.active_strip.get(&w.id).copied().or_else(||w.strips.first().map(|s|s.id))).map(|s|s.0.to_string()),"active":active,"widthPermille":group.map(|g|g.width.permille()),"maximized":group.is_some_and(|g|g.maximized),"capabilities":{"select":true,"width":true,"maximize":true,"strips":true,"commands":true,"close":true},"history":snapshot.get("history").cloned().unwrap_or(serde_json::Value::Null),"scroll":snapshot.get("scroll").cloned().unwrap_or(serde_json::Value::Null),"desktopPan":snapshot.get("desktopPan").cloned().unwrap_or(serde_json::Value::Null)});
             if *snapshot != next { *snapshot = next; changed = true; }
         }
         let scroll = active.as_ref().and_then(|r| {
@@ -448,22 +448,36 @@ impl DesktopRoot {
         if snapshot["history"] != history { snapshot["history"] = history; changed = true; }
         if changed { self.handle.navigation_revision.set(self.handle.navigation_revision.get().wrapping_add(1)); }
     }
-    fn navigate(&mut self, command: crate::desktop_navigation::Command) -> Result<bool, String> {
+    fn navigate(&mut self, command: crate::desktop_navigation::Command, doc: &AutoCommit, path: &ObjId) -> Result<(bool, Option<String>), String> {
         use crate::desktop_navigation::Command;
         if command.generation() != self.handle.generation { return Err("Stale desktop surface".into()); }
-        if let Command::Pan {workspace,strip,offset,..} = command {
+        if let Command::Close { route, .. } = &command {
+            if self.active_route().as_ref() != Some(route) { return Err("Application is no longer active".into()); }
+            let (_, strip, group, tab) = route.ids()?;
+            let location = qos_desktop::session_commands::TabLocation { strip: strip.0, group, tab };
+            if let Some((invocation, _)) = self.handle.session_requests.borrow().iter().find(|(_, bound)| matches!(&bound.command, qos_desktop::session_commands::DesktopCommand::CloseTab { location: pending } if pending == &location)) {
+                return Ok((false, Some(invocation.to_string())));
+            }
+            let resources = self.resources(doc);
+            let address = qos_actions::ActionAddress::new("desktop:requests", "close-tab");
+            let encoded = qos_actions::door::encode(&resources, &address, None).map_err(|error| error.to_string())?;
+            let output = self.invoke_resource_operation_v2(qos_actions::OperationKind::View, &encoded.type_id, &encoded.payload, doc, path)?
+                .ok_or("Close action unavailable")?;
+            return output.value.and_then(|value| value.as_str().map(str::to_owned)).map(|invocation|(false,Some(invocation))).ok_or_else(|| "Close request identity unavailable".into());
+        }
+        if let Command::Pan {workspace,strip,offset,..} = &command {
             if !offset.is_finite() { return Err("Invalid pan offset".into()); }
             let tree = self.handle.tree.borrow();
-            let w = tree.active_workspace().filter(|w| w.id.0.to_string() == workspace).ok_or("Workspace is no longer active")?;
-            let active = tree.active_strip.get(&w.id).copied().or_else(|| w.strips.first().map(|s| s.id)).filter(|s| s.0.to_string() == strip).ok_or("Strip is no longer active")?;
+            let w = tree.active_workspace().filter(|w| w.id.0.to_string() == workspace.as_str()).ok_or("Workspace is no longer active")?;
+            let active = tree.active_strip.get(&w.id).copied().or_else(|| w.strips.first().map(|s| s.id)).filter(|s| s.0.to_string() == strip.as_str()).ok_or("Strip is no longer active")?;
             drop(tree);
-            return self.surface.pan_desktop(active, offset).map(|_|false).ok_or_else(||"Desktop pan unavailable".into());
+            return self.surface.pan_desktop(active, *offset).map(|_|(false,None)).ok_or_else(||"Desktop pan unavailable".into());
         }
         if let Command::History {route,target,..} = command {
             if self.active_route().as_ref() != Some(&route) || self.history_target().as_ref() != Some(&target) { return Err("Document history target is no longer active".into()); }
             let (_,s,g,t) = route.ids()?;
             let host = self.surface.row(s).and_then(|row|row.groups.iter().find(|group|group.id==g && group.active_tab_id()==t)).and_then(|group|group.active_host()).ok_or("Document history unavailable")?;
-            return host.request_document_history(&target).then_some(false).ok_or_else(|| "Document history unavailable".into());
+            return host.request_document_history(&target).then_some((false,None)).ok_or_else(|| "Document history unavailable".into());
         }
         if let Command::Scroll {region,action,..} = command {
             self.refresh_navigation(false);
@@ -472,7 +486,7 @@ impl DesktopRoot {
             let (_,s,g,t)=route.ids()?;
             return match self.surface.apply_primary_vertical_scroll(s,g,t,action.into()) {
                 ui::widget::PrimaryScrollResult::Unsupported=>Err("Scroll action unavailable".into()),
-                _=>Ok(false),
+                _=>Ok((false,None)),
             };
         }
         let current = self.active_route();
@@ -483,7 +497,7 @@ impl DesktopRoot {
             let w=w.id;
             Self::local(&mut tree,LocalViewIntent::Workspace(w));
             Self::local(&mut tree,LocalViewIntent::Strip(s));
-            return Ok(true);
+            return Ok((true,None));
         }
         let route=match &command { Command::Select{route,..}|Command::Width{route,..}|Command::Maximize{route,..}=>route, _=>unreachable!() };
         let (w,s,g,t)=route.ids()?;
@@ -508,7 +522,7 @@ impl DesktopRoot {
             Command::Maximize{maximized,..}=>Self::local(&mut tree,LocalViewIntent::Maximized{group:g,maximized}),
             _=>unreachable!(),
         }
-        Ok(true)
+        Ok((true,None))
     }
     fn reconcile(&mut self) -> bool {
         let intents = self.surface.take_intents();
@@ -671,10 +685,11 @@ impl Widget for DesktopRoot {
         let command: qos_desktop::session_commands::BoundCommand = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
         let mut queue = self.handle.session_requests.borrow_mut();
         if queue.len() >= 32 { self.handle.errors.borrow_mut().push("desktop request queue is full".into()); return Err("desktop request queue is full".into()); }
-        queue.push((uuid::Uuid::new_v4(), command));
+        let invocation = uuid::Uuid::new_v4();
+        queue.push((invocation, command));
         self.dirty = true;
         (self.notify)();
-        Ok(Some(Default::default()))
+        Ok(Some(qos_actions::ActionOutput { value: Some(serde_json::Value::String(invocation.to_string())), resources: vec![] }))
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -689,9 +704,9 @@ impl Widget for DesktopRoot {
         let mut changed = self.reconcile();
         let command = self.handle.navigation_command.borrow_mut().take();
         if let Some(command) = command {
-            let result = self.navigate(command);
-            self.view_changed = result.as_ref().copied().unwrap_or(false);
-            *self.handle.navigation_result.borrow_mut() = Some(result.map(|_| ()));
+            let result = self.navigate(command, doc, path);
+            self.view_changed = result.as_ref().is_ok_and(|(changed, _)| *changed);
+            *self.handle.navigation_result.borrow_mut() = Some(result.map(|(_, invocation)| invocation));
             changed |= self.reconcile();
         }
         let updated = self.surface.update(doc, path);
@@ -1520,6 +1535,41 @@ mod tests {
         assert!(handle.session_requests.borrow().is_empty());
         // All four app leaves are visible here; whole-frame idle is covered by
         // the separately queued PreviewCanvas regression work.
+    }
+    #[test]
+    fn external_close_uses_the_real_root_request_and_rejects_stale_routes() {
+        use crate::desktop_navigation::{Command, Route};
+        use qos_desktop::session_commands::DesktopCommand;
+        let (root, handle, _) = fixture();
+        let before = serde_json::to_string(&*handle.tree.borrow()).unwrap();
+        let mut frame=ui::headless::FrameHarness::new_with_controlled_inputs(ui::State::new(),Box::new(root),(1000,600),ui::Theme::dark(),ui::TextRenderer::new(),ui::permissions::UserId("author".into()));
+        frame.poll_frame().unwrap();
+        assert_eq!(handle.navigation.borrow()["capabilities"]["close"], true);
+        let route: Route=serde_json::from_value(handle.navigation.borrow()["active"].clone()).unwrap();
+        let close=||Command::Close{generation:handle.generation.clone(),route:route.clone()};
+
+        *handle.navigation_command.borrow_mut()=Some(close());frame.relayout();
+        let invocation=handle.navigation_result.borrow_mut().take().unwrap().unwrap().expect("close invocation");
+        let requests=handle.session_requests.borrow();
+        assert_eq!(requests.len(),1);
+        assert_eq!(requests[0].0.to_string(),invocation);
+        assert_eq!(requests[0].1.source.heads,vec![[7;32]]);
+        assert_eq!(requests[0].1.source.room,handle.tree.borrow().active_workspace().unwrap().room.to_string());
+        assert!(matches!(&requests[0].1.command,DesktopCommand::CloseTab{location} if location.strip==2 && location.group==3 && location.tab.to_string()==route.tab));
+        drop(requests);
+        assert_eq!(serde_json::to_string(&*handle.tree.borrow()).unwrap(),before,"close request must not remove local topology");
+
+        *handle.navigation_command.borrow_mut()=Some(close());frame.relayout();
+        assert_eq!(handle.navigation_result.borrow_mut().take().unwrap().unwrap().as_deref(),Some(invocation.as_str()),"repeat close reuses the pending invocation");
+        assert_eq!(handle.session_requests.borrow().len(),1);
+
+        let mut stale_route=route.clone();stale_route.tab="0".into();
+        for command in [Command::Close{generation:handle.generation.clone(),route:stale_route},Command::Close{generation:"stale-generation".into(),route:route.clone()}] {
+            *handle.navigation_command.borrow_mut()=Some(command);frame.relayout();
+            assert!(handle.navigation_result.borrow_mut().take().unwrap().is_err());
+        }
+        assert_eq!(handle.session_requests.borrow().len(),1,"invalid close must not enqueue a request");
+        assert_eq!(serde_json::to_string(&*handle.tree.borrow()).unwrap(),before);
     }
     #[test]
     fn external_history_opens_retained_framework_without_changing_heads() {

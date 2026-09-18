@@ -14,6 +14,7 @@ impl Route {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub(crate) enum Command {
+    Close { generation: String, route: Route },
     History { generation: String, route: Route, target: String },
     Select { generation: String, route: Route },
     Strip { generation: String, workspace: String, strip: String },
@@ -23,7 +24,7 @@ pub(crate) enum Command {
     Scroll { generation: String, region: String, action: ScrollAction },
 }
 impl Command {
-    pub fn generation(&self) -> &str { match self { Self::Pan {generation,..}|Self::History {generation,..}|Self::Select {generation,..}|Self::Strip{generation,..}|Self::Width{generation,..}|Self::Maximize{generation,..}|Self::Scroll{generation,..} => generation } }
+    pub fn generation(&self) -> &str { match self { Self::Close {generation,..}|Self::Pan {generation,..}|Self::History {generation,..}|Self::Select {generation,..}|Self::Strip{generation,..}|Self::Width{generation,..}|Self::Maximize{generation,..}|Self::Scroll{generation,..} => generation } }
 }
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "kebab-case", deny_unknown_fields)]

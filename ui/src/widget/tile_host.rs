@@ -393,6 +393,9 @@ pub struct TileHost {
     was_presented: std::cell::Cell<bool>,
     rect: Rect,
     pub focused: bool,
+    /// Adjacent canvas windows own exactly their layout rectangle, including
+    /// their border; neither outlines nor shadows may spill into a sibling.
+    flush_edges: bool,
     /// `None` by default, matching the "animations only fire for runtime
     /// insertions" rule `TabBar` uses.
     spawned_at: Option<Instant>,
@@ -542,6 +545,7 @@ impl TileHost {
             was_presented: std::cell::Cell::new(false),
             rect: Rect::ZERO,
             focused: false,
+            flush_edges: false,
             spawned_at: None,
             opening_name: String::new(),
             opening_spinner: Spinner::with_size(OPENING_SPINNER_PX_F32),
@@ -554,6 +558,10 @@ impl TileHost {
             Ok(None) => {},
         }
         tile
+    }
+
+    pub(crate) fn set_flush_edges(&mut self, flush: bool) {
+        self.flush_edges = flush;
     }
 
     pub fn set_opening_name(&mut self, name: &str) {
@@ -1728,7 +1736,8 @@ impl TileHost {
             (EDGE_STROKE_WIDTH, theme.window_edge())
         };
         let half = edge_width / 2.0;
-        let edge = RoundedRect::from_rect(rect.inflate(half, half), radius + half);
+        let offset = if self.flush_edges { -half } else { half };
+        let edge = RoundedRect::from_rect(rect.inflate(offset, offset), (radius + offset).max(0.0));
         scene.stroke(
             &vello::kurbo::Stroke::new(edge_width),
             transform,
@@ -1754,7 +1763,9 @@ impl TileHost {
         presence: &PresenceCtx,
     ) {
         let radius = f64::from(theme.tokens.radii.xl);
-        self.draw_shadows(scene, transform, theme);
+        if !self.flush_edges {
+            self.draw_shadows(scene, transform, theme);
+        }
         let shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             vello::peniko::Fill::NonZero,

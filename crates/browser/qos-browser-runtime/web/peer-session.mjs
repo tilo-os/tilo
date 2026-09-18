@@ -3,6 +3,12 @@ import {commitPeerWrites,commitPeerBatches} from './peer-persistence.mjs';
 import {createRecoveryCoordinator} from './peer-recovery.mjs';
 import {retryableMemo} from './asset-recovery.mjs';
 const recoveryOwners=new Set();
+function samePublicValue(left,right){
+ if(Object.is(left,right))return true;
+ if(!left||!right||typeof left!=='object'||typeof right!=='object'||Array.isArray(left)!==Array.isArray(right))return false;
+ const leftKeys=Object.keys(left),rightKeys=Object.keys(right);if(leftKeys.length!==rightKeys.length)return false;
+ return leftKeys.every(key=>Object.hasOwn(right,key)&&samePublicValue(left[key],right[key]));
+}
 export const pendingPeerRecoveryCount=()=>recoveryOwners.size;
 export async function retryPendingPeerRecovery(){const results=await Promise.allSettled([...recoveryOwners].map(close=>close()));const failure=results.find(result=>result.status==='rejected');if(failure)throw failure.reason;}
 export function createConnectPeer({init,runtime,mountDesktop,acquireStorage,acquireIdentity,fetchEnrollment=fetch,session=globalThis.sessionStorage,recoveryClock={},events=globalThis}){
@@ -17,7 +23,7 @@ return async function connectPeer(options={}){
   const operations=new Map(),surfaces=new Map(),surfaceWaiters=new Map(),surfaceAttempts=new Map(),surfaceTargets=new WeakMap();
   let health={version:1,generation:'0',transport:{phase:'connecting',authenticated:false,lastRelayContactAtMs:null,lastSessionPeerContactAtMs:null,retry:{attempt:0,nextAttemptAtMs:null,inFlight:false}},admission:{phase:'waiting',requiredRecords:[],pendingPrerequisites:0,deadlineAtMs:null},records:[],surfaces:[],capabilities:{automaticRecovery:true,retrySaving:true,recoverRenderer:true,durablePeerAcknowledgement:false},failures:[],recoveryOperations:[]};
   const timerSet=recoveryClock.setTimeout??globalThis.setTimeout,timerClear=recoveryClock.clearTimeout??globalThis.clearTimeout,now=recoveryClock.now??Date.now;
-  const report=next=>{if(next.health){if(next.health.admission||next.health.records)admissionRevision++;health={...health,...next.health,transport:{...health.transport,...next.health.transport,retry:health.transport.retry},failures:[...health.failures.filter(f=>!f.id.startsWith('runtime:')),...(next.health.failures??[])]};}health={...health,generation:String(++healthRevision),admission:{...health.admission,deadlineAtMs:admissionDeadline}};snapshot={...snapshot,...next,health};options.onStatus?.(snapshot);for(const listener of subscribers)listener(snapshot);for(const waiter of admissionWaiters)waiter.check();};
+  const report=(next,force=false)=>{if(next.health){if(next.health.admission||next.health.records)admissionRevision++;health={...health,...next.health,transport:{...health.transport,...next.health.transport,retry:health.transport.retry},failures:[...health.failures.filter(f=>!f.id.startsWith('runtime:')),...(next.health.failures??[])]};}health={...health,generation:snapshot.health?.generation??health.generation,admission:{...health.admission,deadlineAtMs:admissionDeadline}};const candidate={...snapshot,...next,health},changed=force||!samePublicValue(snapshot,candidate);if(changed){health={...health,generation:String(++healthRevision)};snapshot={...candidate,health};options.onStatus?.(snapshot);for(const listener of subscribers)listener(snapshot);}for(const waiter of admissionWaiters)waiter.check();};
   async function persist(publish=true){
     if(id===undefined||!storage||closed||failed)return;
     flush=flush.catch(()=>{}).then(async()=>{
@@ -116,15 +122,19 @@ return async function connectPeer(options={}){
     const generation=typeof status.gpuGeneration==='string'?status.gpuGeneration:Number.isSafeInteger(status.gpuGeneration)?String(status.gpuGeneration):prior.generation;
     if(!/^(0|[1-9][0-9]*)$/.test(generation)||BigInt(generation)<BigInt(prior.generation))return;
     const phase=status.phase==='gpu-pending'?'initializing':status.phase==='presented'?'presented':status.phase==='failed'?'failed':status.phase==='closed'?'closed':prior.phase;
+    let healthChanged=false;
     if(status.error&&(status.phase==='failed'||status.asset==='unavailable')){
       const code=status.asset==='unavailable'?'asset-unavailable':/device.*lost/i.test(status.error)?'gpu-device-lost':'renderer-initialization-failed';
-      const asset=status.asset==='unavailable';const failureId=asset?`asset:${surface}:${status.assetId}`:`surface:${surface}`;health={...health,failures:[...health.failures.filter(f=>f.id!==failureId),{id:failureId,code,scope:asset?{kind:'asset',surfaceId:surface,assetId:status.assetId}:{kind:'renderer',surfaceId:surface},severity:'error',message:asset?'An image could not be loaded.':'The desktop could not be displayed. Your work is retained.',recovery:[asset?{kind:'retry-asset',surfaceId:surface,assetId:status.assetId}:{kind:'retry-desktop',surfaceId:surface}],occurredAtMs:Date.now()}]};
+      const asset=status.asset==='unavailable';const failureId=asset?`asset:${surface}:${status.assetId}`:`surface:${surface}`;health={...health,failures:[...health.failures.filter(f=>f.id!==failureId),{id:failureId,code,scope:asset?{kind:'asset',surfaceId:surface,assetId:status.assetId}:{kind:'renderer',surfaceId:surface},severity:'error',message:asset?'An image could not be loaded.':'The desktop could not be displayed. Your work is retained.',recovery:[asset?{kind:'retry-asset',surfaceId:surface,assetId:status.assetId}:{kind:'retry-desktop',surfaceId:surface}],occurredAtMs:Date.now()}]};healthChanged=true;
     }
     const waiter=surfaceWaiters.get(surface);
     if(status.phase==='failed'&&waiter&&BigInt(generation)>=waiter.generation){surfaceWaiters.delete(surface);waiter.reject(Error('Desktop recovery failed'));}
     if(phase==='presented'&&waiter&&BigInt(generation)>waiter.generation){surfaceWaiters.delete(surface);health={...health,failures:health.failures.filter(f=>f.id!==`surface:${surface}`)};waiter.resolve();}
-    if(status.persistence==='failed')setFailure('storage',Error('Local storage transaction failed'));
-    health={...health,surfaces:health.surfaces.map(row=>row.id===surface?{...row,phase,generation,failureIds:health.failures.filter(f=>f.scope.surfaceId===surface).map(f=>f.id)}:row)};report({});
+    if(status.persistence==='failed'){setFailure('storage',Error('Local storage transaction failed'));healthChanged=true;}
+    const failureIds=health.failures.filter(f=>f.scope.surfaceId===surface).map(f=>f.id);
+    const surfaceChanged=phase!==prior.phase||generation!==prior.generation||failureIds.length!==prior.failureIds.length||failureIds.some((id,index)=>id!==prior.failureIds[index]);
+    if(surfaceChanged)health={...health,surfaces:health.surfaces.map(row=>row.id===surface?{...row,phase,generation,failureIds}:row)};
+    if(healthChanged||surfaceChanged)report({},healthChanged);
   }
   async function settleMounts(items){
     const results=await Promise.allSettled([...items].map(mount=>mount.cleanup()));
@@ -222,7 +232,7 @@ return async function connectPeer(options={}){
     if(!['retry-connection','refresh-checkpoint','reauthenticate','retry-saving','retry-desktop','retry-asset','review-permissions'].includes(request?.kind))return Promise.reject(Error('Unsupported recovery request'));
     if(request.kind==='retry-desktop'&&!surfaceAttempts.has(request.surfaceId))return Promise.reject(Error('Unknown desktop surface'));
     const key=JSON.stringify(request);if(operations.has(key))return operations.get(key);
-    const operation={id:String(++operationId),request,state:'pending'};
+    let operation={id:String(++operationId),request,state:'pending'};
     health={...health,recoveryOperations:[...health.recoveryOperations,operation]};report({});
     const task=Promise.resolve().then(async()=>{
       switch(request.kind){
@@ -239,11 +249,11 @@ return async function connectPeer(options={}){
           });break;
         }
         case 'retry-asset':{const mount=surfaces.get(request.surfaceId);if(!mount?.retryAsset)throw Error('Asset recovery is unavailable');await mount.retryAsset(request.assetId);health={...health,failures:health.failures.filter(f=>f.id!==`asset:${request.surfaceId}:${request.assetId}`)};break;}
-        case 'review-permissions':operation.state='requires-user';break;
+        case 'review-permissions':operation={...operation,state:'requires-user'};break;
         default:throw Error('Unsupported recovery request');
       }
-      if(operation.state==='pending')operation.state='succeeded';
-    }).catch(error=>{operation.state='failed';operation.failureId=error?.failureId??health.failures.at(-1)?.id;}).then(()=>{if(!closed&&!closing)report({});return{operationId:operation.id};}).finally(()=>operations.delete(key));
+      if(operation.state==='pending')operation={...operation,state:'succeeded'};
+    }).catch(error=>{operation={...operation,state:'failed',failureId:error?.failureId??health.failures.at(-1)?.id};}).then(()=>{health={...health,recoveryOperations:health.recoveryOperations.map(current=>current.id===operation.id?operation:current)};if(!closed&&!closing)report({});return{operationId:operation.id};}).finally(()=>operations.delete(key));
     operations.set(key,task);return task;
   }
   try{

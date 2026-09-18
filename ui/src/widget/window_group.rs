@@ -1626,6 +1626,7 @@ impl Widget for WindowGroup {
         // active tab switches.
         self.built_active = Some(active_id);
         let tile_node = if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
+            h.set_flush_edges(self.external_navigation);
             h.build_layout(taffy, theme, node_map)
         } else {
             taffy.leaf_node(Style::default())
@@ -2037,6 +2038,42 @@ mod tests {
         assert_eq!(group.tabs().len(), 2);
         assert!(!group.should_show_maximized_chrome(Some(0.0)));
     }
+    #[test]
+    fn external_windows_paint_to_their_border_without_spilling_into_neighbors() {
+        use crate::offscreen::OffscreenRenderer;
+        use taffy::prelude::TaffyMaxContent;
+        let theme = Theme::dark();
+        let mut renderer = OffscreenRenderer::new(400, 300);
+        for focused in [false, true] {
+            let mut group = make_group();
+            group.set_external_navigation(true);
+            group.set_focused(focused);
+            let mut tree = TaffyTree::new();
+            let node = group.build_layout(&mut tree, &theme, &mut Default::default());
+            let mut style = tree.style(node).unwrap().clone();
+            style.size.width = Dimension::length(200.0);
+            tree.set_style(node, style).unwrap();
+            let root = tree.parent_node(Style {
+                size: Size { width: Dimension::length(200.0), height: Dimension::length(200.0) },
+                ..Default::default()
+            }, &[node]);
+            tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+            group.apply_layout(&tree, node, Point::new(100.0, 50.0));
+            assert_eq!(group.rect, Rect::new(100.0, 50.0, 300.0, 250.0));
+            let mut scene = Scene::new();
+            group.draw(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &theme, &PresenceCtx::empty());
+            let rgba = renderer.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 255));
+            for x in [96, 97, 98, 99, 300, 301, 302, 303] {
+                let (r, g, b, _) = OffscreenRenderer::sample(&rgba, 400, x, 150);
+                assert_eq!((r, g, b), (0, 0, 255), "window spilled into neighbor at x={x}, focused={focused}");
+            }
+            for x in [100, 299] {
+                let (r, g, b, _) = OffscreenRenderer::sample(&rgba, 400, x, 150);
+                assert_ne!((r, g, b), (0, 0, 255), "gap before window border at x={x}, focused={focused}");
+            }
+        }
+    }
+
     fn make_group() -> WindowGroup {
         let tabs: Vec<(TabDescriptor, TileContent)> = vec![
             (

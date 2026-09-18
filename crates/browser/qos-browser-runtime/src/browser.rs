@@ -46,6 +46,7 @@ struct Config {
     mac: bool,
 }
 use crate::storage_key::DiskKey;
+use crate::viewport::{Viewport, ViewportState};
 struct Request {
     canvas: web_sys::HtmlCanvasElement,
     config: Config,
@@ -70,6 +71,7 @@ struct Mount {
     storage: PortableStorage,
     gpu: Option<Gpu>,
     pending: bool,
+    viewport: ViewportState,
     hidden: bool,
     generation: u64,
     frames: u64,
@@ -238,10 +240,9 @@ impl ApplicationHandler<u64> for Runner {
                 }
                 WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
                     if m.peer_suspended {return;}
-                    if let Err(e) = m.resize() {
-                        m.error = Some(e);
+                    if m.queue_resize() && !m.viewport.suspended() {
+                        m.window.request_redraw();
                     }
-                    m.window.request_redraw();
                 }
                 WindowEvent::Occluded(hidden) => {
                     m.hidden = hidden;
@@ -253,6 +254,19 @@ impl ApplicationHandler<u64> for Runner {
                 WindowEvent::Destroyed => {}
                 _ => {
                     if m.peer_suspended { return; }
+                    let mut event = event;
+                    // The old layout is still displayed (stretched by CSS) until
+                    // redraw commits the requested viewport. Winit reports the
+                    // new physical coordinates, so map pointer/touch back to it.
+                    match &mut event {
+                        WindowEvent::CursorMoved { position, .. } => {
+                            (position.x, position.y) = m.viewport.map_pointer(position.x, position.y);
+                        }
+                        WindowEvent::Touch(touch) => {
+                            (touch.location.x, touch.location.y) = m.viewport.map_pointer(touch.location.x, touch.location.y);
+                        }
+                        _ => {}
+                    }
                     m.frame.send_host_event(&event);
                     m.pending = true;
                     m.window.request_redraw();
@@ -265,11 +279,11 @@ impl ApplicationHandler<u64> for Runner {
         let mut deadline = None;
         MOUNTS.with_borrow(|mounts| {
             for m in mounts.values() {
-                if m.peer_suspended || m.hidden || m.error.is_some() || m.gpu.is_none() {
+                if m.peer_suspended || m.hidden || m.error.is_some() || m.gpu.is_none() || m.viewport.suspended() {
                     continue;
                 }
                 let output = m.frame.frame_output();
-                if m.pending || output.needs_redraw || output.needs_animation_frame {
+                if m.pending || m.viewport.needs_present() || output.needs_redraw || output.needs_animation_frame {
                     m.window.request_redraw();
                 }
                 if let Some(wake) = output.next_wake_deadline {
@@ -413,6 +427,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         storage,
         gpu: None,
         pending: true,
+        viewport: ViewportState::new(Viewport { width: size.width, height: size.height, dpr }),
         hidden: false,
         generation: 1,
         frames: 0,
@@ -441,7 +456,7 @@ fn begin_desktop(event_loop:&ActiveEventLoop,id:u64,canvas:web_sys::HtmlCanvasEl
     frame.set_input_scale(dpr).map_err(error)?;
     frame.set_platform_conventions(ui::platform::PlatformConventions::new(if config.mac{ui::platform::Platform::MacOs}else{ui::platform::Platform::Linux}));
     let images=std::mem::take(&mut *desktop.images.borrow_mut());
-    let mount=Mount{peer_suspended:false,peer:Some(peer),desktop:Some(desktop),record:None,window:window.clone(),canvas,frame,storage,gpu:None,pending:true,hidden:false,generation:1,frames:0,status:status.clone(),writes:HashMap::new(),images,error:None};
+    let mount=Mount{peer_suspended:false,peer:Some(peer),desktop:Some(desktop),record:None,window:window.clone(),canvas,frame,storage,gpu:None,pending:true,viewport:ViewportState::new(Viewport{width:size.width,height:size.height,dpr}),hidden:false,generation:1,frames:0,status:status.clone(),writes:HashMap::new(),images,error:None};
     MOUNTS.with_borrow_mut(|mounts|mounts.insert(id,mount));emit(&status,serde_json::json!({"phase":"gpu-pending","id":id}));initialize_gpu(id,1,window);Ok(())
 }
 fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>) {
@@ -497,7 +512,8 @@ fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>) {
             match result{Ok(gpu)=>{
                 emit(&m.status,serde_json::json!({"initialSurfaceSize":[gpu.surface.config.width,gpu.surface.config.height]}));
                 m.gpu=Some(gpu);
-                if let Err(e)=m.resize(){m.error=Some(e);}
+                m.viewport.surface_installed();
+                m.queue_resize();
                 m.pending=true;m.window.request_redraw();
                 true
             },Err(e)=>{m.error=Some(format!("WebGPU unavailable: {e}"));m.publish(id);false}}
@@ -517,72 +533,80 @@ impl Mount {
     }
     fn collect_desktop(&mut self){if let Some(desktop)=&self.desktop{self.images.extend(std::mem::take(&mut *desktop.images.borrow_mut()));}}
 
-    fn resize(&mut self) -> Result<(), String> {
+    // ResizeObserver/Winit remains the sole source of viewport notifications.
+    // Reading the pair again at redraw also covers scale/size event ordering and
+    // changes which occurred while GPU initialization or peer recovery was pending.
+    fn queue_resize(&mut self) -> bool {
         let size = self.window.inner_size();
-        let dpr = self.window.scale_factor();
-        if size.width == 0 || size.height == 0 {
-            return Ok(());
-        }
-        self.frame.set_input_scale(dpr)?;
-        self.frame
-            .resize((
-                (size.width as f64 / dpr).max(1.0) as u32,
-                (size.height as f64 / dpr).max(1.0) as u32,
-            ))
-            .map_err(|e| e.to_string())?;
-        if let Some(gpu) = &mut self.gpu {
-            gpu.cx
-                .resize_surface(&mut gpu.surface, size.width, size.height);
-        }
-        self.pending = true;
-        Ok(())
+        let changed = self.viewport.request(Viewport {
+            width: size.width,
+            height: size.height,
+            dpr: self.window.scale_factor(),
+        });
+        self.pending |= changed;
+        changed
     }
     fn draw(&mut self) -> Result<(), String> {
         if self.peer_suspended || self.hidden || self.error.is_some() {
             return Ok(());
         }
-        let size = self.window.inner_size();
-        if size.width == 0 || size.height == 0 {
+        self.queue_resize();
+        if self.viewport.suspended() || self.gpu.is_none() {
             return Ok(());
         }
+        let viewport = self.viewport.requested();
         self.collect_desktop();
-        self.pending |= self.frame.poll_frame().map_err(|e| e.to_string())?;
+        // Inspect wake flags without rebuilding the old viewport first. Layout
+        // and input scale may advance only after acquisition succeeds below.
+        let frame = self.frame.frame_output();
+        self.pending |= self.viewport.needs_present()
+            || frame.needs_redraw
+            || frame.needs_animation_frame
+            || frame.next_wake_deadline.is_some_and(|wake| wake <= ui::clock::Instant::now());
         if !self.pending {
             return Ok(());
         }
-        let Some(gpu) = &mut self.gpu else {
-            return Ok(());
-        };
-        if gpu.surface.config.width != size.width || gpu.surface.config.height != size.height {
-            gpu.cx
-                .resize_surface(&mut gpu.surface, size.width, size.height);
-        }
-        let handle = &gpu.cx.devices[gpu.surface.dev_id];
-        if let Some(reason) = handle.loss_monitor().reason() {
+        let gpu = self.gpu.as_mut().expect("GPU checked above");
+        if let Some(reason) = gpu.cx.devices[gpu.surface.dev_id].loss_monitor().reason() {
             return Err(format!(
                 "WebGPU device lost: {reason}; call recover to recreate the renderer"
             ));
         }
-        let output = match gpu.surface.surface.get_current_texture() {
+        // Configuration changes canvas.width/height on WebGPU, clearing its
+        // displayed image. Keep configure -> acquire -> submit -> present in
+        // this synchronous redraw callback, with no destructive equal-size resize.
+        if self.viewport.needs_surface_resize(gpu.surface.config.width, gpu.surface.config.height) {
+            gpu.cx.resize_surface(&mut gpu.surface, viewport.width, viewport.height);
+        }
+        let mut acquired = gpu.surface.surface.get_current_texture();
+        if matches!(acquired, wgpu::CurrentSurfaceTexture::Outdated) && self.viewport.recover_outdated() {
+            gpu.cx.configure_surface(&gpu.surface);
+            acquired = gpu.surface.surface.get_current_texture();
+        }
+        let output = match acquired {
             wgpu::CurrentSurfaceTexture::Success(t)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            wgpu::CurrentSurfaceTexture::Outdated => {
-                gpu.cx.configure_surface(&gpu.surface);
-                self.window.request_redraw();
-                return Ok(());
-            }
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                self.window.request_redraw();
-                return Ok(());
-            }
+            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
+            wgpu::CurrentSurfaceTexture::Outdated
+            | wgpu::CurrentSurfaceTexture::Timeout
+            | wgpu::CurrentSurfaceTexture::Occluded => None,
             other => return Err(format!("WebGPU surface unavailable: {other:?}")),
         };
+        let Some(output) = self.viewport.apply_for_acquired_texture(output, |viewport| {
+            self.frame.set_input_scale(viewport.dpr)?;
+            self.frame.resize(viewport.logical_size()).map_err(|e| e.to_string())
+        })? else {
+            // Keep both the old input/layout geometry and pending work on a
+            // skipped acquisition. Winit coalesces the retry into the next rAF.
+            self.window.request_redraw();
+            return Ok(());
+        };
+        // Poll only after applying the new viewport. This avoids an old-size
+        // layout merely to discover work, followed by a second resize layout.
+        self.frame.poll_frame().map_err(|e| e.to_string())?;
         let frame = self.frame.frame_output();
         let mut physical = vello::Scene::new();
-        physical.append(
-            frame.scene,
-            Some(ui::scale::composite_transform(self.window.scale_factor())),
-        );
+        physical.append(frame.scene, Some(ui::scale::composite_transform(viewport.dpr)));
+        let handle = &gpu.cx.devices[gpu.surface.dev_id];
         gpu.renderer
             .render_to_texture(
                 &handle.device,
@@ -591,8 +615,8 @@ impl Mount {
                 &gpu.surface.target_view,
                 &vello::RenderParams {
                     base_color: frame.background,
-                    width: size.width,
-                    height: size.height,
+                    width: viewport.width,
+                    height: viewport.height,
                     antialiasing_method: vello::AaConfig::Area,
                 },
             )
@@ -606,6 +630,7 @@ impl Mount {
         );
         handle.queue.submit([encoder.finish()]);
         output.present();
+        self.viewport.did_present();
         self.pending = false;
         self.frames += 1;
         self.publish(0);
@@ -633,7 +658,7 @@ impl Mount {
         let ime=f.ime.map(|i|serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)}));
         emit(
             &self.status,
-            serde_json::json!({"phase":if self.error.is_some(){"failed"}else if self.peer_suspended{"suspended"}else{"presented"},"inputSuspended":self.peer_suspended,"id":id,"error":self.error,"frames":self.frames,"gpuGeneration":self.generation,"logicalSize":f.logical_size,"deviceSize":f.device_size,"dpr":self.window.scale_factor(),"surfaceSize":self.gpu.as_ref().map(|g|[g.surface.config.width,g.surface.config.height]),"scenePaths":f.scene.encoding().n_paths,"sceneSegments":f.scene.encoding().n_path_segments,"sceneDrawTags":f.scene.encoding().draw_tags.len(),"rootRect":f.semantics.root.rect,"record":self.record.as_ref().map(|record|record.checkout.id.as_str()),"actorId":self.record.as_ref().and_then(|record|record.store.read(&record.checkout.id,|doc|doc.get_actor().to_hex_string())),"desktopErrors":setup_errors,"componentCloseErrors":component_close_errors,"pendingSessionIntents":pending_intents,"sessionIntentStatus":if pending_intents>0{Some("awaiting-native-command-admission")}else{None},"heads":heads,"document":document,"semantics":f.semantics,"ime":ime}),
+            serde_json::json!({"phase":if self.error.is_some(){"failed"}else if self.peer_suspended{"suspended"}else{"presented"},"inputSuspended":self.peer_suspended,"id":id,"error":self.error,"frames":self.frames,"gpuGeneration":self.generation,"logicalSize":f.logical_size,"deviceSize":f.device_size,"dpr":self.viewport.applied().dpr,"surfaceSize":self.gpu.as_ref().map(|g|[g.surface.config.width,g.surface.config.height]),"scenePaths":f.scene.encoding().n_paths,"sceneSegments":f.scene.encoding().n_path_segments,"sceneDrawTags":f.scene.encoding().draw_tags.len(),"rootRect":f.semantics.root.rect,"record":self.record.as_ref().map(|record|record.checkout.id.as_str()),"actorId":self.record.as_ref().and_then(|record|record.store.read(&record.checkout.id,|doc|doc.get_actor().to_hex_string())),"desktopErrors":setup_errors,"componentCloseErrors":component_close_errors,"pendingSessionIntents":pending_intents,"sessionIntentStatus":if pending_intents>0{Some("awaiting-native-command-admission")}else{None},"heads":heads,"document":document,"semantics":f.semantics,"ime":ime}),
         );
     }
 }
@@ -1044,7 +1069,7 @@ pub(crate) fn refresh_peer_mounts(peer:u32){
 }
 
 #[wasm_bindgen]
-pub fn rebind_peer(old:u32,new:u32){MOUNTS.with_borrow_mut(|mounts|for mount in mounts.values_mut().filter(|mount|mount.peer==Some(old)){mount.peer=Some(new);mount.peer_suspended=false;let _=mount.resize();mount.frame.relayout();mount.pending=true;mount.window.request_redraw();});}
+pub fn rebind_peer(old:u32,new:u32){MOUNTS.with_borrow_mut(|mounts|for mount in mounts.values_mut().filter(|mount|mount.peer==Some(old)){mount.peer=Some(new);mount.peer_suspended=false;mount.queue_resize();mount.frame.relayout();mount.pending=true;mount.window.request_redraw();});}
 
 #[wasm_bindgen]
 pub fn suspend_peer(peer:u32,suspended:bool)->Result<(),JsValue>{
@@ -1133,7 +1158,7 @@ pub fn desktop_navigation_revision(id: u64) -> Result<String, JsValue> {
     })
 }
 #[wasm_bindgen]
-pub fn desktop_navigate(id: u64, command: &str) -> Result<(), JsValue> {
+pub fn desktop_navigate(id: u64, command: &str) -> Result<Option<String>, JsValue> {
     let command=serde_json::from_str(command).map_err(error)?;
     MOUNTS.with_borrow_mut(|mounts| {
         let mount=mounts.get_mut(&id).ok_or_else(||error("Desktop disposed"))?;
@@ -1143,9 +1168,9 @@ pub fn desktop_navigate(id: u64, command: &str) -> Result<(), JsValue> {
         *desktop.navigation_command.borrow_mut()=Some(command);
         mount.frame.relayout();
         let result=desktop.navigation_result.borrow_mut().take().ok_or_else(||error("Desktop did not accept navigation"))?;
-        result.map_err(error)?;
+        let invocation=result.map_err(error)?;
         mount.pending=true; mount.window.request_redraw();
-        Ok(())
+        Ok(invocation)
     })
 }
 

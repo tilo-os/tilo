@@ -199,7 +199,7 @@ export async function mountDesktop(target,options={}) {
     if(options.actionsV1)actionPalette=bindActionPalette({actions:options.actionsV1,publish:rows=>{if(active())runtime.caller_actions(id,JSON.stringify(rows));},report});
     if(options.actionsV1)desktopCommands=bindDesktopCommands({actions:options.actionsV1,peek:()=>{if(!active())return null;const raw=runtime.pending_desktop_command(id);return raw?JSON.parse(raw):null;},ack:invocation=>{if(active())runtime.acknowledge_desktop_command(id,invocation);},report});
     if(runtime.desktop_navigation_snapshot && runtime.desktop_navigation_snapshot(id)) {
-      navigation=createDesktopNavigation({active,snapshot:()=>runtime.desktop_navigation_snapshot(id),revision:()=>runtime.desktop_navigation_revision(id),dispatch:command=>runtime.desktop_navigate(id,command),search:(generation,query)=>runtime.desktop_command_search(id,generation,query)});
+      navigation=createDesktopNavigation({active,snapshot:()=>runtime.desktop_navigation_snapshot(id),revision:()=>runtime.desktop_navigation_revision(id),dispatch:command=>runtime.desktop_navigate(id,command),search:(generation,query)=>runtime.desktop_command_search(id,generation,query),awaitTerminal:desktopCommands?invocation=>desktopCommands.waitForTerminal(invocation):undefined});
       options.onNavigation?.(navigation.controller);
     }
     return {navigation: navigation?.controller,retryAsset,cleanup:async()=>{registry.remove(token);await cleanup();},flush:()=>{persistenceFailed=false;return persist();},
