@@ -110,6 +110,25 @@ impl InternalRelease {
     pub fn manifest_url(&self) -> &str {
         &self.metadata.manifest_url
     }
+    pub fn manifest_sha256(&self) -> &str {
+        &self.metadata.manifest_sha256
+    }
+
+    #[cfg(test)]
+    pub(crate) fn transport_fixture(bytes: &[u8], url: &str) -> Self {
+        Self {
+            metadata: InternalMetadata {
+                purpose: InternalPurpose::InternalInstaller,
+                layout: InternalLayout::BundleV1,
+                release_id: "fixture-only".into(),
+                arch: "x86_64".into(),
+                manifest_url: url.into(),
+                manifest_sha256: format!("{:x}", Sha256::digest(bytes)),
+                manifest_size: bytes.len() as u64,
+            },
+        }
+    }
+
     pub fn manifest_size(&self) -> u64 {
         self.metadata.manifest_size
     }
