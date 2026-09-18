@@ -454,7 +454,7 @@ impl Graph2dScreen {
                 scene,
                 t,
                 self.scrim_rect,
-                draw::with_alpha(Color::BLACK, 110),
+                draw::with_alpha(theme.tokens.colors.surfaces.scrim, 110),
             );
         }
 
@@ -489,7 +489,7 @@ impl Graph2dScreen {
         if let Some(p) = trace {
             self.draw_trace(scene, t, tr, theme, model, (p, view));
         }
-        draw::stroke_rrect(scene, t, self.canvas, 0.0, c.border_standard, 1.0);
+        draw::stroke_rrect(scene, t, self.canvas, 0.0, ui::surface::edge_on(c.neutral[0]), 1.0);
     }
 
     /// The function panel's background + "Functions" header.
@@ -512,8 +512,8 @@ impl Graph2dScreen {
             t,
             Point::new(self.panel.x1, self.panel.y0),
             Point::new(self.panel.x1, self.panel.y1),
-            c.border_standard,
-            if self.overlay { 1.5 } else { 1.0 },
+            ui::surface::edge_on(panel_bg),
+            1.0,
         );
         // Title and subtitle stack on their measured line boxes (24 + 20 px at
         // 1×); `layout` starts the first card below the same band.
@@ -591,7 +591,7 @@ impl Graph2dScreen {
                 );
                 draw::stroke_rrect(scene, t, r, 8.0, c.accent[5], 1.0);
             } else if self.hovered_row == Some(i) {
-                draw::fill_rrect(scene, t, r, 8.0, c.surfaces.raised);
+                ui::surface::card(scene, t, r, 8.0, c.surfaces.raised);
             }
             // colour swatch
             let sw = Rect::new(
@@ -654,7 +654,7 @@ impl Graph2dScreen {
             }
             // Direct deletion remains available beside every formula; Ctrl+K
             // offers the same durable DeleteGraph action to agents and search.
-            draw::fill_rrect(scene, t, dr, 5.0, c.neutral[2]);
+            ui::surface::card(scene, t, dr, 5.0, c.neutral[2]);
             draw::text_in(
                 scene,
                 tr,
@@ -679,8 +679,7 @@ impl Graph2dScreen {
     /// The "+ Add function" button below the row list.
     fn draw_add_button(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
-        draw::fill_rrect(scene, t, self.add_rect, 8.0, c.surfaces.raised);
-        draw::stroke_rrect(scene, t, self.add_rect, 8.0, c.border_standard, 1.0);
+        ui::surface::card(scene, t, self.add_rect, 8.0, c.surfaces.raised);
         draw::text_in(
             scene,
             tr,
@@ -716,7 +715,7 @@ impl Graph2dScreen {
             self.panel.x1 - 16.0,
             info_y + 3.0 * line_h + 20.0,
         );
-        draw::fill_rrect(scene, t, info, 8.0, c.neutral[1]);
+        ui::surface::card(scene, t, info, 8.0, c.neutral[1]);
         let view = &model.view2d;
         let l1 = Rect::new(
             info.x0 + 12.0,
@@ -795,7 +794,7 @@ impl Graph2dScreen {
         let c = &theme.tokens.colors;
         let r = self.toggle_rect;
         if self.panel_open {
-            draw::fill_rrect(scene, t, r, 8.0, c.neutral[2]);
+            ui::surface::card(scene, t, r, 8.0, c.neutral[2]);
             draw::text_in(
                 scene,
                 tr,
@@ -1203,7 +1202,14 @@ impl Graph2dScreen {
                 let col = series_color(theme, model.active_fn);
                 let dot_r = Rect::new(dot.x - 5.0, dot.y - 5.0, dot.x + 5.0, dot.y + 5.0);
                 draw::fill_rrect(scene, t, dot_r, 5.0, col);
-                draw::stroke_rrect(scene, t, dot_r, 5.0, Color::WHITE, 1.5);
+                draw::stroke_rrect(
+                    scene,
+                    t,
+                    dot_r,
+                    5.0,
+                    ui::tokens::Colors::hairline_on(c.neutral[0], 255),
+                    1.5,
+                );
             }
             // readout chip near the top
             let label = format!(
@@ -1219,8 +1225,7 @@ impl Graph2dScreen {
                 self.canvas.y0 + 36.0,
             );
             let chip = clamp_rect_x(chip, self.canvas);
-            draw::fill_rrect(scene, t, chip, 6.0, c.surfaces.raised);
-            draw::stroke_rrect(scene, t, chip, 6.0, c.border_standard, 1.0);
+            ui::surface::card(scene, t, chip, 6.0, c.surfaces.raised);
             draw::text_in(
                 scene,
                 tr,

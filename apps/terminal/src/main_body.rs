@@ -3675,13 +3675,15 @@ impl TerminalWidget {
             self.grid_rect.x0 + pad + width,
             self.grid_rect.y1 - pad,
         );
-        let card = RoundedRect::from_rect(rect, f64::from(theme.tokens.spacing.s1));
-        scene.fill(
-            Fill::NonZero,
+        // The status label is a small raised card on the grid: fill plus its
+        // derived 1 px edge (HIG §7), so it reads as a surface on both
+        // palettes rather than a bare wash on the terminal background.
+        ui::surface::card(
+            scene,
             transform,
+            rect,
+            f64::from(theme.tokens.spacing.s1),
             theme.tokens.colors.lift(0.3),
-            None,
-            &card,
         );
         tr.draw_text_weighted(
             scene,

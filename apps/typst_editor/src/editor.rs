@@ -402,6 +402,13 @@ impl SourceEditor {
             None,
             &RoundedRect::from_rect(card, 7.0),
         );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            ui::chrome::panel_border(theme),
+            None,
+            &ui::surface::edge_outline(card, 7.0),
+        );
         scene.fill(
             Fill::NonZero,
             transform,

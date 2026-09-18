@@ -125,20 +125,21 @@ impl ExpandModal {
         let px = area.x0 + (area.width() - pw) / 2.0;
         let py = area.y0 + (area.height() - ph) / 2.0;
         let panel = Rect::new(px, py, px + pw, py + ph);
+        // Panel role (HIG §9.5): the modal's ground and its derived border,
+        // shared with every other floating panel on the desktop.
         draw::fill_round(
             scene,
             t,
             panel,
             f64::from(theme.tokens.radii.lg),
-            c.surfaces.raised,
+            ui::chrome::panel_ground(theme),
         );
-        draw::stroke_round(
+        draw::stroke_edge(
             scene,
             t,
             panel,
             f64::from(theme.tokens.radii.lg),
-            1.0,
-            c.border_standard,
+            ui::chrome::panel_border(theme),
         );
         panel
     }
@@ -223,25 +224,17 @@ impl ExpandModal {
                 row_y + 30.0,
             );
             let focused = i == self.focused;
-            draw::fill_round(
-                scene,
-                t,
-                input,
-                f64::from(theme.tokens.radii.md),
-                c.surfaces.base,
-            );
-            draw::stroke_round(
-                scene,
-                t,
-                input,
-                f64::from(theme.tokens.radii.md),
-                if focused { 1.5 } else { 1.0 },
-                if focused {
-                    c.border_focus
-                } else {
-                    c.border_standard
-                },
-            );
+            ui::surface::card(scene, t, input, f64::from(theme.tokens.radii.md), c.surfaces.base);
+            if focused {
+                draw::stroke_round(
+                    scene,
+                    t,
+                    input,
+                    f64::from(theme.tokens.radii.md),
+                    1.5,
+                    c.border_focus,
+                );
+            }
             // The modal keeps its established label/box chrome; the shared
             // editor owns only the inset content and interaction behaviour.
             f.input.apply_layout_external(Rect::new(
@@ -303,21 +296,7 @@ impl ExpandModal {
 
         // Preview card with highlighted, substituted body.
         let card = Rect::new(panel.x0 + pad, y, panel.x1 - pad, panel.y1 - 72.0);
-        draw::fill_round(
-            scene,
-            t,
-            card,
-            f64::from(theme.tokens.radii.md),
-            c.neutral[0],
-        );
-        draw::stroke_round(
-            scene,
-            t,
-            card,
-            f64::from(theme.tokens.radii.md),
-            1.0,
-            c.border_standard,
-        );
+        ui::surface::card(scene, t, card, f64::from(theme.tokens.radii.md), c.neutral[0]);
         let preview = self.preview();
         let mut cy = card.y0 + 12.0;
         for line in preview.lines() {

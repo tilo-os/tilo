@@ -707,10 +707,11 @@ impl HexView {
         let tokens = &theme.tokens;
         let bar = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, m.header_bottom);
         scene.fill(Fill::NonZero, t, tokens.colors.surfaces.raised, None, &bar);
+        // Bar role: one derived hairline under the title bar (HIG §9.5).
         scene.fill(
             Fill::NonZero,
             t,
-            tokens.colors.border_standard,
+            ui::chrome::chrome_hairline(theme),
             None,
             &Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1),
         );
@@ -817,14 +818,22 @@ impl HexView {
         let h = f64::from(th) + 5.5;
         let x0 = right_x - w;
         let y0 = bar.y0 + (bar.height() - h) / 2.0;
-        let shape = RoundedRect::new(x0, y0, right_x, y0 + h, 6.0);
-        scene.fill(Fill::NonZero, t, fill, None, &shape);
+        // A pill with its derived rest edge: the mode / endianness chips sit
+        // on the raised bar and otherwise read as bare washes.
+        ui::surface::pill(
+            scene,
+            t,
+            Rect::new(x0, y0, right_x, y0 + h),
+            fill,
+            Some(ui::surface::edge_on(fill)),
+            Some(6.0),
+        );
         // Centre the measured line box in the pill (no nudge on the font size).
         tr.draw_text_weighted(
             scene,
             label,
             size,
-            contrast_on(fill),
+            theme.tokens.colors.on_surface(fill).ink,
             t * Affine::translate((x0 + pad_x, y0 + (h - f64::from(th)) / 2.0)),
             None,
             TextWeight::Bold,
@@ -940,11 +949,14 @@ impl HexView {
             false,
             true,
         );
+        // Rules on the grid derive from the surface they cross (HIG §9.5):
+        // the declared border is three shades from the dark base and vanishes.
+        let rule = ui::surface::edge_on(tokens.colors.surfaces.base);
         // Hairline under the column header.
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            tokens.colors.border_standard,
+            rule,
             None,
             &Line::new(
                 (self.rect.x0 + 8.0, m.grid_top - 2.0),
@@ -956,7 +968,7 @@ impl HexView {
             scene.stroke(
                 &Stroke::new(1.0),
                 t,
-                tokens.colors.border_standard,
+                rule,
                 None,
                 &Line::new((sep_x, m.grid_top - 2.0), (sep_x, m.grid_bottom)),
             );
@@ -1099,7 +1111,7 @@ impl HexView {
             .is_some_and(|(lo, hi)| geom.off >= lo && geom.off <= hi);
 
         let hex_color = if is_cursor {
-            contrast_on(tokens.colors.accent[ui_accent_idx()])
+            tokens.colors.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
         } else if is_dirty {
             tokens.colors.semantic.warning
         } else if selected {
@@ -1129,7 +1141,7 @@ impl HexView {
         // ASCII glyph.
         let ch = ascii_glyph(geom.byte);
         let ascii_color = if is_cursor && self.model.column() == Column::Ascii {
-            contrast_on(tokens.colors.accent[ui_accent_idx()])
+            tokens.colors.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
         } else if is_dirty {
             tokens.colors.semantic.warning
         } else if (0x20..=0x7E).contains(&geom.byte) {
@@ -1186,7 +1198,7 @@ impl HexView {
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            tokens.colors.border_standard,
+            ui::surface::edge_on(tokens.colors.surfaces.base),
             None,
             &Line::new((panel.x0, panel.y0), (panel.x0, panel.y1)),
         );
@@ -1234,7 +1246,11 @@ impl HexView {
         // One measured pitch for every row (22 px at 1×); the label column is
         // as wide as the widest label it holds plus a gutter, so values never
         // start under a label at any text scale.
-        let row_h = value_line + 7.0;
+        // Row pitch: the line box plus one `s1` (the inter-band gap) and a
+        // 3 px seat, all from the same scaled token so the band below can
+        // never turn negative when spacing scales.
+        let band_gap = f64::from(tokens.spacing.s1);
+        let row_h = value_line + band_gap + 3.0;
         let label_w = rows
             .iter()
             .map(|r| {
@@ -1245,9 +1261,10 @@ impl HexView {
             })
             .fold(0.0_f64, f64::max)
             + 12.0;
-        // The zebra band is the row minus a 1 px seam, centred on the text's
-        // measured line box rather than nudged around an assumed height.
-        let band_pad = (row_h - value_line) / 2.0 - 1.0;
+        // The zebra band is the row minus half an `s1` above and below (so
+        // consecutive bands keep a token-step gap, HIG §7), centred on the
+        // text's measured line box rather than nudged around an assumed height.
+        let band_pad = (row_h - value_line) / 2.0 - band_gap / 2.0;
 
         for r in &rows {
             if y + row_h > panel.y1 {
@@ -1431,7 +1448,7 @@ impl HexView {
             scene,
             label,
             bsz,
-            contrast_on(accent),
+            c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             t * Affine::translate((
                 bx0 + (bw - f64::from(lw)) / 2.0,
                 by0 + (bh - f64::from(lh)) / 2.0,
@@ -1527,7 +1544,7 @@ impl HexView {
             scene,
             kind,
             kind_size,
-            contrast_on(tokens.colors.accent[ui_accent_idx()]),
+            tokens.colors.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             t * Affine::translate((
                 x0 + pad + (chip_w - f64::from(kind_w)) / 2.0,
                 y0 + 12.0 + (chip_h - f64::from(kind_h)) / 2.0,
@@ -2704,17 +2721,6 @@ impl GridMetrics {
 fn with_alpha(c: Color, a: u8) -> Color {
     let rgba = c.to_rgba8();
     Color::from_rgba8(rgba.r, rgba.g, rgba.b, a)
-}
-
-/// Choose black or white text for legibility on `bg` (relative luminance).
-fn contrast_on(bg: Color) -> Color {
-    let rgba = bg.to_rgba8();
-    let lum = 0.299 * f64::from(rgba.r) + 0.587 * f64::from(rgba.g) + 0.114 * f64::from(rgba.b);
-    if lum > 140.0 {
-        Color::from_rgb8(10, 12, 20)
-    } else {
-        Color::WHITE
-    }
 }
 
 /// ASCII glyph for the ASCII column: the printable char, or a centred dot

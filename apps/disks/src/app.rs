@@ -922,7 +922,7 @@ impl DisksApp {
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            c.border_standard,
+            ui::chrome::chrome_hairline(theme),
             None,
             &Line::new(Point::new(bar.x0, bar.y1), Point::new(bar.x1, bar.y1)),
         );
@@ -1080,19 +1080,10 @@ impl DisksApp {
             c.surfaces.raised
         };
         let card_radius = f64::from(theme.tokens.radii.lg);
-        Self::fill_rr(scene, t, r, card_radius, bg);
-        Self::stroke_rr(
-            scene,
-            t,
-            r,
-            card_radius,
-            if selected {
-                theme.accent_primary
-            } else {
-                c.border_standard
-            },
-            if selected { 2.0 } else { 1.0 },
-        );
+        ui::surface::card(scene, t, r, card_radius, bg);
+        if selected {
+            Self::stroke_rr(scene, t, r, card_radius, theme.accent_primary, 2.0);
+        }
         // Left accent bar — the unmistakable "this row is selected" cue.
         if selected {
             Self::fill_rr(
@@ -1112,13 +1103,14 @@ impl DisksApp {
             r.x0 + CARD_INSET + inset + 52.0 * k,
             r.y0 + (14.0 + 22.0) * k,
         );
-        Self::fill_rr(scene, t, badge, 6.0, kind_color(theme, drive.kind));
+        let badge_fill = kind_color(theme, drive.kind);
+        Self::fill_rr(scene, t, badge, 6.0, badge_fill);
         Self::txt_center(
             scene,
             tr,
             drive.kind.tag(),
             ty().sm,
-            Color::WHITE,
+            c.on_surface(badge_fill).ink,
             f64::midpoint(badge.x0, badge.x1),
             badge.y0 + 4.0 * k,
             TextWeight::Bold,
@@ -1206,8 +1198,7 @@ impl DisksApp {
         // Same radius and inner inset as the action band below and the drive
         // rows beside it, so the three cards read as one family.
         let card_radius = f64::from(theme.tokens.radii.lg);
-        Self::fill_rr(scene, t, h, card_radius, c.surfaces.raised);
-        Self::stroke_rr(scene, t, h, card_radius, c.border_standard, 1.0);
+        ui::surface::card(scene, t, h, card_radius, c.surfaces.raised);
 
         let tx = h.x0 + CARD_INSET;
         Self::txt(
@@ -1313,8 +1304,7 @@ impl DisksApp {
         let c = &theme.tokens.colors;
         let bar = lay.action_bar;
         let card_radius = f64::from(theme.tokens.radii.lg);
-        Self::fill_rr(scene, t, bar, card_radius, c.surfaces.raised);
-        Self::stroke_rr(scene, t, bar, card_radius, c.border_standard, 1.0);
+        ui::surface::card(scene, t, bar, card_radius, c.surfaces.raised);
 
         self.draw_action_bar_target(scene, tr, theme, t, bar, drive);
         self.draw_action_bar_buttons(scene, tr, theme, t, lay);
@@ -1395,9 +1385,18 @@ impl DisksApp {
         for (r, a, enabled) in &lay.action_buttons {
             let hov = *enabled && self.hover_action == Some(*a);
             if !enabled {
-                // Disabled — clearly inert.
-                Self::fill_rr(scene, t, *r, 8.0, with_alpha(c.neutral[2], 120));
-                Self::stroke_rr(scene, t, *r, 8.0, with_alpha(c.border_standard, 120), 1.0);
+                // Disabled — clearly inert: the rest face *and* its derived
+                // edge under `DISABLED_ALPHA` (HIG §9.5), so the inert control
+                // is the fainter of the pair, never the crisper.
+                let disabled = ui::widget::DISABLED_ALPHA;
+                Self::fill_rr(scene, t, *r, 8.0, c.neutral[2].with_alpha_factor(disabled));
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    t,
+                    ui::surface::edge_on(c.neutral[2]).with_alpha_factor(disabled),
+                    None,
+                    &ui::surface::edge_outline(*r, 8.0),
+                );
                 Self::txt_center(
                     scene,
                     tr,
@@ -1417,14 +1416,18 @@ impl DisksApp {
                     } else {
                         with_alpha(c.semantic.danger, 44)
                     },
-                    if hov { Color::WHITE } else { c.semantic.danger },
+                    if hov {
+                        c.on_surface(c.semantic.danger).ink
+                    } else {
+                        c.semantic.danger
+                    },
                     with_alpha(c.semantic.danger, 150),
                 )
             } else {
                 (
                     if hov { c.accent[4] } else { c.neutral[2] },
                     c.text_primary,
-                    c.border_standard,
+                    ui::surface::edge_on(if hov { c.accent[4] } else { c.neutral[2] }),
                 )
             };
             Self::fill_rr(scene, t, *r, 8.0, bg);
@@ -1605,7 +1608,11 @@ impl DisksApp {
             t,
             pill,
             11.0,
-            if whole { pill_c } else { c.border_standard },
+            if whole {
+                pill_c
+            } else {
+                ui::surface::edge_on(if pill_hov { c.neutral[3] } else { c.neutral[2] })
+            },
             if whole { 1.6 } else { 1.0 },
         );
         Self::txt_center(
@@ -1663,8 +1670,8 @@ impl DisksApp {
         drive: &Drive,
     ) {
         let c = &theme.tokens.colors;
-        // Background track for the whole device.
-        Self::fill_rr(scene, t, map, 8.0, c.neutral[2]);
+        // Background track for the whole device, with its derived edge.
+        ui::surface::card(scene, t, map, 8.0, c.neutral[2]);
 
         let sel = self.part_index();
         let any_sel = sel.is_some();
@@ -1689,15 +1696,23 @@ impl DisksApp {
                 if let Some(f) = p.used_frac() {
                     let uh = (seg.height() - 6.0) * f;
                     let used_r = Rect::new(seg.x0, seg.y1 - 3.0 - uh, seg.x1, seg.y1 - 3.0);
-                    Self::fill_rr(scene, t, used_r, 2.0, with_alpha(Color::BLACK, 70));
+                    Self::fill_rr(
+                        scene,
+                        t,
+                        used_r,
+                        2.0,
+                        ui::tokens::Colors::hairline_on(col, 70),
+                    );
                 }
                 if seg.width() > 64.0 {
+                    // Label ink measured against this segment's own colour.
+                    let seg_ink = c.on_surface(col).ink;
                     Self::txt(
                         scene,
                         tr,
                         &p.display_label(),
                         ty().xs,
-                        Color::WHITE,
+                        seg_ink,
                         seg.x0 + 8.0,
                         seg.y0 + 8.0,
                         Some((seg.width() - 12.0) as f32),
@@ -1708,7 +1723,7 @@ impl DisksApp {
                         tr,
                         &fmt_size(p.size),
                         ty().xs,
-                        with_alpha(Color::WHITE, 200),
+                        with_alpha(seg_ink, 200),
                         seg.x0 + 8.0,
                         seg.y0 + 24.0,
                         None,
@@ -1956,8 +1971,7 @@ impl DisksApp {
         drive: &Drive,
     ) {
         let c = &theme.tokens.colors;
-        Self::fill_rr(scene, t, area, 12.0, c.neutral[2]);
-        Self::stroke_rr(scene, t, area, 12.0, c.border_standard, 1.0);
+        ui::surface::card(scene, t, area, 12.0, c.neutral[2]);
         let pad = 16.0;
         let x = area.x0 + pad;
         let status = drive.smart_status();
@@ -2293,8 +2307,7 @@ impl DisksApp {
         for (i, (label, val)) in tiles.iter().enumerate() {
             let tx = area.x0 + i as f64 * (tw + gap);
             let r = Rect::new(tx, tiles_top, tx + tw, tiles_top + tile_h);
-            Self::fill_rr(scene, t, r, 10.0, c.surfaces.raised);
-            Self::stroke_rr(scene, t, r, 10.0, c.border_standard, 1.0);
+            ui::surface::card(scene, t, r, 10.0, c.surfaces.raised);
             Self::txt(
                 scene,
                 tr,
@@ -2413,12 +2426,15 @@ impl DisksApp {
         let c = &theme.tokens.colors;
         let (id_x, name_x, val_x, stat_x) = xs;
         if i.is_multiple_of(2) {
+            // Row pitch is 24 px; the zebra band keeps half an `s1` above and
+            // below so consecutive bands never touch (HIG §7).
+            let g = f64::from(theme.tokens.spacing.s1) / 2.0;
             Self::fill_rr(
                 scene,
                 t,
-                Rect::new(area.x0, ry - 4.0, area.x1, ry + 20.0),
+                Rect::new(area.x0, ry - 4.0 + g, area.x1, ry + 20.0 - g),
                 4.0,
-                with_alpha(Color::WHITE, 8),
+                c.lift(0.35),
             );
         }
         Self::txt(
@@ -2615,14 +2631,17 @@ impl DisksApp {
         hover: bool,
     ) {
         let c = &theme.tokens.colors;
-        let rowr = Rect::new(area.x0, ry - 6.0, area.x1, ry + 30.0);
+        // Row pitch is 38 px (`ry += 38.0` in the caller); the painted band
+        // leaves one `s1` of it as the gap to the next row (HIG §7).
+        let gap = f64::from(theme.tokens.spacing.s1);
+        let rowr = Rect::new(area.x0, ry - 6.0, area.x1, ry - 6.0 + 38.0 - gap);
         if selected {
             Self::fill_rr(scene, t, rowr, 6.0, with_alpha(theme.accent_primary, 40));
             Self::stroke_rr(scene, t, rowr, 6.0, theme.accent_primary, 1.4);
         } else if hover {
             Self::fill_rr(scene, t, rowr, 6.0, c.neutral[3]);
         } else if i.is_multiple_of(2) {
-            Self::fill_rr(scene, t, rowr, 6.0, with_alpha(Color::WHITE, 8));
+            Self::fill_rr(scene, t, rowr, 6.0, c.lift(0.35));
         }
         // role swatch (thickened when selected → doubles as the accent bar)
         let sw = Rect::new(
@@ -2795,8 +2814,16 @@ impl DisksApp {
             None,
             &self.rect,
         );
-        Self::fill_rr(scene, t, ml.card, 16.0, c.surfaces.raised);
-        Self::stroke_rr(scene, t, ml.card, 16.0, c.border_standard, 1.0);
+        // Panel role (HIG §9.5): the shared floating-panel ground and its
+        // derived border, so the confirm sheet matches every other dialog.
+        Self::fill_rr(scene, t, ml.card, 16.0, ui::chrome::panel_ground(theme));
+        scene.stroke(
+            &Stroke::new(1.0),
+            t,
+            ui::chrome::panel_border(theme),
+            None,
+            &ui::surface::edge_outline(ml.card, 16.0),
+        );
         let danger = pending.action.destructive();
 
         self.draw_modal_card_text(scene, tr, theme, ml.card, pending, danger);
@@ -2957,8 +2984,7 @@ impl DisksApp {
         // the Rescan button hit-tests exactly where it is painted).
         let (card, btn) = empty_state_rects(self.rect, lay.header);
         let cx = f64::midpoint(card.x0, card.x1);
-        Self::fill_rr(scene, t, card, 16.0, c.surfaces.raised);
-        Self::stroke_rr(scene, t, card, 16.0, c.border_standard, 1.0);
+        ui::surface::card(scene, t, card, 16.0, c.surfaces.raised);
 
         // A simple disk glyph (stacked platters) drawn from primitives so the
         // empty state doesn't depend on a font's emoji coverage.
@@ -3882,7 +3908,7 @@ impl Widget for DisksApp {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                with_alpha(Color::BLACK, alpha),
+                with_alpha(c.surfaces.scrim, alpha),
                 None,
                 &lay.scrim,
             );
@@ -3898,7 +3924,7 @@ impl Widget for DisksApp {
                 scene.stroke(
                     &Stroke::new(1.0),
                     transform,
-                    c.border_standard,
+                    ui::surface::edge_on(c.surfaces.base),
                     None,
                     &Line::new(
                         Point::new(panel.x1, panel.y0),
@@ -4085,7 +4111,18 @@ impl Widget for DisksApp {
             );
             root.children.push(dialog);
         } else {
-            let mut toolbar = AccessNode::new(Role::Toolbar).with_name("Storage controls");
+            // Grouping nodes carry their painted bounds too: a geometry audit
+            // (and a screen reader's spatial navigation) only descends into
+            // a container it can place, so bounded controls under an
+            // unbounded Toolbar / List / TabBar were invisible to both.
+            let mut toolbar = AccessNode::new(Role::Toolbar)
+                .with_name("Storage controls")
+                .with_bounds(Rect::new(
+                    self.rect.x0,
+                    self.rect.y0,
+                    self.rect.x1,
+                    self.rect.y0 + TOPBAR_H * self.k,
+                ));
             if let Some(menu) = lay.hamburger {
                 toolbar.children.push(
                     AccessNode::new(Role::Button)
@@ -4110,7 +4147,9 @@ impl Widget for DisksApp {
             root.children.push(toolbar);
 
             if self.list_open() {
-                let mut list = AccessNode::new(Role::List).with_name("Drives");
+                let mut list = AccessNode::new(Role::List)
+                    .with_name("Drives")
+                    .with_bounds(lay.list_header.union(lay.list_body));
                 let n = self.topo.drives.len();
                 for (i, drive) in self.topo.drives.iter().enumerate() {
                     let Some(&bounds) = lay.cards.get(i) else {
@@ -4150,6 +4189,9 @@ impl Widget for DisksApp {
             }
 
             let mut tabs = AccessNode::new(Role::TabBar).with_name("Drive details");
+            if let Some(strip) = lay.tabs.iter().map(|(r, _)| *r).reduce(|a, b| a.union(b)) {
+                tabs = tabs.with_bounds(strip);
+            }
             for (bounds, tab) in &lay.tabs {
                 tabs.children.push(
                     AccessNode::new(Role::Tab)
