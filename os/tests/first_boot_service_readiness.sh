@@ -98,7 +98,7 @@ if [ "$enable_runs" -eq 1 ] \
    && exactly_once "$containerfile" '    systemctl enable cups.socket && \' \
    && grep -Fq 'systemctl enable tilo-boot-entries.timer tilo-boot-health.service' "$containerfile" \
    && grep -Fq 'systemctl enable bootc-fetch-apply-updates.timer' "$containerfile" \
-   && grep -Fq 'systemctl enable NetworkManager.service' "$containerfile"; then
+   && grep -Fq 'systemctl enable tilo-network-start.timer' "$containerfile"; then
   ok 'service activation retains one useful rootfs layer boundary'
 else
   bad 'service activation is fragmented across expensive rootfs commits or incomplete'
