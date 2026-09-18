@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Real disposable Cosign/registry/Podman acceptance fixture; run in podman unshare.
 
-Requires cosign, podman and openssl. Set TMPDIR and CONTAINERS_STORAGE_CONF to
+Requires cosign, podman and tilo-crypto. Set TMPDIR and CONTAINERS_STORAGE_CONF to
 private temporary storage if the host must not retain fixture image layers.
 No host disk, firmware, production repository or production key is used.
 """
@@ -69,10 +69,14 @@ def main():
                 raise RuntimeError('disposable registry did not become ready')
             key = root / 'cosign'
             run('cosign', 'generate-key-pair', '--output-key-prefix', str(key), env=env)
-            run('openssl', 'genpkey', '-algorithm', 'RSA', '-pkeyopt', 'rsa_keygen_bits:2048', '-out', str(root / 'pcr.key'))
-            run('openssl', 'pkey', '-in', str(root / 'pcr.key'), '-pubout', '-out', str(root / 'pcr.pub'))
-            run('openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
-                '-subj', '/CN=Tilo Disposable Fixture/', '-keyout', str(root / 'efi.key'), '-out', str(root / 'efi.crt'))
+            pcr_certificate = root / 'pcr.crt'
+            run('/usr/local/bin/tilo-crypto', 'generate-secure-boot-cert',
+                'Tilo Disposable PCR Fixture', str(root / 'pcr.key'), str(pcr_certificate))
+            run('/usr/local/bin/tilo-crypto', 'rsa-public-key',
+                str(root / 'pcr.key'), str(root / 'pcr.pub'))
+            pcr_certificate.unlink()
+            run('/usr/local/bin/tilo-crypto', 'generate-secure-boot-cert',
+                'Tilo Disposable Fixture', str(root / 'efi.key'), str(root / 'efi.crt'))
             (root / 'owner.pub').write_text('ab' * 32 + '\n')
             bundle = root / 'public'
             result = json.loads(run('python3', str(DEV / 'development-trust.py'), 'create',
