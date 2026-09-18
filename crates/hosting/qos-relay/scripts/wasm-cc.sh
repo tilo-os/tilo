@@ -10,4 +10,6 @@ for arg in "$@"; do
     args+=("$arg")
   fi
 done
-exec "${QOS_ZIG:-zig}" cc "${args[@]}"
+# Match ordinary clang object compilation. Zig injects UBSan in debug mode,
+# but Rust does not link Zig's sanitizer runtime into the final WASM module.
+exec "${QOS_ZIG:-zig}" cc -fno-sanitize=all "${args[@]}"

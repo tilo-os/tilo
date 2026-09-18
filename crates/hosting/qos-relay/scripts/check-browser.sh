@@ -6,5 +6,6 @@ cd "$repo"
 # the included Zig wrapper with QOS_USE_ZIG=1. Native compilation is unchanged.
 if [[ "${QOS_USE_ZIG:-0}" == 1 ]]; then
   export CC_wasm32_unknown_unknown="$repo/crates/hosting/qos-relay/scripts/wasm-cc.sh"
+  export AR_wasm32_unknown_unknown="$repo/crates/hosting/qos-relay/scripts/wasm-ar.sh"
 fi
-cargo check --locked -j2 -p qos-relay --lib --target wasm32-unknown-unknown
+cargo build --locked -j2 -p qos-relay --lib --target wasm32-unknown-unknown
