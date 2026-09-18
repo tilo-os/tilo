@@ -93,6 +93,15 @@ The example reports the selected path; even its Save mode does not write a file.
 The Windows installer also copies the versioned font catalog and licenses beside
 the executables. Native renderers load and validate that catalog once per process,
 then share its font data. Cargo-run binaries use the checked-in catalog instead.
+
+Passwords is available as an explicit Windows preview with
+`./tools/install-windows-apps.ps1 -Apps passwords`. It is not yet included in the
+default verified-app set: native backup/import/export and failure reporting are
+verified, but successful Windows clipboard copying still needs verification.
+The automated session currently receives an access-denied error from Windows.
+The installer verifies the real Windows Start catalog and reports an error if
+Windows has not indexed the shortcut, even when the executable was copied.
+
 Install the currently verified native apps into your Windows user profile, with
 Start menu entries under **Tilo**:
 
