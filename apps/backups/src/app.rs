@@ -76,12 +76,43 @@ const RAIL_BREAKPOINT: f64 = 820.0;
 /// Below this width the top-bar chrome compacts (icon-only primary action,
 /// tighter tabs) and multi-column tile/card grids drop toward a single column.
 const NARROW_BREAKPOINT: f64 = 720.0;
+/// The consequence of an unavailable repository must remain visible at every
+/// text scale: it is the reason backup actions are deliberately disabled.
+const RECOVERY_SAFETY_COPY: &str = "Backups are paused until this location is reopened.";
 
 /// A closed overlay is positioned mostly outside the content rect. Require a
 /// non-zero eased reveal before painting it; otherwise its off-screen tail can
 /// show as a mysterious sliver at the opposite edge of a phone window.
 fn should_paint_rail(drawer: &SidebarDrawer, rail: Rect) -> bool {
     rail.width() > 4.0 && drawer.reveal() > 0.001
+}
+
+/// Greedily wraps recovery copy using the same renderer that paints it.
+///
+/// Recovery guidance is not decorative: eliding it can hide either the
+/// repository failure or the fact that backup operations are paused. Keep
+/// every word, including at 200% text, and let the notice grow vertically.
+fn wrap_recovery_copy(text: &str, tr: &mut TextRenderer, size: f32, max_width: f64) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+
+    for word in text.split_whitespace() {
+        let candidate = if line.is_empty() {
+            word.to_owned()
+        } else {
+            format!("{line} {word}")
+        };
+        if f64::from(tr.measure(&candidate, size, None).0) > max_width && !line.is_empty() {
+            lines.push(std::mem::take(&mut line));
+            line.push_str(word);
+        } else {
+            line = candidate;
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 /// Click/hover targets discovered during `draw` and consumed by
@@ -235,12 +266,7 @@ impl BackupsApp {
             // missing mount path on startup, or an unplugged drive could look
             // like a fresh local repository and receive a backup in the wrong
             // place later.
-            if !destination.is_dir() {
-                app.repository_error = Some(
-                    "Couldn’t read the saved backup location: it is not mounted or is no longer a folder."
-                        .into(),
-                );
-            } else {
+            if destination.is_dir() {
                 match crate::engine::list_snapshots(&destination) {
                     Ok(manifests) => {
                         app.catalog = Catalog::from_local(&source, &destination, &manifests);
@@ -251,6 +277,11 @@ impl BackupsApp {
                             Some(format!("Couldn’t read the saved backup location: {error}"));
                     }
                 }
+            } else {
+                app.repository_error = Some(
+                    "Couldn’t read the saved backup location: it is not mounted or is no longer a folder."
+                        .into(),
+                );
             }
         }
         app
@@ -1284,6 +1315,114 @@ impl BackupsApp {
 
     // ---- EMPTY onboarding -----------------------------------------------
 
+    /// Renders the persisted recovery state for an unreadable saved
+    /// repository. Returns `true` when the unavailable state owned the empty
+    /// surface, so first-run onboarding is never rendered underneath it.
+    fn draw_unavailable_repository_notice(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+    ) -> bool {
+        let c = &theme.tokens.colors;
+        let Some(error) = self.repository_error.as_deref() else {
+            return false;
+        };
+        // A saved configuration is not equivalent to a usable repository.
+        // Make the distinction persistent and actionable rather than falling
+        // through to first-run copy or a transient error toast.
+        let scale = f64::from(theme.text_scale);
+        let card_w = content.width().min(620.0 * scale);
+        let inner_w = (card_w - 48.0 * scale).max(0.0);
+        let detail_lines = wrap_recovery_copy(error, tr, 12.5, inner_w);
+        let safety_lines = wrap_recovery_copy(RECOVERY_SAFETY_COPY, tr, 11.5, inner_w);
+        let detail_y = 54.0 * scale;
+        let detail_line_h = 17.0 * scale;
+        let safety_y = detail_y + detail_lines.len() as f64 * detail_line_h + 7.0 * scale;
+        let safety_line_h = 16.0 * scale;
+        let button_y = safety_y + safety_lines.len() as f64 * safety_line_h + 18.0 * scale;
+        // Keep the recovery target separate from all of the complete
+        // explanatory copy instead of compressing it into one line.
+        let card_h = button_y + 60.0 * scale;
+        let card = Rect::new(
+            content.center().x - card_w / 2.0,
+            content.center().y - card_h / 2.0,
+            content.center().x + card_w / 2.0,
+            content.center().y + card_h / 2.0,
+        );
+        paint::card(
+            scene,
+            t,
+            card,
+            16.0,
+            c.surfaces.raised,
+            c.semantic.danger.with_alpha_factor(0.8),
+        );
+        let title = if scale >= 1.5 {
+            "Location unavailable"
+        } else {
+            "Backup location needs attention"
+        };
+        paint::text_center(
+            scene,
+            tr,
+            t,
+            title,
+            17.0,
+            c.semantic.danger,
+            card.x0 + 24.0 * scale,
+            card.x1 - 24.0 * scale,
+            card.y0 + 22.0 * scale,
+        );
+        for (index, line) in detail_lines.iter().enumerate() {
+            paint::text_center(
+                scene,
+                tr,
+                t,
+                line,
+                12.5,
+                c.text_dim,
+                card.x0 + 24.0 * scale,
+                card.x1 - 24.0 * scale,
+                card.y0 + detail_y + index as f64 * detail_line_h,
+            );
+        }
+        for (index, line) in safety_lines.iter().enumerate() {
+            paint::text_center(
+                scene,
+                tr,
+                t,
+                line,
+                11.5,
+                c.text_dim,
+                card.x0 + 24.0 * scale,
+                card.x1 - 24.0 * scale,
+                card.y0 + safety_y + index as f64 * safety_line_h,
+            );
+        }
+        let button_w = (252.0 * scale).min(card.width() - 40.0 * scale);
+        let button = Rect::new(
+            card.center().x - button_w / 2.0,
+            card.y0 + button_y,
+            card.center().x + button_w / 2.0,
+            card.y0 + button_y + 42.0 * scale,
+        );
+        Button::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(button, "Choose another location")
+                .primary()
+                .radius(9.0)
+                .hovered(self.hover == Some(Hit::Setup)),
+        );
+        self.hits.push((button, Hit::Setup));
+        true
+    }
+
     /// First-run state: no sources or destinations configured. Renders a
     /// centered prompt so the fresh app reads as ready rather than as a broken
     /// blank dashboard.
@@ -1295,94 +1434,10 @@ impl BackupsApp {
         theme: &Theme,
         content: Rect,
     ) {
-        let c = &theme.tokens.colors;
-        if let Some(error) = self.repository_error.as_deref() {
-            // A saved configuration is not equivalent to a usable repository.
-            // Make the distinction persistent and actionable rather than
-            // falling through to first-run copy or a transient error toast.
-            let scale = f64::from(theme.text_scale);
-            let card_w = content.width().min(620.0 * scale);
-            let card_h = 176.0 * scale;
-            let card = Rect::new(
-                content.center().x - card_w / 2.0,
-                content.center().y - card_h / 2.0,
-                content.center().x + card_w / 2.0,
-                content.center().y + card_h / 2.0,
-            );
-            paint::card(
-                scene,
-                t,
-                card,
-                16.0,
-                c.surfaces.raised,
-                c.semantic.danger.with_alpha_factor(0.8),
-            );
-            let inner_w = (card.width() - 48.0 * scale).max(0.0) as f32;
-            let title = if scale >= 1.5 {
-                "Location unavailable"
-            } else {
-                "Backup location needs attention"
-            };
-            let title = tr.elide_to_width(title, 17.0, inner_w);
-            paint::text_center(
-                scene,
-                tr,
-                t,
-                &title,
-                17.0,
-                c.semantic.danger,
-                card.x0 + 24.0 * scale,
-                card.x1 - 24.0 * scale,
-                card.y0 + 22.0 * scale,
-            );
-            let detail = tr.elide_to_width(error, 12.5, inner_w);
-            paint::text_center(
-                scene,
-                tr,
-                t,
-                &detail,
-                12.5,
-                c.text_dim,
-                card.x0 + 24.0 * scale,
-                card.x1 - 24.0 * scale,
-                card.y0 + 55.0 * scale,
-            );
-            let safety = tr.elide_to_width(
-                "Backups are paused until this location is reopened.",
-                11.5,
-                inner_w,
-            );
-            paint::text_center(
-                scene,
-                tr,
-                t,
-                &safety,
-                11.5,
-                c.text_dim,
-                card.x0 + 24.0 * scale,
-                card.x1 - 24.0 * scale,
-                card.y0 + 78.0 * scale,
-            );
-            let button_w = (252.0 * scale).min(card.width() - 40.0 * scale);
-            let button = Rect::new(
-                card.center().x - button_w / 2.0,
-                card.y1 - 58.0 * scale,
-                card.center().x + button_w / 2.0,
-                card.y1 - 18.0 * scale,
-            );
-            Button::paint(
-                scene,
-                t,
-                tr,
-                theme,
-                &ButtonFace::new(button, "Choose another location")
-                    .primary()
-                    .radius(9.0)
-                    .hovered(self.hover == Some(Hit::Setup)),
-            );
-            self.hits.push((button, Hit::Setup));
+        if self.draw_unavailable_repository_notice(scene, t, tr, theme, content) {
             return;
         }
+        let c = &theme.tokens.colors;
         let cy = content.y0 + content.height() * 0.36;
         let title = if self.job.is_some() {
             "Creating a verified backup"
@@ -5244,8 +5299,10 @@ impl Widget for BackupsApp {
                         AccessState::new().focusable(true),
                     ),
                     Hit::Setup => (
-                        if self.repository_error.is_some() {
-                            "Choose another backup location; backup location needs attention".into()
+                        if let Some(error) = self.repository_error.as_deref() {
+                            format!(
+                                "Choose another backup location. {error} {RECOVERY_SAFETY_COPY}"
+                            )
                         } else {
                             "Set up backups".into()
                         },
@@ -5664,8 +5721,14 @@ mod tests {
                 let plus = f
                     .rect_of(|hit| matches!(hit, Hit::Policy(candidate, 1) if *candidate == field));
                 assert!(minus.x1 <= plus.x0, "{field:?} stepper buttons overlap");
-                assert_eq!(minus.y0, plus.y0, "{field:?} controls leave their row");
-                assert_eq!(minus.y1, plus.y1, "{field:?} controls differ in height");
+                assert!(
+                    (minus.y0 - plus.y0).abs() < f64::EPSILON,
+                    "{field:?} controls leave their row"
+                );
+                assert!(
+                    (minus.y1 - plus.y1).abs() < f64::EPSILON,
+                    "{field:?} controls differ in height"
+                );
                 assert!(minus.x0 >= 0.0 && plus.x1 <= width);
             }
         }
@@ -5938,6 +6001,63 @@ mod tests {
             &Theme::dark(),
         );
         assert!(app.hits.iter().any(|(_, hit)| matches!(hit, Hit::Setup)));
+    }
+
+    #[test]
+    fn unavailable_recovery_copy_reflows_without_elision_at_phone_large_text() {
+        const ERROR: &str = "Couldn’t read the saved backup location: the drive is unavailable.";
+        let mut f = Frame::demo();
+        f.app.catalog = Catalog::empty();
+        f.app.source_path = Some(PathBuf::from("/documents"));
+        f.app.destination_path = Some(PathBuf::from("/backup-drive"));
+        f.app.repository_error = Some(ERROR.into());
+        f.app.rect = Rect::new(0.0, 0.0, 520.0, 820.0);
+        f.theme = Theme::dark().with_text_scale(2.0);
+        f.tr.set_text_scale(2.0);
+        f.draw();
+
+        let max_copy_width = 480.0 - 48.0 * 2.0;
+        for (copy, size) in [(ERROR, 12.5), (RECOVERY_SAFETY_COPY, 11.5)] {
+            let lines = wrap_recovery_copy(copy, &mut f.tr, size, max_copy_width);
+            assert_eq!(
+                lines.join(" "),
+                copy,
+                "every recovery word remains available at 200% text"
+            );
+            assert!(
+                lines.iter().all(|line| !line.contains('…')
+                    && f64::from(f.tr.measure(line, size, None).0) <= max_copy_width),
+                "each recovery line fits without clipping or ellipsis: {lines:?}"
+            );
+        }
+
+        let setup = f.rect_of(|hit| matches!(hit, Hit::Setup));
+        assert!(setup.height() >= 44.0 && setup.x0 >= 0.0 && setup.x1 <= 520.0);
+        assert!(setup.y0 >= 0.0 && setup.y1 <= 820.0);
+        for (other, hit) in &f.app.hits {
+            if !matches!(hit, Hit::Setup) {
+                assert!(
+                    setup.x1 <= other.x0
+                        || other.x1 <= setup.x0
+                        || setup.y1 <= other.y0
+                        || other.y1 <= setup.y0,
+                    "the recovery target must remain disjoint from {hit:?}"
+                );
+            }
+        }
+
+        let recovery_name = f
+            .app
+            .accessibility()
+            .expect("recovery accessibility tree")
+            .children
+            .into_iter()
+            .find(|node| node.action_target.as_deref() == Some("backups.hit:Setup"))
+            .and_then(|node| node.name)
+            .expect("recovery action has an accessible name");
+        assert!(recovery_name.contains(ERROR));
+        assert!(recovery_name.contains(RECOVERY_SAFETY_COPY));
+        assert!(!recovery_name.contains('…'));
     }
 
     #[test]
