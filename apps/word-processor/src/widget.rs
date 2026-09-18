@@ -61,6 +61,18 @@ use crate::zoom_control::MAX as ZOOM_MAX;
 use crate::zoom_control::{MIN as ZOOM_MIN, STEP as ZOOM_STEP, ZoomControl};
 use ui::portal;
 
+mod image_layout;
+
+#[cfg(test)]
+use image_layout::PaintOptions as ImagePaintOptions;
+use image_layout::{
+    anchor as image_anchor, crop_is_active as image_crop_is_active,
+    cropped_source as cropped_image_source, explicit_size as image_explicit_size,
+    floats as image_floats, free_position as image_free_position,
+    paint_options as image_paint_options, paint_transform as image_paint_transform,
+    wrap as image_wrap,
+};
+
 /// Convert the model's `(block, start, end)` ranges into serializable
 /// [`Span`](crate::actions::Span)s for an action payload.
 fn to_spans(ranges: Vec<(String, usize, usize)>) -> Vec<crate::actions::Span> {
@@ -972,140 +984,6 @@ fn block_indent_attr(b: &BlockView) -> f64 {
         Some(AttrVal::Int(n)) => num::f64_of_i64(*n),
         _ => 0.0,
     }
-}
-
-/// An image block's `anchor` attr (`inline` | `paragraph` | `page`), defaulting
-/// to `inline`. `inline` flows the image in its own full-width vertical slot;
-/// `paragraph`/`page` let it float so following text wraps beside it.
-fn image_anchor(b: &BlockView) -> &str {
-    match b.attrs.get("anchor") {
-        Some(AttrVal::Str(s)) => s.as_str(),
-        _ => "inline",
-    }
-}
-
-/// An image block's `wrap` attr (`none` | `left` | `right` | `both`), defaulting
-/// to `none`. Only meaningful for a floated (paragraph/page-anchored) image:
-/// `left` floats the image to the left edge with text beside it on the right (and
-/// vice-versa for `right`); `both`/`none` keep the image in a centered full-width
-/// slot.
-fn image_wrap(b: &BlockView) -> &str {
-    match b.attrs.get("wrap") {
-        Some(AttrVal::Str(s)) => s.as_str(),
-        _ => "none",
-    }
-}
-
-/// The source-relative crop insets of an image in `[0, 1)`. They are stored
-/// as integer ten-thousandths so crop edits converge exactly across replicas;
-/// malformed imported data degrades to an uncropped edge instead of making the
-/// image scale non-finite.
-fn image_crop(b: &BlockView) -> (f64, f64, f64, f64) {
-    let edge = |key: &str| match b.attrs.get(key) {
-        Some(AttrVal::Int(value)) if (0..=9_500).contains(value) => {
-            num::f64_of_i64(*value) / 10_000.0
-        }
-        _ => 0.0,
-    };
-    let (left, top, right, bottom) = (
-        edge("crop_left"),
-        edge("crop_top"),
-        edge("crop_right"),
-        edge("crop_bottom"),
-    );
-    if left + right > 0.95 || top + bottom > 0.95 {
-        (0.0, 0.0, 0.0, 0.0)
-    } else {
-        (left, top, right, bottom)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct ImagePaintOptions {
-    flip_horizontal: bool,
-    flip_vertical: bool,
-    crop: (f64, f64, f64, f64),
-}
-
-fn image_paint_options(block: Option<&BlockView>) -> ImagePaintOptions {
-    block.map_or_else(ImagePaintOptions::default, |block| ImagePaintOptions {
-        flip_horizontal: matches!(block.attrs.get("flip_h"), Some(AttrVal::Bool(true))),
-        flip_vertical: matches!(block.attrs.get("flip_v"), Some(AttrVal::Bool(true))),
-        crop: image_crop(block),
-    })
-}
-
-fn image_paint_transform(base: Affine, rect: Rect, options: ImagePaintOptions) -> Affine {
-    if !options.flip_horizontal && !options.flip_vertical {
-        return base;
-    }
-    let cx = f64::midpoint(rect.x0, rect.x1);
-    let cy = f64::midpoint(rect.y0, rect.y1);
-    base * Affine::translate((cx, cy))
-        * Affine::scale_non_uniform(
-            if options.flip_horizontal { -1.0 } else { 1.0 },
-            if options.flip_vertical { -1.0 } else { 1.0 },
-        )
-        * Affine::translate((-cx, -cy))
-}
-
-fn cropped_image_source(rect: Rect, crop: (f64, f64, f64, f64)) -> Rect {
-    let (left, top, right, bottom) = crop;
-    let visible_w = (1.0 - left - right).max(0.05);
-    let visible_h = (1.0 - top - bottom).max(0.05);
-    Rect::new(
-        rect.x0 - rect.width() * left / visible_w,
-        rect.y0 - rect.height() * top / visible_h,
-        rect.x0 + rect.width() * (1.0 - left) / visible_w,
-        rect.y0 + rect.height() * (1.0 - top) / visible_h,
-    )
-}
-
-fn image_crop_is_active(crop: (f64, f64, f64, f64)) -> bool {
-    crop != (0.0, 0.0, 0.0, 0.0)
-}
-
-/// A page-relative free object's persisted position. The `Option` separates
-/// legacy/imported page anchors (which retain their old flow placement) from a
-/// user-positioned object, even when that user deliberately places it at 0,0.
-fn image_free_position(b: &BlockView) -> Option<(f64, f64, usize)> {
-    let int = |key: &str| match b.attrs.get(key) {
-        Some(AttrVal::Int(value)) => Some(*value),
-        _ => None,
-    };
-    let (x, y, page) = (int("offset_x")?, int("offset_y")?, int("page")?);
-    if !(-100_000..=100_000).contains(&x)
-        || !(-100_000..=100_000).contains(&y)
-        || !(0..=10_000).contains(&page)
-    {
-        return None;
-    }
-    Some((
-        num::f64_of_i64(x),
-        num::f64_of_i64(y),
-        num::usize_of_i64(page),
-    ))
-}
-
-/// An image block's explicit display size `(width, height)` in px from its
-/// `width`/`height` attrs (set by the ODF/OOXML importers and the model on
-/// insert). `None` when either dimension is missing, so callers fall back to the
-/// decoded intrinsic size. Accepts `Int` or `Float`.
-fn image_explicit_size(b: &BlockView) -> Option<(f64, f64)> {
-    let dim = |key: &str| match b.attrs.get(key) {
-        Some(AttrVal::Int(n)) if *n > 0 => Some(num::f64_of_i64(*n)),
-        Some(AttrVal::Float(f)) if *f > 0.0 => Some(*f),
-        _ => None,
-    };
-    Some((dim("width")?, dim("height")?))
-}
-
-/// True when an image block is floated (anchor paragraph/page) with a one-sided
-/// wrap (`left`/`right`) — the case where following paragraphs are narrowed and
-/// placed beside the image rather than below it.
-fn image_floats(b: &BlockView) -> bool {
-    let anchored = matches!(image_anchor(b), "paragraph" | "page");
-    anchored && matches!(image_wrap(b), "left" | "right")
 }
 
 /// Pick a block's horizontal alignment from its `align` attribute.
