@@ -59,7 +59,7 @@ def run(*args: str, cwd: Path) -> str:
 
 
 def cargo_metadata(root: Path) -> dict:
-    return json.loads(run("cargo", "metadata", "--no-deps", "--format-version", "1", cwd=root))
+    return json.loads(run("cargo", "metadata", "--locked", "--no-deps", "--format-version", "1", cwd=root))
 
 
 def package_maps(metadata: dict, root: Path) -> tuple[dict[str, dict], dict[Path, str]]:
@@ -84,8 +84,16 @@ def changed_files(root: Path, base: str | None, head: str) -> list[str]:
         diff_range = f"{base}..{head}"
     else:
         diff_range = f"{merge_base}...{head}"
-    output = run("git", "diff", "--name-only", "--diff-filter=ACDMRTUXB", diff_range, cwd=root)
-    return [line for line in output.splitlines() if line]
+    # A move affects both the old owner and the new owner. Rename detection's
+    # name-only output reports only the destination, losing the old package's
+    # reverse dependants. NUL delimiters also avoid Git quoting Unicode paths
+    # or splitting valid filenames containing newlines/leading whitespace.
+    output = subprocess.check_output(
+        ["git", "diff", "--no-renames", "--name-only", "-z",
+         "--diff-filter=ACDMRTUXB", diff_range, "--"], cwd=root,
+    )
+    return [path.decode("utf-8", errors="surrogateescape")
+            for path in output.split(b"\0") if path]
 
 
 def owner_for(path: str, by_dir: dict[Path, str]) -> str | None:
@@ -139,6 +147,8 @@ def package_cost(pkg: dict) -> int:
 
 
 def balance(names: set[str], packages: dict[str, dict], shard_count: int) -> list[dict]:
+    if not names:
+        return []
     shards = [{"names": [], "cost": 0} for _ in range(max(1, min(shard_count, len(names))))]
     for name in sorted(names, key=lambda n: (-package_cost(packages[n]), n)):
         shard = min(shards, key=lambda item: (item["cost"], len(item["names"])))
@@ -172,7 +182,17 @@ def make_plan(metadata: dict, root: Path, changes: list[str], shard_count: int, 
         path.startswith(workspace_source_roots) and owner_for(path, by_dir) is None
         for path in changes
     )
-    if force_full or global_change or unmapped_workspace_change:
+    # Only design prose is explicitly non-compiling. Other docs can contain
+    # generated contracts, fixtures or embedded Rust inputs and retain coverage.
+    design_only = bool(changes) and all(
+        path.startswith("docs/designs/") and path.endswith(".md")
+        and ".." not in Path(path).parts for path in changes
+    )
+    if design_only and not force_full:
+        selected = set()
+        reason = "design prose only; Rust checks not applicable"
+        full = False
+    elif force_full or global_change or unmapped_workspace_change:
         selected = set(packages)
         reason = ("full workspace explicitly requested" if force_full else
                   "repository-wide build input changed" if global_change else "workspace path has no package owner")
@@ -186,6 +206,7 @@ def make_plan(metadata: dict, root: Path, changes: list[str], shard_count: int, 
     effective_shards = useful_shard_count(selected, packages, shard_count)
     return {
         "full": full,
+        "rust_required": bool(selected),
         "reason": reason,
         "changed_files": changes,
         "selected_count": len(selected),
@@ -207,6 +228,7 @@ def emit_github(plan: dict, output: Path) -> None:
     with output.open("a", encoding="utf-8") as handle:
         handle.write(f"matrix={compact_matrix}\n")
         handle.write(f"full={'true' if plan['full'] else 'false'}\n")
+        handle.write(f"rust_required={'true' if plan['rust_required'] else 'false'}\n")
         handle.write(f"selected_count={plan['selected_count']}\n")
         handle.write(f"workspace_count={plan['workspace_count']}\n")
         handle.write(f"estimated_cost={plan['estimated_cost']}\n")

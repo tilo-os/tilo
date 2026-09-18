@@ -3,8 +3,7 @@
 The root `Cargo.toml` lists every workspace member, grouped by domain. Package
 names and binaries stay stable when directories move. `apps/README.md` describes
 the desktop applications; `shell/` and `ui/` contain the core product surfaces,
-while `system/fs/` owns the filesystem service,
-toolkit, and filesystem.
+while `system/fs/` owns the collaborative filesystem service.
 
 | Directory | Role |
 |---|---|
@@ -22,7 +21,7 @@ toolkit, and filesystem.
 | `session/` | Greeter, installer, unlock helper, and power entrypoints |
 | `system/` | OS integration, policy, settings, device services, and system tools |
 | `text/` | Shared text services such as spellchecking |
-| `windows/` | Windows compatibility catalogue and services |
+| `windows/` | Windows compatibility catalogue, services, and managed VM integration |
 
 ## Developer tools and fixtures
 

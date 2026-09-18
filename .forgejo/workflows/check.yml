@@ -19,9 +19,9 @@ on:
         type: string
 
 concurrency:
-  group: check-${{ github.ref }}
-  # Main is continuously integrated by multiple agents; cancelling its
-  # security gate on every newer push can prevent any revision from finishing.
+  # Keep every main revision, without serializing all commits behind one slow
+  # native build. Runner admission limits resource use across these runs.
+  group: check-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   # Feature branches still supersede obsolete work immediately.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
@@ -97,6 +97,7 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
       base: ${{ steps.plan.outputs.base }}
       full: ${{ steps.plan.outputs.full }}
+      rust_required: ${{ steps.plan.outputs.rust_required }}
       selected_count: ${{ steps.plan.outputs.selected_count }}
       workspace_count: ${{ steps.plan.outputs.workspace_count }}
       estimated_cost: ${{ steps.plan.outputs.estimated_cost }}
@@ -138,6 +139,7 @@ jobs:
         id: plan
         shell: bash
         run: |
+          set -euo pipefail
           base='${{ github.event.pull_request.base.sha }}'
           selection_args=()
           if [ '${{ github.event_name }}' = workflow_dispatch ]; then
@@ -194,6 +196,7 @@ jobs:
         run: bash tools/run-security-boundary-invariants.sh
 
   affected:
+    if: needs.select.outputs.rust_required == 'true'
     needs: [builder, select]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
@@ -205,7 +208,10 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 4
-      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
+      # Forgejo removes an empty matrix job entirely, leaving its aggregate
+      # blocked. Keep one inert row when Rust is inapplicable; the job-level
+      # condition skips it without consuming a runner.
+      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.matrix || '{"include":[{"runner":"runner"}]}') }}
     container:
       image: ${{ needs.builder.outputs.image }}
       credentials:
@@ -241,14 +247,10 @@ jobs:
           bash tools/ci-sccache.sh prepare
 
       # Older/explicitly selected builders may predate the audio fixture.
-      # Excluding installed packages forbids changing their pinned versions.
+      # The helper replaces only the conflicting audio daemon; other installed
+      # packages retain their pinned versions.
       - name: Ensure isolated audio test dependency
-        run: |
-          if ! command -v pulseaudio >/dev/null; then
-            installed=$(rpm -qa --qf '%{NAME}\n' | sort -u | paste -sd, -)
-            dnf install -y --setopt=install_weak_deps=False --setopt=obsoletes=False --setopt=best=False \
-              --exclude="$installed" pulseaudio
-          fi
+        run: bash tools/ensure-headless-audio.sh
 
       # Build and run tests first. The resulting rlibs/rmeta are then reusable
       # by the all-target check; doing this in the opposite order makes rustc
@@ -324,18 +326,51 @@ jobs:
             /cargo-home/git/db
           key: cargo-deps-${{ hashFiles('Cargo.lock') }}
 
+  checks:
+    if: always()
+    needs: [select, security, affected]
+    runs-on: runner
+    timeout-minutes: 5
+    steps:
+      - name: Require applicable checks and explain intentional non-applicability
+        id: aggregate
+        env:
+          SELECT_RESULT: ${{ needs.select.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+          AFFECTED_RESULT: ${{ needs.affected.result }}
+          RUST_REQUIRED: ${{ needs.select.outputs.rust_required }}
+          SELECTED_COUNT: ${{ needs.select.outputs.selected_count }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$SELECT_RESULT" = success
+          test "$SECURITY_RESULT" = success
+          case "$RUST_REQUIRED:$SELECTED_COUNT:$AFFECTED_RESULT" in
+            false:0:skipped)
+              echo 'Rust checks not applicable: design prose only.' >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            true:*:success)
+              [[ "$SELECTED_COUNT" =~ ^[1-9][0-9]*$ ]]
+              echo "Rust checks passed for $SELECTED_COUNT selected packages." >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo '::error::Required checks failed, were skipped unexpectedly, or selection outputs are invalid.'
+              exit 1
+              ;;
+          esac
+
   report-check-result:
     if: >-
       always() &&
       (github.ref == 'refs/heads/main' ||
        github.ref == 'refs/heads/codex/package-desktop-release')
-    needs: [select, security, affected]
+    needs: [select, security, checks]
     runs-on: runner
     timeout-minutes: 10
     env:
       SELECT_RESULT: ${{ needs.select.result }}
       SECURITY_RESULT: ${{ needs.security.result }}
-      AFFECTED_RESULT: ${{ needs.affected.result }}
+      AFFECTED_RESULT: ${{ needs.checks.result }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

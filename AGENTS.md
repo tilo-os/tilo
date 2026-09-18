@@ -228,4 +228,17 @@ those subsystems. `DEVELOPMENT.md` for the build environment.
 
 ## CI
 
+Use a task branch and a pull request for routine integration. Group related,
+tested changes into small coherent increments; do not push work-in-progress or
+minute-by-minute fixups directly to main. Keep the PR updated rather than opening
+another PR for each iteration. Obtain an independent review and successful
+applicable CI for the current head before merging. Routine integration does not
+need an extra human approval unless the change's policy requires one. Explicitly
+authorized emergency CI/infra fixes may be integrated directly.
+
+Keep check/lint results for every main commit. Full OS, desktop distribution and
+app packaging builds are currently explicit or scheduled; do not restore broad
+per-push triggers to obtain a development artifact. Use the existing workflow's
+manual dispatch and the smallest applicable app/architecture inputs instead.
+
 After a successful normal `git push`, final CI status is automatically sent to this task when its runs finish. Keep relevant CI green before merging; use `fgj actions` to investigate failures.
