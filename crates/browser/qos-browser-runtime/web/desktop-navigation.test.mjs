@@ -21,3 +21,45 @@ test('pan keeps real pixel metrics and exact mount/workspace/strip ownership acr
  await nav.controller.dispatch(command);assert.deepEqual(sent,[command]);
  nav.close();await assert.rejects(nav.controller.dispatch(command),/disposed/);assert.equal(sent.length,1);
 });
+test('close is advertised only with terminal correlation, deduplicates, and waits for topology removal',async()=>{
+ const route={workspace:'1',strip:'2',group:'3',tab:'9007199254740993'};
+ let raw={version:1,generation:'surface',active:route,entries:[{route}],capabilities:{close:true}},revision='1',sent=[],terminalResolve;
+ const terminal=new Promise(resolve=>{terminalResolve=resolve;});
+ const nav=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>revision,dispatch:command=>{sent.push(JSON.parse(command));return'invocation-1';},awaitTerminal:id=>{assert.equal(id,'invocation-1');return terminal;},active:()=>true});
+ assert.equal(nav.controller.getSnapshot().capabilities.close,true);
+ let settled=false;
+ const first=nav.controller.dispatch({kind:'close',generation:'surface',route:raw.active}).then(()=>{settled=true;});
+ const second=nav.controller.dispatch({kind:'close',generation:'surface',route:raw.active});
+ assert.equal(sent.length,1,'repeat close must not dispatch twice');
+ terminalResolve();await Promise.resolve();await Promise.resolve();assert.equal(settled,false,'terminal success alone is not visible removal');
+ raw={...raw,active:null,entries:[]};revision='2';nav.refresh();
+ await Promise.all([first,second]);assert.equal(settled,true);
+ nav.close();
+ const local=createDesktopNavigation({snapshot:()=>JSON.stringify({...raw,capabilities:{close:true}}),revision:()=>revision,dispatch:()=>{},active:()=>true});
+ assert.equal(local.controller.getSnapshot().capabilities.close,false);
+ await assert.rejects(local.controller.dispatch({kind:'close',generation:'surface',route:{workspace:'1',strip:'2',group:'3',tab:'4'}}),/unavailable/);
+});
+test('close rejects terminal failure and cleanup rejects unresolved unknown outcome',async()=>{
+ const route={workspace:'1',strip:'2',group:'3',tab:'4'},raw={version:1,generation:'surface',active:route,entries:[{route}],capabilities:{close:true}};
+ let rejectTerminal,attempt=0;
+ const terminal=new Promise((_,reject)=>{rejectTerminal=reject;});
+ const nav=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>"1",dispatch:()=>`invocation-${++attempt}`,awaitTerminal:()=>attempt===1?terminal:new Promise(()=>{}),active:()=>true});
+ const failed=nav.controller.dispatch({kind:'close',generation:'surface',route});rejectTerminal(Error('refused'));
+ await assert.rejects(failed,/refused/);
+ const pending=nav.controller.dispatch({kind:'close',generation:'surface',route});nav.close();
+ await assert.rejects(pending,/disposed/);
+});
+test('close correlation survives route switches and disposes every remaining route',async()=>{
+ const a={workspace:'1',strip:'2',group:'3',tab:'4'},b={workspace:'1',strip:'2',group:'3',tab:'5'},c={workspace:'1',strip:'2',group:'3',tab:'6'};
+ let raw={version:1,generation:'surface',active:a,entries:[a,b,c].map(route=>({route})),capabilities:{close:true}},revision=1,next=0;
+ const terminals=new Map(),sent=[];
+ const nav=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>String(revision),dispatch:command=>{sent.push(JSON.parse(command));return`invocation-${++next}`;},awaitTerminal:invocation=>new Promise(resolve=>terminals.set(invocation,resolve)),active:()=>true});
+ const closeA=nav.controller.dispatch({kind:'close',generation:'surface',route:a});
+ raw={...raw,active:b};revision++;nav.refresh();
+ let bSettled=false;const closeB=nav.controller.dispatch({kind:'close',generation:'surface',route:b}).then(()=>{bSettled=true;});
+ assert.equal(sent.length,2);assert.equal(sent[0].route.tab,'4');assert.equal(sent[1].route.tab,'5');
+ terminals.get('invocation-1')();raw={...raw,entries:[b,c].map(route=>({route}))};revision++;nav.refresh();await closeA;
+ terminals.get('invocation-2')();await Promise.resolve();assert.equal(bSettled,false,'B waits for its own topology removal');
+ raw={...raw,active:c,entries:[{route:c}]};revision++;nav.refresh();await closeB;assert.equal(bSettled,true);
+ const closeC=nav.controller.dispatch({kind:'close',generation:'surface',route:c});nav.close();await assert.rejects(closeC,/disposed/);
+});

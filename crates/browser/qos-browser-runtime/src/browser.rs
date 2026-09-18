@@ -1158,7 +1158,7 @@ pub fn desktop_navigation_revision(id: u64) -> Result<String, JsValue> {
     })
 }
 #[wasm_bindgen]
-pub fn desktop_navigate(id: u64, command: &str) -> Result<(), JsValue> {
+pub fn desktop_navigate(id: u64, command: &str) -> Result<Option<String>, JsValue> {
     let command=serde_json::from_str(command).map_err(error)?;
     MOUNTS.with_borrow_mut(|mounts| {
         let mount=mounts.get_mut(&id).ok_or_else(||error("Desktop disposed"))?;
@@ -1168,9 +1168,9 @@ pub fn desktop_navigate(id: u64, command: &str) -> Result<(), JsValue> {
         *desktop.navigation_command.borrow_mut()=Some(command);
         mount.frame.relayout();
         let result=desktop.navigation_result.borrow_mut().take().ok_or_else(||error("Desktop did not accept navigation"))?;
-        result.map_err(error)?;
+        let invocation=result.map_err(error)?;
         mount.pending=true; mount.window.request_redraw();
-        Ok(())
+        Ok(invocation)
     })
 }
 
