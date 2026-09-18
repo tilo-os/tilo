@@ -578,7 +578,8 @@ mod tests {
             display_name: "Legacy".into(),
             placement: crate::compositor::tab_binding::Placement::NewGroup,
             portal_workspace_id: None,
-        });
+        })
+        .expect("Linux host launch provider");
 
         assert!(!x11_ready());
         assert_eq!(
