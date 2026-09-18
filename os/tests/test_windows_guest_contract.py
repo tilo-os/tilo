@@ -178,6 +178,12 @@ class ContractTests(unittest.TestCase):
             self.assertIn(f"{package}.x86_64", roots)
         self.assertFalse(any(name.startswith("wine-dxvk") for name in roots))
         self.assertFalse(any("-devel." in name for name in roots))
+        assembly = (OS / "dev/build-windows-guest.sh").read_text()
+        self.assertIn("--exclude=wine-dxvk --exclude='wine-dxvk-*'", assembly)
+        self.assertIn("--setopt=install_weak_deps=True", assembly)
+        self.assertIn("--setopt=gpgcheck=True --setopt=tsflags=", assembly)
+        self.assertIn("install-windows-guest-dxvk.py /guestroot", assembly)
+
 
 
 class HeaderTests(unittest.TestCase):

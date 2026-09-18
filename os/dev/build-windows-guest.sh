@@ -22,7 +22,11 @@ mapfile -t packages < /guest-packages.txt
 mkdir /guestroot
 # Explicit reposdir hides every host network repository. RUN --network=none is
 # the second boundary. No --noscripts, --nodeps, --skip-broken or RPM extraction.
-dnf5 --installroot=/guestroot --releasever=44 --use-host-config \
+# Fedora's weak DXVK packages register alternatives for its wow64 layout.
+# The guest owns a checksum-pinned x32/x64 upstream DXVK pair below instead.
+# Keep every other weak dependency and all scriptlets; an older frozen snapshot
+# may contain these unused RPMs, which remain authenticated as snapshot members.
+dnf5 --exclude=wine-dxvk --exclude='wine-dxvk-*' --installroot=/guestroot --releasever=44 --use-host-config \
     --setopt=reposdir=/repo --setopt=install_weak_deps=True \
     --setopt=gpgcheck=True --setopt=tsflags= install -y "${packages[@]}"
 metadata=/guestroot/usr/lib/tilo/windows-guest
