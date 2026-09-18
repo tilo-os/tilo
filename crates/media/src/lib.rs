@@ -10,7 +10,7 @@
 //! * [`MediaEngine`] — the control surface: `open` / `play` / `pause` /
 //!   `seek_ms` / `set_volume`, a monotonic playhead, `duration`, buffering %,
 //!   and a [`MediaEvent`] stream drained with [`MediaEngine::poll`]. With
-//!   `--features decode` it drives a GStreamer `playbin`→`appsink` pipeline
+//!   `--features decode` it drives a `GStreamer` `playbin`→`appsink` pipeline
 //!   with audio output; without it a synthesized-frame fallback is used.
 //! * [`TransportState`] + [`TransportSync`] — collaborative "follow-the-host"
 //!   playback: a host publishes the transport, followers project it forward and

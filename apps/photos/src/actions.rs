@@ -51,6 +51,11 @@ pub const PHOTOS_ACTION_TYPE: &str = "photos.action";
 
 /// The resource `kind` an open photograph publishes under.
 pub const IMAGE_KIND: &str = "photos.image";
+/// The derived, durable browse collection for photographs marked favourite.
+///
+/// Membership itself is shared document state; opening this resource is a
+/// device-local view, just like opening an album or a metadata label.
+pub const FAVORITES_KIND: &str = "photos.favorites";
 pub const PHOTOS_OPERATION_TYPE: &str = "photos.operation";
 /// Contextual enumeration is intentionally small; callers resolve any stable
 /// id outside this window through `ResourceProvider::resource`.
@@ -63,6 +68,7 @@ const MAX_RESOURCE_ID_CHARS: usize = 4_096;
 const MAX_ALBUM_ID_CHARS: usize = 160;
 const MAX_NAME_CHARS: usize = 256;
 const MAX_ALBUM_MEMBERS: usize = 4_096;
+const MAX_BATCH_PHOTOS: usize = 4_096;
 type LabelCounts = Vec<(String, usize)>;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -76,6 +82,11 @@ pub enum PhotosOperation {
     /// Reveal the Photos-owned browsing and management surface without
     /// opening a chooser or mutating the shared library.
     ViewLibrary,
+    /// Show the durable favourites collection without changing any shared
+    /// favourite marker. This is intentionally its own addressable resource,
+    /// rather than a hidden in-app filter, so search, agents, history and a
+    /// collaborator can all name the same collection.
+    ViewFavorites,
     /// Bring a durable album's filtered grid into view. This is presentation
     /// state only: unlike membership actions, activating it never edits the
     /// shared library.
@@ -134,6 +145,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         op,
         PhotosOperation::View
             | PhotosOperation::ViewLibrary
+            | PhotosOperation::ViewFavorites
             | PhotosOperation::ViewAlbum { .. }
             | PhotosOperation::ViewFolder { .. }
             | PhotosOperation::ViewPerson { .. }
@@ -146,6 +158,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
     let tags = match op {
         PhotosOperation::View
         | PhotosOperation::ViewLibrary
+        | PhotosOperation::ViewFavorites
         | PhotosOperation::ViewAlbum { .. }
         | PhotosOperation::ViewFolder { .. }
         | PhotosOperation::ViewPerson { .. }
@@ -179,6 +192,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
     Some(match op {
         PhotosOperation::View
         | PhotosOperation::ViewLibrary
+        | PhotosOperation::ViewFavorites
         | PhotosOperation::ViewAlbum { .. }
         | PhotosOperation::ViewFolder { .. }
         | PhotosOperation::ViewPerson { .. }
@@ -213,6 +227,13 @@ pub enum PhotosAction {
     RemovePhoto { photo_id: String },
     /// Toggle a durable favourite marker.
     SetFavorite { photo_id: String, favorite: bool },
+    /// Replace the favourite state for a bounded, explicitly addressed batch.
+    /// The selection that produced this list is device-local presentation;
+    /// this resulting change is the one shared, replayable document action.
+    SetFavorites {
+        photo_ids: Vec<String>,
+        favorite: bool,
+    },
     /// Replace the complete small metadata record for one photograph.  One
     /// absolute payload avoids a concurrent series of add/remove operations
     /// exposing a half-edited tag list to collaborators.
@@ -403,6 +424,37 @@ impl Action for PhotosAction {
                         ActionError::Refused("that photograph is no longer in the library".into())
                     })?;
                 photo.favorite = *favorite;
+                PhotosDoc::set_library(doc, &library);
+                Ok(())
+            }
+            Self::SetFavorites {
+                photo_ids,
+                favorite,
+            } => {
+                if photo_ids.is_empty()
+                    || photo_ids.len() > MAX_BATCH_PHOTOS
+                    || photo_ids.iter().any(|id| validate_resource_id(id).is_err())
+                    || photo_ids.iter().enumerate().any(|(index, id)| {
+                        photo_ids
+                            .get(..index)
+                            .is_some_and(|previous| previous.contains(id))
+                    })
+                {
+                    return Err(ActionError::Refused(
+                        "favorite batch must contain unique, valid photograph ids".into(),
+                    ));
+                }
+                let mut library = PhotosDoc::library(doc);
+                if !photo_ids.iter().all(|id| library.photo(id).is_some()) {
+                    return Err(ActionError::Refused(
+                        "a selected photograph is no longer in the library".into(),
+                    ));
+                }
+                for photo in &mut library.photos {
+                    if photo_ids.contains(&photo.id) {
+                        photo.favorite = *favorite;
+                    }
+                }
                 PhotosDoc::set_library(doc, &library);
                 Ok(())
             }
@@ -683,6 +735,15 @@ impl ResourceProvider for PhotosResources {
         if id == "photos.library" {
             return Some(library_root_resource());
         }
+        if id == "photos.favorites" {
+            return Some(favorites_resource(
+                PhotosDoc::library(doc)
+                    .photos
+                    .iter()
+                    .filter(|photo| photo.favorite)
+                    .count(),
+            ));
+        }
         if let Some(photo) = PhotosDoc::photo(doc, id) {
             return Some(photo_resource(&photo));
         }
@@ -781,6 +842,9 @@ fn open_image_resource(doc: &AutoCommit, image: &OpenImage) -> Resource {
 fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
     let library = PhotosDoc::library(doc);
     let mut root = library_root_resource();
+    root = root.with_child(favorites_resource(
+        library.photos.iter().filter(|photo| photo.favorite).count(),
+    ));
     for photo in library.photos.iter().take(LIBRARY_CONTEXT_LIMIT) {
         root = root.with_child(photo_resource(photo));
     }
@@ -807,8 +871,29 @@ pub(crate) fn library_root_resource() -> Resource {
     }
     root = root
         .with_action(file_operation("import", "Import photograph", true))
-        .with_action(create_album_spec());
+        .with_action(create_album_spec())
+        .with_action(set_favorites_spec());
     root
+}
+
+/// The stable virtual collection a person expects the star controls to feed.
+///
+/// This deliberately exists even when it is empty: an empty favourite view is
+/// useful as a predictable destination, and it does not falsely imply there
+/// are hidden entries waiting to load.
+pub(crate) fn favorites_resource(count: usize) -> Resource {
+    let mut resource =
+        Resource::new("photos.favorites", FAVORITES_KIND, "Favorites").with_child(Resource::new(
+            "photos.favorites#count",
+            "photos.count",
+            format!("{count} photographs"),
+        ));
+    if let Some(spec) = operation("open", "View favorites", &PhotosOperation::ViewFavorites) {
+        resource = resource.with_action(
+            spec.with_description("Show photographs marked as favorites in the shared library"),
+        );
+    }
+    resource
 }
 
 /// Deterministically collect the small virtual browse namespace.  It is
@@ -1157,16 +1242,37 @@ pub(crate) fn album_resource_from_fields(id: &str, name: &str, photo_count: usiz
 }
 
 fn membership_ids(args: &ActionArgs) -> Vec<String> {
-    args.text("photo_ids")
+    args.array("photo_ids")
+        .unwrap_or_default()
+        .iter()
+        // The parameter schema makes every item a non-empty string before
+        // this builder runs. Keep an unexpected value as an invalid id rather
+        // than dropping it and accidentally changing a caller's request.
         .map(|value| {
             value
-                .split(',')
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-                .map(str::to_owned)
-                .collect()
+                .as_str()
+                .map_or_else(|| "\u{0}".to_owned(), str::to_owned)
         })
-        .unwrap_or_default()
+        .collect()
+}
+
+fn photo_ids_param(required: bool, description: &'static str, min_items: usize) -> ActionParam {
+    let param = if required {
+        ActionParam::required("photo_ids", ParamType::Array, description)
+    } else {
+        ActionParam::optional("photo_ids", ParamType::Array, description)
+    };
+    param.with_schema(serde_json::json!({
+        "type": "array",
+        "minItems": min_items,
+        "maxItems": MAX_BATCH_PHOTOS,
+        "uniqueItems": true,
+        "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": MAX_RESOURCE_ID_CHARS
+        }
+    }))
 }
 
 fn create_album_spec() -> ActionSpec {
@@ -1182,11 +1288,7 @@ fn create_album_spec() -> ActionSpec {
                 "stable album id, for example photos.album:holiday",
             ),
             ActionParam::required("name", ParamType::Text, "visible album name"),
-            ActionParam::optional(
-                "photo_ids",
-                ParamType::Text,
-                "comma-separated stable photo ids",
-            ),
+            photo_ids_param(false, "JSON array of stable photo ids", 0),
         ],
         |args| {
             encode(&PhotosAction::SaveAlbum {
@@ -1201,6 +1303,34 @@ fn create_album_spec() -> ActionSpec {
     .with_description("Create an album and its initial photograph membership atomically")
 }
 
+/// The agent/search counterpart of the visible library selection command.
+/// Selection never leaks into the shared document; callers name exactly the
+/// resources whose durable favorite markers should change.
+fn set_favorites_spec() -> ActionSpec {
+    ActionSpec::typed(
+        "set-favorites",
+        "Set favorites",
+        "Photograph ids and desired favorite state",
+        ExecutionLocus::ClientLocal,
+        vec![
+            photo_ids_param(
+                true,
+                "non-empty JSON array of stable photograph resource ids",
+                1,
+            ),
+            ActionParam::required("favorite", ParamType::Boolean, "whether to mark favorite"),
+        ],
+        |args| {
+            encode(&PhotosAction::SetFavorites {
+                photo_ids: membership_ids(args),
+                favorite: args.boolean("favorite").unwrap_or(false),
+            })
+        },
+    )
+    .reversible()
+    .with_description("Set the favorite marker for a bounded batch of selected photographs")
+}
+
 fn album_save_spec(album_id: &str) -> ActionSpec {
     let id = album_id.to_owned();
     ActionSpec::typed(
@@ -1210,11 +1340,7 @@ fn album_save_spec(album_id: &str) -> ActionSpec {
         ExecutionLocus::ClientLocal,
         vec![
             ActionParam::required("name", ParamType::Text, "visible album name"),
-            ActionParam::optional(
-                "photo_ids",
-                ParamType::Text,
-                "comma-separated stable photo ids",
-            ),
+            photo_ids_param(false, "JSON array of stable photo ids", 0),
         ],
         move |args| {
             encode(&PhotosAction::SaveAlbum {
@@ -1257,28 +1383,17 @@ fn album_membership_spec(album_id: &str) -> ActionSpec {
     ActionSpec::typed(
         "set-membership",
         "Set album membership",
-        "photos.photo:… , photos.photo:… (empty clears the album)",
+        "JSON array of photos.photo:… ids (an empty array clears the album)",
         ExecutionLocus::ClientLocal,
-        vec![ActionParam::required(
-            "photo_ids",
-            ParamType::Text,
-            "comma-separated stable photo ids; empty clears the album",
+        vec![photo_ids_param(
+            true,
+            "JSON array of stable photo ids; an empty array clears the album",
+            0,
         )],
         move |args: &ActionArgs| {
-            let ids = args
-                .text("photo_ids")
-                .map(|value| {
-                    value
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|id| !id.is_empty())
-                        .map(str::to_owned)
-                        .collect()
-                })
-                .unwrap_or_default();
             encode(&PhotosAction::SetAlbumMembership {
                 album_id: album_id.clone(),
-                photo_ids: ids,
+                photo_ids: membership_ids(args),
             })
         },
     )
@@ -2039,7 +2154,14 @@ mod tests {
         let late = library.photos.last().unwrap().id.clone();
         PhotosDoc::set_library(&mut doc, &library);
         let root = PhotosResources.resources(&doc).pop().unwrap();
-        assert!(root.children.len() <= LIBRARY_CONTEXT_LIMIT);
+        assert!(
+            root.children
+                .iter()
+                .filter(|child| child.kind == "photos.photo")
+                .count()
+                <= LIBRARY_CONTEXT_LIMIT,
+            "contextual photos stay bounded even as fixed virtual collections are added"
+        );
         let resolved = PhotosResources
             .resource(&doc, &late)
             .expect("late stable id resolves");
@@ -2049,6 +2171,128 @@ mod tests {
             PhotosResources
                 .resource(&doc, "photos.photo:stale")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn favorites_are_a_stable_browse_resource_with_an_honest_count() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let mut favorite = portable_photo("/photos/favorite.png", 20, 10);
+        favorite.favorite = true;
+        let ordinary = portable_photo("/photos/ordinary.png", 20, 10);
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos: vec![favorite, ordinary],
+                albums: Vec::new(),
+            },
+        );
+
+        let favorites = PhotosResources
+            .resource(&doc, "photos.favorites")
+            .expect("favorites is addressable even outside a materialized shelf");
+        assert_eq!(favorites.kind, FAVORITES_KIND);
+        assert!(favorites.actions.iter().any(|action| action.id == "open"));
+        assert!(
+            favorites
+                .children
+                .iter()
+                .any(|child| child.label == "1 photographs")
+        );
+        let root = PhotosResources.resources(&doc).pop().expect("library root");
+        assert!(
+            root.children
+                .iter()
+                .any(|child| child.id.0 == "photos.favorites")
+        );
+        let batch = root
+            .actions
+            .iter()
+            .find(|action| action.id == "set-favorites")
+            .expect("the library publishes the batch operation agents and selection use");
+        assert!(batch.contract.reversible);
+        assert_eq!(batch.params().len(), 2);
+        assert_eq!(batch.params()[0].ty, ParamType::Array);
+        assert!(
+            batch
+                .build_args([
+                    (
+                        "photo_ids".into(),
+                        tilo_actions::ArgValue::Array(Vec::new())
+                    ),
+                    ("favorite".into(), tilo_actions::ArgValue::Boolean(true)),
+                ])
+                .is_err(),
+            "an empty batch is rejected by the public action contract"
+        );
+        assert!(
+            batch
+                .build_args([
+                    (
+                        "photo_ids".into(),
+                        tilo_actions::ArgValue::Array(vec![serde_json::Value::from(7)]),
+                    ),
+                    ("favorite".into(), tilo_actions::ArgValue::Boolean(true)),
+                ])
+                .is_err(),
+            "an invalid array item is refused rather than disappearing from the request"
+        );
+    }
+
+    #[test]
+    fn favorite_batch_is_atomic_replayable_and_refuses_a_stale_selection() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let first = portable_photo("/photos/first.png", 20, 10);
+        let second = portable_photo("/photos/second.png", 20, 10);
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos: vec![first.clone(), second.clone()],
+                albums: Vec::new(),
+            },
+        );
+        let initial = PhotosDoc::library(&doc);
+        let batch = PhotosAction::SetFavorites {
+            photo_ids: vec![first.id.clone(), second.id],
+            favorite: true,
+        };
+        batch
+            .apply(&mut doc)
+            .expect("both known ids apply together");
+        assert!(
+            PhotosDoc::library(&doc)
+                .photos
+                .iter()
+                .all(|photo| photo.favorite)
+        );
+
+        let before = PhotosDoc::library(&doc);
+        PhotosAction::SetFavorites {
+            photo_ids: vec![first.id, "photos.photo:gone".into()],
+            favorite: false,
+        }
+        .apply(&mut doc)
+        .expect_err("a stale selection cannot partially change favorites");
+        assert_eq!(PhotosDoc::library(&doc), before);
+
+        let encoded = encode(&batch);
+        let mut replica = AutoCommit::new();
+        PhotosDoc::seed(&mut replica);
+        PhotosDoc::set_library(&mut replica, &initial);
+        let mut registry = ActionRegistry::new();
+        register(&mut registry);
+        registry
+            .decode(&encoded)
+            .expect("the canonical registry decodes the selection result")
+            .apply(&mut replica)
+            .expect("replaying an absolute favorite state succeeds");
+        assert!(
+            PhotosDoc::library(&replica)
+                .photos
+                .iter()
+                .all(|photo| photo.favorite)
         );
     }
 
