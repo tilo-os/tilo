@@ -145,6 +145,7 @@ def main():
         result = report(json.loads(args.input.read_text(encoding="utf-8-sig")) if args.input else collect(args))
         serialized = json.dumps(result, indent=2) + "\n"
         if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(serialized, encoding="utf-8")
         else:
             print(serialized, end="")
