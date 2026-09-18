@@ -809,14 +809,7 @@ impl RemoteCaptureFabricRuntime {
             return;
         }
         match session.request.profile.kind() {
-            crate::shell::remote_capture::device::RemoteCaptureKind::DocumentScanner => {
-                let _ = self.bridge.append_scanner_chunk(
-                    &session.app,
-                    &session.source,
-                    &session.target,
-                    chunk,
-                );
-            }
+            crate::shell::remote_capture::device::RemoteCaptureKind::DocumentScanner => {}
             crate::shell::remote_capture::device::RemoteCaptureKind::Camera
             | crate::shell::remote_capture::device::RemoteCaptureKind::Microphone => {
                 if let Ok(mut adapter) = self.adapter.try_lock() {
