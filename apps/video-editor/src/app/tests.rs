@@ -8946,7 +8946,8 @@ fn the_shuttle_readout_is_really_painted_beside_the_timecode() {
     let theme = Theme::dark();
     let (w, h) = (1280u32, 800u32);
     let (mut app, mut doc) = app_and_doc();
-    app.playhead = 8.0;
+    let playhead = app.project.duration() * 0.5;
+    app.playhead = playhead;
     for _ in 0..3 {
         assert!(key_press(&mut app, &mut doc, "l", false));
     }
@@ -8986,7 +8987,7 @@ fn the_shuttle_readout_is_really_painted_beside_the_timecode() {
 
     // The same band on a still playhead: blank strip, nothing lingering.
     let (mut still, _doc) = app_and_doc();
-    still.playhead = 8.0;
+    still.playhead = playhead;
     let stopped = render_pixels(&mut still, w, h, &theme);
     assert_eq!(
         region_colours(&stopped, w, h, band),
