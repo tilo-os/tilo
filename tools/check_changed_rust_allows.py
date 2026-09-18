@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Require a written reason on every newly added Rust `allow` attribute."""
+"""Require written reasons for Rust `allow` attributes in every changed file."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from typing import NamedTuple
 
 
 ZERO_SHA = "0" * 40
-HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 ALLOW = re.compile(r"\ballow\s*\(")
 REASON = re.compile(r"\breason\s*=")
 
@@ -62,29 +61,13 @@ def rust_attributes(source: str) -> list[Attribute]:
     return attributes
 
 
-def unexplained_added_allows(source: str, added_lines: set[int]) -> list[Attribute]:
+def unexplained_allows(source: str) -> list[Attribute]:
     return [
         attribute
         for attribute in rust_attributes(source)
         if ALLOW.search(attribute.text)
         and not REASON.search(attribute.text)
-        and any(
-            line in added_lines
-            for line in range(attribute.start_line, attribute.end_line + 1)
-        )
     ]
-
-
-def added_lines(diff: str) -> set[int]:
-    lines: set[int] = set()
-    for line in diff.splitlines():
-        match = HUNK.match(line)
-        if match is None:
-            continue
-        start = int(match.group(1))
-        count = int(match.group(2) or "1")
-        lines.update(range(start, start + count))
-    return lines
 
 
 def git(root: Path, *arguments: str) -> str:
@@ -149,18 +132,10 @@ def main(argv: list[str] | None = None) -> int:
         revision_range = comparison_range(root, args.base, args.before)
         violations: list[tuple[Path, Attribute]] = []
         for relative in changed_rust_files(root, revision_range):
-            diff = git(
-                root,
-                "diff",
-                "--unified=0",
-                revision_range,
-                "--",
-                str(relative),
-            )
             source = (root / relative).read_text(encoding="utf-8")
             violations.extend(
                 (relative, attribute)
-                for attribute in unexplained_added_allows(source, added_lines(diff))
+                for attribute in unexplained_allows(source)
             )
     except (OSError, UnicodeError, subprocess.CalledProcessError) as error:
         print(f"Rust allow-reason check failed: {error}", file=sys.stderr)
@@ -169,11 +144,11 @@ def main(argv: list[str] | None = None) -> int:
         for path, attribute in violations:
             lints = " ".join(attribute.text.split())
             print(
-                f"{path}:{attribute.start_line}: newly added allow has no reason: {lints}",
+                f"{path}:{attribute.start_line}: changed file contains allow with no reason: {lints}",
                 file=sys.stderr,
             )
         print(
-            "FAIL: add `reason = \"...\"` to each new Rust allow attribute",
+            "FAIL: add `reason = \"...\"` to every Rust allow in changed files",
             file=sys.stderr,
         )
         return 1

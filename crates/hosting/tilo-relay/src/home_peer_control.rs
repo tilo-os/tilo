@@ -2,6 +2,7 @@
 
 use std::io::Read;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -387,17 +388,49 @@ fn invoking_uid() -> anyhow::Result<u32> {
         .context("polkit supplied an invalid requesting user")
 }
 
-fn home_for_uid(uid: u32) -> anyhow::Result<PathBuf> {
-    let passwd = std::fs::read_to_string("/etc/passwd")?;
-    passwd
-        .lines()
-        .find_map(|line| {
-            let mut fields = line.split(':');
-            let record_uid = fields.nth(2)?.parse::<u32>().ok()?;
-            let home = fields.nth(2)?;
-            (record_uid == uid).then(|| PathBuf::from(home))
+#[derive(Debug, PartialEq, Eq)]
+struct Account {
+    gid: u32,
+    home: PathBuf,
+}
+
+fn account_from_passwd(passwd: &str, uid: u32) -> Option<Account> {
+    passwd.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        let _name = fields.next()?;
+        let _password = fields.next()?;
+        let record_uid = fields.next()?.parse::<u32>().ok()?;
+        let gid = fields.next()?.parse::<u32>().ok()?;
+        let _gecos = fields.next()?;
+        let home = fields.next()?;
+        (record_uid == uid).then(|| Account {
+            gid,
+            home: PathBuf::from(home),
         })
-        .context("requesting user's home directory was not found")
+    })
+}
+
+fn account_for_uid(uid: u32) -> anyhow::Result<Account> {
+    let passwd = std::fs::read_to_string("/etc/passwd")?;
+    account_from_passwd(&passwd, uid).context("requesting user's home directory was not found")
+}
+
+fn home_for_uid(uid: u32) -> anyhow::Result<PathBuf> {
+    Ok(account_for_uid(uid)?.home)
+}
+
+fn run_enrollment_as_identity_owner(
+    command: &mut Command,
+    identity_root: &Path,
+    uid: u32,
+    gid: u32,
+) {
+    if identity_root != Path::new("/var/lib/tilo") {
+        // `uid` also clears inherited supplementary groups, so the child gets
+        // only the requesting account's primary identity rather than any of
+        // the privileged helper's ambient root groups.
+        command.gid(gid).uid(uid);
+    }
 }
 
 fn validate_identity_root(identity_root: &Path, uid: u32, home: &Path) -> anyhow::Result<PathBuf> {
@@ -429,11 +462,12 @@ fn approve_enrollment(
         bail!("too many workspaces");
     }
     let uid = invoking_uid()?;
-    let identity_root = validate_identity_root(identity_root, uid, &home_for_uid(uid)?)?;
+    let account = account_for_uid(uid)?;
+    let identity_root = validate_identity_root(identity_root, uid, &account.home)?;
     let mut command = Command::new("/usr/bin/tilo-enroll");
     command
         .args(["approve", "--timeout", "60", "--identity-root"])
-        .arg(identity_root);
+        .arg(&identity_root);
     for id in workspace_ids {
         command.args(["--relay-workspace-id", &id.to_string()]);
     }
@@ -452,6 +486,7 @@ fn approve_enrollment(
         (None, None) => {}
         _ => bail!("nearby device and service identities must be supplied together"),
     }
+    run_enrollment_as_identity_owner(&mut command, &identity_root, uid, account.gid);
     let output =
         bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(90))?;
     enrollment_command_result(output, "home-server enrollment was not completed")
@@ -509,17 +544,18 @@ fn personal_device_command(
     extra: impl FnOnce(&mut Command),
 ) -> anyhow::Result<()> {
     let uid = invoking_uid()?;
-    let home = home_for_uid(uid)?;
-    let identity_root = validate_identity_root(identity_root, uid, &home)?;
-    let identity_dir = validate_identity_dir(identity_dir, uid, &home)?;
+    let account = account_for_uid(uid)?;
+    let identity_root = validate_identity_root(identity_root, uid, &account.home)?;
+    let identity_dir = validate_identity_dir(identity_dir, uid, &account.home)?;
     let mut command = Command::new("/usr/bin/tilo-enroll");
     command
         .arg(operation)
         .arg("--identity-root")
-        .arg(identity_root)
+        .arg(&identity_root)
         .arg("--identity-dir")
         .arg(identity_dir);
     extra(&mut command);
+    run_enrollment_as_identity_owner(&mut command, &identity_root, uid, account.gid);
     let output =
         bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(600))?;
     enrollment_command_result(output, "personal-device enrollment was not completed")
@@ -587,6 +623,19 @@ fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;
+
+    #[test]
+    fn passwd_lookup_keeps_the_requesting_primary_group_and_home() {
+        let passwd = "root:x:0:0:root:/root:/bin/bash\ntilouser:x:42424:31337::/home/tilouser:/sbin/nologin\n";
+        assert_eq!(
+            account_from_passwd(passwd, 42_424),
+            Some(Account {
+                gid: 31_337,
+                home: PathBuf::from("/home/tilouser"),
+            })
+        );
+        assert_eq!(account_from_passwd(passwd, 7), None);
+    }
 
     #[test]
     fn enrollment_failure_preserves_the_bounded_child_diagnostic() {

@@ -302,7 +302,10 @@ impl ActionPalette {
         self.resources = resources.to_vec();
         // `.to_string()` is load-bearing here, not redundant: it ends the
         // immutable borrow of `self.field` before `rebuild` takes `&mut self`.
-        #[allow(clippy::unnecessary_to_owned)]
+        #[allow(
+            clippy::unnecessary_to_owned,
+            reason = "the owned query ends the field borrow before rebuild mutably borrows the palette"
+        )]
         let query = self.field.value().to_string();
         self.rebuild(&query);
     }
@@ -345,7 +348,10 @@ impl ActionPalette {
         self.providers = providers;
         // `.to_string()` is load-bearing here, not redundant: it ends the
         // immutable borrow of `self.field` before `rebuild` takes `&mut self`.
-        #[allow(clippy::unnecessary_to_owned)]
+        #[allow(
+            clippy::unnecessary_to_owned,
+            reason = "the owned query ends the field borrow before rebuild mutably borrows the palette"
+        )]
         let query = self.field.value().to_string();
         self.rebuild(&query);
     }
