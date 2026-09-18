@@ -34,6 +34,7 @@ jobs:
   signing-preflight:
     runs-on: runner
     timeout-minutes: 5
+    enable-openid-connect: true
     steps:
       - name: Checkout signing policy
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
