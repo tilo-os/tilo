@@ -114,6 +114,10 @@ struct ModelSource {
     /// Signed declaration: this exact release accepts bounded image input.
     #[serde(default)]
     vision: bool,
+    /// Signed declaration: this exact release is approved for face recognition.
+    /// Generic vision support must never imply this more sensitive capability.
+    #[serde(default)]
+    face_recognition: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -582,6 +586,7 @@ mod tests {
                 required_accelerator_mib: 0,
                 context_window: 4096,
                 vision: true,
+                face_recognition: false,
             }],
         }
     }
