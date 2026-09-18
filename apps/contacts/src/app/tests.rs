@@ -2571,6 +2571,86 @@ fn compact_toolbar_has_room_and_tooltips_at_phone_width() {
 }
 
 #[test]
+fn discovered_duplicates_have_a_canonical_responsive_review_route() {
+    let mut app = ContactsApp::sample();
+    let mut doc = AutoCommit::new();
+    app.sync(&mut doc, &ROOT);
+    let survivor = app
+        .selected
+        .and_then(|id| app.store.get(id))
+        .cloned()
+        .expect("sample selection exists");
+    let mut source = survivor;
+    source.id = uuid::Uuid::new_v4();
+    source.notes = "Independent import that needs review".into();
+    app.store.upsert(source);
+    app.duplicate_candidate = crate::actions::duplicate_candidates(&app.store.contacts, 1)
+        .into_iter()
+        .next();
+    app.duplicate_candidate_heads.clone_from(&app.model_heads);
+    let candidate = app
+        .duplicate_candidate
+        .clone()
+        .expect("shared email/name makes a candidate");
+
+    // The wide toolbar reserves a separate hit target, so its action never
+    // crowds import/export/new and is exposed with the safety explanation.
+    apply_at(&mut app, 1_280, 800);
+    assert!(app.hit.duplicates.area() > 0.0);
+    for other in [app.hit.import, app.hit.export, app.hit.new] {
+        assert!(
+            app.hit.duplicates.intersect(other).area() <= 0.0,
+            "duplicate review target must not overlap another toolbar action"
+        );
+    }
+    app.last_mouse = app.hit.duplicates.center();
+    assert_eq!(
+        Widget::tooltip(&app),
+        Some("Review possible duplicate — nothing merges automatically")
+    );
+    let tree = app.accessibility().expect("toolbar has semantics");
+    let review = access_target(&tree, "contacts.duplicates").expect("review is focusable");
+    assert_eq!(review.role, Role::Button);
+    assert!(
+        review
+            .description
+            .as_deref()
+            .is_some_and(|copy| copy.contains("Nothing is merged automatically"))
+    );
+
+    // Semantic activation serializes the same typed View operation published
+    // by the exact duplicate resource, then opens the field-level review.
+    assert!(app.perform_semantic_action(
+        "contacts.duplicates",
+        &ui::a11y::Action::Activate,
+        &mut doc,
+        &ROOT,
+    ));
+    let opened = app.duplicate_review.as_ref().expect("review opened");
+    assert_eq!(opened.survivor.id, candidate.survivor_id);
+    assert_eq!(opened.source.id, candidate.source_id);
+
+    // At 200% on a phone width, every compact toolbar target remains a
+    // distinct touch/focus rectangle rather than turning into overlaid icons.
+    app.duplicate_review = None;
+    app.text_scale = 2.0;
+    app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+    app.layout();
+    assert!(app.toolbar_is_compact());
+    for (left, right) in [
+        (app.hit.import, app.hit.duplicates),
+        (app.hit.duplicates, app.hit.export),
+        (app.hit.export, app.hit.new),
+    ] {
+        assert!(
+            left.intersect(right).area() <= 0.0,
+            "compact duplicate controls remain disjoint at 200%"
+        );
+        assert!(left.width() >= 40.0 && right.width() >= 40.0);
+    }
+}
+
+#[test]
 fn popup_keyboard_selects_the_same_type_choice_as_a_pointer() {
     let mut h = Harness::new(1_280, 800);
     let id = h.app.selected.expect("sample contact selected");
