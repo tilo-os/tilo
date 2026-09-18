@@ -318,7 +318,7 @@ else
 fi
 
 if grep -Fq 'CONF_TMP="$(mktemp ' "$backend" \
-   && grep -Fq 'find "$MNT/state/deploy"' "$backend" \
+   && grep -Fq 'DEPLOY_ETC="$(find_deploy_etc "$MNT")"' "$backend" \
    && grep -Fq 'chmod 0600 "$CONF_TMP"' "$backend" \
    && grep -Fq 'mv -f "$CONF_TMP" "$CONF"' "$backend"; then
   ok "account password hash is created privately and published atomically"
