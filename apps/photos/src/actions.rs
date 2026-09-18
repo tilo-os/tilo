@@ -130,6 +130,11 @@ pub enum PhotosOperation {
     Open {
         path: Option<String>,
     },
+    /// Import a folder asynchronously.  With no path the desktop portal
+    /// grants one; a supplied path is for an already-authorised host/agent.
+    ImportDirectory {
+        path: Option<String>,
+    },
     ImportCameraMedia {
         media_id: String,
         name: String,
@@ -225,6 +230,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         | PhotosOperation::ViewObject { .. }
         | PhotosOperation::ViewPet { .. } => vec!["device-local".into(), "presentation".into()],
         PhotosOperation::Open { .. }
+        | PhotosOperation::ImportDirectory { .. }
         | PhotosOperation::Save { .. }
         | PhotosOperation::ImportCameraMedia { .. }
         | PhotosOperation::ImportDirectory { .. }
@@ -291,6 +297,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         | PhotosOperation::Copy
         | PhotosOperation::ShareReference { .. } => spec.retry_policy(RetryPolicy::Idempotent),
         PhotosOperation::Save { .. }
+        | PhotosOperation::ImportDirectory { .. }
         | PhotosOperation::ImportCameraMedia { .. }
         | PhotosOperation::ImportDirectory { .. }
         | PhotosOperation::ReindexDirectory { .. }
@@ -1275,9 +1282,42 @@ pub(crate) fn library_root_resource() -> Resource {
         .with_action(file_operation("import", "Import photograph", true))
         .with_action(import_directory_spec(false))
         .with_action(import_directory_spec(true))
+        .with_action(directory_import_spec())
         .with_action(create_album_spec())
         .with_action(set_favorites_spec());
     root
+}
+
+fn directory_import_spec() -> ActionSpec {
+    ActionSpec::typed_operation(
+        "import-folder",
+        "Import photo folder",
+        "Choose a folder and import its supported photographs in the background",
+        OperationKind::Effect,
+        PHOTOS_OPERATION_TYPE,
+        vec![ActionParam::optional_owned(
+            "path",
+            ParamType::Text,
+            "Authorised folder path",
+        )],
+        |args: &ActionArgs| {
+            EncodedAction::encode_operation(
+                PHOTOS_OPERATION_TYPE,
+                &PhotosOperation::ImportDirectory {
+                    path: args
+                        .text("path")
+                        .filter(|path| !path.trim().is_empty())
+                        .map(str::to_owned),
+                },
+            )
+            .unwrap_or_else(|error| EncodedAction {
+                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                payload: format!("photos folder import could not be serialized: {error}")
+                    .into_bytes(),
+            })
+        },
+    )
+    .with_description("Imports supported photo files with progress; cancelling stops future files")
 }
 
 /// The stable virtual collection a person expects the star controls to feed.
