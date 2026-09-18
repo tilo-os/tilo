@@ -3751,34 +3751,6 @@ impl PhotosApp {
                     format!("{} ({count})", compact_label(person, 8)),
                 ));
             }
-        } else {
-            filters.extend(self.library_folders.iter().map(|(folder, count)| {
-                (
-                    Some(folder.clone()),
-                    None,
-                    None,
-                    false,
-                    format!("Folder: {folder} ({count})"),
-                )
-            }));
-            filters.extend(self.library_people.iter().map(|(person, count)| {
-                (
-                    None,
-                    Some(person.clone()),
-                    None,
-                    false,
-                    format!("People: {person} ({count})"),
-                )
-            }));
-            filters.extend(self.library_tags.iter().map(|(tag, count)| {
-                (
-                    None,
-                    None,
-                    Some(tag.clone()),
-                    false,
-                    format!("Tag: {tag} ({count})"),
-                )
-            }));
         }
         if self.library_favorite_count > 0 {
             filters.insert(
