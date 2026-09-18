@@ -274,6 +274,9 @@ mod device_fabric_ui_tests {
                 revertible_calibrations: Vec::new(),
                 tethering: Vec::new(),
                 remote_capture: Default::default(),
+                display_mirror_consents: Vec::new(),
+                display_mirrors: Vec::new(),
+                display_mirror_available: false,
             },
             remote,
         )
@@ -739,6 +742,63 @@ mod device_fabric_ui_tests {
                 kind: crate::shell::remote_capture_device::RemoteCaptureKind::Camera,
             })
         );
+    }
+
+    #[test]
+    fn device_pane_mirror_requires_consent_and_stops_exact_session() {
+        let (mut view, remote) = fixture();
+        view.local_media.clear();
+        view.local_outputs.clear();
+        view.display_mirror_available = true;
+        view.display_mirror_consents = vec![
+            crate::shell::device_fabric_runtime::DisplayMirrorConsentView {
+                session_id: [21; 16],
+                source_label: "Desk computer".into(),
+            },
+        ];
+        view.display_mirrors = vec![
+            crate::shell::device_fabric_runtime::DisplayMirrorStatusView {
+                session_id: [22; 16],
+                peer: remote.clone(),
+                peer_label: "Travel laptop".into(),
+                outbound: true,
+                phase: crate::shell::device_fabric_runtime::DisplayMirrorPhase::Streaming,
+            },
+        ];
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&actions);
+        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        host.set_device_fabric_bridge(Rc::new(move |action| {
+            recorded.borrow_mut().push(action);
+            Ok(view.clone())
+        }));
+
+        let (allow, decline) =
+            ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
+        host.handle_qs_device_fabric_click(allow.center());
+        host.handle_qs_device_fabric_click(decline.center());
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(3).center());
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(2).center());
+
+        let actions = actions.borrow();
+        assert!(
+            actions.contains(&DeviceFabricUiAction::ResolveDisplayMirror {
+                session_id: [21; 16],
+                approved: true,
+            })
+        );
+        assert!(
+            actions.contains(&DeviceFabricUiAction::ResolveDisplayMirror {
+                session_id: [21; 16],
+                approved: false,
+            })
+        );
+        assert!(actions.contains(&DeviceFabricUiAction::RequestDisplayMirror { target: remote }));
+        assert!(actions.contains(&DeviceFabricUiAction::StopDisplayMirror {
+            session_id: [22; 16],
+        }));
     }
 
     #[test]
@@ -1226,6 +1286,9 @@ pub struct DeviceFabricView {
     pub revertible_calibrations: Vec<crate::shell::personal_continuity::DeviceId>,
     pub tethering: Vec<crate::shell::personal_tethering_runtime::TetheringStatusView>,
     pub remote_capture: crate::shell::remote_capture_runtime::RemoteCaptureView,
+    pub display_mirror_consents: Vec<crate::shell::device_fabric_runtime::DisplayMirrorConsentView>,
+    pub display_mirrors: Vec<crate::shell::device_fabric_runtime::DisplayMirrorStatusView>,
+    pub display_mirror_available: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1295,6 +1358,16 @@ pub enum DeviceFabricUiAction {
     StopRemoteCapture {
         session_id: [u8; 16],
     },
+    RequestDisplayMirror {
+        target: crate::shell::personal_continuity::DeviceId,
+    },
+    ResolveDisplayMirror {
+        session_id: [u8; 16],
+        approved: bool,
+    },
+    StopDisplayMirror {
+        session_id: [u8; 16],
+    },
     RequestPhoneTethering {
         phone: crate::shell::personal_continuity::DeviceId,
     },
@@ -1359,6 +1432,9 @@ enum DeviceFabricPaneRow {
     RemoteCaptureSource(crate::shell::remote_capture_device::RemoteCaptureKind),
     RemoteCaptureSession(crate::shell::remote_capture_runtime::RemoteCaptureSessionView),
     RemoteCaptureDegraded(crate::shell::remote_capture_runtime::RemoteCaptureDegradedView),
+    DisplayMirrorConsent(crate::shell::device_fabric_runtime::DisplayMirrorConsentView),
+    DisplayMirrorSource,
+    DisplayMirrorStatus(crate::shell::device_fabric_runtime::DisplayMirrorStatusView),
     RealtimeConsent(crate::shell::collab_broker_capnp::RealtimeConsentUiView),
     RealtimeSource(crate::shell::collab_broker_capnp::RealtimeSourceUiView),
     BluetoothAuthorization(BluetoothHandoffAuthorizationView),
@@ -1448,6 +1524,22 @@ fn device_fabric_pane_rows(
                 .map(DeviceFabricPaneRow::RemoteCaptureDegraded),
         )
         .chain(
+            view.display_mirror_consents
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::DisplayMirrorConsent),
+        )
+        .chain(
+            view.display_mirror_available
+                .then_some(DeviceFabricPaneRow::DisplayMirrorSource),
+        )
+        .chain(
+            view.display_mirrors
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::DisplayMirrorStatus),
+        )
+        .chain(
             realtime
                 .consents
                 .iter()
@@ -1525,6 +1617,19 @@ fn remote_capture_kind_label(
         crate::shell::remote_capture_device::RemoteCaptureKind::Camera => "camera",
         crate::shell::remote_capture_device::RemoteCaptureKind::Microphone => "microphone",
         crate::shell::remote_capture_device::RemoteCaptureKind::DocumentScanner => "scanner",
+    }
+}
+
+fn display_mirror_failure_label(
+    failure: crate::shell::device_fabric_runtime::DisplayMirrorFailure,
+) -> &'static str {
+    use crate::shell::device_fabric_runtime::DisplayMirrorFailure;
+    match failure {
+        DisplayMirrorFailure::Denied => "declined on the target",
+        DisplayMirrorFailure::PeerOffline => "certified peer went offline",
+        DisplayMirrorFailure::TimedOut => "session timed out",
+        DisplayMirrorFailure::Transport => "private video route failed",
+        DisplayMirrorFailure::Policy => "display continuity was disabled",
     }
 }
 
@@ -1860,6 +1965,7 @@ pub struct ShellOverlayHost {
     qs_selected_gamepad: Option<u64>,
     qs_selected_remote_audio: Option<u64>,
     qs_selected_remote_capture: Option<crate::shell::remote_capture_device::RemoteCaptureKind>,
+    qs_selected_display_mirror: bool,
     /// Session action modal, including destructive-action arming and its
     /// own open/close transition.
     power_menu: PowerMenu,
@@ -3068,6 +3174,7 @@ impl ShellOverlayHost {
             qs_selected_gamepad: None,
             qs_selected_remote_audio: None,
             qs_selected_remote_capture: None,
+            qs_selected_display_mirror: false,
             power_menu: PowerMenu::default(),
             session_inhibitors: tilo_power_mgmt::InhibitRegistry::new(),
             strip_ribbon_hover: None,
@@ -8488,6 +8595,7 @@ impl ShellOverlayHost {
                     Some(
                         DeviceFabricPaneRow::RemoteAudioConsent(_)
                             | DeviceFabricPaneRow::RemoteCaptureConsent(_)
+                            | DeviceFabricPaneRow::DisplayMirrorConsent(_)
                             | DeviceFabricPaneRow::RealtimeConsent(_)
                             | DeviceFabricPaneRow::GamepadAuthorization(_)
                     )
@@ -11885,6 +11993,7 @@ impl ShellOverlayHost {
                 self.qs_selected_media = None;
                 self.qs_selected_gamepad = None;
                 self.qs_selected_remote_capture = None;
+                self.qs_selected_display_mirror = false;
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().bump();
                 }
@@ -11924,6 +12033,7 @@ impl ShellOverlayHost {
                 self.qs_selected_realtime = None;
                 self.qs_selected_media = None;
                 self.qs_selected_gamepad = None;
+                self.qs_selected_display_mirror = false;
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().bump();
                 }
@@ -11949,6 +12059,56 @@ impl ShellOverlayHost {
                 }
             }
             DeviceFabricPaneRow::RemoteCaptureDegraded(_) => None,
+            DeviceFabricPaneRow::DisplayMirrorConsent(consent) => {
+                let (allow, decline) =
+                    Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
+                let approved = if allow.contains(point) {
+                    true
+                } else if decline.contains(point) {
+                    false
+                } else {
+                    return;
+                };
+                Some((
+                    DeviceFabricUiAction::ResolveDisplayMirror {
+                        session_id: consent.session_id,
+                        approved,
+                    },
+                    if approved {
+                        format!("Allowed {} to mirror here once", consent.source_label)
+                    } else {
+                        format!("Declined display mirroring from {}", consent.source_label)
+                    },
+                ))
+            }
+            DeviceFabricPaneRow::DisplayMirrorSource => {
+                self.qs_selected_display_mirror = true;
+                self.qs_selected_remote_capture = None;
+                self.qs_selected_remote_audio = None;
+                self.qs_selected_realtime = None;
+                self.qs_selected_media = None;
+                self.qs_selected_gamepad = None;
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
+                return;
+            }
+            DeviceFabricPaneRow::DisplayMirrorStatus(status) => {
+                use crate::shell::device_fabric_runtime::DisplayMirrorPhase;
+                if matches!(
+                    status.phase,
+                    DisplayMirrorPhase::Failed(_) | DisplayMirrorPhase::Stopped
+                ) {
+                    None
+                } else {
+                    Some((
+                        DeviceFabricUiAction::StopDisplayMirror {
+                            session_id: status.session_id,
+                        },
+                        format!("Stopped display mirroring with {}", status.peer_label),
+                    ))
+                }
+            }
             DeviceFabricPaneRow::RealtimeConsent(consent) => {
                 let (allow, decline) =
                     Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
@@ -12077,6 +12237,7 @@ impl ShellOverlayHost {
                     self.qs_selected_realtime = None;
                     self.qs_selected_remote_audio = None;
                     self.qs_selected_remote_capture = None;
+                    self.qs_selected_display_mirror = false;
                     if let Some(chrome) = self.chrome.as_ref() {
                         chrome.borrow_mut().bump();
                     }
@@ -12108,6 +12269,7 @@ impl ShellOverlayHost {
                 self.qs_selected_gamepad = None;
                 self.qs_selected_remote_audio = None;
                 self.qs_selected_remote_capture = None;
+                self.qs_selected_display_mirror = false;
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().bump();
                 }
@@ -12160,6 +12322,17 @@ impl ShellOverlayHost {
             DeviceFabricPaneRow::Device(device)
                 if !device.is_local
                     && device.online
+                    && device.video_output
+                    && self.qs_selected_display_mirror =>
+            {
+                Some((
+                    DeviceFabricUiAction::RequestDisplayMirror { target: device.id },
+                    format!("Asked {} to allow display mirroring once", device.label),
+                ))
+            }
+            DeviceFabricPaneRow::Device(device)
+                if !device.is_local
+                    && device.online
                     && self.qs_selected_remote_capture.is_some() =>
             {
                 let kind = self
@@ -12202,6 +12375,7 @@ impl ShellOverlayHost {
                     && self.qs_selected_gamepad.is_none()
                     && self.qs_selected_realtime.is_none()
                     && self.qs_selected_remote_capture.is_none()
+                    && !self.qs_selected_display_mirror
                     && self.qs_selected_media.is_none() =>
             {
                 Some((
@@ -15047,6 +15221,39 @@ impl Widget for ShellOverlayHost {
                                                     "This device cannot create the private receiver".into(),
                                                 crate::shell::remote_capture_runtime::RemoteCaptureDegradedReason::TransferInterrupted =>
                                                     "The certified route was interrupted and closed".into(),
+                                            },
+                                            Vec::new(),
+                                        ),
+                                        DeviceFabricPaneRow::DisplayMirrorConsent(consent) => (
+                                            format!("Mirror display from {}", consent.source_label),
+                                            "A certified device requested a private, view-only display mirror"
+                                                .into(),
+                                            vec![
+                                                AccessNode::new(Role::Button)
+                                                    .with_name("Allow display mirroring once"),
+                                                AccessNode::new(Role::Button)
+                                                    .with_name("Decline display mirroring"),
+                                            ],
+                                        ),
+                                        DeviceFabricPaneRow::DisplayMirrorSource => (
+                                            "Mirror this display".into(),
+                                            "Choose a certified video display; the target must approve once and receives no input authority"
+                                                .into(),
+                                            Vec::new(),
+                                        ),
+                                        DeviceFabricPaneRow::DisplayMirrorStatus(status) => (
+                                            format!("Display mirror with {}", status.peer_label),
+                                            match status.phase {
+                                                crate::shell::device_fabric_runtime::DisplayMirrorPhase::AwaitingConsent =>
+                                                    "Waiting for target approval; activate to cancel".into(),
+                                                crate::shell::device_fabric_runtime::DisplayMirrorPhase::Starting =>
+                                                    "Starting private view-only stream; activate to stop".into(),
+                                                crate::shell::device_fabric_runtime::DisplayMirrorPhase::Streaming =>
+                                                    "Private view-only stream active; activate to stop".into(),
+                                                crate::shell::device_fabric_runtime::DisplayMirrorPhase::Failed(failure) =>
+                                                    format!("Display mirroring ended: {}", display_mirror_failure_label(failure)),
+                                                crate::shell::device_fabric_runtime::DisplayMirrorPhase::Stopped =>
+                                                    "Display mirroring stopped".into(),
                                             },
                                             Vec::new(),
                                         ),
@@ -19996,6 +20203,42 @@ impl ShellOverlayHost {
                     false,
                     false,
                 ),
+                DeviceFabricPaneRow::DisplayMirrorConsent(consent) => (
+                    "Allow display mirroring?".into(),
+                    format!(
+                        "{} requested a private view-only stream · allow once or decline",
+                        consent.source_label
+                    ),
+                    ui::icons::Icon::Monitor,
+                    false,
+                    true,
+                ),
+                DeviceFabricPaneRow::DisplayMirrorSource => (
+                    "Mirror this display".into(),
+                    "Select a certified video display below · approval required there".into(),
+                    ui::icons::Icon::Monitor,
+                    self.qs_selected_display_mirror,
+                    true,
+                ),
+                DeviceFabricPaneRow::DisplayMirrorStatus(status) => {
+                    use crate::shell::device_fabric_runtime::DisplayMirrorPhase;
+                    let detail = match status.phase {
+                        DisplayMirrorPhase::AwaitingConsent => "Waiting for approval · select to cancel",
+                        DisplayMirrorPhase::Starting => "Starting view-only stream · select to stop",
+                        DisplayMirrorPhase::Streaming => "View-only stream active · select to stop",
+                        DisplayMirrorPhase::Failed(failure) => {
+                            display_mirror_failure_label(failure)
+                        }
+                        DisplayMirrorPhase::Stopped => "Display mirroring stopped",
+                    };
+                    (
+                        format!("Mirror · {}", status.peer_label),
+                        detail.into(),
+                        ui::icons::Icon::Monitor,
+                        status.phase == DisplayMirrorPhase::Streaming,
+                        !matches!(status.phase, DisplayMirrorPhase::Failed(_) | DisplayMirrorPhase::Stopped),
+                    )
+                }
                 DeviceFabricPaneRow::RealtimeConsent(consent) => {
                     let source_label = view
                         .devices
@@ -20189,6 +20432,7 @@ impl ShellOverlayHost {
                             || self.qs_selected_gamepad.is_some()
                             || self.qs_selected_remote_audio.is_some()
                             || self.qs_selected_remote_capture.is_some()
+                            || (self.qs_selected_display_mirror && device.video_output)
                             || self.qs_selected_realtime.is_some()
                             || selected.is_some_and(|media| media.targets.contains(&device.id)));
                     let mut detail = if device.kind
@@ -20198,6 +20442,7 @@ impl ShellOverlayHost {
                         && self.qs_selected_gamepad.is_none()
                         && self.qs_selected_remote_audio.is_none()
                         && self.qs_selected_remote_capture.is_none()
+                        && !self.qs_selected_display_mirror
                         && self.qs_selected_realtime.is_none()
                         && self.qs_selected_media.is_none()
                     {
@@ -20207,6 +20452,15 @@ impl ShellOverlayHost {
                         && device.online
                     {
                         "Use selected controller here · target approves once".into()
+                    } else if self.qs_selected_display_mirror
+                        && !device.is_local
+                        && device.online
+                    {
+                        if device.video_output {
+                            "Mirror this display here · view-only · target approves once".into()
+                        } else {
+                            "This device cannot receive video".into()
+                        }
                     } else if let Some(kind) = self.qs_selected_remote_capture
                         && !device.is_local
                         && device.online
@@ -20272,6 +20526,7 @@ impl ShellOverlayHost {
                         | DeviceFabricPaneRow::CalibrationProposal(_)
                         | DeviceFabricPaneRow::RemoteAudioConsent(_)
                         | DeviceFabricPaneRow::RemoteCaptureConsent(_)
+                        | DeviceFabricPaneRow::DisplayMirrorConsent(_)
                         | DeviceFabricPaneRow::RealtimeConsent(_)
                         | DeviceFabricPaneRow::GamepadAuthorization(_)
                 ) {
@@ -20323,6 +20578,7 @@ impl ShellOverlayHost {
                     DeviceFabricPaneRow::CalibrationProposal(_)
                         | DeviceFabricPaneRow::RemoteAudioConsent(_)
                         | DeviceFabricPaneRow::RemoteCaptureConsent(_)
+                        | DeviceFabricPaneRow::DisplayMirrorConsent(_)
                         | DeviceFabricPaneRow::RealtimeConsent(_)
                         | DeviceFabricPaneRow::GamepadAuthorization(_)
                 )
@@ -20346,6 +20602,9 @@ impl ShellOverlayHost {
                             }
                             DeviceFabricPaneRow::RemoteCaptureConsent(_) => {
                                 "Allow this remote input once"
+                            }
+                            DeviceFabricPaneRow::DisplayMirrorConsent(_) => {
+                                "Allow display mirroring once"
                             }
                             DeviceFabricPaneRow::GamepadAuthorization(_) => {
                                 "Allow this controller once"
@@ -20375,6 +20634,9 @@ impl ShellOverlayHost {
                             }
                             DeviceFabricPaneRow::RemoteCaptureConsent(_) => {
                                 "Decline this remote input"
+                            }
+                            DeviceFabricPaneRow::DisplayMirrorConsent(_) => {
+                                "Decline display mirroring"
                             }
                             DeviceFabricPaneRow::GamepadAuthorization(_) => {
                                 "Decline this controller"
