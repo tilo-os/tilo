@@ -40,6 +40,27 @@ For an actual installer VM cycle with an already prepared medium, continue using
 session use `dist/dev/fedora44-vm-iterate.sh`. Baseline discovery and one-command
 artifact-backed VM orchestration remain planned work.
 
+## CI feedback and explicit heavy builds
+
+On this development branch, app/UI PRs use affected native Cargo checks and
+packaging contracts. Desktop PRs run the install/payload/session preflight without
+building all distribution packages. Image, boot/security and installed AT-SPI
+inputs still select OS integration builds. Mixed changes retain that heavier
+coverage; a PR result does not claim that a desktop or OS image has booted.
+
+For a change needing native distribution installation proof, dispatch
+`package-desktop.yml` on the candidate branch (enable `full_native` for ARM64).
+For OS assembly/boot proof, dispatch `build-image.yml` on that branch with
+`publish=false`. Record the run's actual source SHA with its results; a moving
+branch name alone is not exact-head evidence. The automatic trusted classification
+and merge gate described in `docs/designs/alpha-ci-integration.md` are not deployed.
+
+OS publication is limited to an explicit `v*` tag or a main-branch manual dispatch
+with `publish=true`. The former `TILO_CONTINUOUS_OS_RELEASE` variable has no effect,
+and desktop publication only retains component payloads. Main-push OS candidate
+builds remain temporarily enabled until their coalesced scheduled/on-demand
+replacement is qualified. Component updates do not automatically release an OS.
+
 ## What the build needs
 
 Install Rust through rustup and the native dependencies below, either on the host

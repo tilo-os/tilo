@@ -23,6 +23,15 @@ Main and the ongoing hardware bring-up remain untouched.
   namespace when non-root, preserving production root-ownership validation.
 - Fast-quality workflow invokes the same installer checks and retains their
   receipt. Existing policy discovery runs the app handoff regression.
+- Merged the available upstream snapshot into this branch, retaining both its RPM
+  scheduling checks and our focused installer checks. No main checkout was changed.
+- Ordinary app/UI-only PR paths no longer trigger OS assembly; explicit image,
+  boot/security and installed AT-SPI inputs retain automatic OS builds. Desktop
+  PRs run preflight contracts, with distribution builds on main/explicit runs.
+- Removed continuous OS publication and the desktop-to-OS release dispatch.
+  OS tags and explicit manual main publication remain. RPM completion can still
+  request a non-publishing integration candidate. These are branch-local changes,
+  not a claim about the live instance's deployed policy.
 
 ## Validation of this implementation
 
@@ -32,16 +41,21 @@ Main and the ongoing hardware bring-up remain untouched.
   original packager before the layout fix.
 - Runner failure/receipt tests: 6 passed. Immutable workflow action verification
   passed across 32 workflows. Independent review found no blocking issues.
-- The wider workflow dependency invariant script still fails its RPM snapshot
-  policy assertion. Re-running it from an archive of the unchanged base commit
-  `76e3df05d` reproduces that failure. The local `origin/main` tracking revision
-  already contains changes to that workflow and assertion; reconcile those when
-  updating this branch rather than duplicating their fix.
-- The required `cargo check -p shell --tests --locked --offline -j2` was attempted
-  with the repository's pinned Rust 1.97.1, then interrupted when host free disk
-  fell below 1 GB. This run is incomplete, not a passing check. No Rust source or
-  lockfile changed in this implementation. Disk capacity and cache retention
-  remain practical constraints even for checking a narrowly scoped change.
+- After upstream synchronization, the release pipeline and workflow dependency
+  invariant scripts pass, resolving the earlier baseline RPM policy failure.
+- Four new workflow-tier tests pass, including executing both actual OS mode
+  scripts across nine event/ref/input combinations. Testing the pre-change merge
+  commit `71b2be254` produces nine failed assertions, establishing that the tests
+  detect the old policies. These tests inspect local workflow definitions and
+  execute their mode scripts; they do not emulate the Forgejo scheduler.
+- The full security boundary suite passed its first 25 entries, then was
+  interrupted while its kernel-module signing test waited to compile the native
+  crypto helper. This broader run is incomplete; the release and workflow
+  invariants above were run independently and passed.
+- The required `cargo check -p shell --tests --locked --offline -j2` passed after
+  upstream synchronization using the pinned Rust 1.97.1 (5m 22s). The earlier
+  pre-sync attempt was interrupted for disk pressure; the successful later run
+  supersedes it. Disk capacity and cache retention remain practical constraints.
 - No live Forgejo execution, native cross-platform build, VM boot, hardware
   qualification or deployment is claimed by these local results.
 
@@ -49,7 +63,7 @@ Main and the ongoing hardware bring-up remain untouched.
 
 | Requirement | Evidence still needed |
 | --- | --- |
-| Cheap normal branch/PR path | Implement trusted affected-policy classification and trigger split; prove ordinary app/UI branches launch no OS/distro fleet work, while boot-policy changes receive relevant proof |
+| Cheap normal branch/PR path | Qualify the implemented trigger split on Forgejo; implement trusted affected-policy classification and relevant required proof before automatic merging |
 | Automatic routine integration and independent review | Prove exact-head review/check identity, stale-main handling, permissions and two competing merges in an isolated pilot before live protection/cutover |
 | First useful retained baseline | Discover/admit actual bootable image and unsigned inputs; preserve digests, trust, source/helper identities and separate VM/board evidence |
 | Targeted real installer/desktop testing | Supported commands consume that baseline, restore disposable state and produce actual test results without unrelated compilation/assembly |
@@ -57,7 +71,7 @@ Main and the ongoing hardware bring-up remain untouched.
 | Continuous app/runtime packaging | Native artifact handoff qualification, portable compatible artifact selection, active/latest-pending coalescing, restart/retry and stale-publication tests |
 | Full enabled product matrix | Linux/qOS apps, desktop distro/architecture combinations, Windows/Linux setup and generic/device OS candidates; Windows app fleet remains a staged decision |
 | macOS exclusion | Disable every macOS build/publication prerequisite and test push/tag/manual paths without removing future capability definitions |
-| Manual OS version release | Prove automatic component completion cannot promote an OS version; manual promotion pins a fully tested compatible manifest |
+| Manual OS version release | Qualify the locally tested publication restrictions with real credentials; manual promotion must pin a fully tested compatible manifest |
 | Forgejo platform decision | Real isolated scheduling/capacity/recovery qualification; compare Buildbot/Buildkite if it requires a general custom controller |
 | Build reuse beyond the small probe | Real UI/runtime/native/generated slice, native Windows, fresh remote workers, invalidation and compatibility checks |
 | Production readiness | Independent reproducibility, signed evidence, update/recovery/hardware qualification, staged promotion, retention and key lifecycle from the roadmap |

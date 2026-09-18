@@ -143,7 +143,7 @@ grep -Fq 'branches: ["main", "codex/package-desktop-release"]' "$desktop" \
 
 grep -Fq 'publish-os-payload:' "$desktop" \
   && grep -Fq 'TILO_DESKTOP_RELEASE_AUDIENCE' "$desktop" \
-  && grep -Fq '"with_browser":"1","publish":"true"' "$desktop" \
+  && ! grep -Fq 'build-image.yml/dispatches' "$desktop" \
   && grep -Fq 'TILO_DESKTOP_PAYLOAD_URL_X86_64' "$os" \
   && grep -Fq 'TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}' "$os" \
   && grep -Fq 'DESKTOP_RELEASE_ARGS=""' "$repo/os/Containerfile" \
@@ -157,7 +157,7 @@ grep -Fq 'with_browser=0' "$os" \
   && grep -Fq 'TILO_PROVISIONAL_CFS_DIGEST="$(printf '\''0%.0s'\'' {1..128})"' "$repo/os/dev/build-image.sh" \
   && ! grep -Fq 'id=tilo-composefs-' "$repo/os/Containerfile" \
   && grep -Fq 'find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +' "$repo/os/Containerfile" \
-  && grep -Fq 'CONTINUOUS_RELEASE: ${{ vars.TILO_CONTINUOUS_OS_RELEASE }}' "$os" \
+  && ! grep -Fq 'TILO_CONTINUOUS_OS_RELEASE' "$os" \
   && ! grep -Fq 'token: ${{ secrets.REGISTRY_TOKEN }}' "$os" \
   && ! grep -Fq 'fetch-depth: 0' "$os" \
   && grep -Fq "if: steps.release-mode.outputs.validate == 'true'" "$os" \
@@ -166,8 +166,8 @@ grep -Fq 'with_browser=0' "$os" \
   && ok 'ordinary OS integration checks omit the release-only browser engine' \
   || bad 'OS branch validation still rebuilds or requires the WPE release snapshot'
 
-if [ "$(grep -Fc '      - "shell/**"' "$os")" -eq 2 ] \
-  && [ "$(grep -Fc '      - "ui/**"' "$os")" -eq 2 ] \
+if [ "$(grep -Fc '      - "shell/**"' "$os")" -eq 1 ] \
+  && [ "$(grep -Fc '      - "ui/**"' "$os")" -eq 1 ] \
   && [ "$(grep -Fc '      - "apps/file-explorer/tests/atspi_smoke.sh"' "$os")" -eq 2 ] \
   && [ "$(grep -Fc '      - "tools/atspi_external_client.py"' "$os")" -eq 2 ] \
   && [ "$(grep -Fc '      - "tools/check_atspi_endpoint_contract.py"' "$os")" -eq 2 ] \
@@ -185,6 +185,12 @@ if [ "$(grep -Fc '      - "shell/**"' "$os")" -eq 2 ] \
   ok 'OS release VM drives compositor and manifest-certified app AT-SPI actions over its session bus'
 else
   bad 'AT-SPI release gate can ship an app outside the readable, action-capable desktop endpoint'
+fi
+
+if python3 "$repo/tools/tests/test_ci_workflow_tiers.py"; then
+  ok 'PR contracts avoid the native desktop fleet and OS publication stays explicit'
+else
+  bad 'CI tier or manual OS publication policy regressed'
 fi
 
 grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager" \

@@ -2,7 +2,7 @@ name: Release / OS
 
 # Builds the bootc OS container image for image-input changes and weekly
 # validation. Publishing is limited to version tags, an explicit main-branch
-# dispatch, or an opted-in continuous release.
+# dispatch. Component publication never promotes an OS version automatically.
 
 on:
   schedule:
@@ -28,17 +28,14 @@ on:
       - ".forgejo/workflows/build-image.yml"
   pull_request:
     branches: ["main"]
+    # App/UI changes use affected native checks and packaging contracts. Keep
+    # automatic assembly for image, boot/security and installed-AT-SPI inputs;
+    # other changes can request an integration build through workflow_dispatch.
     paths:
       - "os/**"
-      - "shell/**"
-      - "ui/**"
       - "apps/file-explorer/tests/atspi_smoke.sh"
-      - "apps/file-explorer/tilo-app.toml"
-      - "apps/settings/tilo-app.toml"
       - "tools/atspi_external_client.py"
       - "tools/check_atspi_endpoint_contract.py"
-      - "Cargo.toml"
-      - "Cargo.lock"
       - "keys/**"
       - "docs/recovery.md"
       - "docs/security/**"
@@ -76,10 +73,9 @@ on:
         default: ""
 
 concurrency:
-  # Generations are a single dense security series. This workflow can publish
-  # from a tag, a manual main run, or an opted-in continuous main push, so every
-  # invocation must share the lock: build-time event expressions cannot safely
-  # predict the repository variable that enables the third publication path.
+  # Generations are a single dense security series. Tags and explicit manual
+  # main runs publish; validation shares the lock until scheduler qualification
+  # establishes a separate safe lane for non-publishing candidates.
   group: tilo-os-image-series
   cancel-in-progress: false
 
@@ -94,16 +90,13 @@ jobs:
       - name: Select validation or native publication lanes
         id: matrix
         env:
-          CONTINUOUS_RELEASE: ${{ vars.TILO_CONTINUOUS_OS_RELEASE }}
           REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
         run: |
           set -euo pipefail
           publish=false
           if [[ $GITHUB_REF == refs/tags/v* \
                 || ( $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
-                     && ${REQUESTED_PUBLISH:-false} == true ) \
-                || ( $GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main \
-                     && ${CONTINUOUS_RELEASE:-0} == 1 ) ]]; then
+                     && ${REQUESTED_PUBLISH:-false} == true ) ]]; then
             publish=true
           fi
           if [[ $publish == true ]]; then
@@ -543,18 +536,15 @@ jobs:
       - name: Select build, validation, or publication mode
         id: release-mode
         env:
-          CONTINUOUS_RELEASE: ${{ vars.TILO_CONTINUOUS_OS_RELEASE }}
           REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
-          PROTECTED_PCR_PREDICTION_SIGNER: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.publish == 'true') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.TILO_CONTINUOUS_OS_RELEASE == '1')) && vars.TILO_PCR_PREDICTION_SIGNER || '' }}
-          PROTECTED_EFI_SIGNING_CERT_SHA256: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.publish == 'true') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.TILO_CONTINUOUS_OS_RELEASE == '1')) && vars.TILO_EFI_SIGNING_CERT_SHA256 || '' }}
+          PROTECTED_PCR_PREDICTION_SIGNER: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.publish == 'true')) && vars.TILO_PCR_PREDICTION_SIGNER || '' }}
+          PROTECTED_EFI_SIGNING_CERT_SHA256: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.publish == 'true')) && vars.TILO_EFI_SIGNING_CERT_SHA256 || '' }}
         run: |
           publish=false
           validate=false
           if [[ $GITHUB_REF == refs/tags/v* \
                 || ( $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
-                     && ${REQUESTED_PUBLISH:-false} == true ) \
-                || ( $GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main \
-                     && ${CONTINUOUS_RELEASE:-0} == 1 ) ]]; then
+                     && ${REQUESTED_PUBLISH:-false} == true ) ]]; then
             publish=true
           fi
           if [[ $GITHUB_EVENT_NAME != pull_request ]]; then

@@ -1,7 +1,8 @@
 name: Release / desktop
 
 # Native builds cover the compositor's distribution graphics/input stack.
-# Pull requests install-test the payload; release tags publish verified artifacts.
+# Pull requests run packaging contracts; main and explicit runs install-test
+# native payloads. Release tags publish verified artifacts.
 on:
   pull_request:
     branches: [main]
@@ -138,6 +139,9 @@ jobs:
           echo "release_arches=$release_arches" >> "$GITHUB_OUTPUT"
 
   package:
+    # PR feedback must not wait for all five distribution userspaces. Explicit
+    # dispatch on the candidate branch still runs the full packaging rehearsal.
+    if: github.event_name != 'pull_request'
     needs: validate
     name: package lane / ${{ matrix.arch }}
     # Desktop packaging uses the larger native runner class.
@@ -251,7 +255,6 @@ jobs:
       - name: Publish immutable desktop payloads and advance their channels
         env:
           DESKTOP_AUDIENCE: ${{ vars.TILO_DESKTOP_RELEASE_AUDIENCE }}
-          CONTINUOUS_OS_RELEASE: ${{ vars.TILO_CONTINUOUS_OS_RELEASE }}
         shell: bash
         run: |
           set -euo pipefail
@@ -318,15 +321,7 @@ jobs:
             fi
           done
           [[ $found == 1 ]]
-          if [[ ${CONTINUOUS_OS_RELEASE:-0} == 1 ]]; then
-            dispatch_api="${GITHUB_API_URL:-$GITHUB_SERVER_URL/api/v1}/repos/$GITHUB_REPOSITORY/actions/workflows/build-image.yml/dispatches"
-            curl --fail --silent --show-error --request POST \
-              --header "Authorization: Bearer $jwt" \
-              --header 'Content-Type: application/json' \
-              --data '{"ref":"main","inputs":{"with_browser":"1","publish":"true"}}' \
-              "$dispatch_api"
-            echo '::notice::requested continuous desktop/OS integration release'
-          fi
+          echo '::notice::desktop payload retained; OS version promotion requires an explicit release request'
 
   release-guard:
     if: startsWith(github.ref, 'refs/tags/desktop-v')
