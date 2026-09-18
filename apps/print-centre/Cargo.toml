@@ -26,6 +26,7 @@ qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
 image.workspace = true
 thumbnail = { path = "../../crates/thumbnail", features = ["pdf"] }
 automerge.workspace = true
+serde_json.workspace = true
 taffy.workspace = true
 vello.workspace = true
 winit.workspace = true
