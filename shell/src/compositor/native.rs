@@ -1867,7 +1867,7 @@ fn test_touch_input_event(
 /// Wayland establishes touch focus.
 fn forward_test_control_touch(
     state: &mut Option<&mut State>,
-    fb: &FrameBuilder,
+    fb: &mut FrameBuilder,
     touch: crate::compositor::backend::TouchEvent,
 ) {
     let Some(state) = state.as_deref_mut() else {
@@ -1918,7 +1918,7 @@ fn dispatch_test_control_touch(
     };
     let frame = |ownership: &mut DirectTouchOwnership,
                  state: &mut Option<&mut State>,
-                 fb: &FrameBuilder| {
+                 fb: &mut FrameBuilder| {
         if ownership.take_client_frame() {
             forward_test_control_touch(state, fb, BackendTouchEvent::Frame);
         }
@@ -5632,7 +5632,7 @@ pub fn run() {
                         {
                             client_input::focus_touch_target(
                                 &mut state,
-                                &frame_builder,
+                                &mut frame_builder,
                                 surface_id,
                             );
                         }

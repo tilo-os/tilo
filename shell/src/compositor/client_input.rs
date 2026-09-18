@@ -204,6 +204,11 @@ impl ClientInput {
         self.placements.iter().map(|(id, (_, group))| (*id, *group))
     }
 
+    /// The workspace address assigned when this surface was mirrored.
+    pub fn placement(&self, surface_id: u64) -> Option<(StripId, GroupId)> {
+        self.placements.get(&surface_id).copied()
+    }
+
     /// Number of live foreign toplevels.
     pub fn len(&self) -> usize {
         self.surfaces.len()
@@ -661,10 +666,11 @@ pub fn touch_target(
     Some((hit.surface_id, (hit.rect.x0, hit.rect.y0)))
 }
 
-/// Direct touch follows the same click-to-focus policy as pointer input for
-/// app-owned overlays. Tiled focus remains owned by the chrome's active-tab
-/// writeback, while touching the OSK must preserve the edited app's focus.
-pub fn focus_touch_target(state: &mut State, fb: &FrameBuilder, surface_id: u64) {
+/// Direct touch follows the same click-to-focus policy as pointer input.
+/// App-owned overlays have no workspace address and are focused directly;
+/// tiled clients promote their exact group before the normal keyboard-focus
+/// reconciliation. Touching the OSK must preserve the edited app's focus.
+pub fn focus_touch_target(state: &mut State, fb: &mut FrameBuilder, surface_id: u64) {
     if state.osk_surface == Some(surface_id) {
         return;
     }
@@ -681,6 +687,34 @@ pub fn focus_touch_target(state: &mut State, fb: &FrameBuilder, surface_id: u64)
             .is_some_and(|(fullscreen_id, _)| fullscreen_id == surface_id)
     {
         state.set_client_keyboard_focus(Some(surface_id));
+        return;
+    }
+    let placement = state.client_input.placement(surface_id).or_else(|| {
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        tree.workspaces.iter().find_map(|workspace| {
+            workspace.strips.iter().find_map(|strip| {
+                strip.window_groups.iter().find_map(|group| {
+                    group
+                        .tabs
+                        .iter()
+                        .any(|tab| {
+                            matches!(
+                                tab.tile,
+                                crate::shell::state::TileContent::Foreign {
+                                    surface_id: id,
+                                    ..
+                                } if id == surface_id
+                            )
+                        })
+                        .then_some((strip.id, group.id))
+                })
+            })
+        })
+    });
+    if let Some((strip, group)) = placement {
+        raise_group(fb, strip, group);
+        sync_keyboard_focus(state, fb);
     }
 }
 
@@ -1422,9 +1456,19 @@ fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) {
     fb.with_chrome(|chrome| {
         {
             let mut tree = chrome.tree_mut();
-            changed = tree.active_group_for(strip) != Some(group);
+            let workspace = tree.active;
+            changed = tree.active_strip.get(&workspace).copied() != Some(strip)
+                || tree.active_group_for(strip) != Some(group);
             if changed {
+                tree.active_strip.insert(workspace, strip);
                 tree.set_active_group(strip, group);
+                // Click-to-focus is local session state, not a transient
+                // pointer decoration. Commit the complete strip/group
+                // address at the same boundary as
+                // the keyboard-focus hand-off so logging out or crashing
+                // immediately after a click cannot restore the previously
+                // focused window on the next session.
+                tree.flush_to_disk();
             }
         }
         if changed {
@@ -1440,6 +1484,7 @@ fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) {
 )]
 mod tests {
     use super::*;
+    use crate::shell::persist;
     use winit::event::{DeviceId, KeyEvent};
     use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
 
@@ -1460,6 +1505,90 @@ mod tests {
             event: ev,
             is_synthetic: false,
         }
+    }
+
+    #[test]
+    fn clicking_a_window_persists_the_focused_group_across_restart() {
+        let state_dir = tempfile::tempdir().expect("temporary state directory");
+        let state_path = state_dir.path().join("state.json");
+        let mut fb = FrameBuilder::new((1280, 800));
+        let (strip_id, first_group, second_group) = {
+            let chrome = fb.chrome();
+            let mut tree = chrome.tree_mut();
+            tree.persist_path = Some(state_path.clone());
+            let (strip_id, first_group) =
+                insert_foreign_group(&mut tree, 710_001, Some("org.example.first"))
+                    .expect("first foreign group");
+            let (_, second_group) =
+                insert_foreign_group(&mut tree, 710_002, Some("org.example.second"))
+                    .expect("second foreign group");
+            tree.set_active_group(strip_id, first_group);
+            tree.flush_to_disk();
+            (strip_id, first_group, second_group)
+        };
+
+        raise_group(&mut fb, strip_id, second_group);
+
+        let restarted = persist::load_tree_from(&state_path).expect("reload focused layout");
+        assert_eq!(
+            restarted.active_group_for(strip_id),
+            Some(second_group),
+            "the window focused by a click must remain selected after restart"
+        );
+        assert_eq!(
+            restarted.active_strip.get(&restarted.active).copied(),
+            Some(strip_id),
+            "the clicked group's strip is part of the durable focus address"
+        );
+        assert_ne!(
+            restarted.active_group_for(strip_id),
+            Some(first_group),
+            "restart must not restore the group focused before the click"
+        );
+    }
+
+    #[test]
+    fn touching_a_tiled_window_promotes_its_exact_group() {
+        use smithay::reexports::calloop::EventLoop;
+        use smithay::reexports::wayland_server::Display;
+
+        let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
+        let mut fb = FrameBuilder::with_handle(tree.clone(), false, (1280, 800));
+        let (strip_id, first_group, second_group, second_surface) = {
+            let chrome = fb.chrome();
+            let mut tree = chrome.tree_mut();
+            let (strip_id, first_group) =
+                insert_foreign_group(&mut tree, 720_001, Some("org.example.first"))
+                    .expect("first foreign group");
+            let (_, second_group) =
+                insert_foreign_group(&mut tree, 720_002, Some("org.example.second"))
+                    .expect("second foreign group");
+            tree.set_active_group(strip_id, first_group);
+            (strip_id, first_group, second_group, 720_002)
+        };
+        let event_loop: EventLoop<'static, crate::compositor::state::State> =
+            EventLoop::try_new().expect("calloop event loop");
+        let display: Display<crate::compositor::state::State> =
+            Display::new().expect("wayland display");
+        let mut state = crate::compositor::state::State::new_with_workspace_tree(
+            event_loop.handle(),
+            display.handle(),
+            tree,
+        );
+
+        focus_touch_target(&mut state, &mut fb, second_surface);
+
+        let chrome = fb.chrome();
+        assert_eq!(
+            chrome.tree().active_group_for(strip_id),
+            Some(second_group),
+            "direct touch must focus the tiled group under the finger"
+        );
+        assert_ne!(
+            chrome.tree().active_group_for(strip_id),
+            Some(first_group),
+            "touch must not leave keyboard focus attached to the previous tiled app"
+        );
     }
 
     #[test]
