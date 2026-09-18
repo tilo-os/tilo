@@ -39,6 +39,12 @@ jobs:
           '${{ github.event.pull_request.base.sha }}'
           '${{ github.event.before }}'
 
+      - name: Require reasons for new Rust lint exceptions
+        run: >-
+          python3 tools/check_changed_rust_allows.py
+          '${{ github.event.pull_request.base.sha }}'
+          '${{ github.event.before }}'
+
       - name: Repository policy unit tests
         run: |
           python3 -m unittest discover -s tools/tests -p 'test_*.py'
