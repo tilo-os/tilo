@@ -112,11 +112,11 @@ else
 fi
 
 nightly_visual_image="$({
-  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/qos\/qos-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
+  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/qos\/tilo-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
     "$nightly_workflow"
 } | head -n 1)"
 refresh_visual_image="$({
-  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/qos\/qos-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
+  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/qos\/tilo-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
     "$visual_refresh_workflow"
 } | head -n 1)"
 if [[ "$nightly_visual_image" =~ @sha256:[0-9a-f]{64}$ ]] \

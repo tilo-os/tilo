@@ -29,11 +29,29 @@ on:
       - .forgejo/workflows/snapshot-rpms.yml
 
 concurrency:
-  group: snapshot-rpms-${{ github.ref }}
-  # Package-set snapshots are expensive and must be allowed to finish. The
-  # publish step rejects a stale GITHUB_SHA, while the newest queued run then
-  # refreshes the pin for current main.
-  cancel-in-progress: false
+  # Automatic snapshots may supersede obsolete package inputs. An explicit
+  # recovery/publication run must finish even while unrelated main work lands.
+  group: snapshot-rpms-${{ github.event_name == 'workflow_dispatch' && 'publication' || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+env:
+  RPM_SNAPSHOT_INPUTS: |
+    os/Containerfile
+    os/Containerfile.rpms
+    os/dev/verify-rpm-snapshot-signatures.sh
+    os/external-assets/github-assets.tsv
+    os/dev/cache-github-assets.sh
+    os/dev/derive-rpm-package-set.py
+    keys/cosign.pub
+    os/dev/promote-native-index.py
+    os/dev/install-cached-cosign.sh
+    os/dev/configure-cosign-kms.sh
+    os/Containerfile.host
+    os/dev/composefs/Containerfile
+    os/containers/tilo-relay/Containerfile
+    os/kernel/Containerfile
+    .forgejo/workflows/snapshot-rpms.yml
+    os/rpms-snapshot.env
 
 jobs:
   signing-preflight:
@@ -214,10 +232,20 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 0
       - name: Download native child descriptors
         uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: native-children
+      - name: Refuse stale snapshot inputs before promotion
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          mapfile -t inputs < <(printf '%s' "$RPM_SNAPSHOT_INPUTS")
+          if ! git diff --quiet "$GITHUB_SHA..origin/main" -- "${inputs[@]}"; then
+            echo '::error::RPM snapshot inputs changed while native builds ran'
+            exit 1
+          fi
       - name: Log in to code.sandbox.example
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
@@ -344,17 +372,7 @@ jobs:
         run: |
           set -euo pipefail
           ref="$(cat rpms-index.txt)"
-          snapshot_inputs=(
-            os/Containerfile os/Containerfile.rpms
-            os/dev/verify-rpm-snapshot-signatures.sh
-            os/external-assets/github-assets.tsv os/dev/cache-github-assets.sh
-            os/dev/derive-rpm-package-set.py keys/cosign.pub
-            os/dev/promote-native-index.py os/dev/install-cached-cosign.sh
-            os/dev/configure-cosign-kms.sh os/Containerfile.host
-            os/dev/composefs/Containerfile os/containers/tilo-relay/Containerfile
-            os/kernel/Containerfile .forgejo/workflows/snapshot-rpms.yml
-            os/rpms-snapshot.env
-          )
+          mapfile -t snapshot_inputs < <(printf '%s' "$RPM_SNAPSHOT_INPUTS")
           for attempt in 1 2 3 4 5; do
             git fetch origin "${GITHUB_REF_NAME}"
             if ! git diff --quiet "$GITHUB_SHA" FETCH_HEAD -- "${snapshot_inputs[@]}"; then

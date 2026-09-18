@@ -50,7 +50,7 @@ jobs:
     runs-on: runner
     timeout-minutes: 45
     container:
-      image: code.sandbox.example/qos/qos-builder:latest
+      image: code.sandbox.example/qos/tilo-builder:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
