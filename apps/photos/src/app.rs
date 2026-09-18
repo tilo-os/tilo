@@ -5445,21 +5445,54 @@ impl PhotosApp {
                     * Affine::scale(scale);
                 scene.draw_image(image, image_transform);
             } else {
-                // Decoding happens off the UI thread and is deliberately
-                // bounded to one small job per sync.  A quiet image glyph is
-                // an honest loading/unavailable placeholder that keeps a
-                // shelf recognisable while it catches up, instead of a row
-                // of anonymous empty rectangles.
-                let icon_side = preview.width().min(preview.height()).min(34.0);
-                let icon_rect = Rect::from_center_size(preview.center(), (icon_side, icon_side));
-                draw_icon(
-                    scene,
+                // Hydration is real asynchronous work. A reserved-aspect
+                // skeleton tells the difference between "arriving" and an
+                // unavailable source without fabricating a thumbnail or
+                // covering the gallery in a repeated generic image glyph.
+                let unavailable = self.thumbnail_unavailable.contains(id);
+                scene.fill(
+                    Fill::NonZero,
                     transform,
-                    icon_rect,
-                    Icon::Image,
-                    theme.text_dim,
-                    1.5,
+                    if unavailable {
+                        theme.tokens.colors.neutral[3]
+                    } else {
+                        theme.tokens.colors.neutral[2]
+                    },
+                    None,
+                    &preview,
                 );
+                let line_w = (preview.width() * 0.34).clamp(36.0, 112.0);
+                let line = Rect::new(
+                    preview.center().x - line_w * 0.5,
+                    preview.center().y - 2.0,
+                    preview.center().x + line_w * 0.5,
+                    preview.center().y + 2.0,
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    if unavailable {
+                        theme.text_dim
+                    } else {
+                        theme.border_standard
+                    },
+                    None,
+                    &line,
+                );
+                if unavailable {
+                    let icon_rect = Rect::from_center_size(
+                        Point::new(preview.center().x, preview.center().y - 22.0),
+                        (18.0, 18.0),
+                    );
+                    draw_icon(
+                        scene,
+                        transform,
+                        icon_rect,
+                        Icon::Image,
+                        theme.text_dim,
+                        1.5,
+                    );
+                }
             }
             let action_y = card.y1 - LIBRARY_ACTION_H;
             let control_w = LIBRARY_ACTION_H;
