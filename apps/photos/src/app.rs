@@ -149,6 +149,71 @@ pub fn timeline_virtual_range(
     start..end
 }
 
+/// Measured rows for the compact library masthead.  Compact and 200% text
+/// share this source of truth so the count, selection affordance, density,
+/// collection rail, and first date never occupy the same vertical space.
+///
+/// Text is painted on a baseline, so the row bounds deliberately include a
+/// little extra leading rather than treating the baseline as the row's top.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CompactHeaderGeometry {
+    title_y: f64,
+    count_y: f64,
+    controls: Rect,
+    albums_y: f64,
+    album_actions: Rect,
+    timeline_y: f64,
+}
+
+fn compact_library_header_geometry(
+    bounds: Rect,
+    large_text: bool,
+    has_albums: bool,
+) -> CompactHeaderGeometry {
+    let top = bounds.y0 + f64::from(PAD);
+    if large_text {
+        let controls_y = top + 68.0;
+        let albums_y = controls_y + 56.0;
+        let actions_y = albums_y + if has_albums { 54.0 } else { 0.0 } + 10.0;
+        let album_actions = Rect::new(
+            bounds.x0 + f64::from(PAD),
+            actions_y,
+            bounds.x1 - f64::from(PAD),
+            actions_y + 44.0,
+        );
+        CompactHeaderGeometry {
+            title_y: top,
+            // Keep this deliberately short at 200%; a wrapped count makes
+            // the next explicit controls row impossible to reason about.
+            count_y: top + 34.0,
+            controls: Rect::new(
+                bounds.x0 + f64::from(PAD),
+                controls_y,
+                bounds.x0 + f64::from(PAD) + 142.0,
+                controls_y + 44.0,
+            ),
+            albums_y,
+            album_actions,
+            timeline_y: album_actions.y1 + 10.0,
+        }
+    } else {
+        let albums_y = top + 24.0;
+        CompactHeaderGeometry {
+            title_y: top,
+            count_y: top + 3.0,
+            controls: Rect::new(
+                bounds.x1 - 118.0,
+                bounds.y0 + 8.0,
+                bounds.x1 - f64::from(PAD),
+                bounds.y0 + 44.0,
+            ),
+            albums_y,
+            album_actions: Rect::ZERO,
+            timeline_y: albums_y + if has_albums { 38.0 } else { 0.0 } + 8.0,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct ThumbnailJob {
     generation: u64,
@@ -612,7 +677,7 @@ pub struct PhotosApp {
     library_total: usize,
     /// A local query over the current library projection.  The intelligence
     /// owner can extend this predicate with OCR and descriptions without
-    /// changing the shared SearchField interaction contract.
+    /// changing the shared `SearchField` interaction contract.
     library_search: SearchField,
     library_query: String,
     /// Count for the always-addressable Favorites virtual collection. This is
@@ -651,6 +716,11 @@ pub struct PhotosApp {
     timeline_density_hits: Vec<(TimelineHit, Rect)>,
     timeline_density_buttons: Vec<(TimelineHit, Button)>,
     timeline_density_pending: Rc<Cell<Option<TimelineHit>>>,
+    /// Retained shared controls over the bespoke timeline surface.  The
+    /// date/photo canvas owns its rhythm; header actions still use toolkit
+    /// button states, focus treatment, and accessible names.
+    library_select_button: Button,
+    library_album_buttons: Vec<(AlbumEditorHit, Button)>,
     /// Number of visual density steps, from spacious (0) to compact (4).
     /// This remains local UI state: collaborators should never change a
     /// person's preferred thumbnail size.
@@ -902,6 +972,8 @@ impl PhotosApp {
             timeline_density_hits: Vec::new(),
             timeline_density_buttons: build_timeline_density_buttons(&timeline_density_pending),
             timeline_density_pending,
+            library_select_button: build_library_header_button("photos-library-select", "Select"),
+            library_album_buttons: build_library_album_buttons(),
             timeline_density: 1,
             timeline_scroll_row: 0.0,
             timeline_last_columns: 1,
@@ -2578,8 +2650,7 @@ impl PhotosApp {
                                 .with_hashed_key(format!("photos:library-item:{id}"))
                                 .with_children(children),
                         )
-                    })
-                    .collect::<Vec<_>>(),
+                    }),
             );
             cards.extend(self.album_cards.iter().map(|(id, bounds)| {
                 let label = id
@@ -3700,6 +3771,7 @@ impl PhotosApp {
             38.0
         };
         let desktop_library = !large_text && bounds.width() >= LIBRARY_TWO_COLUMN_MAX_W;
+        let compact_header = compact_library_header_geometry(bounds, large_text, album_h > 0.0);
         let masthead = Rect::new(
             bounds.x0 + f64::from(PAD),
             bounds.y0 + 8.0,
@@ -3725,7 +3797,7 @@ impl PhotosApp {
         let heading_y = if desktop_library {
             masthead.y0 + 15.0
         } else {
-            bounds.y0 + f64::from(PAD)
+            compact_header.title_y
         };
         text_renderer.draw_text_weighted(
             scene,
@@ -3747,7 +3819,7 @@ impl PhotosApp {
         let count = if desktop_library {
             format!("{} photographs · shared library", self.library_total)
         } else if large_text {
-            format!("{} photographs", self.library_total)
+            format!("{} photos", self.library_total)
         } else if self.library_total == 0 {
             "0".to_owned()
         } else {
@@ -3779,7 +3851,7 @@ impl PhotosApp {
                     if desktop_library {
                         heading_y + 32.0
                     } else if large_text {
-                        heading_y + 32.0
+                        compact_header.count_y
                     } else {
                         heading_y + 3.0
                     },
@@ -3792,10 +3864,8 @@ impl PhotosApp {
         // remain discoverable on a touch display and at 200% text.
         let density_y = if desktop_library {
             masthead.y0 + 16.0
-        } else if large_text {
-            heading_y + 58.0
         } else {
-            heading_y + 25.0
+            compact_header.controls.y0
         };
         let density_x = bounds.x1 - f64::from(PAD) - 96.0;
         for (hit, rect, enabled) in [
@@ -3832,10 +3902,8 @@ impl PhotosApp {
             let mut x = bounds.x0 + f64::from(PAD) + if desktop_library { 60.0 } else { 0.0 };
             let y = if desktop_library {
                 masthead.y1 + 13.0
-            } else if large_text {
-                heading_y + 112.0
             } else {
-                heading_y + 24.0
+                compact_header.albums_y
             };
             if desktop_library {
                 text_renderer.draw_text_weighted(
@@ -3918,10 +3986,8 @@ impl PhotosApp {
         // remains available through the canonical resource/search surface.
         let header_h = if desktop_library {
             56.0
-        } else if large_text {
-            132.0
         } else {
-            31.0
+            (compact_header.timeline_y - heading_y - album_h).max(0.0)
         };
         let filter_y = heading_y + header_h + album_h;
         let mut filter_x = bounds.x0 + f64::from(PAD) + if desktop_library { 60.0 } else { 0.0 };
@@ -3930,17 +3996,6 @@ impl PhotosApp {
         let desktop_pager =
             self.album_editor && desktop_library && self.library_total > columns.saturating_mul(2);
         let filter_x1 = bounds.x1 - f64::from(PAD) - if desktop_pager { 192.0 } else { 0.0 };
-        if desktop_library {
-            text_renderer.draw_text_weighted(
-                scene,
-                "FILTER",
-                10.0,
-                theme.text_dim,
-                transform * Affine::translate((bounds.x0 + f64::from(PAD), filter_y + 8.0)),
-                Some(54.0),
-                TextWeight::Medium,
-            );
-        }
         let compact_filters = columns <= 2;
         let mut filters = vec![(
             None,
@@ -4115,9 +4170,7 @@ impl PhotosApp {
             } else {
                 0.0
             };
-        let filter_h = if desktop_library {
-            0.0
-        } else if large_text {
+        let filter_h = if desktop_library || large_text {
             0.0
         } else {
             34.0
@@ -4213,6 +4266,8 @@ impl PhotosApp {
             selection_y,
             selection_h,
             desktop_library,
+            compact_header.controls,
+            presence,
         );
         let top = selection_y + selection_h;
         // The worker preserves source aspect ratio. A 3:2 shelf avoids the
@@ -4230,7 +4285,7 @@ impl PhotosApp {
                 // below the enlarged browse controls. Keep a generous,
                 // aspect-preserving tray while ensuring the actions remain
                 // reachable in an ordinary 900 px desktop window.
-                320.0
+                if bounds.width() < 620.0 { 220.0 } else { 320.0 }
             } else if columns == 1 {
                 320.0
             } else if desktop_library {
@@ -4269,6 +4324,17 @@ impl PhotosApp {
             // immediate while keeping rendering and thumbnail decoding bounded.
             timeline_virtual_range(self.library_items.len(), 0, rows, columns).len()
         };
+        // The timeline itself may be fractionally translated by a wheel or
+        // trackpad. Clip that moving content to the measured canvas region so
+        // a fast scroll can never paint over the search/header or status bar.
+        let timeline_clip = Rect::new(bounds.x0, top, bounds.x1, bounds.y1);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &timeline_clip,
+        );
         let mut timeline_y =
             top - (self.timeline_scroll_row - self.timeline_scroll_row.floor()) * (card_h + gap);
         let mut timeline_column = columns;
@@ -4279,10 +4345,10 @@ impl PhotosApp {
             let favorite = item.favorite;
             if item.captured_at != previous_day {
                 let group_top = timeline_y
-                    + if timeline_column != columns {
-                        card_h + gap
-                    } else {
+                    + if timeline_column == columns {
                         0.0
+                    } else {
+                        card_h + gap
                     };
                 // Do not leave an orphan date label at the bottom of a
                 // viewport; every heading earns room for its first photo.
@@ -4559,6 +4625,7 @@ impl PhotosApp {
                 timeline_column = 0;
             }
         }
+        scene.pop_layer();
         self.draw_album_editor(scene, transform, text_renderer, theme, presence);
         self.draw_metadata_editor(scene, transform, text_renderer, theme, presence);
         self.draw_selection_destination_sheet(scene, transform, text_renderer, theme, bounds);
@@ -4583,6 +4650,8 @@ impl PhotosApp {
         selection_y: f64,
         selection_h: f64,
         desktop_library: bool,
+        compact_selection_rect: Rect,
+        presence: &PresenceCtx,
     ) {
         use vello::peniko::Fill;
 
@@ -4643,30 +4712,13 @@ impl PhotosApp {
                     masthead.x1 - 388.0,
                     masthead.y1 - 16.0,
                 )
-            } else if self.large_text_toolbar {
-                Rect::new(
-                    bounds.x0 + f64::from(PAD),
-                    bounds.y0 + 70.0,
-                    bounds.x0 + 142.0,
-                    bounds.y0 + 114.0,
-                )
             } else {
-                Rect::new(
-                    bounds.x1 - 118.0,
-                    bounds.y0 + 8.0,
-                    bounds.x1 - f64::from(PAD),
-                    bounds.y0 + 44.0,
-                )
+                compact_selection_rect
             };
-            draw_button(
-                scene,
-                text_renderer,
-                SelectionHit::Start,
-                rect,
-                "Select",
-                true,
-                &mut self.selection_hits,
-            );
+            self.library_select_button.apply_layout_external(rect);
+            self.library_select_button
+                .draw(scene, transform, text_renderer, theme, presence);
+            self.selection_hits.push((SelectionHit::Start, rect));
             return;
         }
 
@@ -5106,72 +5158,31 @@ impl PhotosApp {
             self.draw_large_text_album_editor(scene, transform, text_renderer, theme, presence);
             return;
         }
-        if !self.album_editor && theme.text_scale > 1.25 {
-            // At 200% the collection rail is the management entry point;
-            // two more wide buttons would push the first timeline row below
-            // the fold and collide with the caption/action lane.
-            return;
-        }
         // At enlarged text, keep album management visible rather than making
-        // a core workflow search/agent-only. It gets a dedicated full-width
-        // row below the album and metadata filters.
+        // a core workflow search/agent-only. Its dedicated row is part of
+        // `CompactHeaderGeometry`, so it cannot collide with the collection
+        // rail above or the date heading below.
         if !self.album_editor && theme.text_scale > 1.25 {
             let bounds = self.canvas_rect;
-            let albums_h = if self.library_albums.is_empty() {
-                0.0
-            } else {
-                54.0
-            };
-            let y = bounds.y0 + f64::from(PAD) + 72.0 + albums_h + 50.0;
-            let available = bounds.width() - f64::from(PAD * 2.0) - 8.0;
-            let button_w = (available * 0.5).min(180.0);
-            let new = Rect::new(
-                bounds.x0 + f64::from(PAD),
-                y,
-                bounds.x0 + f64::from(PAD) + button_w,
-                y + 44.0,
-            );
-            let edit = Rect::new(new.x1 + 8.0, y, new.x1 + 8.0 + button_w, y + 44.0);
-            for (hit, rect, label, enabled) in [
-                (AlbumEditorHit::New, new, "New album", true),
-                (
-                    AlbumEditorHit::Edit,
-                    edit,
-                    "Edit album",
-                    self.active_album.is_some(),
-                ),
+            let row =
+                compact_library_header_geometry(bounds, true, !self.library_albums.is_empty())
+                    .album_actions;
+            let button_w = (row.width() - 8.0) * 0.5;
+            let new = Rect::new(row.x0, row.y0, row.x0 + button_w, row.y1);
+            let edit = Rect::new(new.x1 + 8.0, row.y0, row.x1, row.y1);
+            for (hit, rect, enabled) in [
+                (AlbumEditorHit::New, new, true),
+                (AlbumEditorHit::Edit, edit, self.active_album.is_some()),
             ] {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    if enabled {
-                        theme.tokens.colors.surfaces.raised
-                    } else {
-                        theme.tokens.colors.neutral[2]
-                    },
-                    None,
-                    &rect,
-                );
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    transform,
-                    theme.border_standard,
-                    None,
-                    &rect,
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    label,
-                    11.0,
-                    if enabled {
-                        theme.text_primary
-                    } else {
-                        theme.text_dim
-                    },
-                    transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 9.0)),
-                    Some((rect.width() - 20.0) as f32),
-                    TextWeight::Medium,
-                );
+                if let Some((_, button)) = self
+                    .library_album_buttons
+                    .iter_mut()
+                    .find(|(candidate, _)| *candidate == hit)
+                {
+                    button.set_enabled(enabled);
+                    button.apply_layout_external(rect);
+                    button.draw(scene, transform, text_renderer, theme, presence);
+                }
                 if enabled {
                     self.album_editor_hits.push((hit, rect));
                 }
@@ -5230,46 +5241,19 @@ impl PhotosApp {
         if !self.album_editor {
             let new = Rect::new(panel.x0, panel.y0, panel.x0 + 110.0, panel.y0 + 44.0);
             let edit = Rect::new(new.x1 + 8.0, panel.y0, new.x1 + 116.0, panel.y0 + 44.0);
-            for (hit, rect, label, enabled) in [
-                (AlbumEditorHit::New, new, "New album", true),
-                (
-                    AlbumEditorHit::Edit,
-                    edit,
-                    "Edit album",
-                    self.active_album.is_some(),
-                ),
+            for (hit, rect, enabled) in [
+                (AlbumEditorHit::New, new, true),
+                (AlbumEditorHit::Edit, edit, self.active_album.is_some()),
             ] {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    if enabled {
-                        theme.tokens.colors.surfaces.raised
-                    } else {
-                        theme.tokens.colors.neutral[2]
-                    },
-                    None,
-                    &rect,
-                );
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    theme.border_standard,
-                    None,
-                    &Rect::new(rect.x0, rect.y1 - 1.0, rect.x1, rect.y1),
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    label,
-                    13.0,
-                    if enabled {
-                        theme.text_primary
-                    } else {
-                        theme.text_dim
-                    },
-                    transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 14.0)),
-                    Some(100.0),
-                    TextWeight::Medium,
-                );
+                if let Some((_, button)) = self
+                    .library_album_buttons
+                    .iter_mut()
+                    .find(|(candidate, _)| *candidate == hit)
+                {
+                    button.set_enabled(enabled);
+                    button.apply_layout_external(rect);
+                    button.draw(scene, transform, text_renderer, theme, presence);
+                }
                 if enabled {
                     self.album_editor_hits.push((hit, rect));
                 }
@@ -6243,6 +6227,27 @@ fn build_album_page_buttons(
     .collect()
 }
 
+fn build_library_header_button(id: &str, label: &str) -> Button {
+    Button::new(id, label, None)
+        .with_size(142.0, 44.0)
+        .tooltip(label)
+        .with_accessible_name(label)
+}
+
+fn build_library_album_buttons() -> Vec<(AlbumEditorHit, Button)> {
+    [
+        (AlbumEditorHit::New, "photos-library-new-album", "New album"),
+        (
+            AlbumEditorHit::Edit,
+            "photos-library-edit-album",
+            "Edit album",
+        ),
+    ]
+    .into_iter()
+    .map(|(hit, id, label)| (hit, build_library_header_button(id, label)))
+    .collect()
+}
+
 /// Shared retained controls placed over the custom timeline geometry.  The
 /// timeline owns placement, while Button owns its visual states, names and
 /// minimum target treatment.
@@ -6639,7 +6644,7 @@ impl Widget for PhotosApp {
         clippy::too_many_lines,
         reason = "synchronization derives the bounded library, filters, search, and thumbnail work from one document snapshot"
     )]
-    fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
         PhotosDoc::seed(doc);
         self.drain_analysis_results(doc);
         if let Some((invocation, path)) = self.pending_resource_open.take() {
@@ -6663,7 +6668,7 @@ impl Widget for PhotosApp {
         }
         self.drain_picker(doc);
         self.refresh(doc);
-        self.library_search.sync(doc, _path);
+        self.library_search.sync(doc, path);
         if let Some(query) = self.library_search.take_dirty() {
             self.library_query = query;
             self.timeline_scroll_row = 0.0;
@@ -7880,6 +7885,23 @@ mod tests {
     }
 
     #[test]
+    fn compact_header_rows_are_non_overlapping_at_200_percent() {
+        let header =
+            compact_library_header_geometry(Rect::new(0.0, 94.0, 390.0, 820.0), true, true);
+        let title = Rect::new(12.0, header.title_y, 378.0, header.title_y + 26.0);
+        let count = Rect::new(12.0, header.count_y, 192.0, header.count_y + 22.0);
+        let albums = Rect::new(12.0, header.albums_y, 378.0, header.albums_y + 44.0);
+        let album_actions = header.album_actions;
+        assert!(title.y1 <= count.y0);
+        assert!(count.y1 <= header.controls.y0);
+        assert!(header.controls.y1 <= albums.y0);
+        assert!(albums.y1 <= album_actions.y0);
+        assert!((album_actions.height() - 44.0).abs() < f64::EPSILON);
+        assert!(album_actions.y1 <= header.timeline_y);
+        assert!(header.timeline_y > 94.0);
+    }
+
+    #[test]
     fn timeline_virtual_window_has_stable_overscan_without_materialising_the_library() {
         assert_eq!(timeline_virtual_range(500, 12, 4, 5), 60..90);
         assert_eq!(timeline_virtual_range(3, 4, 4, 1), 3..3);
@@ -7893,9 +7915,9 @@ mod tests {
         app.timeline_last_columns = 5;
         app.timeline_scroll_row = 6.0;
         assert!(app.adjust_timeline_density(true));
-        assert_eq!(
-            app.timeline_scroll_row * app.timeline_last_columns as f64,
-            30.0
+        assert!(
+            (app.timeline_scroll_row * app.timeline_last_columns as f64 - 30.0).abs()
+                < f64::EPSILON
         );
     }
 
@@ -8757,6 +8779,16 @@ mod tests {
         );
 
         assert!(app.metadata_filter_cards.is_empty());
+        let new_album = app
+            .album_editor_hits
+            .iter()
+            .find_map(|(hit, rect)| (*hit == AlbumEditorHit::New).then_some(*rect))
+            .expect("200% library exposes New album");
+        let header = compact_library_header_geometry(app.canvas_rect, true, false);
+        assert!(
+            new_album.y1 <= header.timeline_y,
+            "New album must finish before the timeline begins: {new_album:?} / {header:?}"
+        );
         let semantics = app.accessibility_tree();
         let children = &semantics.children[1].children;
         assert!(
