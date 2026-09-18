@@ -191,6 +191,32 @@ return async function connectPeer(options={}){
       reconnect().then(()=>{joined=true;waiter.check();},finish);
     });
   }
+  function waitForDesktopAdmission(signal){
+    // The renderer checks again after asynchronous asset loading and Winit
+    // dispatch. A ready snapshot from before its rejection cannot authorize retry.
+    const revision=admissionRevision;
+    return new Promise((resolve,reject)=>{
+      let settled=false,timeout;
+      const finish=error=>{if(settled)return;settled=true;timerClear(timeout);admissionWaiters.delete(waiter);signal.removeEventListener('abort',abort);error?reject(error):resolve();};
+      const abort=()=>finish(Error('Desktop attempt cancelled'));
+      const waiter={reject:finish,check:()=>{
+        if(closed||closing||signal.aborted){abort();return;}
+        const failure=health.failures.find(f=>f.severity==='error'&&(['admission','permission'].includes(f.scope.kind)||['identity-revoked','certificate-rejected','certificate-expired','signature-rejected','crypto-unavailable'].includes(f.code)));
+        if(health.admission.phase==='failed'||failure){finish(Error(failure?.message??'Desktop admission failed'));return;}
+        if(admissionRevision<=revision)return;
+        const admitted=health.admission.phase==='ready'&&health.admission.pendingPrerequisites===0&&health.admission.requiredRecords.every(record=>{
+          const row=health.records.find(row=>sameRecord(row.record,record));
+          return row?.admission==='admitted'&&row.current&&row.editing.mode!=='blocked';
+        });
+        if(snapshot.phase==='ready'&&admitted)finish();
+      }};
+      timeout=timerSet(()=>finish(Error('Desktop admission timed out')),10000);
+      admissionWaiters.add(waiter);signal.addEventListener('abort',abort,{once:true});waiter.check();
+      // Ask the existing durable owner for a fresh projection even when the last
+      // checkpoint arrived while the rejected host was releasing its resources.
+      if(!settled)void persist().catch(finish);
+    });
+  }
   function recover(request){
     if(closed||closing)return Promise.reject(Error('Session closed'));
     if(!['retry-connection','refresh-checkpoint','reauthenticate','retry-saving','retry-desktop','retry-asset','review-permissions'].includes(request?.kind))return Promise.reject(Error('Unsupported recovery request'));
@@ -251,23 +277,40 @@ return async function connectPeer(options={}){
         entry.run=()=>{
           if(entry.cancelled||closed||closing||surfaceTargets.get(target)!==surface)return Promise.reject(Error('Desktop attempt cancelled'));
           if(entry.pending)return entry.pending;
-          const current=++allocation;
-          const pending=mountDesktop(target,{...mountOptions,...namespace,signal:controller.signal,app,peer:id,record:record?.record_id||undefined,author:snapshot.deviceId,onStatus:status=>{
-            if(entry.cancelled||current!==allocation||closed||closing||surfaceTargets.get(target)!==surface)return;
-            surfaceStatus(surface,status);mountOptions.onStatus?.({...status,surfaceId:surface});if(status.phase==='presented'||status.persistence==='committed')void persist().catch(()=>{});
-          }});
-          pendingMounts.add(pending);
-          entry.pending=Promise.resolve(pending).then(async mounted=>{
-            if(entry.cancelled||closed||closing||current!==allocation||surfaceTargets.get(target)!==surface){await mounted.cleanup();throw Error('Session disposed while mounting');}
+          const admissionPending='canonical desktop records are not admitted';
+          const allocate=async retryAdmission=>{
+            if(entry.cancelled||closed||closing||surfaceTargets.get(target)!==surface)throw Error('Desktop attempt cancelled');
+            const current=++allocation;let admissionRejected=false;
+            try{
+              return await mountDesktop(target,{...mountOptions,...namespace,signal:controller.signal,app,peer:id,record:record?.record_id||undefined,author:snapshot.deviceId,onStatus:status=>{
+                if(entry.cancelled||current!==allocation||closed||closing||surfaceTargets.get(target)!==surface)return;
+                // Only this exact initial guard failure is temporary. Allocation
+                // cleanup must finish before retry; all security/GPU errors pass through.
+                if(sessionDesktop&&retryAdmission&&status.phase==='failed'&&status.error===admissionPending){admissionRejected=true;status={phase:'admitting'};}
+                else if(admissionRejected&&status.phase==='closed'&&status.persistence!=='failed'&&!status.error)status={...status,phase:'admitting'};
+                surfaceStatus(surface,status);mountOptions.onStatus?.({...status,surfaceId:surface});if(status.phase==='presented'||status.persistence==='committed')void persist().catch(()=>{});
+              }});
+            }catch(error){
+              if(current===allocation)allocation++;
+              if(!sessionDesktop||!retryAdmission||error?.message!==admissionPending)throw error;
+              await waitForDesktopAdmission(controller.signal);
+              // One automatic retry only: a repeatedly changing admission must
+              // remain an explicit recoverable failure, never a busy allocation loop.
+              return allocate(false);
+            }
+          };
+          const pending=allocate(true).then(async mounted=>{
+            if(entry.cancelled||closed||closing||surfaceTargets.get(target)!==surface){await mounted.cleanup();throw Error('Session disposed while mounting');}
             const cleanup=mounted.cleanup.bind(mounted);
             mounted.cleanup=async()=>{try{await cleanup();mounts.delete(mounted);failedMounts.delete(mounted);surfaces.delete(surface);surfaceAttempts.delete(surface);mountControllers.delete(controller);mountOptions.signal?.removeEventListener('abort',abort);}catch(error){failedMounts.add(mounted);throw error;}};
             entry.mounted=mounted;mounts.add(mounted);surfaces.set(surface,mounted);
             health={...health,failures:health.failures.filter(f=>f.id!==`surface:${surface}`)};
             surfaceStatus(surface,mounted.state?.()??{phase:'presented'});mountOptions.onMount?.(mounted);return mounted;
           }).catch(error=>{
-            if(!entry.cancelled&&current===allocation&&!closed&&!closing&&surfaceTargets.get(target)===surface){surfaceStatus(surface,{phase:'failed',error:String(error)});mountOptions.onStatus?.({phase:'failed',surfaceId:surface,error:String(error)});}throw error;
+            if(!entry.cancelled&&!closed&&!closing&&surfaceTargets.get(target)===surface){surfaceStatus(surface,{phase:'failed',error:String(error)});mountOptions.onStatus?.({phase:'failed',surfaceId:surface,error:String(error)});}throw error;
           }).finally(()=>{pendingMounts.delete(pending);entry.pending=null;});
-          return entry.pending;
+          entry.pending=pending;pendingMounts.add(pending);
+          return pending;
         };
         return entry.run();
       },

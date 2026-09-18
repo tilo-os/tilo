@@ -18,7 +18,7 @@ function fixture({enroll,recoveryClock}={}){
  };
  const storage={fresh:true,hydrate:async()=>[],commit:async()=>{if(failCommit)throw Error('durable write failed');},release:async()=>{storageRefs--;}};
  const connect=createConnectPeer({init:async()=>{},runtime,recoveryClock,acquireIdentity:async()=>{held++;return{material:'opaque-key',save:async()=>{},release:async()=>{held--;}}},fetchEnrollment:enroll??(async()=>({ok:true,text:async()=>'{raw}'})),acquireStorage:async()=>{storageRefs++;return storage;},mountDesktop:async(_target,options)=>{
-  mountOptionsSeen.push(options);mountSignals.push(options.signal);const mountGate=mountGates.shift();if(mountGate)await mountGate.promise;
+  mountOptionsSeen.push(options);mountSignals.push(options.signal);const mountGate=mountGates.shift();if(mountGate){try{await mountGate.promise;}catch(error){options.onStatus({phase:'failed',error:error.message});if(mountGate.cleanup)await mountGate.cleanup.promise;options.onStatus({phase:'closed',persistence:'committed',pendingWrites:0,error:null});throw error;}}
   if(failMount)throw Error('initial fonts unavailable');
   const mount={id:next,cleanupCalls:0,flushCalls:0,async flush(){mount.flushCalls++;},state:()=>({phase:'presented',gpuGeneration:1}),recover(){options.onStatus({phase:'gpu-pending',gpuGeneration:2});},status(value){options.onStatus(value);},present(gpuGeneration){options.onStatus({phase:'presented',gpuGeneration});},failRenderer(){options.onStatus({phase:'failed',gpuGeneration:1,error:'GPU device lost'});},input(){if(!suspended.has(mount.id)){assert(peers.has(mount.id),'input addressed removed peer');}},setSuspended(){}};
   componentOwners++;
@@ -198,4 +198,85 @@ test('versioned private actions share committed device storage and never expose 
  const row=await peer.actionsV1.invoke({...route,invocation});assert.equal(row.terminal,true);
  const stored=[...rows.values()].find(row=>JSON.parse(row.key).type==='privateActions');assert.equal(JSON.parse(stored.key).workspace,'r');assert.equal(stored.actor,null);
  }finally{await peer.dispose();}assert.equal(f.counts().held,0);
+});
+
+// The real host awaits assets and queues Winit allocation after the ready callback.
+// A signed checkpoint can invalidate that earlier admission before allocation.
+const pendingDesktopAdmission='canonical desktop records are not admitted';
+function desktopAdmission(ready){
+ const value=admissionStatus(true);
+ value.desktop={version:1,mode:'session'};
+ if(!ready){value.phase='admitting';value.health.admission.phase='syncing';value.health.admission.pendingPrerequisites=1;}
+ return value;
+}
+test('desktop allocation waits for a fresh admitted checkpoint after readiness changes in the host gap',async()=>{
+ const f=fixture({recoveryClock:clock()}),peer=await f.connect();
+ f.status(desktopAdmission(true));await drain();
+ const gap=deferred(),statuses=[];f.queueMount(gap);
+ let outcome='pending';const mounting=peer.mountDesktop({}, {onStatus:status=>statuses.push(status)}).then(value=>{outcome='presented';return value;},error=>{outcome='failed';return error;});
+ f.status(desktopAdmission(false));await drain();gap.reject(Error(pendingDesktopAdmission));await drain();
+ assert.equal(outcome,'pending','a temporary admission gap must retain the surface attempt');
+ assert.equal(f.mountOptionsSeen.length,1);assert(!statuses.some(status=>status.phase==='failed'));
+ const surface=peer.getSnapshot().health.surfaces[0];assert.equal(surface.phase,'initializing');assert.deepEqual(surface.failureIds,[]);
+ // Surface/publication reports and incomplete signed state are not fresh readiness.
+ await peer.retryPersistence();f.status(desktopAdmission(false));await drain();assert.equal(f.mountOptionsSeen.length,1);
+ f.status(desktopAdmission(true));await drain();const mounted=await mounting;
+ assert.equal(outcome,'presented');assert.equal(peer.getSnapshot().health.surfaces.length,1);assert.equal(f.mountOptionsSeen.length,2);
+ assert.equal(f.mountOptionsSeen[0].signal,f.mountOptionsSeen[1].signal);assert.equal(f.mounts.size,1);
+ await mounted.cleanup();await peer.dispose();assert.equal(f.counts().held,0);
+});
+test('desktop admission retry refuses stale readiness and times out without allocating again',async()=>{
+ const time=clock(),f=fixture({recoveryClock:time}),peer=await f.connect();f.status(desktopAdmission(true));await drain();
+ const gap=deferred();f.queueMount(gap);let outcome='pending';const mounting=peer.mountDesktop({}).then(()=>{outcome='presented';},error=>{outcome=error.message;});
+ gap.reject(Error(pendingDesktopAdmission));await drain();assert.equal(outcome,'pending');
+ await time.tick(10000);await mounting;assert.match(outcome,/admission.*timed out/i);assert.equal(f.mountOptionsSeen.length,1);
+ assert.equal(peer.getSnapshot().health.surfaces[0].phase,'failed');await peer.dispose();
+});
+test('desktop admission wait terminates for permission denial, cancellation and close',async()=>{
+ for(const stop of ['permission','abort','close']){
+  const f=fixture({recoveryClock:clock()}),peer=await f.connect();f.status(desktopAdmission(true));await drain();
+  const gap=deferred(),controller=new AbortController();f.queueMount(gap);
+  let outcome='pending';const mounting=peer.mountDesktop({}, {signal:controller.signal}).then(()=>{outcome='presented';},error=>{outcome=error.message;});
+  gap.reject(Error(pendingDesktopAdmission));await drain();assert.equal(outcome,'pending');
+  if(stop==='permission'){const status=desktopAdmission(false);status.health.admission.phase='failed';status.health.failures=[{id:'runtime:admission',code:'identity-revoked',scope:{kind:'admission'},severity:'error',message:'This device no longer has access.'}];f.status(status);}
+  else if(stop==='abort')controller.abort();else await peer.dispose();
+  await drain();await mounting;assert.notEqual(outcome,'pending');assert.notEqual(outcome,'presented');
+  f.status(desktopAdmission(true));await drain();assert.equal(f.mountOptionsSeen.length,1);await peer.dispose();assert.equal(f.counts().held,0);
+ }
+});
+test('desktop admission retry is bounded if fresh ready observations repeatedly lose the allocation race',async()=>{
+ const f=fixture({recoveryClock:clock()}),peer=await f.connect();f.status(desktopAdmission(true));await drain();
+ const first=deferred(),second=deferred();f.queueMount(first);f.queueMount(second);
+ let outcome='pending';const mounting=peer.mountDesktop({}).then(()=>{outcome='presented';},error=>{outcome=error.message;});
+ first.reject(Error(pendingDesktopAdmission));await drain();assert.equal(outcome,'pending');f.status(desktopAdmission(true));await drain();
+ assert.equal(f.mountOptionsSeen.length,2);second.reject(Error(pendingDesktopAdmission));await drain();await mounting;
+ assert.equal(outcome,pendingDesktopAdmission);f.status(desktopAdmission(true));await drain();assert.equal(f.mountOptionsSeen.length,2);await peer.dispose();
+});
+test('ordinary mount failures and security errors never enter desktop admission retry',async()=>{
+ for(const reason of ['document read forbidden','device revoked','canonical desktop records are not admitted: forbidden']){
+  const f=fixture({recoveryClock:clock()}),peer=await f.connect();f.status(desktopAdmission(true));await drain();const gap=deferred();f.queueMount(gap);
+  const mounting=peer.mountDesktop({});const rejected=assert.rejects(mounting,error=>error.message===reason);gap.reject(Error(reason));await rejected;
+  f.status(desktopAdmission(true));await drain();assert.equal(f.mountOptionsSeen.length,1);await peer.dispose();
+ }
+});
+
+test('desktop retry waits for rejected host cleanup and ignores its late callbacks',async()=>{
+ const f=fixture({recoveryClock:clock()}),peer=await f.connect();f.status(desktopAdmission(true));await drain();
+ const gap=deferred();gap.cleanup=deferred();f.queueMount(gap);let outcome='pending';const statuses=[];
+ const mounting=peer.mountDesktop({}, {onStatus:status=>statuses.push(status)}).then(value=>{outcome='presented';return value;},error=>{outcome=error.message;return error;});
+ gap.reject(Error(pendingDesktopAdmission));await drain();f.status(desktopAdmission(true));await drain();
+ assert.equal(f.mountOptionsSeen.length,1,'the failed host still owns its storage/canvas until cleanup settles');
+ gap.cleanup.resolve();await drain();assert.equal(outcome,'pending','readiness observed during cleanup is stale for the rejected attempt');
+ f.mountOptionsSeen[0].onStatus({phase:'presented',gpuGeneration:99});
+ assert.equal(peer.getSnapshot().health.surfaces[0].phase,'initializing','retired allocation cannot publish false presentation');
+ f.status(desktopAdmission(true));await drain();const mounted=await mounting;assert.equal(outcome,'presented');
+ f.mountOptionsSeen[0].onStatus({phase:'failed',gpuGeneration:100,error:'stale allocation failure'});
+ assert(!statuses.some(status=>status.phase==='failed'));assert.equal(peer.getSnapshot().health.surfaces[0].phase,'presented');assert.deepEqual(peer.getSnapshot().health.surfaces[0].failureIds,[]);
+ await mounted.cleanup();await peer.dispose();
+});
+test('connection-scoped revoked identity terminates admission wait without allocation',async()=>{
+ const f=fixture({recoveryClock:clock()}),peer=await f.connect();f.status(desktopAdmission(true));await drain();const gap=deferred();f.queueMount(gap);
+ let outcome='pending';const mounting=peer.mountDesktop({}).then(()=>{outcome='presented';},error=>{outcome=error.message;});gap.reject(Error(pendingDesktopAdmission));await drain();
+ const status=desktopAdmission(true);status.health.failures=[{id:'session:connection',code:'identity-revoked',scope:{kind:'connection'},severity:'error',message:'Device revoked'}];f.status(status);await drain();
+ assert.equal(outcome,'Device revoked');await mounting;assert.equal(f.mountOptionsSeen.length,1);await peer.dispose();
 });
