@@ -67,6 +67,47 @@ const TITLE_HEIGHT: f64 = 44.0;
 /// body, so they are scannable without stealing the first editable block.
 const TAG_ROW_HEIGHT: f64 = 28.0;
 
+/// The tag-chip row under the title (HIG §7b): title and tags read as one
+/// group (title + explanation), so the chips start one `s2` under the title
+/// — which also keeps them clear of the focused title's 2 px ring — each
+/// chip is the measured label line plus `s2`, padded `s2` each side, and
+/// chips sit `s2` apart (related siblings). One description for the painter
+/// and the layout tests, so the band the row reserves (`TAG_ROW_HEIGHT` plus
+/// the title ↔ editor gap) is checked against what is drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TagChipBand {
+    /// Base size of a chip label. A *base* size, not `typography.scale.sm`:
+    /// `Theme::with_text_scale` has already multiplied that token and
+    /// `TextRenderer` applies the accessibility scale again, so a scaled
+    /// token would grow large-text chips twice.
+    pub text: f32,
+    pub y0: f64,
+    pub height: f64,
+    pub pad_x: f64,
+    pub gap: f64,
+}
+
+impl TagChipBand {
+    /// Base size of the chip label (see [`TagChipBand::text`]).
+    pub(crate) fn label_size() -> f32 {
+        12.0
+    }
+}
+
+pub(crate) fn tag_chip_band(
+    spacing: &ui::tokens::spacing::Spacing,
+    title_bottom: f64,
+    label_line_h: f64,
+) -> TagChipBand {
+    TagChipBand {
+        text: TagChipBand::label_size(),
+        y0: title_bottom + f64::from(spacing.s2),
+        height: label_line_h + f64::from(spacing.s2),
+        pad_x: f64::from(spacing.s2),
+        gap: f64::from(spacing.s2),
+    }
+}
+
 use crate::markdown::block_kind_wire;
 
 pub struct MainPanel {
@@ -847,43 +888,44 @@ impl Widget for MainPanel {
                 .draw(scene, transform, text_renderer, theme, presence);
 
             if !self.tags.is_empty() {
+                // Every chip is a quiet chip — the raised tier with its
+                // derived edge (HIG §9.5) — on the one measured band
+                // `tag_chip_band` describes for paint and tests alike; the
+                // band's height comes from the label line, so every chip in
+                // the row is the same height whatever its text.
+                let band = tag_chip_band(
+                    &tokens.spacing,
+                    self.title_rect.y1,
+                    f64::from(
+                        text_renderer
+                            .measure("Ag", TagChipBand::label_size(), None)
+                            .1,
+                    ),
+                );
+                let fill = tokens.colors.surfaces.raised;
                 let mut x = self.title_rect.x0;
-                let y = self.title_rect.y1 + 4.0 * self.text_scale;
-                // Keep this a base size: `TextRenderer` applies the global
-                // accessibility scale. Passing an already-scaled theme token
-                // here would multiply large-text chips twice.
-                let font = 12.0;
                 for tag in &self.tags {
                     let label = format!("# {tag}");
-                    let (text_w, _) = text_renderer.measure(&label, font, None);
-                    let width = f64::from(text_w) + 16.0 * self.text_scale;
+                    let (text_w, text_h) = text_renderer.measure(&label, band.text, None);
+                    let width = f64::from(text_w) + 2.0 * band.pad_x;
                     if x + width > self.title_rect.x1 {
                         break;
                     }
-                    let chip = RoundedRect::from_rect(
-                        Rect::new(x, y, x + width, y + 22.0 * self.text_scale),
-                        11.0 * self.text_scale,
-                    );
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        tokens.colors.neutral[3],
-                        None,
-                        &chip,
-                    );
+                    let chip = Rect::new(x, band.y0, x + width, band.y0 + band.height);
+                    ui::surface::card(scene, transform, chip, band.height / 2.0, fill);
                     text_renderer.draw_text(
                         scene,
                         &label,
-                        font,
+                        band.text,
                         tokens.colors.text_dim,
                         transform
                             * Affine::translate((
-                                x + 8.0 * self.text_scale,
-                                y + 4.0 * self.text_scale,
+                                x + band.pad_x,
+                                band.y0 + (band.height - f64::from(text_h)) / 2.0,
                             )),
                         None,
                     );
-                    x += width + 6.0 * self.text_scale;
+                    x += width + band.gap;
                 }
             }
 
@@ -1305,14 +1347,27 @@ mod tests {
 
         let title_top = PADDING_PX;
         let title_bottom = title_top + panel.title_height();
-        let tags_top = title_bottom + 4.0 * panel.text_scale;
-        let tags_bottom = tags_top + 22.0 * panel.text_scale;
+        // The production band: the chip row the painter draws, from the same
+        // measured label line the renderer reports at this scale.
+        let theme = Theme::dark();
+        let label_line_h = ui::text_metrics::line_height_px(
+            TagChipBand::label_size(),
+            num::f32_of_f64(panel.text_scale),
+        );
+        let band = tag_chip_band(&theme.tokens.spacing, title_bottom, label_line_h);
+        let tags_bottom = band.y0 + band.height;
         let first_block_top = panel.editor_top_inset();
 
-        assert!(title_bottom < tags_top, "title must not overlap tag chips");
+        assert!(title_bottom < band.y0, "title must not overlap tag chips");
         assert!(
             tags_bottom <= first_block_top,
-            "tag chips must clear the first block"
+            "tag chips ({tags_bottom}) must clear the first block ({first_block_top})"
         );
+        // Neighbouring chips keep the related-sibling step apart, and the
+        // chip row keeps the title + explanation step under the title — clear
+        // of a focused title's 2 px ring as well.
+        assert_eq!(band.gap, f64::from(theme.tokens.spacing.s2));
+        assert_eq!(band.y0 - title_bottom, f64::from(theme.tokens.spacing.s2));
+        assert!(band.y0 - title_bottom - 2.0 >= f64::from(theme.tokens.spacing.s1));
     }
 }
