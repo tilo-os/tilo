@@ -26,7 +26,7 @@ impl HistoryHost {
         self.live_node = None;
         self.unavailable_node = None;
         let mut body_children = vec![];
-        if self.show_timeline() && self.controller.is_none() && self.files.is_none() {
+        if self.show_timeline() && !self.timeline_available() {
             let message = self.unavailable.build_layout(tree, theme, nodes);
             self.unavailable_node = Some(message);
             body_children.push(message);
@@ -210,7 +210,7 @@ impl Widget for HistoryHost {
         presence: &PresenceCtx,
     ) {
         self.toolbar.draw(scene, transform, text, theme, presence);
-        if self.show_timeline() && self.controller.is_none() && self.files.is_none() {
+        if self.show_timeline() && !self.timeline_available() {
             self.unavailable
                 .draw(scene, transform, text, theme, presence);
         } else if self.show_timeline() {
@@ -264,7 +264,7 @@ impl Widget for HistoryHost {
         if let Some(panel) = &self.review { return vec![&panel.dialog]; }
         let mut children: Vec<&dyn Widget> = vec![&self.toolbar];
         if self.show_timeline() {
-            if self.controller.is_some() || self.files.is_some() {
+            if self.timeline_available() {
                 children.push(&self.timeline);
             } else {
                 children.push(&self.unavailable);
@@ -276,14 +276,13 @@ impl Widget for HistoryHost {
         children
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        let show_timeline = self.show_timeline();
+        let timeline_available = self.timeline_available();
+        let show_preview = self.show_preview();
+        let side = self.side;
         if let Some(panel) = &mut self.review {
             return vec![&mut panel.dialog];
         }
-        let show_timeline = self.open
-            && (self.width >= 600.0 || self.selected.is_empty() || self.activity_page);
-        let timeline_available = self.controller.is_some() || self.files.is_some();
-        let show_preview = !self.selected.is_empty() && !self.activity_page;
-        let side = self.side;
         let mut children: Vec<&mut dyn Widget> = vec![&mut self.toolbar];
         if show_timeline {
             if timeline_available {

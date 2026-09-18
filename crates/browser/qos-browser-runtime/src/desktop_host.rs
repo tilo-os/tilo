@@ -1055,6 +1055,44 @@ mod tests {
         );
         assert_external_frame_idle(&mut frame, "hidden Notes strip");
 
+        let hidden_title = "Hidden update";
+        frame
+            .invoke_bound_action(
+                &ui::bound_dispatch::BoundActionAddress {
+                    instance_id: (5 << 48) | 12,
+                    address: qos_actions::ActionAddress::new("notes.notebook", "new-page"),
+                },
+                serde_json::json!({"value": hidden_title})
+                    .as_object()
+                    .unwrap(),
+            )
+            .unwrap();
+        frame.relayout();
+        assert!(
+            !frame.inspection_json().unwrap().contains("NotesApp"),
+            "updating the retained owner must not present its hidden strip"
+        );
+        let notes_record = handle
+            .records
+            .borrow()
+            .values()
+            .find(|record| record.app == notes::definition().app_id)
+            .unwrap()
+            .clone();
+        assert!(
+            notes_record
+                .store
+                .read(&notes_record.checkout.id, |doc| {
+                    notes::notebook::project(doc, None)
+                        .unwrap()
+                        .pages()
+                        .iter()
+                        .any(|page| page.title == hidden_title)
+                })
+                .unwrap(),
+            "the real retained Notes record must accept the update while hidden"
+        );
+
         *handle.navigation_command.borrow_mut() = Some(crate::desktop_navigation::Command::Strip {
             generation: handle.generation.clone(),
             workspace: "1".into(),
@@ -1067,6 +1105,9 @@ mod tests {
             frame.inspection_json().unwrap().contains("NotesApp"),
             "selecting the retained strip must present its real checked widget"
         );
+        frame
+            .expect(&ui::headless::SemanticExpectation::named("note_title").value(hidden_title))
+            .unwrap();
         settle_notes_status_bubble(&mut frame);
         assert_external_frame_idle(&mut frame, "selected Notes strip");
     }

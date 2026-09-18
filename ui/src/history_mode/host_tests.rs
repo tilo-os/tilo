@@ -186,6 +186,92 @@ fn versioned_driver(viewport: (u32, u32)) -> (Driver, String, Vec<automerge::Cha
         before,
     )
 }
+
+fn assert_history_frame_idle(driver: &mut Driver, context: &str) {
+    assert!(
+        !driver.frame_output().needs_redraw,
+        "{context}: visible History branch stayed dirty after draw"
+    );
+    assert!(
+        !driver.poll_frame().unwrap(),
+        "{context}: idle History branch produced another frame"
+    );
+}
+
+#[test]
+fn managed_history_visible_branches_drain_and_retained_modes_return_current() {
+    let (mut wide, target, _) = versioned_driver((900, 650));
+    assert_history_frame_idle(&mut wide, "toolbar");
+
+    wide.click_named("history-open").unwrap();
+    assert!(wide.targets().contains_key("activity_timeline"));
+    assert_history_frame_idle(&mut wide, "available timeline");
+
+    wide.perform_semantic_named(
+        "activity_timeline",
+        Some(&target),
+        &crate::a11y::Action::Activate,
+    )
+    .unwrap();
+    assert!(wide.inspection_json().unwrap().contains("Notebook: first"));
+    assert_history_frame_idle(&mut wide, "after preview");
+
+    wide.click_named("history-before").unwrap();
+    assert!(!wide.inspection_json().unwrap().contains("Notebook: first"));
+    assert_history_frame_idle(&mut wide, "before preview");
+    wide.click_named("history-after").unwrap();
+    assert!(wide.inspection_json().unwrap().contains("Notebook: first"));
+    assert_history_frame_idle(&mut wide, "retained after preview");
+
+    let (mut narrow, target, _) = versioned_driver((390, 650));
+    narrow.click_named("history-open").unwrap();
+    narrow
+        .perform_semantic_named(
+            "activity_timeline",
+            Some(&target),
+            &crate::a11y::Action::Activate,
+        )
+        .unwrap();
+    assert_history_frame_idle(&mut narrow, "narrow preview");
+    narrow.click_named("history-activity").unwrap();
+    assert!(narrow.targets().contains_key("activity_timeline"));
+    assert!(!narrow.targets().contains_key("history-preview"));
+    assert_history_frame_idle(&mut narrow, "narrow activity");
+
+    static UNVERSIONED: HistoryDefinition = HistoryDefinition {
+        app_id: "dev.qos.history-unavailable-fixture",
+        scopes: &[HistoryScopeDefinition {
+            key: "document",
+            title: "Unavailable notebook",
+            presentation: HistoryPresentation::External {
+                reason: "Fixture history unavailable",
+            },
+            content_schema: None,
+        }],
+    };
+    let registration = HistoryRegistration::new(
+        &UNVERSIONED,
+        vec![HistorySourceRegistration::Unversioned {
+            scope: "document",
+            reason: "Fixture history unavailable",
+        }],
+    )
+    .unwrap();
+    let mut unavailable = Driver::from_managed_root(
+        State::new(),
+        ManagedRoot::new(Box::new(Column::new()), registration),
+        (900, 650),
+    )
+    .unwrap();
+    unavailable.click_named("history-open").unwrap();
+    assert!(
+        unavailable
+            .inspection_json()
+            .unwrap()
+            .contains("Fixture history unavailable")
+    );
+    assert_history_frame_idle(&mut unavailable, "unavailable timeline");
+}
 fn find_access<'a>(
     node: &'a crate::headless::InspectionNode,
     target: &str,
