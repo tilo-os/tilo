@@ -4,6 +4,8 @@
 //! hardware discovery on the render path. Remote clipboard entries become
 //! history, not the live Wayland selection, until explicitly activated.
 
+mod remote_capture;
+
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::io::Read as _;
 use std::os::unix::fs::OpenOptionsExt as _;
@@ -128,18 +130,6 @@ fn identity_matches_local_focus(
         identity.app_id() == focus.app_id
             && identity.workspace_id() == focus.workspace_id
             && identity.session_id() == focus.session_id
-    })
-}
-
-fn stale_remote_capture_owner(
-    previous: Option<&crate::shell::physical_gamepad::PhysicalGamepadBinding>,
-    current: Option<&crate::shell::physical_gamepad::PhysicalGamepadBinding>,
-) -> Option<(String, String)> {
-    previous.and_then(|previous| {
-        let same_owner = current.is_some_and(|current| {
-            current.app_id == previous.app_id && current.workspace_id == previous.workspace_id
-        });
-        (!same_owner).then(|| (previous.app_id.clone(), previous.workspace_id.clone()))
     })
 }
 
@@ -1375,10 +1365,7 @@ pub struct DeviceFabricRuntime {
     notification_bridge: NotificationBridge,
     realtime_adapter: Option<crate::shell::realtime_session::SharedRealtimeFabricAdapter>,
     realtime_online_peers: BTreeSet<crate::shell::personal_continuity::DeviceId>,
-    remote_capture: Option<crate::shell::remote_capture::runtime::SharedRemoteCaptureRuntime>,
-    remote_capture_online_peers: BTreeSet<crate::shell::personal_continuity::DeviceId>,
-    remote_capture_pending_actions: VecDeque<crate::shell::network::ReceivedPersonalFabricAction>,
-    remote_capture_stale_focus: BTreeSet<(String, String)>,
+    remote_capture: remote_capture::RemoteCaptureIntegration,
     tethering: crate::shell::personal_tethering_runtime::PersonalTetheringRuntime,
     gamepad_broker: ProductionGamepadBroker,
     inbound_gamepads: BTreeMap<[u8; 16], InboundGamepadForwarding>,
@@ -1403,10 +1390,7 @@ impl DeviceFabricRuntime {
             notification_bridge,
             realtime_adapter: None,
             realtime_online_peers: BTreeSet::new(),
-            remote_capture: None,
-            remote_capture_online_peers: BTreeSet::new(),
-            remote_capture_pending_actions: VecDeque::new(),
-            remote_capture_stale_focus: BTreeSet::new(),
+            remote_capture: Default::default(),
             tethering: Default::default(),
             gamepad_broker: os_actions::ForwardedPeripheralBroker::new(
                 os_actions::LinuxVirtualGamepadFactory::new(
@@ -1430,7 +1414,7 @@ impl DeviceFabricRuntime {
         &mut self,
         runtime: crate::shell::remote_capture::runtime::SharedRemoteCaptureRuntime,
     ) {
-        self.remote_capture = Some(runtime);
+        self.remote_capture.install(runtime);
     }
 
     /// Supply the compositor's current locally verified app focus. Remote
@@ -1439,11 +1423,8 @@ impl DeviceFabricRuntime {
         &mut self,
         focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
     ) {
-        if let Some(owner) =
-            stale_remote_capture_owner(self.local_app_focus.as_ref(), focus.as_ref())
-        {
-            self.remote_capture_stale_focus.insert(owner);
-        }
+        self.remote_capture
+            .note_focus_change(self.local_app_focus.as_ref(), focus.as_ref());
         self.local_app_focus = focus;
     }
 
@@ -1473,7 +1454,7 @@ impl DeviceFabricRuntime {
             unix_ms(),
         );
         pump_device_health(network, policy);
-        self.pump_remote_capture_peers(network, policy);
+        self.remote_capture.pump(network, policy);
         crate::shell::remote_audio::pump(
             network,
             policy.permits(ContinuityCapability::Media),
@@ -1632,14 +1613,7 @@ impl DeviceFabricRuntime {
             self.tear_down_incoming_media(network, MediaHandoffFailure::Cancelled);
             tear_down_media_handoffs(network);
             tear_down_bluetooth_handoffs(network);
-            if let Some(remote_capture) = self.remote_capture.as_ref()
-                && let Ok(mut remote_capture) = remote_capture.try_lock()
-            {
-                remote_capture.teardown_all();
-            }
-            self.remote_capture_online_peers.clear();
-            self.remote_capture_pending_actions.clear();
-            self.remote_capture_stale_focus.clear();
+            self.remote_capture.request_teardown_all();
         }
     }
 
@@ -1707,15 +1681,7 @@ impl DeviceFabricRuntime {
 
     fn handle_fabric_actions(&mut self, network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
         prune_spatial_leases(network);
-        if let Some(runtime) = self.remote_capture.as_ref()
-            && let Ok(mut runtime) = runtime.try_lock()
-        {
-            for received in self.remote_capture_pending_actions.drain(..) {
-                if network.personal_route_is_current(&received.route) {
-                    runtime.handle_action(&received.envelope, Instant::now());
-                }
-            }
-        }
+        self.remote_capture.drain_pending_actions(network);
         for received in network.take_personal_fabric_actions() {
             let crate::shell::network::ReceivedPersonalFabricAction { envelope, route } = received;
             if !network.personal_route_is_current(&route) {
@@ -1735,22 +1701,10 @@ impl DeviceFabricRuntime {
             if self.tethering.handle_action(network, &envelope, unix_ms()) {
                 continue;
             }
-            if matches!(
-                &envelope.action,
-                PersonalFabricAction::RemoteCaptureSignal { .. }
-                    | PersonalFabricAction::RemoteCaptureChunk { .. }
-            ) {
-                if let Some(runtime) = self.remote_capture.as_ref()
-                    && let Ok(mut runtime) = runtime.try_lock()
-                {
-                    runtime.handle_action(&envelope, Instant::now());
-                } else if self.remote_capture_pending_actions.len()
-                    < crate::shell::remote_capture::device::MAX_REMOTE_CAPTURE_SESSIONS * 4
-                {
-                    self.remote_capture_pending_actions.push_back(
-                        crate::shell::network::ReceivedPersonalFabricAction { envelope, route },
-                    );
-                }
+            if remote_capture::RemoteCaptureIntegration::handles(&envelope.action) {
+                self.remote_capture.handle_action(
+                    crate::shell::network::ReceivedPersonalFabricAction { envelope, route },
+                );
                 continue;
             }
             if self.handle_gamepad_action(network, &envelope) {
@@ -1909,51 +1863,6 @@ impl DeviceFabricRuntime {
                     handle_display_mirror_action(network, &envelope.source, action);
                 }
                 action => handle_spatial_action(envelope.source, &envelope.target, action),
-            }
-        }
-    }
-
-    fn pump_remote_capture_peers(
-        &mut self,
-        network: &ShellNetwork,
-        policy: ContinuityPolicySnapshot,
-    ) {
-        let Some(runtime) = self.remote_capture.as_ref() else {
-            return;
-        };
-        let Ok(mut runtime) = runtime.try_lock() else {
-            return;
-        };
-        for (app_id, workspace_id) in std::mem::take(&mut self.remote_capture_stale_focus) {
-            runtime.teardown_target_app(&app_id, &workspace_id);
-        }
-        if !policy.permits(ContinuityCapability::Media) {
-            runtime.teardown_all();
-            self.remote_capture_online_peers.clear();
-            return;
-        }
-        let online = network
-            .device_fabric()
-            .snapshots()
-            .values()
-            .filter(|snapshot| snapshot.presence.online)
-            .map(|snapshot| snapshot.owner.clone())
-            .collect::<BTreeSet<_>>();
-        for peer in self.remote_capture_online_peers.difference(&online) {
-            runtime.teardown_peer(peer);
-        }
-        self.remote_capture_online_peers = online;
-        runtime.pump(Instant::now());
-        let outgoing = runtime.drain_outgoing();
-        drop(runtime);
-        for (peer, action) in outgoing {
-            if network
-                .send_personal_fabric_action(&peer, action.clone())
-                .is_err()
-                && let Some(runtime) = self.remote_capture.as_ref()
-                && let Ok(mut runtime) = runtime.try_lock()
-            {
-                runtime.outgoing_failed(&peer, &action);
             }
         }
     }
@@ -8976,37 +8885,6 @@ mod tests {
                 ..exact
             })
         ));
-    }
-
-    #[test]
-    fn remote_capture_owner_changes_only_across_app_or_workspace_focus() {
-        let previous = crate::shell::physical_gamepad::PhysicalGamepadBinding {
-            app_id: "dev.tilo.Camera".into(),
-            workspace_id: "room-a".into(),
-            session_id: "tab-a".into(),
-        };
-        let same_owner = crate::shell::physical_gamepad::PhysicalGamepadBinding {
-            session_id: "tab-b".into(),
-            ..previous.clone()
-        };
-        let other_app = crate::shell::physical_gamepad::PhysicalGamepadBinding {
-            app_id: "dev.tilo.Calls".into(),
-            ..previous.clone()
-        };
-
-        assert_eq!(
-            stale_remote_capture_owner(Some(&previous), Some(&same_owner)),
-            None
-        );
-        assert_eq!(
-            stale_remote_capture_owner(Some(&previous), Some(&other_app)),
-            Some(("dev.tilo.Camera".into(), "room-a".into()))
-        );
-        assert_eq!(
-            stale_remote_capture_owner(Some(&previous), None),
-            Some(("dev.tilo.Camera".into(), "room-a".into()))
-        );
-        assert_eq!(stale_remote_capture_owner(None, Some(&previous)), None);
     }
 
     #[test]
