@@ -4949,6 +4949,63 @@ struct CapnpChannelHandle {
 
 const MAX_PRIVATE_PLAYBACK_REPORT_BYTES: usize = 256 * 1024;
 
+fn continuation_route(
+    route: &CrdtRoute,
+    claimed_app_id: &str,
+    operation: &str,
+) -> Result<
+    (
+        crate::shell::state::RoomId,
+        String,
+        crate::shell::personal_continuity::AppInstanceId,
+    ),
+    String,
+> {
+    if route.app_id.is_empty() || claimed_app_id != route.app_id {
+        return Err(format!(
+            "{operation} appId must match the certified connection route"
+        ));
+    }
+    let instance_id = route
+        .record_id
+        .strip_prefix("continuation:")
+        .and_then(|id| id.parse::<u64>().ok())
+        .map(crate::shell::personal_continuity::AppInstanceId)
+        .ok_or_else(|| format!("{operation} requires a durable shell tab id"))?;
+    let room = crate::shell::state::RoomId::parse(&route.cluster_id)
+        .ok_or_else(|| format!("{operation} route has no durable workspace room"))?;
+    Ok((room, claimed_app_id.to_owned(), instance_id))
+}
+
+fn report_continuation_for_route(
+    reports: &mut crate::shell::personal_continuity_registry::ContinuationRegistry,
+    policy: crate::shell::continuity_policy::ContinuityPolicySnapshot,
+    route: &CrdtRoute,
+    claimed_app_id: &str,
+    schema_version: u16,
+    metadata: Vec<u8>,
+) -> Result<(), String> {
+    if !policy.permits(crate::shell::continuity_policy::ContinuityCapability::AppContinuations) {
+        return Err("app continuation is disabled".into());
+    }
+    let (room, app_id, instance_id) =
+        continuation_route(route, claimed_app_id, "reportContinuation")?;
+    reports
+        .report(room, app_id, instance_id, schema_version, metadata)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn clear_continuation_for_route(
+    reports: &mut crate::shell::personal_continuity_registry::ContinuationRegistry,
+    route: &CrdtRoute,
+    claimed_app_id: &str,
+) -> Result<bool, String> {
+    let (room, app_id, instance_id) =
+        continuation_route(route, claimed_app_id, "clearContinuation")?;
+    Ok(reports.clear(room, &app_id, instance_id))
+}
+
 fn playback_report_owner(route: &CrdtRoute, peer_id: u64) -> String {
     format!(
         "{}#{}#{}#{peer_id}",
@@ -7498,26 +7555,6 @@ impl channel_handle::Server for CapnpChannelHandle {
             Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
         };
         let route = self.route();
-        if route.app_id.is_empty() || app_id != route.app_id {
-            return Promise::err(capnp::Error::failed(
-                "reportContinuation appId must match the certified connection route".into(),
-            ));
-        }
-        let Some(instance_id) = route
-            .record_id
-            .strip_prefix("continuation:")
-            .and_then(|id| id.parse::<u64>().ok())
-            .map(crate::shell::personal_continuity::AppInstanceId)
-        else {
-            return Promise::err(capnp::Error::failed(
-                "reportContinuation requires a durable shell tab id".into(),
-            ));
-        };
-        let Some(room) = crate::shell::state::RoomId::parse(&route.cluster_id) else {
-            return Promise::err(capnp::Error::failed(
-                "reportContinuation route has no durable workspace room".into(),
-            ));
-        };
         let metadata = match request.get_metadata() {
             Ok(bytes) => bytes.to_vec(),
             Err(error) => return Promise::err(error),
@@ -7526,15 +7563,14 @@ impl channel_handle::Server for CapnpChannelHandle {
             .lock()
             .map_err(|_| "continuation registry unavailable".to_string())
             .and_then(|mut reports| {
-                reports
-                    .report(
-                        room,
-                        app_id,
-                        instance_id,
-                        request.get_schema_version(),
-                        metadata,
-                    )
-                    .map_err(|error| error.to_string())
+                report_continuation_for_route(
+                    &mut reports,
+                    crate::shell::continuity_policy::ContinuityPolicySnapshot::load(),
+                    &route,
+                    &app_id,
+                    request.get_schema_version(),
+                    metadata,
+                )
             }) {
             Ok(_) => Promise::ok(()),
             Err(error) => Promise::err(capnp::Error::failed(error)),
@@ -7565,34 +7601,14 @@ impl channel_handle::Server for CapnpChannelHandle {
             Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
         };
         let route = self.route();
-        if route.app_id.is_empty() || app_id != route.app_id {
-            return Promise::err(capnp::Error::failed(
-                "clearContinuation appId must match the certified connection route".into(),
-            ));
-        }
-        let Some(instance_id) = route
-            .record_id
-            .strip_prefix("continuation:")
-            .and_then(|id| id.parse::<u64>().ok())
-            .map(crate::shell::personal_continuity::AppInstanceId)
-        else {
-            return Promise::err(capnp::Error::failed(
-                "clearContinuation requires a durable shell tab id".into(),
-            ));
-        };
-        let Some(room) = crate::shell::state::RoomId::parse(&route.cluster_id) else {
-            return Promise::err(capnp::Error::failed(
-                "clearContinuation route has no durable workspace room".into(),
-            ));
-        };
         match crate::shell::personal_continuity_registry::global_registry()
             .lock()
             .map_err(|_| "continuation registry unavailable".to_string())
         {
-            Ok(mut reports) => {
-                reports.clear(room, &app_id, instance_id);
-                Promise::ok(())
-            }
+            Ok(mut reports) => match clear_continuation_for_route(&mut reports, &route, &app_id) {
+                Ok(_) => Promise::ok(()),
+                Err(error) => Promise::err(capnp::Error::failed(error)),
+            },
             Err(error) => Promise::err(capnp::Error::failed(error)),
         }
     }
@@ -11952,5 +11968,124 @@ mod tests {
         assert!(!nearby_policy_enabled(policy(false, true)));
         assert!(!nearby_policy_enabled(policy(true, false)));
         assert!(nearby_policy_enabled(policy(true, true)));
+    }
+
+    fn continuation_policy(
+        enabled: bool,
+    ) -> crate::shell::continuity_policy::ContinuityPolicySnapshot {
+        let document = serde_json::json!({
+            "continuity": {
+                "enabled": true,
+                "app_continuations": enabled,
+            }
+        });
+        crate::shell::continuity_policy::ContinuityPolicySnapshot::from_document(
+            document.as_object().expect("policy object"),
+        )
+    }
+
+    fn continuation_metadata(url: &str) -> ui::collaboration::ContinuationMetadata {
+        ui::app::compose_structural_continuation_metadata(
+            ui::view::View::default(),
+            Some(ui::collaboration::ContinuationMetadata {
+                schema_version: 1,
+                bytes: format!(r#"{{"url":"{url}"}}"#).into_bytes(),
+            }),
+        )
+        .expect("valid browser continuation")
+    }
+
+    fn continuation_route_for(room: crate::shell::state::RoomId, instance: u64) -> CrdtRoute {
+        CrdtRoute::record(
+            "dev.tilo.browser",
+            room.to_string(),
+            format!("continuation:{instance}"),
+        )
+    }
+
+    #[test]
+    fn disabled_app_continuation_report_never_enters_registry() {
+        let room = crate::shell::state::RoomId::new();
+        let route = continuation_route_for(room, 11);
+        let metadata = continuation_metadata("https://disabled.test");
+        let mut reports =
+            crate::shell::personal_continuity_registry::ContinuationRegistry::default();
+
+        let result = report_continuation_for_route(
+            &mut reports,
+            continuation_policy(false),
+            &route,
+            "dev.tilo.browser",
+            metadata.schema_version,
+            metadata.bytes,
+        );
+
+        assert_eq!(result, Err("app continuation is disabled".into()));
+        assert!(
+            reports
+                .resume_for(
+                    room,
+                    "dev.tilo.browser",
+                    crate::shell::personal_continuity::AppInstanceId(11),
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn clear_continuation_affects_only_the_exact_authenticated_route() {
+        let room = crate::shell::state::RoomId::new();
+        let first = continuation_route_for(room, 11);
+        let second = continuation_route_for(room, 22);
+        let mut reports =
+            crate::shell::personal_continuity_registry::ContinuationRegistry::default();
+        for (route, url) in [
+            (&first, "https://first.test"),
+            (&second, "https://second.test"),
+        ] {
+            let metadata = continuation_metadata(url);
+            report_continuation_for_route(
+                &mut reports,
+                continuation_policy(true),
+                route,
+                "dev.tilo.browser",
+                metadata.schema_version,
+                metadata.bytes,
+            )
+            .expect("enabled exact route report");
+        }
+
+        assert!(
+            clear_continuation_for_route(&mut reports, &first, "dev.tilo.browser")
+                .expect("exact clear")
+        );
+        assert!(
+            reports
+                .resume_for(
+                    room,
+                    "dev.tilo.browser",
+                    crate::shell::personal_continuity::AppInstanceId(11),
+                )
+                .is_none()
+        );
+        assert!(
+            reports
+                .resume_for(
+                    room,
+                    "dev.tilo.browser",
+                    crate::shell::personal_continuity::AppInstanceId(22),
+                )
+                .is_some()
+        );
+        assert!(clear_continuation_for_route(&mut reports, &second, "dev.tilo.editor").is_err());
+        assert!(
+            reports
+                .resume_for(
+                    room,
+                    "dev.tilo.browser",
+                    crate::shell::personal_continuity::AppInstanceId(22),
+                )
+                .is_some()
+        );
     }
 }
