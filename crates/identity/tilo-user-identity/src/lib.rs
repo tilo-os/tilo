@@ -237,31 +237,31 @@ mod tests {
     use super::*;
 
     /// The signing-preimage byte constants are wire ABI. If any of
-    /// these three byte sequences change, previously-issued
+    /// these byte sequences change, previously-issued
     /// certificates and revocations stop verifying — that would
     /// silently disconnect every device in the field. Freeze them.
     #[test]
     fn signing_preimage_is_frozen_abi() {
         assert_eq!(cert::DEVCERT_PREIMAGE_TAG, b"tilo-devcert-v1\0");
-        assert_eq!(cert::DEVCERT_PREIMAGE_TAG.len(), 15);
+        assert_eq!(cert::DEVCERT_PREIMAGE_TAG.len(), 16);
 
-        assert_eq!(revocation::REVOCATION_PREIMAGE_TAG, b"tilo-revocation-v1\0");
+        assert_eq!(revocation::REVOCATION_PREIMAGE_TAG, b"qos-revocation-v1\0");
         assert_eq!(revocation::REVOCATION_PREIMAGE_TAG.len(), 18);
 
-        assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG, b"tilo-enrollment-v1\0");
+        assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG, b"qos-enrollment-v1\0");
         assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG.len(), 18);
 
-        assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG, b"tilo-dir-delta-v1\0");
+        assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG, b"qos-dir-delta-v1\0");
         assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG.len(), 17);
 
         assert_eq!(
             approval::APPROVAL_REQUEST_TAG,
-            b"tilo-device-approval-request-v1\0"
+            b"qos-device-approval-request-v1\0"
         );
         assert_eq!(approval::APPROVAL_REQUEST_TAG.len(), 31);
         assert_eq!(
             approval::APPROVAL_RESPONSE_TAG,
-            b"tilo-device-approval-response-v1\0"
+            b"qos-device-approval-response-v1\0"
         );
         assert_eq!(approval::APPROVAL_RESPONSE_TAG.len(), 32);
     }
