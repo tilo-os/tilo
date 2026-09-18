@@ -545,13 +545,18 @@ for required in \
   'DevicePolicy=closed' \
   'DeviceAllow=/dev/tpmrm0 rw' \
   'DeviceAllow=/dev/tpm0 rw' \
-  'CapabilityBoundingSet=CAP_SYS_PTRACE CAP_SYSLOG' \
-  'AmbientCapabilities=CAP_SYS_PTRACE CAP_SYSLOG' \
+  'CapabilityBoundingSet=' \
+  'AmbientCapabilities=' \
   'SystemCallFilter=@system-service' \
   'SystemCallFilter=~@clock @cpu-emulation @debug @module @mount @obsolete @raw-io @reboot @resources @swap'; do
   grep -Fqx "$required" "$audit_unit" \
     || bad "security audit sandbox is missing: $required"
 done
+if grep -Eq 'CAP_SYS_PTRACE|CAP_SYSLOG|/proc/\$fspid/maps' "$audit_unit" "$audit"; then
+  bad 'read-only security audit retains process-inspection or kernel-log capabilities'
+fi
+grep -Fq 'journalctl --quiet --boot --dmesg' "$audit" \
+  || bad 'security audit does not read kernel diagnostics through the journal'
 [ "$fail" -ne 0 ] || ok 'read-only security audit has a bounded runtime sandbox'
 
 hidepid_unit="$repo/os/usr/lib/systemd/system/tilo-hidepid.service"
