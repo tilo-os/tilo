@@ -109,15 +109,23 @@ test('remote canonical edit retains unrebasable composition for explicit recover
   assert.equal(document.activeElement,retained,'canonical snapshots do not steal focus from recovery');
   assert.equal(editor.value,'newer remote','newer canonical text remains authoritative before recovery');
   const recover=recovery.children.find(child=>child.localName==='button');
+  bridge.update({root:{path:'chat',children:[]}});
+  assert.equal(recover.disabled,true,'insertion is unavailable while the semantic owner is removed');
+  assert.equal(retained.value,'東京','removed owners keep exact text available for copy');
+  assert.equal(recovery.children.at(-1).textContent,'Dismiss retained text','the orphaned recovery can be explicitly retired');
+  bridge.update(snapshot({role:'TextInput',name:'Title',action_target:'title',value:'remounted remote',state:{focusable:true,focused:true},text_selection:{anchor:16,focus:16}}));
+  const remounted=root.children[0];
+  assert.notEqual(remounted,editor,'the stable target was represented by a new DOM node');
+  assert.equal(recover.disabled,false,'same-key remount re-enables explicit insertion');
   accept=false;recover.dispatchEvent(event('click'));
-  assert.equal(editor.value,'newer remote','rejected recovery restores the canonical value');
+  assert.equal(remounted.value,'remounted remote','rejected recovery restores the remounted canonical value');
   assert.equal(mount.children.includes(recovery),true,'rejected recovery retains the explicit surface');
   accept=true;
   recover.dispatchEvent(event('click'));
   assert.deepEqual(calls.map(call=>call.slice(2)),[
-    ['value','newer remote東京',0,0],
-    ['value','newer remote東京',0,0],
-    ['selection','',14,14],
+    ['value','remounted remote東京',0,0],
+    ['value','remounted remote東京',0,0],
+    ['selection','',18,18],
   ]);
   assert.equal(mount.children.includes(recovery),false,'accepted recovery clears the surface');
 });
@@ -159,6 +167,24 @@ test('canonical focus reconciles one owner without duplicate dispatch or stealin
   assert.equal(document.activeElement,cloudControl,'an unrelated Cloud control keeps focus');
   assert.equal(three.dataset.qosFocused,'true','the canonical owner remains represented in the mirror');
   assert.equal(calls.length,1);
+});
+
+test('separate semantic bridges never treat each other as managed focus',()=>{
+  const mountA=new Element('main'),canvasA=new Element('canvas'),rootA=new Element('div');mountA.append(canvasA,rootA);
+  const mountB=new Element('main'),canvasB=new Element('canvas'),rootB=new Element('div');mountB.append(canvasB,rootB);
+  const callsA=[];const callsB=[];
+  const bridgeA=semanticBridge(rootA,(...args)=>{callsA.push(args);return true;},()=>{});
+  const bridgeB=semanticBridge(rootB,(...args)=>{callsB.push(args);return true;},()=>{});
+  const view=name=>({root:{path:name,semantics:{semantic_key:'focused',role:'Button',name,action_target:name,state:{focusable:true,focused:true}}}});
+
+  document.activeElement=canvasA;bridgeA.update(view('viewer-a'));
+  document.activeElement=canvasB;bridgeB.update(view('viewer-b'));
+  const focusedB=rootB.children[0];focusedB.focus();
+  assert.equal(document.activeElement,focusedB);
+  bridgeA.update(view('viewer-a'));
+  assert.equal(document.activeElement,focusedB,'viewer A cannot steal viewer B semantic focus');
+  assert.equal(callsA.length,0);
+  assert.equal(callsB.length,1);
 });
 
 test('canonical multiline updates restore grapheme selection without moving scroll',()=>{

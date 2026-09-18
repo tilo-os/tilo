@@ -13,6 +13,7 @@ function domOffset(value,index){
 export function semanticBridge(root,invoke,report) {
   const elements=new Map();
   const recoverySurfaces=new Set();
+  const recoveries=new Map();
   const bridgeId=++bridgeSequence;
   let elementSequence=0;
   let activeDescendantHost;
@@ -75,32 +76,45 @@ export function semanticBridge(root,invoke,report) {
     while(suffix<base.length-prefix&&suffix<current.length-prefix&&base[base.length-1-suffix]===current[current.length-1-suffix])suffix++;
     return current.slice(prefix,current.length-suffix);
   }
-  function clearRecovery(element){
-    const state=element.qosState;
-    state.recoveryText='';
-    if(state.recoverySurface){recoverySurfaces.delete(state.recoverySurface);state.recoverySurface.remove();state.recoverySurface=null;}
+  function clearRecovery(recovery){
+    recoveries.delete(recovery.key);
+    recoverySurfaces.delete(recovery.surface);recovery.surface.remove();
   }
-  function recoverComposition(element){
+  function recoveryTarget(recovery){
+    const element=elements.get(recovery.key);
+    return element?.qosEditable&&element.qosState.active&&!element.qosState.disabled&&!element.qosState.readOnly?element:undefined;
+  }
+  function syncRecovery(recovery){
+    const available=Boolean(recoveryTarget(recovery));
+    recovery.recover.disabled=!available;
+    recovery.explanation.textContent=available
+      ?'Input changed elsewhere. Your composed text was retained.'
+      :'The original input is unavailable. Your composed text remains available to copy.';
+  }
+  function recoverComposition(recovery){
+    const element=recoveryTarget(recovery);
+    if(!element||!recovery.text)return false;
     const state=element.qosState;
-    if(!state.recoveryText)return false;
     const value=state.canonicalValue;
     const focus=state.canonicalSelection?.[1]??graphemeIndex(value,value.length);
     const offset=domOffset(value,focus);
-    element.value=`${value.slice(0,offset)}${state.recoveryText}${value.slice(offset)}`;
-    const caret=focus+graphemeIndex(state.recoveryText,state.recoveryText.length);
+    element.value=`${value.slice(0,offset)}${recovery.text}${value.slice(offset)}`;
+    const caret=focus+graphemeIndex(recovery.text,recovery.text.length);
     element.setSelectionRange?.(domOffset(element.value,caret),domOffset(element.value,caret));
     if(!dispatchValue(element))return false;
-    clearRecovery(element);return true;
+    clearRecovery(recovery);return true;
   }
   function presentRecovery(element,text){
     if(!text)return;
     const state=element.qosState;
-    state.recoveryText+=text;
-    if(!state.recoverySurface){
+    let recovery=recoveries.get(state.key);
+    if(!recovery){
       const surface=document.createElement('div');
       const explanation=document.createElement('span');
       const retained=document.createElement('textarea');
       const recover=document.createElement('button');
+      const dismiss=document.createElement('button');
+      recovery={key:state.key,text:'',surface,explanation,retained,recover};
       surface.dataset.qosCompositionRecovery=state.key;
       surface.setAttribute('role','alert');
       surface.style.cssText='position:absolute;left:12px;bottom:12px;z-index:2147483647;box-sizing:border-box;max-width:calc(100% - 24px);padding:10px 12px;border:1px solid #64748b;border-radius:8px;background:#0f172a;color:#f8fafc;font:13px system-ui;box-shadow:0 4px 18px #0008;';
@@ -108,19 +122,21 @@ export function semanticBridge(root,invoke,report) {
       retained.readOnly=true;retained.setAttribute('aria-label','Retained composed text');
       retained.style.cssText='display:block;box-sizing:border-box;width:100%;margin:8px 0;padding:6px;color:#0f172a;background:#f8fafc;';
       recover.type='button';recover.textContent='Insert retained text';
-      recover.addEventListener('click',()=>recoverComposition(element));
-      surface.append(explanation,retained,recover);
+      recover.addEventListener('click',()=>recoverComposition(recovery));
+      dismiss.type='button';dismiss.textContent='Dismiss retained text';dismiss.style.cssText='margin-left:8px;';
+      dismiss.addEventListener('click',()=>clearRecovery(recovery));
+      surface.append(explanation,retained,recover,dismiss);
       (root.parentNode??root).append(surface);
-      state.recoverySurface=surface;recoverySurfaces.add(surface);
+      recoveries.set(state.key,recovery);recoverySurfaces.add(surface);
     }
-    state.recoverySurface.children[1].value=state.recoveryText;
+    recovery.text+=text;recovery.retained.value=recovery.text;syncRecovery(recovery);
   }
   function createElement(editable,key,role){
     const element=document.createElement(editable?'textarea':role==='Button'?'button':'div');
     element.id=`qos-semantic-${bridgeId}-${++elementSequence}`;
     element.dataset.qosSemantic=key;
     element.qosEditable=editable;
-    element.qosState={key,active:true,disabled:false,readOnly:false,composing:false,canonicalValue:'',compositionBase:null,suppressInput:null,canonicalSelection:null,lastSelection:null,reconcilingFocus:false,recoveryText:'',recoverySurface:null};
+    element.qosState={key,active:true,disabled:false,readOnly:false,composing:false,canonicalValue:'',compositionBase:null,suppressInput:null,canonicalSelection:null,lastSelection:null,reconcilingFocus:false};
     element.addEventListener('focus',()=>{if(!element.qosState.reconcilingFocus)act(element,'focus');});
     element.addEventListener('click',()=>act(element,'activate'));
     if(editable){
@@ -157,6 +173,7 @@ export function semanticBridge(root,invoke,report) {
   }
   function update(snapshot){
     const live=new Set();
+    const ownedBeforeUpdate=new Set(elements.values());
     const activeBeforeUpdate=document.activeElement;
     let canonicalFocus;
     function semantic(node,owner,parent,index){
@@ -212,9 +229,10 @@ export function semanticBridge(root,invoke,report) {
     }
     walk(snapshot.root,root);
     for(const [key,element] of elements)if(!live.has(key)){element.qosState.active=false;element.route=undefined;element.remove();elements.delete(key);}
+    for(const recovery of recoveries.values())syncRecovery(recovery);
     for(const element of elements.values())element.dataset.qosFocused=String(element===canonicalFocus);
     const active=document.activeElement;
-    const focusWasManaged=Boolean(activeBeforeUpdate?.qosState);
+    const focusWasManaged=ownedBeforeUpdate.has(activeBeforeUpdate);
     const focusInMount=Boolean(root.parentNode?.contains?.(active));
     const focusInRecovery=[...recoverySurfaces].some(surface=>surface.contains?.(active));
     if(canonicalFocus&&active!==canonicalFocus&&focusInMount&&!focusWasManaged&&!focusInRecovery){
@@ -225,9 +243,9 @@ export function semanticBridge(root,invoke,report) {
       try{canonicalFocus.focus();}finally{canonicalFocus.qosState.reconcilingFocus=false;}
     }else{
       clearActiveDescendant();
-      if(!canonicalFocus&&active?.qosState&&active.qosState.active)active.blur?.();
+      if(!canonicalFocus&&ownedBeforeUpdate.has(active)&&active.qosState.active)active.blur?.();
     }
     root.dataset.nodeCount=String(elements.size);
   }
-  return {update,close(){clearActiveDescendant();for(const element of elements.values()){element.qosState.active=false;element.route=undefined;}for(const surface of recoverySurfaces)surface.remove();recoverySurfaces.clear();root.replaceChildren();elements.clear();}};
+  return {update,close(){clearActiveDescendant();for(const element of elements.values()){element.qosState.active=false;element.route=undefined;}for(const surface of recoverySurfaces)surface.remove();recoverySurfaces.clear();recoveries.clear();root.replaceChildren();elements.clear();}};
 }
