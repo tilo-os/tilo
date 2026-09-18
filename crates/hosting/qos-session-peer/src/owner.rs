@@ -315,6 +315,13 @@ impl SessionOwner {
             .receive_from(origin, message, SystemTime::now())
             .map_err(anyhow::Error::msg)?;
         if !(request || outcome.changed || outcome.metadata_changed) {
+            if outcome.deferred {
+                // This is still unadmitted transport input, not committed document state.
+                // Keep its bounded prerequisite queue reachable for later governance.
+                // No receipt/checkpoint covers it; the sender retains its durable outbox
+                // until admission, including across a native restart.
+                self.peer = candidate;
+            }
             return Ok(None);
         }
         let mut next = self.aggregate.clone();

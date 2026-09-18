@@ -424,3 +424,52 @@ async fn admit_until_ready(
         }
     }
 }
+
+#[test]
+fn deferred_snapshot_stays_reachable_until_governed_coverage_then_commits() {
+    use qos_peer_state::{NeighbourMsg, TransportOrigin};
+    use qos_user_identity::persist::{self, IdentityPaths};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("owner");
+    let mut owner = SessionOwner::initialize(&path).unwrap();
+    let before = owner.status();
+    let key = persist::read_device_key(&IdentityPaths::under(path.join("identity")).device_privkey)
+        .unwrap();
+    let mut source = owner.peer().clone();
+    qos_browser_runtime::fixture_writer_insert(
+        &mut source,
+        &key,
+        "queued snapshot",
+        web_time::SystemTime::now(),
+    )
+    .unwrap();
+    let messages = source
+        .bootstrap_messages(&key, web_time::SystemTime::now())
+        .unwrap();
+    let snapshot=messages.iter().find(|message|matches!(message,NeighbourMsg::AppDocument{record_id,..} if !record_id.is_empty())).unwrap().clone();
+    let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
+    assert!(
+        owner.receive(origin, snapshot).unwrap().is_none(),
+        "unadmitted data must not return a commit receipt"
+    );
+    assert_eq!(
+        owner.status(),
+        before,
+        "no acknowledgement or committed record change yet"
+    );
+    assert_eq!(
+        owner.peer().pending_count(),
+        1,
+        "deferred candidate remains reachable"
+    );
+    let governance = messages
+        .into_iter()
+        .find(|message| matches!(message, NeighbourMsg::SyncResp { .. }))
+        .unwrap();
+    assert!(owner.receive(origin, governance).unwrap().is_some());
+    assert_eq!(owner.peer().pending_count(), 0);
+    assert_eq!(owner.peer().rows(), source.rows());
+    let committed = owner.status();
+    drop(owner);
+    assert_eq!(SessionOwner::open(&path).unwrap().status(), committed);
+}
