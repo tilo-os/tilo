@@ -13,6 +13,7 @@ use std::rc::Rc;
 use automerge::{AutoCommit, ChangeHash};
 use vello::kurbo::Point;
 
+use ui::icons::Icon;
 use ui::{ActionHost, ImageStore};
 
 use crate::account::AccountStore;
@@ -103,6 +104,40 @@ impl CtxAction {
             CtxAction::Delete => "Delete".into(),
             CtxAction::MoveToInbox => "Move to Inbox".into(),
             CtxAction::Junk => "Mark as junk".into(),
+        }
+    }
+
+    /// Shared visual treatment for the reader toolbar and its context menu.
+    /// Keeping the icon mapping beside the action makes a command mean the
+    /// same thing whether it is invoked by pointer, keyboard, or AT.
+    pub fn icon(self) -> Icon {
+        match self {
+            // The shared icon set does not yet include reply-all/mail-open,
+            // so use the closest existing canonical glyph rather than draw a
+            // bespoke lookalike here.
+            CtxAction::Reply | CtxAction::ReplyAll => Icon::Reply,
+            CtxAction::Forward => Icon::Send,
+            CtxAction::ToggleRead => Icon::Mail,
+            CtxAction::ToggleStar => Icon::Star,
+            CtxAction::Archive => Icon::Archive,
+            CtxAction::Delete => Icon::Trash,
+            CtxAction::MoveToInbox => Icon::Inbox,
+            CtxAction::Junk => Icon::Ban,
+        }
+    }
+
+    /// A visible hint only — command dispatch remains in `MailApp` so these
+    /// shortcuts never bypass the collaborative action boundary.
+    pub fn shortcut(self) -> Option<&'static str> {
+        match self {
+            CtxAction::Reply => Some("R"),
+            CtxAction::ToggleRead => Some("U"),
+            CtxAction::ToggleStar => Some("S"),
+            CtxAction::Archive => Some("E"),
+            CtxAction::Delete => Some("Del"),
+            CtxAction::ReplyAll | CtxAction::Forward | CtxAction::MoveToInbox | CtxAction::Junk => {
+                None
+            }
         }
     }
 }
