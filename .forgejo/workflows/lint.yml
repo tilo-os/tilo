@@ -50,6 +50,17 @@ jobs:
         run: |
           bash os/tests/workflow_dependency_invariants.sh
 
+      - name: Focused installer contracts without image assembly
+        run: python3 tools/dev.py check installer --out "$RUNNER_TEMP/tilo-installer-contracts"
+
+      - name: Retain installer contract timings and results
+        if: always()
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: installer-contract-results
+          path: ${{ runner.temp }}/tilo-installer-contracts/run.json
+          if-no-files-found: warn
+
       - name: Codex CI watcher unit tests
         run: |
           python3 -m json.tool .codex/hooks.json >/dev/null
