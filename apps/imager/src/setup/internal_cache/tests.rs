@@ -868,3 +868,80 @@ pub(in crate::setup) fn test_prepared(parts: TransferParts<'_>) -> PreparedPrefi
         final_candidate,
     }
 }
+
+fn standalone_epoch_record(kind: u8, generation: u64, epoch: u64) -> Vec<u8> {
+    let length = if kind == 3 { 4096u64 } else { 4 };
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"QOSCP001");
+    bytes.push(kind);
+    bytes.extend_from_slice(&[0; 96]);
+    bytes.extend_from_slice(b".qos-part-0123456789abcdef0123456789abcdef");
+    for value in [generation, epoch, length, 4096] {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes.extend_from_slice(&Sha256::digest(vec![b'E'; length as usize]));
+    let checksum = Sha256::digest(&bytes);
+    bytes.extend_from_slice(&checksum);
+    bytes
+}
+#[test]
+fn impossible_nonreset_epoch_is_rejected_without_a_predecessor() {
+    use super::checkpoint::Record;
+    for kind in [1, 3] {
+        for (generation, epoch) in [(3, 1), (4, 2), (u32::MAX as u64, u32::MAX as u64 - 2)] {
+            assert!(Record::decode(&standalone_epoch_record(kind, generation, epoch)).is_ok());
+        }
+        for (generation, epoch) in [(2, 1), (3, 2), (u32::MAX as u64, u32::MAX as u64 - 1)] {
+            assert!(
+                Record::decode(&standalone_epoch_record(kind, generation, epoch)).is_err(),
+                "kind={kind}, generation={generation}, epoch={epoch}"
+            );
+        }
+    }
+}
+#[cfg(unix)]
+#[test]
+fn impossible_nonreset_epoch_refuses_recovery_before_any_tail_trim() {
+    for kind in [1, 3] {
+        for generation in [3u64, 2] {
+            let s = selected();
+            let dir = tempfile::tempdir().unwrap();
+            let (p, mut f) = DiskProvider::new(dir.path());
+            let own = p.ownership();
+            let cancel = AtomicBool::new(false);
+            {
+                let mut session = Session::new(&s, 0, 1, p).unwrap();
+                drop(session.prepare(&s, &mut f, &cancel).unwrap());
+            }
+            let length = if kind == 3 { 4096usize } else { 4 };
+            let mut payload = vec![b'E'; length];
+            if kind == 1 {
+                payload.extend_from_slice(b"TAIL");
+            }
+            f.write_all(&payload).unwrap();
+            f.sync_all().unwrap();
+            drop(f);
+            let path = dir.path().join("journal/record-1");
+            let mut record = fs::read(&path).unwrap();
+            let fields = standalone_epoch_record(kind, generation, 1);
+            record[8] = kind;
+            record[147..211].copy_from_slice(&fields[147..211]);
+            rewrite_checksum(&mut record);
+            fs::write(&path, &record).unwrap();
+            assert_eq!(fs::read_dir(dir.path().join("journal")).unwrap().count(), 1);
+            let (p, mut f) = DiskProvider::reopen(dir.path(), own.clone());
+            let mut session = Session::new(&s, 0, 2, p).unwrap();
+            if generation == 3 {
+                assert_eq!(
+                    session.prepare(&s, &mut f, &cancel).unwrap().committed(),
+                    length as u64
+                );
+                assert_eq!(f.metadata().unwrap().len(), length as u64);
+            } else {
+                assert!(session.prepare(&s, &mut f, &cancel).is_err(), "kind={kind}");
+                assert_eq!(fs::read(dir.path().join(&own.leaf)).unwrap(), payload);
+                assert_eq!(fs::read(&path).unwrap(), record);
+            }
+        }
+    }
+}

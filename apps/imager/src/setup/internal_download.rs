@@ -94,6 +94,14 @@ fn cancelled(cancel: &AtomicBool) -> Result<(), String> {
         Ok(())
     }
 }
+fn completion_stop(cancel: &AtomicBool, pause: Option<&AtomicBool>) -> Result<(), String> {
+    cancelled(cancel)?;
+    if pause.is_some_and(|p| p.load(Ordering::Acquire)) {
+        Err("Internal transfer paused".into())
+    } else {
+        Ok(())
+    }
+}
 fn io_error(error: std::io::Error) -> String {
     format!("Internal working-file/stream error: {error}")
 }
@@ -137,7 +145,9 @@ impl InternalTransport {
         if expected == 0 || expected > MAX_MANIFEST_BYTES as u64 {
             return Err("Invalid selected manifest size".into());
         }
-        let mut response = self.request(url, 0, cancel).map_err(|e| e.message())?;
+        let mut response = self
+            .request(url, 0, cancel, None)
+            .map_err(|e| e.message())?;
         cancelled(cancel)?;
         self.response_identity(&response)?;
         if response.status() != reqwest::StatusCode::OK {
@@ -161,9 +171,13 @@ impl InternalTransport {
         mut url: Url,
         offset: u64,
         cancel: &AtomicBool,
+        pause: Option<&AtomicBool>,
     ) -> Result<reqwest::blocking::Response, RequestError> {
         for hops in 0..=5 {
             cancelled(cancel).map_err(RequestError::Fatal)?;
+            if pause.is_some_and(|p| p.load(Ordering::Acquire)) {
+                return Err(RequestError::Paused);
+            }
             if !same_origin(&url, &self.origin) {
                 return Err(RequestError::Fatal("Untrusted request URL".into()));
             }
@@ -176,6 +190,10 @@ impl InternalTransport {
             }
             let response = request.send();
             cancelled(cancel).map_err(RequestError::Fatal)?;
+            // Stop before interpreting errors, redirects, status or framing.
+            if pause.is_some_and(|p| p.load(Ordering::Acquire)) {
+                return Err(RequestError::Paused);
+            }
             let response = response.map_err(|e| {
                 // Header/protocol parsing errors are not transient transport
                 // failures. Only explicit connect/timeouts retry acquisition.
@@ -401,7 +419,14 @@ impl InternalTransport {
                     return Err("Internal transfer paused".into());
                 }
             }
-            let mut response = match self.request(url.clone(), offset, cancel) {
+            let pause = durable.as_ref().map(|d| d.pause);
+            let mut response = match self.request(url.clone(), offset, cancel, pause) {
+                Err(RequestError::Paused) => {
+                    if let Some(d) = durable.as_deref_mut() {
+                        d.stop(file, component.byte_size, cancel)?;
+                    }
+                    return Err("Internal transfer paused".into());
+                }
                 Ok(response) => response,
                 Err(RequestError::Fatal(error)) => return Err(error),
                 Err(RequestError::Retry(error)) => {
@@ -442,7 +467,7 @@ impl InternalTransport {
             let Some(expected) = expected else {
                 last_error = "Server ignored/rejected Range or sent invalid range bounds".into();
                 if let Some(d) = durable.as_deref_mut() {
-                    d.before_reset(file, cancel)?;
+                    d.before_reset(file, component.byte_size, cancel)?;
                 }
                 reset(file, cancel, events)?;
                 if let Some(d) = durable.as_deref_mut() {
@@ -456,8 +481,17 @@ impl InternalTransport {
             cancelled(cancel)?;
             events.emit(Phase::Receiving, 0, true);
             let pause = durable.as_ref().map(|d| d.pause);
+            #[cfg(test)]
+            let mut measured = tests::ResponseReader {
+                response: &mut response,
+                received: 0,
+            };
+            #[cfg(test)]
+            let reader = &mut measured;
+            #[cfg(not(test))]
+            let reader = &mut response;
             let end = read_body_stoppable(
-                &mut response,
+                reader,
                 expected,
                 cancel,
                 || pause.is_some_and(|p| p.load(Ordering::Acquire)),
@@ -501,7 +535,7 @@ impl InternalTransport {
             // Demand a fresh complete response within this invocation.
             if length == component.byte_size {
                 if let Some(d) = durable.as_deref_mut() {
-                    d.before_reset(file, cancel)?;
+                    d.before_reset(file, component.byte_size, cancel)?;
                 }
                 reset(file, cancel, events)?;
                 if let Some(d) = durable.as_deref_mut() {
@@ -522,6 +556,11 @@ impl InternalTransport {
             events.emit(Phase::Retrying, 0, true);
         }
         cancelled(cancel)?;
+        if let Some(d) = durable.as_deref_mut() {
+            if d.stop(file, component.byte_size, cancel)? {
+                return Err("Internal transfer paused".into());
+            }
+        }
         Err(format!(
             "Component incomplete after 3 attempts ({} held bytes): {last_error}",
             regular_length(file, component.byte_size, cancel)?
@@ -530,6 +569,7 @@ impl InternalTransport {
 }
 
 enum RequestError {
+    Paused,
     Fatal(String),
     Retry(String),
 }
@@ -537,6 +577,7 @@ impl RequestError {
     fn message(self) -> String {
         match self {
             Self::Fatal(s) | Self::Retry(s) => s,
+            Self::Paused => "Internal transfer paused".into(),
         }
     }
 }
@@ -590,6 +631,10 @@ fn read_body_stoppable(
         let limit = ((expected - received + 1).min(BUFFER as u64)) as usize;
         let read = reader.read(&mut buffer[..limit]);
         cancelled(cancel)?;
+        // A stop requested while this read was in flight precedes EOF/error.
+        if pause() {
+            return Ok(BodyEnd::Paused);
+        }
         let count = match read {
             Ok(n) => n,
             Err(e) => return Ok(BodyEnd::Interrupted(format!("Response read failed: {e}"))),
@@ -694,11 +739,20 @@ fn regular_length(file: &File, max: u64, cancel: &AtomicBool) -> Result<u64, Str
     Ok(metadata.len())
 }
 fn hash_file(file: &mut File, length: u64, cancel: &AtomicBool) -> Result<String, String> {
+    hash_file_stoppable(file, length, cancel, None)
+}
+fn hash_file_stoppable(
+    file: &mut File,
+    length: u64,
+    cancel: &AtomicBool,
+    pause: Option<&AtomicBool>,
+) -> Result<String, String> {
+    completion_stop(cancel, pause)?;
     if regular_length(file, length, cancel)? != length {
         return Err("Working file length changed".into());
     }
     file.rewind().map_err(io_error)?;
-    cancelled(cancel)?;
+    completion_stop(cancel, pause)?;
     let mut hash = Sha256::new();
     #[cfg(test)]
     let mut count = 0;
@@ -709,22 +763,30 @@ fn hash_file(file: &mut File, length: u64, cancel: &AtomicBool) -> Result<String
         let reader = &mut measured;
         #[cfg(not(test))]
         let reader = &mut *file;
-        read_body(reader, length, cancel, |chunk| {
-            hash.update(chunk);
-            #[cfg(test)]
-            {
-                count += chunk.len() as u64;
-                tests::event("hash", count);
-            }
-            cancelled(cancel)
-        })
+        read_body_stoppable(
+            reader,
+            length,
+            cancel,
+            || pause.is_some_and(|p| p.load(Ordering::Acquire)),
+            |chunk| {
+                hash.update(chunk);
+                #[cfg(test)]
+                {
+                    count += chunk.len() as u64;
+                    tests::event("hash", count);
+                }
+                completion_stop(cancel, pause)
+            },
+        )
     }?;
-    if let BodyEnd::Interrupted(error) = end {
-        return Err(error);
+    match end {
+        BodyEnd::Paused => return Err("Internal transfer paused".into()),
+        BodyEnd::Interrupted(error) => return Err(error),
+        BodyEnd::Complete => {}
     }
     #[cfg(test)]
     tests::event("hash-eof", count);
-    cancelled(cancel)?;
+    completion_stop(cancel, pause)?;
     if regular_length(file, length, cancel)? != length {
         return Err("Working file length changed".into());
     }
@@ -865,19 +927,20 @@ fn finish(
     file: &mut File,
     cancel: &AtomicBool,
     events: &mut Events<impl FnMut(Progress)>,
+    pause: Option<&AtomicBool>,
 ) -> Result<CompletedComponent, String> {
-    cancelled(cancel)?;
+    completion_stop(cancel, pause)?;
     events.emit(Phase::Verifying, 0, true);
-    cancelled(cancel)?;
+    completion_stop(cancel, pause)?;
     file.flush().map_err(io_error)?;
-    cancelled(cancel)?;
-    if hash_file(file, component.byte_size, cancel)? != component.sha256 {
+    completion_stop(cancel, pause)?;
+    if hash_file_stoppable(file, component.byte_size, cancel, pause)? != component.sha256 {
         return Err("Complete component SHA-256 mismatch".into());
     }
-    cancelled(cancel)?;
+    completion_stop(cancel, pause)?;
     events.received = component.byte_size;
     events.emit(Phase::Complete, component.byte_size, true);
-    cancelled(cancel)?;
+    completion_stop(cancel, pause)?;
     Ok(CompletedComponent {
         byte_size: component.byte_size,
     })
@@ -945,8 +1008,15 @@ impl DurableTransfer<'_> {
         cancel: &AtomicBool,
         kind: cache::Kind,
     ) -> Result<(), String> {
-        self.hashes.verify_tail(file, cancel)?;
+        if kind == cache::Kind::Final && self.stop(file, self.hashes.length, cancel)? {
+            return Err("Internal transfer paused".into());
+        }
+        let verified = self.hashes.verify_tail(file, cancel);
         cancelled(cancel)?;
+        if kind == cache::Kind::Final && self.stop(file, self.hashes.length, cancel)? {
+            return Err("Internal transfer paused".into());
+        }
+        verified?;
         self.acknowledge(
             file,
             cache::Candidate {
@@ -956,10 +1026,21 @@ impl DurableTransfer<'_> {
             },
         )?;
         self.committed = self.hashes.length;
-        cancelled(cancel)
-    }
-    fn before_reset(&mut self, file: &mut File, cancel: &AtomicBool) -> Result<(), String> {
         cancelled(cancel)?;
+        if kind == cache::Kind::Final && self.stop(file, self.hashes.length, cancel)? {
+            return Err("Internal transfer paused".into());
+        }
+        Ok(())
+    }
+    fn before_reset(
+        &mut self,
+        file: &mut File,
+        full: u64,
+        cancel: &AtomicBool,
+    ) -> Result<(), String> {
+        if self.stop(file, full, cancel)? {
+            return Err("Internal transfer paused".into());
+        }
         self.acknowledge(
             file,
             cache::Candidate {
@@ -969,6 +1050,9 @@ impl DurableTransfer<'_> {
             },
         )?;
         self.committed = 0;
+        if self.stop(file, full, cancel)? {
+            return Err("Internal transfer paused".into());
+        }
         Ok(())
     }
     fn stop(&mut self, file: &mut File, full: u64, cancel: &AtomicBool) -> Result<bool, String> {
@@ -997,9 +1081,21 @@ fn finish_persistent(
     file: &mut File,
     cancel: &AtomicBool,
     events: &mut Events<impl FnMut(Progress)>,
-    durable: Option<&mut DurableTransfer<'_>>,
+    mut durable: Option<&mut DurableTransfer<'_>>,
 ) -> Result<CompletedComponent, String> {
-    let done = finish(component, file, cancel, events)?;
+    if let Some(d) = durable.as_deref_mut() {
+        if d.stop(file, component.byte_size, cancel)? {
+            return Err("Internal transfer paused".into());
+        }
+    }
+    let pause = durable.as_ref().map(|d| d.pause);
+    let result = finish(component, file, cancel, events, pause);
+    if let Some(d) = durable.as_deref_mut() {
+        if d.stop(file, component.byte_size, cancel)? {
+            return Err("Internal transfer paused".into());
+        }
+    }
+    let done = result?;
     if let Some(d) = durable {
         if !d.final_candidate {
             d.commit(file, cancel, cache::Kind::Final)?;
