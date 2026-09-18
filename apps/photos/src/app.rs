@@ -2250,6 +2250,17 @@ impl PhotosApp {
                 self.metadata_editor = false;
             }
             crate::actions::PhotosOperation::ViewLibrary => self.show_library(),
+            crate::actions::PhotosOperation::ViewPeople => {
+                self.show_library();
+                self.notice = Some(
+                    "People is local-first: install a signed face model in Settings, then review every suggestion before sharing labels".to_owned(),
+                );
+            }
+            crate::actions::PhotosOperation::ManagePeopleRecognition => {
+                self.notice = Some(
+                    "Open Settings › Models to install and start a signed local face-recognition model. Photos never downloads model bytes itself.".to_owned(),
+                );
+            }
             crate::actions::PhotosOperation::ViewFavorites => self.view_favorites(doc)?,
             crate::actions::PhotosOperation::ViewPlaces => {
                 self.show_library();
@@ -6596,6 +6607,18 @@ impl Widget for PhotosApp {
                 self.metadata_editor = false;
             }
             crate::actions::PhotosOperation::ViewLibrary => self.show_library(),
+            crate::actions::PhotosOperation::ViewPeople => {
+                self.show_library();
+                self.notice = Some(
+                    "People recognition is local and opt-in; no face model is currently available on this device".to_owned(),
+                );
+            }
+            crate::actions::PhotosOperation::ManagePeopleRecognition => {
+                self.notice = Some(
+                    "Open Settings › Models to install a signed local face-recognition model"
+                        .to_owned(),
+                );
+            }
             crate::actions::PhotosOperation::ViewFavorites => self.view_favorites(doc)?,
             crate::actions::PhotosOperation::ViewPlaces => {
                 self.show_library();
