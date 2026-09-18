@@ -96,6 +96,13 @@ has "$workflow" 'test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"' \
   'snapshot pin updates reject source changes during the build'
 has "$workflow" 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' \
   'snapshot signing requires a non-exportable key'
+if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$workflow" \
+   && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$workflow" \
+   && grep -Fq 'needs: signing-preflight' "$workflow"; then
+  ok 'snapshot construction starts only after KMS authority matches the pinned public key'
+else
+  bad 'snapshot construction can start before its signing authority is identity-bound'
+fi
 has "$workflow" 'https://tilo.dev/buildtypes/frozen-rpm-index/v1' \
   'snapshot provenance binds the package-set build type'
 has "$workflow" 'cosign attest --yes --key "$COSIGN_KEY_REF" --type slsaprovenance1' \
