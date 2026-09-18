@@ -48,6 +48,7 @@ use crate::doc::PhotosDoc;
 use crate::model::{Edits, LibraryPhoto, OpenImage, Rect01};
 use crate::pixels::{self, Rgba};
 use crate::strings::tr;
+use crate::timeline_projection::{TimelineGeometry, TimelinePhoto, TimelineProjection};
 
 /// Toolbar height, and the status bar's. Both are chrome around the canvas,
 /// which takes everything left over.
@@ -248,69 +249,6 @@ pub fn timeline_virtual_range(
     start..end
 }
 
-/// Build continuous chronological rows from document-owned image dimensions.
-/// A row never crosses a capture day; complete rows fill the available width,
-/// while a day's final partial row remains at its natural target height.
-fn justified_timeline_layout(
-    items: &[LibraryItem],
-    available_width: f64,
-    target_height: f64,
-    gap: f64,
-) -> Vec<TimelineItemLayout> {
-    let mut layout = Vec::with_capacity(items.len());
-    let mut start = 0;
-    while start < items.len() {
-        let day = &items[start].captured_at;
-        let mut day_end = start + 1;
-        while day_end < items.len() && items[day_end].captured_at == *day {
-            day_end += 1;
-        }
-        let mut row_start = start;
-        while row_start < day_end {
-            let mut row_end = row_start;
-            let mut aspect_sum = 0.0;
-            while row_end < day_end {
-                let next_aspect = items[row_end].aspect_ratio.clamp(0.35, 3.0);
-                let next_count = row_end - row_start + 1;
-                let next_width = (aspect_sum + next_aspect) * target_height
-                    + gap * next_count.saturating_sub(1) as f64;
-                aspect_sum += next_aspect;
-                row_end += 1;
-                if next_width >= available_width || next_count >= 6 {
-                    break;
-                }
-            }
-            let fills_row = row_end < day_end || aspect_sum * target_height >= available_width;
-            let height = if fills_row {
-                ((available_width - gap * (row_end - row_start - 1) as f64) / aspect_sum)
-                    .clamp(76.0, 320.0)
-            } else {
-                target_height.clamp(76.0, 320.0)
-            };
-            let mut used = 0.0;
-            for index in row_start..row_end {
-                let is_last = index + 1 == row_end;
-                let width = if fills_row && is_last {
-                    (available_width - used).max(44.0)
-                } else {
-                    let width = (items[index].aspect_ratio.clamp(0.35, 3.0) * height).round();
-                    used += width + gap;
-                    width
-                };
-                layout.push(TimelineItemLayout {
-                    width,
-                    height,
-                    row_start: index == row_start,
-                    row_end: is_last,
-                });
-            }
-            row_start = row_end;
-        }
-        start = day_end;
-    }
-    layout
-}
-
 /// Measured rows for the compact library masthead.  Compact and 200% text
 /// share this source of truth so the count, selection affordance, density,
 /// collection rail, and first date never occupy the same vertical space.
@@ -446,8 +384,17 @@ impl PeopleScanProgress {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ImageAnalysisComponent {
+    Ocr,
+    Vision,
+}
+
 enum AnalysisOutcome {
-    Image(Result<crate::model::ImageAnalysis, String>),
+    Image {
+        component: ImageAnalysisComponent,
+        result: Result<crate::model::ImageAnalysis, String>,
+    },
     People(Result<crate::people::VerifiedFaceClusterBatch, String>),
 }
 
@@ -489,6 +436,16 @@ fn analysis_failure(
     }
 }
 
+fn mark_analysis_shared(analysis: &mut crate::model::ImageAnalysis) {
+    "shared".clone_into(&mut analysis.provenance.scope);
+    if let Some(provenance) = &mut analysis.ocr_provenance {
+        "shared".clone_into(&mut provenance.scope);
+    }
+    if let Some(provenance) = &mut analysis.vision_provenance {
+        "shared".clone_into(&mut provenance.scope);
+    }
+}
+
 fn analysis_worker(rx: &Receiver<AnalysisJob>, tx: &SyncSender<AnalysisResult>) {
     while let Ok(job) = rx.recv() {
         if tx
@@ -497,12 +454,14 @@ fn analysis_worker(rx: &Receiver<AnalysisJob>, tx: &SyncSender<AnalysisResult>) 
                 photo_id: job.photo_id,
                 content: job.content,
                 result: match job.kind {
-                    AnalysisJobKind::Ocr { language } => AnalysisOutcome::Image(
-                        crate::analysis::recognize_text(&job.image, &language),
-                    ),
-                    AnalysisJobKind::Vision { capability } => AnalysisOutcome::Image(
-                        crate::analysis::analyze_image(&job.image, &capability),
-                    ),
+                    AnalysisJobKind::Ocr { language } => AnalysisOutcome::Image {
+                        component: ImageAnalysisComponent::Ocr,
+                        result: crate::analysis::recognize_text(&job.image, &language),
+                    },
+                    AnalysisJobKind::Vision { capability } => AnalysisOutcome::Image {
+                        component: ImageAnalysisComponent::Vision,
+                        result: crate::analysis::analyze_image(&job.image, &capability),
+                    },
                     AnalysisJobKind::People { capability, images } => {
                         AnalysisOutcome::People(crate::analysis::detect_people(images, &capability))
                     }
@@ -730,10 +689,6 @@ struct LibraryItem {
     name: String,
     favorite: bool,
     captured_at: String,
-    /// Intrinsic geometry is document metadata, available before thumbnail
-    /// hydration.  Keeping it in the projected item avoids a 3:2 placeholder
-    /// grid that jumps every time a decoder finishes.
-    aspect_ratio: f64,
 }
 
 /// Presentation-only geometry for a stable justified row.
@@ -741,8 +696,6 @@ struct LibraryItem {
 struct TimelineItemLayout {
     width: f64,
     height: f64,
-    row_start: bool,
-    row_end: bool,
 }
 
 #[derive(Clone)]
@@ -1133,10 +1086,12 @@ pub struct PhotosApp {
     /// This remains local UI state: collaborators should never change a
     /// person's preferred thumbnail size.
     timeline_density: u8,
-    /// Fractional row offset: pixel-wheel scrolling is smooth while the
-    /// materialised slice still advances only when its leading row changes.
-    timeline_scroll_row: f64,
-    timeline_last_columns: usize,
+    /// Exact variable-height chronology coordinate.
+    timeline_scroll_y: f64,
+    timeline_projection: TimelineProjection,
+    timeline_projection_heads: Vec<automerge::ChangeHash>,
+    timeline_projection_filter: String,
+    timeline_viewport_height: f64,
     /// Shared chronological navigation face.  It owns no library data: the
     /// current row offset/density remain private presentation state, while
     /// date boundaries are a bounded projection of canonical photo metadata.
@@ -1319,9 +1274,17 @@ impl PhotosApp {
             let targets = library
                 .photos
                 .into_iter()
-                .filter(|photo| photo.analysis.is_none())
+                .filter(|photo| {
+                    !photo.analysis.as_ref().is_some_and(|analysis| {
+                        analysis.has_vision_component(
+                            photo.image.content.as_deref(),
+                            &capability.revision,
+                        )
+                    })
+                })
                 .filter_map(|photo| {
-                    if crate::doc::bytes_of(&photo.image).is_some() {
+                    if photo.image.content.is_some() && crate::doc::bytes_of(&photo.image).is_some()
+                    {
                         Some(photo.id)
                     } else {
                         unavailable += 1;
@@ -1488,11 +1451,14 @@ impl PhotosApp {
             .as_ref()
             .is_none_or(|photo| photo.image.content != completed.content);
         let item_result = match completed.result {
-            AnalysisOutcome::Image(Ok(mut analysis)) if !stale => {
-                "shared".clone_into(&mut analysis.provenance.scope);
-                let action = crate::actions::PhotosAction::SetImageAnalysis {
+            AnalysisOutcome::Image {
+                component: ImageAnalysisComponent::Vision,
+                result: Ok(mut analysis),
+            } if !stale => {
+                mark_analysis_shared(&mut analysis);
+                let action = crate::actions::PhotosAction::MergeImageAnalysis {
                     photo_id: completed.photo_id.clone(),
-                    analysis: Some(analysis),
+                    analysis,
                 };
                 self.actions
                     .try_dispatch_with_context(
@@ -1507,10 +1473,18 @@ impl PhotosApp {
                     )
                     .map_err(|error| error.to_string())
             }
-            AnalysisOutcome::Image(Ok(_)) => {
+            AnalysisOutcome::Image {
+                component: ImageAnalysisComponent::Ocr,
+                ..
+            } => {
+                Err("The image-analysis worker returned an OCR result for a vision scan".to_owned())
+            }
+            AnalysisOutcome::Image { result: Ok(_), .. } => {
                 Err("The photograph changed before local analysis finished".to_owned())
             }
-            AnalysisOutcome::Image(Err(error)) => Err(error),
+            AnalysisOutcome::Image {
+                result: Err(error), ..
+            } => Err(error),
             AnalysisOutcome::People(_) => {
                 Err("The image-analysis worker returned the wrong result kind".to_owned())
             }
@@ -1590,7 +1564,7 @@ impl PhotosApp {
             if self.cancelled_analysis.remove(&completed.invocation) {
                 continue;
             }
-            let stale = matches!(&completed.result, AnalysisOutcome::Image(_))
+            let stale = matches!(&completed.result, AnalysisOutcome::Image { .. })
                 && PhotosDoc::photo(doc, &completed.photo_id)
                     .as_ref()
                     .is_none_or(|photo| photo.image.content != completed.content);
@@ -1608,11 +1582,14 @@ impl PhotosApp {
                 }
             } else {
                 match completed.result {
-                    AnalysisOutcome::Image(Ok(mut analysis)) => {
-                        "shared".clone_into(&mut analysis.provenance.scope);
-                        let action = crate::actions::PhotosAction::SetImageAnalysis {
+                    AnalysisOutcome::Image {
+                        component: _,
+                        result: Ok(mut analysis),
+                    } => {
+                        mark_analysis_shared(&mut analysis);
+                        let action = crate::actions::PhotosAction::MergeImageAnalysis {
                             photo_id: completed.photo_id,
-                            analysis: Some(analysis),
+                            analysis,
                         };
                         match self.actions.try_dispatch_with_context(
                             doc,
@@ -1637,9 +1614,9 @@ impl PhotosApp {
                             Err(error) => analysis_failure(completed.invocation, error.to_string()),
                         }
                     }
-                    AnalysisOutcome::Image(Err(error)) => {
-                        analysis_failure(completed.invocation, error)
-                    }
+                    AnalysisOutcome::Image {
+                        result: Err(error), ..
+                    } => analysis_failure(completed.invocation, error),
                     AnalysisOutcome::People(Err(error)) => {
                         self.people_scan_progress.status = "error".to_owned();
                         self.people_scan_progress.last_error = Some(error.clone());
@@ -1836,8 +1813,11 @@ impl PhotosApp {
             library_select_button: build_library_header_button("photos-library-select", "Select"),
             library_album_buttons: build_library_album_buttons(),
             timeline_density: 1,
-            timeline_scroll_row: 0.0,
-            timeline_last_columns: 1,
+            timeline_scroll_y: 0.0,
+            timeline_projection: TimelineProjection::default(),
+            timeline_projection_heads: Vec::new(),
+            timeline_projection_filter: String::new(),
+            timeline_viewport_height: 0.0,
             timeline_index: DateIndexedScrollbar::new("photos:timeline-index"),
             timeline_index_markers: Vec::new(),
             timeline_index_metrics: ScrollMetrics::new(0.0, 0.0, 0.0),
@@ -2504,7 +2484,7 @@ impl PhotosApp {
                     self.active_person = Some(name.clone());
                     self.library_destination = LibraryDestination::Timeline;
                     self.people_mode = false;
-                    self.timeline_scroll_row = 0.0;
+                    self.timeline_scroll_y = 0.0;
                 }
             }
             PeopleIntent::SaveName => {
@@ -2621,6 +2601,7 @@ impl PhotosApp {
         self.active_object = None;
         self.active_pet = None;
         self.active_favorites = false;
+        self.timeline_scroll_y = 0.0;
         self.library_remove_confirm = None;
         self.finish_selection();
     }
@@ -2675,13 +2656,46 @@ impl PhotosApp {
         let Some(index) = index else {
             return Err("that timeline boundary is no longer in the shared library".to_owned());
         };
-        let columns = timeline_column_count(
-            self.canvas_rect.width(),
-            self.timeline_density,
-            self.large_text_toolbar,
-        )
-        .max(1);
-        self.timeline_scroll_row = index as f64 / columns as f64;
+        if let Some(offset) = self
+            .timeline_projection
+            .day_offset(&photos[index].0, self.timeline_viewport_height)
+        {
+            self.timeline_scroll_y = offset;
+            return Ok(());
+        }
+        // A semantic action can arrive before the first painted frame. Build
+        // the same lightweight metadata projection now so the jump is exact
+        // rather than falling back to a guessed fixed-height row.
+        let library = PhotosDoc::library(doc);
+        self.timeline_projection
+            .replace(library.photos.iter().map(|photo| {
+                TimelinePhoto {
+                    id: photo.id.clone(),
+                    name: photo.image.name.clone(),
+                    favorite: photo.favorite,
+                    day: photo
+                        .captured_at
+                        .as_deref()
+                        .map_or_else(|| "Undated".to_owned(), capture_day),
+                    captured_at: photo.captured_at.clone().unwrap_or_default(),
+                    aspect_ratio: if photo.image.width > 0 && photo.image.height > 0 {
+                        f64::from(photo.image.width) / f64::from(photo.image.height)
+                    } else {
+                        1.5
+                    },
+                }
+            }));
+        let width = (self.canvas_rect.width() - f64::from(PAD * 2.0) - 18.0).max(44.0);
+        self.timeline_projection.set_geometry(TimelineGeometry {
+            width,
+            target_height: 168.0,
+            gap: 16.0,
+            compact: self.canvas_rect.width() < LIBRARY_DESKTOP_MASTHEAD_MIN_W,
+        });
+        self.timeline_scroll_y = self
+            .timeline_projection
+            .day_offset(&photos[index].0, self.timeline_viewport_height)
+            .unwrap_or(0.0);
         Ok(())
     }
 
@@ -3735,9 +3749,6 @@ impl PhotosApp {
     /// their resulting layout testable for parity.
     fn adjust_timeline_density(&mut self, increase: bool) -> bool {
         let before = self.timeline_density;
-        let anchor = (self.timeline_scroll_row * self.timeline_last_columns.max(1) as f64)
-            .round()
-            .max(0.0);
         if increase {
             self.timeline_density = self.timeline_density.saturating_add(1).min(4);
         } else {
@@ -3746,18 +3757,26 @@ impl PhotosApp {
         if before == self.timeline_density {
             return false;
         }
-        let columns = timeline_column_count(
-            self.canvas_rect.width(),
-            self.timeline_density,
-            self.large_text_toolbar,
-        );
-        self.timeline_scroll_row = anchor / columns.max(1) as f64;
-        self.timeline_last_columns = columns;
         true
     }
 
     fn scroll_timeline_rows(&mut self, delta: f64) {
-        self.timeline_scroll_row = (self.timeline_scroll_row + delta).max(0.0);
+        // Keyboard rows remain a useful semantic step, but the canonical
+        // offset is pixels so portrait and justified rows scroll smoothly.
+        self.timeline_scroll_y = self.timeline_projection.clamp_scroll(
+            self.timeline_scroll_y + delta * 168.0,
+            self.timeline_viewport_height,
+        );
+    }
+
+    fn scroll_timeline_pixels(&mut self, delta: f64) {
+        if !delta.is_finite() {
+            return;
+        }
+        self.timeline_scroll_y = self.timeline_projection.clamp_scroll(
+            self.timeline_scroll_y + delta,
+            self.timeline_viewport_height,
+        );
     }
 
     /// Apply every chronological-index input through the same local scroll
@@ -3767,7 +3786,7 @@ impl PhotosApp {
     fn apply_timeline_index_intent(&mut self, intent: DateIndexIntent) -> bool {
         match intent {
             DateIndexIntent::ScrollTo { position } => {
-                self.timeline_scroll_row =
+                self.timeline_scroll_y =
                     DateIndexedScrollbar::offset_for(self.timeline_index_metrics, position);
                 true
             }
@@ -4270,6 +4289,7 @@ impl PhotosApp {
         self.active_pet = None;
         self.active_favorites = false;
         self.library_offset = 0;
+        self.timeline_scroll_y = 0.0;
         self.album_editor = false;
         self.album_delete_confirm = false;
         self.notice = Some("Showing selected album".to_owned());
@@ -4314,6 +4334,7 @@ impl PhotosApp {
         self.active_pet = None;
         self.active_favorites = false;
         self.library_offset = 0;
+        self.timeline_scroll_y = 0.0;
         self.album_editor = false;
         self.album_delete_confirm = false;
         self.notice = Some("Showing shared photo metadata view".to_owned());
@@ -4349,6 +4370,7 @@ impl PhotosApp {
         self.active_pet = pet.then_some(label);
         self.active_favorites = false;
         self.library_offset = 0;
+        self.timeline_scroll_y = 0.0;
         self.album_editor = false;
         self.notice = Some("Showing explicitly shared image analysis".to_owned());
         Ok(())
@@ -4374,6 +4396,7 @@ impl PhotosApp {
         self.active_pet = None;
         self.active_favorites = true;
         self.library_offset = 0;
+        self.timeline_scroll_y = 0.0;
         self.album_editor = false;
         self.album_delete_confirm = false;
         self.notice = Some("Showing favorite photographs".to_owned());
@@ -5921,6 +5944,7 @@ impl PhotosApp {
             self.active_tag = None;
             self.active_favorites = false;
             self.library_offset = 0;
+            self.timeline_scroll_y = 0.0;
             return true;
         }
         if let Some(id) = target.strip_prefix("photos:library-details:") {
@@ -9724,36 +9748,87 @@ impl PhotosApp {
         // Cards are photographs in every responsive mode.  A compact screen
         // opens a card directly or enters selection; it never trades half a
         // tile for a filename and three permanent action buttons.
-        let default_card_h = default_preview_h;
-        let rows =
-            ((bounds.y1 - top - f64::from(PAD)).max(0.0) / (default_card_h + gap)).floor() as usize;
-        // The index speaks in chronological *rows*, the exact continuous
-        // coordinate used by the virtualised timeline. It is not derived from
-        // `library_items.len()`: that is just the 120-item materialisation
-        // window and would make the thumb lie about a large collection.
-        let content_rows = self.library_total.div_ceil(columns.max(1));
+        let viewport_height = (bounds.y1 - top - f64::from(PAD)).max(0.0);
+        self.timeline_viewport_height = viewport_height;
+        let timeline_left = bounds.x0 + f64::from(PAD);
+        let timeline_width = bounds.x1 - f64::from(PAD) - 18.0 - timeline_left;
+        // Header controls need their compact arrangement well before the
+        // photographs need to collapse to a single column. Keeping those
+        // breakpoints independent gives tablets and narrow desktop strips a
+        // useful, expressive chronology instead of two enormous image rows.
+        let single_column_timeline = timeline_width < 520.0 || large_text;
+        let anchor = self.timeline_projection.anchor_at(self.timeline_scroll_y);
+        let geometry_changed = self.timeline_projection.set_geometry(TimelineGeometry {
+            width: timeline_width.max(44.0),
+            target_height: default_preview_h,
+            gap,
+            compact: single_column_timeline,
+        });
+        if geometry_changed
+            && let Some(anchor) = anchor.as_ref()
+            && let Some(restored) = self
+                .timeline_projection
+                .restore_anchor(anchor, viewport_height)
+        {
+            self.timeline_scroll_y = restored;
+        }
+        self.timeline_scroll_y = self
+            .timeline_projection
+            .clamp_scroll(self.timeline_scroll_y, viewport_height);
         self.timeline_index_metrics = ScrollMetrics::new(
-            f64::from(u32::try_from(content_rows).unwrap_or(u32::MAX)),
-            f64::from(u32::try_from(rows.max(1)).unwrap_or(u32::MAX)),
-            self.timeline_scroll_row,
+            self.timeline_projection.total_height(),
+            viewport_height,
+            self.timeline_scroll_y,
         );
+        self.timeline_index_markers = self
+            .timeline_projection
+            .date_markers(viewport_height)
+            .into_iter()
+            .map(|(day, position, major)| {
+                DateIndexMarker::new(
+                    day.clone(),
+                    timeline_date_label(&day),
+                    position,
+                    if major {
+                        DateIndexMarkerKind::Major
+                    } else {
+                        DateIndexMarkerKind::Minor
+                    },
+                )
+            })
+            .collect();
         self.timeline_index.set_rect(Rect::new(
             bounds.x1 - f64::from(PAD) - ui::widget::date_indexed_scrollbar::DEFAULT_TRACK_WIDTH,
             top + 4.0,
             bounds.x1 - f64::from(PAD),
             bounds.y1 - f64::from(PAD),
         ));
-        // The editor is modal at large text: leaving a partially visible
-        // ultra-wide thumbnail behind it creates a false second target and
-        // can make its action row look clipped. The local grid decision still
-        // drops to one lane, ready for the sheet to close, but the sheet owns
-        // the visual surface while it is active.
-        let visible = if large_text && self.metadata_editor {
-            0
+        let visible_days = self
+            .timeline_projection
+            .visible_days(self.timeline_scroll_y, viewport_height);
+        let visible_items: Vec<_> = if large_text && self.metadata_editor {
+            Vec::new()
         } else {
-            // Two overscan rows make a wheel/pinch density change feel
-            // immediate while keeping rendering and thumbnail decoding bounded.
-            timeline_virtual_range(self.library_items.len(), 0, rows, columns).len()
+            self.timeline_projection
+                .visible_photos(self.timeline_scroll_y, viewport_height)
+                .into_iter()
+                .map(|entry| {
+                    (
+                        LibraryItem {
+                            id: entry.photo.id.clone(),
+                            name: entry.photo.name.clone(),
+                            favorite: entry.photo.favorite,
+                            captured_at: entry.photo.day.clone(),
+                        },
+                        TimelineItemLayout {
+                            width: entry.width,
+                            height: entry.height,
+                        },
+                        timeline_left + entry.x,
+                        top + entry.y,
+                    )
+                })
+                .collect()
         };
         // Clip the moving content to the measured canvas region so a fast
         // scroll can never paint over the search/header or status bar.
@@ -9765,83 +9840,35 @@ impl PhotosApp {
             transform,
             &timeline_clip,
         );
-        // The canonical scroll anchor is an item offset. Do not apply the old
-        // fixed-row fractional translation to justified rows: it could bisect
-        // a variable-height row and orphan its date heading.
-        let mut timeline_y = top;
-        let timeline_left = bounds.x0 + f64::from(PAD);
-        let timeline_width = bounds.x1 - f64::from(PAD) - 18.0 - timeline_left;
-        let timeline_layout = if desktop_library {
-            justified_timeline_layout(
-                &self.library_items[..visible],
-                timeline_width.max(44.0),
-                default_preview_h,
-                gap,
-            )
-        } else {
-            // Phone and 200% layouts use one full-width photo per row. This
-            // keeps portrait cards above the 44px interaction minimum and
-            // avoids putting the old footer/actions inside a narrow row.
-            self.library_items[..visible]
-                .iter()
-                .map(|item| TimelineItemLayout {
-                    width: timeline_width.max(44.0),
-                    height: (timeline_width / item.aspect_ratio.clamp(0.35, 3.0))
-                        .clamp(140.0, 420.0),
-                    row_start: true,
-                    row_end: true,
-                })
-                .collect()
-        };
-        let mut timeline_x = timeline_left;
-        let mut previous_day = String::new();
-        let mut painted_items = 0usize;
-        for (item, item_layout) in self
-            .library_items
-            .iter()
-            .take(visible)
-            .zip(timeline_layout.iter().copied())
-        {
+        for day in visible_days {
+            let heading_y = top + day.y;
+            let day_rule = Rect::new(
+                timeline_left,
+                heading_y + 24.0,
+                bounds.x1 - f64::from(PAD) - 18.0,
+                heading_y + 25.0,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                &timeline_date_label(&day.key),
+                if large_text { 15.0 } else { 13.0 },
+                theme.text_primary,
+                transform * Affine::translate((day_rule.x0, heading_y + 4.0)),
+                Some(day_rule.width() as f32),
+                TextWeight::Medium,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.border_standard,
+                None,
+                &Rect::new(day_rule.x0 + 148.0, day_rule.y0, day_rule.x1, day_rule.y1),
+            );
+        }
+        for (item, item_layout, projected_x, projected_y) in &visible_items {
             let id = &item.id;
             let name = &item.name;
             let favorite = item.favorite;
-            if item_layout.row_start && item.captured_at != previous_day {
-                let group_top = timeline_y;
-                // Do not leave an orphan date label at the bottom of a
-                // viewport; every heading earns room for its first photo.
-                if painted_items > 0
-                    && group_top + 34.0 + default_card_h > bounds.y1 - f64::from(PAD)
-                {
-                    break;
-                }
-                timeline_y = group_top;
-                let day_label = timeline_date_label(&item.captured_at);
-                let day_rule = Rect::new(
-                    bounds.x0 + f64::from(PAD),
-                    timeline_y + 24.0,
-                    bounds.x1 - f64::from(PAD) - 18.0,
-                    timeline_y + 25.0,
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    &day_label,
-                    if large_text { 15.0 } else { 13.0 },
-                    theme.text_primary,
-                    transform * Affine::translate((day_rule.x0, timeline_y + 4.0)),
-                    Some(day_rule.width() as f32),
-                    TextWeight::Medium,
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.border_standard,
-                    None,
-                    &Rect::new(day_rule.x0 + 148.0, day_rule.y0, day_rule.x1, day_rule.y1),
-                );
-                timeline_y += 34.0;
-                timeline_x = timeline_left;
-                previous_day.clone_from(&item.captured_at);
-            }
             // The desktop timeline reserves no artificial 3:2 tray.  Its
             // width stays predictable for scrolling while every item's
             // height is derived from document-owned intrinsic dimensions.
@@ -9854,11 +9881,8 @@ impl PhotosApp {
             // one tall portrait. Paint that first card (the clip protects the
             // masthead) so a chronological view never degenerates into an
             // empty canvas plus a misleading continuation card.
-            if painted_items > 0 && timeline_y + item_card_h > bounds.y1 - f64::from(PAD) {
-                break;
-            }
-            let x = timeline_x;
-            let y = timeline_y;
+            let x = *projected_x;
+            let y = *projected_y;
             let card = Rect::new(x, y, x + card_w, y + item_card_h);
             let preview = Rect::new(x, y, x + card_w, y + item_preview_h);
             scene.fill(
@@ -10096,90 +10120,6 @@ impl PhotosApp {
                 );
             }
             self.library_cards.push((id.clone(), card, favorite));
-            painted_items += 1;
-            if item_layout.row_end {
-                timeline_y += item_card_h + gap;
-                timeline_x = timeline_left;
-            } else {
-                timeline_x += card_w + gap;
-            }
-        }
-        // Never leave a short final viewport looking like a failed virtual
-        // list. The continuation/end card is derived from the actual next
-        // record and bounded materialisation window — no inferred memories,
-        // locations, or dates are fabricated here.
-        let remaining = self.library_items.len().saturating_sub(painted_items);
-        let can_summarise = painted_items > 0
-            && (remaining > 0
-                || (self.timeline_index_markers.len() == 1
-                    && self.library_items.len() == self.library_total
-                    && self.library_items.len() < visible
-                    && (timeline_x - timeline_left).abs() < f64::EPSILON));
-        if can_summarise {
-            let summary_y = timeline_y + 2.0;
-            let summary_bottom = (summary_y + 122.0).min(bounds.y1 - f64::from(PAD));
-            if summary_bottom - summary_y >= 82.0 {
-                let summary = Rect::new(
-                    bounds.x0 + f64::from(PAD),
-                    summary_y,
-                    bounds.x1 - f64::from(PAD),
-                    summary_bottom,
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.surfaces.raised,
-                    None,
-                    &summary,
-                );
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    transform,
-                    theme.border_standard,
-                    None,
-                    &summary,
-                );
-                let (title, body) = if let Some(next) = self.library_items.get(painted_items) {
-                    let remaining_total = self.library_total.saturating_sub(painted_items);
-                    let count = if remaining_total == 1 {
-                        "1 photo remains".to_owned()
-                    } else {
-                        format!("{remaining_total} photos remain")
-                    };
-                    (
-                        format!("Continue to {}", timeline_date_label(&next.captured_at)),
-                        format!("{count} · Scroll, drag the date index, or choose a date marker."),
-                    )
-                } else if self.library_total == 1 {
-                    (
-                        "This day is complete · 1 photo shown".to_owned(),
-                        "Use + / −, pinch, or Ctrl + wheel to change timeline density.".to_owned(),
-                    )
-                } else {
-                    (
-                        format!("This day is complete · {} photos shown", self.library_total),
-                        "Use + / −, pinch, or Ctrl + wheel to change timeline density.".to_owned(),
-                    )
-                };
-                text_renderer.draw_text_weighted(
-                    scene,
-                    &title,
-                    if large_text { 15.0 } else { 13.0 },
-                    theme.text_primary,
-                    transform * Affine::translate((summary.x0 + 14.0, summary.y0 + 15.0)),
-                    Some((summary.width() - 28.0) as f32),
-                    TextWeight::Medium,
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    &body,
-                    if large_text { 13.0 } else { 11.0 },
-                    theme.text_dim,
-                    transform * Affine::translate((summary.x0 + 14.0, summary.y0 + 43.0)),
-                    Some((summary.width() - 28.0) as f32),
-                    TextWeight::Regular,
-                );
-            }
         }
         scene.pop_layer();
         if !self.album_editor && !self.metadata_editor && !self.selection_album_chooser {
@@ -12515,40 +12455,6 @@ fn capture_day(captured_at: &str) -> String {
         .to_owned()
 }
 
-/// Materialise lightweight chronological boundaries for the shared index.
-/// The collection stays virtual: this walks metadata already projected during
-/// `sync`, creates at most one marker per visible capture day, and the widget
-/// later paints/exports only a bounded sample.  Newest-first remains position
-/// zero so the date index and the timeline use the same direction.
-fn timeline_index_markers(items: &[LibraryItem], columns: usize) -> Vec<DateIndexMarker> {
-    let denominator = items.len().saturating_sub(1).max(1) as f64;
-    let columns = columns.max(1);
-    let mut markers = Vec::new();
-    let mut previous_day = "";
-    let mut previous_year = "";
-    for (index, item) in items.iter().enumerate() {
-        if item.captured_at == previous_day {
-            continue;
-        }
-        let year = item.captured_at.get(..4).unwrap_or_default();
-        let kind = if year.len() == 4 && year != previous_year {
-            previous_year = year;
-            DateIndexMarkerKind::Major
-        } else {
-            DateIndexMarkerKind::Minor
-        };
-        let row = index / columns;
-        markers.push(DateIndexMarker::new(
-            format!("{}:{}", item.captured_at, row),
-            timeline_date_label(&item.captured_at),
-            index as f64 / denominator,
-            kind,
-        ));
-        previous_day = &item.captured_at;
-    }
-    markers
-}
-
 /// Read at most the encoded-image budget plus one sentinel byte. A hostile
 /// file can otherwise exhaust memory before the decoder gets a chance to
 /// enforce its decoded-pixel limit.
@@ -12988,6 +12894,9 @@ impl Widget for PhotosApp {
         {
             let photo = PhotosDoc::photo(doc, &resource_id)
                 .ok_or_else(|| "that photograph is no longer in the library".to_owned())?;
+            if photo.image.content.is_none() {
+                return Err("This legacy photograph needs a verified content identity before text recognition can be shared".to_owned());
+            }
             let sender = self
                 .analysis_tx
                 .as_ref()
@@ -13009,6 +12918,9 @@ impl Widget for PhotosApp {
         if let crate::actions::PhotosOperation::AnalyzeImage { resource_id } = operation {
             let photo = PhotosDoc::photo(doc, &resource_id)
                 .ok_or_else(|| "that photograph is no longer in the library".to_owned())?;
+            if photo.image.content.is_none() {
+                return Err("This legacy photograph needs a verified content identity before image analysis can be shared".to_owned());
+            }
             let capability = tilo_vision::discover_local_capability(
                 &agent_provider_config::ProviderConfig::load(),
             )
@@ -13233,7 +13145,7 @@ impl Widget for PhotosApp {
         self.library_search.sync(doc, path);
         if let Some(query) = self.library_search.take_dirty() {
             self.library_query = query;
-            self.timeline_scroll_row = 0.0;
+            self.timeline_scroll_y = 0.0;
         }
 
         // An address can arrive before its bytes. Do not offer Copy, Save or
@@ -13252,14 +13164,18 @@ impl Widget for PhotosApp {
                 Err(error) => Some(format!("Photo search kept its previous index: {error}")),
             };
             self.thumbnail_unavailable.clear();
-            self.search_heads = heads;
+            self.search_heads = heads.clone();
         }
         self.status = self.status_text(doc);
         let library = PhotosDoc::library(doc);
         self.library_analysis_coverage = library.photos.iter().fold(
             (0usize, 0usize, 0usize),
             |(analyzed, available, awaiting), photo| {
-                if photo.analysis.is_some() {
+                if photo.analysis.as_ref().is_some_and(|analysis| {
+                    analysis
+                        .vision_provenance_for_content(photo.image.content.as_deref())
+                        .is_some()
+                }) {
                     (analyzed + 1, available, awaiting)
                 } else if crate::doc::bytes_of(&photo.image).is_some() {
                     (analyzed, available + 1, awaiting)
@@ -13344,20 +13260,6 @@ impl Widget for PhotosApp {
         self.library_offset = self
             .library_offset
             .min(self.library_total.saturating_sub(1));
-        let timeline_columns = timeline_column_count(
-            self.canvas_rect.width(),
-            self.timeline_density,
-            self.large_text_toolbar,
-        );
-        self.timeline_last_columns = timeline_columns;
-        self.timeline_scroll_row = self
-            .timeline_scroll_row
-            .min(self.library_total.saturating_sub(1) as f64 / timeline_columns.max(1) as f64);
-        let browse_offset = if self.album_editor {
-            self.library_offset
-        } else {
-            (self.timeline_scroll_row.floor() as usize).saturating_mul(timeline_columns)
-        };
         let mut timeline_items: Vec<_> = library
             .photos
             .iter()
@@ -13370,14 +13272,6 @@ impl Widget for PhotosApp {
                     .captured_at
                     .as_deref()
                     .map_or_else(|| "Undated".to_owned(), capture_day),
-                aspect_ratio: if photo.image.width > 0 && photo.image.height > 0 {
-                    f64::from(photo.image.width) / f64::from(photo.image.height)
-                } else {
-                    // Legacy path-only records did not retain dimensions.
-                    // Keep their geometry stable without pretending to know
-                    // the original aspect ratio.
-                    1.5
-                },
             })
             .collect();
         // A timeline reads newest-first.  The id tie-breaker makes peers with
@@ -13391,12 +13285,63 @@ impl Widget for PhotosApp {
                 .then_with(|| right.captured_at.cmp(&left.captured_at))
                 .then_with(|| left.id.cmp(&right.id))
         });
-        self.timeline_index_markers = timeline_index_markers(&timeline_items, timeline_columns);
-        self.library_items = timeline_items
+        let projection_filter = format!(
+            "{}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{}",
+            query,
+            self.active_album,
+            self.active_folder,
+            self.active_person,
+            self.active_tag,
+            self.active_object,
+            self.active_pet,
+            self.active_favorites
+        );
+        if self.timeline_projection_heads != heads
+            || self.timeline_projection_filter != projection_filter
+        {
+            self.timeline_projection.reconcile(
+                library
+                    .photos
+                    .iter()
+                    .filter(|photo| matches_filter(photo))
+                    .map(|photo| TimelinePhoto {
+                        id: photo.id.clone(),
+                        name: photo.image.name.clone(),
+                        favorite: photo.favorite,
+                        day: photo
+                            .captured_at
+                            .as_deref()
+                            .map_or_else(|| "Undated".to_owned(), capture_day),
+                        captured_at: photo.captured_at.clone().unwrap_or_default(),
+                        aspect_ratio: if photo.image.width > 0 && photo.image.height > 0 {
+                            f64::from(photo.image.width) / f64::from(photo.image.height)
+                        } else {
+                            1.5
+                        },
+                    }),
+            );
+            self.timeline_projection_heads = heads.clone();
+            self.timeline_projection_filter = projection_filter;
+            self.library_total = self.timeline_projection.len();
+        }
+        // Markers are rebuilt from exact pixel day offsets during draw, once
+        // the real viewport and responsive geometry are known.
+        self.timeline_index_markers.clear();
+        let visible_ids: HashSet<_> = self
+            .timeline_projection
+            .visible_photos(self.timeline_scroll_y, self.timeline_viewport_height)
             .into_iter()
-            .skip(browse_offset)
-            .take(120)
+            .map(|entry| entry.photo.id.clone())
             .collect();
+        self.library_items = if visible_ids.is_empty() {
+            timeline_items.into_iter().take(120).collect()
+        } else {
+            timeline_items
+                .into_iter()
+                .filter(|item| visible_ids.contains(&item.id))
+                .take(120)
+                .collect()
+        };
         self.places_items = library
             .photos
             .iter()
@@ -14311,7 +14256,11 @@ impl Widget for PhotosApp {
         // narrow track/preview lane owns the pointer (or it holds a drag / AT
         // focus). Ordinary scrolling anywhere else remains the timeline's
         // smooth wheel path below.
-        if self.library_mode && !self.album_editor && !self.metadata_editor {
+        if self.library_mode
+            && self.library_destination == LibraryDestination::Timeline
+            && !self.album_editor
+            && !self.metadata_editor
+        {
             let index_owns_event = self.timeline_index.contains_interaction_point(self.pointer)
                 || self.timeline_index.is_dragging()
                 || self.timeline_index.is_focused();
@@ -14363,6 +14312,7 @@ impl Widget for PhotosApp {
         // ordinary wheel for chronological browsing; otherwise a trackpad
         // scroll would unexpectedly rearrange the entire library.
         if self.library_mode
+            && self.library_destination == LibraryDestination::Timeline
             && !self.album_editor
             && !self.metadata_editor
             && modifiers.state().control_key()
@@ -14384,6 +14334,7 @@ impl Widget for PhotosApp {
         // same event; macOS/iOS use it natively.  Ctrl-wheel above remains the
         // fallback on compositors that do not advertise pinch gestures.
         if self.library_mode
+            && self.library_destination == LibraryDestination::Timeline
             && !self.album_editor
             && !self.metadata_editor
             && let winit::event::WindowEvent::PinchGesture { delta, .. } = event
@@ -14677,6 +14628,7 @@ impl Widget for PhotosApp {
                 self.active_tag = card.tag;
                 self.active_favorites = false;
                 self.library_offset = 0;
+                self.timeline_scroll_y = 0.0;
                 self.notice = None;
             }
             *handled = true;
@@ -14702,15 +14654,14 @@ impl Widget for PhotosApp {
             return;
         }
         if self.library_mode
+            && self.library_destination == LibraryDestination::Timeline
             && let winit::event::WindowEvent::MouseWheel { delta, .. } = event
         {
-            let rows = match delta {
-                winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(y.signum()),
-                winit::event::MouseScrollDelta::PixelDelta(position) => {
-                    (-position.y / 96.0).clamp(-3.0, 3.0)
-                }
+            let pixels = match delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 48.0,
+                winit::event::MouseScrollDelta::PixelDelta(position) => -position.y,
             };
-            self.scroll_timeline_rows(rows);
+            self.scroll_timeline_pixels(pixels);
             *handled = true;
             return;
         }
