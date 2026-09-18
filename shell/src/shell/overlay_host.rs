@@ -5106,22 +5106,25 @@ impl ShellOverlayHost {
             // accessor — captured from a `Box<GroupRow>` owned through
             // the content tree, host outlives the content; this is a
             // read-only deref.
-            let row: &GroupRow = unsafe { &*ptr };
-            for g in &row.groups {
-                writes.push(Writeback {
-                    strip: strip_id,
-                    group: g.id,
-                    tab: g.active_tab_id(),
-                });
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for g in &mut row.groups {
+                if let Some(tab) = g.take_tab_activation() {
+                    writes.push(Writeback {
+                        strip: strip_id,
+                        group: g.id,
+                        tab,
+                    });
+                }
             }
         }
         if writes.is_empty() {
             return;
         }
         let st = chrome.borrow_mut();
-        // A divergence between `bar.active_id()` and the tree means a tab
-        // pill was clicked; stamp `active_strip`/`active_group` after the
-        // writeback, or Ctrl+K's scope stays on the old group.
+        // Only an explicit pointer/keyboard/accessibility edge reaches this
+        // list. A newly rebuilt retained row can temporarily disagree with
+        // the model; treating that divergence as a click steals focus back
+        // from an application which just opened.
         let mut focus_writes: Vec<(WorkspaceId, StripId, GroupId)> = Vec::new();
         // A FileReference card is inert until the person explicitly selects
         // its tab.  Capture that activation while holding the tree, then
@@ -14527,6 +14530,11 @@ impl Widget for ShellOverlayHost {
         if self.route_dropped_file_event(event, handled) {
             return;
         }
+        // An opening pointer/accessibility/search action can be followed by
+        // a key before the next draw. Observe the authoritative chrome edge
+        // here so every entry point starts keyboard traversal from the same
+        // visible first control rather than a retained selection.
+        self.reconcile_quick_settings_open_edge(self.overlay_flags().quick_settings);
         // The shell keyboard helper intentionally handles only pressed keys;
         // absorb releases here as well so a key held across a QS opening
         // cannot be delivered to the client behind the modal.
@@ -16514,12 +16522,7 @@ impl ShellOverlayHost {
         theme: &Theme,
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
-        if flags.quick_settings && !self.qs_was_open {
-            self.qs_refresh.kick_fast();
-            self.qs_refresh.kick_firmware();
-            self.qs_root.reset_focus();
-        }
-        self.qs_was_open = flags.quick_settings;
+        self.reconcile_quick_settings_open_edge(flags.quick_settings);
         self.apply_quick_settings_readings();
         self.qs_transition.set_open(
             flags.quick_settings,
@@ -16530,6 +16533,20 @@ impl ShellOverlayHost {
             },
             ui::Curve::EaseOut,
         );
+    }
+
+    /// Reconcile Quick Settings' retained widget with the authoritative
+    /// chrome flag before another input edge can arrive. Open requests can
+    /// originate in top-bar pointer/accessibility controls, media chrome,
+    /// search actions, or configured shortcuts; none of those callers should
+    /// need to know that the popover owns a retained keyboard cursor.
+    fn reconcile_quick_settings_open_edge(&mut self, open: bool) {
+        if open && !self.qs_was_open {
+            self.qs_refresh.kick_fast();
+            self.qs_refresh.kick_firmware();
+            self.qs_root.reset_focus();
+        }
+        self.qs_was_open = open;
     }
 
     /// The quick-settings dropdown: no scrim, so it reads as a dropdown
@@ -22157,6 +22174,28 @@ mod palette_dispatch_tests {
         let state = chrome.borrow();
         assert!(state.overlays.ws_settings);
         assert!(!state.overlays.quick_settings);
+    }
+
+    #[test]
+    fn direct_quick_settings_open_reconciles_focus_before_the_first_draw() {
+        let (mut host, chrome) = host_with_chrome();
+
+        // Simulate a retained selection from the previous visit, then open
+        // through ChromeState as top-bar, accessibility and deep-link paths
+        // do. The first key may arrive before any rendering pass.
+        chrome.borrow_mut().overlays.quick_settings = true;
+        host.reconcile_quick_settings_open_edge(true);
+        assert!(
+            host.qs_root
+                .focus_next(&chrome.borrow().quick_settings, false)
+        );
+
+        assert_eq!(
+            host.qs_root
+                .activate_focused(host.rect, &mut chrome.borrow_mut().quick_settings),
+            RootAction::LayoutChanged,
+            "the first Tab after every direct open must select Edit"
+        );
     }
 
     #[test]
