@@ -269,6 +269,8 @@ PY
     "$install_mode" "$(cat "$cycle_dir/windows.before.sha256")" "$(cat "$cycle_dir/linux.before.sha256")" \
     "$(cat "$cycle_dir/windows-loader.before.sha256")" "$(cat "$cycle_dir/linux-loader.before.sha256")" \
     > "$out/alongside-preservation.txt"
+  printf 'fixture=synthetic-foreign-filesystems\nreal_windows_boot_verified=false\n' \
+    >> "$out/alongside-preservation.txt"
   rm -f -- "$raw"
 }
 
@@ -419,6 +421,14 @@ done
 "$vm" status | grep -q '^stopped' || die "graphical Finish action did not power off"
 copy_evidence installer
 "$vm" stop >/dev/null 2>&1 || true
+
+# Keep installation/preservation evidence independently of later desktop/OOBE
+# acceptance. A later failure must not erase what this exact target already
+# proved. Verify again after the cold target boot before issuing overall PASS.
+if [ "$install_mode" != erase ]; then
+  verify_alongside_target
+  cp "$out/alongside-preservation.txt" "$out/alongside-preservation-before-target-boot.txt"
+fi
 
 phase=target
 target_boot_started="$(date +%s)"
