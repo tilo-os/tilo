@@ -550,6 +550,78 @@ fn windows_leaf_supported(name: &str) -> bool {
 }
 
 #[cfg(any(windows, test))]
+#[derive(Debug, PartialEq, Eq)]
+struct WindowsDirectoryPath {
+    root: [u16; 3],
+    names: Vec<Vec<u16>>,
+}
+
+#[cfg(any(windows, test))]
+fn windows_directory_leaf_supported(name: &[u16]) -> bool {
+    if name.is_empty()
+        || name.len() > 255
+        || matches!(name.last(), Some(0x20 | 0x2e))
+        || name
+            .iter()
+            .any(|&unit| unit <= 31 || b"<>:\"/\\|?*~".iter().any(|&c| unit == u16::from(c)))
+    {
+        return false;
+    }
+    // Fold only ASCII for reserved-device comparison. Retain the original
+    // code units, including unpaired surrogates, for every actual open.
+    let mut stem: Vec<_> = name
+        .iter()
+        .copied()
+        .take_while(|&unit| unit != u16::from(b'.'))
+        .map(|unit| match unit {
+            0x61..=0x7a => unit - 0x20,
+            _ => unit,
+        })
+        .collect();
+    while stem.last() == Some(&u16::from(b' ')) {
+        stem.pop();
+    }
+    !["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
+        .iter()
+        .any(|reserved| stem.iter().copied().eq(reserved.encode_utf16()))
+        && !(stem.len() == 4
+            && ["COM", "LPT"]
+                .iter()
+                .any(|prefix| stem[..3].iter().copied().eq(prefix.encode_utf16()))
+            // Include DOS digit aliases and Windows superscript ¹, ² and ³.
+            && matches!(stem[3], 0x30..=0x39 | 0xb9 | 0xb2 | 0xb3))
+}
+
+#[cfg(any(windows, test))]
+fn windows_directory_path(
+    raw: impl IntoIterator<Item = u16>,
+) -> Result<WindowsDirectoryPath, String> {
+    // Validate raw units before Path::components can normalize aliases. One
+    // extra unit detects overflow without collecting an unbounded input.
+    let raw: Vec<_> = raw.into_iter().take(4097).collect();
+    require(
+        (3..=4096).contains(&raw.len())
+            && matches!(raw[0], 0x41..=0x5a | 0x61..=0x7a)
+            && raw[1..3] == [u16::from(b':'), u16::from(b'\\')],
+        "require a bounded ordinary absolute Windows drive path",
+    )?;
+    let mut names = Vec::new();
+    if raw.len() > 3 {
+        for name in raw[3..].split(|&unit| unit == u16::from(b'\\')) {
+            require(
+                names.len() < 64 && windows_directory_leaf_supported(name),
+                "unsupported Windows directory component",
+            )?;
+            names.push(name.to_vec());
+        }
+    }
+    Ok(WindowsDirectoryPath {
+        root: [raw[0], raw[1], raw[2]],
+        names,
+    })
+}
+
+#[cfg(any(windows, test))]
 fn windows_volume_root(value: &str) -> bool {
     value
         .strip_prefix(r"\\?\Volume{")
@@ -558,7 +630,8 @@ fn windows_volume_root(value: &str) -> bool {
 }
 
 /// Windows is deliberately restricted to ordinary absolute drive-letter paths
-/// with ASCII leaf names. UNC, verbatim/device namespaces, relative paths,
+/// with lossless UTF-16 directory names and ASCII payload names. UNC,
+/// verbatim/device namespaces, relative paths,
 /// alternate streams, DOS aliases and every reparse tag fail closed.
 #[cfg(windows)]
 mod windows {
@@ -567,12 +640,14 @@ mod windows {
     use cap_primitives::fs::FollowSymlinks;
     use cap_std::fs::{Dir, OpenOptions, OpenOptionsExt};
     use std::{
+        ffi::{OsStr, OsString},
         fs::File,
         os::windows::{
+            ffi::{OsStrExt, OsStringExt},
             fs::OpenOptionsExt as StdOpenOptionsExt,
             io::{AsRawHandle, RawHandle},
         },
-        path::{Component as PathComponent, Prefix},
+        path::PathBuf,
     };
     use windows_sys::Win32::Storage::FileSystem::*;
 
@@ -655,13 +730,17 @@ mod windows {
 
     fn open_leaf(
         dir: &Dir,
-        name: &str,
+        name: &OsStr,
         directory: bool,
         cancel: &AtomicBool,
     ) -> Result<File, String> {
         check_cancel(cancel)?;
         require(
-            windows_leaf_supported(name),
+            if directory {
+                windows_directory_leaf_supported(&name.encode_wide().take(256).collect::<Vec<_>>())
+            } else {
+                name.to_str().is_some_and(windows_leaf_supported)
+            },
             "unsupported Windows leaf name",
         )?;
         let mut options = OpenOptions::new();
@@ -686,11 +765,11 @@ mod windows {
     }
 
     struct DirectoryChain {
-        root_path: String,
+        root_path: PathBuf,
         // Each handle remains live, preventing compatible delete/write opens.
-        entries: Vec<(String, Dir, Snapshot)>,
+        entries: Vec<(OsString, Dir, Snapshot)>,
     }
-    fn open_drive(root: &str, cancel: &AtomicBool) -> Result<File, String> {
+    fn open_drive(root: &Path, cancel: &AtomicBool) -> Result<File, String> {
         check_cancel(cancel)?;
         let file = std::fs::OpenOptions::new()
             .read(true)
@@ -728,53 +807,24 @@ mod windows {
     impl DirectoryChain {
         fn acquire(path: &Path, cancel: &AtomicBool) -> Result<Self, String> {
             check_cancel(cancel)?;
-            let raw = path
-                .to_str()
-                .ok_or("unsupported non-Unicode Windows path")?;
-            // Parse raw separators ourselves: Path::components normalizes dot
-            // segments; those aliases are deliberately unsupported here.
-            require(
-                !raw.contains('/')
-                    && raw.len() >= 3
-                    && raw.as_bytes()[0].is_ascii_alphabetic()
-                    && &raw.as_bytes()[1..3] == b":\\",
-                "require an ordinary absolute Windows drive path",
-            )?;
-            let mut components = path.components();
-            require(
-                matches!(components.next(),Some(PathComponent::Prefix(prefix)) if matches!(prefix.kind(),Prefix::Disk(_)))
-                    && matches!(components.next(), Some(PathComponent::RootDir)),
-                "unsupported Windows namespace",
-            )?;
-            let root_path = raw[..3].to_owned();
-            let names: Vec<_> = if raw.len() == 3 {
-                Vec::new()
-            } else {
-                raw[3..].split('\\').collect()
-            };
-            require(
-                raw.len() <= 4096
-                    && names.len() <= 64
-                    && names.iter().all(|name| windows_leaf_supported(name)),
-                "unsupported Windows directory component",
-            )?;
+            let parsed = windows_directory_path(path.as_os_str().encode_wide())?;
+            let root_path = PathBuf::from(OsString::from_wide(&parsed.root));
             let root = open_drive(&root_path, cancel)?;
             let root_snapshot = snapshot(root.as_raw_handle(), true, cancel)?;
             let mut chain = Self {
                 root_path,
-                entries: vec![(String::new(), Dir::from_std_file(root), root_snapshot)],
+                entries: vec![(OsString::new(), Dir::from_std_file(root), root_snapshot)],
             };
-            for name in names {
+            for raw_name in parsed.names {
+                let name = OsString::from_wide(&raw_name);
                 let file = open_leaf(
                     &chain.entries.last().ok_or("missing root")?.1,
-                    name,
+                    &name,
                     true,
                     cancel,
                 )?;
                 let before = snapshot(file.as_raw_handle(), true, cancel)?;
-                chain
-                    .entries
-                    .push((name.into(), Dir::from_std_file(file), before));
+                chain.entries.push((name, Dir::from_std_file(file), before));
             }
             Ok(chain)
         }
@@ -810,7 +860,7 @@ mod windows {
         let mut pinned = Vec::new();
         let mut identities = std::collections::HashSet::new();
         for component in &bundle.manifest.components {
-            let mut file = open_leaf(dir, &component.filename, false, cancel)?;
+            let mut file = open_leaf(dir, OsStr::new(&component.filename), false, cancel)?;
             let before = snapshot(file.as_raw_handle(), false, cancel)?;
             require(
                 before.length as u64 == component.byte_size,
@@ -826,7 +876,7 @@ mod windows {
             pinned.push((component, file, before));
         }
         for (component, file, before) in &pinned {
-            let named = open_leaf(dir, &component.filename, false, cancel)?;
+            let named = open_leaf(dir, OsStr::new(&component.filename), false, cancel)?;
             require(
                 snapshot(file.as_raw_handle(), false, cancel)? == *before
                     && snapshot(named.as_raw_handle(), false, cancel)? == *before,
@@ -1116,6 +1166,184 @@ pub(crate) mod tests {
                 },
             );
         }
+    }
+
+    fn windows_path(text: &str) -> Result<WindowsDirectoryPath, String> {
+        windows_directory_path(text.encode_utf16())
+    }
+
+    #[test]
+    fn windows_unicode_ancestors_retain_exact_names() {
+        for name in [
+            "André",
+            "用户",
+            "e\u{301}",
+            "cache-😀",
+            "O'Neil",
+            "$cache",
+            "CONsole",
+            "COM10",
+            "COM¹safe",
+        ] {
+            let parsed = windows_path(&format!("C:\\Users\\{name}\\cache")).unwrap();
+            assert_eq!(parsed.root, [b'C' as u16, b':' as u16, b'\\' as u16]);
+            assert_eq!(parsed.names[1], name.encode_utf16().collect::<Vec<_>>());
+        }
+        assert!(windows_path("c:\\").unwrap().names.is_empty());
+        let composed = windows_path("C:\\é").unwrap();
+        let decomposed = windows_path("C:\\e\u{301}").unwrap();
+        assert_eq!(composed.names, vec![vec![0xe9]]);
+        assert_eq!(decomposed.names, vec![vec![b'e' as u16, 0x301]]);
+        assert_ne!(composed, decomposed);
+    }
+
+    #[test]
+    fn windows_unicode_ancestor_bounds_count_utf16_units() {
+        let leaf = format!("{}a", "😀".repeat(127));
+        assert_eq!(leaf.encode_utf16().count(), 255);
+        assert!(windows_path(&format!("C:\\{leaf}")).is_ok());
+        assert!(windows_path(&format!("C:\\{leaf}a")).is_err());
+        let mut names = vec!["é".repeat(255); 15];
+        names.push("é".repeat(253));
+        let path = format!("C:\\{}", names.join("\\"));
+        assert_eq!(path.encode_utf16().count(), 4096);
+        assert!(windows_path(&path).is_ok());
+        // The last leaf remains below 255; only the total path limit changes.
+        assert!(windows_path(&(path + "a")).is_err());
+        assert!(windows_path(&format!("C:\\{}", vec!["é"; 64].join("\\"))).is_ok());
+        assert!(windows_path(&format!("C:\\{}", vec!["é"; 65].join("\\"))).is_err());
+    }
+
+    #[test]
+    fn windows_unicode_raw_collection_is_bounded() {
+        let mut consumed = 0;
+        let raw = std::iter::repeat(b'a' as u16).inspect(|_| consumed += 1);
+        assert!(windows_directory_path(raw).is_err());
+        assert_eq!(consumed, 4097);
+    }
+
+    #[test]
+    fn windows_unicode_unpaired_surrogates_are_preserved() {
+        let name = vec![0xd800, b'a' as u16, 0xdc00, 0xd83d, 0xde00];
+        let mut raw: Vec<_> = "C:\\".encode_utf16().collect();
+        raw.extend_from_slice(&name);
+        assert_eq!(windows_directory_path(raw).unwrap().names, vec![name]);
+    }
+
+    #[test]
+    fn windows_unicode_raw_namespaces_and_separators_are_refused() {
+        assert!(windows_path("C:\\Users\\ordinary").is_ok());
+        for path in [
+            "",
+            "C:",
+            "C:ordinary",
+            "\\ordinary",
+            "ordinary",
+            "1:\\ordinary",
+            "\\\\server\\share",
+            "\\\\?\\C:\\ordinary",
+            "\\\\.\\C:\\ordinary",
+            "\\??\\C:\\ordinary",
+            "\\\\?\\GLOBALROOT\\Device\\HarddiskVolume1",
+            "C:/ordinary",
+            "C:\\Users/ordinary",
+            "C:\\Users\\",
+            "C:\\Users\\\\ordinary",
+            "C:\\Users\\.\\ordinary",
+            "C:\\Users\\..\\ordinary",
+        ] {
+            assert!(windows_path(path).is_err(), "accepted {path:?}");
+        }
+    }
+
+    #[test]
+    fn windows_unicode_leaf_aliases_and_control_units_are_refused() {
+        assert!(windows_path("C:\\Users\\ordinary").is_ok());
+        for name in [
+            ".",
+            "..",
+            "file.",
+            "file ",
+            "CON",
+            "prn.txt",
+            "aux",
+            "nul.cache",
+            "CONIN$",
+            "conout$.txt",
+            "CoN .txt",
+            "COM0",
+            "com1.ext",
+            "COM9",
+            "LPT0",
+            "lpt1.ext",
+            "LPT9",
+            "COM¹",
+            "com².ext",
+            "CoM³",
+            "LPT¹.ext",
+            "lpt²",
+            "LPT³",
+            "PROGRA~1",
+            "file:stream",
+        ] {
+            assert!(
+                windows_path(&format!("C:\\Users\\{name}")).is_err(),
+                "accepted {name:?}"
+            );
+        }
+        for unit in (0_u16..=31).chain("<>:\"/\\|?*~".encode_utf16()) {
+            let mut raw: Vec<_> = "C:\\Users\\".encode_utf16().collect();
+            raw.push(unit);
+            assert!(windows_directory_path(raw).is_err(), "accepted {unit:x}");
+        }
+    }
+
+    #[test]
+    fn windows_unicode_ancestors_do_not_broaden_authenticated_filenames() {
+        assert!(validate_internal_bundle(&bytes(&fixture())).is_ok());
+        for name in ["é.img", "用户.img", "e\u{301}.img", "😀.img"] {
+            assert!(!windows_leaf_supported(name));
+            let mut manifest = fixture();
+            manifest["components"][0]["filename"] = json!(name);
+            assert!(validate_internal_bundle(&bytes(&manifest)).is_err());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_unicode_os_string_bridge_is_lossless() {
+        use std::{
+            ffi::OsString,
+            os::windows::ffi::{OsStrExt, OsStringExt},
+        };
+        let mut raw: Vec<_> = "C:\\用户\\".encode_utf16().collect();
+        raw.extend([0xd800, b'a' as u16, 0xdc00, 0xd83d, 0xde00]);
+        let path = std::path::PathBuf::from(OsString::from_wide(&raw));
+        assert_eq!(path.as_os_str().encode_wide().collect::<Vec<_>>(), raw);
+        let parsed = windows_directory_path(path.as_os_str().encode_wide()).unwrap();
+        let mut rebuilt: Vec<_> = OsString::from_wide(&parsed.root).encode_wide().collect();
+        for (index, name) in parsed.names.iter().enumerate() {
+            if index != 0 {
+                rebuilt.push(b'\\' as u16);
+            }
+            rebuilt.extend(OsString::from_wide(name).encode_wide());
+        }
+        assert_eq!(rebuilt, raw);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_unicode_directory_verifies_ordinary_payloads() {
+        let parent = tempfile::tempdir().unwrap();
+        let path = parent.path().join("André-用户-e\u{301}-😀");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("staging-esp.img"), vec![b'E'; 4096]).unwrap();
+        std::fs::write(path.join("staging-root.img"), vec![b'R'; 8192]).unwrap();
+        let bundle = validate_internal_bundle(&bytes(&fixture())).unwrap();
+        assert!(verify_internal_components(&bundle, &path, &AtomicBool::new(false)).is_ok());
+        assert!(verify_internal_components(&bundle, &path, &AtomicBool::new(true)).is_err());
+        std::fs::write(path.join("staging-root.img"), vec![b'X'; 8192]).unwrap();
+        assert!(verify_internal_components(&bundle, &path, &AtomicBool::new(false)).is_err());
     }
 
     #[test]
