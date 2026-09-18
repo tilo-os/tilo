@@ -829,6 +829,7 @@ struct PendingIncomingMedia {
     position_ms: u64,
     resume_playing: bool,
     has_video: bool,
+    route: crate::shell::network::AuthenticatedPersonalRoute,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -864,6 +865,7 @@ struct MediaHandoffStatus {
     target: crate::shell::personal_continuity::DeviceId,
     phase: MediaHandoffPhase,
     updated: Instant,
+    route: crate::shell::network::AuthenticatedPersonalRoute,
 }
 
 fn media_handoff_statuses() -> &'static Mutex<BTreeMap<[u8; 16], MediaHandoffStatus>> {
@@ -1682,7 +1684,11 @@ impl DeviceFabricRuntime {
                 runtime.handle_action(&envelope, Instant::now());
             }
         }
-        for envelope in network.take_personal_fabric_actions() {
+        for received in network.take_personal_fabric_actions() {
+            let crate::shell::network::ReceivedPersonalFabricAction { envelope, route } = received;
+            if !network.personal_route_is_current(&route) {
+                continue;
+            }
             if !policy.permits_action(&envelope.action) {
                 continue;
             }
@@ -1743,6 +1749,7 @@ impl DeviceFabricRuntime {
                         position_ms,
                         resume_playing,
                         has_video,
+                        route,
                     };
                     match self.try_launch_incoming_media(network, &request) {
                         IncomingMediaLaunch::Waiting
@@ -1774,15 +1781,16 @@ impl DeviceFabricRuntime {
                         media_handoff_statuses().lock().ok().and_then(|statuses| {
                             statuses.get(&request_id).map(|status| {
                                 status.target == envelope.source
+                                    && status.route == route
                                     && status.phase == MediaHandoffPhase::Pending
                             })
                         });
                     if expected_target != Some(true) {
                         continue;
                     }
-                    let Some(report) =
+                    let Some(Some(report)) = network.with_current_personal_route(&route, || {
                         media::handoff::accept_outbound_handoff(request_id, &session_id)
-                    else {
+                    }) else {
                         continue;
                     };
                     if let Some(controller) = report.controller_bus_name {
@@ -1799,6 +1807,7 @@ impl DeviceFabricRuntime {
                         media_handoff_statuses().lock().ok().and_then(|statuses| {
                             statuses.get(&request_id).map(|status| {
                                 status.target == envelope.source
+                                    && status.route == route
                                     && status.phase == MediaHandoffPhase::Pending
                             })
                         });
@@ -4243,7 +4252,10 @@ pub fn request_media_handoff(
         resume_playing: transfer.resume_playing,
         has_video: report.session.has_video,
     };
-    let request_id = network.send_personal_fabric_action(target, action)?;
+    let route = network
+        .current_personal_route(target)
+        .ok_or_else(|| "target has no current authenticated personal route".to_string())?;
+    let request_id = network.send_personal_fabric_action_on_route(&route, action)?;
     if let Some(transfer) = local_transfer {
         network.start_personal_media_transfer(transfer)?;
     }
@@ -4254,6 +4266,7 @@ pub fn request_media_handoff(
         target: target.clone(),
         phase: MediaHandoffPhase::Pending,
         updated: Instant::now(),
+        route,
     });
     media::handoff::remember_outbound_handoff(request_id, report);
     Ok(request_id)
@@ -7794,6 +7807,7 @@ mod tests {
         source: DeviceId,
         received: Instant,
     ) -> PendingIncomingMedia {
+        let route = crate::shell::network::AuthenticatedPersonalRoute::for_test(source.clone());
         PendingIncomingMedia {
             received,
             request_id,
@@ -7808,6 +7822,7 @@ mod tests {
             position_ms: 1_000,
             resume_playing: true,
             has_video: false,
+            route,
         }
     }
 
@@ -8530,6 +8545,7 @@ mod tests {
         let departures = vec![crate::shell::network::PeerDeparture {
             generation: 8,
             endpoint_id: departed_endpoint,
+            membership_epoch: Some(crate::network::actor::MembershipEpoch::for_test(1)),
             session_handle: 1,
             route: crate::shell::collab_broker::CrdtRoute::cluster("personal"),
             cause: crate::shell::network::PeerDepartureCause::LivenessTimedOut,
