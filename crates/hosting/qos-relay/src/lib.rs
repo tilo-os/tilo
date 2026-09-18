@@ -91,6 +91,8 @@ pub mod process_lease;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod store;
 pub mod transport;
+pub mod transport_v2;
+pub mod peer_actions;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod workspace;
 

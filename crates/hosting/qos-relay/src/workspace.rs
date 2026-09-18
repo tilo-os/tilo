@@ -87,6 +87,7 @@ pub struct WorkspaceRuntime {
     pub admitted_users: HashSet<[u8; 32]>,
     /// Current live subscribers keyed by device pubkey.
     pub subscribers: HashMap<[u8; 32], Subscriber>,
+    pub(crate) action_targets: HashMap<[u8; 32], crate::peer::ActionTarget>,
     /// Device pubkeys of peer relays this workspace has federated
     /// with at least once since the daemon started. Ops arriving
     /// while such a relay is offline are queued via the same
@@ -138,6 +139,7 @@ impl WorkspaceRuntime {
             admitted_users: HashSet::new(),
             subscribers: HashMap::new(),
             known_peer_relays: HashSet::new(),
+            action_targets: HashMap::new(),
         })
     }
 
@@ -152,6 +154,13 @@ impl WorkspaceRuntime {
     /// Register a subscription. Replaces any prior subscription
     /// from the same device.
     pub fn add_subscriber(&mut self, sub: Subscriber) {
+        if !self
+            .subscribers
+            .get(&sub.device_public_key)
+            .is_some_and(|current| current.tx.same_channel(&sub.tx))
+        {
+            self.action_targets.remove(&sub.device_public_key);
+        }
         self.subscribers.insert(sub.device_public_key, sub);
     }
 
@@ -172,6 +181,23 @@ impl WorkspaceRuntime {
     /// Drop a subscription for `device`. Idempotent.
     pub fn remove_subscriber(&mut self, device: &[u8; 32]) {
         self.subscribers.remove(device);
+        self.action_targets.remove(device);
+    }
+
+    /// Remove only the session that registered this queue. An old connection
+    /// must not unregister its replacement when its delayed teardown runs.
+    pub(crate) fn remove_subscriber_session(
+        &mut self,
+        device: &[u8; 32],
+        tx: &mpsc::Sender<Envelope>,
+    ) {
+        if self
+            .subscribers
+            .get(device)
+            .is_some_and(|sub| sub.tx.same_channel(tx))
+        {
+            self.remove_subscriber(device);
+        }
     }
 
     /// Whether `device` currently holds a subscription here.
@@ -222,7 +248,7 @@ impl WorkspaceRuntime {
             }
         }
         for d in dead {
-            self.subscribers.remove(&d);
+            self.remove_subscriber(&d);
         }
         // 2. Store-and-forward for offline members. A member is any
         //    pubkey in `membership` that is not the author and not
@@ -425,7 +451,7 @@ impl WorkspaceRuntime {
             }
         }
         for d in dead {
-            self.subscribers.remove(&d);
+            self.remove_subscriber(&d);
         }
         delivered
     }

@@ -11537,6 +11537,7 @@ dependencies = [
  "n0-future",
  "postcard",
  "qdoc",
+ "qos-actions",
  "qos-browser-runtime",
  "qos-peer-state",
  "qos-user-identity",

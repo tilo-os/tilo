@@ -22,9 +22,11 @@ use crate::auth::{self, AuthenticatedPeer, Hello, HelloAck};
 use crate::framing::{read_frame, write_frame};
 use crate::transport::{
     ALPN, ContentEndpointAdvertisement, ContentEndpointRequest, ContentPeerRegistration,
-    DISCOVERY_ALPN, Envelope, FrameReader, HomePeerManagementRequest, HomePeerManagementResponse,
+    DISCOVERY_ALPN, Envelope, HomePeerManagementRequest, HomePeerManagementResponse,
     MANAGEMENT_ALPN, MAX_FRAME_BYTES,
 };
+
+use crate::transport_v2::{EnvelopeV2, SessionReader};
 
 /// A live authenticated session with a relay. Handles are cheap;
 /// dropping the client tears down the connection.
@@ -39,6 +41,8 @@ pub struct RelayClient {
     /// explicit unsubscribe for each one before gracefully finishing the
     /// stream, so the host can begin offline delivery without a QUIC timeout.
     subscriptions: Mutex<HashSet<u64>>,
+    action_outbound: Option<mpsc::Sender<EnvelopeV2>>,
+    action_inbound: Arc<AsyncMutex<mpsc::Receiver<EnvelopeV2>>>,
     /// Kept alive so the connection is not dropped.
     connection: Connection,
     /// Kept alive for the same reason. A `Connection` does **not** keep
@@ -464,9 +468,68 @@ impl RelayClient {
         own_sk: ed25519_dalek::SigningKey,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
+        Self::connect_version(
+            endpoint,
+            relay_addr,
+            expected_server_user,
+            expected_server_device,
+            own_cert,
+            own_sk,
+            revocations,
+            false,
+        )
+        .await
+    }
+
+    /// Explicit v2 dial with the same certificate and endpoint pinning as an
+    /// enrolled home peer. Authentication errors never trigger downgrade.
+    /// Durable action execution remains unavailable; private routing is opt-in
+    /// per subscribed room via `EnableActions`.
+    ///
+    /// # Errors
+    /// Returns an error for unsupported ALPN, authentication or transport failure.
+    pub async fn connect_v2_to_enrolled_home_peer(
+        endpoint: Endpoint,
+        relay_addr: EndpointAddr,
+        expected_server_user: [u8; 32],
+        expected_server_device: [u8; 32],
+        own_cert: DeviceCert,
+        own_sk: ed25519_dalek::SigningKey,
+        revocations: RevocationList,
+    ) -> Result<Self, ClientError> {
+        Self::connect_version(
+            endpoint,
+            relay_addr,
+            Some(expected_server_user),
+            Some(expected_server_device),
+            own_cert,
+            own_sk,
+            revocations,
+            true,
+        )
+        .await
+    }
+
+    async fn connect_version(
+        endpoint: Endpoint,
+        relay_addr: EndpointAddr,
+        expected_server_user: Option<[u8; 32]>,
+        expected_server_device: Option<[u8; 32]>,
+        own_cert: DeviceCert,
+        own_sk: ed25519_dalek::SigningKey,
+        revocations: RevocationList,
+        v2: bool,
+    ) -> Result<Self, ClientError> {
         let endpoint_keepalive = endpoint.clone();
         let conn = endpoint
-            .connect(relay_addr, ALPN)
+            .connect(
+                relay_addr,
+                if v2 {
+                    crate::transport_v2::ALPN_V2
+                } else {
+                    ALPN
+                },
+            )
             .await
             .map_err(|e| ClientError::Iroh(e.to_string()))?;
         let (mut send, mut recv) = conn
@@ -518,7 +581,10 @@ impl RelayClient {
         // Split into pump halves.
         let (outbound_tx, mut outbound_rx) = mpsc::channel::<Envelope>(256);
         let (inbound_tx, inbound_rx) = mpsc::channel::<Envelope>(256);
-        let mut reader = FrameReader::new(recv);
+        let (action_tx, mut action_rx) = mpsc::channel::<EnvelopeV2>(32);
+        let (action_inbound_tx, action_inbound_rx) = mpsc::channel::<EnvelopeV2>(32);
+        let mut reader = SessionReader::new(recv, v2);
+        let pump_connection = conn.clone();
         let pump = n0_future::task::spawn(async move {
             // Keep the socket alive through the final queued Unsubscribe and
             // FIN even if the caller handed this client its only Endpoint.
@@ -528,7 +594,7 @@ impl RelayClient {
                     biased;
                     ob = outbound_rx.recv() => {
                         if let Some(env) = ob {
-                            let Ok(bytes) = crate::transport::encode(&env) else { break };
+                            let Ok(bytes) = crate::transport_v2::encode_state(&env,v2) else { break };
                             if send.write_all(&bytes).await.is_err() { break; }
                         } else {
                             let _ = send.finish();
@@ -543,16 +609,31 @@ impl RelayClient {
                             break;
                         }
                     }
+                    action = action_rx.recv(), if v2 => {
+                        if let Some(action)=action {
+                            let Ok(bytes)=crate::transport_v2::encode(&action) else {break};
+                            if send.write_all(&bytes).await.is_err() {break;}
+                        } else {break;}
+                    }
                     ib = reader.read_next() => {
                         match ib {
-                            Ok(Some(env)) => {
-                                if inbound_tx.send(env).await.is_err() { break; }
+                            Ok(Some(EnvelopeV2::State(env))) => {
+                                if v2 {
+                                    if inbound_tx.try_send(env).is_err() {break;}
+                                } else if inbound_tx.send(env).await.is_err() { break; }
+                            }
+                            Ok(Some(action)) => {
+                                // A stalled private consumer cannot silently lose a
+                                // result or block state indefinitely. Close and let
+                                // the owner query its durable invocation later.
+                                if action_inbound_tx.try_send(action).is_err() { break; }
                             }
                             Ok(None) | Err(_) => break,
                         }
                     }
                 }
             }
+            pump_connection.close(0u32.into(), b"relay pump ended");
         });
 
         Ok(Self {
@@ -560,6 +641,8 @@ impl RelayClient {
             outbound: outbound_tx,
             inbound: Arc::new(AsyncMutex::new(inbound_rx)),
             subscriptions: Mutex::new(HashSet::new()),
+            action_outbound: v2.then_some(action_tx),
+            action_inbound: Arc::new(AsyncMutex::new(action_inbound_rx)),
             connection: conn,
             endpoint,
             _pump: pump,
@@ -591,6 +674,31 @@ impl RelayClient {
             }
         }
         Ok(())
+    }
+
+    /// Queue one private v2 frame. A v1 session reports unavailable explicitly.
+    /// State continues to use `send` and `recv`, sharing a single wire reader.
+    ///
+    /// # Errors
+    /// Returns an error on v1, invalid/oversized frames, or bounded backpressure.
+    pub fn send_action(&self, frame: EnvelopeV2) -> Result<(), ClientError> {
+        let tx = self
+            .action_outbound
+            .as_ref()
+            .ok_or_else(|| ClientError::Codec("peer lacks qos-relay/2 action capability".into()))?;
+        if matches!(frame, EnvelopeV2::State(_)) {
+            return Err(ClientError::Codec("state uses send".into()));
+        }
+        crate::transport_v2::encode(&frame).map_err(|e| ClientError::Codec(e.to_string()))?;
+        tx.try_send(frame)
+            .map_err(|_| ClientError::Codec("private queue unavailable".into()))
+    }
+
+    /// Receive private frames from the session's single wire demultiplexer.
+    /// Returns None on v1 sessions or when the transport ends.
+    pub async fn recv_action(&self) -> Option<EnvelopeV2> {
+        self.action_outbound.as_ref()?;
+        self.action_inbound.lock().await.recv().await
     }
 
     /// Convenience: recv the next envelope.

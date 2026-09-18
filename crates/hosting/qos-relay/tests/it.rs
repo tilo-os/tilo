@@ -49,3 +49,6 @@ mod relay_daemon;
 mod store_and_forward;
 #[path = "browser_transport.rs"]
 mod browser_transport;
+
+#[path = "addressed_actions.rs"]
+mod addressed_actions;

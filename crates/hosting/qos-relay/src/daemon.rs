@@ -25,7 +25,8 @@ use crate::client::RelayClient;
 use crate::config::{PeerRelayConfig, RelayConfig};
 use crate::metrics::Metrics;
 use crate::peer::{
-    PeerContext, WorkspaceAutobind, WorkspaceRegistry, get_or_autobind_workspace, now_ns, run_peer,
+    PeerContext, WorkspaceAutobind, WorkspaceRegistry, get_or_autobind_workspace, now_ns,
+    run_peer_version,
 };
 use crate::policy::TrustPolicy;
 use crate::transport::{
@@ -258,6 +259,7 @@ impl Relay {
 
         let live_trust_policy = Arc::new(std::sync::RwLock::new(cfg.trust_policy.clone()));
         let handler = RelayProtocol {
+            v2: false,
             workspaces: workspaces.clone(),
             trust_policy: live_trust_policy.clone(),
             revocations: revocations.clone(),
@@ -298,6 +300,13 @@ impl Relay {
             state_root: cfg.state_root.clone(),
         };
         let router = Router::builder(endpoint.clone())
+            .accept(
+                crate::transport_v2::ALPN_V2,
+                RelayProtocol {
+                    v2: true,
+                    ..handler.clone()
+                },
+            )
             .accept(ALPN, handler)
             .accept(DISCOVERY_ALPN, discovery)
             .accept(MANAGEMENT_ALPN, management)
@@ -1118,6 +1127,7 @@ fn validate_relay_identity(identity: &RelayIdentity) -> Result<(), RelayError> {
 /// The `ProtocolHandler` iroh wires to the ALPN.
 #[derive(Clone)]
 struct RelayProtocol {
+    v2: bool,
     workspaces: WorkspaceRegistry,
     trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
     revocations: Arc<std::sync::RwLock<RevocationList>>,
@@ -1539,7 +1549,7 @@ async fn handle_conn(
     ctx.metrics.inc_conns_authed();
 
     // 4. Hand off to the peer loop.
-    let peer_result = run_peer(
+    let peer_result = run_peer_version(
         client_peer,
         connection.clone(),
         recv,
@@ -1552,6 +1562,7 @@ async fn handle_conn(
             own_user_public_key: ctx.own_user_pk,
             metrics: ctx.metrics,
         },
+        ctx.v2,
     )
     .await;
     if let Err(e) = peer_result {

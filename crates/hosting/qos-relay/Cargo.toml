@@ -50,6 +50,7 @@ path = "src/home_peer_control.rs"
 #   iroh endpoint so the integration tests spin up two relays + N
 #   peers without any external service.
 [dependencies]
+qos-actions = { path = "../../collab/actions" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 # Home-peer configuration is one signed filesystem bundle; the relay imports
 # its workspace tickets rather than asking the operator to duplicate ids.

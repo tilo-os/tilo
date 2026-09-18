@@ -227,6 +227,43 @@ impl RelayCoeditSession {
         })
     }
 
+    /// Enable the private v2 lane on this same co-edit connection. Await its
+    /// `ActionsReady` with `recv_action`; v1 sessions explicitly return an error.
+    ///
+    /// # Errors
+    /// Returns an error for a different room, v1, or a full/disconnected queue.
+    pub fn enable_actions(&self, room: uuid::Uuid) -> Result<(), crate::client::ClientError> {
+        if crate::room_workspace_id(&room.to_string()).ok() != Some(self.workspace_id) {
+            return Err(crate::client::ClientError::Codec(
+                "action room differs from co-edit room".into(),
+            ));
+        }
+        self.client
+            .send_action(crate::transport_v2::EnvelopeV2::EnableActions { room })
+    }
+
+    /// Send privately through the co-edit session's existing demultiplexer.
+    ///
+    /// # Errors
+    /// Returns an error for a different room, v1, or a full/disconnected queue.
+    pub fn send_action(
+        &self,
+        action: crate::peer_actions::DirectedAction,
+    ) -> Result<(), crate::client::ClientError> {
+        if crate::room_workspace_id(&action.room.to_string()).ok() != Some(self.workspace_id) {
+            return Err(crate::client::ClientError::Codec(
+                "action room differs from co-edit room".into(),
+            ));
+        }
+        self.client
+            .send_action(crate::transport_v2::EnvelopeV2::Directed(action))
+    }
+
+    /// Receive only private events; this never consumes shared co-edit state.
+    pub async fn recv_action(&self) -> Option<crate::transport_v2::EnvelopeV2> {
+        self.client.recv_action().await
+    }
+
     /// The workspace this session is bound to.
     pub fn workspace_id(&self) -> u64 {
         self.workspace_id

@@ -15,8 +15,10 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use crate::auth::AuthenticatedPeer;
+use crate::peer_actions::{ActionMessage, DirectedAction, UnavailableReason};
 use crate::store::StoreError;
-use crate::transport::{Envelope, FrameReader};
+use crate::transport::Envelope;
+use crate::transport_v2::{ActionCapability, EnvelopeV2, SessionReader};
 use crate::workspace::{SharedWorkspace, Subscriber};
 
 /// Maximum live fan-out backlog per connected peer. Durable deltas move to
@@ -105,6 +107,9 @@ struct SessionCtx<'a> {
     metrics: &'a crate::metrics::Metrics,
     trust_policy: &'a Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     disconnect: &'a mpsc::Sender<()>,
+    v2: bool,
+    private_tx: &'a mpsc::Sender<PrivateOutbound>,
+    revocations: &'a Arc<std::sync::RwLock<qos_user_identity::RevocationList>>,
 }
 
 /// Run one peer connection until the wire closes.
@@ -123,8 +128,23 @@ pub async fn run_peer<R, W>(
     peer: AuthenticatedPeer,
     connection: iroh::endpoint::Connection,
     read: R,
+    write: W,
+    ctx: PeerContext,
+) -> Result<(), PeerError>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    run_peer_version(peer, connection, read, write, ctx, false).await
+}
+
+pub(crate) async fn run_peer_version<R, W>(
+    peer: AuthenticatedPeer,
+    connection: iroh::endpoint::Connection,
+    read: R,
     mut write: W,
     ctx: PeerContext,
+    v2: bool,
 ) -> Result<(), PeerError>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -143,7 +163,8 @@ where
     // subscribed to writes into it; we drain to the wire.
     let (tx, mut rx) = mpsc::channel::<Envelope>(PEER_OUTBOUND_CAPACITY);
     let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<()>(1);
-    let mut reader = FrameReader::new(read);
+    let mut reader = SessionReader::new(read, v2);
+    let (private_tx, mut private_rx) = mpsc::channel(PEER_OUTBOUND_CAPACITY);
     // Track our subscriptions so we can unregister on disconnect.
     let mut subscribed: Vec<u64> = Vec::new();
     let mut access_audit = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -158,6 +179,9 @@ where
         metrics: &metrics,
         trust_policy: &trust_policy,
         disconnect: &disconnect_tx,
+        v2,
+        private_tx: &private_tx,
+        revocations: &revocations,
     };
 
     // A clean EOF is only one of the ways this ends: a write to a
@@ -181,16 +205,36 @@ where
                 outbound = rx.recv() => {
                     match outbound {
                         Some(env) => {
-                            let bytes = crate::transport::encode(&env)?;
+                            let bytes = crate::transport_v2::encode_state(&env, v2)?;
                             write.write_all(&bytes).await?;
                         }
                         None => break,
                     }
                 }
+                private = private_rx.recv(), if v2 => {
+                    if let Some(private) = private {
+                        match private {
+                            PrivateOutbound::Reply(reply) => write.write_all(&crate::transport_v2::encode(&reply)?).await?,
+                            PrivateOutbound::Delivery(delivery) => {
+                                match authorize_delivery(&delivery, &peer, &session).await {
+                                    Ok(()) => write.write_all(&crate::transport_v2::encode(&EnvelopeV2::Delivered { action: delivery.action, source_user: delivery.source.user_public_key })?).await?,
+                                    Err(reason) => { let _ = delivery.reply.try_send(PrivateOutbound::Reply(EnvelopeV2::unavailable(&delivery.action,reason))); }
+                                }
+                            }
+                        }
+                    }
+                }
                 frame = reader.read_next() => {
                     match frame {
                         Ok(Some(env)) => {
-                            handle_inbound_frame(env, &peer, &session, &mut subscribed, &mut write).await?;
+                            match env {
+                                EnvelopeV2::State(env) => handle_inbound_frame(env, &peer, &session, &mut subscribed, &mut write).await?,
+                                frame => {
+                                    if let Some(reply) = handle_private(frame, &peer, &session).await? {
+                                        write.write_all(&crate::transport_v2::encode(&reply)?).await?;
+                                    }
+                                }
+                            }
                         }
                         Ok(None) => break,
                         Err(e) => return Err(PeerError::Frame(e)),
@@ -205,7 +249,9 @@ where
     let wsmap = workspaces.lock().await;
     for id in &subscribed {
         if let Some(ws) = wsmap.get(id) {
-            ws.lock().await.remove_subscriber(&peer.device_public_key);
+            ws.lock()
+                .await
+                .remove_subscriber_session(&peer.device_public_key, session.outbound);
         }
     }
     drop(wsmap);
@@ -295,14 +341,14 @@ where
     )
     .await?;
     for envelope in replay {
-        let bytes = crate::transport::encode(&envelope)?;
+        let bytes = crate::transport_v2::encode_state(&envelope, session.v2)?;
         write.write_all(&bytes).await?;
     }
     for path in replay_cleanup {
         std::fs::remove_file(path)?;
     }
     if let Some(direct_reply) = direct_reply {
-        let bytes = crate::transport::encode(&direct_reply)?;
+        let bytes = crate::transport_v2::encode_state(&direct_reply, session.v2)?;
         write.write_all(&bytes).await?;
     }
     Ok(())
@@ -507,7 +553,9 @@ async fn handle_unsubscribe(
         map.get(&workspace_id).cloned()
     };
     if let Some(ws) = ws {
-        ws.lock().await.remove_subscriber(&peer.device_public_key);
+        ws.lock()
+            .await
+            .remove_subscriber_session(&peer.device_public_key, session.outbound);
     }
     subscribed.retain(|id| id != &workspace_id);
     Ok(None)
@@ -747,5 +795,413 @@ mod autobind_tests {
         assert!(autobind_has_capacity(MAX_AUTOBOUND_WORKSPACES - 1));
         assert!(!autobind_has_capacity(MAX_AUTOBOUND_WORKSPACES));
         assert!(!autobind_has_capacity(usize::MAX));
+    }
+}
+
+/// A private queue belongs to one authenticated state session and exact room.
+#[derive(Clone)]
+pub(crate) struct ActionTarget {
+    room: uuid::Uuid,
+    peer: AuthenticatedPeer,
+    state_tx: mpsc::Sender<Envelope>,
+    tx: mpsc::Sender<PrivateOutbound>,
+}
+
+pub(crate) enum PrivateOutbound {
+    Reply(EnvelopeV2),
+    Delivery(PrivateDelivery),
+}
+
+pub(crate) struct PrivateDelivery {
+    action: DirectedAction,
+    source: AuthenticatedPeer,
+    source_tx: mpsc::Sender<Envelope>,
+    reply: mpsc::Sender<PrivateOutbound>,
+}
+
+fn current_cert(peer: &AuthenticatedPeer, session: &SessionCtx<'_>) -> bool {
+    peer.role == crate::auth::PeerRole::Device
+        && peer
+            .cert
+            .expires_at_ns
+            .is_none_or(|expiry| expiry > now_ns())
+        && session
+            .revocations
+            .read()
+            .is_ok_and(|list| !list.is_revoked(&peer.device_public_key))
+        && session
+            .trust_policy
+            .read()
+            .is_ok_and(|policy| policy.admits(&peer.cert, session.own_user_public_key))
+}
+
+fn current_member(wr: &crate::workspace::WorkspaceRuntime, peer: &AuthenticatedPeer) -> bool {
+    // Private authority is explicit and current. The broad auto-bind switch
+    // allows a Subscribe to enrol an owner device, never bypasses this check.
+    wr.membership.contains(&peer.device_public_key)
+        || wr.admitted_users.contains(&peer.user_public_key)
+}
+
+fn current_session(
+    wr: &crate::workspace::WorkspaceRuntime,
+    peer: &AuthenticatedPeer,
+    tx: &mpsc::Sender<Envelope>,
+) -> bool {
+    wr.subscribers
+        .get(&peer.device_public_key)
+        .is_some_and(|sub| sub.tx.same_channel(tx))
+}
+
+async fn handle_private(
+    frame: EnvelopeV2,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Result<Option<EnvelopeV2>, PeerError> {
+    match frame {
+        EnvelopeV2::EnableActions { room } => {
+            if room.is_nil() || !current_cert(peer, session) {
+                return Err(PeerError::Protocol(
+                    "private capability not authorised".into(),
+                ));
+            }
+            let id = crate::room_workspace_id(&room.to_string())
+                .map_err(|_| PeerError::Protocol("invalid room".into()))?;
+            let Some(ws) = session.workspaces.lock().await.get(&id).cloned() else {
+                return Err(PeerError::Protocol("private room not subscribed".into()));
+            };
+            let mut wr = ws.lock().await;
+            let members = wr.store.load_membership()?;
+            wr.membership.set(members);
+            if !current_member(&wr, peer) || !current_session(&wr, peer, session.outbound) {
+                return Err(PeerError::Protocol("private room not subscribed".into()));
+            }
+            wr.action_targets.insert(
+                peer.device_public_key,
+                ActionTarget {
+                    room,
+                    peer: peer.clone(),
+                    state_tx: session.outbound.clone(),
+                    tx: session.private_tx.clone(),
+                },
+            );
+            Ok(Some(EnvelopeV2::ActionsReady {
+                room,
+                capability: ActionCapability::TransportOnly,
+            }))
+        }
+        EnvelopeV2::Directed(action) => {
+            let reason = route_private(&action, peer, session).await?;
+            Ok(reason.map(|reason| EnvelopeV2::unavailable(&action, reason)))
+        }
+        // Peers may send private results only inside a source-bound Directed
+        // frame. Relay control responses can never be forged by a peer.
+        _ => Err(PeerError::Protocol(
+            "unexpected private control frame".into(),
+        )),
+    }
+}
+
+async fn route_private(
+    action: &DirectedAction,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Result<Option<UnavailableReason>, PeerError> {
+    use UnavailableReason as U;
+    if action.source != peer.device_public_key || !current_cert(peer, session) {
+        return Ok(Some(U::NotAuthorised));
+    }
+    if !action.validate()
+        || crate::transport_v2::encode(&EnvelopeV2::Directed(action.clone())).is_err()
+    {
+        return Ok(Some(U::InvalidRequest));
+    }
+    let id = crate::room_workspace_id(&action.room.to_string())
+        .map_err(|_| PeerError::Protocol("invalid room".into()))?;
+    let Some(ws) = session.workspaces.lock().await.get(&id).cloned() else {
+        return Ok(Some(U::NotAuthorised));
+    };
+    let mut wr = ws.lock().await;
+    let members = wr.store.load_membership()?;
+    wr.membership.set(members);
+    if !current_member(&wr, peer)
+        || !current_session(&wr, peer, session.outbound)
+        || !wr
+            .action_targets
+            .get(&peer.device_public_key)
+            .is_some_and(|target| {
+                target.room == action.room && target.state_tx.same_channel(session.outbound)
+            })
+    {
+        return Ok(Some(U::NotAuthorised));
+    }
+    let Some(sub) = wr.subscribers.get(&action.target) else {
+        return Ok(Some(U::Offline));
+    };
+    let Some(target) = wr.action_targets.get(&action.target) else {
+        return Ok(Some(U::UnsupportedPeer));
+    };
+    if !current_cert(&target.peer, session)
+        || !current_member(&wr, &target.peer)
+        || target.room != action.room
+        || !target.state_tx.same_channel(&sub.tx)
+    {
+        return Ok(Some(U::NotAuthorised));
+    }
+    // This transport slice deliberately cannot claim or admit external
+    // effects. A later native broker+journal integration must open this gate.
+    if matches!(action.message, ActionMessage::Invoke { .. }) {
+        return Ok(Some(U::AdmissionUnavailable));
+    }
+    let delivery = PrivateDelivery {
+        action: action.clone(),
+        source: peer.clone(),
+        source_tx: session.outbound.clone(),
+        reply: session.private_tx.clone(),
+    };
+    Ok(target
+        .tx
+        .try_send(PrivateOutbound::Delivery(delivery))
+        .err()
+        .map(|error| match error {
+            mpsc::error::TrySendError::Full(_) => U::Backpressure,
+            mpsc::error::TrySendError::Closed(_) => U::Offline,
+        }))
+}
+
+async fn authorize_delivery(
+    delivery: &PrivateDelivery,
+    recipient: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Result<(), UnavailableReason> {
+    use UnavailableReason as U;
+    if !current_cert(&delivery.source, session) || !current_cert(recipient, session) {
+        return Err(U::NotAuthorised);
+    }
+    let id = crate::room_workspace_id(&delivery.action.room.to_string())
+        .map_err(|_| U::InvalidRequest)?;
+    let ws = session
+        .workspaces
+        .lock()
+        .await
+        .get(&id)
+        .cloned()
+        .ok_or(U::NotAuthorised)?;
+    let mut wr = ws.lock().await;
+    let members = wr.store.load_membership().map_err(|_| U::NotAuthorised)?;
+    wr.membership.set(members);
+    if !current_member(&wr, &delivery.source)
+        || !current_member(&wr, recipient)
+        || delivery.action.target != recipient.device_public_key
+        || !current_session(&wr, &delivery.source, &delivery.source_tx)
+        || !wr
+            .action_targets
+            .get(&delivery.source.device_public_key)
+            .is_some_and(|target| {
+                target.room == delivery.action.room
+                    && target.state_tx.same_channel(&delivery.source_tx)
+            })
+        || !current_session(&wr, recipient, session.outbound)
+        || !wr
+            .action_targets
+            .get(&recipient.device_public_key)
+            .is_some_and(|target| {
+                target.room == delivery.action.room
+                    && target.state_tx.same_channel(session.outbound)
+            })
+    {
+        return Err(U::NotAuthorised);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod private_transport_tests {
+    use super::*;
+    use qos_user_identity::{
+        DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity,
+        sign_device_cert,
+    };
+
+    fn certified_device(
+        root: &ed25519_dalek::SigningKey,
+        user: [u8; 32],
+        label: &str,
+    ) -> AuthenticatedPeer {
+        let (key, device) = DeviceIdentity::generate(label, 1);
+        let mut cert = DeviceCert {
+            user_public_key: user,
+            device_public_key: device.public_key,
+            device_label: label.into(),
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, root).unwrap();
+        // Exercise certificate signature and nonce proof, matching the relay
+        // handshake rather than constructing unchecked AuthenticatedPeer data.
+        let hello = crate::auth::Hello {
+            cert,
+            client_nonce: [2; 32],
+        };
+        let peer = crate::auth::accept_hello(
+            &hello,
+            &user,
+            &crate::policy::TrustPolicy::AllowMatchingUser,
+            &RevocationList::new(),
+            now_ns(),
+        )
+        .unwrap();
+        let proof = crate::auth::build_hello_ack2(&key, &[1; 32]);
+        crate::auth::verify_hello_ack2(&proof, &peer.device_public_key, &[1; 32]).unwrap();
+        peer
+    }
+
+    #[tokio::test]
+    async fn bounded_private_queue_and_delivery_recheck_never_retain_traffic() {
+        let (root, user) = UserIdentity::generate("alice", 1);
+        let a = certified_device(&root, user.public_key, "a");
+        let b = certified_device(&root, user.public_key, "b");
+        let room = uuid::Uuid::from_u128(7);
+        let id = crate::room_workspace_id(&room.to_string()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut wr = crate::workspace::WorkspaceRuntime::open(
+            tmp.path(),
+            id,
+            true,
+            crate::workspace::Membership::default(),
+        )
+        .unwrap();
+        wr.admit_device(a.device_public_key).unwrap();
+        wr.admit_device(b.device_public_key).unwrap();
+        let (atx, _arx) = mpsc::channel(2);
+        let (btx, _brx) = mpsc::channel(2);
+        let (ap, _apr) = mpsc::channel(2);
+        let (bp, mut bpr) = mpsc::channel(1);
+        let (disconnect, _disconnect_rx) = mpsc::channel(1);
+        for (peer, tx, private) in [(&a, &atx, &ap), (&b, &btx, &bp)] {
+            wr.add_subscriber(Subscriber {
+                device_public_key: peer.device_public_key,
+                role: peer.role,
+                tx: tx.clone(),
+                disconnect: disconnect.clone(),
+            });
+            wr.action_targets.insert(
+                peer.device_public_key,
+                ActionTarget {
+                    room,
+                    peer: peer.clone(),
+                    state_tx: tx.clone(),
+                    tx: private.clone(),
+                },
+            );
+        }
+        let wr = Arc::new(AsyncMutex::new(wr));
+        let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, wr.clone())])));
+        let trust = Arc::new(std::sync::RwLock::new(
+            crate::policy::TrustPolicy::AllowMatchingUser,
+        ));
+        let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
+        let metrics = crate::metrics::Metrics::default();
+        let session = SessionCtx {
+            workspaces: &registry,
+            autobind: None,
+            outbound: &atx,
+            own_user_public_key: &user.public_key,
+            metrics: &metrics,
+            trust_policy: &trust,
+            disconnect: &disconnect,
+            v2: true,
+            private_tx: &ap,
+            revocations: &revocations,
+        };
+        let receiver = SessionCtx {
+            outbound: &btx,
+            private_tx: &bp,
+            ..session
+        };
+        let action = DirectedAction {
+            room,
+            request_id: uuid::Uuid::from_u128(8),
+            source: a.device_public_key,
+            target: b.device_public_key,
+            message: ActionMessage::CatalogueRefresh,
+        };
+        // State resubscribe is idempotent on the same connection. It must not
+        // silently withdraw a separately negotiated private capability.
+        wr.lock().await.add_subscriber(Subscriber {
+            device_public_key: b.device_public_key,
+            role: b.role,
+            tx: btx.clone(),
+            disconnect: disconnect.clone(),
+        });
+        assert_eq!(route_private(&action, &a, &session).await.unwrap(), None);
+        assert_eq!(
+            route_private(&action, &a, &session).await.unwrap(),
+            Some(UnavailableReason::Backpressure)
+        );
+        let PrivateOutbound::Delivery(delivery) = bpr.recv().await.unwrap() else {
+            panic!("expected private delivery")
+        };
+        assert_eq!(authorize_delivery(&delivery, &b, &receiver).await, Ok(()));
+        // Removal after dispatch but before recipient wire delivery fails closed.
+        wr.lock()
+            .await
+            .store
+            .save_membership(&[a.device_public_key])
+            .unwrap();
+        assert_eq!(
+            authorize_delivery(&delivery, &b, &receiver).await,
+            Err(UnavailableReason::NotAuthorised)
+        );
+        wr.lock()
+            .await
+            .store
+            .save_membership(&[a.device_public_key, b.device_public_key])
+            .unwrap();
+        // Exact room equality is checked in addition to the numeric shard.
+        wr.lock()
+            .await
+            .action_targets
+            .get_mut(&b.device_public_key)
+            .unwrap()
+            .room = uuid::Uuid::from_u128(9);
+        assert_eq!(
+            route_private(&action, &a, &session).await.unwrap(),
+            Some(UnavailableReason::NotAuthorised)
+        );
+        wr.lock()
+            .await
+            .action_targets
+            .get_mut(&b.device_public_key)
+            .unwrap()
+            .room = room;
+        let (replacement, _rx) = mpsc::channel(2);
+        wr.lock().await.add_subscriber(Subscriber {
+            device_public_key: b.device_public_key,
+            role: b.role,
+            tx: replacement.clone(),
+            disconnect: disconnect.clone(),
+        });
+        assert_eq!(
+            authorize_delivery(&delivery, &b, &receiver).await,
+            Err(UnavailableReason::NotAuthorised)
+        );
+        wr.lock()
+            .await
+            .remove_subscriber_session(&b.device_public_key, &btx);
+        assert!(
+            wr.lock()
+                .await
+                .subscribers
+                .get(&b.device_public_key)
+                .unwrap()
+                .tx
+                .same_channel(&replacement)
+        );
+        let wr = wr.lock().await;
+        assert_eq!(wr.store.count_pending(&b.device_public_key).unwrap(), 0);
+        assert!(wr.store.load_retained().unwrap().is_empty());
+        assert!(wr.store.load_snapshot().unwrap().is_none());
     }
 }
