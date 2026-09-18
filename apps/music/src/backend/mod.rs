@@ -19,13 +19,12 @@
 //! `PoToken` minting (why the offline-audio path works with no `BotGuard`) is
 //! documented in [`potoken`].
 
+pub mod android_vr;
+#[cfg(feature = "live")]
+pub mod live;
 pub mod offline;
 pub mod potoken;
 pub mod proxy;
-pub mod ytdlp;
-
-#[cfg(feature = "live")]
-pub mod live;
 
 /// Signed media URLs are accepted only from `YouTube`'s HTTPS media origin.
 /// A substring check would also accept `googlevideo.com.attacker.invalid`.

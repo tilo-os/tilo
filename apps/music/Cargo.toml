@@ -66,8 +66,8 @@ zbus = { workspace = true, optional = true, features = ["p2p"], default-features
 # configuration.
 tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 # Pure-Rust InnerTube (YouTube / YouTube Music) client: search + stream
-# resolution. Embeds `rquickjs` for signature deobfuscation — no ffmpeg /
-# yt-dlp / JS runtime binary. Gated behind `live`; off the `--shots` path.
+# resolution. Embeds `rquickjs` for signature deobfuscation — no external
+# interpreter, downloader, or JS runtime binary. Gated behind `live`.
 rustypipe = { workspace = true, optional = true, features = ["rustls-tls-webpki-roots"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

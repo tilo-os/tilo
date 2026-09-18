@@ -863,21 +863,21 @@ impl AudioEngine {
 
 /// The HTTP `User-Agent`s of the player clients that sign the media URLs this
 /// app plays: the two rustypipe resolves through (its default order with no
-/// `BotGuard` is `[Ios, Tv]`) plus `android_vr`, the client
-/// [`crate::backend::ytdlp`] asks `yt-dlp` for. We present the client UA
+/// `BotGuard` is `[Ios, Tv]`) plus the `ANDROID_VR` client queried by the
+/// Rust-native full-track resolver. We present the client UA
 /// matching the URL's `c=` param on the media fetch to mirror the client that
 /// signed it. The iOS/TV values mirror rustypipe's own client UAs (crate 0.11);
-/// the `android_vr` one mirrors `yt-dlp`'s `INNERTUBE_CLIENTS["android_vr"]`.
+/// the Android VR value matches the direct full-track resolver.
 #[cfg(all(feature = "audio", feature = "live"))]
 const IOS_UA: &str =
     "com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iOS 18_2_1 like Mac OS X)";
 #[cfg(all(feature = "audio", feature = "live"))]
 const TV_UA: &str = "Mozilla/5.0 (SMART-TV; Linux; Tizen 5.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/5.0 NativeTVAds Safari/538.1";
-/// The client the yt-dlp full-track resolver asks for. Without this arm such a
+/// The client the Rust-native full-track resolver asks for. Without this arm such a
 /// URL was fetched under the iOS UA — a client it was not signed for, which the
 /// rule above exists to prevent.
 #[cfg(all(feature = "audio", feature = "live"))]
-const ANDROID_VR_UA: &str = "com.google.android.apps.youtube.vr.oculus/1.62.27 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip";
+const ANDROID_VR_UA: &str = crate::backend::android_vr::USER_AGENT;
 
 /// Pick the `User-Agent` for fetching a media URL.
 ///
