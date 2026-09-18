@@ -189,6 +189,7 @@ struct LocalModelPackage {
     license_url: String,
     download_bytes: u64,
     installed_bytes: u64,
+    vision: bool,
 }
 #[derive(Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -648,6 +649,7 @@ fn package(model: &LocalModelRelease) -> LocalModelPackage {
         license_url: model.license_url.clone(),
         download_bytes: model.artifact.size_bytes,
         installed_bytes: model.installed_size_bytes,
+        vision: model.vision,
     }
 }
 fn runtime_kind_for(

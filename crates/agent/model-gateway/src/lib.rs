@@ -17,6 +17,18 @@ pub const SERVICE_NAME: &str = "model-gateway";
 pub const SERVICE_FD_ENV: &str = "TILO_SVC_MODEL_GATEWAY_FD";
 pub const RPC_VERSION: u16 = 2;
 pub const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
+/// The only encoded-preview media types accepted by the local vision RPC.
+/// Keeping this vocabulary closed means a caller cannot ask the trusted
+/// gateway to fetch a URL or interpret an arbitrary document as an image.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct VisionImage {
+    /// `image/jpeg`, `image/png`, or `image/webp`.
+    pub media_type: String,
+    /// Standard base64 of a caller-decoded, downscaled preview.
+    pub data_base64: String,
+    /// SHA-256 of the original photo bytes, not of `data_base64`.
+    pub source_content_hash: String,
+}
 
 /// A request that can cross the sandbox boundary. `SetApiKey` is only sent by
 /// Settings; a server also authenticates the launcher-provided app preamble.
@@ -29,6 +41,14 @@ pub enum Request {
         model_id: String,
         body: serde_json::Value,
         timeout_ms: u64,
+    },
+    /// Fixed-shape, device-local visual analysis for Photos. The gateway
+    /// owns the prompt and refuses hosted, unpinned, or non-vision profiles;
+    /// a sandboxed caller never obtains direct network access.
+    AnalyzeImage {
+        profile_id: String,
+        model_id: String,
+        image: VisionImage,
     },
     SecretStatus {
         profile_id: String,
@@ -142,6 +162,29 @@ pub fn plan(
     response
         .output
         .ok_or_else(|| ClientError::Protocol("gateway returned no provider response".into()))
+}
+
+/// Request a fixed-schema visual analysis through the launcher-issued gateway
+/// descriptor. This operation can only be authorized for Photos by the
+/// gateway; callers cannot provide a URL, arbitrary prompt, or timeout.
+///
+/// # Errors
+///
+/// Returns [`ClientError`] if the capability is not passed by the launcher,
+/// the gateway rejects the request, or the provider is unavailable.
+pub fn analyze_image(
+    profile_id: &str,
+    model_id: &str,
+    image: VisionImage,
+) -> Result<String, ClientError> {
+    let response = request(Request::AnalyzeImage {
+        profile_id: profile_id.to_string(),
+        model_id: model_id.to_string(),
+        image,
+    })?;
+    response
+        .output
+        .ok_or_else(|| ClientError::Protocol("gateway returned no image analysis".into()))
 }
 
 /// Query whether the profile has a secret stored by the isolated gateway.

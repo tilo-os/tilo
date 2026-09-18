@@ -99,6 +99,10 @@ pub struct LocalModelPackage {
     pub license_url: String,
     pub download_bytes: u64,
     pub installed_bytes: u64,
+    /// Signed capability reported by the local-model manager for this exact
+    /// revision. It is not inferred from a model name.
+    #[serde(default)]
+    pub vision: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -467,7 +471,8 @@ fn synced_local_profile(
             id: model.package.id.clone(),
             label: model.package.name.clone(),
             context_window: None,
-            vision: false,
+            revision: Some(model.package.revision.clone()),
+            vision: model.package.vision,
             tool_calling: true,
         })
         .collect();
@@ -1572,6 +1577,7 @@ mod tests {
             license_url: "https://example.test/license".into(),
             download_bytes: 5_368_709_120,
             installed_bytes: 10_737_418_240,
+            vision: false,
         }
     }
 
@@ -1769,7 +1775,8 @@ mod tests {
 
     #[test]
     fn local_profile_uses_the_ready_manager_endpoint_not_port_8000() {
-        let package = package();
+        let mut package = package();
+        package.vision = true;
         let model_id = package.id.clone();
         let models = vec![InstalledLocalModel {
             package,
@@ -1784,6 +1791,11 @@ mod tests {
         let profile = synced_local_profile(None, &models).expect("ready local profile");
         assert_eq!(profile.endpoint, "http://127.0.0.1:43127/v1");
         assert_eq!(profile.default_model.as_deref(), Some("test/model"));
+        assert_eq!(
+            profile.models[0].revision.as_deref(),
+            Some("0123456789abcdef")
+        );
+        assert!(profile.models[0].vision);
         assert!(profile.enabled);
     }
 
