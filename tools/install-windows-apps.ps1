@@ -81,6 +81,7 @@ Get-ChildItem -LiteralPath $fontSource -Recurse -File | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination $fontTarget -Force
 }
 $shortcutShell = New-Object -ComObject WScript.Shell
+& (Join-Path $PSScriptRoot 'install-windows-dxc.ps1')
 if ('pdf-viewer' -in $applications -or 'file-explorer' -in $applications) {
     & (Join-Path $PSScriptRoot 'install-windows-pdfium.ps1')
 }

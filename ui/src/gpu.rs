@@ -102,6 +102,25 @@ fn create_targets(width: u32, height: u32, device: &Device) -> (Texture, Texture
 
 impl RenderContext {
     pub fn new() -> Self {
+        let backend_options = wgpu::BackendOptions::from_env_or_default();
+        #[cfg(windows)]
+        let backend_options = {
+            let mut options = backend_options;
+            // Prefer the pinned app-local compiler, independent of the
+            // working directory or ambient SDK/PATH. Keep an explicit
+            // diagnostic compiler override and unbundled wgpu fallback.
+            if wgpu::Dx12Compiler::from_env().is_none()
+                && let Some(compiler) = std::env::current_exe()
+                    .ok()
+                    .and_then(|exe| exe.parent().map(|path| path.join("dxcompiler.dll")))
+                    .filter(|path| path.is_file())
+            {
+                options.dx12.shader_compiler = wgpu::Dx12Compiler::DynamicDxc {
+                    dxc_path: compiler.to_string_lossy().into_owned(),
+                };
+            }
+            options
+        };
         // Every field spelled out: `InstanceDescriptor` has no `Default`, and
         // these are the values vello would have used.
         let instance = Instance::new(wgpu::InstanceDescriptor {
@@ -119,7 +138,7 @@ impl RenderContext {
             }),
             flags: wgpu::InstanceFlags::from_build_config().with_env(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
-            backend_options: wgpu::BackendOptions::from_env_or_default(),
+            backend_options,
         });
         Self {
             instance,
