@@ -126,3 +126,41 @@ Refresh the full required-job evidence after recovery and never reuse a prior
 aggregate receipt. A changed handle after uncertain transport means reconcile,
 not blindly request another rerun. No custom reaper or product recovery controller
 is implemented by this read-only audit.
+
+## Private pilot landing command
+
+`tools/ci_pilot_land.py` advances the read-only audit into a deliberately isolated
+landing path. It hard-denies every repository except
+`qos/ci-workflow-pilot-20260918-9245-repeat`; it is not a product merge service.
+Default invocation is a dry run, with the same trusted external policy schema as
+the read-only audit and fresh double collection of reviews/current job attempts:
+
+```text
+python tools/ci_pilot_land.py --repo qos/ci-workflow-pilot-20260918-9245-repeat \
+  --pr NUMBER --git-root TRUSTED_PILOT_GIT_OBJECTS --policy TRUSTED_POLICY.json \
+  --journal NEW_JOURNAL.json
+```
+
+`--execute` additionally accepts one operator-owned credential envelope through
+stdin: namespace `forgejo`, name `qos-integrator-pilot`, username `qos-integrator`,
+and its existing token. Retrieve that Secret in memory using the trusted operator
+path; never put credentials into a command line, journal, candidate workflow or
+committed file. The repository-restricted token lacks `read:user`. Its identity
+binding is the existing trusted provisioning record, the sole integrator merge
+whitelist and the observed merge actor—not a fabricated `/user` response. The tool
+checks the pilot's dedicated write grant and required branch-protection settings.
+Author, accepted reviewer and integration identity must be different.
+
+Before its single immediate expected-head fast-forward request, it persists a
+merge-intent journal. It disables force and queued auto-merge. Every HTTP outcome,
+including a transport exception, is followed by PR/main readback. An existing
+journal cannot issue another merge. `--reconcile` performs GET-only reconciliation
+of that journal; a still-unmerged readback after timeout is not permission to retry.
+Manual recovery must determine that the original request cannot still complete
+before starting a new independently audited request.
+
+Protected paths still require a complete operator-reviewed executable closure.
+The final read-to-merge rerun race is not eliminated by this CLI: server statuses
+are defense in depth but candidate jobs can forge them. Keep this pilot restriction
+until atomic readiness or equivalent trusted execution/promotion semantics are
+qualified. A dry-run success is an observation, not durable merge authorization.

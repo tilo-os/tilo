@@ -1,0 +1,39 @@
+name: Trusted private landing fixture
+on:
+  push:
+jobs:
+  fixture-tests:
+    runs-on: runner
+    timeout-minutes: 4
+    container:
+      image: docker.io/library/python:3.13-alpine
+    steps:
+      - name: Validate exact-head data then publish fixture readiness
+        env:
+          TOKEN: ${{ github.token }}
+          HEAD: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import base64, json, os, re, urllib.request, urllib.error
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  raise urllib.error.HTTPError(req.full_url, code, "redirect denied", headers, fp)
+          opener = urllib.request.build_opener(NoRedirect())
+          repo = os.environ['REPOSITORY']
+          assert repo == 'qos/ci-workflow-pilot-20260918-9245-repeat'
+          head = os.environ['HEAD']
+          assert re.fullmatch('[0-9a-f]{40}', head)
+          headers = {'Authorization': 'token ' + os.environ['TOKEN'], 'Content-Type': 'application/json'}
+          url = 'https://code.podesta.ai/api/v1/repos/' + repo
+          request = urllib.request.Request(url + '/contents/landing-data.txt?ref=' + head, headers=headers)
+          with opener.open(request, timeout=30) as response:
+              data = json.load(response)
+          assert base64.b64decode(data['content']) in (b'fixture:bootstrap\n', b'fixture:candidate\n')
+          print('Exact-head fixture data passed')
+          request = urllib.request.Request(url + '/statuses/' + head, headers=headers, method='POST',
+              data=json.dumps({'context': 'pilot/ready', 'state': 'success',
+                  'description': 'Trusted fixture data test passed; not production qualification'}).encode())
+          with opener.open(request, timeout=30) as response:
+              assert response.status == 201
+          PY
