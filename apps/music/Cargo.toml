@@ -38,7 +38,7 @@ ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }
 # Ctrl+K palette and the on-screen affordances both dispatch — one source of
 # truth, one replay path.
 tilo-actions = { path = "../../crates/collab/actions" }
-media = { path = "../../crates/media" }
+media = { path = "../../crates/media/core" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

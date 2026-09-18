@@ -21,7 +21,7 @@ decode = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 encode = ["dep:gstreamer"]
 
 [dependencies]
-bounded-command = { path = "../system/bounded-command" }
+bounded-command = { path = "../../system/bounded-command" }
 libc.workspace = true
 # Transport CRDT. A tiny automerge document carries follow-the-host playback
 # state (playing / position / rate / epoch) between peers so a joiner follows

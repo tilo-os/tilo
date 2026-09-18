@@ -4,11 +4,11 @@ set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$TEST_DIR/../.." && pwd)"
-AUDIO="$ROOT/crates/media/src/audio.rs"
-RUNTIME="$ROOT/crates/media/src/audio_runtime.rs"
+AUDIO="$ROOT/crates/media/core/src/audio.rs"
+RUNTIME="$ROOT/crates/media/core/src/audio_runtime.rs"
 OCR="$ROOT/crates/media/ocr/src/lib.rs"
 SETTINGS_AUDIO="$ROOT/apps/settings/src/panes/audio.rs"
-NOTIFICATION_SOUND="$ROOT/crates/media/src/notification_sound.rs"
+NOTIFICATION_SOUND="$ROOT/crates/media/core/src/notification_sound.rs"
 SHELL_CAPTURE="$ROOT/shell/src/compositor/audio_capture.rs"
 
 fails=0
