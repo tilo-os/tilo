@@ -227,7 +227,7 @@ printf '%s' "$_tilo_rpms_provenance" | jq -e \
   --arg package_set_sha256 "$_tilo_package_set_sha256" \
   --arg native_package_set_sha256 "$_tilo_native_package_set_sha256" \
   --arg native_arch "$_tilo_registry_arch" '
-    [.[].payload | @base64d | fromjson | .predicate]
+    [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
     | any(
         .buildDefinition.buildType == "https://tilo.dev/buildtypes/frozen-rpm-index/v1"
         and .buildDefinition.externalParameters.architectures == ["amd64", "arm64"]
@@ -255,7 +255,7 @@ _tilo_kernel_provenance="$(cosign verify-attestation \
 printf '%s' "$_tilo_kernel_provenance" | jq -e \
   --arg digest "$_tilo_kernel_digest" --arg architecture "$(uname -m)" \
   --arg base "$BASE_REF" --arg rpms "$RPMS_REF" '
-    [.[].payload | @base64d | fromjson | .predicate]
+    [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
     | any(
         .buildDefinition.buildType == "https://tilo.dev/buildtypes/kernel-rpm/v1"
         and .buildDefinition.externalParameters.architecture == $architecture

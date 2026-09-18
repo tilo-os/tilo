@@ -208,7 +208,7 @@ grep -Fq 'release/app-collections.toml' "$apps" \
   && grep -Fq '${REQUESTED_PUBLISH:-false} == true' "$apps" \
   && grep -Fq 'REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}' "$apps" \
   && grep -Fq 'tools/app_release.py --architecture-matrix' "$apps" \
-  && grep -Fq 'image: code.podesta.ai/qos/qos-builder:latest' "$apps" \
+  && grep -Fq 'image: code.podesta.ai/qos/tilo-builder:latest' "$apps" \
   && grep -Fq 'actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5' "$apps" \
   && grep -Fq 'enable-openid-connect: true' "$apps" \
   && grep -Fq 'TILO_APP_RELEASE_TAG_AUDIENCE' "$apps" \
@@ -231,9 +231,16 @@ grep -Fq 'TILO_APP_COLLECTION_SHA256' "$os" \
   && grep -Fq 'QPKG_DIR=/out/prebuilt-apps' "$repo/os/Containerfile" \
   && grep -Fq 'cp -a /build/os/app-runtime/tilo-runtime /usr/lib/' "$repo/os/Containerfile" \
   && grep -Fq 'RUNTIME_BUNDLE_IDENTITY_FILE' "$repo/dist/apps/package-apps.sh" \
+  && grep -Fq -- '-C codegen-units=1' "$repo/tools/rustc-thin-app-wrapper.sh" \
+  && ! grep -Fq -- '--icf=all' "$repo/tools/rustc-thin-app-wrapper.sh" \
   && grep -Fq 'shared runtime changed; the full collection must be rebuilt' "$apps" \
   && ok 'OS builds consume OIDC-authenticated pinned app and desktop inputs without rebuilding them' \
   || bad 'OS releases are still coupled to app source builds'
+
+grep -Fq "CARGO_BUILD_JOBS: \${{ matrix.arch == 'aarch64' && '1' || '4' }}" \
+    "$workflows/check.yml" \
+  && ok 'affected-package CI serializes memory-heavy ARM links' \
+  || bad 'affected-package CI can OOM the native ARM runner with parallel links'
 
 grep -Fq 'SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77' "$repo/os/Containerfile" \
   && grep -Fq 'sccache_arch=aarch64' "$repo/os/Containerfile" \

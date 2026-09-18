@@ -23,6 +23,10 @@ conf=$home/.config/tilo/dev-session
 # else can write, and /tmp is 1777 by definition.
 mkdir -p "$home/.cache"
 scratch=$(mktemp -d "$home/.cache/tilo-dev-session-test.XXXXXX")
+# Minimal packaging containers do not run logind and therefore have no
+# /run/user/<uid>. Use a private per-test runtime directory, matching the
+# writable XDG_RUNTIME_DIR a real login session supplies.
+export XDG_RUNTIME_DIR="$scratch/runtime"
 saved=
 
 cleanup() {
@@ -112,6 +116,7 @@ cat >"$lifecycle" <<'SH'
 #!/bin/sh
 case "${1:-}" in /*) ;; *) exit 73 ;; esac
 test -x "$1" || exit 74
+env | grep '^TILO_TEST_CONTROL=' >"$(dirname -- "$XDG_RUNTIME_DIR")/managed-environment"
 printf 'managed %s ::' "$1"
 shift
 if (( $# )); then
@@ -139,6 +144,14 @@ if [[ -r $attest ]] \
     pass=$((pass + 1))
 else
     echo "FAIL: developer launch attestation is missing or malformed"
+    fails=$((fails + 1))
+fi
+
+if grep -Fqx "TILO_TEST_CONTROL=$test_runtime/tilo-dev-session/control.sock" "$scratch/managed-environment"; then
+    echo "ok: developer lifecycle receives a private live-control endpoint"
+    pass=$((pass + 1))
+else
+    echo "FAIL: developer lifecycle did not receive its private live-control endpoint"
     fails=$((fails + 1))
 fi
 
