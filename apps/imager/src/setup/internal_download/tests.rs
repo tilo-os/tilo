@@ -1024,3 +1024,296 @@ fn malformed_http_framing_fails_without_retrying_an_invalid_response() {
         assert_eq!(file.metadata().unwrap().len(), 0);
     }
 }
+
+fn chunked(bytes: &[u8]) -> Vec<u8> {
+    let mut wire = format!("{:x}\r\n", bytes.len()).into_bytes();
+    wire.extend_from_slice(bytes);
+    wire.extend_from_slice(b"\r\n0\r\n\r\n");
+    wire
+}
+fn unsupported_framings(bytes: &[u8]) -> Vec<(&'static str, String, Vec<u8>)> {
+    vec![
+        (
+            "unknown",
+            "Transfer-Encoding: yolo\r\n".into(),
+            bytes.to_vec(),
+        ),
+        (
+            "TE plus CL",
+            format!(
+                "Transfer-Encoding: chunked\r\nContent-Length: {}\r\n",
+                bytes.len()
+            ),
+            chunked(bytes),
+        ),
+        (
+            "repeated coding",
+            "Transfer-Encoding: chunked, chunked\r\n".into(),
+            chunked(bytes),
+        ),
+        (
+            "additional coding",
+            "Transfer-Encoding: gzip, chunked\r\n".into(),
+            chunked(bytes),
+        ),
+        (
+            "duplicate fields",
+            "Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n".into(),
+            chunked(bytes),
+        ),
+    ]
+}
+#[test]
+fn framing_manifests_refuse_unsupported_transfer_encoding_with_authentic_payload() {
+    let bytes = manifest();
+    for headers in [
+        "Transfer-Encoding: chunked\r\n",
+        "Transfer-Encoding: \tChUnKeD \t\r\n",
+    ] {
+        let server = Server::new(vec![response(200, headers, &chunked(&bytes))]);
+        assert_eq!(
+            server
+                .transport()
+                .fetch_manifest(&server.release(&bytes), &AtomicBool::new(false))
+                .unwrap()
+                .bytes(),
+            bytes
+        );
+    }
+    let mut accepted = Vec::new();
+    for (name, headers, body) in unsupported_framings(&bytes) {
+        let server = Server::new(vec![response(200, &headers, &body)]);
+        if server
+            .transport()
+            .fetch_manifest(&server.release(&bytes), &AtomicBool::new(false))
+            .is_ok()
+        {
+            accepted.push(name);
+        }
+        assert_eq!(server.requests.lock().unwrap().len(), 1);
+    }
+    assert!(
+        accepted.is_empty(),
+        "unsupported framing accepted authentic manifest: {accepted:?}"
+    );
+}
+#[test]
+fn framing_resumed_components_refuse_before_modifying_held_prefix() {
+    let mut accepted = Vec::new();
+    for (name, headers, body) in unsupported_framings(&vec![b'E'; 3072]) {
+        let server = Server::new(vec![response(
+            206,
+            &format!("{headers}Content-Range: bytes 1024-4095/4096\r\n"),
+            &body,
+        )]);
+        let selected = context(&server);
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&vec![b'E'; 1024]).unwrap();
+        let cp = capture_checkpoint(&selected, 0, &mut file, &AtomicBool::new(false)).unwrap();
+        let result = server.transport().transfer(
+            &selected,
+            0,
+            &mut file,
+            Some(&cp),
+            &AtomicBool::new(false),
+            1,
+            |_| {},
+        );
+        if result.is_ok() || contents(&mut file) != vec![b'E'; 1024] {
+            accepted.push(name);
+        }
+        assert_eq!(server.requests.lock().unwrap().len(), 1);
+    }
+    assert!(
+        accepted.is_empty(),
+        "unsupported framing accepted/mutated resumed component: {accepted:?}"
+    );
+}
+#[test]
+fn framing_refuses_before_redirect_or_ignored_range_reset() {
+    let bytes = manifest();
+    let mut violations = Vec::new();
+    for (name, headers, _) in unsupported_framings(&[]) {
+        let server = Server::new(vec![
+            response(302, &format!("{headers}Location: /next\r\n"), b""),
+            response(200, "", &bytes),
+        ]);
+        let result = server
+            .transport()
+            .fetch_manifest(&server.release(&bytes), &AtomicBool::new(false));
+        if result.is_ok() || server.requests.lock().unwrap().len() != 1 {
+            violations.push(format!("redirect {name}"));
+        }
+        let server = Server::new(vec![
+            response(200, &headers, b""),
+            response(200, "", &vec![b'E'; 4096]),
+        ]);
+        let selected = context(&server);
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&vec![b'E'; 1024]).unwrap();
+        let cp = capture_checkpoint(&selected, 0, &mut file, &AtomicBool::new(false)).unwrap();
+        let result = server.transport().transfer(
+            &selected,
+            0,
+            &mut file,
+            Some(&cp),
+            &AtomicBool::new(false),
+            1,
+            |_| {},
+        );
+        if result.is_ok()
+            || server.requests.lock().unwrap().len() != 1
+            || contents(&mut file) != vec![b'E'; 1024]
+        {
+            violations.push(format!("reset {name}"));
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "unsupported framing was acted on: {violations:?}"
+    );
+}
+
+#[test]
+fn framing_http_10_requires_absent_transfer_encoding() {
+    let bytes = manifest();
+    for (headers, body, accepted) in [
+        ("", bytes.clone(), true),
+        ("Transfer-Encoding: chunked\r\n", chunked(&bytes), false),
+    ] {
+        let raw = response(200, headers, &body);
+        let raw = [b"HTTP/1.0".as_slice(), &raw[8..]].concat();
+        let server = Server::new(vec![raw]);
+        assert_eq!(
+            server
+                .transport()
+                .fetch_manifest(&server.release(&bytes), &AtomicBool::new(false))
+                .is_ok(),
+            accepted
+        );
+        assert_eq!(server.requests.lock().unwrap().len(), 1);
+    }
+}
+
+thread_local! { static WRITE_REMAINING: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) }; }
+pub(super) struct FaultWriter<'a>(pub(super) &'a mut File);
+impl Write for FaultWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        WRITE_REMAINING.with(|remaining| match remaining.get() {
+            Some(0) => Err(std::io::Error::other("injected after real partial write")),
+            Some(limit) => {
+                let count = self.0.write(&bytes[..bytes.len().min(limit)])?;
+                remaining.set(Some(limit - count));
+                Ok(count)
+            }
+            None => self.0.write(bytes),
+        })
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
+fn with_write_failure(after: usize, test: impl FnOnce()) {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            WRITE_REMAINING.with(|r| r.set(None));
+        }
+    }
+    WRITE_REMAINING.with(|r| r.set(Some(after)));
+    let _reset = Reset;
+    test();
+}
+#[test]
+fn terminal_counter_includes_successful_write_before_cancellation() {
+    let server = Server::new(vec![response(200, "", &vec![b'E'; 4096])]);
+    let mut file = tempfile::tempfile().unwrap();
+    let mut events = Vec::new();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let signal = cancel.clone();
+    with_hook(
+        Box::new(move |stage, _| {
+            if stage == "write" {
+                signal.store(true, Ordering::Release);
+            }
+        }),
+        || {
+            assert!(
+                server
+                    .transport()
+                    .transfer(&context(&server), 0, &mut file, None, &cancel, 41, |p| {
+                        events.push(p)
+                    })
+                    .is_err()
+            );
+        },
+    );
+    let bytes = contents(&mut file);
+    assert!(!bytes.is_empty());
+    assert!(bytes.iter().all(|b| *b == b'E'));
+    let terminal = events.last().unwrap();
+    assert_eq!(terminal.phase, Phase::Cancelled);
+    assert_eq!(terminal.verified, 0);
+    assert_eq!(terminal.received, bytes.len() as u64);
+    assert_eq!(server.requests.lock().unwrap().len(), 1);
+}
+#[test]
+fn terminal_counter_clears_successful_reset_before_cancellation() {
+    let server = Server::new(vec![response(416, "", b"")]);
+    let selected = context(&server);
+    let mut file = tempfile::tempfile().unwrap();
+    file.write_all(&vec![b'E'; 1024]).unwrap();
+    let cp = capture_checkpoint(&selected, 0, &mut file, &AtomicBool::new(false)).unwrap();
+    let mut events = Vec::new();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let signal = cancel.clone();
+    with_hook(
+        Box::new(move |stage, _| {
+            if stage == "reset" {
+                signal.store(true, Ordering::Release);
+            }
+        }),
+        || {
+            assert!(
+                server
+                    .transport()
+                    .transfer(&selected, 0, &mut file, Some(&cp), &cancel, 42, |p| events
+                        .push(p))
+                    .is_err()
+            );
+        },
+    );
+    assert!(contents(&mut file).is_empty());
+    let terminal = events.last().unwrap();
+    assert_eq!(terminal.phase, Phase::Cancelled);
+    assert_eq!(terminal.verified, 0);
+    assert_eq!(terminal.received, 0);
+    assert_eq!(server.requests.lock().unwrap().len(), 1);
+}
+#[test]
+fn terminal_counter_includes_partial_real_file_write_before_error() {
+    let server = Server::new(vec![response(200, "", &vec![b'E'; 4096])]);
+    let mut file = tempfile::tempfile().unwrap();
+    let mut events = Vec::new();
+    with_write_failure(1024, || {
+        let error = server
+            .transport()
+            .transfer(
+                &context(&server),
+                0,
+                &mut file,
+                None,
+                &AtomicBool::new(false),
+                43,
+                |p| events.push(p),
+            )
+            .unwrap_err();
+        assert!(error.contains("injected after real partial write"));
+    });
+    assert_eq!(contents(&mut file), vec![b'E'; 1024]);
+    let terminal = events.last().unwrap();
+    assert_eq!(terminal.phase, Phase::Failed);
+    assert_eq!(terminal.verified, 0);
+    assert_eq!(terminal.received, 1024);
+    assert_eq!(server.requests.lock().unwrap().len(), 1);
+}
