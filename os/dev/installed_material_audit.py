@@ -29,6 +29,7 @@ class Scanner:
         self.values = tuple(private_values)
         self.entries = self.bytes = 0
         self.deadline = time.monotonic() + 300
+        self.squash_images = 0
 
     def entry(self, name, mode, size, stream):
         self.entries += 1
@@ -45,7 +46,7 @@ class Scanner:
         if forbidden:
             raise AuditError('installed private-material path policy violation')
         if leaf in ('squash-root.img', 'squashfs-root.img', 'erofs-root.img'):
-            raise AuditError('nested initramfs filesystem requires full audit support')
+            raise AuditError('unexpected nested filesystem outside initramfs wrapper')
         if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)):
             # Device nodes in initramfs have no payload; no device is opened.
             if size:
@@ -98,13 +99,86 @@ class Scanner:
                 else:
                     raise AuditError('special file in installed mutable state')
 
+    def squash(self, image, scratch):
+        """List then stream every regular payload; never extract image paths.
+
+        Numeric listing is strict: ambiguous/unfamiliar paths or types fail.
+        Every cat target and its ancestors are verified before unsquashfs runs.
+        """
+        records = {}
+        with archive.child([archive.TOOLS['unsquashfs'], '-lln', '-dest', 'ROOT', str(image)],
+                           limit=32 * 1024**2, scratch=scratch, deadline=self.deadline) as output:
+            listing = bytearray()
+            while data := output.read(archive.CHUNK):
+                listing.extend(data)
+        try:
+            lines = listing.decode('utf-8', errors='strict').splitlines()
+        except UnicodeError:
+            raise AuditError('unsupported squashfs listing encoding') from None
+        for line in lines:
+            match = re.fullmatch(r'([dlpcbsp-])[rwxStTs-]{9} +[0-9]+/[0-9]+ +([0-9]+(?:, *[0-9]+)?) '
+                                 r'[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (ROOT(?:/.*)?)', line)
+            if not match:
+                raise AuditError('unsupported squashfs listing')
+            kind, size, path = match.groups()
+            target = None
+            if kind == 'l':
+                if path.count(' -> ') != 1:
+                    raise AuditError('ambiguous squashfs symlink')
+                path, target = path.split(' -> ')
+            name = path.removeprefix('ROOT').removeprefix('/')
+            if (path in records or len(path.encode()) > 4096
+                    or any(ord(c) < 32 or ord(c) == 127 for c in path)
+                    or ' -> ' in name or (name and any(p in ('', '.', '..') for p in name.split('/')))):
+                raise AuditError('unsafe or duplicate squashfs path')
+            if len(records) >= MAX_ENTRIES:
+                raise AuditError('squashfs entry limit exceeded')
+            records[path] = (kind, size, name, target)
+        if records.get('ROOT', (None,))[0] != 'd':
+            raise AuditError('missing squashfs root directory')
+        for path, (kind, size, name, target) in records.items():
+            for parent in PurePosixPath(path).parents:
+                if str(parent) != '.' and records.get(str(parent), (None,))[0] != 'd':
+                    raise AuditError('squashfs ancestor is missing or redirected')
+            if kind == '-':
+                count = int(size)
+                if count > MAX_TOTAL - self.bytes:
+                    raise AuditError('squashfs expanded byte limit exceeded')
+                with archive.child([archive.TOOLS['unsquashfs'], '-processors', '1', '-data-queue', '16',
+                        '-frag-queue', '16', '-no-wildcards', '-cat', str(image), name],
+                        limit=count, scratch=scratch, deadline=self.deadline) as output:
+                    self.entry(name, stat.S_IFREG, count, output)
+                    if output.read(1):
+                        raise AuditError('squashfs payload exceeds listed size')
+            elif kind == 'l':
+                data = target.encode()
+                self.entry(name, stat.S_IFLNK, len(data), io.BytesIO(data))
+            else:
+                self.entry(name or '.', stat.S_IFDIR if kind == 'd' else stat.S_IFIFO, 0, io.BytesIO())
+        self.squash_images += 1
+
+    def initramfs_entry(self, name, mode, size, stream, scratch):
+        if name not in ('squash-root.img', 'squashfs-root.img'):
+            return self.entry(name, mode, size, stream)
+        if self.squash_images or not stat.S_ISREG(mode) or not 0 < size <= archive.MAX_IMAGE:
+            raise AuditError('ambiguous or oversized squashfs wrapper')
+        image = scratch / 'payload.squashfs'
+        with image.open('xb') as output:
+            remaining = size
+            while remaining:
+                data = archive.exact(stream, min(remaining, archive.CHUNK))
+                output.write(data)
+                remaining -= len(data)
+        self.squash(image, scratch)
+
     def initramfs(self, data):
         if not 0 < len(data) <= archive.MAX_IMAGE:
             raise AuditError('initramfs size exceeds bounds')
         state = {'entries': 0, 'path_bytes': 0, 'archives': 0,
-                 'deadline': self.deadline, 'visitor': self.entry}
+                 'deadline': self.deadline}
         with tempfile.TemporaryDirectory(prefix='tilo-installed-audit-') as tmp:
             scratch = Path(tmp)
+            state['visitor'] = lambda name, mode, size, stream: self.initramfs_entry(name, mode, size, stream, scratch)
             # A regular temporary input supports streaming trusted decompression.
             with tempfile.TemporaryFile(buffering=0) as source:
                 source.write(data)
@@ -126,7 +200,7 @@ class Scanner:
         if not state['archives']:
             raise AuditError('no complete initramfs archive')
         return {'sha256': hashlib.sha256(data).hexdigest(), 'archives': state['archives'],
-                'entries': state['entries']}
+                'entries': state['entries'], 'squashfs_images': self.squash_images}
 
 
 def audit_installed_material(etc_root, var_root, esp_root, uki, *, architecture='aarch64', private_values=()):
