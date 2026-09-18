@@ -512,14 +512,60 @@ pub fn edge_delta(edge: Color, surface: Color) -> f64 {
 /// visibly registers (`tokens::colors::HAIRLINE_MIN_DELTA`).
 #[must_use]
 pub fn edge_on(surface: Color) -> Color {
-    let mut last = Colors::hairline_on(surface, EDGE_ALPHA_STEPS[0]);
+    let key = u32::from_be_bytes([surface.r(), surface.g(), surface.b(), surface.a()]);
+    if let Some(edge) = EDGE_MEMO.with(|memo| {
+        memo.borrow()
+            .entries
+            .iter()
+            .flatten()
+            .find(|(k, _)| *k == key)
+            .map(|(_, edge)| *edge)
+    }) {
+        return edge;
+    }
+    let edge = derive_edge_on(surface);
+    EDGE_MEMO.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        let slot = memo.next;
+        memo.entries[slot] = Some((key, edge));
+        memo.next = (slot + 1) % EDGE_MEMO_SLOTS;
+    });
+    edge
+}
+
+/// The uncached ladder walk behind [`edge_on`].
+fn derive_edge_on(surface: Color) -> Color {
+    use crate::a11y::relative_luminance;
+    let ground = relative_luminance(surface);
+    let mut last = Color::TRANSPARENT;
     for alpha in EDGE_ALPHA_STEPS {
         last = Colors::hairline_on(surface, *alpha);
-        if edge_delta(last, surface) >= crate::tokens::colors::HAIRLINE_MIN_DELTA {
+        let painted = crate::tokens::colors::composite(last, surface);
+        if (relative_luminance(painted) - ground).abs() >= crate::tokens::colors::HAIRLINE_MIN_DELTA {
             return last;
         }
     }
     last
+}
+
+/// A frame asks for the edge of the same three or four theme constants
+/// hundreds of times (every row, card and rule), and each derivation is a
+/// handful of `powf` calls per ladder step. `edge_on` is a pure function of
+/// its 8-bit input, so the last few answers are kept per thread.
+struct EdgeMemo {
+    entries: [Option<(u32, Color)>; EDGE_MEMO_SLOTS],
+    next: usize,
+}
+
+const EDGE_MEMO_SLOTS: usize = 8;
+
+thread_local! {
+    static EDGE_MEMO: std::cell::RefCell<EdgeMemo> = const {
+        std::cell::RefCell::new(EdgeMemo {
+            entries: [None; EDGE_MEMO_SLOTS],
+            next: 0,
+        })
+    };
 }
 
 /// [`edge_on`] at a fixed alpha, for callers that want the control hairline
@@ -710,6 +756,33 @@ mod tests {
         let half = separator_rect(0.0, 50.0, 99.5, 0.0).expect("rule");
         assert_eq!((half.y0, half.y1), (99.0, 100.0));
         assert!(separator_rect(0.0, 20.0, 5.0, 12.0).is_none(), "insets that meet paint nothing");
+    }
+
+    #[test]
+    fn edge_on_memo_returns_the_derived_answer() {
+        // The memo must be transparent: the same surface asked twice (and
+        // many distinct surfaces cycling through the slots) always yields
+        // exactly what the ladder derives.
+        let theme = Theme::dark();
+        let surfaces = [
+            theme.tokens.colors.surfaces.base,
+            theme.tokens.colors.surfaces.raised,
+            theme.tokens.colors.surfaces.overlay,
+            theme.tokens.colors.lift(0.35),
+            theme.tokens.colors.lift(0.5),
+            Theme::light().tokens.colors.surfaces.base,
+            Theme::light().tokens.colors.surfaces.raised,
+            Theme::high_contrast().tokens.colors.surfaces.base,
+            Theme::high_contrast().tokens.colors.surfaces.raised,
+            Color::from_rgb8(120, 60, 200),
+            Color::from_rgb8(255, 255, 255),
+            Color::from_rgb8(0, 0, 0),
+        ];
+        for _ in 0..3 {
+            for surface in surfaces {
+                assert_eq!(edge_on(surface), derive_edge_on(surface));
+            }
+        }
     }
 
     #[test]
