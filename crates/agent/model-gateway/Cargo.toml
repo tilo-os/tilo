@@ -24,6 +24,8 @@ thiserror.workspace = true
 zeroize.workspace = true
 clap.workspace = true
 libc.workspace = true
+base64.workspace = true
+url.workspace = true
 
 [lints]
 workspace = true
