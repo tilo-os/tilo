@@ -10,14 +10,15 @@ use std::collections::HashSet;
 use chrono::{Datelike, NaiveDate};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
 use crate::app::{center_text, draw_chevron};
 use crate::date;
-use crate::draw_util::{fill_round, stroke_line, stroke_round};
+use crate::draw_util::{fill_round, stroke_round};
+use ui::surface::separator;
 
 const RESERVED_HEIGHT: f64 = 196.0;
 const BOTTOM_INSET: f64 = 12.0;
@@ -83,13 +84,16 @@ impl MiniMonth {
         };
         let colors = &theme.tokens.colors;
 
-        stroke_line(
+        // The rule above the navigator is derived against the sidebar's own
+        // raised ground (HIG §9.5), inset like a Panel separator.
+        separator(
             scene,
             transform,
-            colors.border_standard,
-            Point::new(sidebar.x0 + HORIZONTAL_PAD, layout.divider_y),
-            Point::new(sidebar.x1 - HORIZONTAL_PAD, layout.divider_y),
-            1.0,
+            sidebar.x0,
+            sidebar.x1,
+            layout.divider_y,
+            HORIZONTAL_PAD,
+            colors.surfaces.raised,
         );
         text.draw_text(
             scene,
@@ -170,7 +174,7 @@ impl MiniMonth {
                 );
             }
             let number_color = if is_today {
-                Color::WHITE
+                colors.on_accent(4.5)
             } else if !in_month {
                 colors.neutral[4]
             } else {

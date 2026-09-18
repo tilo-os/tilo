@@ -10,7 +10,7 @@ use chrono::{Datelike, NaiveDate};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
 use ui::dnd::DRAG_START_THRESHOLD_PX;
@@ -18,7 +18,9 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
 use crate::date;
-use crate::draw_util::{elide_to_width, fill_rect, fill_round, stroke_line, stroke_round};
+use crate::draw_util::{elide_to_width, fill_rect, fill_round, hairline, stroke_line, stroke_round};
+use ui::surface::card;
+use ui::tokens::colors::over;
 use crate::model::{Id, Palette};
 use crate::timeline_viewport::{
     TIMELINE_DAY_TEXT, TIMELINE_HOUR_TEXT, TIMELINE_STRIP_TEXT, TIMELINE_SUBTITLE_TEXT,
@@ -438,13 +440,12 @@ impl TimelineInteraction {
         Self::draw_headers(
             scene, transform, text, theme, area, model, grid_x0, col_w, geom, &mut hits,
         );
-        stroke_line(
+        hairline(
             scene,
             transform,
-            colors.border_standard,
+            colors.surfaces.base,
             Point::new(area.x0, geom.body_top),
             Point::new(geom.grid_right, geom.body_top),
-            0.5,
         );
 
         let body = geom.body(area.x0, area.x1);
@@ -533,14 +534,15 @@ impl TimelineInteraction {
                 .iter()
                 .find(|event| event.day == *day && event.all_day)
             {
-                fill_round(scene, transform, event.color.color(theme), strip, 4.0);
+                let strip_fill = event.color.color(theme);
+                card(scene, transform, strip, 4.0, strip_fill);
                 let line =
                     elide_to_width(text, event.title, TIMELINE_STRIP_TEXT, strip.width() - 12.0);
                 text.draw_text(
                     scene,
                     &line,
                     TIMELINE_STRIP_TEXT,
-                    Color::WHITE,
+                    ui::widget::Avatar::initial_ink(strip_fill),
                     transform
                         * Affine::translate((
                             strip.x0 + 6.0,
@@ -572,13 +574,12 @@ impl TimelineInteraction {
         let body = geom.body(area.x0, area.x1);
         for hour in 0..=24 {
             let y = y_at(f64::from(hour) * 60.0);
-            stroke_line(
+            hairline(
                 scene,
                 transform,
-                colors.border_standard.with_alpha(0.5),
+                colors.surfaces.base,
                 Point::new(grid_x0, y),
                 Point::new(geom.grid_right, y),
-                0.5,
             );
             if hour < 24 {
                 text.draw_text(
@@ -593,13 +594,12 @@ impl TimelineInteraction {
         }
         for index in 0..=model.days.len() {
             let x = grid_x0 + col_w * index as f64;
-            stroke_line(
+            hairline(
                 scene,
                 transform,
-                colors.border_standard.with_alpha(0.5),
+                colors.surfaces.base,
                 Point::new(x, body.y0),
                 Point::new(x, body.y1),
-                0.5,
             );
         }
         if let Some((now_day, now_min)) = model.now
@@ -655,7 +655,15 @@ impl TimelineInteraction {
                     event.end_min,
                 );
                 let color = event.color.color(theme);
-                fill_round(scene, transform, color.with_alpha(0.22), block, 6.0);
+                // The block is a wash of the calendar colour resolved onto the
+                // grid, so its own edge can be derived from it (HIG §9.5).
+                card(
+                    scene,
+                    transform,
+                    block,
+                    6.0,
+                    over(colors.surfaces.base, color, 0.22),
+                );
                 fill_round(
                     scene,
                     transform,
