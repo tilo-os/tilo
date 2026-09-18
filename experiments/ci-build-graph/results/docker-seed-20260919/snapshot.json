@@ -1,0 +1,16 @@
+{
+  "name": "ci-trusted-builder-seed-snapshot",
+  "uid": "d71d6090-a9eb-4c0b-8fac-610c6e1d4d35",
+  "spec": {
+    "source": {
+      "persistentVolumeClaimName": "ci-trusted-builder-seed-probe"
+    },
+    "volumeSnapshotClassName": "zfs-localpv-snap"
+  },
+  "status": {
+    "boundVolumeSnapshotContentName": "snapcontent-d71d6090-a9eb-4c0b-8fac-610c6e1d4d35",
+    "creationTime": "2026-09-18T22:13:40Z",
+    "readyToUse": true,
+    "restoreSize": "50Gi"
+  }
+}

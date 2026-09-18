@@ -1,0 +1,36 @@
+{
+  "name": "ci-trusted-builder-clone-probe",
+  "uid": "dbeb3d87-a976-4b47-ad1b-5c05701a31e4",
+  "spec": {
+    "accessModes": [
+      "ReadWriteOnce"
+    ],
+    "dataSource": {
+      "apiGroup": "snapshot.storage.k8s.io",
+      "kind": "VolumeSnapshot",
+      "name": "ci-trusted-builder-seed-snapshot"
+    },
+    "dataSourceRef": {
+      "apiGroup": "snapshot.storage.k8s.io",
+      "kind": "VolumeSnapshot",
+      "name": "ci-trusted-builder-seed-snapshot"
+    },
+    "resources": {
+      "requests": {
+        "storage": "50Gi"
+      }
+    },
+    "storageClassName": "zfs-localpv-block-cache",
+    "volumeMode": "Block",
+    "volumeName": "pvc-dbeb3d87-a976-4b47-ad1b-5c05701a31e4"
+  },
+  "status": {
+    "accessModes": [
+      "ReadWriteOnce"
+    ],
+    "capacity": {
+      "storage": "50Gi"
+    },
+    "phase": "Bound"
+  }
+}

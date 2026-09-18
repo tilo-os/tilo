@@ -1,0 +1,8 @@
+3f166ccf03bf: Pull complete
+6231e78be812: Pull complete
+Digest: sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a
+Status: Downloaded newer image for code.podesta.ai/qos/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a
+code.podesta.ai/qos/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a
+PULL_SECONDS=222
+VERIFIED_IMAGE sha256:ae200bd2d78ac6a67168067d96987f98c02a82f3f4762afe9639c3dfae351c0d ["code.podesta.ai/qos/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a"]
+CLEAN_DAEMON_STOP_AND_UNMOUNT

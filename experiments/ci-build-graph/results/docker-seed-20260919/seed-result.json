@@ -1,0 +1,16 @@
+{
+  "name": "ci-trusted-builder-seed-probe-xkzlf",
+  "node": "talos-2a014f9307124fd2",
+  "uid": "2edf04c0-3364-4973-bb67-18ee7dcf20bd",
+  "phase": "Succeeded",
+  "container": {
+    "terminated": {
+      "containerID": "containerd://c77ee93b94c018d53338fdb1421ed39f99fca588c2455fd5206c52570197229a",
+      "exitCode": 0,
+      "finishedAt": "2026-09-18T22:12:56Z",
+      "reason": "Completed",
+      "startedAt": "2026-09-18T22:09:05Z"
+    }
+  },
+  "image": "docker.io/library/docker@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce"
+}

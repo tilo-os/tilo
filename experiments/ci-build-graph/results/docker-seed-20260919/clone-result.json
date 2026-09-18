@@ -1,0 +1,17 @@
+{
+  "name": "ci-trusted-builder-clone-probe-5656m",
+  "node": "talos-2a014f9307124fd2",
+  "uid": "2cbca3e4-073f-442d-a2bb-6e9d6baddfef",
+  "created": "2026-09-18T22:13:55Z",
+  "phase": "Succeeded",
+  "container": {
+    "terminated": {
+      "containerID": "containerd://f089b8441e60f40c97d1e41c51ad3739c61688f118f52d90df782a39cd5f316a",
+      "exitCode": 0,
+      "finishedAt": "2026-09-18T22:14:13Z",
+      "reason": "Completed",
+      "startedAt": "2026-09-18T22:14:03Z"
+    }
+  },
+  "image": "docker.io/library/docker@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce"
+}
