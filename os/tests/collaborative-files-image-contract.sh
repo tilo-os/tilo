@@ -63,6 +63,7 @@ for path in /usr/bin/fs /usr/bin/file-explorer /usr/bin/tilo-launcher \
             /usr/bin/tilo-install /usr/bin/tilo-runtime-bundle \
             /usr/bin/fusermount3 /usr/bin/cage /usr/libexec/tilo/files-atspi-smoke.sh \
             /usr/libexec/tilo/native-atspi-smoke.sh \
+            /usr/libexec/tilo/atspi-external-client.py /usr/libexec/tilo/installed-atspi-apps.sh \
             /usr/libexec/tilo-session; do
   require_exec "$path"
 done

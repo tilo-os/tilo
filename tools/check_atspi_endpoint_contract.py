@@ -13,6 +13,7 @@ smoke; it prevents a new app from silently bypassing the shared endpoint.
 from __future__ import annotations
 
 import sys
+import tomllib
 from pathlib import Path
 
 
@@ -75,6 +76,35 @@ def audit(root: Path = ROOT) -> list[str]:
     ):
         if needle not in native:
             errors.append(f"shell/src/compositor/accessibility.rs: missing {purpose}")
+
+    # The source boundary above proves every graphical app reaches the shared
+    # provider. These manifests declare the small, safe installed-image sample
+    # that the independent D-Bus client actually drives. Keep it explicit: a
+    # package may not silently leave core acceptance coverage by deleting a
+    # scenario, and every scenario must contain an observable post-action tree
+    # state rather than merely a successful in-process callback.
+    for app, expected in {
+        "file-explorer": {"root": "Files activity", "action": "View options"},
+        "settings": {"root": "Personal Settings", "action": "Accessibility"},
+    }.items():
+        manifest = root / "apps" / app / "tilo-app.toml"
+        with manifest.open("rb") as source:
+            document = tomllib.load(source)
+        scenario = document.get("accessibility", {}).get("atspi_acceptance")
+        if not isinstance(scenario, dict):
+            errors.append(f"{manifest.relative_to(root)}: core app lacks external AT-SPI acceptance data")
+            continue
+        for key, value in expected.items():
+            if scenario.get(key) != value:
+                errors.append(f"{manifest.relative_to(root)}: AT-SPI acceptance {key} must be {value!r}")
+        for key in ("required", "after_action"):
+            values = scenario.get(key)
+            if not isinstance(values, list) or not values or not all(isinstance(item, str) and item for item in values):
+                errors.append(f"{manifest.relative_to(root)}: AT-SPI acceptance {key} must be a non-empty string list")
+
+    external_client = root / "tools/atspi_external_client.py"
+    if not external_client.is_file():
+        errors.append("tools/atspi_external_client.py: installed external AT-SPI client is absent")
     return errors
 
 
