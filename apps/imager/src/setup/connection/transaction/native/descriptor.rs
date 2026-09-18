@@ -1,4 +1,5 @@
 //! Bounded restart clues. Decoding never produces live endpoint authority.
+pub(crate) mod directory;
 use crate::setup::connection::model::{NativeName, RelativePath};
 use sha2::{Digest, Sha256};
 

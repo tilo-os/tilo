@@ -8,8 +8,31 @@ use super::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+#[derive(Clone)]
+enum WatchDirectory {
+    Pinned(NativeDirectory),
+    Retained(std::sync::Arc<File>),
+}
+impl WatchDirectory {
+    fn file(&self) -> &File {
+        match self {
+            Self::Pinned(directory) => directory.file(),
+            Self::Retained(file) => file,
+        }
+    }
+    fn validate(&self) -> std::result::Result<(), EndpointError> {
+        match self {
+            Self::Pinned(directory) => directory.validate(true),
+            Self::Retained(file) => {
+                endpoint::native_directory_metadata(file)?;
+                destination_security::check_private_file(file)?;
+                Ok(())
+            }
+        }
+    }
+}
 struct Watch {
-    directory: NativeDirectory,
+    directory: WatchDirectory,
     identity: ObjectId,
     wd: i32,
 }
@@ -26,6 +49,7 @@ pub(super) struct DescriptorEvidence {
     origin: DescriptorOrigin,
 }
 pub(super) struct NamespaceWitness {
+    directory_phase: Option<rules::DirectoryPhase>,
     pub(super) restarted: bool,
     reader: File,
     watches: Vec<Watch>,
@@ -44,6 +68,11 @@ fn invalid() -> io::Error {
     io::Error::from(io::ErrorKind::InvalidData)
 }
 impl NamespaceWitness {
+    #[cfg(test)]
+    pub(super) fn passes_for_test(&self) -> u8 {
+        self.passes.used()
+    }
+
     pub(super) fn new(
         root: &NativeDirectory,
         target: &ParentGuard,
@@ -56,6 +85,7 @@ impl NamespaceWitness {
             return Err(io::Error::last_os_error());
         }
         let mut value = Self {
+            directory_phase: None,
             // SAFETY: fd belongs solely to this owner.
             reader: unsafe { File::from_raw_fd(fd) },
             restarted: !bootstrap,
@@ -82,7 +112,41 @@ impl NamespaceWitness {
         }
         Ok(value)
     }
+    pub(super) fn new_directory(
+        root: &NativeDirectory,
+        target: &ParentGuard,
+        name: CString,
+        bootstrap: bool,
+    ) -> io::Result<Self> {
+        let mut value = Self::new(root, target, name, bootstrap)?;
+        value.directory_phase = Some(rules::DirectoryPhase::Unpublished);
+        value.passes = Passes::directory();
+        Ok(value)
+    }
+    pub(super) fn watch_directory(
+        &mut self,
+        file: std::sync::Arc<File>,
+        published: bool,
+    ) -> io::Result<()> {
+        if self.directory_phase != Some(rules::DirectoryPhase::Unpublished)
+            || published && !self.restarted
+        {
+            return Err(invalid());
+        }
+        self.watch_inner(WatchDirectory::Retained(file), Role::Directory)?;
+        if published {
+            self.directory_phase = Some(rules::DirectoryPhase::Published);
+        }
+        Ok(())
+    }
     pub(super) fn watch(&mut self, directory: &NativeDirectory, role: Role) -> io::Result<()> {
+        if role == Role::Directory {
+            return Err(invalid());
+        }
+        self.watch_inner(WatchDirectory::Pinned(directory.clone()), role)
+    }
+    fn watch_inner(&mut self, directory: WatchDirectory, role: Role) -> io::Result<()> {
+        directory.validate().map_err(|_| invalid())?;
         if self.failed || self.bindings.iter().any(|(_, bound)| *bound == role) {
             return Err(invalid());
         }
@@ -144,7 +208,7 @@ impl NamespaceWitness {
             return Err(invalid());
         }
         self.watches.push(Watch {
-            directory: directory.clone(),
+            directory,
             identity,
             wd,
         });
@@ -158,16 +222,28 @@ impl NamespaceWitness {
             .find(|(_, bound)| *bound == role)
             .ok_or_else(invalid)?
             .0;
-        Ok(self
+        match &self
             .watches
             .iter()
             .find(|watch| watch.wd == wd)
             .ok_or_else(invalid)?
             .directory
-            .clone())
+        {
+            WatchDirectory::Pinned(directory) => Ok(directory.clone()),
+            WatchDirectory::Retained(_) => Err(invalid()),
+        }
     }
     pub(super) fn set_inventory(&mut self, names: &[&[u8]]) -> io::Result<()> {
         if self.failed || !self.expected.is_empty() || names.len() > 6 || !self.inventory.is_empty()
+        {
+            return Err(invalid());
+        }
+        if self.directory_phase.is_some()
+            && (names.len() > 3
+                || names.iter().any(|name| {
+                    !matches!(*name, b"intent" | b"staged-intent" | b"stage" | b"outcome")
+                })
+                || names.contains(&b"stage".as_slice()) && names.contains(&b"outcome".as_slice()))
         {
             return Err(invalid());
         }
@@ -178,6 +254,15 @@ impl NamespaceWitness {
         Ok(())
     }
     pub(super) fn create(&mut self, name: &CStr) -> io::Result<()> {
+        if let Some(phase) = self.directory_phase {
+            if !matches!(
+                name.to_bytes(),
+                b"intent" | b"staged-intent" | b"stage" | b"outcome"
+            ) || (name == c"outcome") != (phase == rules::DirectoryPhase::Published)
+            {
+                return Err(invalid());
+            }
+        }
         rules::creation_phase(&self.inventory, name.to_bytes()).map_err(|_| invalid())?;
         if self.failed
             || !self.expected.is_empty()
@@ -189,12 +274,22 @@ impl NamespaceWitness {
         self.expected.push(Expected {
             role: Role::Namespace,
             name: name.to_bytes().to_vec(),
-            mask: rules::CREATE,
+            mask: rules::CREATE
+                | if self.directory_phase.is_some() && name == c"stage" {
+                    rules::ISDIR
+                } else {
+                    0
+                },
         });
         Ok(())
     }
     pub(super) fn move_entry(&mut self, publish: bool) -> io::Result<()> {
         rules::movement_phase(&self.inventory, publish).map_err(|_| invalid())?;
+        if self.directory_phase.is_some()
+            && (!publish || self.directory_phase != Some(rules::DirectoryPhase::Unpublished))
+        {
+            return Err(invalid());
+        }
         if self.failed || !self.expected.is_empty() {
             return Err(invalid());
         }
@@ -224,14 +319,32 @@ impl NamespaceWitness {
             Expected {
                 role: from,
                 name: from_name,
-                mask: rules::MOVED_FROM,
+                mask: rules::MOVED_FROM
+                    | if self.directory_phase.is_some() {
+                        rules::ISDIR
+                    } else {
+                        0
+                    },
             },
             Expected {
                 role: to,
                 name: to_name,
-                mask: rules::MOVED_TO,
+                mask: rules::MOVED_TO
+                    | if self.directory_phase.is_some() {
+                        rules::ISDIR
+                    } else {
+                        0
+                    },
             },
         ];
+        if self.directory_phase.is_some() {
+            self.directory_phase = Some(rules::DirectoryPhase::Publishing);
+            self.expected.push(Expected {
+                role: Role::Directory,
+                name: Vec::new(),
+                mask: rules::MOVE_SELF,
+            });
+        }
         Ok(())
     }
     pub(super) fn descriptor(&self, name: &CStr) -> Option<&DescriptorEvidence> {
@@ -276,7 +389,7 @@ impl NamespaceWitness {
     }
     fn sample(&self, epoch: &mut NativeEpoch<'_>, full: bool) -> Result<()> {
         for watch in &self.watches {
-            epoch.ep(watch.directory.validate(true))?;
+            epoch.ep(watch.directory.validate())?;
             if epoch.ep(object(watch.directory.file()))? != watch.identity {
                 return Err(epoch.failure(EndpointError::IdentityChanged));
             }
@@ -307,6 +420,10 @@ impl NamespaceWitness {
         }
         result
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "The bounded sample/enumerate/drain/sample cut is ordered and indivisible"
+    )]
     fn checkpoint_inner(&mut self, epoch: &mut NativeEpoch<'_>) -> Result<()> {
         self.passes
             .enter()
@@ -322,8 +439,19 @@ impl NamespaceWitness {
                 .iter()
                 .any(|(wd, role)| *wd == watch.wd && *role == Role::Namespace);
             let names: Vec<_> = self.inventory.iter().map(Vec::as_slice).collect();
+            let is_unpublished = self.directory_phase == Some(rules::DirectoryPhase::Unpublished)
+                && self
+                    .bindings
+                    .iter()
+                    .any(|(wd, role)| *wd == watch.wd && *role == Role::Directory);
+            // Both exact inventories must hold if two semantic roles alias.
+            if is_namespace && is_unpublished && !names.is_empty() {
+                return Err(epoch.failure(EndpointError::Unstable));
+            }
             let inventory = if is_namespace {
                 Inventory::exact(&names)
+            } else if is_unpublished {
+                Inventory::exact(&[])
             } else {
                 Inventory::barrier()
             };
@@ -342,12 +470,22 @@ impl NamespaceWitness {
             let target = epoch.io(self.role(Role::Target))?;
             epoch.io(sentinel(target.file(), &self.target_name))?;
         }
-        let mut transcript = Transcript::new(
-            &self.bindings,
-            self.namespace_name.to_bytes(),
-            self.target_name.to_bytes(),
-            &self.expected,
-        )
+        let mut transcript = if let Some(phase) = self.directory_phase {
+            Transcript::directory(
+                &self.bindings,
+                self.namespace_name.to_bytes(),
+                self.target_name.to_bytes(),
+                &self.expected,
+                phase,
+            )
+        } else {
+            Transcript::new(
+                &self.bindings,
+                self.namespace_name.to_bytes(),
+                self.target_name.to_bytes(),
+                &self.expected,
+            )
+        }
         .map_err(|_| epoch.failure(EndpointError::Unstable))?;
         loop {
             epoch.check()?;
@@ -386,6 +524,9 @@ impl NamespaceWitness {
         if Instant::now() >= deadline {
             return Err(epoch.failure(EndpointError::LimitExceeded));
         }
+        if self.directory_phase == Some(rules::DirectoryPhase::Publishing) {
+            self.directory_phase = Some(rules::DirectoryPhase::Published);
+        }
         self.expected.clear();
         self.closed = true;
         Ok(())
@@ -406,7 +547,7 @@ fn sentinel(parent: &File, name: &CStr) -> io::Result<()> {
 }
 fn enumerate(
     epoch: &mut NativeEpoch<'_>,
-    directory: &NativeDirectory,
+    directory: &WatchDirectory,
     mut inventory: Inventory,
     deadline: Instant,
 ) -> Result<()> {
@@ -453,7 +594,7 @@ fn enumerate(
             {
                 return Err(epoch.failure(EndpointError::IdentityChanged));
             }
-            epoch.ep(directory.validate(true))?;
+            epoch.ep(directory.validate())?;
             return epoch.check();
         }
     }
@@ -497,6 +638,7 @@ impl NativeEpoch<'_> {
         expected: &[u8],
     ) -> Result<DescriptorEvidence> {
         self.check()?;
+        self.admit_directory_descriptor()?;
         let file = self.io(open_at(directory.file(), name, libc::O_RDONLY))?;
         self.ep(endpoint::native_same_mount(directory.file(), &file))?;
         self.io(destination_security::check_private_file(&file))?;
@@ -648,6 +790,10 @@ pub(super) fn test_cut(cut: &str, directory: &NativeDirectory, name: &CStr) {
     });
 }
 
+#[cfg(test)]
+pub(super) fn set_test_cut(hook: Option<CutHook>) {
+    CUT_HOOK.with(|slot| *slot.borrow_mut() = hook);
+}
 #[cfg(test)]
 mod tests {
     use super::*;

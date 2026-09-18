@@ -1,4 +1,5 @@
 //! Private transaction admission. Durable facts are never mutation authority.
+pub(super) mod directory;
 pub(super) mod native;
 #[cfg(test)]
 mod tests;
@@ -223,6 +224,14 @@ impl TransactionSession {
         cancel: &AtomicBool,
     ) -> Result<StepAdmission, StoreError> {
         store.check_native(live)?;
+        if live.native_kind() == Some(super::store::NativeOperationKind::DirectoryV1)
+            && !matches!(
+                kind,
+                StepKind::Namespace | StepKind::Stage | StepKind::Publish
+            )
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
         if !live.action().is_reconciliation()
             || live.intent().decision == super::model::Decision::VerifyEqual
             || (matches!(
@@ -546,5 +555,7 @@ pub(super) enum TransactionOutcome {
         error: StoreError,
     },
 }
+#[cfg(target_os = "linux")]
+pub(super) use native::execute_next_directory;
 #[cfg(target_os = "linux")]
 pub(super) use native::linux::{execute_next_regular, execute_reviewed_initial, resolve_regular};

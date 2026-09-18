@@ -1496,6 +1496,11 @@ impl PinnedEndpoint {
         Ok(directory)
     }
 }
+/// Metadata only; the Directory owner retains and validates its own name edges.
+#[cfg(target_os = "linux")]
+pub(super) fn native_directory_metadata(file: &File) -> Result<(), EndpointError> {
+    native::check_metadata(file, true).map(|_| ())
+}
 #[cfg(target_os = "linux")]
 pub(super) fn native_regular_metadata(file: &File) -> Result<bool, EndpointError> {
     native::check_metadata(file, false)

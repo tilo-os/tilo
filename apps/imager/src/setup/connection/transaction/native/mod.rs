@@ -1,6 +1,17 @@
 //! Native evidence stays private, move-only and process-local.
 pub(in crate::setup::connection) mod descriptor;
 #[cfg(target_os = "linux")]
+mod directory;
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) use directory::{
+    DirectoryBaselineValue, VerifiedDirectoryComparison,
+};
+#[cfg(target_os = "linux")]
+pub(in crate::setup::connection) use linux::directory::{
+    DirectoryBoundary, DirectoryContinuation, DirectoryOutcome, DirectoryPrepared,
+    DirectoryUntouched, NativeDirectoryAdmission, execute_next_directory,
+};
+#[cfg(target_os = "linux")]
 pub(super) mod linux;
 #[cfg(any(target_os = "linux", test))]
 mod witness;
@@ -614,6 +625,10 @@ mod budget_tests {
 
 #[cfg(target_os = "linux")]
 pub(in crate::setup::connection) struct NativeOwnedNames {
+    directory_requests: Option<(
+        crate::setup::connection::store::OperationId,
+        std::sync::Arc<std::sync::atomic::AtomicU16>,
+    )>,
     records: Vec<crate::setup::connection::store::NativeNamespaceRecord>,
     root: linux::ObjectId,
     endpoint: [u8; 64],

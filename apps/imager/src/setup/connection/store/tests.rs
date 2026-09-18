@@ -518,6 +518,7 @@ fn baseline_commit_has_one_durable_visibility_point() {
     assert!(store.load_baseline(record.id).unwrap().entries().is_none());
     store
         .append(Change::BaselineCommit {
+            directory_ancestors: None,
             existing_ancestors: None,
             connection: record.id.0,
             expected: current.revision,
@@ -892,6 +893,7 @@ fn commit_test_baseline(store: &mut ConnectionStore, id: ConnectionId) -> [u8; 3
     .unwrap();
     store
         .append(Change::BaselineCommit {
+            directory_ancestors: None,
             existing_ancestors: None,
             connection: id.0,
             expected: current.revision,
@@ -1075,6 +1077,7 @@ fn intent_or_preserved_record_is_not_publication_authority() {
     assert!(
         store
             .append(Change::BaselineCommit {
+                directory_ancestors: None,
                 existing_ancestors: None,
                 connection: record.id.0,
                 expected: current.revision,
@@ -1210,6 +1213,7 @@ fn baseline_fault_boundaries_never_expose_mixed_pages() {
         let result = (|| {
             let root = storage::build_pages(&store.storage, rows)?;
             store.append(Change::BaselineCommit {
+                directory_ancestors: None,
                 existing_ancestors: None,
                 connection: record.id.0,
                 expected: current.revision,
@@ -1351,6 +1355,7 @@ fn baseline_candidate_survives_automatic_checkpoint_before_commit() {
     let generation = store.current.generation;
     store
         .append(Change::BaselineCommit {
+            directory_ancestors: None,
             existing_ancestors: None,
             connection: record.id.0,
             expected: current.revision,
@@ -3257,6 +3262,7 @@ fn native_baseline_patch_cannot_drop_an_unprocessed_path() {
         store
             .append_native(
                 Change::BaselineCommit {
+                    directory_ancestors: None,
                     existing_ancestors: None,
                     connection: record.id.0,
                     expected: live.revision,
@@ -3336,6 +3342,7 @@ fn native_baseline_patches_advance_two_paths_separately_and_reopen() {
         store
             .append_native(
                 Change::BaselineCommit {
+                    directory_ancestors: None,
                     existing_ancestors: None,
                     connection: record.id.0,
                     expected: live.revision,
@@ -3592,6 +3599,7 @@ fn native_baseline_checkpoint_second_reduction_pays_again_and_pins_candidate() {
     store
         .append_native(
             Change::BaselineCommit {
+                directory_ancestors: None,
                 existing_ancestors: None,
                 connection: record.id.0,
                 expected: live.revision,
@@ -3811,6 +3819,7 @@ fn native_initial_baseline_boolean_cannot_replace_review_fact() {
     assert!(matches!(
         store.append_native(
             Change::BaselineCommit {
+                directory_ancestors: None,
                 existing_ancestors: None,
                 connection: record.id.0,
                 expected: live.revision,
@@ -5101,6 +5110,7 @@ fn native_selected_action_retains_exact_history_and_rejects_ordinary_resume_afte
     .unwrap();
     store
         .append(Change::BaselineCommit {
+            directory_ancestors: None,
             existing_ancestors: None,
             connection: record.id.0,
             expected,
@@ -6323,6 +6333,7 @@ fn reviewed_restore_case(boundary: u8) {
         .unwrap();
         store
             .append(Change::BaselineCommit {
+                directory_ancestors: None,
                 existing_ancestors: None,
                 connection: record.id.0,
                 expected,
@@ -6439,7 +6450,7 @@ fn reviewed_restore_case(boundary: u8) {
                 .encode()
                 .unwrap();
             store
-                .begin_native_operation(intent, &session, None, Some(identity), Some(action))
+                .begin_native_operation(intent, &session, None, Some(identity), Some(action), None)
                 .unwrap()
         } else {
             store
@@ -7194,6 +7205,7 @@ fn reviewed_restore_case(boundary: u8) {
                 store
                     .append_native(
                         Change::BaselineCommit {
+                            directory_ancestors: None,
                             existing_ancestors: None,
                             connection: record.id.0,
                             expected: other.revision(),
@@ -7310,6 +7322,7 @@ fn reviewed_restore_case(boundary: u8) {
                 assert!(matches!(
                     store.append_checked_with_baseline(
                         Change::BaselineCommit {
+                            directory_ancestors: None,
                             existing_ancestors: None,
                             connection: record.id.0,
                             expected: equality.revision(),
@@ -7341,6 +7354,7 @@ fn reviewed_restore_case(boundary: u8) {
                 store
                     .append_native(
                         Change::BaselineCommit {
+                            directory_ancestors: None,
                             existing_ancestors: None,
                             connection: record.id.0,
                             expected: equality.revision(),
@@ -7444,6 +7458,7 @@ fn native_reviewed_restore_selection_refuses_same_revision_reopen_and_fence() {
         .unwrap();
         store
             .append(Change::BaselineCommit {
+                directory_ancestors: None,
                 existing_ancestors: None,
                 connection: record.id.0,
                 expected,
@@ -7580,6 +7595,7 @@ fn native_selected_reader_reopens_with_paid_inspection_only() {
     .unwrap();
     store
         .append(Change::BaselineCommit {
+            directory_ancestors: None,
             existing_ancestors: None,
             connection: record.id.0,
             expected,
@@ -7761,6 +7777,7 @@ fn selected_collision_case(stopped: bool) {
     .unwrap();
     store
         .append(Change::BaselineCommit {
+            directory_ancestors: None,
             existing_ancestors: None,
             connection: record.id.0,
             expected,
@@ -9037,7 +9054,14 @@ fn selected_tombstone_case(stopped: u8) {
     assert_eq!(reviewed_intent, next.decode().unwrap().intent);
     assert_eq!(Some(reviewed_action.clone()), next.action);
     let mut selected_live = store
-        .begin_native_operation(reviewed_intent, &session, None, None, Some(reviewed_action))
+        .begin_native_operation(
+            reviewed_intent,
+            &session,
+            None,
+            None,
+            Some(reviewed_action),
+            None,
+        )
         .expect("exact recorded absence must admit as a selected historical version");
     assert_eq!(store.operation(selected_live.id()).unwrap(), next);
     store
@@ -9411,7 +9435,7 @@ fn selected_tombstone_case(stopped: u8) {
         ),
         "only exact chosen absence and the bound current conflict revision authorize candidate consideration"
     );
-    store.append_native(Change::BaselineCommit { existing_ancestors: None, connection: record.id.0, expected: equality.revision(), root: None, count: 0,
+    store.append_native(Change::BaselineCommit { directory_ancestors: None, existing_ancestors: None, connection: record.id.0, expected: equality.revision(), root: None, count: 0,
         source: record.source.identity.into(), destination: record.destination.identity.into(), initial_review: true }, &paid)
         .expect("fresh absence comparison clears the attention barrier only after paid retained-version verification");
     assert!(
@@ -9953,7 +9977,7 @@ fn account_tombstone_collision(
     }
     let session = store.transaction_session(id.connection).unwrap();
     let continued = store
-        .begin_native_operation(proposal, &session, None, None, Some(action))
+        .begin_native_operation(proposal, &session, None, None, Some(action), None)
         .unwrap();
     let operation = store.operation(continued.id()).unwrap();
     assert_eq!(
@@ -10317,6 +10341,7 @@ fn native_executor_plans_existing_missing_baseline_ancestors() {
         .unwrap();
         store
             .append(Change::BaselineCommit {
+                directory_ancestors: None,
                 existing_ancestors: None,
                 connection: record.id.0,
                 expected: current.revision,
@@ -10515,6 +10540,7 @@ fn native_baseline_final_validation_refuses_before_event_after_checkpoint_prepar
             }
             let result = store.append_checked_with_baseline(
                 Change::BaselineCommit {
+                    directory_ancestors: None,
                     existing_ancestors: None,
                     connection: record.id.0,
                     expected: live.revision,
@@ -10930,3 +10956,6 @@ fn native_created_profile_registration_is_distinct_from_legacy_pending() {
         Some(Row::NativeRegistration(registration))
     );
 }
+
+#[path = "directory_tests.rs"]
+mod directory_registration_wire_tests;
