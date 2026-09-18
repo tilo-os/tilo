@@ -1565,9 +1565,6 @@ impl FrameHarness {
             }
         }
         self.root.focus_requested(node, &self.taffy);
-        if self.focused == node {
-            return;
-        }
         if let Some(history) = &mut self.history
             && node.is_some_and(|node| history.owns_node(node, &self.taffy))
             && self.focused.is_some_and(|node| !history.owns_node(node, &self.taffy)) {
@@ -1575,6 +1572,26 @@ impl FrameHarness {
             // unfinished live editor and its IME/local state stay in place.
             unsafe { history.preserve_focus(self.focused, &self.node_map, &self.bindings, &self.taffy); }
             self.focused = None;
+        }
+        if let Some(target) = node {
+            // Root dispatch visits every live app. An exact owner must also
+            // clear competing mount/restoration flags, or a preceding editor
+            // can consume its first key. Keep the selected compound editor's
+            // ancestors/children, and never blur a history-suspended caret.
+            let competing: Vec<_> = self.node_map.keys().copied().filter(|&candidate| {
+                candidate != target
+                    && !self.bindings.is_descendant(candidate, target)
+                    && !self.bindings.is_descendant(target, candidate)
+                    && crate::history_mode::embedded::allows_focus(self.root.as_ref(), candidate, &self.taffy)
+                    && self.history.as_ref().is_none_or(|history| !history.has_saved_focus() || history.owns_node(candidate, &self.taffy))
+                    && self.inspect_node(candidate, |widget| widget.is_focusable() && widget.is_focused()).unwrap_or(false)
+            }).collect();
+            for competing in competing {
+                let _ = self.mutate_node(competing, |widget| widget.set_focus(false));
+            }
+        }
+        if self.focused == node {
+            return;
         }
         if let Some(old) = self.focused {
             let _ = self.mutate_node(old, |widget| widget.set_focus(false));

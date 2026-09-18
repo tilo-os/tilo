@@ -291,7 +291,11 @@ impl ChatApp {
                 // then places the caret at the click point — forward the
                 // real press so the widget resolves the position.
                 if text_input_hit {
-                    focus_requested = self.forward_press_to_focused_text_input(event, scale, modifiers, doc);
+                    self.forward_press_to_focused_text_input(event, scale, modifiers, doc);
+                    // `on_hit` above activated this actual input. Its local
+                    // caret may already be focused on a cold mount, but the
+                    // retained Chat owner must still claim keyboard/IME focus.
+                    focus_requested = true;
                 }
                 *handled = true;
             }

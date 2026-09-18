@@ -714,6 +714,161 @@ mod tests {
     }
 
     #[test]
+    fn desktop_cold_chat_pointer_and_explicit_focus_own_first_key_and_ime() {
+        fn access(node: &ui::headless::InspectionNode, label: &str) -> Option<ui::a11y::AccessNode> {
+            fn semantic(node: &ui::a11y::AccessNode, label: &str) -> Option<ui::a11y::AccessNode> {
+                if node.name.as_deref() == Some(label) {
+                    return Some(node.clone());
+                }
+                node.children
+                    .iter()
+                    .find_map(|child| semantic(child, label))
+            }
+            if node.test_id.as_deref() == Some(label) { return node.semantics.clone(); }
+            node.semantics
+                .as_ref()
+                .and_then(|node| semantic(node, label))
+                .or_else(|| node.children.iter().find_map(|node| access(node, label)))
+        }
+        for pointer in [true, false] {
+            let (mut root, handle, _storage) = fixture();
+            let mut topology = handle.tree.borrow().clone();
+            let groups = &mut topology.workspaces[0].strips[0].window_groups;
+            let chat = groups[0].tabs.remove(1);
+            groups[0].tabs.pop();
+            groups.push(WindowGroup {
+                id: 4,
+                active_tab: chat.id,
+                tabs: vec![chat],
+                width: WindowWidth::Normal,
+                maximized: false,
+            });
+            topology.active_strip.insert(topology.active, StripId(2));
+            topology.active_group.insert(StripId(2), 3);
+            *handle.inbox.borrow_mut() = Some((
+                Admission {
+                    tree: topology,
+                    routes: root.resolver.host.routes.clone(),
+                    required: vec![],
+                    missing: vec![],
+                    unsupported: vec![],
+                    pending: 0,
+                },
+                handle.permissions.borrow().clone(),
+            ));
+            root.reconcile();
+            let mut root = Box::new(root);
+            let root_ptr = std::ptr::from_mut(root.as_mut());
+            let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+                ui::state::State::new(),
+                root,
+                (740, 720),
+                ui::Theme::dark(),
+                ui::TextRenderer::new(),
+                ui::permissions::UserId("author".into()),
+            );
+            assert!(access(&frame.inspection().root, "word_processor").unwrap().state.focused,
+                "cold Writer retains a local focus flag");
+            assert!(access(&frame.inspection().root, "Message composer").unwrap().state.focused,
+                "cold Chat already has a local composer caret");
+            let before: Vec<_> = handle
+                .records
+                .borrow()
+                .values()
+                .filter(|record| record.app != "dev.qos.chat")
+                .map(|record| {
+                    (
+                        record.clone(),
+                        record
+                            .store
+                            .read(&record.checkout.id, |doc| doc.clone().save())
+                            .unwrap(),
+                    )
+                })
+                .collect();
+            let (owner, target) = browser_semantic_route(&frame, "Message composer");
+            if pointer {
+                let rect = access(&frame.inspection().root, "Message composer")
+                    .unwrap()
+                    .bounds
+                    .unwrap()
+                    .to_rect();
+                // The real partially visible composer, without any previous
+                // Writer gesture or semantic activation warming its flags.
+                frame.click_at((rect.x0 + 740.0) / 2.0, rect.center().y);
+            } else {
+                frame
+                    .perform_semantic_named(&owner, Some(&target), &ui::a11y::Action::Focus)
+                    .unwrap();
+            }
+            assert_eq!(
+                frame.inspection().keyboard_focus_owner.as_deref(),
+                Some(owner.as_str()),
+                "cold pointer={pointer}"
+            );
+            assert!(
+                frame.frame_output().ime.is_some(),
+                "cold Chat must expose its actual IME owner"
+            );
+            // First ordinary canvas key, before the hidden DOM editor enables IME.
+            frame.key("N");
+            assert_eq!(
+                access(&frame.inspection().root, "Message composer")
+                    .unwrap()
+                    .value
+                    .as_deref(),
+                Some("N")
+            );
+            frame.type_text("avigation two-peer check");
+            for event in [
+                winit::event::WindowEvent::Focused(true),
+                winit::event::WindowEvent::Ime(winit::event::Ime::Enabled),
+                winit::event::WindowEvent::Ime(winit::event::Ime::Commit(" IME".into())),
+                winit::event::WindowEvent::Ime(winit::event::Ime::Disabled),
+                winit::event::WindowEvent::Focused(false),
+                winit::event::WindowEvent::Focused(true),
+                winit::event::WindowEvent::Ime(winit::event::Ime::Enabled),
+                winit::event::WindowEvent::Ime(winit::event::Ime::Commit(" resumed".into())),
+            ] {
+                frame.send_host_event(&event);
+            }
+            assert_eq!(
+                access(&frame.inspection().root, "Message composer")
+                    .unwrap()
+                    .value
+                    .as_deref(),
+                Some("Navigation two-peer check IME resumed")
+            );
+            assert_eq!(
+                frame.inspection().keyboard_focus_owner.as_deref(),
+                Some(owner.as_str())
+            );
+            assert!(frame.frame_output().ime.is_some());
+            assert_eq!(handle.tree.borrow().active_group[&StripId(2)], 4);
+            for (record, bytes) in before {
+                assert_eq!(
+                    record
+                        .store
+                        .read(&record.checkout.id, |doc| doc.clone().save())
+                        .unwrap(),
+                    bytes,
+                    "cold pointer={pointer} typing must not mutate {}",
+                    record.app
+                );
+            }
+            // SAFETY: the boxed root stays in the harness and this access ends before its next call.
+            unsafe {
+                (&mut *root_ptr)
+                    .surface
+                    .row_mut(StripId(2))
+                    .unwrap()
+                    .tick_snap_at(ui::clock::Instant::now() + ui::clock::Duration::from_secs(1));
+            }
+            frame.relayout();
+        }
+    }
+
+    #[test]
     fn desktop_navigation_reveals_real_chat_and_preserves_local_records_and_return_focus() {
         let (mut root, handle, storage) = fixture();
         let mut topology = handle.tree.borrow().clone();
