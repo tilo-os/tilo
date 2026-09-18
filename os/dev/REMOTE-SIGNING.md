@@ -121,10 +121,10 @@ responses, and an actual read-only signer-home mount in a private namespace.
 They do not claim that the real OS has been finalized or booted.
 ## Native signer test prerequisite
 
-On newer main the real signer invokes `/usr/local/bin/tilo-crypto`; older
-coherent release tooling uses OpenSSL/sbsigntools. The fixture suite tests the
-actual checked-in backend, never substitutes the other implementation. It
-fails clearly before creating fixture keys if a required tool, protected
+The signer and its independent response verification invoke only the canonical
+`/usr/local/bin/tilo-crypto` Rust helper. The fixture suite tests that actual
+checked-in backend and never substitutes legacy external signing tools. It
+fails clearly before creating fixture keys if the helper, protected
 `/var/lib`, or mount namespace capability is missing.
 
 Use the prepared native tools container with the authenticated native crypto

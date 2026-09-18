@@ -344,7 +344,8 @@ def verify(args):
                 raise ValueError('installed selected UKI differs from verified source')
             sections = prediction.boot.uki_sections(data, args.architecture)
             profile_cmdline(sections['.cmdline'], args.boot_profile, args.generation, args.composefs_digest)
-            command(['/usr/bin/sbverify', '--cert', str(verified.public_bundle / 'efi-signing.crt'), str(esp / uki)])
+            command(['/usr/local/bin/tilo-crypto', 'verify-efi',
+                     str(verified.public_bundle / 'efi-signing.crt'), str(esp / uki)])
             loader_receipt = verify_loaders(verified.root, esp, verified.public_bundle,
                                            args.manifest_sha256, args.architecture)
             deploy = f'state/deploy/{args.composefs_digest}'
