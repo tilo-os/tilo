@@ -159,6 +159,7 @@ impl SettingsApp {
     }
 
     #[must_use]
+    #[cfg(not(feature = "thin"))]
     pub(crate) fn with_account_directory_for_shot(
         mut self,
         directory: crate::accounts::AccountDirectory,
@@ -168,6 +169,7 @@ impl SettingsApp {
     }
 
     #[must_use]
+    #[cfg(not(feature = "thin"))]
     pub(crate) fn with_account_form_for_shot(mut self, kind: crate::accounts::AccountKind) -> Self {
         self.account_form_override = Some(kind);
         self
