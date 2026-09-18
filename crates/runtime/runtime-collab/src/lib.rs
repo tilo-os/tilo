@@ -401,6 +401,128 @@ pub const MAX_NEARBY_TRANSFER_LABEL_BYTES: usize = 256;
 pub const MAX_NEARBY_TRANSFER_NAME_BYTES: usize = 512;
 /// Maximum raw byte length of one exact Files source path.
 pub const MAX_NEARBY_TRANSFER_PATH_BYTES: usize = 4_096;
+/// Maximum encoded size of one local Settings Wi-Fi continuity request.
+pub const MAX_WIFI_CONTINUITY_WIRE_BYTES: usize = 4 * 1024;
+pub const MAX_WIFI_SSID_BYTES: usize = 256;
+pub const MAX_WIFI_PASSWORD_BYTES: usize = 512;
+
+/// Portable Wi-Fi authentication modes understood by the sealed personal
+/// secret bridge. Enterprise identity/certificate state is intentionally not
+/// representable here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PortableWifiSecurity {
+    Wpa2,
+    Wpa3,
+}
+
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "command", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum WifiContinuityCommand {
+    Lookup {
+        ssid: String,
+        security: PortableWifiSecurity,
+    },
+    Share {
+        ssid: String,
+        security: PortableWifiSecurity,
+        password: String,
+    },
+    ShareSavedProfile {
+        /// Local NetworkManager capability; never serialized into fabric state.
+        profile_uuid: String,
+    },
+}
+
+impl std::fmt::Debug for WifiContinuityCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Lookup { ssid, security } => formatter
+                .debug_struct("Lookup")
+                .field("ssid", ssid)
+                .field("security", security)
+                .finish(),
+            Self::Share { ssid, security, .. } => formatter
+                .debug_struct("Share")
+                .field("ssid", ssid)
+                .field("security", security)
+                .field("password", &"<redacted>")
+                .finish(),
+            Self::ShareSavedProfile { profile_uuid } => formatter
+                .debug_struct("ShareSavedProfile")
+                .field("profile_uuid", profile_uuid)
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "result", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum WifiContinuityReply {
+    Password { password: String },
+    NotFound,
+    Shared { ssid: String },
+    Rejected { reason: String },
+}
+
+impl std::fmt::Debug for WifiContinuityReply {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Password { .. } => formatter
+                .debug_struct("Password")
+                .field("password", &"<redacted>")
+                .finish(),
+            Self::NotFound => formatter.write_str("NotFound"),
+            Self::Shared { ssid } => formatter
+                .debug_struct("Shared")
+                .field("ssid", ssid)
+                .finish(),
+            Self::Rejected { reason } => formatter
+                .debug_struct("Rejected")
+                .field("reason", reason)
+                .finish(),
+        }
+    }
+}
+
+impl WifiContinuityCommand {
+    pub fn valid(&self) -> bool {
+        let valid_ssid = |ssid: &str| !ssid.is_empty() && ssid.len() <= MAX_WIFI_SSID_BYTES;
+        match self {
+            Self::Lookup { ssid, .. } => valid_ssid(ssid),
+            Self::Share { ssid, password, .. } => {
+                valid_ssid(ssid)
+                    && !password.is_empty()
+                    && password.len() <= MAX_WIFI_PASSWORD_BYTES
+            }
+            Self::ShareSavedProfile { profile_uuid } => valid_uuid(profile_uuid),
+        }
+    }
+}
+
+impl WifiContinuityReply {
+    pub fn valid(&self) -> bool {
+        match self {
+            Self::Password { password } => {
+                !password.is_empty() && password.len() <= MAX_WIFI_PASSWORD_BYTES
+            }
+            Self::NotFound => true,
+            Self::Shared { ssid } => !ssid.is_empty() && ssid.len() <= MAX_WIFI_SSID_BYTES,
+            Self::Rejected { reason } => !reason.is_empty() && reason.len() <= 512,
+        }
+    }
+}
+
+fn valid_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+}
 
 /// A short-lived shell capability naming one picker target. It deliberately
 /// carries no cryptographic peer identity and has no authority outside the
@@ -722,6 +844,52 @@ impl ChannelHandle {
         if !decoded.valid() {
             return Err(NotAvailable::Capnp(capnp::Error::failed(
                 "invalid nearby transfer reply".into(),
+            )));
+        }
+        Ok(decoded)
+    }
+
+    /// Use the shell-owned sealed Wi-Fi secret bridge from the authenticated
+    /// Settings route. Plaintext is confined to this connected local
+    /// descriptor and the immediate NetworkManager call.
+    pub async fn wifi_continuity_command(
+        &self,
+        app_id: &str,
+        command: &WifiContinuityCommand,
+    ) -> Result<WifiContinuityReply, NotAvailable> {
+        if !command.valid() {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "invalid Wi-Fi continuity command".into(),
+            )));
+        }
+        let command_json = serde_json::to_vec(command).map_err(|error| {
+            NotAvailable::Capnp(capnp::Error::failed(format!(
+                "encode Wi-Fi continuity command: {error}"
+            )))
+        })?;
+        if command_json.len() > MAX_WIFI_CONTINUITY_WIRE_BYTES {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "Wi-Fi continuity command exceeds wire bound".into(),
+            )));
+        }
+        let mut request = self.inner.wifi_continuity_command_request();
+        request.get().set_app_id(app_id);
+        request.get().set_command_json(&command_json);
+        let reply = request.send().promise.await?;
+        let bytes = reply.get()?.get_reply_json()?;
+        if bytes.len() > MAX_WIFI_CONTINUITY_WIRE_BYTES {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "Wi-Fi continuity reply exceeds wire bound".into(),
+            )));
+        }
+        let decoded: WifiContinuityReply = serde_json::from_slice(bytes).map_err(|error| {
+            NotAvailable::Capnp(capnp::Error::failed(format!(
+                "decode Wi-Fi continuity reply: {error}"
+            )))
+        })?;
+        if !decoded.valid() {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "invalid Wi-Fi continuity reply".into(),
             )));
         }
         Ok(decoded)
@@ -2782,5 +2950,60 @@ mod tests {
             }
             .valid()
         );
+    }
+
+    #[test]
+    fn wifi_continuity_contract_is_bounded_and_redacts_secrets() {
+        let command = WifiContinuityCommand::Share {
+            ssid: "Studio".into(),
+            security: PortableWifiSecurity::Wpa3,
+            password: "correct horse battery staple".into(),
+        };
+        assert!(command.valid());
+        assert!(!format!("{command:?}").contains("correct horse"));
+        let encoded = serde_json::to_vec(&command).expect("encode Wi-Fi command");
+        assert!(encoded.len() < MAX_WIFI_CONTINUITY_WIRE_BYTES);
+        assert_eq!(
+            serde_json::from_slice::<WifiContinuityCommand>(&encoded)
+                .expect("decode Wi-Fi command"),
+            command
+        );
+
+        assert!(
+            !WifiContinuityCommand::Share {
+                ssid: "Studio".into(),
+                security: PortableWifiSecurity::Wpa2,
+                password: "x".repeat(MAX_WIFI_PASSWORD_BYTES + 1),
+            }
+            .valid()
+        );
+        assert!(
+            !WifiContinuityReply::Password {
+                password: "x".repeat(MAX_WIFI_PASSWORD_BYTES + 1),
+            }
+            .valid()
+        );
+    }
+
+    #[test]
+    fn saved_wifi_profile_reference_requires_an_exact_local_uuid() {
+        assert!(
+            WifiContinuityCommand::ShareSavedProfile {
+                profile_uuid: "12345678-1234-1234-1234-123456789abc".into(),
+            }
+            .valid()
+        );
+        for invalid in [
+            "profile-name",
+            "../../secret",
+            "12345678-1234-1234-1234-123456789abz",
+        ] {
+            assert!(
+                !WifiContinuityCommand::ShareSavedProfile {
+                    profile_uuid: invalid.into(),
+                }
+                .valid()
+            );
+        }
     }
 }
