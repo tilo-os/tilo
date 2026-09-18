@@ -50,6 +50,8 @@ pub enum ManifestError {
     SemanticContinuityWithoutSchema,
     #[error("kind=app requires presentation in continuity.required")]
     AppContinuityMissingPresentation,
+    #[error("accessibility.atspi_acceptance.{field} must not be empty")]
+    EmptyAtspiAcceptanceField { field: &'static str },
     #[error(
         "package `{package}` declares `sandbox.fs.write = [{entry:?}]`, and an app does not \
          choose where it writes.\n  \
@@ -124,6 +126,8 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
     if m.package.kind == Kind::App && !facets.contains(&ContinuityFacet::Presentation) {
         return Err(ManifestError::AppContinuityMissingPresentation);
     }
+
+    validate_atspi_acceptance(m)?;
 
     Version::parse(&m.package.version)
         .map_err(|e| ManifestError::BadVersion(m.package.version.clone(), e.to_string()))?;
@@ -208,6 +212,26 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
         .signature_bytes()
         .map_err(|e| ManifestError::BadPublisherSignature(e.to_string()))?;
 
+    Ok(())
+}
+
+fn validate_atspi_acceptance(m: &Manifest) -> Result<(), ManifestError> {
+    let Some(acceptance) = &m.accessibility.atspi_acceptance else {
+        return Ok(());
+    };
+    for (field, value) in [("root", &acceptance.root), ("action", &acceptance.action)] {
+        if value.trim().is_empty() {
+            return Err(ManifestError::EmptyAtspiAcceptanceField { field });
+        }
+    }
+    for (field, values) in [
+        ("required", &acceptance.required),
+        ("after_action", &acceptance.after_action),
+    ] {
+        if values.is_empty() || values.iter().any(|value| value.trim().is_empty()) {
+            return Err(ManifestError::EmptyAtspiAcceptanceField { field });
+        }
+    }
     Ok(())
 }
 

@@ -97,10 +97,14 @@ acceptance record.
 1. **Accessibility acceptance.** Core journeys still require recorded
    screen-reader, 200% scale and high-contrast acceptance evidence on the
    supported desktop stack. The installed-image VM now fails unless an external
-   AT-SPI client can read the compositor-owned OOBE, desktop and protected lock
-   screen, in addition to the deeper Files tree smoke. Monolithic custom-painted
-   apps are being converted to complete semantic/action trees app by app; a
-   committed gate is not a recorded successful external run.
+   AT-SPI client can read and drive the compositor-owned OOBE, desktop and
+   protected lock screen. It also launches the signed installed Files and
+   Settings payloads, finds them through the real AT-SPI bus, verifies their
+   named roots and meaningful controls, invokes a safe action, and observes the
+   resulting tree state. That executable evidence does not substitute for a
+   recorded screen-reader, 200% scale, high-contrast, hardware, service, or
+   full product-journey acceptance run; monolithic custom-painted apps remain
+   on the app-by-app semantic/action conversion track.
 2. **Localisation.** Public shell and app strings need Fluent ownership and
    expansion-safe layouts. English literals are not a release-ready fallback.
 3. **Standard-app journey acceptance.** The visible-control audit is complete,

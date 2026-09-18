@@ -63,6 +63,15 @@ type            = "gui"
 splash-segments = ["bin/settings[0x0:0x400000]"]
 splash-budget   = 250
 
+# The installed-image external AT-SPI client uses this safe navigation action
+# as a release certificate; it neither changes a preference nor needs hardware
+# or a configured account.
+[accessibility.atspi_acceptance]
+root         = "Personal Settings"
+required     = ["Appearance", "Accessibility"]
+action       = "Accessibility"
+after_action = ["Screen reader"]
+
 [providers]
 mime = []
 ext  = []
