@@ -792,11 +792,27 @@ impl ChromeState {
     pub fn commit_workspace_name(&mut self) {
         if let Some(buf) = self.editing_workspace_name.take() {
             let trimmed = buf.trim();
-            if self.can_rename_active_workspace()
-                && !trimmed.is_empty()
-                && let Some(ws) = self.tree_mut().active_workspace_mut()
-            {
-                ws.name = trimmed.to_string();
+            if self.can_rename_active_workspace() && !trimmed.is_empty() {
+                let mut tree = self.tree_mut();
+                let room = if let Some(ws) = tree.active_workspace_mut() {
+                    if ws.name == trimmed {
+                        None
+                    } else {
+                        ws.name = trimmed.to_string();
+                        Some(ws.room)
+                    }
+                } else {
+                    None
+                };
+                if let Some(room) = room {
+                    // A workspace name is both local restart state and room
+                    // metadata. Commit both authorities at the same mutation
+                    // boundary so a crash/restart cannot restore the old
+                    // label and a peer cannot immediately write it back.
+                    tree.sync_room_doc(room);
+                    tree.seed_doc_from_cache();
+                    tree.flush_to_disk();
+                }
             }
             self.bump();
         }
@@ -2022,6 +2038,61 @@ mod active_tab_tests {
         assert!(chrome.borrow_mut().focus_strip_index(1));
         let restarted = crate::shell::persist::load_tree_from(&path).expect("strip focus");
         assert_eq!(restarted.active_strip.get(&workspace), Some(&second_strip));
+    }
+
+    #[test]
+    fn committed_workspace_name_survives_restart_and_replicates_to_a_room_peer() {
+        let dir = tempfile::tempdir().expect("state dir");
+        let path = dir.path().join("workspace.json");
+        let mut tree = tree_with(100);
+        let room = tree.workspaces[0].room;
+        tree.persist_path = Some(path.clone());
+        tree.adopt_ownerless_workspaces(&"shell-fixture".to_string());
+        tree.flush_to_disk();
+
+        // Establish a real shared-room lineage before the rename. Merely
+        // assigning the same RoomId to two independently-seeded documents
+        // creates concurrent `name` values; that is not how a peer joins and
+        // cannot prove which later edit should win.
+        let mut replica = tree_with(100);
+        let replica_workspace = replica.active;
+        assert!(replica.set_room(replica_workspace, room));
+        let baseline = tree
+            .export_room_changes_since(room, &[])
+            .expect("host room baseline");
+        replica
+            .apply_room_changes(room, &baseline, &crate::shell::state::PeerOrigin::hub(1))
+            .expect("guest joins host room");
+        assert_eq!(replica.active_workspace().unwrap().name, "Home");
+        let replica_heads = replica.room_heads(room);
+
+        let chrome = ChromeState::new_with_fixture_handle(
+            tree.shared(),
+            crate::shell::hosted_inputs::HostedTileInputs::fixture()
+                .expect("hosted fixture inputs"),
+        );
+        {
+            let mut state = chrome.borrow_mut();
+            assert!(state.can_rename_active_workspace());
+            state.editing_workspace_name = Some("  Project Aurora  ".into());
+            state.commit_workspace_name();
+        }
+
+        let restarted = crate::shell::persist::load_tree_from(&path).expect("renamed state");
+        assert_eq!(restarted.active_workspace().unwrap().name, "Project Aurora");
+        let changes = chrome
+            .borrow()
+            .tree_mut()
+            .export_room_changes_since(room, &replica_heads)
+            .expect("room rename delta");
+        assert!(
+            !changes.is_empty(),
+            "the rename must enter the room document"
+        );
+        replica
+            .apply_room_changes(room, &changes, &crate::shell::state::PeerOrigin::hub(1))
+            .expect("room merge");
+        assert_eq!(replica.workspaces[0].name, "Project Aurora");
     }
 
     #[test]
