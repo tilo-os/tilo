@@ -7494,6 +7494,34 @@ mod tests {
     }
 
     #[test]
+    fn large_text_search_keeps_the_query_field_visible_and_editable() {
+        let (mut app, mut doc) = app_with_doc();
+        app.view = View::Search;
+        app.search_input.set_text("aurora");
+        app.search_input.set_focus(true);
+
+        draw_once_large_text(&mut app, &mut doc);
+
+        let field = app.search_input.get_rect();
+        assert!(
+            field.width() > 200.0,
+            "large-text search has a usable field"
+        );
+        assert!(
+            field.height() >= 40.0,
+            "large-text search gives the scaled type a touchable target"
+        );
+        assert!(
+            field.y1 <= app.body_rect.y0,
+            "the search control sits in header chrome, not beneath result rows"
+        );
+        assert!(
+            app.search_input.is_focused(),
+            "the visible large-text control preserves the active text edit"
+        );
+    }
+
+    #[test]
     fn draw_registers_row_menu_hits() {
         let (mut app, mut doc) = app_with_doc();
         app.view = View::Songs;
