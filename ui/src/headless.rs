@@ -4364,7 +4364,10 @@ mod a11y_driver_tests {
             _pr: &PresenceCtx,
         ) {
         }
-        #[allow(clippy::too_many_arguments)]
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "the fixture implements the fixed Widget::handle_event trait signature"
+        )]
         fn handle_event(
             &mut self,
             _e: &WindowEvent,
@@ -4460,7 +4463,10 @@ mod a11y_driver_tests {
         (d, activated)
     }
 
-    #[allow(clippy::type_complexity)]
+    #[allow(
+        clippy::type_complexity,
+        reason = "the fixture exposes separate activation and mutable item handles for production driver assertions"
+    )]
     fn driver_with_items() -> (
         Driver,
         Rc<RefCell<Vec<String>>>,
@@ -4683,7 +4689,10 @@ mod undo_driver_tests {
         ) {
         }
 
-        #[allow(clippy::too_many_arguments)]
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "the fixture implements the fixed Widget::handle_event trait signature"
+        )]
         fn handle_event(
             &mut self,
             event: &WindowEvent,
@@ -4971,7 +4980,10 @@ mod dispatched_action_driver_tests {
         ) {
         }
 
-        #[allow(clippy::too_many_arguments)]
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "the fixture implements the fixed Widget::handle_event trait signature"
+        )]
         fn handle_event(
             &mut self,
             event: &WindowEvent,
