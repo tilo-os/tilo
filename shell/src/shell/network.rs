@@ -1003,6 +1003,9 @@ pub struct ShellNetwork {
     /// registry. This lets refresh remove revoked/decommissioned entries
     /// without disturbing hosts carried by workspace invitations.
     registered_home_peer_ids: Mutex<std::collections::HashSet<iroh::EndpointId>>,
+    /// Certified device keys eligible to decrypt personal secrets. Routing
+    /// uses the deliberately distinct relay service ids above.
+    registered_home_device_ids: Mutex<std::collections::HashSet<[u8; 32]>>,
     /// Last bounded scan of the enrollment registry. A paired home peer may
     /// be approved after this shell started, so startup-only loading is not
     /// sufficient.
@@ -1318,6 +1321,10 @@ impl ShellNetwork {
             .iter()
             .map(|host| host.addr.id)
             .collect::<std::collections::HashSet<_>>();
+        let home_device_ids = home_peers
+            .iter()
+            .map(|host| host.expectation.device_public_key)
+            .collect::<std::collections::HashSet<_>>();
         // Enrollment-bound home peers must never race an unpinned connection.
         // The actor treats the first `(workspace, endpoint)` dial as the active
         // attempt, and an unpinned attempt deliberately cannot discover Files.
@@ -1392,6 +1399,7 @@ impl ShellNetwork {
             listen_addrs,
             host_addrs: Mutex::new(host_addrs),
             registered_home_peer_ids: Mutex::new(home_peer_ids),
+            registered_home_device_ids: Mutex::new(home_device_ids),
             last_home_peer_refresh: Mutex::new(None),
             last_sync_kick: Mutex::new(None),
             personal_continuity: Mutex::new(persisted_continuity.continuity),
@@ -2162,10 +2170,22 @@ impl ShellNetwork {
         let Ok(desired) =
             registered_home_peer_addrs(self.personal_continuity_user, &relay_workspace_ids)
         else {
+            // Preserve existing routes for availability, but fail closed for
+            // secrets when current enrollment authority cannot be proven.
+            if let Ok(mut devices) = self.registered_home_device_ids.lock() {
+                devices.clear();
+            }
             // Preserve the last known-good routing set across a partial or
             // malformed registry write. A subsequent bounded refresh retries.
             return false;
         };
+        let desired_device_ids = desired
+            .iter()
+            .map(|host| host.expectation.device_public_key)
+            .collect::<std::collections::HashSet<_>>();
+        if let Ok(mut devices) = self.registered_home_device_ids.lock() {
+            *devices = desired_device_ids;
+        }
         let desired_ids: std::collections::HashSet<_> =
             desired.iter().map(|host| host.addr.id).collect();
         let previous_ids = self
@@ -3644,9 +3664,9 @@ impl ShellNetwork {
             .clone()
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
-        if let Ok(peers) = self.registered_home_peer_ids.lock() {
-            recipients.extend(peers.iter().filter_map(|peer| {
-                crate::shell::personal_continuity::DeviceId::new(hex::encode(peer.as_bytes())).ok()
+        if let Ok(devices) = self.registered_home_device_ids.lock() {
+            recipients.extend(devices.iter().filter_map(|device| {
+                crate::shell::personal_continuity::DeviceId::new(hex::encode(device)).ok()
             }));
         }
         recipients
@@ -5298,6 +5318,7 @@ pub(crate) fn shell_network_for_test(
         listen_addrs: Arc::new(Mutex::new(Vec::new())),
         host_addrs: Mutex::new(Vec::new()),
         registered_home_peer_ids: Mutex::new(std::collections::HashSet::new()),
+        registered_home_device_ids: Mutex::new(std::collections::HashSet::new()),
         last_home_peer_refresh: Mutex::new(None),
         last_sync_kick: Mutex::new(None),
         personal_continuity: Mutex::new(
@@ -6042,6 +6063,140 @@ mod tests {
             Err("Wi-Fi Continuity is disabled on this device".to_string()),
             "the API must sample the new policy instead of retaining a stale denial"
         );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn wifi_registry_seals_to_device_identity_and_shrinks_after_removal() {
+        use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+
+        let temp = tempfile::tempdir().expect("temp");
+        let registry = temp.path().join("home-peers.json");
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0x81; 32]);
+        let local_key = ed25519_dalek::SigningKey::from_bytes(&[0x82; 32]);
+        let remote_key = ed25519_dalek::SigningKey::from_bytes(&[0x83; 32]);
+        let relay_key = iroh::SecretKey::from_bytes(&[0x84; 32]);
+        let relay_signing_key = ed25519_dalek::SigningKey::from_bytes(&relay_key.to_bytes());
+        let user_public_key = root.verifying_key().to_bytes();
+        let local_device = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            local_key.verifying_key().to_bytes(),
+        ))
+        .expect("local device id");
+        let remote_device = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            remote_key.verifying_key().to_bytes(),
+        ))
+        .expect("remote device id");
+        let relay_service = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            relay_key.public().as_bytes(),
+        ))
+        .expect("relay service id");
+
+        let mut local_cert = DeviceCert {
+            user_public_key,
+            device_public_key: local_key.verifying_key().to_bytes(),
+            device_label: "Local device".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut local_cert, &root).expect("local certificate");
+
+        let (mut net, _commands) = shell_network_for_test(WorkspaceTree::default().shared(), 1);
+        net.personal_continuity_user = Some(user_public_key);
+        net.personal_continuity_device = Some(local_device.clone());
+        net.host_identity = Some(HostIdentity {
+            device_cert: local_cert,
+            device_signing_key: local_key.clone(),
+            workspace_device_certs: std::collections::HashMap::new(),
+            workspace_revocations: std::collections::HashMap::new(),
+            identity_paths: None,
+        });
+        net.continuity_policy_override = Some(test_continuity_policy(true, false, true));
+        net.device_fabric
+            .lock()
+            .expect("fabric")
+            .upsert(fabric_snapshot(local_device.clone(), 1))
+            .expect("local presence");
+
+        let registration = tilo_relay::HomePeerRegistration {
+            schema_version: tilo_relay::HomePeerRegistration::CURRENT_SCHEMA,
+            device_node_id: remote_device.as_str().to_owned(),
+            relay_service_node_id: relay_service.as_str().to_owned(),
+            relay_endpoint: None,
+            label: "Home relay".into(),
+            user_public_key: hex::encode(user_public_key),
+            device_cert: None,
+            relay_workspace_ids: vec![personal_continuity_topic_id(&user_public_key)],
+        };
+        std::fs::write(
+            &registry,
+            serde_json::to_vec(&vec![registration]).expect("registry"),
+        )
+        .expect("write registry");
+        let previous = std::env::var_os("TILO_HOME_PEERS_PATH");
+        // SAFETY: guarded by the process_env serial group.
+        unsafe { std::env::set_var("TILO_HOME_PEERS_PATH", &registry) };
+
+        assert!(net.refresh_home_peer_hosts());
+        net.share_wifi_credential("Home", os_actions::WifiSecurity::Wpa2, "correct horse")
+            .expect("share credential");
+        let credential = net
+            .device_fabric()
+            .merged_wifi()
+            .into_values()
+            .next()
+            .expect("shared credential");
+        assert_eq!(
+            crate::shell::device_fabric_secrets::wifi_envelope_recipients(&credential)
+                .expect("recipient projection"),
+            std::collections::BTreeSet::from([local_device.clone(), remote_device.clone()]),
+            "relay routing identity must never become a secret recipient"
+        );
+        assert_eq!(
+            crate::shell::device_fabric_secrets::open_wifi_credential(&credential, &remote_key)
+                .expect("enrolled device decrypts"),
+            "correct horse"
+        );
+        assert!(
+            crate::shell::device_fabric_secrets::open_wifi_credential(
+                &credential,
+                &relay_signing_key
+            )
+            .is_err(),
+            "the distinct relay service key must not decrypt personal secrets"
+        );
+
+        std::fs::write(&registry, b"[]").expect("remove enrollment");
+        assert!(net.refresh_home_peer_hosts());
+        assert!(
+            net.refresh_wifi_credential_recipients()
+                .expect("rewrap after removal")
+        );
+        let credential = net
+            .device_fabric()
+            .merged_wifi()
+            .into_values()
+            .next()
+            .expect("rewrapped credential");
+        assert_eq!(
+            crate::shell::device_fabric_secrets::wifi_envelope_recipients(&credential)
+                .expect("recipient projection"),
+            std::collections::BTreeSet::from([local_device])
+        );
+        assert!(
+            crate::shell::device_fabric_secrets::open_wifi_credential(&credential, &remote_key)
+                .is_err(),
+            "removed devices must be excluded from the next envelope"
+        );
+
+        // SAFETY: guarded by the process_env serial group.
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
+                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
+            }
+        }
     }
 
     fn fabric_snapshot(
