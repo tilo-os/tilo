@@ -38,6 +38,7 @@ pub mod files_app;
 pub mod history_control;
 pub mod i18n;
 pub mod identity_directory;
+mod metadata_refresh;
 pub mod model;
 pub mod nearby_send;
 pub mod path_bar;
