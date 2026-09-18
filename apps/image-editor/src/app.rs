@@ -1579,28 +1579,29 @@ impl Widget for ImageEditorApp {
                 .iter()
                 .next()
                 .and_then(|id| self.project.graph.nodes.get(id))
-                .map(|n| n.title.as_str())
-                .unwrap_or("Select an adjustment");
-            tr.draw_text_weighted(
-                s,
-                selected,
-                13.0,
-                c.text_primary,
-                a.pre_translate(
-                    (
-                        self.inspector_rect.x0 + 12.0,
-                        self.inspector_rect.y0
-                            + if self.rect.width() < 820.0 {
-                                28.0
-                            } else {
-                                23.0
-                            },
-                    )
-                        .into(),
-                ),
-                Some((self.inspector_rect.width() - 80.0) as f32),
-                TextWeight::Semibold,
-            );
+                .map(|node| node.title.as_str());
+            if let Some(selected) = selected {
+                tr.draw_text_weighted(
+                    s,
+                    selected,
+                    13.0,
+                    c.text_primary,
+                    a.pre_translate(
+                        (
+                            self.inspector_rect.x0 + 12.0,
+                            self.inspector_rect.y0
+                                + if self.rect.width() < 820.0 {
+                                    28.0
+                                } else {
+                                    23.0
+                                },
+                        )
+                            .into(),
+                    ),
+                    Some((self.inspector_rect.width() - 80.0) as f32),
+                    TextWeight::Semibold,
+                );
+            }
             if let Some((value, label)) = self.selected_slider() {
                 let slider = self.inspector_slider_rect();
                 Slider::paint(
@@ -1655,23 +1656,22 @@ impl Widget for ImageEditorApp {
                         .ghost(),
                 );
             } else {
-                let hint = if self.crop_editor.is_some() {
-                    "Drag a corner on the image"
+                let (hint, x) = if selected.is_none() {
+                    (
+                        "Select an adjustment to edit",
+                        self.inspector_rect.x0 + 12.0,
+                    )
+                } else if self.crop_editor.is_some() {
+                    ("Drag a corner on the image", self.inspector_rect.x1 - 250.0)
                 } else {
-                    "No settings for this step"
+                    ("No settings for this step", self.inspector_rect.x1 - 250.0)
                 };
                 tr.draw_text_weighted(
                     s,
                     hint,
                     12.0,
                     c.text_dim,
-                    a.pre_translate(
-                        (
-                            self.inspector_rect.x1 - 250.0,
-                            self.inspector_rect.y0 + 22.0,
-                        )
-                            .into(),
-                    ),
+                    a.pre_translate((x, self.inspector_rect.y0 + 22.0).into()),
                     Some(186.0),
                     TextWeight::Regular,
                 );
