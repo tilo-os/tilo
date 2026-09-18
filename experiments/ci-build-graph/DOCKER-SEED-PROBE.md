@@ -43,6 +43,31 @@ successful local image inspection **before** its timed registry pull.
 
 ## Candidate broker integration
 
+### Second node and three-image generation
+
+Natural admission placed workers on AX41, where the AX52-local snapshot cannot
+restore. `trusted_seed_generation.py --fresh` therefore built a separate trusted
+seed on `talos-2a014f91aa0832`, preserving the old AX52 seed. It contains the full
+builder `027e43c0…`, `ci-fast` `fd2d462e…`, and `ci-control` `cc33624d…`; complete
+immutable references are recorded in the receipts. Initial pulls took 131, 17,
+and 6 seconds respectively, benefiting from shared layers within the seed.
+
+A new isolated clone verified all three images locally before their pulls.
+Each pull reported zero elapsed whole seconds, and Pod creation through clean
+shutdown took 18 seconds. This demonstrates cached presence, not literally zero
+cost. Receipts: `results/docker-seed-ax41-20260919/`.
+
+The new ready snapshot is `ci-trusted-tools-v2-ax41`, UID
+`aeefb314-20f8-484a-a1a4-6daa276e08ff`, from retained source PVC
+`ci-trusted-tools-seed-v2-ax41`. Both maintenance Jobs/Pods and the disposable
+clone PVC were removed; neither retained source disk was used for user jobs.
+The broker helper now supports profiles keyed by the admitted node, preserving
+the original single-node configuration as fallback. Matching configured
+profiles require immutable snapshot identity, source binding and actual topology
+checks; missing profiles explicitly take the cold path. Production activation
+and a broker-created workload acceptance are tracked separately by the deployment
+work, not established by these isolated maintenance Jobs.
+
 Keep this opt-in until the experiment passes. Configuration should map
 `(authorized repository, architecture, node, builder digest, DinD digest,
 storage driver)` to an immutable, ready VolumeSnapshot and restore size.

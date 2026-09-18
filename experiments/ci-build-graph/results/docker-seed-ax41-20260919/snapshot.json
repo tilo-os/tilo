@@ -1,0 +1,22 @@
+{
+  "name": "ci-trusted-tools-v2-ax41",
+  "uid": "aeefb314-20f8-484a-a1a4-6daa276e08ff",
+  "annotations": {
+    "trusted-image": "code.podesta.ai/qos/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a",
+    "dind-image": "docker.io/library/docker@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce",
+    "seed-node": "talos-2a014f91aa0832",
+    "trusted-extra-images": "[\"code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a\", \"code.podesta.ai/qos/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5\"]"
+  },
+  "spec": {
+    "source": {
+      "persistentVolumeClaimName": "ci-trusted-tools-seed-v2-ax41"
+    },
+    "volumeSnapshotClassName": "zfs-localpv-snap"
+  },
+  "status": {
+    "boundVolumeSnapshotContentName": "snapcontent-aeefb314-20f8-484a-a1a4-6daa276e08ff",
+    "creationTime": "2026-09-18T22:49:00Z",
+    "readyToUse": true,
+    "restoreSize": "50Gi"
+  }
+}

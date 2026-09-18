@@ -1,0 +1,36 @@
+{
+  "name": "ci-trusted-tools-clone-v2-ax41",
+  "uid": "f1f61e2b-19c3-4ede-882e-e345837f4a6c",
+  "spec": {
+    "accessModes": [
+      "ReadWriteOnce"
+    ],
+    "dataSource": {
+      "apiGroup": "snapshot.storage.k8s.io",
+      "kind": "VolumeSnapshot",
+      "name": "ci-trusted-tools-v2-ax41"
+    },
+    "dataSourceRef": {
+      "apiGroup": "snapshot.storage.k8s.io",
+      "kind": "VolumeSnapshot",
+      "name": "ci-trusted-tools-v2-ax41"
+    },
+    "resources": {
+      "requests": {
+        "storage": "50Gi"
+      }
+    },
+    "storageClassName": "zfs-localpv-block-cache",
+    "volumeMode": "Block",
+    "volumeName": "pvc-f1f61e2b-19c3-4ede-882e-e345837f4a6c"
+  },
+  "status": {
+    "accessModes": [
+      "ReadWriteOnce"
+    ],
+    "capacity": {
+      "storage": "50Gi"
+    },
+    "phase": "Bound"
+  }
+}

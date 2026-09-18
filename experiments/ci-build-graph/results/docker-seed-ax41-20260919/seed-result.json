@@ -1,0 +1,16 @@
+{
+  "name": "ci-trusted-tools-seed-v2-ax41-l4p4n",
+  "node": "talos-2a014f91aa0832",
+  "uid": "266c2381-0144-4112-91ea-c9501e09e346",
+  "phase": "Succeeded",
+  "container": {
+    "terminated": {
+      "containerID": "containerd://08790500ecbfa642bcc7fcb1e3b6916ea8716bb9f4967ef0e7556f3ab90cb0ac",
+      "exitCode": 0,
+      "finishedAt": "2026-09-18T22:48:10Z",
+      "reason": "Completed",
+      "startedAt": "2026-09-18T22:45:25Z"
+    }
+  },
+  "image": "docker.io/library/docker@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce"
+}

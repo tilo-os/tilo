@@ -1,0 +1,17 @@
+{
+  "name": "ci-trusted-tools-clone-v2-ax41-mp992",
+  "node": "talos-2a014f91aa0832",
+  "uid": "0a184ce1-6687-43eb-8be7-d37c3c75978c",
+  "created": "2026-09-18T22:49:17Z",
+  "phase": "Succeeded",
+  "container": {
+    "terminated": {
+      "containerID": "containerd://9c0786c9aefef83b8b2946dedca8e9da054acb0aab5fe10da0b33054608b0407",
+      "exitCode": 0,
+      "finishedAt": "2026-09-18T22:49:35Z",
+      "reason": "Completed",
+      "startedAt": "2026-09-18T22:49:26Z"
+    }
+  },
+  "image": "docker.io/library/docker@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce"
+}
