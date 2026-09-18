@@ -1155,6 +1155,7 @@ impl TubeApp {
                 bus,
                 self.nav.can_go_back(),
                 &self.search_query,
+                self.text_scale >= 1.5 && self.rect.width() <= 480.0,
             ))
             .push(split);
 
@@ -1190,6 +1191,12 @@ impl TubeApp {
     }
 
     fn nav_rail_width(&self) -> f64 {
+        if self.text_scale >= 1.5 && self.rect.width() <= 480.0 {
+            // At phone width with 200% text, an overlay that leaves a thin
+            // strip of clipped content is visually noisy and inaccessible.
+            // The drawer owns the entire content region until dismissed.
+            return self.rect.width();
+        }
         if self.text_scale >= 1.5 {
             264.0
         } else {

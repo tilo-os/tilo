@@ -641,6 +641,7 @@ pub fn top_bar(
     bus: &ActionBus,
     can_back: bool,
     search_query: &ui::LocalState<String>,
+    compact: bool,
 ) -> Flex {
     // The search field uses the toolkit's process-local TextInput binding. It
     // survives navigation rebuilds in this app instance but never enters the
@@ -659,7 +660,7 @@ pub fn top_bar(
 
     // A single search lens (leading) — Enter submits, so there is no second
     // trailing lens/button cluttering the field.
-    let search = Flex::row()
+    let search_field = Flex::row()
         .grow(1.0)
         .max_w(560.0)
         .h(Len::Px(42.0))
@@ -673,14 +674,19 @@ pub fn top_bar(
         })
         .push(icon(Icon::Search, 18.0, theme.text_dim))
         .push(Flex::row().grow(1.0).push(search_input));
+    let search = if compact {
+        icon_button(theme, bus, Icon::Search, Action::OpenPalette).id("compact_search")
+    } else {
+        search_field
+    };
 
     // Only surface the data-source indicator when we're NOT on live data
     // (connecting or offline) — in the normal live case the top bar stays clean.
     // SponsorBlock / DeArrow are settings, not top-bar toggles; they live in Settings.
-    let status = Flex::row()
-        .gap(8.0)
-        .align(Align::Center)
-        .push_if(!model.data_source.live, data_source_pill(theme, model));
+    let status = Flex::row().gap(8.0).align(Align::Center).push_if(
+        !compact && !model.data_source.live,
+        data_source_pill(theme, model),
+    );
 
     Flex::row()
         .fill_w()
