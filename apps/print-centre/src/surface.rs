@@ -1,12 +1,13 @@
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use taffy::{NodeId, TaffyTree};
-use tilo_actions::{ActionContract, ActionSpec, OperationKind, Resource};
+use tilo_actions::{ActionSpec, OperationKind, Resource};
 use ui::icons::Icon;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
@@ -26,6 +27,13 @@ use vello::{
 use winit::event::{Modifiers, WindowEvent};
 
 type El = Box<dyn Widget>;
+
+/// The one typed door for local printer and scanner operations. The commands
+/// remain local because they talk to CUPS/SANE and portals on this machine;
+/// publishing them still lets the shell, search, and a collaborating agent
+/// discover the real controls and receive an invocation receipt.
+const PRINT_CENTRE_OPERATION: &str = "print-centre.operation";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DemoScenario {
     Dashboard,
@@ -367,6 +375,130 @@ fn action(id: &str, label: &str) -> El {
             .fit_content(44.0)
             .on_view(|| {}),
     )
+}
+
+fn resource_action(
+    id: &str,
+    label: &str,
+    kind: OperationKind,
+    command: &str,
+) -> Option<ActionSpec> {
+    ActionSpec::operation(id, label, kind, PRINT_CENTRE_OPERATION, &command).ok()
+}
+
+/// Resource identifiers are shell-facing rather than display text. Keep the
+/// externally visible address valid and stable even when CUPS reports spaces,
+/// punctuation, or non-ASCII queue names.
+fn resource_key(value: &str) -> String {
+    let mut key = String::with_capacity(value.len().saturating_mul(2));
+    for byte in value.bytes() {
+        let _ = write!(&mut key, "{byte:02x}");
+    }
+    key
+}
+
+fn printer_resource(queue: &os_actions::printing::PrinterQueue) -> Resource {
+    let key = resource_key(&queue.name);
+    let mut resource = Resource::new(
+        format!("print-centre.printer.{key}"),
+        "print-centre.printer",
+        display_name(&queue.name),
+    );
+    if let Some(action) = resource_action(
+        "open",
+        "Open printer",
+        OperationKind::View,
+        &format!("device\0{}", queue.name),
+    ) {
+        resource.actions.push(action);
+    }
+    if !queue.default
+        && let Some(action) = resource_action(
+            "set-default",
+            "Set as default printer",
+            OperationKind::Effect,
+            &format!("default\0{}", queue.name),
+        )
+    {
+        resource.actions.push(action);
+    }
+    let (label, command) = if queue.accepting_jobs {
+        ("Pause printer", "pause")
+    } else {
+        ("Resume printer", "resume")
+    };
+    if let Some(action) = resource_action(
+        "toggle-enabled",
+        label,
+        OperationKind::Effect,
+        &format!("{command}\0{}", queue.name),
+    ) {
+        resource.actions.push(action);
+    }
+    resource
+}
+
+fn job_resource(job: &os_actions::printing::PrintJob) -> Resource {
+    let key = resource_key(&job.id);
+    let mut resource = Resource::new(
+        format!("print-centre.job.{key}"),
+        "print-centre.job",
+        job_title(job),
+    );
+    if let Some(action) = resource_action("open-queue", "Open queue", OperationKind::View, "queue")
+    {
+        resource.actions.push(action);
+    }
+    if matches!(
+        job.state,
+        Some(
+            os_actions::printing::JobState::Pending
+                | os_actions::printing::JobState::Held
+                | os_actions::printing::JobState::Processing
+                | os_actions::printing::JobState::Stopped
+        )
+    ) && let Some(action) = resource_action(
+        "cancel",
+        "Cancel document",
+        OperationKind::Effect,
+        &format!("cancel\0{}", job.id),
+    ) {
+        resource.actions.push(action);
+    }
+    if matches!(
+        job.state,
+        Some(
+            os_actions::printing::JobState::Stopped
+                | os_actions::printing::JobState::Canceled
+                | os_actions::printing::JobState::Aborted
+        )
+    ) && let Some(action) = resource_action(
+        "retry",
+        "Print again",
+        OperationKind::Effect,
+        &format!("retry\0{}", job.id),
+    ) {
+        resource.actions.push(action);
+    }
+    resource
+}
+
+fn scanner_resource(scanner: &os_actions::printing::Scanner) -> Resource {
+    let key = resource_key(&scanner.device);
+    let mut resource = Resource::new(
+        format!("print-centre.scanner.{key}"),
+        "print-centre.scanner",
+        scanner.description.clone(),
+    );
+    if let Some(action) = resource_action(
+        "scan",
+        "Scan a document",
+        OperationKind::View,
+        &format!("scan-device\0{}", scanner.device),
+    ) {
+        resource.actions.push(action);
+    }
+    resource
 }
 
 fn command_action(id: &str, label: &str, tx: &mpsc::Sender<UiCommand>, command: UiCommand) -> El {
@@ -3115,43 +3247,130 @@ impl Widget for PrintCentre {
         self.refresh.is_some() || self.picker.is_some() || self.scan_save_picker.is_some()
     }
     fn resources(&self, _: &AutoCommit) -> Vec<Resource> {
-        let Ok(refresh) = ActionSpec::operation(
-            "refresh",
-            "Refresh printers and documents",
-            OperationKind::Effect,
-            "print-centre.refresh",
-            &(),
-        ) else {
-            return Vec::new();
-        };
-        let refresh = refresh.with_contract(ActionContract::default());
-        vec![
-            Resource::new("print-centre", "print-centre.dashboard", "Print Centre")
-                .with_action(refresh),
-        ]
+        let mut root = Resource::new("print-centre", "print-centre.dashboard", "Print Centre");
+        for (id, label, kind, command) in [
+            (
+                "refresh",
+                "Refresh printers and documents",
+                OperationKind::Effect,
+                "refresh",
+            ),
+            (
+                "open-dashboard",
+                "Open dashboard",
+                OperationKind::View,
+                "dashboard",
+            ),
+            (
+                "open-queue",
+                "Open print queue",
+                OperationKind::View,
+                "queue",
+            ),
+            (
+                "open-history",
+                "Open print history",
+                OperationKind::View,
+                "history",
+            ),
+            (
+                "run-diagnostics",
+                "Run printer diagnostics",
+                OperationKind::View,
+                "diagnostics",
+            ),
+            (
+                "find-printers",
+                "Find network printers",
+                OperationKind::Effect,
+                "discover",
+            ),
+            (
+                "print-document",
+                "Print a document",
+                OperationKind::View,
+                "print",
+            ),
+            (
+                "scan-document",
+                "Scan a document",
+                OperationKind::View,
+                "scan",
+            ),
+        ] {
+            if let Some(action) = resource_action(id, label, kind, command) {
+                root.actions.push(action);
+            }
+        }
+        if let Some(snapshot) = &self.snapshot {
+            if let Ok(queues) = &snapshot.queues {
+                root.children.extend(queues.iter().map(printer_resource));
+            }
+            if let Ok(jobs) = &snapshot.jobs {
+                root.children.extend(jobs.iter().map(job_resource));
+            }
+            if let Ok(scanners) = &snapshot.scanners {
+                root.children.extend(scanners.iter().map(scanner_resource));
+            }
+        }
+        vec![root]
     }
     fn invoke_resource_operation(
         &mut self,
         k: OperationKind,
         id: &str,
-        _: &[u8],
+        payload: &[u8],
         _: &AutoCommit,
         _: &ObjId,
     ) -> Result<bool, String> {
-        if k == OperationKind::Effect && id == "print-centre.refresh" {
-            *self = Self::new();
-            return Ok(true);
+        if id != PRINT_CENTRE_OPERATION || !matches!(k, OperationKind::View | OperationKind::Effect)
+        {
+            return Ok(false);
         }
-        Ok(false)
+        let command: String = serde_json::from_slice(payload)
+            .map_err(|error| format!("invalid Print Centre operation: {error}"))?;
+        let (verb, value) = command.split_once('\0').unwrap_or((&command, ""));
+        let expected_kind = match verb {
+            "refresh" | "discover" | "default" | "pause" | "resume" | "cancel" | "retry" => {
+                OperationKind::Effect
+            }
+            "dashboard" | "queue" | "history" | "diagnostics" | "print" | "scan" | "device"
+            | "scan-device" => OperationKind::View,
+            _ => return Err("unknown Print Centre operation".into()),
+        };
+        if k != expected_kind {
+            return Err("Print Centre operation has the wrong execution kind".into());
+        }
+        let next = match verb {
+            "refresh" => UiCommand::Refresh,
+            "discover" => UiCommand::Discover,
+            "dashboard" => UiCommand::Dashboard,
+            "queue" => UiCommand::Queue,
+            "history" => UiCommand::History,
+            "diagnostics" => UiCommand::Diagnostics,
+            "print" => UiCommand::ChooseDocument,
+            "scan" => UiCommand::ScanSetup,
+            "device" if !value.is_empty() => UiCommand::Device(value.into()),
+            "scan-device" if !value.is_empty() => UiCommand::SelectScanner(value.into()),
+            "default" if !value.is_empty() => UiCommand::SetDefault(value.into()),
+            "pause" if !value.is_empty() => UiCommand::SetEnabled(value.into(), false),
+            "resume" if !value.is_empty() => UiCommand::SetEnabled(value.into(), true),
+            "cancel" if !value.is_empty() => UiCommand::ConfirmCancel(value.into()),
+            "retry" if !value.is_empty() => UiCommand::RetryJob(value.into()),
+            _ => return Err("Print Centre resource is no longer available".into()),
+        };
+        self.handle_command(next);
+        Ok(true)
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["print-centre.refresh"]
+        &[PRINT_CENTRE_OPERATION]
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::ROOT;
 
     fn queue(
         state: os_actions::printing::QueueState,
@@ -3183,6 +3402,62 @@ mod tests {
         ] {
             assert_eq!(PrintCentre::demo(s).name(), "PrintCentre");
         }
+    }
+
+    #[test]
+    fn resource_surface_exposes_real_navigation_and_device_operations() {
+        let mut centre = PrintCentre::demo(DemoScenario::Dashboard);
+        centre.snapshot = Some(demo_snapshot());
+        let doc = AutoCommit::new();
+        let resources = centre.resources(&doc);
+        let root = resources.first().expect("Print Centre root resource");
+        let action_ids = root
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect::<Vec<_>>();
+        for expected in [
+            "refresh",
+            "open-queue",
+            "open-history",
+            "run-diagnostics",
+            "find-printers",
+            "print-document",
+            "scan-document",
+        ] {
+            assert!(action_ids.contains(&expected), "missing {expected} action");
+        }
+        assert!(
+            root.children
+                .iter()
+                .any(|resource| resource.kind == "print-centre.printer"),
+            "configured queues are first-class resources"
+        );
+        assert!(
+            root.children
+                .iter()
+                .any(|resource| resource.kind == "print-centre.job"),
+            "recent documents are first-class resources"
+        );
+        assert!(
+            root.children
+                .iter()
+                .any(|resource| resource.kind == "print-centre.scanner"),
+            "available scanners are first-class resources"
+        );
+
+        let payload = serde_json::to_vec("queue").expect("operation payload");
+        assert!(
+            centre
+                .invoke_resource_operation(
+                    OperationKind::View,
+                    PRINT_CENTRE_OPERATION,
+                    &payload,
+                    &doc,
+                    &ROOT,
+                )
+                .expect("queue view operation")
+        );
     }
 
     #[test]
