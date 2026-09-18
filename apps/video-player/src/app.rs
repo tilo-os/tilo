@@ -27,8 +27,10 @@ use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager};
 use ui::icons::Icon;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
+use ui::surface;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::tokens::Spacing;
 use ui::widget::video_player::{PlayerSetting, PlayerSettingEvent};
 use ui::widget::{ActionEmitter, Button, ButtonFace, VideoPlayer, Widget};
 
@@ -36,9 +38,18 @@ use crate::actions::PlayerOperation;
 use crate::collab::{CollabPlayback, Role};
 use crate::preferences::{PlaybackPreferences, RecentMedia};
 
-/// Inset (logical px) of the floating top overlay (media title + Open) from the
-/// video edges.
-const OVERLAY_MARGIN: f64 = 14.0;
+/// A `Spacing::BASE` step as the `f64` this painter's geometry uses.
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: `f64::from` is not const; f32 -> f64 is exact"
+)]
+const fn step(px: f32) -> f64 {
+    px as f64
+}
+
+/// Inset of the floating top overlay (media title + Open) from the video
+/// edges: the section-padding step (HIG §7b `s4`).
+const OVERLAY_MARGIN: f64 = step(Spacing::BASE.s4);
 /// Height (logical px) of the floating Open pill at 1× text.
 const OPEN_BTN_H: f64 = 32.0;
 /// Width (logical px) of the floating Open pill at 1× text.
@@ -50,8 +61,10 @@ const LIBRARY_BTN_W: f64 = 88.0;
 /// authored width scales with text; this padding does not.
 const BUTTON_PAD_X: f64 = 30.0;
 /// Vertical room either side of a floating button's label once the label
-/// outgrows [`OPEN_BTN_H`] (accessibility text scale).
-const BUTTON_PAD_Y: f64 = 4.0;
+/// outgrows [`OPEN_BTN_H`] (accessibility text scale): `s1`.
+const BUTTON_PAD_Y: f64 = step(Spacing::BASE.s1);
+/// Title ↔ Library capsule, and a row's text ↔ its controls: siblings, `s3`.
+const STRIP_TITLE_GAP: f64 = step(Spacing::BASE.s3);
 /// Label size the floating buttons ask the shared `Button` face for, and the
 /// media title's size. Both are renderer-relative: the renderer applies the
 /// text scale and the default `TextStyle` line height.
@@ -92,12 +105,13 @@ struct StripLabels {
     open_w: f64,
 }
 /// One gutter for everything in the library panel — title, subtitle, tabs, row
-/// text on the left; Close/Clear and each row's Play on the right.
-const PANEL_GUTTER: f64 = 16.0;
+/// text on the left; Close/Clear and each row's Play on the right. The
+/// section-padding step (HIG §7b `s4`).
+const PANEL_GUTTER: f64 = step(Spacing::BASE.s4);
 /// Rows extend `PANEL_ROW_INSET` short of the panel edge and inset their
 /// content by the same amount, so row text and row controls land on
-/// [`PANEL_GUTTER`] while the hover surface still reads as a row.
-const PANEL_ROW_INSET: f64 = 8.0;
+/// [`PANEL_GUTTER`] while the row card still reads as a row (`s2`).
+const PANEL_ROW_INSET: f64 = step(Spacing::BASE.s2);
 
 /// The floating top strip: one description consumed by `apply_layout` (the
 /// Library/Open rects, which hit-testing and the accessibility export read)
@@ -140,24 +154,28 @@ const PANEL_ROW_CONTROL_SIZE: f32 = 11.0;
 /// and 200% text stops painting through the next line (title over subtitle,
 /// subtitle over tabs, "Remove" over "Play", 1× row pitch under 2× glyphs).
 const PANEL_WIDTH: f64 = 360.0;
-const PANEL_HEADER_TOP: f64 = 10.0;
+/// One rhythm for the panel (HIG §7b): the header sits a sibling step
+/// (`s3`) under the panel edge, sections are `s3` apart, controls beside
+/// each other are `s2` apart, and list rows — siblings of equal weight —
+/// keep `s3` between their cards so no two rows touch.
+const PANEL_HEADER_TOP: f64 = step(Spacing::BASE.s3);
 const PANEL_HEADER_BUTTON_H: f64 = 28.0;
 const PANEL_CLOSE_W: f64 = 56.0;
 const PANEL_CLEAR_W: f64 = 50.0;
-const PANEL_BUTTON_GAP: f64 = 6.0;
-const PANEL_SECTION_GAP: f64 = 12.0;
+const PANEL_BUTTON_GAP: f64 = step(Spacing::BASE.s2);
+const PANEL_SECTION_GAP: f64 = step(Spacing::BASE.s3);
 const PANEL_TAB_H: f64 = 30.0;
 const PANEL_QUEUE_TAB_W: f64 = 86.0;
 const PANEL_RECENT_TAB_W: f64 = 92.0;
 const PANEL_ROW_H: f64 = 58.0;
-const PANEL_ROW_GAP: f64 = 4.0;
-const PANEL_ROW_PAD_Y: f64 = 8.0;
+const PANEL_ROW_GAP: f64 = step(Spacing::BASE.s3);
+const PANEL_ROW_PAD_Y: f64 = step(Spacing::BASE.s2);
 const PANEL_ROW_TITLE_BOX_H: f64 = 21.0;
 const PANEL_CONTROL_H: f64 = 44.0;
 const PANEL_PLAY_W: f64 = 48.0;
 const PANEL_REMOVE_W: f64 = 50.0;
 /// Vertical room either side of a label inside a panel button / tab.
-const PANEL_LABEL_PAD_Y: f64 = 4.0;
+const PANEL_LABEL_PAD_Y: f64 = step(Spacing::BASE.s1);
 /// The panel subtitle — measured for its wrapped height in the panel gutter.
 const PANEL_SUBTITLE: &str = "Local to this device · paths never shared";
 /// The floating strip's scrim opacity over the media (the authored 90/255).
@@ -166,7 +184,7 @@ const PANEL_SUBTITLE: &str = "Local to this device · paths never shared";
 const STRIP_SCRIM_ALPHA: f32 = 90.0 / 255.0;
 /// Horizontal room a compact panel control keeps around its measured label
 /// (6 px a side) before its authored width has to grow.
-const PANEL_LABEL_PAD_X: f64 = 12.0;
+const PANEL_LABEL_PAD_X: f64 = step(Spacing::BASE.s3);
 
 /// The library panel's labels measured with the frame's renderer at one text
 /// scale and panel width. `apply_layout` has a theme but no renderer, so
@@ -271,7 +289,12 @@ impl LibraryPanelGeometry {
         Self {
             // The title ends before the header's leftmost button slot (Clear,
             // shown on the Recent tab) so it can never run under either button.
-            title: Rect::new(left, header_y, clear.x0 - 8.0, header_y + header_h),
+            title: Rect::new(
+                left,
+                header_y,
+                clear.x0 - PANEL_BUTTON_GAP,
+                header_y + header_h,
+            ),
             subtitle,
             close,
             clear,
@@ -2018,7 +2041,7 @@ impl PlayerApp {
         } else {
             "Video Player"
         };
-        let title_x = self.library_button_rect.x1 + 12.0;
+        let title_x = self.library_button_rect.x1 + STRIP_TITLE_GAP;
         let title_budget = (self.open_button_rect.x0 - title_x - OVERLAY_MARGIN)
             .max(0.0)
             .min(f64::from(f32::MAX)) as f32;
@@ -2133,11 +2156,14 @@ impl PlayerApp {
         let colors = &theme.tokens.colors;
         let panel = self.library_panel_rect;
         fill_rect(scene, transform, panel, colors.surfaces.raised);
+        // The panel's edge against the video derives from its own surface
+        // (HIG §9.5); a declared `border_standard` on `raised` vanished in
+        // the dark preset.
         fill_rect(
             scene,
             transform,
             Rect::new(panel.x0, panel.y0, panel.x0 + 1.0, panel.y1),
-            colors.border_standard,
+            surface::edge_on(colors.surfaces.raised),
         );
         panel_text(
             scene,
@@ -2236,7 +2262,7 @@ impl PlayerApp {
             .into_iter()
             .take(crate::actions::CONTEXTUAL_CHILD_LIMIT)
         {
-            if y + row_h > panel.y1 - 14.0 {
+            if y + geometry.row_h > panel.y1 - PANEL_GUTTER {
                 break;
             }
             // Row surface inset `PANEL_ROW_INSET`; its text and controls inset
@@ -2265,11 +2291,22 @@ impl PlayerApp {
                 play.x0 - PANEL_BUTTON_GAP,
                 control_y1,
             ));
-            if rect.contains(self.last_cursor) {
-                fill_rect(scene, transform, rect, colors.neutral[2]);
-            }
+            // Each row is a card on the raised panel: the base surface is a
+            // contrast step down from the panel and carries its own derived
+            // edge, so rows read as rows at rest, not only under the pointer.
+            surface::card(
+                scene,
+                transform,
+                rect,
+                f64::from(theme.tokens.radii.md),
+                if rect.contains(self.last_cursor) {
+                    theme.bg_hover
+                } else {
+                    colors.surfaces.base
+                },
+            );
             let active = self.current_queue_id.as_deref() == Some(entry.id.as_str());
-            let text_x1 = remove.map_or(play.x0, |remove| remove.x0) - 8.0;
+            let text_x1 = remove.map_or(play.x0, |remove| remove.x0) - STRIP_TITLE_GAP;
             // Elide at the weight the label is drawn with (`panel_text` now
             // honours `Medium`); Regular advances are narrower and would let
             // a just-fitting title run into the Remove/Play faces.
@@ -2305,7 +2342,7 @@ impl PlayerApp {
                 scene,
                 text_renderer,
                 transform,
-                Rect::new(content_x0, title_box.y1, text_x1, rect.y1 - PANEL_ROW_GAP),
+                Rect::new(content_x0, title_box.y1, text_x1, rect.y1 - PANEL_ROW_PAD_Y),
                 if active {
                     "Playing on this device"
                 } else {
@@ -3488,10 +3525,13 @@ mod tests {
         let panel = Rect::new(840.0, 0.0, 1200.0, 800.0);
         let one = LibraryPanelGeometry::for_panel(panel, 1.0, None);
         assert_eq!(one.close.height(), PANEL_HEADER_BUTTON_H);
-        assert_eq!(one.subtitle.y0, 38.0);
-        assert_eq!(one.queue_tab.y0, 66.0);
+        // 1× stack on the panel rhythm (`s3` header top, `s3` between
+        // sections): header 12..40, subtitle 40..56, tabs 68..98, rows 110.
+        assert_eq!(one.subtitle.y0, PANEL_HEADER_TOP + PANEL_HEADER_BUTTON_H);
+        assert_eq!(one.subtitle.y0, 40.0);
+        assert_eq!(one.queue_tab.y0, 68.0);
         assert_eq!(one.queue_tab.height(), PANEL_TAB_H);
-        assert_eq!(one.rows_top, 108.0);
+        assert_eq!(one.rows_top, 110.0);
         assert_eq!(one.row_h, PANEL_ROW_H);
         assert_eq!(one.control_h, PANEL_CONTROL_H);
         assert_eq!((one.play_w, one.remove_w), (PANEL_PLAY_W, PANEL_REMOVE_W));
