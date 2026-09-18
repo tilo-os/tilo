@@ -87,3 +87,21 @@ Containerfile hash, and WPE receipt hash for the unchanged strict native importe
 Actual assembly input evidence continues to identify the new source and receipt.
 Three-deep authenticated source checkout is required. No compilation fallback
 is introduced, and WPE payload/config inspection still runs in its importer.
+
+### Reviewed runtime policy follow-up
+
+An optional `rootfs_revision` adds one final policy commit to the explicit
+frozen-source → provider → rootfs-recipe → runtime-policy chain. The final
+commit must change exactly `os/scripts/verify-runtime-crypto-packages.sh`,
+`os/usr/libexec/tilo-security-audit`, and `docs/security/boot-chain.md`, each
+with independently reviewed old/new blob identities in the admission. The
+recipe commit must still change only Containerfile. No other tracked changes
+are accepted. The unchanged recipe must reference all three policy inputs
+inside rootfs, with none of those references before rootfs or after split.
+
+The builder's broad `COPY . /build` includes these files as context; the
+frozen Cargo/build scripts do not consume them to produce native outputs.
+This is reviewed source compatibility, not identical build-context provenance.
+Native receipt identities remain original and the real assembly source remains
+recorded. The recipe and WPE consumer receipt are unchanged by the policy
+commit. Authenticated source checkout needs depth four.
