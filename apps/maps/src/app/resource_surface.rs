@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    ActionContract, ActionSpec, Availability, DiscoveryScope, ExecutionMode, MapsApp,
+    OperationKind, PermissionRequirement, Resource, ResultSpec, RetryPolicy,
+};
 
 impl MapsApp {
     /// Add operations whose availability depends on this live app instance to
