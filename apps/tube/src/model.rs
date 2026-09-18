@@ -754,18 +754,14 @@ impl TubeModel {
     /// an imported subscription is not accidentally left active.
     pub fn subscription_key(&self, id: &str) -> Option<&str> {
         self.subscriptions.iter().find_map(|subscription| {
-            subscription == id
-                || self
-                    .channel(id)
-                    .is_some_and(|channel| {
-                        subscription == &channel.handle
-                            || subscription
-                                .strip_prefix("https://youtube.com/")
-                                .is_some_and(|handle| {
-                                    handle == channel.handle.trim_start_matches('/')
-                                })
-                    })
-                    .then_some(subscription.as_str())
+            let matches = subscription == id
+                || self.channel(id).is_some_and(|channel| {
+                    subscription == &channel.handle
+                        || subscription
+                            .strip_prefix("https://youtube.com/")
+                            .is_some_and(|handle| handle == channel.handle.trim_start_matches('/'))
+                });
+            matches.then_some(subscription.as_str())
         })
     }
 
