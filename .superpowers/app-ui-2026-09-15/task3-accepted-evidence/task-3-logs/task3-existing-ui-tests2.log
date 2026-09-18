@@ -1,0 +1,48 @@
+    Blocking waiting for file lock on build directory
+   Compiling ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
+error[E0599]: no method named `native_input_snapshot` found for struct `app::App` in the current scope
+   --> ui/src/native_scenario.rs:156:21
+    |
+156 |         assert!(app.native_input_snapshot().is_none());
+    |                     ^^^^^^^^^^^^^^^^^^^^^ method not found in `app::App`
+    |
+   ::: ui/src/app.rs:437:1
+    |
+437 | pub struct App {
+    | -------------- method `native_input_snapshot` not found for this struct
+
+error[E0599]: no method named `set_native_input_probe` found for struct `app::App` in the current scope
+   --> ui/src/native_scenario.rs:157:13
+    |
+157 |         app.set_native_input_probe(move || serde_json::json!({"offset": observed.get()}));
+    |             ^^^^^^^^^^^^^^^^^^^^^^ method not found in `app::App`
+    |
+   ::: ui/src/app.rs:437:1
+    |
+437 | pub struct App {
+    | -------------- method `set_native_input_probe` not found for this struct
+
+error[E0599]: no method named `native_input_snapshot` found for struct `app::App` in the current scope
+   --> ui/src/native_scenario.rs:158:24
+    |
+158 |         assert_eq!(app.native_input_snapshot().unwrap()["offset"], 12);
+    |                        ^^^^^^^^^^^^^^^^^^^^^ method not found in `app::App`
+    |
+   ::: ui/src/app.rs:437:1
+    |
+437 | pub struct App {
+    | -------------- method `native_input_snapshot` not found for this struct
+
+error[E0599]: no method named `native_input_snapshot` found for struct `app::App` in the current scope
+   --> ui/src/native_scenario.rs:160:24
+    |
+160 |         assert_eq!(app.native_input_snapshot().unwrap()["offset"], 24);
+    |                        ^^^^^^^^^^^^^^^^^^^^^ method not found in `app::App`
+    |
+   ::: ui/src/app.rs:437:1
+    |
+437 | pub struct App {
+    | -------------- method `native_input_snapshot` not found for this struct
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `ui` (lib test) due to 4 previous errors

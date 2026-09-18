@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "workspaces": [
+    {
+      "id": 110056715893866497,
+      "room": "f5a6416e-964c-41a6-9cba-e13f3729183f",
+      "name": "Home",
+      "strips": [
+        {
+          "id": 110056715893866498,
+          "name": "Main",
+          "window_groups": []
+        }
+      ],
+      "collaborators": [],
+      "owner": "xaver",
+      "pending_ownership_transfer": null,
+      "ownership_transfer_audit": [],
+      "ownership_transfer_cancellations": [],
+      "capabilities": [
+        {
+          "subject": {
+            "Principal": {
+              "Person": "xaver"
+            }
+          },
+          "scope": {
+            "Room": "f5a6416e-964c-41a6-9cba-e13f3729183f"
+          },
+          "effect": "Grant",
+          "verb": "Admin",
+          "id": "owner-110056715893866497",
+          "expiry": "Never",
+          "granted_by": null
+        }
+      ],
+      "default_apps": {
+        "policy": {},
+        "user_choices": {}
+      },
+      "tasks": [],
+      "effect_receipts": [],
+      "shared_surfaces": {}
+    },
+    {
+      "id": 110056715893866499,
+      "room": "cdd6b8ec-f83b-437b-9903-e356b271a474",
+      "name": "Untitled",
+      "strips": [
+        {
+          "id": 110056715893866500,
+          "name": "Main",
+          "window_groups": []
+        }
+      ],
+      "collaborators": [],
+      "owner": "xaver",
+      "pending_ownership_transfer": null,
+      "ownership_transfer_audit": [],
+      "ownership_transfer_cancellations": [],
+      "capabilities": [
+        {
+          "subject": {
+            "Principal": {
+              "Person": "xaver"
+            }
+          },
+          "scope": {
+            "Room": "cdd6b8ec-f83b-437b-9903-e356b271a474"
+          },
+          "effect": "Grant",
+          "verb": "Admin",
+          "id": "owner-110056715893866499",
+          "expiry": "Never",
+          "granted_by": null
+        }
+      ],
+      "default_apps": {
+        "policy": {},
+        "user_choices": {}
+      },
+      "tasks": [],
+      "effect_receipts": [],
+      "shared_surfaces": {}
+    }
+  ],
+  "active": 110056715893866497,
+  "active_strip": {
+    "110056715893866499": 110056715893866500,
+    "110056715893866497": 110056715893866498
+  },
+  "active_group": {},
+  "collaborators": [],
+  "room_authority": {},
+  "room_peer_names": {},
+  "room_peer_identities": {},
+  "room_share_floor": {},
+  "continuation_tabs": [],
+  "continuation_rooms": [],
+  "continuation_owned_tabs": {},
+  "continuation_closed_tabs": {},
+  "continuation_file_references": {},
+  "native_document_tabs": {}
+}

@@ -1,0 +1,31 @@
+   Compiling ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `ui` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 29.54s
+     Running unittests src/lib.rs (target/debug/deps/ui-c93bc6d5c202339c)
+
+running 2 tests
+
+thread 'widget::rich_text_line::tests::rich_marks_paint_each_glyph_once' (1840261) panicked at ui/src/widget/rich_text_line.rs:1021:9:
+assertion `left == right` failed
+  left: 4
+ right: 3
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test widget::rich_text_line::tests::rich_marks_paint_each_glyph_once ... FAILED
+
+thread 'widget::rich_text_line::tests::rich_marks_style_only_changes_refresh_authoritative_geometry' (1840262) panicked at ui/src/widget/rich_text_line.rs:1034:13:
+bold must change the authoritative advances
+test widget::rich_text_line::tests::rich_marks_style_only_changes_refresh_authoritative_geometry ... FAILED
+
+failures:
+
+failures:
+    widget::rich_text_line::tests::rich_marks_paint_each_glyph_once
+    widget::rich_text_line::tests::rich_marks_style_only_changes_refresh_authoritative_geometry
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 3167 filtered out; finished in 0.23s
+
+error: test failed, to rerun pass `-p ui --lib`

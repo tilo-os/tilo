@@ -88,6 +88,7 @@ pub(crate) fn widget_deadline(
 }
 
 #[derive(Default, Clone, Copy)]
+#[allow(clippy::struct_excessive_bools, reason = "independent concurrent wake sources may be active together; an exclusive enum would lose demand")]
 pub(crate) struct WakeDemand {
     pub model: bool,
     pub primary_startup: bool,

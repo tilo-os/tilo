@@ -1,0 +1,1341 @@
+    Checking runtime-portal v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/runtime/runtime-portal)
+   Compiling runtime-fs v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/runtime/runtime-fs)
+    Checking collab-types v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/collab/collab-types)
+   Compiling runtime-collab v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/runtime/runtime-collab)
+    Checking atomic-file v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/atomic-file)
+   Compiling ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
+    Checking qdoc v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/doc/qdoc)
+    Checking qos-actions v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/collab/actions)
+    Checking cli v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/runtime/cli)
+    Checking app-state v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/app-state)
+    Checking settings-store v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/settings-store)
+    Checking tts v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/tts)
+    Checking media v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/media)
+    Checking threshold-identity v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/collab/threshold-identity)
+    Checking runtime-identity v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/runtime/runtime-identity)
+    Checking channel-crypto v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/collab/channel-crypto)
+    Checking qos-ui-graph v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/dev/ui-graph)
+    Checking qos-headless-schema v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/dev/headless-schema)
+    Checking qos-startup-metrics v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/qos-startup-metrics)
+    Checking spellcheck v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/text/spellcheck)
+error: long literal lacking separators
+   --> ui/src/webview/chromium/mod.rs:614:69
+    |
+614 |                         .is_some_and(|v| v.is_finite() && v.abs() < 100000.0)
+    |                                                                     ^^^^^^^^ help: consider: `100_000.0`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unreadable_literal
+    = note: `-D clippy::unreadable-literal` implied by `-D clippy::pedantic`
+    = help: to override `-D clippy::pedantic` add `#[allow(clippy::unreadable_literal)]`
+
+error: `panic` should not be present in production code
+    --> ui/src/app.rs:6364:37
+     |
+6364 |             .unwrap_or_else(|error| panic!("invalid native performance scenario: {error}"));
+     |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#panic
+     = note: requested on the command line with `-D clippy::panic`
+
+warning: this `if` statement can be collapsed
+    --> ui/src/app.rs:9463:13
+     |
+9463 | /             if !surface.suspended && !surface.adopted {
+9464 | |                 if auxiliary_redraw_allowed(surface.render.as_ref()) {
+9465 | |                     surface.window.request_redraw();
+9466 | |                 }
+9467 | |             }
+     | |_____________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+     = note: `#[warn(clippy::collapsible_if)]` on by default
+help: collapse nested if block
+     |
+9463 ~             if !surface.suspended && !surface.adopted
+9464 ~                 && auxiliary_redraw_allowed(surface.render.as_ref()) {
+9465 |                     surface.window.request_redraw();
+9466 ~                 }
+     |
+
+warning: this `if` statement can be collapsed
+    --> ui/src/app.rs:9609:13
+     |
+9609 | /             if let Some(audience) = self.audience_presentation.as_ref() {
+9610 | |                 if auxiliary_redraw_allowed(audience.render.as_ref()) {
+9611 | |                     audience.window.request_redraw();
+9612 | |                 }
+9613 | |             }
+     | |_____________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+9609 ~             if let Some(audience) = self.audience_presentation.as_ref()
+9610 ~                 && auxiliary_redraw_allowed(audience.render.as_ref()) {
+9611 |                     audience.window.request_redraw();
+9612 ~                 }
+     |
+
+error: this function has too many lines (127/100)
+   --> ui/src/render_thread.rs:241:1
+    |
+241 | / pub fn spawn_render_thread(
+242 | |     render_cx: RenderContext,
+243 | |     mut surface: RenderSurface<'static>,
+244 | |     mut renderer: Renderer,
+245 | |     wake: Arc<dyn Fn() + Send + Sync>,
+246 | | ) -> Result<RenderThreadHandle, String> {
+    | |_______________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_lines
+    = note: `-D clippy::too-many-lines` implied by `-D clippy::pedantic`
+    = help: to override `-D clippy::pedantic` add `#[allow(clippy::too_many_lines)]`
+
+error: arithmetic operation that can potentially result in unexpected side-effects
+  --> ui/src/webview/chromium/protocol.rs:47:37
+   |
+47 |             let mut bytes = vec![0; (length - 1) as usize];
+   |                                     ^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#arithmetic_side_effects
+   = note: requested on the command line with `-D clippy::arithmetic-side-effects`
+
+error: arithmetic operation that can potentially result in unexpected side-effects
+  --> ui/src/webview/chromium/protocol.rs:78:33
+   |
+78 |                 || size != Some(length - header_size)
+   |                                 ^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#arithmetic_side_effects
+
+error: arithmetic operation that can potentially result in unexpected side-effects
+  --> ui/src/webview/chromium/protocol.rs:82:38
+   |
+82 |             let mut pixels = vec![0; (length - header_size) as usize];
+   |                                      ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#arithmetic_side_effects
+
+error: function call inside of `map_or`
+  --> ui/src/webview/chromium/protocol.rs:92:25
+   |
+92 |               Ok(Some(tab.map_or(Packet::Frame(frame.clone()), |id| {
+   |  _________________________^
+93 | |                 Packet::TabFrame(id, frame)
+94 | |             })))
+   | |______________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#or_fun_call
+   = note: requested on the command line with `-D clippy::or-fun-call`
+help: try
+   |
+92 ~             Ok(Some(tab.map_or_else(|| Packet::Frame(frame.clone()), |id| {
+93 +                 Packet::TabFrame(id, frame)
+94 ~             })))
+   |
+
+warning: this `if` statement can be collapsed
+  --> ui/src/webview/chromium/mod.rs:30:9
+   |
+30 | /         if let Some(waker) = waker {
+31 | |             if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| waker())).is_err() {
+32 | |                 tracing::error!("Chromium UI wake callback panicked");
+33 | |             }
+34 | |         }
+   | |_________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+help: collapse nested if block
+   |
+30 ~         if let Some(waker) = waker
+31 ~             && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| waker())).is_err() {
+32 |                 tracing::error!("Chromium UI wake callback panicked");
+33 ~             }
+   |
+
+warning: this `if` statement can be collapsed
+  --> ui/src/webview/chromium/mod.rs:38:9
+   |
+38 | /         if let WebViewEvent::UriChanged(uri) = &event {
+39 | |             if let Ok(mut current) = self.uri.lock() {
+40 | |                 current.clone_from(uri);
+41 | |             }
+42 | |         }
+   | |_________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+help: collapse nested if block
+   |
+38 ~         if let WebViewEvent::UriChanged(uri) = &event
+39 ~             && let Ok(mut current) = self.uri.lock() {
+40 |                 current.clone_from(uri);
+41 ~             }
+   |
+
+warning: this `if` statement can be collapsed
+  --> ui/src/webview/chromium/mod.rs:67:13
+   |
+67 | /             if events.len() >= 512 {
+68 | |                 if let Some(index) = events.iter().position(|old| {
+69 | |                     !matches!(
+70 | |                         old,
+...  |
+76 | |             }
+   | |_____________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+help: collapse nested if block
+   |
+67 ~             if events.len() >= 512
+68 ~                 && let Some(index) = events.iter().position(|old| {
+69 |                     !matches!(
+...
+74 |                     events.remove(index);
+75 ~                 }
+   |
+
+error: this argument is passed by value, but not consumed in the function body
+   --> ui/src/webview/chromium/mod.rs:132:42
+    |
+132 | fn fail_routes(routes: &Routes, message: String) {
+    |                                          ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_pass_by_value
+    = note: `-D clippy::needless-pass-by-value` implied by `-D clippy::pedantic`
+    = help: to override `-D clippy::pedantic` add `#[allow(clippy::needless_pass_by_value)]`
+help: consider changing the type to
+    |
+132 - fn fail_routes(routes: &Routes, message: String) {
+132 + fn fail_routes(routes: &Routes, message: &str) {
+    |
+help: change `message.clone()` to
+    |
+140 -         shared.fail(message.clone());
+140 +         shared.fail(message.to_string());
+    |
+
+error: used `unwrap()` on a `Result` value
+   --> ui/src/webview/chromium/mod.rs:133:29
+    |
+133 |       let endpoints: Vec<_> = routes
+    |  _____________________________^
+134 | |         .lock()
+135 | |         .unwrap()
+    | |_________________^
+    |
+    = note: if this value is an `Err`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+    = note: requested on the command line with `-D clippy::unwrap-used`
+
+error: docs for function returning `Result` missing `# Errors` section
+   --> ui/src/webview/chromium/mod.rs:223:5
+    |
+223 |     pub fn new() -> Result<Arc<Self>, String> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#missing_errors_doc
+    = note: `-D clippy::missing-errors-doc` implied by `-D clippy::pedantic`
+    = help: to override `-D clippy::pedantic` add `#[allow(clippy::missing_errors_doc)]`
+
+error: docs for function returning `Result` missing `# Errors` section
+   --> ui/src/webview/chromium/mod.rs:227:5
+    |
+227 |     pub fn new_with_extensions(extensions: &[PathBuf]) -> Result<Arc<Self>, String> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#missing_errors_doc
+
+error: docs for function returning `Result` missing `# Errors` section
+   --> ui/src/webview/chromium/mod.rs:236:5
+    |
+236 |     pub fn with_host(host: &Path, profile: &Path) -> Result<Arc<Self>, String> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#missing_errors_doc
+
+error: this function has too many lines (199/100)
+   --> ui/src/webview/chromium/mod.rs:240:5
+    |
+240 | /     fn with_host_extensions(
+241 | |         host: &Path,
+242 | |         profile: &Path,
+243 | |         extensions: &[PathBuf],
+244 | |     ) -> Result<Arc<Self>, String> {
+    | |__________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_lines
+
+error: redundant clone
+   --> ui/src/webview/chromium/mod.rs:325:35
+    |
+325 |         let reader_routes = routes.clone();
+    |                                   ^^^^^^^^ help: remove this
+    |
+note: this value is dropped without further use
+   --> ui/src/webview/chromium/mod.rs:325:29
+    |
+325 |         let reader_routes = routes.clone();
+    |                             ^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#redundant_clone
+    = note: requested on the command line with `-D clippy::redundant-clone`
+
+error: indexing may panic
+   --> ui/src/webview/chromium/mod.rs:347:28
+    |
+347 |                         if value["event"] == "ready" {
+    |                            ^^^^^^^^^^^^^^
+    |
+    = help: consider using `.get(n)` or `.get_mut(n)` instead
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#indexing_slicing
+    = note: requested on the command line with `-D clippy::indexing-slicing`
+
+error: indexing may panic
+   --> ui/src/webview/chromium/mod.rs:348:51
+    |
+348 | ...   tracing::info!(cef = ?value["cef_version"], chromium = ?value["chromium_version"], "Chromium engine ready (CPU frame transpor...
+    |                             ^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: consider using `.get(n)` or `.get_mut(n)` instead
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#indexing_slicing
+
+error: indexing may panic
+   --> ui/src/webview/chromium/mod.rs:348:85
+    |
+348 | ...   tracing::info!(cef = ?value["cef_version"], chromium = ?value["chromium_version"], "Chromium engine ready (CPU frame transpor...
+    |                                                               ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: consider using `.get(n)` or `.get_mut(n)` instead
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#indexing_slicing
+
+error: indexing may panic
+   --> ui/src/webview/chromium/mod.rs:351:37
+    |
+351 |                         if matches!(value["event"].as_str(), Some("download_prompt" | "download")) {
+    |                                     ^^^^^^^^^^^^^^
+    |
+    = help: consider using `.get(n)` or `.get_mut(n)` instead
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#indexing_slicing
+
+error: used `unwrap()` on a `Result` value
+   --> ui/src/webview/chromium/mod.rs:354:57
+    |
+354 | ...                   let endpoints: Vec<_> = reader_routes.lock().unwrap().values().filter_map(Weak::upgrade).collect();
+    |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is an `Err`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+
+error: casting `u64` to `u32` may truncate the value
+   --> ui/src/webview/chromium/mod.rs:359:35
+    |
+359 |                         let tab = value["tab"].as_u64().unwrap_or(1) as u32;
+    |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+    = note: `-D clippy::cast-possible-truncation` implied by `-D clippy::pedantic`
+    = help: to override `-D clippy::pedantic` add `#[allow(clippy::cast_possible_truncation)]`
+help: ... or use `try_from` and handle the error accordingly
+    |
+359 -                         let tab = value["tab"].as_u64().unwrap_or(1) as u32;
+359 +                         let tab = u32::try_from(value["tab"].as_u64().unwrap_or(1));
+    |
+
+error: indexing may panic
+   --> ui/src/webview/chromium/mod.rs:359:35
+    |
+359 |                         let tab = value["tab"].as_u64().unwrap_or(1) as u32;
+    |                                   ^^^^^^^^^^^^
+    |
+    = help: consider using `.get(n)` or `.get_mut(n)` instead
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#indexing_slicing
+
+warning: this `if` statement can be collapsed
+   --> ui/src/webview/chromium/mod.rs:361:29
+    |
+361 | / ...   if value["event"] == "open_tab" {
+362 | | ...       if let Some(url) = value["url"].as_str() {
+363 | | ...           let mut requests = shared.open_tabs.lock().unwrap();
+364 | | ...           if requests.len() < 32 { requests.push_back((url.into(), value["background"].as_bool().unwrap_or(false))); }
+...   |
+367 | | ...   }
+    | |_______^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+361 ~                             if value["event"] == "open_tab"
+362 ~                                 && let Some(url) = value["url"].as_str() {
+363 |                                     let mut requests = shared.open_tabs.lock().unwrap();
+364 |                                     if requests.len() < 32 { requests.push_back((url.into(), value["background"].as_bool().unwrap_or(false))); }
+365 |                                     drop(requests); shared.wake();
+366 ~                                 }
+    |
+
+error: indexing may panic
+   --> ui/src/webview/chromium/mod.rs:361:32
+    |
+361 | ...                   if value["event"] == "open_tab" {
+    |                          ^^^^^^^^^^^^^^
+    |
+    = help: consider using `.get(n)` or `.get_mut(n)` instead
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#indexing_slicing
+
+error: indexing may panic
+   --> ui/src/webview/chromium/mod.rs:362:52
+    |
+362 | ...                   if let Some(url) = value["url"].as_str() {
+    |                                          ^^^^^^^^^^^^
+    |
+    = help: consider using `.get(n)` or `.get_mut(n)` instead
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#indexing_slicing
+
+error: used `unwrap()` on a `Result` value
+   --> ui/src/webview/chromium/mod.rs:363:56
+    |
+363 | ...                   let mut requests = shared.open_tabs.lock().unwrap();
+    |                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is an `Err`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+
+error: indexing may panic
+   --> ui/src/webview/chromium/mod.rs:364:94
+    |
+364 | ...                   if requests.len() < 32 { requests.push_back((url.into(), value["background"].as_bool().unwrap_or(false))); }
+    |                                                                                ^^^^^^^^^^^^^^^^^^^
+    |
+    = help: consider using `.get(n)` or `.get_mut(n)` instead
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#indexing_slicing
+
+error: indexing may panic
+   --> ui/src/webview/chromium/mod.rs:370:28
+    |
+370 |                         if value["event"] == "closed" { reader_routes.lock().unwrap().remove(&tab); }
+    |                            ^^^^^^^^^^^^^^
+    |
+    = help: consider using `.get(n)` or `.get_mut(n)` instead
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#indexing_slicing
+
+error: used `unwrap()` on a `Result` value
+   --> ui/src/webview/chromium/mod.rs:370:57
+    |
+370 |                         if value["event"] == "closed" { reader_routes.lock().unwrap().remove(&tab); }
+    |                                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is an `Err`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+
+error: used `unwrap()` on an `Option` value
+   --> ui/src/webview/chromium/mod.rs:396:33
+    |
+396 |                 let mut child = supervisor_child.lock().unwrap().take().unwrap();
+    |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is `None`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+
+error: used `unwrap()` on a `Result` value
+   --> ui/src/webview/chromium/mod.rs:396:33
+    |
+396 |                 let mut child = supervisor_child.lock().unwrap().take().unwrap();
+    |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is an `Err`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+
+error: temporary with significant `Drop` in `if let` scrutinee will live until the end of the `if let` expression
+   --> ui/src/webview/chromium/mod.rs:431:38
+    |
+431 |             if let Some(mut child) = child.lock().unwrap().take() {
+    |                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+434 |             }
+    |              - temporary lives until here
+    |
+    = note: this might lead to deadlocks or other unexpected behavior
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#significant_drop_in_scrutinee
+    = note: requested on the command line with `-D clippy::significant-drop-in-scrutinee`
+help: try moving the temporary above the match
+    |
+431 ~             let value = child.lock().unwrap().take();
+432 ~             if let Some(mut child) = value {
+    |
+
+error: used `unwrap()` on a `Result` value
+   --> ui/src/webview/chromium/mod.rs:431:38
+    |
+431 |             if let Some(mut child) = child.lock().unwrap().take() {
+    |                                      ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is an `Err`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+
+error: temporary with significant `Drop` can be early dropped
+   --> ui/src/webview/chromium/mod.rs:449:17
+    |
+448 |       fn create_tab(&self) -> Result<super::SharedEngine, String> {
+    |  _________________________________________________________________-
+449 | |         let mut routes = self
+    | |                 ^^^^^^
+450 | |             .runtime
+451 | |             .routes
+...   |
+473 | |         }))
+474 | |     }
+    | |_____- temporary `routes` is currently being dropped at the end of its contained scope
+    |
+    = note: this might lead to unnecessary resource contention
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#significant_drop_tightening
+    = note: requested on the command line with `-D clippy::significant-drop-tightening`
+help: drop the temporary after the end of its last usage
+    |
+465 ~             routes.remove(&tab);
+466 +             drop(routes);
+    |
+
+error: assigning the result of `Clone::clone()` may be inefficient
+   --> ui/src/webview/chromium/mod.rs:462:9
+    |
+462 |         *shared.waker.lock().unwrap() = self.shared.waker.lock().unwrap().clone();
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: use `clone_from()`: `(*shared.waker.lock().unwrap()).clone_from(&self.shared.waker.lock().unwrap())`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#assigning_clones
+    = note: `-D clippy::assigning-clones` implied by `-D clippy::pedantic`
+    = help: to override `-D clippy::pedantic` add `#[allow(clippy::assigning_clones)]`
+
+error: used `unwrap()` on a `Result` value
+   --> ui/src/webview/chromium/mod.rs:462:41
+    |
+462 |         *shared.waker.lock().unwrap() = self.shared.waker.lock().unwrap().clone();
+    |                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is an `Err`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+
+error: used `unwrap()` on a `Result` value
+   --> ui/src/webview/chromium/mod.rs:462:10
+    |
+462 |         *shared.waker.lock().unwrap() = self.shared.waker.lock().unwrap().clone();
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is an `Err`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+
+error: used `unwrap()` on a `Result` value
+   --> ui/src/webview/chromium/mod.rs:487:9
+    |
+487 |         self.shared.open_tabs.lock().unwrap().drain(..).collect()
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is an `Err`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+
+error: indexing may panic
+   --> ui/src/webview/chromium/mod.rs:517:13
+    |
+517 |             command["tab"] = json!(self.tab);
+    |             ^^^^^^^^^^^^^^
+    |
+    = help: consider using `.get(n)` or `.get_mut(n)` instead
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#indexing_slicing
+
+warning: this `if` statement can be collapsed
+   --> ui/src/webview/chromium/mod.rs:529:20
+    |
+529 |               } else if let Some(uri) = navigation {
+    |  ____________________^
+530 | |                 if let Ok(mut current) = self.shared.uri.lock() {
+531 | |                     *current = uri;
+532 | |                 }
+533 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+529 ~             } else if let Some(uri) = navigation
+530 ~                 && let Ok(mut current) = self.shared.uri.lock() {
+531 |                     *current = uri;
+532 ~                 }
+    |
+
+error: used `unwrap()` on a `Result` value
+   --> ui/src/webview/chromium/mod.rs:580:26
+    |
+580 |         let mut routes = self.runtime.routes.lock().unwrap();
+    |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is an `Err`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+
+error: checked cast can be simplified
+   --> ui/src/webview/chromium/mod.rs:591:37
+    |
+591 |         .is_some_and(|id| id > 0 && id <= i32::MAX as u64)
+    |                                     ^^^^^^^^^^^^^^^^^^^^^ help: try: `i32::try_from(id).is_ok()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#checked_conversions
+    = note: `-D clippy::checked-conversions` implied by `-D clippy::pedantic`
+    = help: to override `-D clippy::pedantic` add `#[allow(clippy::checked_conversions)]`
+
+error: checked cast can be simplified
+   --> ui/src/webview/chromium/mod.rs:597:41
+    |
+597 |             .is_some_and(|id| id > 0 && id <= i32::MAX as u64)
+    |                                         ^^^^^^^^^^^^^^^^^^^^^ help: try: `i32::try_from(id).is_ok()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#checked_conversions
+
+error: these match arms have identical bodies
+   --> ui/src/webview/chromium/mod.rs:607:9
+    |
+607 |         "context_closed" => valid_id(value),
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+637 |         "permission_closed" => valid_id(value),
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is unintentional make the arms return different values
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#match_same_arms
+    = note: `-D clippy::match-same-arms` implied by `-D clippy::pedantic`
+    = help: to override `-D clippy::pedantic` add `#[allow(clippy::match_same_arms)]`
+help: otherwise merge the patterns into a single arm
+    |
+607 ~         "context_menu" => {
+608 |             valid_id(value)
+...
+635 |         "permission_prompt" => valid_id(value) && text("origin") && text("permissions"),
+636 ~         "context_closed" | "permission_closed" => valid_id(value),
+    |
+
+error: casts from `i32` to `i64` can be expressed infallibly using `From`
+   --> ui/src/webview/chromium/mod.rs:629:48
+    |
+629 |                         .is_some_and(|n| (-1..=i32::MAX as i64).contains(&n))
+    |                                                ^^^^^^^^^^^^^^^
+    |
+    = help: an `as` cast can become silently lossy if the types change in the future
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_lossless
+    = note: `-D clippy::cast-lossless` implied by `-D clippy::pedantic`
+    = help: to override `-D clippy::pedantic` add `#[allow(clippy::cast_lossless)]`
+help: use `i64::from` instead
+    |
+629 -                         .is_some_and(|n| (-1..=i32::MAX as i64).contains(&n))
+629 +                         .is_some_and(|n| (-1..=i64::from(i32::MAX)).contains(&n))
+    |
+
+error: checked cast can be simplified
+   --> ui/src/webview/chromium/mod.rs:669:45
+    |
+669 |                 .is_some_and(|id| id > 0 && id <= i32::MAX as u64)
+    |                                             ^^^^^^^^^^^^^^^^^^^^^ help: try: `i32::try_from(id).is_ok()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#checked_conversions
+
+error: checked cast can be simplified
+   --> ui/src/webview/chromium/mod.rs:694:24
+    |
+694 |             *id > 0 && *id <= i32::MAX as u32 && *command <= i32::MAX as u32
+    |                        ^^^^^^^^^^^^^^^^^^^^^^ help: try: `i32::try_from(*id).is_ok()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#checked_conversions
+
+error: checked cast can be simplified
+   --> ui/src/webview/chromium/mod.rs:694:50
+    |
+694 |             *id > 0 && *id <= i32::MAX as u32 && *command <= i32::MAX as u32
+    |                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `i32::try_from(*command).is_ok()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#checked_conversions
+
+error: checked cast can be simplified
+   --> ui/src/webview/chromium/mod.rs:697:24
+    |
+697 |             *id > 0 && *id <= i32::MAX as u32 && text.len() <= 4096
+    |                        ^^^^^^^^^^^^^^^^^^^^^^ help: try: `i32::try_from(*id).is_ok()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#checked_conversions
+
+error: checked cast can be simplified
+   --> ui/src/webview/chromium/mod.rs:701:32
+    |
+701 |             *request_id > 0 && *request_id <= i32::MAX as u32
+    |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `i32::try_from(*request_id).is_ok()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#checked_conversions
+
+error: checked cast can be simplified
+   --> ui/src/webview/chromium/mod.rs:704:32
+    |
+704 |             *request_id > 0 && *request_id <= i32::MAX as u32 && *id > 0 && *id <= i32::MAX as u32
+    |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `i32::try_from(*request_id).is_ok()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#checked_conversions
+
+error: checked cast can be simplified
+   --> ui/src/webview/chromium/mod.rs:704:77
+    |
+704 |             *request_id > 0 && *request_id <= i32::MAX as u32 && *id > 0 && *id <= i32::MAX as u32
+    |                                                                             ^^^^^^^^^^^^^^^^^^^^^^ help: try: `i32::try_from(*id).is_ok()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#checked_conversions
+
+error: checked cast can be simplified
+   --> ui/src/webview/chromium/mod.rs:709:63
+    |
+709 |         | WebViewCommand::CancelDownload { id } => *id > 0 && *id <= i32::MAX as u32,
+    |                                                               ^^^^^^^^^^^^^^^^^^^^^^ help: try: `i32::try_from(*id).is_ok()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#checked_conversions
+
+warning: very complex type used. Consider factoring parts into `type` definitions
+   --> ui/src/webview/chromium/mod.rs:729:12
+    |
+729 |     state: Mutex<(VecDeque<(Value, usize)>, usize, bool)>,
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#type_complexity
+    = note: `#[warn(clippy::type_complexity)]` on by default
+
+error: temporary with significant `Drop` can be early dropped
+   --> ui/src/webview/chromium/mod.rs:750:17
+    |
+733 |       fn push(&self, value: Value) -> Result<(), &'static str> {
+    |  ______________________________________________________________-
+734 | |         // Count encoded bytes without allocating a second command buffer.
+735 | |         struct Counter(usize);
+736 | |         impl std::io::Write for Counter {
+...   |
+750 | |         let mut state = self.state.lock().unwrap();
+    | |                 ^^^^^
+...   |
+784 | |         Ok(())
+785 | |     }
+    | |_____- temporary `state` is currently being dropped at the end of its contained scope
+    |
+    = note: this might lead to unnecessary resource contention
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#significant_drop_tightening
+help: drop the temporary after the end of its last usage
+    |
+782 ~         state.0.push_back((value, count.0));
+783 +         drop(state);
+    |
+
+error: arithmetic operation that can potentially result in unexpected side-effects
+   --> ui/src/webview/chromium/mod.rs:738:17
+    |
+738 |                 self.0 += data.len();
+    |                 ^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#arithmetic_side_effects
+
+error: used `unwrap()` on a `Result` value
+   --> ui/src/webview/chromium/mod.rs:750:25
+    |
+750 |         let mut state = self.state.lock().unwrap();
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is an `Err`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+
+error: indexing may panic
+   --> ui/src/webview/chromium/mod.rs:754:18
+    |
+754 |         let op = value["op"].as_str().unwrap_or("");
+    |                  ^^^^^^^^^^^
+    |
+    = help: consider using `.get(n)` or `.get_mut(n)` instead
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#indexing_slicing
+
+warning: this `if` statement can be collapsed
+   --> ui/src/webview/chromium/mod.rs:757:9
+    |
+757 | /         if matches!(op, "mouse_move" | "resize" | "focus") {
+758 | |             if state
+759 | |                 .0
+760 | |                 .back()
+...   |
+766 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+757 ~         if matches!(op, "mouse_move" | "resize" | "focus")
+758 ~             && state
+759 |                 .0
+...
+764 |                 state.1 -= bytes;
+765 ~             }
+    |
+
+error: indexing may panic
+   --> ui/src/webview/chromium/mod.rs:761:77
+    |
+761 |                 .is_some_and(|(last, _)| last["op"] == op && last["tab"] == value["tab"])
+    |                                                                             ^^^^^^^^^^^^
+    |
+    = help: consider using `.get(n)` or `.get_mut(n)` instead
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#indexing_slicing
+
+error: used `unwrap()` on an `Option` value
+   --> ui/src/webview/chromium/mod.rs:763:34
+    |
+763 |                 let (_, bytes) = state.0.pop_back().unwrap();
+    |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is `None`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+
+error: arithmetic operation that can potentially result in unexpected side-effects
+   --> ui/src/webview/chromium/mod.rs:764:17
+    |
+764 |                 state.1 -= bytes;
+    |                 ^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#arithmetic_side_effects
+
+error: arithmetic operation that can potentially result in unexpected side-effects
+   --> ui/src/webview/chromium/mod.rs:781:9
+    |
+781 |         state.1 += count.0;
+    |         ^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#arithmetic_side_effects
+
+error: used `unwrap()` on a `Result` value
+   --> ui/src/webview/chromium/mod.rs:787:25
+    |
+787 |         let mut state = self.state.lock().unwrap();
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is an `Err`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+
+error: arithmetic operation that can potentially result in unexpected side-effects
+   --> ui/src/webview/chromium/mod.rs:790:17
+    |
+790 |                 state.1 -= bytes;
+    |                 ^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#arithmetic_side_effects
+
+error: used `unwrap()` on a `Result` value
+   --> ui/src/webview/chromium/mod.rs:796:21
+    |
+796 |             state = self.ready.wait(state).unwrap();
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is an `Err`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+
+error: used `unwrap()` on a `Result` value
+   --> ui/src/webview/chromium/mod.rs:800:9
+    |
+800 |         self.state.lock().unwrap().2 = true;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is an `Err`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+
+error: casting `u64` to `u32` may truncate the value
+   --> ui/src/webview/chromium/mod.rs:810:17
+    |
+810 |             id: value["id"].as_u64()? as u32,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+810 -             id: value["id"].as_u64()? as u32,
+810 +             id: u32::try_from(value["id"].as_u64()?),
+    |
+
+error: casting `u64` to `u32` may truncate the value
+   --> ui/src/webview/chromium/mod.rs:813:17
+    |
+813 |             id: value["id"].as_u64()? as u32,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+813 -             id: value["id"].as_u64()? as u32,
+813 +             id: u32::try_from(value["id"].as_u64()?),
+    |
+
+error: casting `u64` to `u32` may truncate the value
+   --> ui/src/webview/chromium/mod.rs:820:35
+    |
+820 |                 .map(|item| Some((item["id"].as_u64()? as u32, item["label"].as_str()?.into())))
+    |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+820 -                 .map(|item| Some((item["id"].as_u64()? as u32, item["label"].as_str()?.into())))
+820 +                 .map(|item| Some((u32::try_from(item["id"].as_u64()?), item["label"].as_str()?.into())))
+    |
+
+error: casting `u64` to `u32` may truncate the value
+   --> ui/src/webview/chromium/mod.rs:824:17
+    |
+824 |             id: value["id"].as_u64()? as u32,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+824 -             id: value["id"].as_u64()? as u32,
+824 +             id: u32::try_from(value["id"].as_u64()?),
+    |
+
+error: casting `i64` to `i32` may truncate the value
+   --> ui/src/webview/chromium/mod.rs:825:20
+    |
+825 |             count: value["count"].as_i64()? as i32,
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+825 -             count: value["count"].as_i64()? as i32,
+825 +             count: i32::try_from(value["count"].as_i64()?),
+    |
+
+error: casting `i64` to `i32` may truncate the value
+   --> ui/src/webview/chromium/mod.rs:826:21
+    |
+826 |             active: value["active"].as_i64()? as i32,
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+826 -             active: value["active"].as_i64()? as i32,
+826 +             active: i32::try_from(value["active"].as_i64()?),
+    |
+
+error: casting `u64` to `u32` may truncate the value
+   --> ui/src/webview/chromium/mod.rs:834:17
+    |
+834 |             id: value["id"].as_u64()? as u32,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+834 -             id: value["id"].as_u64()? as u32,
+834 +             id: u32::try_from(value["id"].as_u64()?),
+    |
+
+error: casting `u64` to `u32` may truncate the value
+   --> ui/src/webview/chromium/mod.rs:839:17
+    |
+839 |             id: value["id"].as_u64()? as u32,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+839 -             id: value["id"].as_u64()? as u32,
+839 +             id: u32::try_from(value["id"].as_u64()?),
+    |
+
+error: casting `u64` to `u32` may truncate the value
+   --> ui/src/webview/chromium/mod.rs:842:17
+    |
+842 |             id: value["id"].as_u64()? as u32,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+842 -             id: value["id"].as_u64()? as u32,
+842 +             id: u32::try_from(value["id"].as_u64()?),
+    |
+
+error: casting `u64` to `u32` may truncate the value
+   --> ui/src/webview/chromium/mod.rs:847:17
+    |
+847 |             id: value["id"].as_u64()? as u32,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+847 -             id: value["id"].as_u64()? as u32,
+847 +             id: u32::try_from(value["id"].as_u64()?),
+    |
+
+error: casting `f64` to `u64` may truncate the value
+   --> ui/src/webview/chromium/mod.rs:851:23
+    |
+851 |             received: value["received"].as_f64()? as u64,
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+
+error: casting `f64` to `u64` may lose the sign of the value
+   --> ui/src/webview/chromium/mod.rs:851:23
+    |
+851 |             received: value["received"].as_f64()? as u64,
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_sign_loss
+    = note: `-D clippy::cast-sign-loss` implied by `-D clippy::pedantic`
+    = help: to override `-D clippy::pedantic` add `#[allow(clippy::cast_sign_loss)]`
+
+error: casting `f64` to `u64` may truncate the value
+   --> ui/src/webview/chromium/mod.rs:852:20
+    |
+852 |             total: value["total"].as_f64()? as u64,
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+
+error: casting `f64` to `u64` may lose the sign of the value
+   --> ui/src/webview/chromium/mod.rs:852:20
+    |
+852 |             total: value["total"].as_f64()? as u64,
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_sign_loss
+
+error: casting `u64` to `u32` may truncate the value
+   --> ui/src/webview/chromium/mod.rs:856:25
+    |
+856 |             request_id: value["request_id"].as_u64()? as u32,
+    |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+856 -             request_id: value["request_id"].as_u64()? as u32,
+856 +             request_id: u32::try_from(value["request_id"].as_u64()?),
+    |
+
+error: casting `u64` to `u32` may truncate the value
+   --> ui/src/webview/chromium/mod.rs:863:29
+    |
+863 |                         id: entry["id"].as_u64()? as u32,
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+help: ... or use `try_from` and handle the error accordingly
+    |
+863 -                         id: entry["id"].as_u64()? as u32,
+863 +                         id: u32::try_from(entry["id"].as_u64()?),
+    |
+
+error: this function has too many lines (128/100)
+   --> ui/src/webview/test_engine.rs:144:5
+    |
+144 |     fn send(&self, cmd: WebViewCommand) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_lines
+
+error: arithmetic operation that can potentially result in unexpected side-effects
+   --> ui/src/webview/test_engine.rs:164:26
+    |
+164 |                         ((inner.index + 1)..inner.history.len()).take(12).collect()
+    |                          ^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#arithmetic_side_effects
+
+error: docs for function returning `Result` missing `# Errors` section
+   --> ui/src/webview/mod.rs:355:5
+    |
+355 |     fn create_tab(&self) -> Result<SharedEngine, String> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#missing_errors_doc
+
+error: item in documentation is missing backticks
+   --> ui/src/webview/mod.rs:367:62
+    |
+367 |     /// Whether this backend accepts source rules instead of WebKit JSON.
+    |                                                              ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+    = note: `-D clippy::doc-markdown` implied by `-D clippy::pedantic`
+    = help: to override `-D clippy::pedantic` add `#[allow(clippy::doc_markdown)]`
+help: try
+    |
+367 -     /// Whether this backend accepts source rules instead of WebKit JSON.
+367 +     /// Whether this backend accepts source rules instead of `WebKit` JSON.
+    |
+
+error: item in documentation is missing backticks
+   --> ui/src/webview/mod.rs:381:42
+    |
+381 |     /// completes asynchronously through TabClosed or TabCloseBlocked.
+    |                                          ^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+help: try
+    |
+381 -     /// completes asynchronously through TabClosed or TabCloseBlocked.
+381 +     /// completes asynchronously through `TabClosed` or TabCloseBlocked.
+    |
+
+error: item in documentation is missing backticks
+   --> ui/src/webview/mod.rs:381:55
+    |
+381 |     /// completes asynchronously through TabClosed or TabCloseBlocked.
+    |                                                       ^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+help: try
+    |
+381 -     /// completes asynchronously through TabClosed or TabCloseBlocked.
+381 +     /// completes asynchronously through TabClosed or `TabCloseBlocked`.
+    |
+
+warning: this expression creates a reference which is immediately dereferenced by the compiler
+    --> ui/src/widget/text_input.rs:1728:17
+     |
+1728 |                 &style,
+     |                 ^^^^^^ help: change this to: `style`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_borrow
+     = note: `#[warn(clippy::needless_borrow)]` on by default
+
+error: casting `f64` to `f32` may truncate the value
+    --> ui/src/widget/text_input.rs:3755:35
+     |
+3755 |             let available_width = (f64::from(width) - self.ml_left() - ML_PAD_X).max(1.0) as f32;
+     |                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+
+error: function call inside of `map_or`
+    --> ui/src/widget/text_input.rs:3779:18
+     |
+3779 |                   .map_or(f64::from(style.line_height_px()), |layout| {
+     |  __________________^
+3780 | |                     f64::from(layout.height())
+3781 | |                 })
+     | |__________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#or_fun_call
+help: try
+     |
+3779 ~                 .map_or_else(|| f64::from(style.line_height_px()), |layout| {
+3780 +                     f64::from(layout.height())
+3781 +                 })
+     |
+
+error: unnecessary boolean `not` operation
+    --> ui/src/widget/tabs.rs:2267:28
+     |
+2267 |                   let node = if !self.pinned_ids.contains(&t.id) {
+     |  ____________________________^
+2268 | |                     node.with_children(vec![
+2269 | |                         AccessNode::new(Role::Button)
+2270 | |                             .with_name(format!("Close {}", t.title))
+...    |
+2278 | |                     node
+2279 | |                 };
+     | |_________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#if_not_else
+     = note: `-D clippy::if-not-else` implied by `-D clippy::pedantic`
+     = help: to override `-D clippy::pedantic` add `#[allow(clippy::if_not_else)]`
+help: try
+     |
+2267 ~                 let node = if self.pinned_ids.contains(&t.id) {
+2268 +                     node
+2269 +                 } else {
+2270 +                     node.with_children(vec![
+2271 +                         AccessNode::new(Role::Button)
+2272 +                             .with_name(format!("Close {}", t.title))
+2273 +                             .with_action_target(format!("tab-close:{}", t.id))
+2274 +                             .with_state(AccessState {
+2275 +                                 focusable: true,
+2276 +                                 ..Default::default()
+2277 +                             }),
+2278 +                     ])
+2279 ~                 };
+     |
+
+error: returning a `str` unnecessarily tied to the lifetime of arguments
+    --> ui/src/widget/scrollable.rs:1085:23
+     |
+1085 |     fn name(&self) -> &str {
+     |                       ^^^^ help: try: `&'static str`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unnecessary_literal_bound
+     = note: `-D clippy::unnecessary-literal-bound` implied by `-D clippy::pedantic`
+     = help: to override `-D clippy::pedantic` add `#[allow(clippy::unnecessary_literal_bound)]`
+
+warning: manual implementation of `Iterator::find`
+   --> ui/src/widget/context_menu.rs:317:9
+    |
+317 | /         for idx in 0..self.items.len() {
+318 | |             if self.item_rect(idx).is_some_and(|rect| rect.contains(point)) {
+319 | |                 return Some(idx);
+...   |
+322 | |         None
+    | |____________^ help: replace with an iterator: `(0..self.items.len()).find(|&idx| self.item_rect(idx).is_some_and(|rect| rect.contains(point)))`
+    |
+    = note: you may need to dereference some variables
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#manual_find
+    = note: `#[warn(clippy::manual_find)]` on by default
+
+error: item in documentation is missing backticks
+ --> ui/src/widget/toolbar.rs:1:44
+  |
+1 | //! A measured command strip with a shared ContextMenu for overflow.
+  |                                            ^^^^^^^^^^^
+  |
+  = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+help: try
+  |
+1 - //! A measured command strip with a shared ContextMenu for overflow.
+1 + //! A measured command strip with a shared `ContextMenu` for overflow.
+  |
+
+error: arithmetic operation that can potentially result in unexpected side-effects
+   --> ui/src/widget/toolbar.rs:452:39
+    |
+452 |             Some(index) if forward => index.saturating_add(1) % targets.len(),
+    |                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#arithmetic_side_effects
+
+error: this function has too many lines (103/100)
+   --> ui/src/widget/toolbar.rs:687:5
+    |
+687 | /     fn handle_event(
+688 | |         &mut self,
+689 | |         event: &WindowEvent,
+690 | |         scale: f64,
+...   |
+697 | |         tree: &TaffyTree<()>,
+698 | |     ) {
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_lines
+
+error: casting `f64` to `f32` may truncate the value
+   --> ui/src/widget/webview.rs:230:28
+    |
+230 |         let device_scale = coefficients[0].hypot(coefficients[1]) as f32;
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+
+error: strict comparison of `f32` or `f64`
+   --> ui/src/widget/webview.rs:231:62
+    |
+231 |         if device_scale.is_finite() && device_scale > 0.0 && device_scale != self.scale_factor {
+    |                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider comparing them within some margin of error: `(device_scale - self.scale_factor).abs() > error_margin`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#float_cmp
+    = note: `-D clippy::float-cmp` implied by `-D clippy::pedantic`
+    = help: to override `-D clippy::pedantic` add `#[allow(clippy::float_cmp)]`
+
+warning: unnecessary closure used to substitute value for `Option::None`
+   --> ui/src/widget/empty_state.rs:592:21
+    |
+592 |           let width = known.width.or_else(|| match available.width {
+    |  _____________________^
+593 | |             taffy::AvailableSpace::Definite(width) => Some(width),
+594 | |             taffy::AvailableSpace::MinContent | taffy::AvailableSpace::MaxContent => None,
+595 | |         });
+    | |__________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unnecessary_lazy_evaluations
+    = note: `#[warn(clippy::unnecessary_lazy_evaluations)]` on by default
+help: use `or` instead
+    |
+592 ~         let width = known.width.or(match available.width {
+593 +             taffy::AvailableSpace::Definite(width) => Some(width),
+594 +             taffy::AvailableSpace::MinContent | taffy::AvailableSpace::MaxContent => None,
+595 ~         });
+    |
+
+error: casting `f64` to `f32` may truncate the value
+   --> ui/src/widget/empty_state.rs:634:21
+    |
+634 |             height: intrinsic_height as f32,
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_truncation
+
+error: docs for function returning `Result` missing `# Errors` section
+  --> ui/src/native_scenario.rs:44:5
+   |
+44 |     pub fn validate(&self) -> Result<(), String> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#missing_errors_doc
+
+error: arithmetic operation that can potentially result in unexpected side-effects
+  --> ui/src/native_scenario.rs:69:52
+   |
+69 |         deadline(Instant::now(), self.interval_us, self.steps.len() - 1)?;
+   |                                                    ^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#arithmetic_side_effects
+
+error: docs for function returning `Result` missing `# Errors` section
+  --> ui/src/native_scenario.rs:81:1
+   |
+81 | pub fn load_from_env() -> Result<Option<Scenario>, String> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#missing_errors_doc
+
+error: docs for function returning `Result` missing `# Errors` section
+  --> ui/src/native_scenario.rs:92:1
+   |
+92 | pub fn deadline(origin: Instant, interval_us: u64, index: usize) -> Result<Instant, String> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#missing_errors_doc
+
+error: docs for function returning `Result` missing `# Errors` section
+   --> ui/src/native_scenario.rs:109:1
+    |
+109 | / pub fn spawn(
+110 | |     scenario: Scenario,
+111 | |     mut deliver: impl FnMut(Packet) -> bool + Send + 'static,
+112 | | ) -> Result<std::thread::JoinHandle<()>, String> {
+    | |________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#missing_errors_doc
+
+error: unused `self` argument
+  --> ui/src/presentation_feedback.rs:56:23
+   |
+56 |     pub(crate) fn arm(&self, surface: &vello::wgpu::Surface<'_>, worker_frame_ix: u64, cpu_frame_id: Option<u64>) {
+   |                       ^^^^^
+   |
+   = help: consider refactoring to an associated function
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unused_self
+   = note: `-D clippy::unused-self` implied by `-D clippy::pedantic`
+   = help: to override `-D clippy::pedantic` add `#[allow(clippy::unused_self)]`
+
+warning: `ui` (lib) generated 12 warnings
+error: could not compile `ui` (lib) due to 100 previous errors; 12 warnings emitted

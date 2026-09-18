@@ -137,11 +137,13 @@ mod tests {
                 &session,
             )
             .unwrap();
+        let cancel = AtomicBool::new(false);
+        store.reserve_native_reads(&mut live, &session, 16 * 1024 * 1024,
+            Instant::now() + std::time::Duration::from_secs(30), &cancel).unwrap();
         let reservation = store
             .reserve_native_namespace(&mut live, ModelSide::Destination)
             .unwrap();
         let private_name = reservation.name();
-        let cancel = AtomicBool::new(false);
         let mut epoch =
             NativeEpoch::begin_connected(&live, &source_endpoint, &target_endpoint).unwrap();
         let source = epoch.pin_parent(Side::Source, &live.intent().path).unwrap();
@@ -421,7 +423,7 @@ mod tests {
         std::fs::write(tree.path().join("source"), b"proposal").unwrap();
         std::fs::create_dir(tree.path().join("destination-parent")).unwrap();
         let endpoint = endpoint(tree.path());
-        let mut epoch = NativeEpoch::begin(&endpoint, &endpoint, binding()).unwrap();
+        let mut epoch = NativeEpoch::begin(&endpoint, &endpoint, binding(), super::super::OperationReads::funded_for_test()).unwrap();
         let source = epoch
             .pin_parent(Side::Source, &RelativePath::unix(b"source").unwrap())
             .unwrap();
@@ -487,7 +489,7 @@ mod tests {
             let tree = fixture();
             std::fs::write(tree.path().join("source"), b"proposal").unwrap();
             let endpoint = endpoint(tree.path());
-            let mut epoch = NativeEpoch::begin(&endpoint, &endpoint, binding()).unwrap();
+            let mut epoch = NativeEpoch::begin(&endpoint, &endpoint, binding(), super::super::OperationReads::funded_for_test()).unwrap();
             let source = epoch
                 .pin_parent(Side::Source, &RelativePath::unix(b"source").unwrap())
                 .unwrap();
@@ -539,7 +541,7 @@ mod tests {
             .open(tree.path().join("racer"))
             .unwrap();
         let endpoint = endpoint(tree.path());
-        let mut epoch = NativeEpoch::begin(&endpoint, &endpoint, binding()).unwrap();
+        let mut epoch = NativeEpoch::begin(&endpoint, &endpoint, binding(), super::super::OperationReads::funded_for_test()).unwrap();
         let target = epoch
             .pin_parent(Side::Target, &RelativePath::unix(b"live").unwrap())
             .unwrap();
@@ -575,7 +577,7 @@ mod tests {
         let tree = fixture();
         std::fs::write(tree.path().join("source"), b"source").unwrap();
         let endpoint = endpoint(tree.path());
-        let mut epoch = NativeEpoch::begin(&endpoint, &endpoint, binding()).unwrap();
+        let mut epoch = NativeEpoch::begin(&endpoint, &endpoint, binding(), super::super::OperationReads::funded_for_test()).unwrap();
         let source = epoch
             .pin_parent(Side::Source, &RelativePath::unix(b"source").unwrap())
             .unwrap();
@@ -583,7 +585,7 @@ mod tests {
         std::fs::rename(tree.path().join("source"), tree.path().join("saved")).unwrap();
         assert!(epoch.capture(&guard).is_err());
         drop(epoch);
-        let mut epoch = NativeEpoch::begin(&endpoint, &endpoint, binding()).unwrap();
+        let mut epoch = NativeEpoch::begin(&endpoint, &endpoint, binding(), super::super::OperationReads::funded_for_test()).unwrap();
         assert!(
             epoch
                 .pin_parent(Side::Target, &RelativePath::unix(b"missing/child").unwrap())
@@ -606,7 +608,7 @@ mod tests {
         let tree = fixture();
         std::fs::write(tree.path().join("live"), b"old").unwrap();
         let endpoint = endpoint(tree.path());
-        let mut epoch = NativeEpoch::begin(&endpoint, &endpoint, binding()).unwrap();
+        let mut epoch = NativeEpoch::begin(&endpoint, &endpoint, binding(), super::super::OperationReads::funded_for_test()).unwrap();
         let target = epoch
             .pin_parent(Side::Target, &RelativePath::unix(b"live").unwrap())
             .unwrap();
@@ -648,7 +650,7 @@ mod tests {
         let tree = fixture();
         std::fs::write(tree.path().join("source"), b"proposal").unwrap();
         let endpoint = endpoint(tree.path());
-        let mut epoch = NativeEpoch::begin(&endpoint, &endpoint, binding()).unwrap();
+        let mut epoch = NativeEpoch::begin(&endpoint, &endpoint, binding(), super::super::OperationReads::funded_for_test()).unwrap();
         let source = epoch
             .pin_parent(Side::Source, &RelativePath::unix(b"source").unwrap())
             .unwrap();
@@ -691,7 +693,7 @@ mod tests {
         let tree = fixture();
         std::fs::write(tree.path().join("live"), b"old").unwrap();
         let endpoint = endpoint(tree.path());
-        let mut epoch = NativeEpoch::begin(&endpoint, &endpoint, binding()).unwrap();
+        let mut epoch = NativeEpoch::begin(&endpoint, &endpoint, binding(), super::super::OperationReads::funded_for_test()).unwrap();
         let parent = epoch
             .pin_parent(Side::Target, &RelativePath::unix(b"live").unwrap())
             .unwrap();
@@ -726,7 +728,7 @@ mod tests {
         std::fs::create_dir(tree.path().join("parent")).unwrap();
         std::fs::write(tree.path().join("parent/source"), b"old").unwrap();
         let endpoint = endpoint(tree.path());
-        let mut epoch = NativeEpoch::begin(&endpoint, &endpoint, binding()).unwrap();
+        let mut epoch = NativeEpoch::begin(&endpoint, &endpoint, binding(), super::super::OperationReads::funded_for_test()).unwrap();
         let source = epoch
             .pin_parent(Side::Source, &RelativePath::unix(b"parent/source").unwrap())
             .unwrap();
@@ -965,6 +967,7 @@ impl<'a> NativeEpoch<'a> {
         source: &'a PinnedEndpoint,
         target: &'a PinnedEndpoint,
         binding: OperationBinding,
+        reads: Arc<super::OperationReads>,
     ) -> Result<Self> {
         let fail = |cause| Failure {
             cause,
@@ -998,7 +1001,7 @@ impl<'a> NativeEpoch<'a> {
             leases,
             deadline: Instant::now() + lease_process::WORK,
             read_budget: Arc::new(super::ReadBudget {
-                reads: Arc::new(super::OperationReads::new()),
+                reads,
                 deadline: Instant::now() + lease_process::WORK,
             }),
             lifetime: Arc::new(()),
@@ -1693,11 +1696,8 @@ impl<'e> NativeEpoch<'e> {
                 revision: live.admission(),
                 fence: live.fence(),
             },
+            Arc::clone(live.operation_reads()),
         )?;
-        epoch.read_budget = Arc::new(super::ReadBudget::for_operation(
-            live.operation_reads(),
-            epoch.deadline,
-        ));
         epoch.connected = Some(ConnectedBinding {
             id: live.id(),
             lifetime: live.lifetime().clone(),

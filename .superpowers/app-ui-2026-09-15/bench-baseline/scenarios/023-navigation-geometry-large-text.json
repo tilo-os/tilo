@@ -1,0 +1,53 @@
+{
+  "name": "Desktop navigation geometry",
+  "goal": "Read the current workspace and distinguish the controls for navigation",
+  "viewport": [
+    1280,
+    800
+  ],
+  "budget": {
+    "clicks": 0,
+    "keys": 0
+  },
+  "steps": [
+    {
+      "op": "checkpoint",
+      "name": "navigation",
+      "checks": [
+        {
+          "kind": "visible",
+          "target": "semantic:topbar:workspace-settings"
+        },
+        {
+          "kind": "target_size",
+          "target": "semantic:topbar:overview",
+          "min": [
+            24,
+            24
+          ]
+        },
+        {
+          "kind": "gap",
+          "first": "semantic:topbar:workspace-down",
+          "second": "semantic:topbar:workspace-settings",
+          "axis": "x",
+          "min": 4,
+          "max": 12
+        },
+        {
+          "kind": "aligned",
+          "first": "semantic:topbar:overview",
+          "second": "semantic:topbar:workspace-settings",
+          "axis": "y",
+          "tolerance": 1
+        },
+        {
+          "kind": "no_overlap",
+          "first": "semantic:topbar:workspace-down",
+          "second": "semantic:topbar:workspace-settings"
+        }
+      ]
+    }
+  ],
+  "text_scale": 2
+}

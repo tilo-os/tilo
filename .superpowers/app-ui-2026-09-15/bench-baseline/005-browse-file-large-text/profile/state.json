@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "workspaces": [
+    {
+      "id": 13007521623752835073,
+      "room": "303b2363-5209-4981-a0f1-f6e62f48869b",
+      "name": "Home",
+      "strips": [
+        {
+          "id": 13007521623752835074,
+          "name": "Main",
+          "window_groups": [
+            {
+              "id": 13007521623752835076,
+              "tabs": [
+                {
+                  "id": 13007521623752835075,
+                  "title": "Files",
+                  "tile": {
+                    "AppPlaceholder": {
+                      "kind": "FileExplorer",
+                      "label": "Files"
+                    }
+                  }
+                },
+                {
+                  "id": 13007521623752835077,
+                  "title": "Document-000.txt",
+                  "tile": {
+                    "AppPlaceholder": {
+                      "kind": {
+                        "Other": "Editor"
+                      },
+                      "label": "Document-000.txt"
+                    }
+                  }
+                }
+              ],
+              "active_tab": 13007521623752835077,
+              "width": "Normal",
+              "maximized": false
+            }
+          ]
+        }
+      ],
+      "collaborators": [],
+      "owner": "xaver",
+      "pending_ownership_transfer": null,
+      "ownership_transfer_audit": [],
+      "ownership_transfer_cancellations": [],
+      "capabilities": [
+        {
+          "subject": {
+            "Principal": {
+              "Person": "xaver"
+            }
+          },
+          "scope": {
+            "Room": "303b2363-5209-4981-a0f1-f6e62f48869b"
+          },
+          "effect": "Grant",
+          "verb": "Admin",
+          "id": "owner-13007521623752835073",
+          "expiry": "Never",
+          "granted_by": null
+        }
+      ],
+      "default_apps": {
+        "policy": {},
+        "user_choices": {}
+      },
+      "tasks": [],
+      "effect_receipts": [],
+      "shared_surfaces": {}
+    }
+  ],
+  "active": 13007521623752835073,
+  "active_strip": {
+    "13007521623752835073": 13007521623752835074
+  },
+  "active_group": {
+    "13007521623752835074": 13007521623752835076
+  },
+  "collaborators": [],
+  "room_authority": {},
+  "room_peer_names": {},
+  "room_peer_identities": {},
+  "room_share_floor": {},
+  "continuation_tabs": [],
+  "continuation_rooms": [],
+  "continuation_owned_tabs": {},
+  "continuation_closed_tabs": {},
+  "continuation_file_references": {},
+  "native_document_tabs": {
+    "13007521623752835077": {
+      "provider_id": "org.nirios.Editor",
+      "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/bench-baseline/005-browse-file-large-text/home/Documents/Document-000.txt"
+    }
+  }
+}

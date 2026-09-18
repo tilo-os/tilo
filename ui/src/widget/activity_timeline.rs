@@ -383,6 +383,7 @@ impl ActivityTimeline {
     }
 
     /// Use selection/inspection without offering metadata or direct revert actions.
+    #[must_use]
     pub fn with_preview_selection(mut self) -> Self { self.preview_selection = true; self }
 
     pub fn with_entries(entries: Vec<HistoryEntry>) -> Self {

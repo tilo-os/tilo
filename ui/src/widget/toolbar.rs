@@ -1,4 +1,4 @@
-//! A measured command strip with a shared ContextMenu for overflow.
+//! A measured command strip with a shared `ContextMenu` for overflow.
 //! The extent cache is the sole source for intrinsic sizing, fitting and placement.
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
@@ -444,6 +444,40 @@ impl Toolbar {
             Target::Overflow => self.open_menu(true),
         }
     }
+    fn handle_key(&mut self, key: &Key, handled: &mut bool) {
+    match key {
+        Key::Named(NamedKey::Enter | NamedKey::Space) => {
+            if let Some(target) = self.focus {
+                self.activate(target);
+            }
+            *handled = true;
+        }
+        Key::Named(NamedKey::ArrowRight)
+            if self.orientation == Orientation::Horizontal =>
+        {
+            self.move_focus(true);
+            *handled = true;
+        }
+        Key::Named(NamedKey::ArrowLeft)
+            if self.orientation == Orientation::Horizontal =>
+        {
+            self.move_focus(false);
+            *handled = true;
+        }
+        Key::Named(NamedKey::ArrowDown)
+            if self.orientation == Orientation::Vertical =>
+        {
+            self.move_focus(true);
+            *handled = true;
+        }
+        Key::Named(NamedKey::ArrowUp) if self.orientation == Orientation::Vertical => {
+            self.move_focus(false);
+            *handled = true;
+        }
+        _ => {}
+    }
+    }
+
     fn move_focus(&mut self, forward: bool) {
         let targets = self.targets();
         if targets.is_empty() {
@@ -454,7 +488,7 @@ impl Toolbar {
             .and_then(|focus| targets.iter().position(|target| *target == focus));
         let next = match index {
             None => 0,
-            Some(index) if forward => index.saturating_add(1) % targets.len(),
+            Some(index) if forward => index.saturating_add(1).checked_rem(targets.len()).unwrap_or_default(),
             Some(index) => index
                 .checked_sub(1)
                 .unwrap_or_else(|| targets.len().saturating_sub(1)),
@@ -783,37 +817,7 @@ impl Widget for Toolbar {
             WindowEvent::KeyboardInput { event, .. }
                 if self.focused && event.state == ElementState::Pressed =>
             {
-                match &event.logical_key {
-                    Key::Named(NamedKey::Enter | NamedKey::Space) => {
-                        if let Some(target) = self.focus {
-                            self.activate(target);
-                        }
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowRight)
-                        if self.orientation == Orientation::Horizontal =>
-                    {
-                        self.move_focus(true);
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowLeft)
-                        if self.orientation == Orientation::Horizontal =>
-                    {
-                        self.move_focus(false);
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowDown)
-                        if self.orientation == Orientation::Vertical =>
-                    {
-                        self.move_focus(true);
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowUp) if self.orientation == Orientation::Vertical => {
-                        self.move_focus(false);
-                        *handled = true;
-                    }
-                    _ => {}
-                }
+                self.handle_key(&event.logical_key, handled);
             }
             _ => {}
         }

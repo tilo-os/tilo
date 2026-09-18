@@ -1,0 +1,18 @@
+    Blocking waiting for file lock on build directory
+   Compiling ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
+    Finished `test` profile [unoptimized] target(s) in 24.46s
+     Running tests/it.rs (target/debug/deps/it-3162d7e8d403d620)
+
+running 9 tests
+test scrollable_test::scrollable_scroll_into_view_vertical ... ok
+test scrollable_test::scrollable_momentum_decays ... ok
+test scrollable_test::scrollable_clamps_to_content_bounds ... ok
+test scrollable_test::writing_surface_preserves_explicit_child_height ... ok
+test scrollable_test::default_short_multiline_remains_content_sized ... ok
+test scrollable_test::empty_writing_surface_fills_viewport_and_accepts_lower_click ... ok
+test scrollable_test::writing_surface_retained_tree_settles_without_changing_child_style ... ok
+test scrollable_test::writing_surface_settles_resize_and_short_long_short_changes ... ok
+test scrollable_test::long_writing_surface_retains_overflow_and_footer ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 294 filtered out; finished in 0.75s
+

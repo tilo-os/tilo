@@ -1,5 +1,5 @@
 //! Host-owned asynchronous file sessions. Only frozen values cross into renderers.
-use super::checked_files::*;
+use super::checked_files::{FileHistorySnapshot, FileHistoryTarget, FileRestoreSession, FileHistoryTransport, FileHistoricalContent};
 use collab_types::files::{
     CheckedHistoryOperationV1 as Operation, CheckedHistoryOutcomeV1 as Outcome,
     CheckedHistoryRequestV1 as Request, FileHistoryReadErrorV1 as Error,
@@ -39,6 +39,7 @@ struct Completion {
     key: Key,
     reply: Reply,
 }
+#[allow(clippy::struct_excessive_bools, reason = "preview/review notifications, live-update policy and asynchronous lifecycle flags can coexist")]
 pub(super) struct FileController {
     pub target: FileHistoryTarget,
     key: Key,
@@ -214,13 +215,13 @@ impl FileController {
         self.message = "Submitting checked restore".into();
         self.run(move |transport| Reply::Outcome(request, transport.submit(request)));
     }
-    pub fn retry(&mut self) {
+    pub fn retry(&self) {
         let Some(request) = self.restore.request else {
             return;
         };
         self.run(move |transport| Reply::Outcome(request, transport.submit(request)));
     }
-    pub fn check_result(&mut self) {
+    pub fn check_result(&self) {
         let Some(request) = self.restore.request else {
             return;
         };
@@ -255,6 +256,51 @@ impl FileController {
         self.preview_changed = true;
         self.review_changed = true;
     }
+    fn apply_activity(&mut self, result: Result<(Scope, Vec<FileVersionV1>, Option<collab_types::ContentRevisionV1>), Error>) {
+        self.refreshing = false;
+        let now = std::time::Instant::now();
+        self.next_poll = now.checked_add(Duration::from_secs(2)).unwrap_or(now);
+        let wake = self.wake.clone();
+        if self.active {
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(2));
+                wake.wake();
+            });
+        }
+        match result {
+            Ok((scope, versions, current_revision))
+                if self.visible_identity(
+                    scope.workspace_id,
+                    scope.mount_lifetime,
+                    scope.record_id,
+                ) =>
+            {
+                self.live_updates = self
+                    .after
+                    .as_ref()
+                    .is_some_and(|after| after.scope.frontier != scope.frontier);
+                self.scope = Some(scope);
+                self.versions = versions;
+                self.current_revision = current_revision;
+                if self.after.is_none() {
+                    self.message =
+                        format!("{} immutable versions", self.versions.len());
+                }
+            }
+            Ok(_) => {
+                self.hide();
+                self.message =
+                    "File binding changed; reopen History for the current file".into();
+            }
+            Err(error) => {
+                if error == Error::NotVisible {
+                    self.hide();
+                }
+                self.message = read_message(error).into();
+            }
+        }
+    }
+
     pub fn drain(&mut self) -> bool {
         self.has_results();
         let values = self.inbox.get_mut().drain(..).collect::<Vec<_>>();
@@ -286,49 +332,7 @@ impl FileController {
                 continue;
             }
             match completion.reply {
-                Reply::Activity(result) => {
-                    self.refreshing = false;
-                    self.next_poll = std::time::Instant::now() + Duration::from_secs(2);
-                    let wake = self.wake.clone();
-                    if self.active {
-                        std::thread::spawn(move || {
-                            std::thread::sleep(Duration::from_secs(2));
-                            wake.wake();
-                        });
-                    }
-                    match result {
-                        Ok((scope, versions, current_revision))
-                            if self.visible_identity(
-                                scope.workspace_id,
-                                scope.mount_lifetime,
-                                scope.record_id,
-                            ) =>
-                        {
-                            self.live_updates = self
-                                .after
-                                .as_ref()
-                                .is_some_and(|after| after.scope.frontier != scope.frontier);
-                            self.scope = Some(scope);
-                            self.versions = versions;
-                            self.current_revision = current_revision;
-                            if self.after.is_none() {
-                                self.message =
-                                    format!("{} immutable versions", self.versions.len());
-                            }
-                        }
-                        Ok(_) => {
-                            self.hide();
-                            self.message =
-                                "File binding changed; reopen History for the current file".into();
-                        }
-                        Err(error) => {
-                            if error == Error::NotVisible {
-                                self.hide();
-                            }
-                            self.message = read_message(error).into();
-                        }
-                    }
-                }
+                Reply::Activity(result) => self.apply_activity(result),
                 Reply::Selection(result) => match result {
                     Ok((after, before))
                         if self.visible_identity(
@@ -458,11 +462,13 @@ fn load_all(
             None if versions.len() as u64 == page.total_versions => {
                 if page.heads.iter().any(|id| !seen.contains(id))
                     || page.current_revision.is_some_and(|revision| {
-                        !versions.iter().any(|version| {
+                        #[allow(clippy::suspicious_operation_groupings, reason = "FileVersionV1.id corresponds to ContentRevisionV1.version_id, not the revision identity")]
+                        let present = versions.iter().any(|version| {
                             version.id == revision.version_id
                                 && version.content_hash == revision.content_hash
                                 && version.metadata_hash == revision.metadata_hash
-                        })
+                        });
+                        !present
                     })
                 {
                     return Err(Error::InvalidRequest);

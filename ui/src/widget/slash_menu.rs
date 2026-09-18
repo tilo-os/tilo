@@ -462,6 +462,24 @@ impl SlashMenu {
         }
     }
 
+    fn draw_empty_hint(&self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, font_size: f32) {
+        let rect = self.rect();
+        let tokens = &theme.tokens;
+        // Empty-state hint when the filter matches nothing.
+        if self.visible.is_empty() {
+            let (_, hint_h) = text_renderer.measure("No matches", font_size, None);
+            let y = self.rows_top() + (ROW_HEIGHT - f64::from(hint_h)) / 2.0;
+            text_renderer.draw_text(
+                scene,
+                "No matches",
+                font_size,
+                tokens.colors.text_dim,
+                translated(transform, rect.x0 + PADDING_X, y),
+                None,
+            );
+        }
+    }
+
     /// Paint the popover into `scene`. Called by the parent AFTER its
     /// main draw pass so the menu lands on top of everything else.
     pub fn draw_overlay(
@@ -570,19 +588,7 @@ impl SlashMenu {
                 None,
             );
         }
-        // Empty-state hint when the filter matches nothing.
-        if self.visible.is_empty() {
-            let (_, hint_h) = text_renderer.measure("No matches", font_size, None);
-            let y = self.rows_top() + (ROW_HEIGHT - f64::from(hint_h)) / 2.0;
-            text_renderer.draw_text(
-                scene,
-                "No matches",
-                font_size,
-                tokens.colors.text_dim,
-                translated(transform, rect.x0 + PADDING_X, y),
-                None,
-            );
-        }
+        self.draw_empty_hint(scene, transform, text_renderer, theme, font_size);
     }
 }
 

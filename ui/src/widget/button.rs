@@ -437,6 +437,57 @@ pub struct ButtonInteract {
     pub disabled: bool,
 }
 
+fn danger_face_colors(theme: &Theme, interact: ButtonInteract) -> (
+    vello::peniko::Color,
+    Option<vello::peniko::Color>,
+    vello::peniko::Color,
+) {
+    use vello::peniko::Color;
+    use crate::color_compat::ColorCompat;
+    let d = theme.tokens.colors.semantic.danger;
+    // The label is resolved first: the feedback has to respect it.
+    let fg = theme
+        .tokens
+        .colors
+        .ink_on(d, Color::WHITE, ON_FILL_MIN_CONTRAST);
+    // Hover/press shift the fill ~15%, and the direction is not a
+    // constant: lifting a mid-tone danger toward white took a
+    // white label from 4.97:1 at rest to 3.96:1 the moment the
+    // pointer arrived. A control can't buy feedback with its own
+    // label's legibility, so the shift always moves the fill
+    // *away* from the ink that sits on it.
+    let toward: u8 = if crate::a11y::contrast_ratio(fg, Color::WHITE)
+        > crate::a11y::contrast_ratio(fg, Color::from_rgb8(0, 0, 0))
+    {
+        255
+    } else {
+        0
+    };
+    let shift = |a: u8| {
+        let blended = (f32::from(a) * 0.85 + f32::from(toward) * 0.15)
+            .round()
+            .clamp(0.0, 255.0);
+        // `blended` is a convex combination of two `u8`-derived
+        // values (weights 0.85 + 0.15), clamped immediately above,
+        // so it can't wrap or flip sign on the way into `u8`.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "blended is clamped to [0.0, 255.0] on the line above"
+        )]
+        {
+            blended as u8
+        }
+    };
+    let active = Color::from_rgba8(shift(d.r()), shift(d.g()), shift(d.b()), d.a());
+    let bg = if interact.hovered || interact.pressed {
+        active
+    } else {
+        d
+    };
+    (bg, None, fg)
+}
+
 /// The single source of truth for both the retained widget's look and
 /// the immediate-mode [`Button::paint`]. `border` is `None` for the
 /// accent-filled styles, whose fill is self-defining; the painter adds a
@@ -505,51 +556,7 @@ pub fn face_colors(
                     .ink_on_any(&[rest, active], Color::WHITE, ON_FILL_MIN_CONTRAST);
             (bg, None, fg)
         }
-        ButtonStyle::Danger => {
-            use crate::color_compat::ColorCompat;
-            let d = theme.tokens.colors.semantic.danger;
-            // The label is resolved first: the feedback has to respect it.
-            let fg = theme
-                .tokens
-                .colors
-                .ink_on(d, Color::WHITE, ON_FILL_MIN_CONTRAST);
-            // Hover/press shift the fill ~15%, and the direction is not a
-            // constant: lifting a mid-tone danger toward white took a
-            // white label from 4.97:1 at rest to 3.96:1 the moment the
-            // pointer arrived. A control can't buy feedback with its own
-            // label's legibility, so the shift always moves the fill
-            // *away* from the ink that sits on it.
-            let toward: u8 = if crate::a11y::contrast_ratio(fg, Color::WHITE)
-                > crate::a11y::contrast_ratio(fg, Color::from_rgb8(0, 0, 0))
-            {
-                255
-            } else {
-                0
-            };
-            let shift = |a: u8| {
-                let blended = (f32::from(a) * 0.85 + f32::from(toward) * 0.15)
-                    .round()
-                    .clamp(0.0, 255.0);
-                // `blended` is a convex combination of two `u8`-derived
-                // values (weights 0.85 + 0.15), clamped immediately above,
-                // so it can't wrap or flip sign on the way into `u8`.
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "blended is clamped to [0.0, 255.0] on the line above"
-                )]
-                {
-                    blended as u8
-                }
-            };
-            let active = Color::from_rgba8(shift(d.r()), shift(d.g()), shift(d.b()), d.a());
-            let bg = if interact.hovered || interact.pressed {
-                active
-            } else {
-                d
-            };
-            (bg, None, fg)
-        }
+        ButtonStyle::Danger => danger_face_colors(theme, interact),
         ButtonStyle::Ghost => {
             let bg = if interact.pressed {
                 theme.bg_active
@@ -1183,13 +1190,10 @@ impl Widget for Button {
         if !self.uses_default_footprint() {
             return self.adjust_layout_style(taffy, node);
         }
-        let (width, height) = match self.default_footprint {
-            Some(footprint) => footprint,
-            None => {
-                let footprint = self.measured_default_footprint(text);
-                self.default_footprint = Some(footprint);
-                footprint
-            }
+        let (width, height) = if let Some(footprint) = self.default_footprint { footprint } else {
+            let footprint = self.measured_default_footprint(text);
+            self.default_footprint = Some(footprint);
+            footprint
         };
         let Ok(current) = taffy.style(node) else {
             return false;

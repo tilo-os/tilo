@@ -1,0 +1,35 @@
+    Blocking waiting for file lock on build directory
+   Compiling ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
+   Compiling qos-app v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/app/qos-app)
+   Compiling word-processor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/word-processor)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 19s
+     Running unittests src/lib.rs (target/debug/deps/word_processor-47ead8d2ae8a39e7)
+
+running 2 tests
+test widget::tests::file_ux_failed_open_reports_an_error_without_changing_the_draft ... FAILED
+test widget::tests::file_ux_failed_save_as_keeps_the_original_destination ... FAILED
+
+failures:
+
+---- widget::tests::file_ux_failed_open_reports_an_error_without_changing_the_draft stdout ----
+
+thread 'widget::tests::file_ux_failed_open_reports_an_error_without_changing_the_draft' (3750965) panicked at apps/word-processor/src/widget.rs:17506:9:
+failed Open needs visible feedback
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- widget::tests::file_ux_failed_save_as_keeps_the_original_destination stdout ----
+word-processor: could not write /var/folders/p6/fg2jh4md76b0fd2s6m_qcpv40000gn/T/wp-save-as-failure-72863/missing-parent/new.docx: No such file or directory (os error 2)
+
+thread 'widget::tests::file_ux_failed_save_as_keeps_the_original_destination' (3750966) panicked at apps/word-processor/src/widget.rs:17489:9:
+assertion `left == right` failed
+  left: Some("/var/folders/p6/fg2jh4md76b0fd2s6m_qcpv40000gn/T/wp-save-as-failure-72863/missing-parent/new.docx")
+ right: Some("/var/folders/p6/fg2jh4md76b0fd2s6m_qcpv40000gn/T/wp-save-as-failure-72863/original.md")
+
+
+failures:
+    widget::tests::file_ux_failed_open_reports_an_error_without_changing_the_draft
+    widget::tests::file_ux_failed_save_as_keeps_the_original_destination
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 293 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p word-processor --lib`

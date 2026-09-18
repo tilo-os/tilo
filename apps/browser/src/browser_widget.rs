@@ -94,7 +94,14 @@ const ROOMY_CHROME_MIN_WIDTH: f64 = 1000.0;
 /// find bar's controls, which sit beside a field of the same height.
 pub(crate) const TOOLBAR_CONTROL_HEIGHT: f32 = 40.0;
 
-/// At or above this width the developer commands — DevTools, Find and the
+/// Match the default single-line `TextInput` band: a 16px face with a 1.25
+/// line-height ratio and 8px vertical padding per side. Geometry integration
+/// tests keep this browser row aligned when the shared field metrics change.
+pub(crate) fn toolbar_control_height(text_scale: f32) -> f32 {
+    (20.0 * text_scale + 16.0).max(TOOLBAR_CONTROL_HEIGHT)
+}
+
+/// At or above this width the developer commands — `DevTools`, Find and the
 /// zoom readout — join the toolbar row.
 const DEVELOPER_CHROME_MIN_WIDTH: f64 = 1100.0;
 
@@ -1601,7 +1608,7 @@ impl BrowserWidget {
         // even on a narrow / mobile-width window.
         let nav_btn: (f32, f32) = (
             if self.compact_chrome { 33.0 } else { 44.0 },
-            TOOLBAR_CONTROL_HEIGHT,
+            toolbar_control_height(self.text_scale),
         );
         let back = self.bind_button(
             Button::new("browser.back", "", None)
@@ -1746,7 +1753,7 @@ impl BrowserWidget {
             } else {
                 self.labelled_width(92.0)
             },
-            TOOLBAR_CONTROL_HEIGHT,
+            toolbar_control_height(self.text_scale),
         )
         .on_effect(move || private_request.set(true));
         let private_window_btn = if self.browsing_mode.is_private() {
@@ -1773,10 +1780,10 @@ impl BrowserWidget {
             toolbar = toolbar.push(Box::new(
                 self.site
                     .launcher(true)
-                    .with_size(self.labelled_width(56.0), TOOLBAR_CONTROL_HEIGHT),
+                    .with_size(self.labelled_width(56.0), toolbar_control_height(self.text_scale)),
             ));
         }
-        // Every control on this row is `TOOLBAR_CONTROL_HEIGHT` tall — the
+        // Every control on this row follows the scaled field height — the
         // address field's height — so the row has one top and one bottom
         // edge. The two site launchers were 32px in a 40px row.
         toolbar = toolbar
@@ -1826,7 +1833,7 @@ impl BrowserWidget {
                     .tooltip("Show downloads")
                     .with_size(
                         self.labelled_width(download_status_w),
-                        TOOLBAR_CONTROL_HEIGHT,
+                        toolbar_control_height(self.text_scale),
                     ),
                 "browser.downloads",
                 "show",
@@ -2567,7 +2574,19 @@ impl BrowserWidget {
                     self.structure_dirty = true;
                 }
                 event @ (WebViewEvent::SiteStatus(_) | WebViewEvent::SiteResult { .. }) => {
-                    self.structure_dirty |= self.site.apply(event);
+                    let reload_started = matches!(
+                        &event,
+                        WebViewEvent::SiteResult { action, success: true, .. }
+                            if action == "reload"
+                    );
+                    let accepted = self.site.apply(event);
+                    self.structure_dirty |= accepted;
+                    if accepted && reload_started {
+                        self.loading_stopped = false;
+                        self.clear_address_error();
+                        self.set_loading_progress(0.0);
+                        self.structure_dirty |= self.daily.navigation_started(&self.engine);
+                    }
                 }
                 WebViewEvent::TabClosed | WebViewEvent::TabDetached => {
                     self.native_closed = true;
@@ -3269,6 +3288,32 @@ fn engine_or_error(result: Result<SharedEngine, String>) -> SharedEngine {
         tracing::error!(%error, "browser engine unavailable");
         ui::webview::chromium::UnavailableEngine::new(error)
     })
+}
+
+fn address_state(widget: &dyn Widget) -> Option<(String, String)> {
+    if matches!(
+        widget.test_id(),
+        Some(URL_INPUT_ID | crate::daily_controls::FIND_INPUT)
+    ) && widget.is_focused()
+    {
+        return widget
+            .get_state()
+            .map(|state| (widget.test_id().unwrap_or(URL_INPUT_ID).to_owned(), state));
+    }
+    widget
+        .children()
+        .iter()
+        .find_map(|child| address_state(*child))
+}
+fn restore_address(widget: &mut dyn Widget, id: &str, state: &str) {
+    if widget.test_id() == Some(id) {
+        widget.set_focus(true);
+        widget.set_state(state);
+        return;
+    }
+    for child in widget.children_mut() {
+        restore_address(child, id, state);
+    }
 }
 
 impl Widget for BrowserWidget {
@@ -3998,31 +4043,6 @@ impl Widget for BrowserWidget {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        fn address_state(widget: &dyn Widget) -> Option<(String, String)> {
-            if matches!(
-                widget.test_id(),
-                Some(URL_INPUT_ID | crate::daily_controls::FIND_INPUT)
-            ) && widget.is_focused()
-            {
-                return widget
-                    .get_state()
-                    .map(|state| (widget.test_id().unwrap_or(URL_INPUT_ID).to_owned(), state));
-            }
-            widget
-                .children()
-                .iter()
-                .find_map(|child| address_state(*child))
-        }
-        fn restore_address(widget: &mut dyn Widget, id: &str, state: &str) {
-            if widget.test_id() == Some(id) {
-                widget.set_focus(true);
-                widget.set_state(state);
-                return;
-            }
-            for child in widget.children_mut() {
-                restore_address(child, id, state);
-            }
-        }
         self.pending_chrome_focus = None;
         let page_focused = self.control_focused("browser.surface");
         let address_state = self
@@ -4083,7 +4103,7 @@ impl Widget for BrowserWidget {
             // edge (and the same kept free on the right) and `s12` kept free
             // at the foot.
             let gutter = theme.tokens.spacing.s3;
-            let top = TOOLBAR_CONTROL_HEIGHT + 2.0 * theme.padding_standard;
+            let top = toolbar_control_height(self.text_scale) + 2.0 * theme.padding_standard;
             let width = (self.rect.width() as f32 - 2.0 * gutter).clamp(240.0, 480.0);
             let height = (self.rect.height() as f32 - top - theme.tokens.spacing.s12)
                 .clamp(180.0, 510.0);
@@ -6436,6 +6456,158 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    #[allow(clippy::too_many_lines, reason = "Keep the real panel action and ordered asynchronous replies in one regression fixture.")]
+    fn site_protection_reload_updates_chrome_only_after_correlated_success() {
+        // Keep engine replies under test control: TestEngine records commands,
+        // while this queue models the native helper's asynchronous event order.
+        struct QueuedEngine {
+            events: std::sync::Mutex<Vec<WebViewEvent>>,
+            capture: Arc<TestEngine>,
+        }
+        impl WebViewEngine for QueuedEngine {
+            fn send(&self, command: WebViewCommand) {
+                self.capture.send(command);
+            }
+            fn frames(&self) -> ui::webview::FrameSlot {
+                self.capture.frames()
+            }
+            fn drain_events(&self) -> Vec<WebViewEvent> {
+                std::mem::take(&mut *self.events.lock().unwrap())
+            }
+        }
+
+        const ORIGIN: &str = "https://protection.test";
+        const URL: &str = "https://protection.test/page";
+        const GENERATION: u64 = 3;
+        for reload_succeeds in [false, true] {
+            let capture = TestEngine::new();
+            let engine = Arc::new(QueuedEngine {
+                events: std::sync::Mutex::new(Vec::new()),
+                capture: capture.clone(),
+            });
+            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+            let (mut doc, root) = synced(&mut widget);
+            engine.events.lock().unwrap().push(WebViewEvent::UriChanged(URL.into()));
+            widget.apply_engine_events();
+            widget.set_loading_progress(0.2);
+            widget.perform_browser_operation(BrowserOperation::Stop).unwrap();
+            widget.daily.act(crate::daily_controls::Action::Open, &widget.engine);
+            widget.daily.buffer_text("existing match");
+            widget.daily.sync(&widget.engine);
+            let find_id = capture.commands().into_iter().find_map(|command| {
+                match command {
+                    WebViewCommand::Find { id, next: false, .. } => Some(id),
+                    _ => None,
+                }
+            }).expect("Find has an active native request");
+            engine.events.lock().unwrap().push(WebViewEvent::FindResult {
+                id: find_id, count: 4, active: 2, final_update: true,
+            });
+            widget.apply_engine_events();
+
+            widget.site.open = true;
+            widget.sync(&mut doc, &root);
+            let status_request = capture.commands().into_iter().rev().find_map(|command| {
+                match command {
+                    WebViewCommand::RequestSiteStatus { request_id, .. } => Some(request_id),
+                    _ => None,
+                }
+            }).expect("open panel requests native site status");
+            engine.events.lock().unwrap().push(WebViewEvent::SiteStatus(ui::webview::SiteStatus {
+                request_id: status_request, origin: ORIGIN.into(), generation: GENERATION,
+                blocked: 4, global_enabled: true, excepted: false, effective: true,
+                security: "secure".into(), certificate_status: 0, tls_version: 6,
+                content_status: 0, subject: String::new(), issuer: String::new(),
+                expires: 0.0, permissions: Vec::new(),
+            }));
+            widget.apply_engine_events();
+            layout_at(&mut widget, 1000.0, 700.0);
+            assert!(widget.site_panel.is_some());
+            assert!(widget.start_resource_operation(
+                ui::qos_actions::InvocationId::new(),
+                OperationKind::Effect,
+                "qos.ui.control.invoke",
+                &serde_json::to_vec("browser.site.toggle").unwrap(),
+                &doc,
+                &root,
+            ).unwrap().is_some(), "the real protection button must accept the action");
+            widget.sync(&mut doc, &root);
+            let toggle_request = capture.commands().into_iter().rev().find_map(|command| {
+                match command {
+                    WebViewCommand::SiteAction { request_id, origin, generation, action }
+                        if action == "disable" => {
+                            assert_eq!(origin, ORIGIN);
+                            assert_eq!(generation, GENERATION);
+                            Some(request_id)
+                        }
+                    _ => None,
+                }
+            }).expect("the panel sends an origin-scoped protection change");
+            engine.events.lock().unwrap().push(WebViewEvent::SiteResult {
+                request_id: toggle_request, origin: ORIGIN.into(), generation: GENERATION,
+                action: "disable".into(), success: true, message: "Changed".into(),
+            });
+            widget.sync(&mut doc, &root);
+            widget.sync(&mut doc, &root);
+            let reload_request = capture.commands().into_iter().rev().find_map(|command| {
+                match command {
+                    WebViewCommand::SiteAction { request_id, origin, generation, action }
+                        if action == "reload" => {
+                            assert_eq!(origin, ORIGIN);
+                            assert_eq!(generation, GENERATION);
+                            Some(request_id)
+                        }
+                    _ => None,
+                }
+            }).expect("the accepted protection change submits a scoped reload");
+
+            let reply = |request_id, success| WebViewEvent::SiteResult {
+                request_id, origin: ORIGIN.into(), generation: GENERATION,
+                action: "reload".into(), success, message: "Reload result".into(),
+            };
+            let assert_stopped = |widget: &BrowserWidget| {
+                assert!(widget.loading_stopped, "an unaccepted reload must not resume loading chrome");
+                assert!((widget.progress - 1.0).abs() < f64::EPSILON);
+                assert!(widget.daily.open, "an unaccepted reload must preserve Find");
+            };
+            assert_stopped(&widget);
+            engine.events.lock().unwrap().push(reply(reload_request + 1, true));
+            widget.apply_engine_events();
+            assert_stopped(&widget);
+            assert!(!capture.commands().contains(&WebViewCommand::StopFinding));
+
+            engine.events.lock().unwrap().push(reply(reload_request, reload_succeeds));
+            widget.apply_engine_events();
+            if reload_succeeds {
+                assert!(!widget.loading_stopped);
+                assert!(widget.progress.abs() < f64::EPSILON);
+                assert!(!widget.daily.open);
+                assert!(capture.commands().contains(&WebViewCommand::StopFinding));
+                engine.events.lock().unwrap().extend([
+                    WebViewEvent::UriChanged(URL.into()),
+                    WebViewEvent::LoadProgress(0.4),
+                ]);
+                widget.apply_engine_events();
+                assert!((widget.progress - 0.4).abs() < f64::EPSILON,
+                    "same-URL reload progress must resume after Stop");
+                engine.events.lock().unwrap().push(reply(reload_request, true));
+                widget.apply_engine_events();
+                assert!((widget.progress - 0.4).abs() < f64::EPSILON,
+                    "a repeated reply must not restart progress");
+                assert!(!widget.daily.open);
+            } else {
+                engine.events.lock().unwrap().push(WebViewEvent::LoadProgress(0.4));
+                widget.apply_engine_events();
+                assert_stopped(&widget);
+                assert!(!capture.commands().contains(&WebViewCommand::StopFinding));
+            }
+            assert!(!capture.commands().contains(&WebViewCommand::Reload),
+                "chrome reset must not send a second unscoped reload");
+        }
+    }
+
 
     #[test]
     fn site_panel_resource_actions_reach_the_retained_panel() {

@@ -1,0 +1,1516 @@
+{
+  "schema_version": 1,
+  "scenario": {
+    "budget": {
+      "clicks": 0,
+      "keys": 0
+    },
+    "fixture": "desktop",
+    "goal": "Find a visible way to open an app from a fresh desktop",
+    "name": "Fresh desktop discoverability",
+    "scale": 1.0,
+    "steps": [
+      {
+        "checks": [
+          {
+            "kind": "visible",
+            "target": "semantic:Open an app"
+          },
+          {
+            "kind": "target_size",
+            "min": [
+              24.0,
+              24.0
+            ],
+            "target": "semantic:Open an app"
+          }
+        ],
+        "name": "desktop",
+        "op": "checkpoint"
+      }
+    ],
+    "text_scale": 1.0,
+    "theme": "dark",
+    "viewport": [
+      1280,
+      800
+    ]
+  },
+  "passed": true,
+  "counts": {
+    "clicks": 0,
+    "keys": 0,
+    "semantic_actions": 0,
+    "wheel_events": 0
+  },
+  "trace": [
+    {
+      "elapsed_ms": 576.480833,
+      "error": null,
+      "input": {
+        "checks": [
+          {
+            "kind": "visible",
+            "target": "semantic:Open an app"
+          },
+          {
+            "kind": "target_size",
+            "min": [
+              24.0,
+              24.0
+            ],
+            "target": "semantic:Open an app"
+          }
+        ],
+        "name": "desktop",
+        "op": "checkpoint"
+      },
+      "step": 0
+    }
+  ],
+  "frames": [
+    {
+      "name": "initial",
+      "screenshot": "initial.png",
+      "targets": {
+        "ShellOverlayHost": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/CaptureStudio": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/CaptureStudio[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/CommandPalette": [
+          320.0,
+          96.0,
+          640.0,
+          248.0
+        ],
+        "ShellOverlayHost[0]/Container": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/Container[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column": [
+          0.0,
+          60.0,
+          1280.0,
+          740.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]": [
+          0.0,
+          60.0,
+          1280.0,
+          740.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/CollaborationLaunchpad": [
+          0.0,
+          92.0,
+          1280.0,
+          688.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/CollaborationLaunchpad[0]": [
+          0.0,
+          92.0,
+          1280.0,
+          688.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/GroupRow": [
+          0.0,
+          792.0,
+          1280.0,
+          0.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/GroupRow[0]": [
+          0.0,
+          792.0,
+          1280.0,
+          0.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/StripView": [
+          0.0,
+          80.0,
+          1280.0,
+          0.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/StripView[0]": [
+          0.0,
+          80.0,
+          1280.0,
+          0.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/WorkspaceView": [
+          0.0,
+          68.0,
+          1280.0,
+          0.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/WorkspaceView[0]": [
+          0.0,
+          68.0,
+          1280.0,
+          0.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/TopBarChrome": [
+          0.0,
+          0.0,
+          1280.0,
+          48.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/TopBarChrome[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          48.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/DesktopBackdrop": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/DesktopBackdrop[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/SidebarWheelDisc": [
+          0.0,
+          168.32,
+          220.0,
+          511.35999999999996
+        ],
+        "ShellOverlayHost[0]/SidebarWheelDisc[0]": [
+          0.0,
+          168.32,
+          220.0,
+          511.35999999999996
+        ],
+        "semantic:Catch up": [
+          922.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Desktop navigation": [
+          0.0,
+          0.0,
+          1280.0,
+          48.0
+        ],
+        "semantic:Discuss": [
+          314.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Hosted applications": [
+          0.0,
+          792.0,
+          1280.0,
+          0.0
+        ],
+        "semantic:Invite people": [
+          618.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Make something together": [
+          0.0,
+          92.0,
+          1280.0,
+          688.0
+        ],
+        "semantic:Next workspace": [
+          93.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "semantic:Notes": [
+          618.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Open an app": [
+          1054.0,
+          584.0,
+          160.0,
+          36.0
+        ],
+        "semantic:Open overview": [
+          12.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "semantic:Open quick settings": [
+          1228.0,
+          8.0,
+          40.0,
+          32.0
+        ],
+        "semantic:Plan a meeting": [
+          314.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Previous workspace": [
+          61.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "semantic:Show calendar": [
+          512.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:Show clock": [
+          464.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:Show system monitor": [
+          488.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:Tasks": [
+          922.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Workspace settings for Home": [
+          131.0,
+          8.0,
+          85.509765625,
+          32.0
+        ],
+        "semantic:qOS workspace": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "semantic:shell.empty-workspace.activity": [
+          922.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:shell.empty-workspace.chat": [
+          314.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:shell.empty-workspace.invite": [
+          618.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:shell.empty-workspace.meet": [
+          314.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:shell.empty-workspace.notes": [
+          618.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:shell.empty-workspace.open-app": [
+          1054.0,
+          584.0,
+          160.0,
+          36.0
+        ],
+        "semantic:shell.empty-workspace.tasks": [
+          922.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:topbar": [
+          0.0,
+          0.0,
+          1280.0,
+          48.0
+        ],
+        "semantic:topbar:center:calendar": [
+          512.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:topbar:center:clock": [
+          464.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:topbar:center:system-monitor": [
+          488.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:topbar:overview": [
+          12.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "semantic:topbar:quick-settings": [
+          1228.0,
+          8.0,
+          40.0,
+          32.0
+        ],
+        "semantic:topbar:workspace-down": [
+          93.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "semantic:topbar:workspace-settings": [
+          131.0,
+          8.0,
+          85.509765625,
+          32.0
+        ],
+        "semantic:topbar:workspace-up": [
+          61.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "shell.capture-studio": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "wheel_disc": [
+          0.0,
+          168.32,
+          220.0,
+          511.35999999999996
+        ]
+      },
+      "visible_targets": {
+        "ShellOverlayHost[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/CaptureStudio[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/Container[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]": [
+          0.0,
+          60.0,
+          1280.0,
+          740.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/CollaborationLaunchpad[0]": [
+          0.0,
+          92.0,
+          1280.0,
+          688.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/GroupRow[0]": [
+          0.0,
+          792.0,
+          1280.0,
+          0.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/StripView[0]": [
+          0.0,
+          80.0,
+          1280.0,
+          0.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/WorkspaceView[0]": [
+          0.0,
+          68.0,
+          1280.0,
+          0.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/TopBarChrome[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          48.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/DesktopBackdrop[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/SidebarWheelDisc[0]": [
+          0.0,
+          168.32,
+          220.0,
+          511.35999999999996
+        ],
+        "semantic:Catch up": [
+          922.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Desktop navigation": [
+          0.0,
+          0.0,
+          1280.0,
+          48.0
+        ],
+        "semantic:Discuss": [
+          314.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Hosted applications": [
+          0.0,
+          792.0,
+          1280.0,
+          0.0
+        ],
+        "semantic:Invite people": [
+          618.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Make something together": [
+          0.0,
+          92.0,
+          1280.0,
+          688.0
+        ],
+        "semantic:Next workspace": [
+          93.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "semantic:Notes": [
+          618.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Open an app": [
+          1054.0,
+          584.0,
+          160.0,
+          36.0
+        ],
+        "semantic:Open overview": [
+          12.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "semantic:Open quick settings": [
+          1228.0,
+          8.0,
+          40.0,
+          32.0
+        ],
+        "semantic:Plan a meeting": [
+          314.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Previous workspace": [
+          61.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "semantic:Show calendar": [
+          512.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:Show clock": [
+          464.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:Show system monitor": [
+          488.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:Tasks": [
+          922.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Workspace settings for Home": [
+          131.0,
+          8.0,
+          85.509765625,
+          32.0
+        ],
+        "semantic:qOS workspace": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "semantic:shell.empty-workspace.activity": [
+          922.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:shell.empty-workspace.chat": [
+          314.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:shell.empty-workspace.invite": [
+          618.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:shell.empty-workspace.meet": [
+          314.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:shell.empty-workspace.notes": [
+          618.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:shell.empty-workspace.open-app": [
+          1054.0,
+          584.0,
+          160.0,
+          36.0
+        ],
+        "semantic:shell.empty-workspace.tasks": [
+          922.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:topbar": [
+          0.0,
+          0.0,
+          1280.0,
+          48.0
+        ],
+        "semantic:topbar:center:calendar": [
+          512.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:topbar:center:clock": [
+          464.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:topbar:center:system-monitor": [
+          488.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:topbar:overview": [
+          12.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "semantic:topbar:quick-settings": [
+          1228.0,
+          8.0,
+          40.0,
+          32.0
+        ],
+        "semantic:topbar:workspace-down": [
+          93.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "semantic:topbar:workspace-settings": [
+          131.0,
+          8.0,
+          85.509765625,
+          32.0
+        ],
+        "semantic:topbar:workspace-up": [
+          61.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "shell.capture-studio": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "wheel_disc": [
+          0.0,
+          168.32,
+          220.0,
+          511.35999999999996
+        ]
+      },
+      "checks": [],
+      "state": {
+        "active_tabs": [],
+        "active_workspace": "Home",
+        "tab_titles": [],
+        "workspace_count": 1
+      }
+    },
+    {
+      "name": "desktop",
+      "screenshot": "desktop.png",
+      "targets": {
+        "ShellOverlayHost": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/CaptureStudio": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/CaptureStudio[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/CommandPalette": [
+          320.0,
+          96.0,
+          640.0,
+          248.0
+        ],
+        "ShellOverlayHost[0]/Container": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/Container[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column": [
+          0.0,
+          60.0,
+          1280.0,
+          740.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]": [
+          0.0,
+          60.0,
+          1280.0,
+          740.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/CollaborationLaunchpad": [
+          0.0,
+          92.0,
+          1280.0,
+          688.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/CollaborationLaunchpad[0]": [
+          0.0,
+          92.0,
+          1280.0,
+          688.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/GroupRow": [
+          0.0,
+          792.0,
+          1280.0,
+          0.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/GroupRow[0]": [
+          0.0,
+          792.0,
+          1280.0,
+          0.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/StripView": [
+          0.0,
+          80.0,
+          1280.0,
+          0.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/StripView[0]": [
+          0.0,
+          80.0,
+          1280.0,
+          0.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/WorkspaceView": [
+          0.0,
+          68.0,
+          1280.0,
+          0.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/WorkspaceView[0]": [
+          0.0,
+          68.0,
+          1280.0,
+          0.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/TopBarChrome": [
+          0.0,
+          0.0,
+          1280.0,
+          48.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/TopBarChrome[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          48.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/DesktopBackdrop": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/DesktopBackdrop[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/SidebarWheelDisc": [
+          0.0,
+          168.32,
+          220.0,
+          511.35999999999996
+        ],
+        "ShellOverlayHost[0]/SidebarWheelDisc[0]": [
+          0.0,
+          168.32,
+          220.0,
+          511.35999999999996
+        ],
+        "semantic:Catch up": [
+          922.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Desktop navigation": [
+          0.0,
+          0.0,
+          1280.0,
+          48.0
+        ],
+        "semantic:Discuss": [
+          314.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Hosted applications": [
+          0.0,
+          792.0,
+          1280.0,
+          0.0
+        ],
+        "semantic:Invite people": [
+          618.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Make something together": [
+          0.0,
+          92.0,
+          1280.0,
+          688.0
+        ],
+        "semantic:Next workspace": [
+          93.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "semantic:Notes": [
+          618.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Open an app": [
+          1054.0,
+          584.0,
+          160.0,
+          36.0
+        ],
+        "semantic:Open overview": [
+          12.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "semantic:Open quick settings": [
+          1228.0,
+          8.0,
+          40.0,
+          32.0
+        ],
+        "semantic:Plan a meeting": [
+          314.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Previous workspace": [
+          61.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "semantic:Show calendar": [
+          512.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:Show clock": [
+          464.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:Show system monitor": [
+          488.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:Tasks": [
+          922.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Workspace settings for Home": [
+          131.0,
+          8.0,
+          85.509765625,
+          32.0
+        ],
+        "semantic:qOS workspace": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "semantic:shell.empty-workspace.activity": [
+          922.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:shell.empty-workspace.chat": [
+          314.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:shell.empty-workspace.invite": [
+          618.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:shell.empty-workspace.meet": [
+          314.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:shell.empty-workspace.notes": [
+          618.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:shell.empty-workspace.open-app": [
+          1054.0,
+          584.0,
+          160.0,
+          36.0
+        ],
+        "semantic:shell.empty-workspace.tasks": [
+          922.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:topbar": [
+          0.0,
+          0.0,
+          1280.0,
+          48.0
+        ],
+        "semantic:topbar:center:calendar": [
+          512.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:topbar:center:clock": [
+          464.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:topbar:center:system-monitor": [
+          488.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:topbar:overview": [
+          12.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "semantic:topbar:quick-settings": [
+          1228.0,
+          8.0,
+          40.0,
+          32.0
+        ],
+        "semantic:topbar:workspace-down": [
+          93.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "semantic:topbar:workspace-settings": [
+          131.0,
+          8.0,
+          85.509765625,
+          32.0
+        ],
+        "semantic:topbar:workspace-up": [
+          61.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "shell.capture-studio": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "wheel_disc": [
+          0.0,
+          168.32,
+          220.0,
+          511.35999999999996
+        ]
+      },
+      "visible_targets": {
+        "ShellOverlayHost[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/CaptureStudio[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/Container[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]": [
+          0.0,
+          60.0,
+          1280.0,
+          740.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/CollaborationLaunchpad[0]": [
+          0.0,
+          92.0,
+          1280.0,
+          688.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/GroupRow[0]": [
+          0.0,
+          792.0,
+          1280.0,
+          0.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/StripView[0]": [
+          0.0,
+          80.0,
+          1280.0,
+          0.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/Column[0]/WorkspaceView[0]": [
+          0.0,
+          68.0,
+          1280.0,
+          0.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/Column[0]/TopBarChrome[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          48.0
+        ],
+        "ShellOverlayHost[0]/Container[0]/Stack[0]/DesktopBackdrop[0]": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "ShellOverlayHost[0]/SidebarWheelDisc[0]": [
+          0.0,
+          168.32,
+          220.0,
+          511.35999999999996
+        ],
+        "semantic:Catch up": [
+          922.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Desktop navigation": [
+          0.0,
+          0.0,
+          1280.0,
+          48.0
+        ],
+        "semantic:Discuss": [
+          314.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Hosted applications": [
+          0.0,
+          792.0,
+          1280.0,
+          0.0
+        ],
+        "semantic:Invite people": [
+          618.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Make something together": [
+          0.0,
+          92.0,
+          1280.0,
+          688.0
+        ],
+        "semantic:Next workspace": [
+          93.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "semantic:Notes": [
+          618.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Open an app": [
+          1054.0,
+          584.0,
+          160.0,
+          36.0
+        ],
+        "semantic:Open overview": [
+          12.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "semantic:Open quick settings": [
+          1228.0,
+          8.0,
+          40.0,
+          32.0
+        ],
+        "semantic:Plan a meeting": [
+          314.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Previous workspace": [
+          61.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "semantic:Show calendar": [
+          512.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:Show clock": [
+          464.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:Show system monitor": [
+          488.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:Tasks": [
+          922.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:Workspace settings for Home": [
+          131.0,
+          8.0,
+          85.509765625,
+          32.0
+        ],
+        "semantic:qOS workspace": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "semantic:shell.empty-workspace.activity": [
+          922.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:shell.empty-workspace.chat": [
+          314.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:shell.empty-workspace.invite": [
+          618.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:shell.empty-workspace.meet": [
+          314.0,
+          474.0,
+          292.0,
+          96.0
+        ],
+        "semantic:shell.empty-workspace.notes": [
+          618.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:shell.empty-workspace.open-app": [
+          1054.0,
+          584.0,
+          160.0,
+          36.0
+        ],
+        "semantic:shell.empty-workspace.tasks": [
+          922.0,
+          366.0,
+          292.0,
+          96.0
+        ],
+        "semantic:topbar": [
+          0.0,
+          0.0,
+          1280.0,
+          48.0
+        ],
+        "semantic:topbar:center:calendar": [
+          512.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:topbar:center:clock": [
+          464.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:topbar:center:system-monitor": [
+          488.0,
+          8.0,
+          24.0,
+          32.0
+        ],
+        "semantic:topbar:overview": [
+          12.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "semantic:topbar:quick-settings": [
+          1228.0,
+          8.0,
+          40.0,
+          32.0
+        ],
+        "semantic:topbar:workspace-down": [
+          93.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "semantic:topbar:workspace-settings": [
+          131.0,
+          8.0,
+          85.509765625,
+          32.0
+        ],
+        "semantic:topbar:workspace-up": [
+          61.0,
+          8.0,
+          32.0,
+          32.0
+        ],
+        "shell.capture-studio": [
+          0.0,
+          0.0,
+          1280.0,
+          800.0
+        ],
+        "wheel_disc": [
+          0.0,
+          168.32,
+          220.0,
+          511.35999999999996
+        ]
+      },
+      "checks": [
+        {
+          "check": {
+            "kind": "visible",
+            "target": "semantic:Open an app"
+          },
+          "passed": true,
+          "observed": {
+            "bounds": [
+              1054.0,
+              584.0,
+              160.0,
+              36.0
+            ],
+            "visible_bounds": [
+              1054.0,
+              584.0,
+              160.0,
+              36.0
+            ]
+          }
+        },
+        {
+          "check": {
+            "kind": "target_size",
+            "min": [
+              24.0,
+              24.0
+            ],
+            "target": "semantic:Open an app"
+          },
+          "passed": true,
+          "observed": [
+            160.0,
+            36.0
+          ]
+        }
+      ],
+      "state": {
+        "active_tabs": [],
+        "active_workspace": "Home",
+        "tab_titles": [],
+        "workspace_count": 1
+      }
+    }
+  ],
+  "failures": [],
+  "coverage": [
+    "Real retained shell/widget input path; isolated fixture state",
+    "Layout and screenshots in logical pixels; physical wheel input uses declared scale",
+    "Visibility checks declared clipping and hidden state, not sibling-overlay occlusion",
+    "Contrast covers explicit rendered pixel pairs only; no whole-screen certification",
+    "Hardware delivery, native gesture arbitration, perceived ease and animation smoothness require live acceptance"
+  ]
+}

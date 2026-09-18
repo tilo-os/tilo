@@ -635,9 +635,11 @@ impl Widget for EmptyState {
             .total
             .max(220.0)
         };
+        #[allow(clippy::cast_possible_truncation, reason = "Taffy uses f32 layout sizes; measured text geometry is intentionally rounded to that precision")]
+        let height = intrinsic_height as f32;
         taffy::Size {
             width: measured_width,
-            height: intrinsic_height as f32,
+            height,
         }
     }
 

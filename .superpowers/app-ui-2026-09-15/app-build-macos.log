@@ -1,0 +1,56 @@
+   Compiling aws-lc-rs v1.17.3
+   Compiling aws-lc-sys v0.43.0
+   Compiling libgit2-sys v0.18.5+1.9.4
+   Compiling typst-render v0.14.2
+   Compiling typst v0.14.2
+   Compiling rust_xlsxwriter v0.79.4
+   Compiling git2 v0.21.0
+   Compiling icu_locale v2.3.1
+   Compiling app-host v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/packaging/app-host)
+   Compiling wayland-protocols-misc v0.3.10
+   Compiling postgres v0.19.14
+   Compiling swipe v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/swipe)
+   Compiling russh v0.63.1
+   Compiling webpki-roots v0.26.11
+   Compiling runtime-portal-xdg v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/runtime/runtime-portal-xdg)
+   Compiling qos-callstream v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/collab/qos-callstream)
+   Compiling desktop-policy v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/system/desktop-policy)
+   Compiling trash v5.2.6
+   Compiling des v0.8.1
+   Compiling similar v2.7.0
+   Compiling settings v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/settings)
+   Compiling file-explorer v0.2.0 (/Users/xaver/dev/qos-macos-shell/apps/file-explorer)
+   Compiling monitor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/monitor)
+   Compiling diffmerge v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/diffmerge)
+   Compiling git_client v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/git_client)
+   Compiling sheets v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/sheets)
+   Compiling remote v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/remote)
+   Compiling store v0.1.2 (/Users/xaver/dev/qos-macos-shell/apps/store)
+   Compiling db_client v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/db_client)
+   Compiling osk v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/osk)
+error[E0425]: cannot find function `memfd_create` in crate `libc`
+   --> apps/osk/src/inject.rs:400:38
+    |
+400 |             let raw = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
+    |                                      ^^^^^^^^^^^^ not found in `libc`
+
+error[E0425]: cannot find value `MFD_CLOEXEC` in crate `libc`
+   --> apps/osk/src/inject.rs:400:72
+    |
+400 |             let raw = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
+    |                                                                        ^^^^^^^^^^^
+    |
+   ::: /Users/xaver/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/libc-0.2.189/src/unix/mod.rs:259:9
+    |
+259 |         pub const FD_CLOEXEC: c_int = 0x1;
+    |         --------------------------- similarly named constant `FD_CLOEXEC` defined here
+    |
+help: a constant with a similar name exists
+    |
+400 -             let raw = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
+400 +             let raw = unsafe { libc::memfd_create(name.as_ptr(), libc::FD_CLOEXEC) };
+    |
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `osk` (lib) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...

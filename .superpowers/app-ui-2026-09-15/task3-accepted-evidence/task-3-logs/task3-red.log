@@ -1,0 +1,22 @@
+    Blocking waiting for file lock on build directory
+   Compiling ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
+error[E0046]: not all trait items implemented, missing: `sync`
+    --> ui/src/headless.rs:3453:5
+     |
+3453 |     impl Widget for ConsumingActivationControl {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `sync` in implementation
+     |
+    ::: ui/src/widget/mod.rs:532:5
+     |
+ 532 |     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId);
+     |     --------------------------------------------------------- `sync` from trait
+
+error[E0689]: can't call method `saturating_add` on ambiguous numeric type `{integer}`
+    --> ui/src/headless.rs:4060:41
+     |
+4060 |             observed.set(observed.get().saturating_add(1));
+     |                                         ^^^^^^^^^^^^^^
+
+Some errors have detailed explanations: E0046, E0689.
+For more information about an error, try `rustc --explain E0046`.
+error: could not compile `ui` (lib test) due to 2 previous errors

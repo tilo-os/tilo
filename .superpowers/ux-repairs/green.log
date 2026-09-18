@@ -1,0 +1,14 @@
+    Blocking waiting for file lock on build directory
+   Compiling ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
+   Compiling qos-app v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/app/qos-app)
+   Compiling word-processor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/word-processor)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 19s
+     Running unittests src/lib.rs (target/debug/deps/word_processor-47ead8d2ae8a39e7)
+
+running 3 tests
+test widget::tests::menu_ux_right_click_preserves_selected_text_and_clipboard_actions ... ok
+test widget::tests::menu_ux_context_actions_stay_in_the_viewport ... ok
+test widget::tests::menu_ux_open_menus_capture_editing_keys_and_keyboard_activation ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 292 filtered out; finished in 0.29s
+

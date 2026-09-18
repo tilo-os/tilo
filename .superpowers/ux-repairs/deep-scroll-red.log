@@ -1,0 +1,22 @@
+   Compiling word-processor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/word-processor)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.41s
+     Running unittests src/lib.rs (target/debug/deps/word_processor-47ead8d2ae8a39e7)
+
+running 1 test
+test widget::tests::deep_scrolling_keeps_visible_text_loaded ... FAILED
+
+failures:
+
+---- widget::tests::deep_scrolling_keeps_visible_text_loaded stdout ----
+
+thread 'widget::tests::deep_scrolling_keeps_visible_text_loaded' (3867660) panicked at apps/word-processor/src/widget.rs:12589:13:
+scroll fraction 0.5 must retain visible text (window 405, scroll 15426.058823529413)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    widget::tests::deep_scrolling_keeps_visible_text_loaded
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 321 filtered out; finished in 3.40s
+
+error: test failed, to rerun pass `-p word-processor --lib`

@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "workspaces": [
+    {
+      "id": 17310992542682054657,
+      "room": "81b47247-69bb-49d6-8ebb-5b3a5456da82",
+      "name": "Home",
+      "strips": [
+        {
+          "id": 17310992542682054658,
+          "name": "Main",
+          "window_groups": [
+            {
+              "id": 17310992542682054660,
+              "tabs": [
+                {
+                  "id": 17310992542682054659,
+                  "title": "Files",
+                  "tile": {
+                    "AppPlaceholder": {
+                      "kind": "FileExplorer",
+                      "label": "Files"
+                    }
+                  }
+                }
+              ],
+              "active_tab": 17310992542682054659,
+              "width": "Normal",
+              "maximized": false
+            }
+          ]
+        }
+      ],
+      "collaborators": [],
+      "owner": "xaver",
+      "pending_ownership_transfer": null,
+      "ownership_transfer_audit": [],
+      "ownership_transfer_cancellations": [],
+      "capabilities": [
+        {
+          "subject": {
+            "Principal": {
+              "Person": "xaver"
+            }
+          },
+          "scope": {
+            "Room": "81b47247-69bb-49d6-8ebb-5b3a5456da82"
+          },
+          "effect": "Grant",
+          "verb": "Admin",
+          "id": "owner-17310992542682054657",
+          "expiry": "Never",
+          "granted_by": null
+        }
+      ],
+      "default_apps": {
+        "policy": {},
+        "user_choices": {}
+      },
+      "tasks": [],
+      "effect_receipts": [],
+      "shared_surfaces": {}
+    }
+  ],
+  "active": 17310992542682054657,
+  "active_strip": {
+    "17310992542682054657": 17310992542682054658
+  },
+  "active_group": {
+    "17310992542682054658": 17310992542682054660
+  },
+  "collaborators": [],
+  "room_authority": {},
+  "room_peer_names": {},
+  "room_peer_identities": {},
+  "room_share_floor": {},
+  "continuation_tabs": [],
+  "continuation_rooms": [],
+  "continuation_owned_tabs": {},
+  "continuation_closed_tabs": {},
+  "continuation_file_references": {},
+  "native_document_tabs": {}
+}

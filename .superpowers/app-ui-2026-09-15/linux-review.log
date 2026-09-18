@@ -1,0 +1,667 @@
+tar: crates/dev/qos-dev/src/lib.rs: time stamp 2026-09-15 19:18:10.6705105 is 4427.975693009 s in the future
+tar: crates/dev/qos-dev/templates/starter.rs: time stamp 2026-09-15 19:14:41.7795458 is 4219.08425835 s in the future
+tar: docs/superpowers/audits/2026-09-15-fixed-ux-bench-results.md: time stamp 2026-09-15 18:34:14.285179 is 1791.539090925 s in the future
+tar: docs/superpowers/audits/2026-09-15-framework-layout-evidence.md: time stamp 2026-09-15 20:35:16.5050285 is 9053.75886805 s in the future
+tar: docs/superpowers/audits/2026-09-15-framework-layout-progress.md: time stamp 2026-09-15 20:35:16.5048404 is 9053.758643575 s in the future
+tar: docs/superpowers/audits/2026-09-15-layout-model-comparison.md: time stamp 2026-09-15 20:34:43.0342429 is 9020.287887617 s in the future
+tar: docs/superpowers/audits/2026-09-15-store-current-layout-review.md: time stamp 2026-09-15 20:31:55.7600813 is 8853.01365635 s in the future
+tar: docs/superpowers/audits/framework-layout-verification/capture-comparison.json: time stamp 2026-09-15 20:33:47.8689091 is 8965.122323484 s in the future
+tar: docs/superpowers/audits/framework-layout-verification/clippy.log: time stamp 2026-09-15 20:27:23.9668877 is 8581.2202795 s in the future
+tar: docs/superpowers/audits/framework-layout-verification/final-acceptance-matrix.md: time stamp 2026-09-15 20:34:43.0338945 is 9020.28723305 s in the future
+tar: docs/superpowers/audits/framework-layout-verification/final-fix-report.md: time stamp 2026-09-15 20:31:03.7359788 is 8800.989268892 s in the future
+tar: docs/superpowers/audits/framework-layout-verification/final-fix-review.md: time stamp 2026-09-15 20:31:49.939622 is 8847.192880175 s in the future
+tar: docs/superpowers/audits/framework-layout-verification/final-review.md: time stamp 2026-09-15 20:06:25.4113736 is 7322.66460165 s in the future
+tar: docs/superpowers/audits/framework-layout-verification/final-source-evidence.json: time stamp 2026-09-15 20:27:23.9481983 is 8581.201347392 s in the future
+tar: docs/superpowers/audits/framework-layout-verification/formatting.log: time stamp 2026-09-15 20:28:46.3003125 is 8663.553430384 s in the future
+tar: docs/superpowers/audits/framework-layout-verification/generated-starter-tests.log: time stamp 2026-09-15 20:35:57.7654278 is 9095.018494267 s in the future
+tar: docs/superpowers/audits/framework-layout-verification/historical-capture-audit.json: time stamp 2026-09-15 19:05:09.5508587 is 3646.803889334 s in the future
+tar: docs/superpowers/audits/framework-layout-verification/rulings.md: time stamp 2026-09-15 20:35:57.7658885 is 9095.018890342 s in the future
+tar: docs/superpowers/audits/framework-layout-verification/ui-tests.log: time stamp 2026-09-15 20:35:57.7657506 is 9095.018053692 s in the future
+tar: docs/superpowers/plans/2026-09-15-fix-desktop-ux-failures.md: time stamp 2026-09-15 18:25:38.4144428 is 1275.662171559 s in the future
+tar: docs/superpowers/plans/2026-09-15-framework-layout-improvements.md: time stamp 2026-09-15 20:34:43.034042 is 9020.28170105 s in the future
+tar: docs/superpowers/specs/2026-09-15-ui-quality-design.md: time stamp 2026-09-15 20:34:43.0341551 is 9020.280104817 s in the future
+tar: docs/ux-testing-bench.md: time stamp 2026-09-15 18:14:47.2411032 is 624.485608167 s in the future
+tar: shell/src/compositor/macos.rs: time stamp 2026-09-15 18:28:37.0534678 is 1454.269576142 s in the future
+tar: shell/src/main.rs: time stamp 2026-09-15 18:06:03.919982 is 101.132778384 s in the future
+tar: shell/src/shell/collaboration_launchpad.rs: time stamp 2026-09-15 18:05:11.565458 is 48.772304675 s in the future
+tar: shell/src/shell/hosted_inputs.rs: time stamp 2026-09-15 18:29:14.0584798 is 1491.263510767 s in the future
+tar: shell/src/shell/overlay_host.rs: time stamp 2026-09-15 18:28:37.0545504 is 1454.254375784 s in the future
+tar: shell/src/shell/workspace_settings_overlay.rs: time stamp 2026-09-15 18:05:11.5615933 is 48.751934142 s in the future
+tar: ui/Cargo.toml: time stamp 2026-09-15 19:04:54.6763322 is 3631.859455 s in the future
+tar: ui/FORM_COMPOSITION.md: time stamp 2026-09-15 19:18:10.6709244 is 4427.853987492 s in the future
+tar: ui/HIG.md: time stamp 2026-09-15 19:13:10.0577927 is 4127.240721959 s in the future
+tar: ui/MANUAL_LAYOUT.md: time stamp 2026-09-15 20:19:07.6880667 is 8084.870969875 s in the future
+tar: ui/examples/form_composition_shots.rs: time stamp 2026-09-15 18:42:16.9752746 is 2273.9067379 s in the future
+tar: ui/examples/manual_composition_shots.rs: time stamp 2026-09-15 19:16:59.183344 is 4356.1146188 s in the future
+tar: ui/src/app.rs: time stamp 2026-09-15 20:21:56.0970829 is 8253.024934284 s in the future
+tar: ui/src/app/form_composition_tests.rs: time stamp 2026-09-15 18:29:08.143191 is 1485.070949925 s in the future
+tar: ui/src/app/manual_composition_tests.rs: time stamp 2026-09-15 20:17:59.9312747 is 8016.858972334 s in the future
+tar: ui/src/app/number_input_layout_tests.rs: time stamp 2026-09-15 20:22:48.3972425 is 8305.32491955 s in the future
+tar: ui/src/headless.rs: time stamp 2026-09-15 19:16:59.1198342 is 4356.044731625 s in the future
+tar: ui/src/widget/button.rs: time stamp 2026-09-15 18:08:07.7322772 is 224.647189375 s in the future
+tar: ui/src/widget/card_composition.rs: time stamp 2026-09-15 18:33:31.605388 is 1748.519663425 s in the future
+tar: ui/src/widget/checkbox.rs: time stamp 2026-09-15 18:40:44.9006698 is 2181.814621767 s in the future
+tar: ui/src/widget/column.rs: time stamp 2026-09-15 19:16:59.156461 is 4356.069891842 s in the future
+tar: ui/src/widget/composition_parts.rs: time stamp 2026-09-15 20:17:59.9229944 is 8016.83612395 s in the future
+tar: ui/src/widget/form_composition.rs: time stamp 2026-09-15 18:40:44.8941553 is 2181.804850642 s in the future
+tar: ui/src/widget/form_composition/label.rs: time stamp 2026-09-15 18:40:44.888814 is 2181.799441342 s in the future
+tar: ui/src/widget/form_composition/page.rs: time stamp 2026-09-15 18:40:44.8893795 is 2181.799949509 s in the future
+tar: ui/src/widget/form_composition/tests.rs: time stamp 2026-09-15 18:40:44.8908887 is 2181.801399709 s in the future
+tar: ui/src/widget/layout.rs: time stamp 2026-09-15 19:10:14.2509353 is 3951.159335142 s in the future
+tar: ui/src/widget/layout_info.rs: time stamp 2026-09-15 19:01:13.099263 is 3410.007630467 s in the future
+tar: ui/src/widget/manual.rs: time stamp 2026-09-15 20:17:59.925086 is 8016.833317925 s in the future
+tar: ui/src/widget/manual/ownership_tests.rs: time stamp 2026-09-15 19:09:05.8118947 is 3882.720072417 s in the future
+tar: ui/src/widget/manual/tests.rs: time stamp 2026-09-15 20:19:07.71818 is 8084.626238759 s in the future
+tar: ui/src/widget/mod.rs: time stamp 2026-09-15 20:17:59.879787 is 8016.787207217 s in the future
+tar: ui/src/widget/number_input.rs: time stamp 2026-09-15 20:24:20.5646641 is 8397.470940984 s in the future
+tar: ui/src/widget/row.rs: time stamp 2026-09-15 19:16:59.1584694 is 4356.06366745 s in the future
+tar: ui/src/widget/text_input.rs: time stamp 2026-09-15 20:24:20.5195723 is 8397.421448059 s in the future
+Verified immutable Linux source 3614
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.45
+   Compiling proc-macro2 v1.0.106
+   Compiling cfg-if v1.0.4
+   Compiling libc v0.2.189
+   Compiling memchr v2.8.0
+   Compiling serde_core v1.0.228
+   Compiling typenum v1.20.1
+   Compiling syn v2.0.117
+   Compiling bitflags v2.11.0
+   Compiling log v0.4.29
+   Compiling serde v1.0.228
+   Compiling once_cell v1.21.4
+   Compiling smallvec v1.15.1
+   Compiling version_check v0.9.5
+   Compiling getrandom v0.2.17
+   Compiling thiserror v2.0.18
+   Compiling pin-project-lite v0.2.16
+   Compiling autocfg v1.5.0
+   Compiling equivalent v1.0.2
+   Compiling rand_core v0.6.4
+   Compiling rand_core v0.10.0
+   Compiling generic-array v0.14.7
+   Compiling subtle v2.6.1
+   Compiling getrandom v0.4.1
+   Compiling shlex v1.3.0
+   Compiling find-msvc-tools v0.1.9
+   Compiling libm v0.2.16
+   Compiling stable_deref_trait v1.2.1
+   Compiling futures-core v0.3.32
+   Compiling zerocopy v0.8.39
+   Compiling cfg_aliases v0.2.2
+   Compiling jobserver v0.1.34
+   Compiling rustix v1.1.4
+   Compiling cc v1.2.56
+   Compiling linux-raw-sys v0.12.1
+   Compiling slab v0.4.12
+   Compiling const-oid v0.9.6
+   Compiling arrayvec v0.7.6
+   Compiling synstructure v0.13.2
+   Compiling futures-io v0.3.32
+   Compiling winnow v0.7.14
+   Compiling pkg-config v0.3.32
+   Compiling semver v1.0.27
+   Compiling rustc_version v0.4.1
+   Compiling serde_derive v1.0.228
+   Compiling zeroize_derive v1.5.0
+   Compiling thiserror-impl v2.0.18
+   Compiling zeroize v1.9.0
+   Compiling crypto-common v0.1.7
+   Compiling zerocopy-derive v0.8.39
+   Compiling bytemuck_derive v1.10.2
+   Compiling zerofrom-derive v0.1.6
+   Compiling foldhash v0.2.0
+   Compiling bytemuck v1.25.0
+   Compiling block-buffer v0.10.4
+   Compiling hashbrown v0.17.1
+   Compiling cmov v0.5.4
+   Compiling ctutils v0.4.2
+   Compiling digest v0.10.7
+   Compiling indexmap v2.14.0
+   Compiling libloading v0.8.9
+   Compiling parking_lot_core v0.9.12
+   Compiling zerofrom v0.1.6
+   Compiling hybrid-array v0.4.13
+   Compiling errno v0.3.14
+   Compiling scopeguard v1.2.0
+   Compiling lock_api v0.4.14
+   Compiling signal-hook-registry v1.4.8
+   Compiling displaydoc v0.2.5
+   Compiling num-traits v0.2.19
+   Compiling const-oid v0.10.2
+   Compiling parking_lot v0.12.5
+   Compiling tracing-core v0.1.36
+   Compiling crossbeam-utils v0.8.21
+   Compiling crypto-common v0.2.2
+   Compiling tracing-attributes v0.1.31
+   Compiling enumflags2_derive v0.7.12
+   Compiling yoke-derive v0.8.2
+   Compiling itoa v1.0.17
+   Compiling block-buffer v0.12.1
+   Compiling dlib v0.5.3
+   Compiling toml_parser v1.0.9+spec-1.1.0
+   Compiling wayland-sys v0.31.11
+   Compiling syn v3.0.4
+   Compiling tracing v0.1.44
+   Compiling toml_datetime v0.7.5+spec-1.1.0
+   Compiling yoke v0.8.3
+   Compiling hex v0.4.3
+   Compiling toml_edit v0.23.10+spec-1.0.0
+   Compiling digest v0.11.3
+   Compiling futures-sink v0.3.32
+   Compiling cpufeatures v0.2.17
+   Compiling proc-macro-crate v3.4.0
+   Compiling futures-channel v0.3.32
+   Compiling ppv-lite86 v0.2.21
+   Compiling bytes v1.11.1
+   Compiling futures-macro v0.3.32
+   Compiling futures-task v0.3.32
+   Compiling uuid v1.26.0
+   Compiling base16ct v0.2.0
+   Compiling futures-util v0.3.32
+   Compiling endi v1.1.1
+   Compiling zerovec-derive v0.11.6
+   Compiling tokio-macros v2.7.0
+   Compiling zerovec v0.11.8
+   Compiling wayland-backend v0.3.15
+   Compiling socket2 v0.6.3
+   Compiling mio v1.2.0
+   Compiling base64ct v1.8.3
+   Compiling parking v2.2.1
+   Compiling zmij v1.0.21
+   Compiling winnow v1.0.3
+   Compiling tinystr v0.8.4
+   Compiling tokio v1.52.3
+   Compiling concurrent-queue v2.5.0
+   Compiling enumflags2 v0.7.12
+   Compiling polling v3.11.0
+   Compiling quick-xml v0.41.0
+   Compiling downcast-rs v1.2.1
+   Compiling serde_json v1.0.151
+   Compiling scoped-tls v1.0.1
+   Compiling zvariant_utils v3.4.0
+   Compiling heapless v0.7.17
+   Compiling either v1.15.0
+   Compiling byteorder v1.5.0
+   Compiling wayland-client v0.31.14
+   Compiling hash32 v0.2.1
+   Compiling zvariant_derive v5.12.0
+   Compiling wayland-scanner v0.31.11
+   Compiling signature v2.2.0
+   Compiling curve25519-dalek v4.1.3
+   Compiling cpufeatures v0.3.0
+   Compiling sha2 v0.10.9
+   Compiling cobs v0.3.0
+   Compiling tinyvec_macros v0.1.1
+   Compiling capnp v0.26.2
+   Compiling tinyvec v1.10.0
+   Compiling postcard v1.1.3
+   Compiling event-listener v5.4.1
+   Compiling serde_bytes v0.11.19
+   Compiling percent-encoding v2.3.2
+   Compiling atomic-waker v1.1.2
+   Compiling arrayref v0.3.9
+   Compiling event-listener-strategy v0.5.4
+   Compiling itertools v0.14.0
+   Compiling pem-rfc7468 v0.7.0
+   Compiling litemap v0.8.1
+   Compiling writeable v0.6.4
+   Compiling crc32fast v1.5.0
+   Compiling utf8_iter v1.0.4
+   Compiling simd-adler32 v0.3.8
+   Compiling fastrand v2.5.0
+   Compiling icu_locale_core v2.3.0
+   Compiling der v0.7.10
+   Compiling potential_utf v0.1.4
+   Compiling rand_chacha v0.3.1
+   Compiling zerotrie v0.2.5
+   Compiling inout v0.1.4
+   Compiling icu_normalizer_data v2.3.0
+   Compiling litrs v1.0.0
+   Compiling icu_properties_data v2.3.0
+   Compiling getrandom v0.3.4
+   Compiling spki v0.7.3
+   Compiling icu_provider v2.3.1
+   Compiling cipher v0.4.4
+   Compiling zvariant v5.12.0
+   Compiling document-features v0.2.12
+   Compiling icu_collections v2.3.0
+   Compiling futures-lite v2.6.1
+   Compiling wayland-protocols v0.32.12
+   Compiling ed25519 v2.2.3
+   Compiling hmac v0.12.1
+   Compiling universal-hash v0.5.1
+   Compiling core_maths v0.1.1
+   Compiling unicode-width v0.2.2
+   Compiling opaque-debug v0.3.1
+   Compiling bit-vec v0.9.1
+   Compiling adler2 v2.0.1
+   Compiling static_assertions v1.1.0
+   Compiling miniz_oxide v0.8.9
+   Compiling zbus_names v4.3.2
+   Compiling bit-set v0.9.1
+   Compiling codespan-reporting v0.13.1
+   Compiling ed25519-dalek v2.2.0
+   Compiling pkcs8 v0.10.2
+   Compiling rand v0.8.8
+   Compiling blake3 v1.8.5
+   Compiling nix v0.30.1
+   Compiling ff v0.13.1
+   Compiling async-io v2.6.0
+   Compiling zlib-rs v0.6.5
+   Compiling foldhash v0.1.5
+   Compiling rustc-hash v1.1.0
+   Compiling hexf-parse v0.2.1
+   Compiling option-ext v0.2.0
+   Compiling hashbrown v0.15.5
+   Compiling group v0.13.0
+   Compiling icu_properties v2.3.0
+   Compiling sec1 v0.7.3
+   Compiling icu_normalizer v2.3.0
+   Compiling hkdf v0.12.4
+   Compiling capnp-futures v0.26.1
+   Compiling keccak v0.2.2
+   Compiling futures v0.3.32
+   Compiling crypto-bigint v0.5.5
+   Compiling ring v0.17.14
+   Compiling flate2 v1.1.9
+   Compiling async-task v4.7.1
+   Compiling rustc-hash v2.1.1
+   Compiling constant_time_eq v0.4.2
+   Compiling ipnet v2.12.0
+   Compiling elliptic-curve v0.13.8
+   Compiling capnp-rpc v0.26.1
+   Compiling idna_adapter v1.2.1
+   Compiling async-broadcast v0.7.2
+   Compiling async-channel v2.5.0
+   Compiling form_urlencoded v1.2.2
+   Compiling tokio-util v0.7.18
+   Compiling quick-xml v0.39.4
+   Compiling serdect v0.2.0
+   Compiling font-types v0.11.3
+   Compiling aead v0.5.2
+   Compiling derive-getters v0.5.0
+   Compiling visibility v0.1.1
+   Compiling async-trait v0.1.89
+   Compiling serde_repr v0.1.20
+   Compiling ordered-stream v0.2.0
+   Compiling memmap2 v0.9.10
+   Compiling io-lifetimes v2.0.4
+   Compiling raw-window-handle v0.6.2
+   Compiling hax-lib v0.3.7
+   Compiling const-crc32-nostd v1.3.1
+   Compiling allocator-api2 v0.2.21
+   Compiling heck v0.5.0
+   Compiling thiserror v1.0.69
+   Compiling same-file v1.0.6
+   Compiling hashbrown v0.16.1
+   Compiling walkdir v2.5.0
+   Compiling frost-core v3.0.0
+   Compiling zbus_xml v5.1.1
+   Compiling runtime-portal v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/runtime/runtime-portal)
+   Compiling async-signal v0.2.13
+   Compiling idna v1.1.0
+   Compiling wayland-protocols-wlr v0.3.10
+   Compiling poly1305 v0.8.0
+   Compiling chacha20 v0.9.1
+   Compiling piper v0.2.4
+   Compiling async-lock v3.4.2
+   Compiling capnpc v0.26.0
+   Compiling sha2 v0.11.0
+   Compiling xkeysym v0.2.1
+   Compiling rustls-pki-types v1.14.0
+   Compiling thiserror-impl v1.0.69
+   Compiling hax-lib-macros v0.3.7
+   Compiling tls_codec_derive v0.5.0
+   Compiling hex-conservative v0.2.2
+   Compiling naga v29.0.3
+   Compiling smol_str v0.3.6
+   Compiling aho-corasick v1.1.4
+   Compiling rustix v0.38.44
+   Compiling siphasher v1.0.3
+   Compiling regex-syntax v0.8.11
+   Compiling sponge-cursor v0.1.0
+   Compiling untrusted v0.9.0
+   Compiling ash v0.38.0+1.3.281
+   Compiling tls_codec v0.5.0
+   Compiling bitcoin_hashes v0.14.101
+   Compiling regex-automata v0.4.18
+   Compiling async-process v2.5.0
+   Compiling blocking v1.6.2
+   Compiling chacha20poly1305 v0.10.1
+   Compiling url v2.5.8
+   Compiling frost-rerandomized v3.0.0
+   Compiling zbus-lockstep v0.5.2
+   Compiling async-executor v1.14.0
+   Compiling collab-types v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/collab/collab-types)
+   Compiling rand_core v0.9.5
+   Compiling zbus_macros v5.16.0
+   Compiling ttf-parser v0.25.1
+   Compiling rfc6979 v0.4.0
+   Compiling unicode-normalization v0.1.25
+   Compiling half v2.7.1
+   Compiling module-lattice v0.2.3
+   Compiling serde_spanned v0.6.9
+   Compiling toml_datetime v0.6.11
+   Compiling curve25519-dalek v5.0.0
+   Compiling async-recursion v1.1.1
+   Compiling rand v0.10.1
+   Compiling spirv v0.4.0+sdk-1.4.341.0
+   Compiling io-extras v0.18.4
+   Compiling toml_write v0.1.2
+   Compiling rustls v0.23.36
+   Compiling khronos-egl v6.0.0
+   Compiling xcursor v0.3.10
+   Compiling linux-raw-sys v0.4.15
+   Compiling cursor-icon v1.2.0
+   Compiling crossbeam-epoch v0.9.20
+   Compiling wayland-cursor v0.31.12
+   Compiling wayland-csd-frame v0.3.0
+   Compiling zbus v5.16.0
+   Compiling toml_edit v0.22.27
+   Compiling bip39 v2.2.2
+   Compiling ecdsa v0.16.9
+   Compiling rand_chacha v0.9.0
+   Compiling zbus-lockstep-macros v0.5.2
+   Compiling frost-ed25519 v3.0.0
+   Compiling rustls-webpki v0.103.15
+   Compiling shake v0.1.0
+   Compiling phf_shared v0.14.0
+   Compiling wgpu-types v29.0.3
+   Compiling primeorder v0.13.6
+   Compiling dirs-sys v0.5.0
+   Compiling unic-langid-impl v0.9.6
+   Compiling der v0.8.1
+   Compiling zvariant_utils v2.1.0
+   Compiling wgpu-hal v29.0.3
+   Compiling gpu-descriptor-types v0.2.0
+   Compiling unicode-segmentation v1.12.0
+   Compiling libcrux-intrinsics v0.0.8
+   Compiling presser v0.3.1
+   Compiling atomic-file v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/system/atomic-file)
+   Compiling cap-primitives v3.4.6
+   Compiling leb128 v0.2.5
+   Compiling hexane v0.2.1
+   Compiling phf_generator v0.14.0
+   Compiling gpu-descriptor v0.3.2
+   Compiling spki v0.8.0
+   Compiling wgpu-naga-bridge v29.0.3
+   Compiling unic-langid v0.9.6
+   Compiling dirs v6.0.0
+   Compiling atspi-common v0.13.0
+   Compiling threshold-identity v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/collab/threshold-identity)
+   Compiling rand v0.9.2
+   Compiling gpu-allocator v0.28.0
+   Compiling toml v0.8.23
+   Compiling calloop v0.13.0
+   Compiling fs-set-times v0.20.3
+   Compiling libcrux-secrets v0.0.6
+   Compiling openmls_traits v0.6.0
+   Compiling sha3 v0.11.0
+   Compiling polyval v0.6.2
+   Compiling http v1.4.0
+   Compiling blake2 v0.11.0
+   Compiling kem v0.3.0
+   Compiling ordered-float v5.0.0
+   Compiling rustix-linux-procfs v0.1.1
+   Compiling yoke-derive v0.7.5
+   Compiling polycool v0.4.0
+   Compiling memoffset v0.9.1
+   Compiling slotmap v1.1.1
+   Compiling glow v0.17.0
+   Compiling strict-num v0.1.1
+   Compiling linebender_resource_handle v0.1.1
+   Compiling rustversion v1.0.22
+   Compiling rayon-core v1.13.0
+   Compiling cap-std v3.4.6
+   Compiling smithay-client-toolkit v0.19.2
+   Compiling ambient-authority v0.0.2
+   Compiling libcrux-sha3 v0.0.10
+   Compiling maybe-owned v0.3.4
+   Compiling renderdoc-sys v1.1.0
+   Compiling lazy_static v1.5.0
+   Compiling profiling v1.0.17
+   Compiling sharded-slab v0.1.7
+   Compiling yoke v0.7.5
+   Compiling tiny-skia-path v0.11.4
+   Compiling kurbo v0.13.1
+   Compiling http-body v1.0.1
+   Compiling argon2 v0.6.0
+   Compiling ml-kem v0.3.2
+   Compiling ghash v0.5.1
+   Compiling crossbeam-deque v0.8.6
+   Compiling libcrux-traits v0.0.8
+   Compiling calloop-wayland-source v0.3.0
+   Compiling x25519-dalek v3.0.0
+   Compiling automerge v0.8.0
+   Compiling pkcs8 v0.11.0
+   Compiling phf_macros v0.14.0
+   Compiling zvariant_derive v4.2.0
+   Compiling p256 v0.13.2
+   Compiling p384 v0.13.1
+   Compiling hpke-rs-crypto v0.7.0
+   Compiling owned_ttf_parser v0.25.1
+   Compiling matchers v0.2.0
+   Compiling sha3 v0.12.0
+   Compiling runtime-fs v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/runtime/runtime-fs)
+   Compiling read-fonts v0.39.2
+   Compiling nasm-rs v0.3.2
+   Compiling ctr v0.9.2
+   Compiling aes v0.8.4
+   Compiling fdeflate v0.3.7
+   Compiling accesskit v0.25.0
+   Compiling hmac v0.13.0
+   Compiling signature v3.0.0
+   Compiling euclid v0.22.14
+   Compiling tracing-log v0.2.0
+   Compiling font-types v0.10.1
+   Compiling gethostname v1.1.0
+   Compiling zerovec-derive v0.10.3
+   Compiling x11-dl v2.21.0
+   Compiling nix v0.29.0
+   Compiling wgpu-core v29.0.3
+   Compiling ahash v0.8.12
+   Compiling libcrux-platform v0.0.3
+   Compiling thread_local v1.1.9
+   Compiling nu-ansi-term v0.50.3
+   Compiling fixedbitset v0.5.7
+   Compiling color v0.3.3
+   Compiling utf8parse v0.2.2
+   Compiling httparse v1.10.1
+   Compiling x11rb-protocol v0.13.2
+   Compiling svg_fmt v0.4.5
+   Compiling ab_glyph_rasterizer v0.1.10
+   Compiling anyhow v1.0.103
+   Compiling as-raw-xcb-connection v1.0.1
+   Compiling ab_glyph v0.2.32
+   Compiling guillotiere v0.7.0
+   Compiling skrifa v0.42.1
+   Compiling peniko v0.6.1
+   Compiling anstyle-parse v1.0.0
+   Compiling petgraph v0.8.3
+   Compiling tracing-subscriber v0.3.22
+   Compiling zerovec v0.10.4
+   Compiling read-fonts v0.35.0
+   Compiling vello_shaders v0.9.0 (/home/parallels/qos-ui-review-20260915/vendor/vello_shaders)
+   Compiling ml-dsa v0.1.1
+   Compiling x11rb v0.13.2
+   Compiling hkdf v0.13.0
+   Compiling accesskit_consumer v0.39.0
+   Compiling png v0.18.1
+   Compiling aes-gcm v0.10.3
+   Compiling openh264-sys2 v0.9.6
+   Compiling phf v0.14.0
+   Compiling x-wing v0.1.0
+   Compiling zvariant v4.2.0
+   Compiling wgpu-core-deps-windows-linux-android v29.0.3
+   Compiling runtime-identity v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/runtime/runtime-identity)
+   Compiling tiny-skia v0.11.4
+   Compiling atspi-proxies v0.13.0
+   Compiling read-fonts v0.37.0
+   Compiling k256 v0.13.4
+   Compiling type-map v0.5.1
+   Compiling dirs-sys v0.4.1
+   Compiling x25519-dalek v2.0.1
+   Compiling calloop v0.14.4
+   Compiling rand_chacha v0.10.0
+   Compiling pxfm v0.1.27
+   Compiling tinystr v0.7.6
+   Compiling smithay-client-toolkit v0.20.0
+   Compiling winit v0.30.13 (/home/parallels/qos-ui-review-20260915/vendor/winit)
+   Compiling wgpu v29.0.3
+   Compiling nom v8.0.0
+   Compiling bumpalo v3.20.3
+   Compiling roxmltree v0.20.0
+   Compiling quick-error v2.0.1
+   Compiling colorchoice v1.0.4
+   Compiling anstyle v1.0.13
+   Compiling icu_segmenter_data v1.5.1
+   Compiling tower-service v0.3.3
+   Compiling litemap v0.7.5
+   Compiling zune-core v0.5.1
+   Compiling anstyle-query v1.1.5
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling try-lock v0.2.5
+   Compiling self_cell v1.2.2
+   Compiling pulldown-cmark v0.12.2
+   Compiling writeable v0.5.5
+   Compiling byteorder-lite v0.1.0
+   Compiling icu_locid v1.5.0
+   Compiling image-webp v0.2.4
+   Compiling want v0.3.1
+   Compiling anstream v1.0.0
+   Compiling zune-jpeg v0.5.12
+   Compiling tree_magic_mini v3.2.2
+   Compiling fontconfig-parser v0.5.8
+   Compiling zopfli v0.8.3
+   Compiling moxcms v0.7.11
+   Compiling calloop-wayland-source v0.4.1
+   Compiling hpke-rs-rust-crypto v0.7.0
+   Compiling atspi v0.29.0
+   Compiling dirs v5.0.1
+   Compiling intl-memoizer v0.5.3
+   Compiling strum_macros v0.26.4
+   Compiling sctk-adwaita v0.10.1
+   Compiling zbus_names v3.0.0
+   Compiling rayon v1.12.0
+   Compiling accesskit_atspi_common v0.20.0
+   Compiling skrifa v0.37.0
+   Compiling hpke-rs v0.7.0
+   Compiling vello_encoding v0.9.0 (/home/parallels/qos-ui-review-20260915/vendor/vello_encoding)
+   Compiling openmls_memory_storage v0.6.0
+   Compiling intl_pluralrules v7.0.2
+   Compiling fluent-langneg v0.13.1
+   Compiling zbus_macros v4.4.0
+   Compiling runtime-collab v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/runtime/runtime-collab)
+   Compiling xkbcommon v0.8.0
+   Compiling xkbcommon-dl v0.4.2
+   Compiling wayland-protocols-plasma v0.3.10
+   Compiling wayland-protocols-experimental v20250721.0.1
+   Compiling wayland-protocols-misc v0.3.10
+   Compiling sha1 v0.10.6
+   Compiling safe_arch v0.7.4
+   Compiling openmls_serialization_helpers v0.1.0
+   Compiling fluent-syntax v0.12.0
+   Compiling icu_provider_macros v1.5.0
+   Compiling is-docker v0.2.0
+   Compiling xdg-home v1.3.0
+   Compiling os_pipe v1.2.3
+   Compiling strsim v0.11.1
+   Compiling pin-utils v0.1.0
+   Compiling clap_lex v1.0.0
+   Compiling iana-time-zone v0.1.65
+   Compiling zeno v0.3.3
+   Compiling unicase v2.9.0
+   Compiling dpi v0.1.2
+   Compiling yazi v0.2.1
+   Compiling strum v0.26.3
+   Compiling ssip-client v0.10.2
+   Compiling swash v0.2.6
+   Compiling chrono v0.4.45
+   Compiling clap_builder v4.6.0
+   Compiling hyper v1.8.1
+   Compiling wl-clipboard-rs v0.9.3
+   Compiling icu_provider v1.5.0
+   Compiling zbus v4.4.0
+   Compiling is-wsl v0.4.0
+   Compiling openmls v0.9.0
+   Compiling fluent-bundle v0.16.0
+   Compiling wide v0.7.33
+   Compiling openmls_rust_crypto v0.6.0
+   Compiling cli v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/runtime/cli)
+   Compiling accesskit_unix v0.23.0
+   Compiling image v0.25.9
+   Compiling zip v4.6.1
+   Compiling fontdb v0.23.0
+   Compiling skrifa v0.40.0
+   Compiling harfrust v0.5.2
+   Compiling openmls_basic_credential v0.6.0
+   Compiling icu_collections v1.5.0
+   Compiling regex v1.13.1
+   Compiling clap_derive v4.6.1
+   Compiling futures-intrusive v0.5.0
+   Compiling ui v0.1.0 (/home/parallels/qos-ui-review-20260915/ui)
+   Compiling sync_wrapper v1.0.2
+   Compiling pathdiff v0.2.3
+   Compiling base64 v0.22.1
+   Compiling tower-layer v0.3.3
+   Compiling unicode-linebreak v0.1.5
+   Compiling sys-locale v0.3.2
+   Compiling unicode-script v0.5.8
+   Compiling rangemap v1.7.1
+   Compiling grid v1.0.0
+   Compiling unicode-bidi v0.3.18
+   Compiling taffy v0.10.1
+   Compiling hyper-util v0.1.20
+   Compiling cosmic-text v0.19.0
+   Compiling tower v0.5.3
+   Compiling open v5.3.5
+   Compiling vello v0.9.0 (/home/parallels/qos-ui-review-20260915/vendor/vello)
+   Compiling clap v4.6.1
+   Compiling qos-actions v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/collab/actions)
+   Compiling icu_segmenter v1.5.0
+   Compiling channel-crypto v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/collab/channel-crypto)
+   Compiling accesskit_winit v0.34.0
+   Compiling qdoc v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/doc/qdoc)
+   Compiling arboard v3.6.1
+   Compiling app-state v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/system/app-state)
+   Compiling smithay-clipboard v0.7.3
+   Compiling fluent v0.17.0
+   Compiling ashpd v0.9.3
+   Compiling tts v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/system/tts)
+   Compiling openh264 v0.9.3
+   Compiling media v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/media)
+   Compiling tokio-rustls v0.26.4
+   Compiling settings-store v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/system/settings-store)
+   Compiling webpki-roots v1.0.6
+   Compiling qos-startup-metrics v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/system/qos-startup-metrics)
+   Compiling qos-headless-schema v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/dev/headless-schema)
+   Compiling qos-ui-graph v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/dev/ui-graph)
+   Compiling hypher v0.1.7
+   Compiling base32 v0.5.1
+   Compiling launcher v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/packaging/launcher)
+   Compiling qrcode v0.14.1
+   Compiling spellcheck v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/text/spellcheck)
+   Compiling pollster v0.4.0
+   Compiling iri-string v0.7.10
+   Compiling ryu v1.0.23
+   Compiling serde_urlencoded v0.7.1
+   Compiling hyper-rustls v0.27.7
+   Compiling runtime-bundle v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/packaging/runtime-bundle)
+   Compiling http-body-util v0.1.3
+   Compiling pkg v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/packaging/pkg)
+   Compiling landlock v0.4.5
+   Compiling tower-http v0.6.8
+   Compiling qos-desktop-entry v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/system/desktop-entry)
+   Compiling seccompiler v0.5.0
+   Compiling reqwest v0.12.28
+   Compiling swipe v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/system/swipe)
+   Compiling compat-catalogue v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/windows/compat-catalogue)
+   Compiling windows-vm v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/system/windows-vm)
+   Compiling compat-service v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/windows/compat-service)
+   Compiling qos-app v0.1.0 (/home/parallels/qos-ui-review-20260915/crates/app/qos-app)
+   Compiling osk v0.1.0 (/home/parallels/qos-ui-review-20260915/apps/osk)
+   Compiling windows-app v0.1.0 (/home/parallels/qos-ui-review-20260915/apps/windows)
+    Finished `dev` profile [unoptimized] target(s) in 1m 25s
+CapturedLinux osk
+CapturedLinux windows

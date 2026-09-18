@@ -1,0 +1,25 @@
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `ui` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.32s
+     Running unittests src/lib.rs (target/debug/deps/ui-c514f5321372d418)
+
+running 13 tests
+test widget::context_menu::a11y_tests::accessibility_reports_menu_role_and_collapsed_when_closed ... ok
+test widget::context_menu::a11y_tests::accessibility_open_menu_is_expanded_and_visible ... ok
+test widget::context_menu::a11y_tests::accessibility_exposes_named_action_rows_and_skips_separators ... ok
+test widget::context_menu::tests::modal_capture_when_open ... ok
+test widget::context_menu::tests::esc_dismisses ... ok
+test widget::context_menu::tests::hover_tracks_cursor_row ... ok
+test widget::context_menu::tests::click_on_row_fires_action_and_records_selection ... ok
+test widget::context_menu::tests::click_outside_dismisses_and_is_swallowed ... ok
+test widget::context_menu::tests::keyboard_nav_skips_separator_and_enter_selects ... ok
+test widget::context_menu::bounded_tests::tiny_viewport_keeps_focused_rows_reachable ... ok
+test widget::context_menu::bounded_tests::width_uses_shaping_and_legacy_open_resets_bounded_geometry ... ok
+test widget::context_menu::tests::bounded_wheel_hit_testing_and_keyboard_activation_share_scroll_offset ... ok
+test widget::context_menu::bounded_tests::bounded_menu_measures_scales_and_clamps_at_all_edges ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 3219 filtered out; finished in 0.27s
+

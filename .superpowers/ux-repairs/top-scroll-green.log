@@ -1,0 +1,12 @@
+    Blocking waiting for file lock on build directory
+   Compiling ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
+   Compiling qos-app v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/app/qos-app)
+   Compiling word-processor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/word-processor)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 22.80s
+     Running unittests src/lib.rs (target/debug/deps/word_processor-47ead8d2ae8a39e7)
+
+running 1 test
+test widget::tests::scrolling_to_top_restores_first_blocks_without_moving_deep_caret ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 321 filtered out; finished in 3.32s
+

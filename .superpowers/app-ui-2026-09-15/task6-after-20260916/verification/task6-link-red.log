@@ -1,0 +1,26 @@
+   Compiling ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `ui` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 26.88s
+     Running unittests src/lib.rs (target/debug/deps/ui-c93bc6d5c202339c)
+
+running 1 test
+
+thread 'widget::block_editor::tests::rich_link_hits_follow_current_draw_on_first_frame_style_and_scale_changes' (1910029) panicked at ui/src/widget/block_editor.rs:5641:13:
+assertion `left == right` failed: the final painted sliver must link on this frame at 1x, bold=false
+  left: None
+ right: Some(00000000-0000-0000-0000-00000000002a)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test widget::block_editor::tests::rich_link_hits_follow_current_draw_on_first_frame_style_and_scale_changes ... FAILED
+
+failures:
+
+failures:
+    widget::block_editor::tests::rich_link_hits_follow_current_draw_on_first_frame_style_and_scale_changes
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3175 filtered out; finished in 0.20s
+
+error: test failed, to rerun pass `-p ui --lib`

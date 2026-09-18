@@ -1020,8 +1020,7 @@ impl Widget for ScreenshotMarkup {
             .into_iter()
             .find(|(_, rect)| rect.contains(self.cursor))
             .filter(|(id, _)| {
-                !(*id == "tool" && self.tool_picker_open)
-                    && !(*id == "colors" && self.color_picker_open)
+                !(*id == "tool" && self.tool_picker_open || *id == "colors" && self.color_picker_open)
             })
             && let Some(label) = match id {
                 "cancel" => Some("Close"),

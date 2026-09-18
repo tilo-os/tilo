@@ -1,6 +1,6 @@
 //! Layout and input routing for chrome plus a borrowed presentation slot.
 //! Live ownership/lifecycle traversal stays entirely with the runner.
-use super::*;
+use super::{HistoryHost, Widget, TaffyTree, Theme, HashMap, NodeId, Dimension, TaffyTreeExt, Style, FlexDirection, Size, Point, WindowEvent, AutoCommit, ObjId, Rect, Scene, Affine, TextRenderer, PresenceCtx};
 
 impl HistoryHost {
     pub(crate) fn build_composition(
@@ -128,6 +128,7 @@ impl HistoryHost {
     }
     pub(crate) fn live_layout_node(&self) -> Option<NodeId> { self.live_node }
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::trivially_copy_pass_by_ref, reason = "event router forwards borrowed modifiers to the Widget event contract")]
     pub(crate) fn route_event(
         &mut self,
         live: &mut dyn Widget,
@@ -162,7 +163,7 @@ impl Widget for HistoryHost {
     fn inactive_callback_boundary(&self) -> Option<NodeId> {
         self.live_node.filter(|_| !self.live_interactive())
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "History"
     }
     fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}

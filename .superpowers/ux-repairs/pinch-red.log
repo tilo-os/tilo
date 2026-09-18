@@ -1,0 +1,32 @@
+    Blocking waiting for file lock on build directory
+   Compiling ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
+   Compiling qos-app v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/app/qos-app)
+   Compiling word-processor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/word-processor)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 37.33s
+     Running unittests src/lib.rs (target/debug/deps/word_processor-47ead8d2ae8a39e7)
+
+running 2 tests
+test widget::tests::trackpad_pinch_zooms_smoothly_and_keeps_the_reading_position ... FAILED
+test widget::tests::trackpad_pinch_respects_overlays_bounds_and_invalid_deltas ... FAILED
+
+failures:
+
+---- widget::tests::trackpad_pinch_zooms_smoothly_and_keeps_the_reading_position stdout ----
+
+thread 'widget::tests::trackpad_pinch_zooms_smoothly_and_keeps_the_reading_position' (3857119) panicked at apps/word-processor/src/widget.rs:13965:9:
+assertion failed: pinch(&mut wp, &mut state, 0.025, TouchPhase::Moved)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- widget::tests::trackpad_pinch_respects_overlays_bounds_and_invalid_deltas stdout ----
+
+thread 'widget::tests::trackpad_pinch_respects_overlays_bounds_and_invalid_deltas' (3857118) panicked at apps/word-processor/src/widget.rs:13991:9:
+assertion failed: pinch(&mut wp, &mut state, 0.5, TouchPhase::Moved)
+
+
+failures:
+    widget::tests::trackpad_pinch_respects_overlays_bounds_and_invalid_deltas
+    widget::tests::trackpad_pinch_zooms_smoothly_and_keeps_the_reading_position
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 317 filtered out; finished in 0.24s
+
+error: test failed, to rerun pass `-p word-processor --lib`

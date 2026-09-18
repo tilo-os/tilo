@@ -1,0 +1,24 @@
+   Compiling ui v0.1.0 (/Users/xaver/dev/qos-macos-shell/ui)
+   Compiling qos-app v0.1.0 (/Users/xaver/dev/qos-macos-shell/crates/app/qos-app)
+   Compiling terminal v0.2.1 (/Users/xaver/dev/qos-macos-shell/apps/terminal)
+   Compiling code_editor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/code_editor)
+    Finished `test` profile [unoptimized] target(s) in 17.91s
+     Running unittests src/lib.rs (target/debug/deps/code_editor-d418c3bb67674693)
+
+running 1 test
+
+thread 'app::tests::a_document_from_a_previous_session_still_stats_the_file' (3458657) panicked at apps/code_editor/src/app.rs:6329:9:
+assertion `left == right` failed: and the buffer knows which file it writes back to
+  left: Some("/var/folders/p6/fg2jh4md76b0fd2s6m_qcpv40000gn/T/.tmpzXi9pX/main.rs")
+ right: Some("/private/var/folders/p6/fg2jh4md76b0fd2s6m_qcpv40000gn/T/.tmpzXi9pX/main.rs")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test app::tests::a_document_from_a_previous_session_still_stats_the_file ... FAILED
+
+failures:
+
+failures:
+    app::tests::a_document_from_a_previous_session_still_stats_the_file
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 207 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p code_editor --lib`

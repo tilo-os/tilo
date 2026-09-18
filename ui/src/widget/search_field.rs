@@ -236,15 +236,15 @@ impl SearchField {
             None,
             &rounded,
         );
+        // Centre the measured line in the chip; the former `cy - 6.5` was a
+        // hand-tuned offset for an 11 px face that left the label a fraction
+        // low and could not follow a text-scale change.
+        let label_top = centered_text_top(chip.y0, KBD_HEIGHT, f64::from(th));
         #[allow(
             clippy::arithmetic_side_effects,
             reason = "Affine composition is float matrix multiplication; it cannot overflow \
                       or panic"
         )]
-        // Centre the measured line in the chip; the former `cy - 6.5` was a
-        // hand-tuned offset for an 11 px face that left the label a fraction
-        // low and could not follow a text-scale change.
-        let label_top = centered_text_top(chip.y0, KBD_HEIGHT, f64::from(th));
         let label_transform = transform * Affine::translate((chip.x0 + KBD_PAD_X, label_top));
         text_renderer.draw_text(
             scene,

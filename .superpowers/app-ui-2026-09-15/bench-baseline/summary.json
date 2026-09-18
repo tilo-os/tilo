@@ -1,0 +1,583 @@
+{
+  "schema_version": 1,
+  "passed": true,
+  "runs": [
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 1,
+        "keys": 1,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Find and open a document in Files \u2014 baseline",
+      "directory": "000-browse-file-baseline"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 1,
+        "keys": 1,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Find and open a document in Files \u2014 compact",
+      "directory": "001-browse-file-compact"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 1,
+        "keys": 1,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Find and open a document in Files \u2014 light",
+      "directory": "002-browse-file-light"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 1,
+        "keys": 1,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Find and open a document in Files \u2014 high-contrast",
+      "directory": "003-browse-file-high-contrast"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 1,
+        "keys": 1,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Find and open a document in Files \u2014 retina",
+      "directory": "004-browse-file-retina"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 1,
+        "keys": 1,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Find and open a document in Files \u2014 large-text",
+      "directory": "005-browse-file-large-text"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Fresh desktop discoverability \u2014 baseline",
+      "directory": "006-desktop-baseline"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Fresh desktop discoverability \u2014 compact",
+      "directory": "007-desktop-compact"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Fresh desktop discoverability \u2014 light",
+      "directory": "008-desktop-light"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Fresh desktop discoverability \u2014 high-contrast",
+      "directory": "009-desktop-high-contrast"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Fresh desktop discoverability \u2014 retina",
+      "directory": "010-desktop-retina"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Fresh desktop discoverability \u2014 large-text",
+      "directory": "011-desktop-large-text"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 5
+      },
+      "name": "Scroll Files content without moving the workspace \u2014 baseline",
+      "directory": "012-files-scroll-baseline"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 5
+      },
+      "name": "Scroll Files content without moving the workspace \u2014 compact",
+      "directory": "013-files-scroll-compact"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 5
+      },
+      "name": "Scroll Files content without moving the workspace \u2014 light",
+      "directory": "014-files-scroll-light"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 5
+      },
+      "name": "Scroll Files content without moving the workspace \u2014 high-contrast",
+      "directory": "015-files-scroll-high-contrast"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 5
+      },
+      "name": "Scroll Files content without moving the workspace \u2014 retina",
+      "directory": "016-files-scroll-retina"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 5
+      },
+      "name": "Scroll Files content without moving the workspace \u2014 large-text",
+      "directory": "017-files-scroll-large-text"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Desktop navigation geometry \u2014 baseline",
+      "directory": "018-navigation-geometry-baseline"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Desktop navigation geometry \u2014 compact",
+      "directory": "019-navigation-geometry-compact"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Desktop navigation geometry \u2014 light",
+      "directory": "020-navigation-geometry-light"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Desktop navigation geometry \u2014 high-contrast",
+      "directory": "021-navigation-geometry-high-contrast"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Desktop navigation geometry \u2014 retina",
+      "directory": "022-navigation-geometry-retina"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Desktop navigation geometry \u2014 large-text",
+      "directory": "023-navigation-geometry-large-text"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Desktop navigation geometry and contrast \u2014 baseline",
+      "directory": "024-navigation-layout-baseline"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Desktop navigation geometry and contrast \u2014 compact",
+      "directory": "025-navigation-layout-compact"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Desktop navigation geometry and contrast \u2014 light",
+      "directory": "026-navigation-layout-light"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Desktop navigation geometry and contrast \u2014 high-contrast",
+      "directory": "027-navigation-layout-high-contrast"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Desktop navigation geometry and contrast \u2014 retina",
+      "directory": "028-navigation-layout-retina"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Desktop navigation geometry and contrast \u2014 large-text",
+      "directory": "029-navigation-layout-large-text"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 7,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Open Files from desktop \u2014 baseline",
+      "directory": "030-open-files-baseline"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 7,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Open Files from desktop \u2014 compact",
+      "directory": "031-open-files-compact"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 7,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Open Files from desktop \u2014 light",
+      "directory": "032-open-files-light"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 7,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Open Files from desktop \u2014 high-contrast",
+      "directory": "033-open-files-high-contrast"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 7,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Open Files from desktop \u2014 retina",
+      "directory": "034-open-files-retina"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 0,
+        "keys": 7,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Open Files from desktop \u2014 large-text",
+      "directory": "035-open-files-large-text"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 3,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Reach workspace overview \u2014 baseline",
+      "directory": "036-workspace-overview-baseline"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 3,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Reach workspace overview \u2014 compact",
+      "directory": "037-workspace-overview-compact"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 3,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Reach workspace overview \u2014 light",
+      "directory": "038-workspace-overview-light"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 3,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Reach workspace overview \u2014 high-contrast",
+      "directory": "039-workspace-overview-high-contrast"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 3,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Reach workspace overview \u2014 retina",
+      "directory": "040-workspace-overview-retina"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 3,
+        "keys": 0,
+        "semantic_actions": 0,
+        "wheel_events": 0
+      },
+      "name": "Reach workspace overview \u2014 large-text",
+      "directory": "041-workspace-overview-large-text"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 2,
+        "keys": 8,
+        "semantic_actions": 0,
+        "wheel_events": 2
+      },
+      "name": "Rename a workspace \u2014 baseline",
+      "directory": "042-workspace-settings-baseline"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 2,
+        "keys": 8,
+        "semantic_actions": 0,
+        "wheel_events": 2
+      },
+      "name": "Rename a workspace \u2014 compact",
+      "directory": "043-workspace-settings-compact"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 2,
+        "keys": 8,
+        "semantic_actions": 0,
+        "wheel_events": 2
+      },
+      "name": "Rename a workspace \u2014 light",
+      "directory": "044-workspace-settings-light"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 2,
+        "keys": 8,
+        "semantic_actions": 0,
+        "wheel_events": 2
+      },
+      "name": "Rename a workspace \u2014 high-contrast",
+      "directory": "045-workspace-settings-high-contrast"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 2,
+        "keys": 8,
+        "semantic_actions": 0,
+        "wheel_events": 2
+      },
+      "name": "Rename a workspace \u2014 retina",
+      "directory": "046-workspace-settings-retina"
+    },
+    {
+      "status": "pass",
+      "failures": [],
+      "counts": {
+        "clicks": 2,
+        "keys": 8,
+        "semantic_actions": 0,
+        "wheel_events": 2
+      },
+      "name": "Rename a workspace \u2014 large-text",
+      "directory": "047-workspace-settings-large-text"
+    }
+  ],
+  "coverage_gaps": []
+}

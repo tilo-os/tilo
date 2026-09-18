@@ -1,0 +1,28 @@
+
+running 23 tests
+test widget::code_editor::tests::token_color_changes_with_theme ... ok
+test widget::code_editor::tests::accessibility_reports_a_multiline_text_input ... ok
+test widget::code_editor::tests::goto_line_moves_the_caret_to_the_line_start ... ok
+test widget::code_editor::tests::typing_inserts_on_the_real_key_path ... ok
+test widget::code_editor::tests::typst_fenced_block_carries ... ok
+test widget::code_editor::tests::enter_inserts_a_real_newline_and_gutter_counts_lines ... ok
+test widget::code_editor::tests::rust_block_comment_carries_across_lines ... ok
+test widget::code_editor::tests::rust_string_literal_span ... ok
+test widget::code_editor::tests::sql_preserves_function_type_and_operator_categories ... ok
+test widget::code_editor::tests::rust_span_ranges_map_to_the_right_text ... ok
+test widget::code_editor::tests::language_maps_to_a_highlighter ... ok
+test widget::code_editor::tests::sql_keywords_are_case_insensitive ... ok
+test widget::code_editor::tests::shift_arrow_extends_selection_word_wise ... ok
+test widget::code_editor::tests::tab_inserts_soft_spaces_and_shift_tab_outdents ... ok
+test widget::code_editor::tests::sql_doubled_quotes_stay_inside_one_string_span ... ok
+test widget::code_editor::tests::typst_heading_and_function ... ok
+test widget::code_editor::tests::rust_keyword_and_function_classified ... ok
+test widget::code_editor::tests::selection_and_cut_run_through_the_real_path ... ok
+test widget::code_editor::tests::wrapper_forwards_the_shaped_ime_candidate_rect ... ok
+test widget::code_editor::tests::highlighter_colours_segments_from_the_theme ... ok
+test widget::code_editor::tests::wrapper_layout_uses_theme_scale_with_a_stale_renderer_and_reverses_to_normal ... ok
+test widget::code_editor::tests::scaled_gutter_and_wrapped_rows_share_the_shaped_editor_geometry ... ok
+test widget::code_editor::tests::no_gutter_offset_when_gutter_disabled ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 3157 filtered out; finished in 0.31s
+

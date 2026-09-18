@@ -1,0 +1,72 @@
+{
+  "app": "apps/terminal",
+  "status": "captured",
+  "binary": "/Users/xaver/dev/qos-macos-shell/target/debug/terminal",
+  "binary_sha256": "88ecf42bf5c1327bd1fc6095e6309805afd4bba2bba313eae21f7a7acfaa5f84",
+  "source_head": "47fc2425a643a07ebf9c4f127fb5579ba42f77a7",
+  "working_diff_sha256": "7f762ea1f3d802de77724201200fa2412477d420d59c0bebe82fe0571b479797",
+  "captures": [
+    {
+      "variant": "wide",
+      "command": [
+        "/Users/xaver/dev/qos-macos-shell/target/debug/terminal",
+        "--shots",
+        "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/captures/terminal/wide.png",
+        "--viewport",
+        "1200x800"
+      ],
+      "status": "captured",
+      "exit_code": 0,
+      "seconds": 0.98,
+      "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/captures/terminal/wide.png",
+      "requested_scale": 1
+    },
+    {
+      "variant": "compact",
+      "command": [
+        "/Users/xaver/dev/qos-macos-shell/target/debug/terminal",
+        "--shots",
+        "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/captures/terminal/compact.png",
+        "--viewport",
+        "800x700"
+      ],
+      "status": "captured",
+      "exit_code": 0,
+      "seconds": 0.2,
+      "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/captures/terminal/compact.png",
+      "requested_scale": 1
+    },
+    {
+      "variant": "narrow",
+      "command": [
+        "/Users/xaver/dev/qos-macos-shell/target/debug/terminal",
+        "--shots",
+        "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/captures/terminal/narrow.png",
+        "--viewport",
+        "480x900"
+      ],
+      "status": "captured",
+      "exit_code": 0,
+      "seconds": 0.2,
+      "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/captures/terminal/narrow.png",
+      "requested_scale": 1
+    },
+    {
+      "variant": "large-text",
+      "command": [
+        "/Users/xaver/dev/qos-macos-shell/target/debug/terminal",
+        "--shots",
+        "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/captures/terminal/large-text.png",
+        "--viewport",
+        "800x900",
+        "--text-scale",
+        "2"
+      ],
+      "status": "captured",
+      "exit_code": 0,
+      "seconds": 0.21,
+      "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/captures/terminal/large-text.png",
+      "requested_scale": 2
+    }
+  ]
+}

@@ -204,11 +204,11 @@ impl Widget for QrWidget {
             let msg = format!("QR error: {err}");
             // Affine composition: pure `f64` matrix multiply, cannot panic
             // regardless of operand magnitude.
+            let inset = f64::from(theme.tokens.spacing.s2);
             #[allow(
                 clippy::arithmetic_side_effects,
                 reason = "Affine composition is float matrix math and cannot panic"
             )]
-            let inset = f64::from(theme.tokens.spacing.s2);
             let text_transform =
                 transform * Affine::translate((self.rect.x0 + inset, self.rect.y0 + inset));
             text_renderer.draw_text(

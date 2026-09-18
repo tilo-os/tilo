@@ -1,0 +1,123 @@
+   Compiling object v0.37.3
+   Compiling nom v7.1.3
+   Compiling mail v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/mail)
+   Compiling feeds v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/feeds)
+   Compiling vpn v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/vpn)
+   Compiling pdf_viewer v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/pdf_viewer)
+   Compiling cexpr v0.6.0
+warning: function `report_engine_error` is never used
+   --> apps/mail/src/engine.rs:284:4
+    |
+284 | fn report_engine_error(
+    |    ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling bindgen v0.72.1
+   Compiling ar_archive_writer v0.5.2
+   Compiling psm v0.1.31
+   Compiling agent v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/agent)
+   Compiling stacker v0.1.24
+   Compiling typst-eval v0.14.2
+   Compiling code_editor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/code_editor)
+   Compiling typst v0.14.2
+warning: `mail` (lib) generated 1 warning
+   Compiling camera v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/camera)
+   Compiling typst_editor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/typst_editor)
+   Compiling totp v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/totp)
+   Compiling mysql_common v0.32.4
+   Compiling imager v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/imager)
+   Compiling qos-scratchpad v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/scratchpad)
+   Compiling mysql v25.0.1
+   Compiling calendar v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/calendar)
+   Compiling tube v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/tube)
+   Compiling browser v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/browser)
+   Compiling db_client v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/db_client)
+warning: constant `MAX_XML_BYTES` is never used
+  --> apps/calendar/src/caldav.rs:41:7
+   |
+41 | const MAX_XML_BYTES: usize = 8 * 1024 * 1024;
+   |       ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `MAX_RESOURCES` is never used
+  --> apps/calendar/src/caldav.rs:42:7
+   |
+42 | const MAX_RESOURCES: usize = 10_000;
+   |       ^^^^^^^^^^^^^
+
+warning: constant `MAX_HREF_BYTES` is never used
+  --> apps/calendar/src/caldav.rs:43:7
+   |
+43 | const MAX_HREF_BYTES: usize = 4096;
+   |       ^^^^^^^^^^^^^^
+
+warning: constant `MAX_ICAL_BYTES` is never used
+  --> apps/calendar/src/caldav.rs:44:7
+   |
+44 | const MAX_ICAL_BYTES: usize = 2 * 1024 * 1024;
+   |       ^^^^^^^^^^^^^^
+
+warning: struct `ParsedMultistatus` is never constructed
+   --> apps/calendar/src/caldav.rs:493:8
+    |
+493 | struct ParsedMultistatus {
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: function `parse_multistatus` is never used
+   --> apps/calendar/src/caldav.rs:502:4
+    |
+502 | fn parse_multistatus(xml: &str) -> Result<ParsedMultistatus, String> {
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: function `sync_collection_body` is never used
+   --> apps/calendar/src/caldav.rs:580:4
+    |
+580 | fn sync_collection_body(token: &str) -> String {
+    |    ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `xml_escape` is never used
+   --> apps/calendar/src/caldav.rs:590:4
+    |
+590 | fn xml_escape(value: &str) -> String {
+    |    ^^^^^^^^^^
+
+   Compiling api_tester v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/api_tester)
+   Compiling weather v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/weather)
+   Compiling maps v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/maps)
+   Compiling ebook v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/ebook)
+   Compiling contacts v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/contacts)
+warning: `calendar` (lib) generated 8 warnings
+   Compiling video-player v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/video-player)
+   Compiling hex_editor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/hex_editor)
+   Compiling music v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/music)
+   Compiling containers v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/containers)
+   Compiling notes v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/notes)
+   Compiling snippets v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/snippets)
+   Compiling backups v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/backups)
+   Compiling disks v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/disks)
+   Compiling logs v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/logs)
+   Compiling slides v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/slides)
+   Compiling calculator v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/calculator)
+   Compiling video_editor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/video_editor)
+   Compiling themes v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/themes)
+   Compiling firewall v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/firewall)
+   Compiling git_client v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/git_client)
+   Compiling store v0.1.2 (/Users/xaver/dev/qos-macos-shell/apps/store)
+   Compiling monitor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/monitor)
+   Compiling sheets v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/sheets)
+   Compiling diffmerge v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/diffmerge)
+   Compiling settings v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/settings)
+   Compiling remote v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/remote)
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+   Compiling file-explorer v0.2.0 (/Users/xaver/dev/qos-macos-shell/apps/file-explorer)
+warning: `typst_editor` (bin "typst_editor") generated 1 warning
+   Compiling photos v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/photos)
+   Compiling chat v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/chat)
+   Compiling terminal v0.2.1 (/Users/xaver/dev/qos-macos-shell/apps/terminal)
+   Compiling word-processor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/word-processor)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 26.51s

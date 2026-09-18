@@ -1,0 +1,87 @@
+{
+  "app": "apps/video-player",
+  "status": "captured",
+  "binary": "/Users/xaver/dev/qos-macos-shell/target/debug/video-player",
+  "binary_sha256": "de13e591596a987772a50f56ea6aed0fb659892b83463c44db5dafc9b81f767d",
+  "source_head": "ef5f08db5aece7eaf199067bc575a07862f594ac",
+  "working_diff_sha256": "7f762ea1f3d802de77724201200fa2412477d420d59c0bebe82fe0571b479797",
+  "captures": [
+    {
+      "variant": "wide",
+      "command": [
+        "/Users/xaver/dev/qos-macos-shell/target/debug/video-player",
+        "--shots",
+        "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/capture-corrected/captures/video-player/wide.png",
+        "--viewport",
+        "1200x800"
+      ],
+      "status": "captured",
+      "exit_code": 0,
+      "seconds": 1.12,
+      "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/capture-corrected/captures/video-player/wide.png",
+      "requested_scale": 1
+    },
+    {
+      "variant": "compact",
+      "command": [
+        "/Users/xaver/dev/qos-macos-shell/target/debug/video-player",
+        "--shots",
+        "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/capture-corrected/captures/video-player/compact.png",
+        "--viewport",
+        "800x700"
+      ],
+      "status": "captured",
+      "exit_code": 0,
+      "seconds": 0.27,
+      "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/capture-corrected/captures/video-player/compact.png",
+      "requested_scale": 1
+    },
+    {
+      "variant": "narrow",
+      "command": [
+        "/Users/xaver/dev/qos-macos-shell/target/debug/video-player",
+        "--shots",
+        "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/capture-corrected/captures/video-player/narrow.png",
+        "--viewport",
+        "480x900"
+      ],
+      "status": "captured",
+      "exit_code": 0,
+      "seconds": 0.21,
+      "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/capture-corrected/captures/video-player/narrow.png",
+      "requested_scale": 1
+    },
+    {
+      "variant": "large-text",
+      "command": [
+        "/Users/xaver/dev/qos-macos-shell/target/debug/video-player",
+        "--shots",
+        "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/capture-corrected/captures/video-player/large-text.png",
+        "--viewport",
+        "800x900",
+        "--text-scale",
+        "2"
+      ],
+      "status": "captured",
+      "exit_code": 0,
+      "seconds": 0.26,
+      "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/capture-corrected/captures/video-player/large-text.png",
+      "requested_scale": 2
+    },
+    {
+      "variant": "scale-baseline",
+      "command": [
+        "/Users/xaver/dev/qos-macos-shell/target/debug/video-player",
+        "--shots",
+        "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/capture-corrected/captures/video-player/scale-baseline.png",
+        "--viewport",
+        "800x900"
+      ],
+      "status": "captured",
+      "exit_code": 0,
+      "seconds": 0.26,
+      "path": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/capture-corrected/captures/video-player/scale-baseline.png",
+      "requested_scale": 1
+    }
+  ]
+}

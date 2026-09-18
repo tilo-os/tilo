@@ -1,0 +1,10 @@
+{
+  "executable": "/Users/xaver/dev/qos-macos-shell/target/debug/ux-bench",
+  "executable_blake3": "7273ca90f35067deac54f8d41473c937530d885179de00a6817b07464bf5ba15",
+  "fixture_profile": "/Users/xaver/dev/qos-macos-shell/.superpowers/app-ui-2026-09-15/bench-baseline/010-desktop-retina/profile",
+  "persisted_workspace_names": [
+    "Home"
+  ],
+  "platform": "macos",
+  "scenario": "{\n  \"name\": \"Fresh desktop discoverability\",\n  \"goal\": \"Find a visible way to open an app from a fresh desktop\",\n  \"viewport\": [\n    1280,\n    800\n  ],\n  \"budget\": {\n    \"clicks\": 0,\n    \"keys\": 0\n  },\n  \"steps\": [\n    {\n      \"op\": \"checkpoint\",\n      \"name\": \"desktop\",\n      \"checks\": [\n        {\n          \"kind\": \"visible\",\n          \"target\": \"semantic:Open an app\"\n        },\n        {\n          \"kind\": \"target_size\",\n          \"target\": \"semantic:Open an app\",\n          \"min\": [\n            24,\n            24\n          ]\n        }\n      ]\n    }\n  ],\n  \"scale\": 2\n}\n"
+}

@@ -1,0 +1,63 @@
+    Blocking waiting for file lock on build directory
+   Compiling word-processor v0.1.0 (/Users/xaver/dev/qos-macos-shell/apps/word-processor)
+warning: methods `close` and `rect` are never used
+  --> apps/word-processor/src/unsaved_changes.rs:25:19
+   |
+23 | impl UnsavedChanges {
+   | ------------------- methods in this implementation
+24 |     pub(crate) fn open(&mut self) {}
+25 |     pub(crate) fn close(&mut self) {}
+   |                   ^^^^^
+26 |     pub(crate) fn is_open(&self) -> bool { false }
+27 |     pub(crate) fn rect(&self) -> Option<Rect> { self.layout.as_ref().map(|l| l.card) }
+   |                   ^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `word-processor` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 55s
+     Running unittests src/lib.rs (target/debug/deps/word_processor-47ead8d2ae8a39e7)
+
+running 4 tests
+test unsaved_changes::tests::unsaved_prompt_tab_and_shift_tab_reach_every_choice ... FAILED
+test unsaved_changes::tests::unsaved_prompt_keyboard_choices_are_safe_and_reset_on_reopen ... FAILED
+test unsaved_changes::tests::unsaved_prompt_scrim_and_close_cancel_and_accessible_buttons_activate ... FAILED
+test unsaved_changes::tests::unsaved_prompt_actions_are_visible_and_clickable_in_both_themes_and_scales ... FAILED
+
+failures:
+
+---- unsaved_changes::tests::unsaved_prompt_tab_and_shift_tab_reach_every_choice stdout ----
+
+thread 'unsaved_changes::tests::unsaved_prompt_tab_and_shift_tab_reach_every_choice' (3776893) panicked at apps/word-processor/src/unsaved_changes.rs:97:9:
+assertion `left == right` failed
+  left: None
+ right: Some(Cancel)
+
+---- unsaved_changes::tests::unsaved_prompt_keyboard_choices_are_safe_and_reset_on_reopen stdout ----
+
+thread 'unsaved_changes::tests::unsaved_prompt_keyboard_choices_are_safe_and_reset_on_reopen' (3776891) panicked at apps/word-processor/src/unsaved_changes.rs:80:9:
+assertion failed: dialog.is_open()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- unsaved_changes::tests::unsaved_prompt_scrim_and_close_cancel_and_accessible_buttons_activate stdout ----
+
+thread 'unsaved_changes::tests::unsaved_prompt_scrim_and_close_cancel_and_accessible_buttons_activate' (3776892) panicked at apps/word-processor/src/unsaved_changes.rs:133:9:
+assertion `left == right` failed
+  left: None
+ right: Some(Cancel)
+
+---- unsaved_changes::tests::unsaved_prompt_actions_are_visible_and_clickable_in_both_themes_and_scales stdout ----
+
+thread 'unsaved_changes::tests::unsaved_prompt_actions_are_visible_and_clickable_in_both_themes_and_scales' (3776890) panicked at apps/word-processor/src/unsaved_changes.rs:113:61:
+called `Option::unwrap()` on a `None` value
+
+
+failures:
+    unsaved_changes::tests::unsaved_prompt_actions_are_visible_and_clickable_in_both_themes_and_scales
+    unsaved_changes::tests::unsaved_prompt_keyboard_choices_are_safe_and_reset_on_reopen
+    unsaved_changes::tests::unsaved_prompt_scrim_and_close_cancel_and_accessible_buttons_activate
+    unsaved_changes::tests::unsaved_prompt_tab_and_shift_tab_reach_every_choice
+
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 300 filtered out; finished in 0.16s
+
+error: test failed, to rerun pass `-p word-processor --lib`

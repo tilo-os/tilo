@@ -1,0 +1,4 @@
+BEFORE link target=b92b903b-34f8-4dad-906c-9fd91fe3949b doc-target=true hit=Some(b92b903b-34f8-4dad-906c-9fd91fe3949b) edge=385.875 y=134
+PASS 1x caret=13 selection=9..13 code-selection=18..22 link-edge=385.875 selected=b92b903b-34f8-4dad-906c-9fd91fe3949b
+BEFORE link target=b12c9adc-d437-406a-aca1-7441dc1e47a3 doc-target=true hit=Some(b12c9adc-d437-406a-aca1-7441dc1e47a3) edge=259.75 y=324
+PASS 2x caret=13 selection=9..13 code-selection=18..22 link-edge=259.750 selected=b12c9adc-d437-406a-aca1-7441dc1e47a3
