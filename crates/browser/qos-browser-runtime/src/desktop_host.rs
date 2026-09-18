@@ -635,11 +635,40 @@ impl DesktopRoot {
         if snapshot["desktopPan"] != pan { snapshot["desktopPan"] = pan; changed = true; }
         let history = self.history_target().map(|target| json!({"target":target})).unwrap_or(serde_json::Value::Null);
         if snapshot["history"] != history { snapshot["history"] = history; changed = true; }
+        let available = self.activity_snapshot().is_ok();
+        let capabilities = json!({"select":true,"width":true,"maximize":true,"strips":true,"commands":true,
+            "workspaceSelect":!self.handle.tree.borrow().workspaces.is_empty(),"workspaceHistory":available,"workspaceReplay":available});
+        let activity = self.activity.as_ref().filter(|_| available).map(|activity| json!({
+            "workspace":activity.workspace.0.to_string(), "view":activity.pane.view(),
+            "playing":activity.pane.replay_is_playing(),
+            "coverage":if activity.pane.feed_coverage().is_complete() { "complete" } else { "partial" }
+        })).unwrap_or(serde_json::Value::Null);
+        for (key, value) in [("capabilities", capabilities), ("workspaceActivity", activity),
+            ("workspaceActivityCloseReason", json!(self.activity_close_reason))] {
+            if snapshot[key] != value { snapshot[key] = value; changed = true; }
+        }
         if changed { self.handle.navigation_revision.set(self.handle.navigation_revision.get().wrapping_add(1)); }
     }
     fn navigate(&mut self, command: crate::desktop_navigation::Command) -> Result<bool, String> {
         use crate::desktop_navigation::Command;
         if command.generation() != self.handle.generation { return Err("Stale desktop surface".into()); }
+        let request = match &command {
+            Command::Workspace { workspace, .. } | Command::WorkspaceActivity { workspace, .. }
+            | Command::CloseWorkspaceActivity { workspace, .. } => {
+                let id = workspace.parse::<u64>().ok().filter(|id| id.to_string() == *workspace)
+                    .map(WorkspaceId).ok_or("Invalid navigation identity")?;
+                Some(match &command {
+                    Command::Workspace { .. } => activity::WorkspaceViewRequest::Select { workspace: id },
+                    Command::WorkspaceActivity { view, .. } => activity::WorkspaceViewRequest::OpenActivity { workspace: id, view: *view },
+                    _ => {
+                        if self.handle.tree.borrow().active != id { return Err("Workspace is no longer active".into()); }
+                        activity::WorkspaceViewRequest::CloseActivity { workspace: id }
+                    }
+                })
+            }
+            _ => None,
+        };
+        if let Some(request) = request { self.queue_view_request(request)?; return Ok(false); }
         if let Command::Pan {workspace,strip,offset,..} = command {
             if !offset.is_finite() { return Err("Invalid pan offset".into()); }
             let tree = self.handle.tree.borrow();
@@ -652,7 +681,11 @@ impl DesktopRoot {
             if self.active_route().as_ref() != Some(&route) || self.history_target().as_ref() != Some(&target) { return Err("Document history target is no longer active".into()); }
             let (_,s,g,t) = route.ids()?;
             let host = self.surface.row(s).and_then(|row|row.groups.iter().find(|group|group.id==g && group.active_tab_id()==t)).and_then(|group|group.active_host()).ok_or("Document history unavailable")?;
-            return host.request_document_history(&target).then_some(false).ok_or_else(|| "Document history unavailable".into());
+            if !host.request_document_history(&target) { return Err("Document history unavailable".into()); }
+            // navigate runs during update, after outgoing layout focus capture.
+            // The exact document request must succeed before retiring its overlay.
+            self.close_activity(crate::desktop_activity::ActivityCloseReason::ResourceOpened);
+            return Ok(false);
         }
         if let Command::Scroll {region,action,..} = command {
             self.refresh_navigation(false);
@@ -1531,6 +1564,47 @@ mod tests {
         assert!(handle.session_requests.borrow().is_empty());
     }
 
+    #[test]
+    fn workspace_navigation_admitted_state_and_queued_commands() {
+        let (mut root, handle, _) = fixture_with_topology(|tree| {
+            tree.workspaces.push(Workspace::new(WorkspaceId(9_007_199_254_740_993), "Empty"));
+        });
+        assert_eq!(handle.navigation.borrow()["capabilities"]["workspaceHistory"], true);
+        let command = |kind: &str, workspace: &str, view: Option<&str>| {
+            let mut wire = serde_json::json!({"kind":kind,"generation":handle.generation,"workspace":workspace});
+            if let Some(view) = view { wire["view"] = view.into(); }
+            serde_json::from_value(wire).unwrap()
+        };
+        root.navigate(command("workspace-activity", "1", Some("replay"))).unwrap();
+        assert!(root.activity.is_none(), "bridge acceptance must only queue the pane");
+        root.update(&mut AutoCommit::new(), &automerge::ROOT);
+        assert_eq!(handle.navigation.borrow()["workspaceActivity"], serde_json::json!({"workspace":"1","view":"replay","playing":false,"coverage":"complete"}));
+        root.activity.as_mut().unwrap().pane.set_view(activity::ActivityView::Tasks);
+        root.refresh_navigation(false);
+        assert_eq!(handle.navigation.borrow()["workspaceActivity"]["view"], "tasks");
+        for workspace in ["01", "-1", "18446744073709551616", "2", "9007199254740993"] {
+            assert!(root.navigate(command("workspace-activity", workspace, Some("explore"))).is_err());
+        }
+        let mut stale = serde_json::json!({"kind":"close-workspace-activity","generation":"old","workspace":"1"});
+        assert!(root.navigate(serde_json::from_value(stale.clone()).unwrap()).is_err());
+        stale["kind"] = "workspace".into();
+        assert!(root.navigate(serde_json::from_value(stale).unwrap()).is_err());
+        root.navigate(command("close-workspace-activity", "1", None)).unwrap();
+        assert!(root.activity.is_some());
+        root.update(&mut AutoCommit::new(), &automerge::ROOT);
+        assert_eq!(handle.navigation.borrow()["workspaceActivityCloseReason"], "dismissed");
+        root.navigate(command("workspace", "9007199254740993", None)).unwrap();
+        assert_eq!(handle.tree.borrow().active, WorkspaceId(1));
+        root.update(&mut AutoCommit::new(), &automerge::ROOT);
+        assert_eq!(handle.navigation.borrow()["activeWorkspace"], "9007199254740993");
+        assert!(handle.navigation.borrow()["active"].is_null());
+        handle.invalidate_history(); root.reconcile();
+        assert_eq!(handle.navigation.borrow()["capabilities"]["workspaceHistory"], false);
+        assert_eq!(handle.navigation.borrow()["capabilities"]["workspaceReplay"], false);
+        assert!(root.navigate(command("workspace-activity", "9007199254740993", Some("replay"))).is_err());
+        assert!(handle.session_requests.borrow().is_empty());
+    }
+
     fn fixture() -> (DesktopRoot, DesktopHandle, PortableStorage) {
         fixture_with_topology(|_| {})
     }
@@ -2142,6 +2216,38 @@ mod tests {
         // All four app leaves are visible here; whole-frame idle is covered by
         // the separately queued PreviewCanvas regression work.
     }
+    #[test]
+    fn workspace_navigation_document_history_interlock_preserves_exact_owner() {
+        use crate::desktop_navigation::Command;
+        let (root, handle, _) = fixture();
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(ui::State::new(), Box::new(root), (1000,600), ui::Theme::dark(), ui::TextRenderer::new(), ui::permissions::UserId("author".into()));
+        frame.poll_frame().unwrap();
+        let notes = handle.navigation.borrow()["entries"].as_array().unwrap().iter().find(|e| e["label"] == "Notes").unwrap()["route"].clone();
+        *handle.navigation_command.borrow_mut() = Some(Command::Select { generation:handle.generation.clone(),route:serde_json::from_value(notes).unwrap() });
+        frame.relayout(); frame.poll_frame().unwrap();
+        let nav = handle.navigation.borrow().clone();
+        *handle.navigation_command.borrow_mut() = Some(serde_json::from_value(serde_json::json!({"kind":"workspace-activity","generation":handle.generation,"workspace":"1","view":"replay"})).unwrap());
+        frame.relayout(); frame.poll_frame().unwrap(); frame.relayout();
+        assert_eq!(handle.navigation.borrow()["workspaceActivity"]["view"], "replay");
+        let mut route: crate::desktop_navigation::Route = serde_json::from_value(nav["active"].clone()).unwrap();
+        route.workspace = "9007199254740993".into();
+        *handle.navigation_command.borrow_mut() = Some(Command::History { generation:handle.generation.clone(), route, target:nav["history"]["target"].as_str().unwrap().into() });
+        frame.relayout();
+        assert!(handle.navigation_result.borrow_mut().take().unwrap().is_err());
+        assert!(!handle.navigation.borrow()["workspaceActivity"].is_null());
+        let before = handle.records.borrow().values().map(|r| r.store.read(&r.checkout.id, |doc|doc.base_heads().to_vec()).unwrap()).collect::<Vec<_>>();
+        *handle.navigation_command.borrow_mut() = Some(Command::History { generation:handle.generation.clone(),route:serde_json::from_value(nav["active"].clone()).unwrap(),target:nav["history"]["target"].as_str().unwrap().into() });
+        frame.relayout(); frame.poll_frame().unwrap();
+        assert!(handle.navigation_result.borrow_mut().take().unwrap().is_ok());
+        assert!(handle.navigation.borrow()["workspaceActivity"].is_null());
+        assert_eq!(handle.navigation.borrow()["workspaceActivityCloseReason"], "resource-opened");
+        assert!(frame.inspection_json().unwrap().contains("ActivityTimeline"));
+        assert!(!frame.inspection_json().unwrap().contains("Workspace activity"));
+        let after = handle.records.borrow().values().map(|r| r.store.read(&r.checkout.id, |doc|doc.base_heads().to_vec()).unwrap()).collect::<Vec<_>>();
+        assert_eq!(before, after);
+        assert!(handle.session_requests.borrow().is_empty());
+    }
+
     #[test]
     fn external_history_opens_retained_framework_without_changing_heads() {
         use crate::desktop_navigation::Command;
