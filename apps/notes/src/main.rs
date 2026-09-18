@@ -121,7 +121,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
         out,
         args.scenario.as_deref(),
-        args.text_scale,
+        ui::launch::shot_theme(args),
     )
     .map_err(|error| LaunchError::Operation(error.to_string()))
 }
