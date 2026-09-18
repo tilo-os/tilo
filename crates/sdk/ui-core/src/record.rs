@@ -2093,6 +2093,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn room_discovery_never_crosses_scopes_after_restart() {
         let dir = tempfile::tempdir().expect("temporary state directory");
         // SAFETY: serialised by this module's persistent-record tests.
@@ -2203,10 +2204,10 @@ mod tests {
     #[test]
     // Shares a serial key with every other test mutating the process-global
     // `XDG_DATA_HOME` (see `persist::tests`), so they don't race on it.
-    #[serial_test::serial(state_dir_env)]
+    #[serial_test::serial(process_env)]
     fn each_record_persists_to_its_own_file_and_comes_back() {
         let tmp = tempfile::tempdir().expect("temp dir");
-        // SAFETY: this test is serialised on `record_state_dir`; no other
+        // SAFETY: this test is serialised on `process_env`; no other
         // thread reads the variable between the set and the reads below.
         unsafe {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
@@ -2274,7 +2275,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(state_dir_env)]
+    #[serial_test::serial(process_env)]
     fn same_record_id_in_two_rooms_never_aliases_and_each_hydrates_after_restart() {
         let tmp = tempfile::tempdir().expect("temp dir");
         unsafe {

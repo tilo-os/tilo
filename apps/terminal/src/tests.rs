@@ -56,7 +56,7 @@ impl MasterPty for MockMasterShared {
 
 /// `DeviceId::dummy()` is gated behind a winit unstable feature; the
 /// regular constructor isn't pub. Match what
-/// `ui/src/widget/date_picker.rs` does: zero-init the value, which
+/// `crates/sdk/ui-core/src/widget/date_picker.rs` does: zero-init the value, which
 /// `handle_event` never inspects for these tests.
 fn fake_device_id() -> winit::event::DeviceId {
     unsafe { std::mem::zeroed() }
