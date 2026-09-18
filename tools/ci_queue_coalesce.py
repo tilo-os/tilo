@@ -17,7 +17,7 @@ from urllib.request import Request, build_opener, HTTPRedirectHandler
 from urllib.error import URLError
 
 WORKFLOWS = frozenset({
-    "check.yml", "lint.yml", "build-image.yml", "package-desktop.yml",
+    "build-image.yml", "package-desktop.yml",
     "release-apps.yml", "fs-fuse.yml", "legacy-app-e2e.yml",
 })
 UNSTARTED = {None, "", "1970-01-01T00:00:00Z", "0001-01-01T00:00:00Z"}
@@ -89,6 +89,8 @@ class Forgejo:
             rows = response["workflow_runs"]
             if not isinstance(rows, list):
                 raise ValueError("workflow_runs is not a list")
+            if len(rows) > 30:
+                raise ValueError("server ignored page size; no cancellations performed")
             for row in rows:
                 runs[row["id"]] = row
             if len(rows) < 30:
