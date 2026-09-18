@@ -1,0 +1,53 @@
+# Tilo DX12 compiled-shader cache prototype
+
+Source: crates.io `wgpu-hal` 29.0.3, upstream commit
+`4cbe6232b2d7c289b6e1a38416a6ae1461a22e81` (wgpu-hal directory).
+Original MIT/Apache licenses and normalized manifest are retained. This is a
+pinned dependency patch, not an edition or dependency upgrade.
+
+The public wgpu PipelineCache currently works only with Vulkan. This patch
+does not advertise DX12 PIPELINE_CACHE support. It exposes a narrow DX12-only
+Device import/export API for the existing process-local DXC shader cache.
+
+Changes are limited to `src/dx12/{mod,device,shader_cache,shader_cache_key,
+shader_compilation}.rs` and the Windows LibraryLoader feature:
+
+- Runtime WGSL validation, specialization and layout-specific HLSL generation
+  remain unchanged. Only the following compiler invocation can be skipped.
+- Cache keys contain length-delimited exact HLSL, entry point, shader stage,
+  shader model, source label, and dynamic DXC debug/optimization/F16 options.
+- Import is unsafe: the caller must verify compiler identity and provenance.
+  The toolkit fingerprints the DLL before loading it, holding a replacement-
+  preventing handle for the device lifetime, and owns bounded private storage.
+- Import rejects duplicate/empty/oversized records before mutating cache state.
+- Export returns used compute shaders only; render shaders follow the original
+  path. A rejected cached compute PSO evicts imported bytecode and retries the
+  same validated shader through DXC, bounded to one retry per pipeline.
+- Compiler identity uses the kernel module path of the actual DxcCreateInstance
+  symbol. The toolkit loads the final path from its held fingerprinted file
+  handle, then compares the loaded module's volume/file ID with that held file.
+- Stats report hits, misses, rejections, summed DXC compile elapsed durations and
+  summed compute PSO creation elapsed durations. These include descheduling and
+  are neither measured CPU time nor startup wall-clock critical path.
+
+On an upstream upgrade, review `compile_dxc` arguments and runtime HLSL options,
+update the toolkit cache ABI, and rerun cold/hit/corrupt-cache native rendering
+tests. No API here should be generalized to arbitrary untrusted shader blobs.
+
+Native ARM64 release Calculator validation (2026-09-18) passed: checksum
+corruption fell back to compilation; checksum-valid invalid DXIL reached the
+real driver rejection path, recompiled, presented and subsequently repaired the
+cache. Native accessibility/keyboard `40+2` returned `42`; dark/light offscreen
+1280x800 output matched the pre-patch binary pixel-for-pixel.
+
+On the measured unplugged, Energy-Saver host, alternating runs of the same
+installed binary had median first-present 1,589ms with caching disabled (4 runs)
+and 1,111ms with caching enabled (5 runs, range 569--1,467ms). Median Vello
+initialization fell from 1,216ms to 34ms; normal hits reused 24 compute shaders.
+This is a material shader-stage reduction, not near-immediate app startup.
+Fonts and surface setup still dominated some runs. An empty shader cache took
+1,772ms; this was not a controlled cold OS boot. Power and runtime scheduling
+were not controlled, and the measurements must not be generalized to all hosts.
+
+The patch does not accelerate first cache misses, Naga translation, fonts,
+adapter selection or driver-native pipeline creation. Linux rendering is unchanged.
