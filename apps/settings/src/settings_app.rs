@@ -44,6 +44,14 @@ use ui::{AppKind, AppWidget, IconDescriptor};
 /// placement gets the phone layout.
 pub const NAV_BREAKPOINT: f64 = 720.0;
 
+/// Keep enough horizontal room for a readable detail pane after the custom
+/// Settings sidebar expands for large text. The shared shell deliberately has
+/// no theme dependency, so this app supplies the scale-aware breakpoint.
+fn nav_breakpoint_for_text_scale(text_scale: f32) -> f64 {
+    let sidebar_width = sidebar::width_for_text_scale(text_scale);
+    NAV_BREAKPOINT + (sidebar_width - sidebar::SIDEBAR_WIDTH).max(0.0)
+}
+
 pub struct SettingsApp {
     /// Currently-selected sidebar category.
     selected: Category,
@@ -60,6 +68,10 @@ pub struct SettingsApp {
     /// Seed width hint so the very first offscreen frame resolves the correct
     /// wide/narrow layout. `None` lets the shell decide from its own rect.
     width_hint: Option<f32>,
+    /// The text scale used to construct the retained shell. A custom-painted
+    /// sidebar has scale-dependent geometry, so a system text-scale change
+    /// rebuilds the shell while preserving only durable/local app state.
+    shell_text_scale: f32,
     /// The live, local-only search query typed into the sidebar's search
     /// field. When non-empty the sidebar shows a filtered results list instead
     /// of the sectioned category list.
@@ -120,6 +132,7 @@ impl SettingsApp {
             structure_dirty: false,
             narrow_shot_screen: None,
             width_hint: None,
+            shell_text_scale: 1.0,
             search_query: String::new(),
             sidebar_selection: ui::LocalState::new(None),
             search_state: ui::LocalState::new(String::new()),
@@ -240,9 +253,9 @@ impl SettingsApp {
     pub fn is_narrow(&self) -> bool {
         match &self.shell {
             Some(s) => s.is_narrow(),
-            None => self
-                .width_hint
-                .is_some_and(|w| f64::from(w) < NAV_BREAKPOINT),
+            None => self.width_hint.is_some_and(|w| {
+                f64::from(w) < nav_breakpoint_for_text_scale(self.shell_text_scale)
+            }),
         }
     }
 
@@ -433,7 +446,12 @@ impl SettingsApp {
     /// Create the persistent [`AppShell`] with the current nav + content +
     /// search and the seeded shot state.
     fn build_shell(&self) -> AppShell {
-        let nav = sidebar::build(self.selected, &self.search_query, &self.sidebar_selection);
+        let nav = sidebar::build_with_text_scale(
+            self.selected,
+            &self.search_query,
+            &self.sidebar_selection,
+            self.shell_text_scale,
+        );
         let content = self.build_content();
         // A narrow (phone) layout keeps the selected category's CONTENT on
         // screen — the category list is one back-tap away, never the default a
@@ -442,8 +460,8 @@ impl SettingsApp {
         let narrow_screen = self.narrow_shot_screen.unwrap_or(NarrowScreen::Content);
         let mut shell = AppShell::new(nav, content)
             .with_search(self.build_search_field())
-            .with_breakpoint(NAV_BREAKPOINT)
-            .with_sidebar_width(sidebar::SIDEBAR_WIDTH)
+            .with_breakpoint(nav_breakpoint_for_text_scale(self.shell_text_scale))
+            .with_sidebar_width(sidebar::width_for_text_scale(self.shell_text_scale))
             .with_narrow_screen(narrow_screen);
         if let Some(w) = self.width_hint {
             shell = shell.with_width_hint(f64::from(w));
@@ -455,7 +473,12 @@ impl SettingsApp {
     /// query. No-op before the shell exists (the first `build_layout` will
     /// build them fresh).
     fn refresh_shell_children(&mut self) {
-        let nav = sidebar::build(self.selected, &self.search_query, &self.sidebar_selection);
+        let nav = sidebar::build_with_text_scale(
+            self.selected,
+            &self.search_query,
+            &self.sidebar_selection,
+            self.shell_text_scale,
+        );
         let content = self.build_content();
         if let Some(shell) = &mut self.shell {
             shell.set_nav(nav);
@@ -1388,7 +1411,8 @@ impl Widget for SettingsApp {
     ) -> taffy::NodeId {
         // Create the shell once and reuse it so its collapse/overlay state
         // survives category switches (which rebuild the tree).
-        if self.shell.is_none() {
+        if self.shell.is_none() || (self.shell_text_scale - theme.text_scale).abs() > f32::EPSILON {
+            self.shell_text_scale = theme.text_scale;
             self.shell = Some(self.build_shell());
         }
         #[allow(
@@ -2789,6 +2813,43 @@ mod tests {
             heading.y0 < 844.0,
             "large text must retain the destination heading in the first viewport (y={})",
             heading.y0
+        );
+    }
+
+    #[test]
+    fn wide_large_text_reserves_a_readable_sidebar_before_layout() {
+        let mut app = SettingsApp::new()
+            .with_width_hint(1440.0)
+            .with_narrow_content_shot();
+        layout_at_with_theme(
+            &mut app,
+            1440.0,
+            900.0,
+            &ui::Theme::dark().with_text_scale(2.0),
+        );
+        assert!(
+            !app.is_narrow(),
+            "1440px still admits a readable split at 200% text"
+        );
+        let sidebar = app
+            .shell
+            .as_ref()
+            .expect("layout builds the shell")
+            .sidebar_panel_rect();
+        assert!(
+            (sidebar.width() - sidebar::width_for_text_scale(2.0)).abs() < 0.5,
+            "sidebar tracks the same scale as its custom-painted rows: {sidebar:?}"
+        );
+        let mut compact = SettingsApp::new().with_width_hint(900.0);
+        layout_at_with_theme(
+            &mut compact,
+            900.0,
+            844.0,
+            &ui::Theme::dark().with_text_scale(2.0),
+        );
+        assert!(
+            compact.is_narrow(),
+            "a 900px split would crowd 200%-text navigation and must collapse"
         );
     }
 
