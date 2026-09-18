@@ -7,9 +7,11 @@ use tilo_actions::{
     Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
     ExecutionLocus, OperationKind, ParamType, Resource, RetryPolicy,
 };
+use ui::graph_editor::Edge;
 pub const ADD_ADJUSTMENT_TYPE: &str = "image-editor.add-adjustment";
 pub const REMOVE_ADJUSTMENT_TYPE: &str = "image-editor.remove-adjustment";
 pub const UPDATE_ADJUSTMENT_TYPE: &str = "image-editor.update-adjustment";
+pub const RECONNECT_INPUT_TYPE: &str = "image-editor.reconnect-input";
 pub const OPERATION_TYPE: &str = "image-editor.operation";
 pub const PROJECT_RESOURCE_ID: &str = "image-editor.project";
 pub const SOURCE_RESOURCE_ID: &str = "image-editor.source";
@@ -34,6 +36,7 @@ pub fn register(r: &mut ActionRegistry) {
     r.register::<AddAdjustment>(ADD_ADJUSTMENT_TYPE);
     r.register::<RemoveAdjustment>(REMOVE_ADJUSTMENT_TYPE);
     r.register::<UpdateAdjustment>(UPDATE_ADJUSTMENT_TYPE);
+    r.register::<ReconnectInput>(RECONNECT_INPUT_TYPE);
 }
 
 /// The normal collaborative graph insertion action.  It names the stable
@@ -98,6 +101,28 @@ impl Action for UpdateAdjustment {
         } else {
             Err(ActionError::Refused(
                 "that adjustment or parameter is no longer editable".into(),
+            ))
+        }
+    }
+    fn locus(&self) -> ExecutionLocus {
+        ExecutionLocus::ClientLocal
+    }
+}
+
+/// Expert graph wiring changes only the chosen target input. This is a
+/// first-class collaborative action rather than a replacement of the entire
+/// graph, preserving independent layout and adjustment edits from peers.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ReconnectInput {
+    pub edge: Edge,
+}
+impl Action for ReconnectInput {
+    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        if ProjectDoc::set_connection(doc, &self.edge) {
+            Ok(())
+        } else {
+            Err(ActionError::Refused(
+                "that graph connection is no longer editable".into(),
             ))
         }
     }
