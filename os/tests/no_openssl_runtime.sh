@@ -96,6 +96,7 @@ else
 fi
 if rg -n -i '\b(openssl|sbsign|sbverify)\b' \
     "$development_boot_fixture" "$development_signer_fixture" \
+    "$repo/os/tests/test_signing_spool.py" \
     "$repo/os/tests/test_development_trust.py" \
     "$repo/os/tests/development_source_registry.py" \
     "$tls_registry_fixture" \

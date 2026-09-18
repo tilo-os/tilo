@@ -25,12 +25,8 @@ class SigningSpoolTests(unittest.TestCase):
     def setUpClass(cls):
         # Test the actual signer implementation; do not replace its backend.
         # Run in the prepared native tool container, never install test tools
-        # globally or substitute the older OpenSSL signer on newer main.
-        required = ['/usr/bin/openssl', '/usr/bin/sbverify', '/usr/bin/unshare', '/usr/bin/mount']
-        if '/usr/local/bin/tilo-crypto' in spool.signer.sign.__code__.co_consts:
-            required.append('/usr/local/bin/tilo-crypto')
-        else:
-            required.append('/usr/bin/sbsign')
+        # globally or substitute a legacy external signer on newer main.
+        required = ['/usr/local/bin/tilo-crypto', '/usr/bin/unshare', '/usr/bin/mount']
         try:
             if os.getuid() != 0:
                 raise ValueError('already-root native Linux required')
@@ -62,11 +58,13 @@ class SigningSpoolTests(unittest.TestCase):
         (cls.home / 'signer').write_text(source.read_text())
         (cls.home / 'signer').chmod(0o755)
         (cls.home / 'purpose').write_bytes(spool.signer.PURPOSE)
-        for key in ('pcr-signing.key', 'efi-signing.key'):
-            spool.signer.run(['/usr/bin/openssl', 'genpkey', '-algorithm', 'RSA', '-pkeyopt', 'rsa_keygen_bits:2048', '-out', str(cls.home / key)])
-            (cls.home / key).chmod(0o600)
-        spool.signer.run(['/usr/bin/openssl', 'pkey', '-in', str(cls.home / 'pcr-signing.key'), '-pubout', '-out', str(cls.home / 'pcr.pub')])
-        spool.signer.run(['/usr/bin/openssl', 'req', '-new', '-x509', '-key', str(cls.home / 'efi-signing.key'), '-subj', '/CN=Throwaway test/', '-days', '1', '-out', str(cls.home / 'efi-signing.crt')])
+        crypto = '/usr/local/bin/tilo-crypto'
+        spool.signer.run([crypto, 'generate-secure-boot-cert', 'Throwaway PCR test',
+                          str(cls.home / 'pcr-signing.key'), str(cls.home / 'pcr-signing.crt')])
+        spool.signer.run([crypto, 'rsa-public-key', str(cls.home / 'pcr-signing.key'),
+                          str(cls.home / 'pcr.pub')])
+        spool.signer.run([crypto, 'generate-secure-boot-cert', 'Throwaway EFI test',
+                          str(cls.home / 'efi-signing.key'), str(cls.home / 'efi-signing.crt')])
 
     @classmethod
     def tearDownClass(cls):
@@ -132,7 +130,8 @@ class SigningSpoolTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(errors, [])
         self.assertFalse(receipt['private_keys_transferred'])
-        spool.signer.run(['/usr/bin/openssl', 'dgst', '-sha256', '-verify', str(self.home / 'pcr.pub'), '-signature', str(destination), str(source)])
+        spool.signer.run(['/usr/local/bin/tilo-crypto', 'verify-rsa-sha256',
+                          str(self.home / 'pcr.pub'), str(source), str(destination)])
         with self.assertRaises(FileExistsError):
             self.service(requests[0].parent, policy)
         with self.assertRaisesRegex(ValueError, 'already consumed'):
@@ -142,7 +141,8 @@ class SigningSpoolTests(unittest.TestCase):
         data = synthetic_uki('aarch64')
         request = self.request(data, operation='sign-efi')
         self.service(request, self.policy(data, 'uki', 'sign-efi'))
-        spool.signer.run(['/usr/bin/sbverify', '--cert', str(self.home / 'efi-signing.crt'), str(request / 'output')])
+        spool.signer.run(['/usr/local/bin/tilo-crypto', 'verify-efi',
+                          str(self.home / 'efi-signing.crt'), str(request / 'output')])
 
     def test_mismatched_input_and_context_never_reserve_authorization(self):
         data = b'x' * 40
@@ -224,8 +224,8 @@ subprocess.run([home+'/signer','sign-sha256-rsa-pkcs1',source,destination],check
                                  '/usr/bin/python3', '-c', script, str(self.home), str(source), str(output)],
                                 capture_output=True, timeout=30)
         self.assertEqual(result.returncode, 0, 'fixture signer failed with actual read-only home')
-        spool.signer.run(['/usr/bin/openssl', 'dgst', '-sha256', '-verify', str(self.home / 'pcr.pub'),
-                         '-signature', str(output), str(source)])
+        spool.signer.run(['/usr/local/bin/tilo-crypto', 'verify-rsa-sha256',
+                          str(self.home / 'pcr.pub'), str(source), str(output)])
 
     def test_cross_request_response_rejected_without_output(self):
         source = self.work / 'message'
@@ -270,4 +270,3 @@ subprocess.run([home+'/signer','sign-sha256-rsa-pkcs1',source,destination],check
 
 if __name__ == '__main__':
     unittest.main()
-
