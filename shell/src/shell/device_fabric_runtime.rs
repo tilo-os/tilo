@@ -816,7 +816,7 @@ pub(crate) fn handle_nearby_transfer_frame(
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct PendingIncomingMedia {
     received: Instant,
     request_id: [u8; 16],
@@ -1346,8 +1346,7 @@ pub struct DeviceFabricRuntime {
     roaming_provenance_fingerprint: Option<[u8; 32]>,
     applied_remote_settings: BTreeMap<String, Value>,
     settings_origin_initialized: bool,
-    pending_incoming_media:
-        BTreeMap<[u8; 16], (crate::shell::personal_continuity::DeviceId, String)>,
+    pending_incoming_media: BTreeMap<[u8; 16], PendingIncomingMedia>,
     waiting_incoming_media: BTreeMap<[u8; 16], PendingIncomingMedia>,
     notification_bridge: NotificationBridge,
     realtime_adapter: Option<crate::shell::realtime_session::SharedRealtimeFabricAdapter>,
@@ -1433,6 +1432,7 @@ impl DeviceFabricRuntime {
         pump_bluetooth_handoffs(network);
         if policy.permits(ContinuityCapability::Media) {
             pump_media_handoff_statuses(network);
+            self.expire_incoming_media(network);
         }
         self.maintain_gamepad_forwarding(network, policy);
         self.handle_fabric_actions(network, policy);
@@ -1598,8 +1598,7 @@ impl DeviceFabricRuntime {
             tear_down_nearby_transfers(network);
         }
         if newly_disabled(ContinuityCapability::Media) {
-            self.pending_incoming_media.clear();
-            self.waiting_incoming_media.clear();
+            self.tear_down_incoming_media(network, MediaHandoffFailure::Cancelled);
             tear_down_media_handoffs(network);
             tear_down_bluetooth_handoffs(network);
             if let Some(remote_capture) = self.remote_capture.as_ref()
@@ -1773,9 +1772,10 @@ impl DeviceFabricRuntime {
                 } => {
                     let expected_target =
                         media_handoff_statuses().lock().ok().and_then(|statuses| {
-                            statuses
-                                .get(&request_id)
-                                .map(|status| status.target == envelope.source)
+                            statuses.get(&request_id).map(|status| {
+                                status.target == envelope.source
+                                    && status.phase == MediaHandoffPhase::Pending
+                            })
                         });
                     if expected_target != Some(true) {
                         continue;
@@ -1797,9 +1797,10 @@ impl DeviceFabricRuntime {
                 } => {
                     let expected_target =
                         media_handoff_statuses().lock().ok().and_then(|statuses| {
-                            statuses
-                                .get(&request_id)
-                                .map(|status| status.target == envelope.source)
+                            statuses.get(&request_id).map(|status| {
+                                status.target == envelope.source
+                                    && status.phase == MediaHandoffPhase::Pending
+                            })
                         });
                     if expected_target == Some(true)
                         && media::handoff::cancel_outbound_handoff(request_id, &session_id)
@@ -1812,22 +1813,12 @@ impl DeviceFabricRuntime {
                     request_id,
                     session_id,
                 } => {
-                    if self
-                        .waiting_incoming_media
-                        .get(&request_id)
-                        .is_some_and(|pending| {
-                            pending.source == envelope.source && pending.session_id == session_id
-                        })
-                    {
-                        self.waiting_incoming_media.remove(&request_id);
-                    }
-                    if self.pending_incoming_media.get(&request_id).is_some_and(
-                        |(source, pending_session)| {
-                            source == &envelope.source && pending_session == &session_id
-                        },
-                    ) {
-                        self.pending_incoming_media.remove(&request_id);
-                    }
+                    let cancelled = self.take_incoming_media(|pending| {
+                        pending.request_id == request_id
+                            && pending.source == envelope.source
+                            && pending.session_id == session_id
+                    });
+                    self.terminate_incoming_media(network, cancelled, None);
                 }
                 action @ (PersonalFabricAction::NearbyDrop { .. }
                 | PersonalFabricAction::NearbyDropResult { .. }
@@ -2587,19 +2578,20 @@ impl DeviceFabricRuntime {
             },
         );
         if launch.is_ok() {
-            self.pending_incoming_media.insert(
-                request.request_id,
-                (request.source.clone(), request.session_id.clone()),
-            );
+            self.pending_incoming_media
+                .insert(request.request_id, request.clone());
             if let Some(source) = resume_source {
-                let _ =
-                    crate::shell::mpris::resume_after_launch(crate::shell::mpris::ResumeRequest {
-                        request_id: request.request_id,
-                        package_id: request.app_id.clone(),
-                        source,
-                        position_ms: request.position_ms,
-                        playing: request.resume_playing,
-                    });
+                if !crate::shell::mpris::resume_after_launch(crate::shell::mpris::ResumeRequest {
+                    request_id: request.request_id,
+                    package_id: request.app_id.clone(),
+                    source,
+                    position_ms: request.position_ms,
+                    playing: request.resume_playing,
+                }) {
+                    self.pending_incoming_media.remove(&request.request_id);
+                    let _ = crate::shell::mpris::cancel_resume_after_launch(request.request_id);
+                    return IncomingMediaLaunch::Rejected(MediaHandoffFailure::OpenFailed);
+                }
             }
             IncomingMediaLaunch::Launched
         } else {
@@ -2626,10 +2618,6 @@ impl DeviceFabricRuntime {
     fn retry_waiting_media(&mut self, network: &ShellNetwork) {
         let waiting = std::mem::take(&mut self.waiting_incoming_media);
         for (request_id, request) in waiting {
-            if request.received.elapsed() >= INCOMING_MEDIA_WAIT {
-                self.reject_incoming_media(network, &request, MediaHandoffFailure::TimedOut);
-                continue;
-            }
             match self.try_launch_incoming_media(network, &request) {
                 IncomingMediaLaunch::Waiting => {
                     self.waiting_incoming_media.insert(request_id, request);
@@ -2648,17 +2636,69 @@ impl DeviceFabricRuntime {
         accepted.sort_unstable();
         accepted.dedup();
         for request_id in accepted {
-            let Some((source, session_id)) = self.pending_incoming_media.remove(&request_id) else {
+            let Some(pending) = self.pending_incoming_media.remove(&request_id) else {
                 continue;
             };
             let _ = network.send_personal_fabric_action(
-                &source,
+                &pending.source,
                 PersonalFabricAction::MediaAccepted {
                     request_id,
-                    session_id,
+                    session_id: pending.session_id,
                 },
             );
         }
+    }
+
+    fn take_incoming_media(
+        &mut self,
+        mut predicate: impl FnMut(&PendingIncomingMedia) -> bool,
+    ) -> Vec<PendingIncomingMedia> {
+        let waiting = self
+            .waiting_incoming_media
+            .iter()
+            .filter(|(_, pending)| predicate(pending))
+            .map(|(request_id, _)| *request_id)
+            .collect::<Vec<_>>();
+        let pending = self
+            .pending_incoming_media
+            .iter()
+            .filter(|(_, pending)| predicate(pending))
+            .map(|(request_id, _)| *request_id)
+            .collect::<Vec<_>>();
+        waiting
+            .into_iter()
+            .filter_map(|request_id| self.waiting_incoming_media.remove(&request_id))
+            .chain(
+                pending
+                    .into_iter()
+                    .filter_map(|request_id| self.pending_incoming_media.remove(&request_id)),
+            )
+            .collect()
+    }
+
+    fn terminate_incoming_media(
+        &self,
+        network: &ShellNetwork,
+        requests: Vec<PendingIncomingMedia>,
+        failure: Option<MediaHandoffFailure>,
+    ) {
+        for request in requests {
+            let _ = crate::shell::mpris::cancel_resume_after_launch(request.request_id);
+            if let Some(failure) = failure {
+                self.reject_incoming_media(network, &request, failure);
+            }
+        }
+    }
+
+    fn tear_down_incoming_media(&mut self, network: &ShellNetwork, failure: MediaHandoffFailure) {
+        let incoming = self.take_incoming_media(|_| true);
+        self.terminate_incoming_media(network, incoming, Some(failure));
+    }
+
+    fn expire_incoming_media(&mut self, network: &ShellNetwork) {
+        let expired =
+            self.take_incoming_media(|pending| pending.received.elapsed() >= INCOMING_MEDIA_WAIT);
+        self.terminate_incoming_media(network, expired, Some(MediaHandoffFailure::TimedOut));
     }
 }
 
@@ -7747,6 +7787,98 @@ mod tests {
             policy_capabilities(policy, local),
             FabricCapabilities::default()
         );
+    }
+
+    fn pending_media(
+        request_id: [u8; 16],
+        source: DeviceId,
+        received: Instant,
+    ) -> PendingIncomingMedia {
+        PendingIncomingMedia {
+            received,
+            request_id,
+            source,
+            session_id: format!("session-{}", request_id[0]),
+            app_id: "dev.tilo.music".into(),
+            workspace_id: "00000000-0000-0000-0000-000000000001".into(),
+            title: "Track".into(),
+            locator: MediaSourceLocator::RemoteStream {
+                url: "https://media.example/track.mp3".into(),
+            },
+            position_ms: 1_000,
+            resume_playing: true,
+            has_video: false,
+        }
+    }
+
+    #[test]
+    fn incoming_media_cancel_is_exact_and_timeout_clears_late_authority() {
+        let (network, _commands) = crate::shell::network::shell_network_for_test(
+            crate::shell::state::WorkspaceTree::default().shared(),
+            0x4d45_4449_41,
+        );
+        let mut runtime = DeviceFabricRuntime::new(&network, NotificationBridge::new());
+        let source = DeviceId::new("media-source").unwrap();
+        let exact = pending_media([31; 16], source.clone(), Instant::now());
+        let sibling = pending_media([32; 16], source, Instant::now());
+        let expired = pending_media(
+            [33; 16],
+            DeviceId::new("expired-source").unwrap(),
+            Instant::now()
+                .checked_sub(INCOMING_MEDIA_WAIT + Duration::from_secs(1))
+                .unwrap(),
+        );
+        runtime
+            .waiting_incoming_media
+            .insert(exact.request_id, exact.clone());
+        runtime
+            .pending_incoming_media
+            .insert(sibling.request_id, sibling.clone());
+        runtime
+            .waiting_incoming_media
+            .insert(expired.request_id, expired);
+
+        let cancelled = runtime.take_incoming_media(|pending| {
+            pending.request_id == exact.request_id
+                && pending.source == exact.source
+                && pending.session_id == exact.session_id
+        });
+        runtime.terminate_incoming_media(&network, cancelled, None);
+        assert!(
+            !runtime
+                .waiting_incoming_media
+                .contains_key(&exact.request_id)
+        );
+        assert_eq!(
+            runtime.pending_incoming_media.get(&sibling.request_id),
+            Some(&sibling)
+        );
+        runtime.expire_incoming_media(&network);
+        assert!(runtime.waiting_incoming_media.is_empty());
+        assert_eq!(runtime.pending_incoming_media.len(), 1);
+    }
+
+    #[test]
+    fn media_policy_teardown_revokes_waiting_and_launched_requests() {
+        let (network, _commands) = crate::shell::network::shell_network_for_test(
+            crate::shell::state::WorkspaceTree::default().shared(),
+            0x504f_4c49_4359,
+        );
+        let mut runtime = DeviceFabricRuntime::new(&network, NotificationBridge::new());
+        let source = DeviceId::new("policy-media-source").unwrap();
+        let waiting = pending_media([34; 16], source.clone(), Instant::now());
+        let launched = pending_media([35; 16], source, Instant::now());
+        runtime
+            .waiting_incoming_media
+            .insert(waiting.request_id, waiting);
+        runtime
+            .pending_incoming_media
+            .insert(launched.request_id, launched);
+
+        runtime.tear_down_incoming_media(&network, MediaHandoffFailure::Cancelled);
+
+        assert!(runtime.waiting_incoming_media.is_empty());
+        assert!(runtime.pending_incoming_media.is_empty());
     }
 
     #[test]
