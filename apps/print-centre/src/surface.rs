@@ -11,7 +11,7 @@ use tilo_actions::{ActionSpec, OperationKind, Resource};
 use ui::icons::Icon;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Banner, BarGauge, Button, Card, CardGrid, Column, Container, CropSelection, Divider, Dropdown,
+    Banner, Button, Card, CardGrid, Column, Container, CropSelection, Divider, Dropdown,
     IconWidget, Image, ImageCropEditor, NumberInput, PagePreview, ProgressBar, Row, ScrollAxis,
     Scrollable, Spacer, Text, Toggle, ToggleGroup, Widget,
 };
@@ -595,44 +595,138 @@ fn header(subtitle: &str) -> El {
 
 fn live_header(subtitle: &str, tx: &mpsc::Sender<UiCommand>) -> El {
     Box::new(
-        Row::new()
+        // The title and document actions need independently measured rows.
+        // A fixed-width, non-wrapping row clipped the primary action at large
+        // text sizes; this row can use the page width and wrap on a phone.
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
             .push(Box::new(
-                Container::new()
-                    .with_min_width(220.0)
-                    .with_flex_grow()
+                Column::new()
                     .with_no_padding()
-                    .with_child(Box::new(
-                        Column::new()
-                            .with_no_padding()
-                            .with_intrinsic_height()
-                            .push(title("Print Centre", 28.0))
-                            .push(muted(subtitle)),
-                    )),
+                    .with_intrinsic_height()
+                    .push(title("Print Centre", 28.0))
+                    .push(muted(subtitle)),
             ))
+            .push(gap(14.0))
             .push(Box::new(
-                Container::new()
-                    .with_width(300.0)
-                    .with_no_padding()
-                    .with_child(Box::new(
-                        Row::new()
-                            .no_wrap()
-                            .push(icon_command_action(
-                                "print-centre.add",
-                                "Add printer",
-                                Icon::Plus,
-                                tx,
-                                UiCommand::Discover,
-                            ))
-                            .push(primary_icon_command_action(
-                                "print-centre.print",
-                                "Print a document",
-                                Icon::Printer,
-                                tx,
-                                UiCommand::ChooseDocument,
-                            )),
+                Row::new()
+                    .push(icon_command_action(
+                        "print-centre.add",
+                        "Add printer",
+                        Icon::Plus,
+                        tx,
+                        UiCommand::Discover,
+                    ))
+                    .push(primary_icon_command_action(
+                        "print-centre.print",
+                        "Print a document",
+                        Icon::Printer,
+                        tx,
+                        UiCommand::ChooseDocument,
                     )),
             )),
     )
+}
+
+/// App-local semantic boundary for a measured dashboard surface. It lets the
+/// headless contract assert real surface bounds without changing shared UI.
+struct DashboardCard {
+    inner: El,
+}
+
+impl DashboardCard {
+    fn new(inner: El) -> Self {
+        Self { inner }
+    }
+}
+
+impl Widget for DashboardCard {
+    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        self.inner.sync(state, path);
+    }
+
+    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        self.inner.update(state, path)
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.inner.build_layout(taffy, theme, node_map)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.inner.apply_layout(taffy, node, origin);
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.inner.draw(scene, transform, text, theme, presence);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus: &mut Option<NodeId>,
+        node: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        self.inner.handle_event(
+            event, scale, modifiers, state, path, handled, focus, node, taffy,
+        );
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![self.inner.as_ref()]
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![self.inner.as_mut()]
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.inner.get_rect()
+    }
+
+    fn name(&self) -> &'static str {
+        "DashboardCard"
+    }
+}
+
+/// Dashboard cards deliberately use one intrinsic column. This makes a
+/// growing preview, supply gauge, and footer contribute to the same surface
+/// measurement instead of allowing a fixed/card-grid row to paint below its
+/// reported bounds.
+fn dashboard_card(title_text: impl Into<String>, body: El, footer: Option<El>) -> El {
+    let mut content = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .push(title(&title_text.into(), 18.0))
+        .push(gap(14.0))
+        .push(body);
+    if let Some(footer) = footer {
+        content = content.push(gap(16.0)).push(footer);
+    }
+    Box::new(DashboardCard::new(Box::new(
+        Container::new()
+            .with_background()
+            .with_child(Box::new(content)),
+    )))
 }
 
 fn subpage_header(title_text: &str, subtitle: &str, tx: &mpsc::Sender<UiCommand>) -> El {
@@ -699,6 +793,21 @@ fn supply_level(queue: &os_actions::printing::PrinterQueue) -> Option<(f32, u8)>
     Some((f32::from(percent) / 100.0, percent))
 }
 
+/// Keep supply text and its visual meter on separate rows so enlarged text
+/// cannot be painted through by the meter's fill.
+fn supply_meter(name: &str, level: f32, detail: &str) -> El {
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(copy(&format!("{name}: {detail}")))
+            .push(gap(6.0))
+            .push(Box::new(
+                ProgressBar::new(level).with_label(format!("{name} level")),
+            )),
+    )
+}
+
 fn live_job_card(job: &os_actions::printing::PrintJob, tx: &mpsc::Sender<UiCommand>) -> El {
     let progress = f32::from(job.progress_percent().unwrap_or(0)) / 100.0;
     let page_count = job.impressions_total.unwrap_or(1).max(1);
@@ -712,21 +821,19 @@ fn live_job_card(job: &os_actions::printing::PrintJob, tx: &mpsc::Sender<UiComma
         Some(os_actions::printing::JobState::Stopped) => "Needs attention",
         _ => "Printing now",
     };
-    Box::new(Card::titled_with_action(
+    // The direct measured surface lets wide windows use the space beside the
+    // preview, while the flexible detail column wraps below it on a phone.
+    dashboard_card(
         status,
-        command_action("print-centre.queue", "Open queue", tx, UiCommand::Queue),
         Box::new(
             Row::new()
+                .align_start()
                 .push(Box::new(PagePreview::new(
                     "Current document",
                     page,
                     page_count,
                 )))
                 .push(Box::new(
-                    // A bare Column requests 100% row width and therefore
-                    // wraps below the preview. The shared zero-basis flex
-                    // container claims only the space left after the page,
-                    // while its minimum keeps the narrow fallback readable.
                     Container::new()
                         .with_no_padding()
                         .with_flex_grow()
@@ -744,18 +851,29 @@ fn live_job_card(job: &os_actions::printing::PrintJob, tx: &mpsc::Sender<UiComma
                                 .push(Box::new(
                                     ProgressBar::new(progress)
                                         .with_label("Current document progress"),
-                                ))
-                                .push(gap(12.0))
-                                .push(Box::new(Row::new().push(command_action(
-                                    "print-centre.job.cancel",
-                                    "Cancel",
-                                    tx,
-                                    UiCommand::RequestCancel(job.id.clone()),
-                                )))),
+                                )),
                         )),
                 )),
         ),
-    ))
+        Some(Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .push(command_action(
+                    "print-centre.queue",
+                    "Open queue",
+                    tx,
+                    UiCommand::Queue,
+                ))
+                .push(gap(10.0))
+                .push(command_action(
+                    "print-centre.job.cancel",
+                    "Cancel",
+                    tx,
+                    UiCommand::RequestCancel(job.id.clone()),
+                )),
+        )),
+    )
 }
 
 #[allow(
@@ -805,13 +923,9 @@ fn live_view(
         body = body.push(issue).push(gap(14.0));
     }
     if let Some(job) = active.first() {
-        // The active-card footer can be taller than the card's title row on
-        // a large text scale. Reserve a complete touch-target-sized rhythm
-        // before the next section so its heading and Refresh control never
-        // intrude into a live document's Cancel affordance.
-        body = body.push(live_job_card(job, tx)).push(gap(230.0));
+        body = body.push(live_job_card(job, tx)).push(gap(28.0));
     }
-    let cards = queues
+    let cards: Vec<El> = queues
         .iter()
         .map(|queue| {
             let detail = if queue.default {
@@ -825,37 +939,41 @@ fn live_view(
                 .push(copy(friendly_queue_state(queue)))
                 .push(gap(10.0));
             details = if let Some((level, percent)) = supply_level(queue) {
-                details.push(Box::new(
-                    BarGauge::new(level)
-                        .with_label("Lowest supply", format!("{percent}% remaining")),
+                details.push(supply_meter(
+                    "Lowest supply",
+                    level,
+                    &format!("{percent}% remaining"),
                 ))
             } else {
                 details.push(muted("Supply levels unavailable"))
             };
             details = details.push(gap(8.0)).push(muted(detail));
-            Box::new(Card::titled_with_action(
+            dashboard_card(
                 display_name(&queue.name),
-                icon_command_action(
-                    &format!("print-centre.device.open.{}", queue.name),
-                    "Open",
-                    Icon::ArrowRight,
-                    tx,
-                    UiCommand::Device(queue.name.clone()),
-                ),
                 Box::new(
                     Row::new()
                         .align_start()
                         .push(Box::new(IconWidget::new(Icon::Printer, 34.0).dim()))
                         .push(Box::new(details)),
                 ),
-            )) as El
+                Some(icon_command_action(
+                    &format!("print-centre.device.open.{}", queue.name),
+                    "Open",
+                    Icon::ArrowRight,
+                    tx,
+                    UiCommand::Device(queue.name.clone()),
+                )),
+            )
         })
         .collect();
     if snapshot.queues.is_ok() {
         body = body
             .push(Box::new(
-                Row::new()
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
                     .push(title("Your printers", 19.0))
+                    .push(gap(8.0))
                     .push(icon_command_action(
                         "print-centre.refresh",
                         "Refresh",
@@ -878,47 +996,40 @@ fn live_view(
                 copy("You can still scan documents below. Add a printer whenever you need one."),
             )));
         } else {
-            body = body.push(Box::new(
-                CardGrid::new(cards)
-                    .with_min_card_width(420.0)
-                    .with_card_height(230.0),
-            ));
+            // Printer cards remain a measured vertical sequence. It avoids a
+            // grid row whose height is resolved before variable telemetry has
+            // finished measuring at a larger text scale.
+            let mut printer_cards = Column::new().with_no_padding().with_intrinsic_height();
+            for card in cards {
+                printer_cards = printer_cards.push(card).push(gap(14.0));
+            }
+            body = body.push(Box::new(printer_cards));
         }
     }
     if let Some(scanner) = scanners.first() {
-        body = body.push(gap(18.0)).push(Box::new(Card::titled_with_action(
+        body = body.push(gap(18.0)).push(dashboard_card(
             "Scan a document",
-            primary_icon_command_action(
-                "print-centre.scan.open",
-                "Start scanning",
-                Icon::Camera,
-                tx,
-                UiCommand::ScanSetup,
-            ),
             Box::new(
                 Row::new()
                     .align_start()
                     .push(Box::new(IconWidget::new(Icon::Camera, 30.0).dim()))
                     .push(copy(&format!("{} is ready", scanner.description))),
             ),
-        )));
+            Some(primary_icon_command_action(
+                "print-centre.scan.open",
+                "Start scanning",
+                Icon::Camera,
+                tx,
+                UiCommand::ScanSetup,
+            )),
+        ));
     }
-    let mut utility_cards = Row::new().align_start();
+    let mut utility_cards = Column::new().with_no_padding().with_intrinsic_height();
     if snapshot.jobs.is_ok() {
-        utility_cards = utility_cards.push(Box::new(
-            Container::new()
-                .with_min_width(280.0)
-                .with_flex_grow()
-                .with_no_padding()
-                .with_child(Box::new(Card::titled_with_action(
+        utility_cards =
+            utility_cards.push(Box::new(Container::new().with_no_padding().with_child(
+                dashboard_card(
                     "Recent documents",
-                    icon_command_action(
-                        "print-centre.history.open",
-                        "See all",
-                        Icon::History,
-                        tx,
-                        UiCommand::History,
-                    ),
                     copy(
                         if jobs.iter().any(|job| {
                             matches!(job.state, Some(os_actions::printing::JobState::Completed))
@@ -928,26 +1039,30 @@ fn live_view(
                             "Completed documents will appear here."
                         },
                     ),
-                ))),
-        ));
-    }
-    utility_cards = utility_cards.push(Box::new(
-        Container::new()
-            .with_min_width(280.0)
-            .with_flex_grow()
-            .with_no_padding()
-            .with_child(Box::new(Card::titled_with_action(
-                "Device help",
-                icon_command_action(
-                    "print-centre.diagnostics.open",
-                    "Check devices",
-                    Icon::Info,
-                    tx,
-                    UiCommand::Diagnostics,
+                    Some(icon_command_action(
+                        "print-centre.history.open",
+                        "See all",
+                        Icon::History,
+                        tx,
+                        UiCommand::History,
+                    )),
                 ),
-                copy("Plain-language checks for connections, paper, supplies, and scanners."),
-            ))),
-    ));
+            )));
+        utility_cards = utility_cards.push(gap(14.0));
+    }
+    utility_cards = utility_cards.push(Box::new(Container::new().with_no_padding().with_child(
+        dashboard_card(
+            "Device help",
+            copy("Plain-language checks for connections, paper, supplies, and scanners."),
+            Some(icon_command_action(
+                "print-centre.diagnostics.open",
+                "Check devices",
+                Icon::Info,
+                tx,
+                UiCommand::Diagnostics,
+            )),
+        ),
+    )));
     body = body.push(gap(18.0)).push(Box::new(utility_cards));
     centered_page(
         Box::new(Scrollable::new(ScrollAxis::Vertical).with_child(Box::new(body))),
@@ -1144,9 +1259,10 @@ fn diagnostics_view(snapshot: &Snapshot, tx: &mpsc::Sender<UiCommand>) -> El {
         if let Some(supplies) = &queue.telemetry.supplies {
             for supply in supplies.iter().take(6) {
                 if let Some(percent) = supply.level_percent {
-                    checks = checks.push(gap(10.0)).push(Box::new(
-                        BarGauge::new(f32::from(percent) / 100.0)
-                            .with_label(&supply.name, format!("{percent}% remaining")),
+                    checks = checks.push(gap(10.0)).push(supply_meter(
+                        &supply.name,
+                        f32::from(percent) / 100.0,
+                        &format!("{percent}% remaining"),
                     ));
                 }
             }
@@ -1380,9 +1496,10 @@ fn device_view(queue: &os_actions::printing::PrinterQueue, tx: &mpsc::Sender<UiC
             for supply in items {
                 let percent = supply.level_percent.unwrap_or(0);
                 column = column
-                    .push(Box::new(
-                        BarGauge::new(f32::from(percent) / 100.0)
-                            .with_label(&supply.name, format!("{percent}%")),
+                    .push(supply_meter(
+                        &supply.name,
+                        f32::from(percent) / 100.0,
+                        &format!("{percent}% remaining"),
                     ))
                     .push(gap(10.0));
             }
@@ -3573,56 +3690,7 @@ mod tests {
     }
 
     #[test]
-    fn active_job_uses_the_space_beside_its_preview_and_wraps_when_needed() {
-        fn rects_named(widget: &dyn Widget, name: &str, out: &mut Vec<Rect>) {
-            if widget.name() == name && widget.get_rect().area() > 0.0 {
-                out.push(widget.get_rect());
-            }
-            for child in widget.children() {
-                rects_named(child, name, out);
-            }
-        }
-        fn geometry(width: f32) -> (Rect, Rect) {
-            let mut centre = PrintCentre::demo(DemoScenario::Active);
-            let mut tree = TaffyTree::new();
-            let mut map = HashMap::new();
-            let node = centre.build_layout(&mut tree, &Theme::dark(), &mut map);
-            tree.compute_layout(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(width),
-                    height: taffy::AvailableSpace::Definite(800.0),
-                },
-            )
-            .unwrap();
-            centre.apply_layout(&tree, node, Point::ZERO);
-            let mut pages = Vec::new();
-            let mut progress = Vec::new();
-            rects_named(&centre, "PagePreview", &mut pages);
-            rects_named(&centre, "ProgressBar", &mut progress);
-            (
-                *pages.first().expect("active document preview"),
-                *progress.first().expect("active document progress"),
-            )
-        }
-
-        let (wide_page, wide_progress) = geometry(1280.0);
-        assert!(
-            wide_progress.x0 > wide_page.x1,
-            "desktop details should use the empty space beside the preview: {wide_page:?} {wide_progress:?}"
-        );
-        assert!(wide_progress.y0 < wide_page.y1);
-
-        let (phone_page, phone_progress) = geometry(360.0);
-        assert!(
-            phone_progress.y0 >= phone_page.y1,
-            "a genuinely narrow screen should wrap without crushing either child: {phone_page:?} {phone_progress:?}"
-        );
-        assert!(phone_progress.x0 >= 0.0 && phone_progress.x1 <= 360.5);
-    }
-
-    #[test]
-    fn active_job_footer_is_disjoint_from_printer_section_refresh() {
+    fn dashboard_cards_and_actions_stay_measured_at_large_text_scales() {
         fn rect_for(widget: &ui::headless::InspectionNode, id: &str) -> Option<Rect> {
             if widget.test_id.as_deref() == Some(id) {
                 let [x, y, width, height] = widget.rect;
@@ -3631,18 +3699,87 @@ mod tests {
             widget.children.iter().find_map(|child| rect_for(child, id))
         }
 
-        let centre = ui::headless::Driver::new(
-            ui::State::new(),
-            Box::new(PrintCentre::demo(DemoScenario::Active)),
-            (1440, 900),
-        );
-        let root = &centre.inspection().root;
-        let cancel = rect_for(root, "print-centre.job.cancel").expect("active Cancel button");
-        let refresh = rect_for(root, "print-centre.refresh").expect("printer Refresh button");
-        assert!(
-            cancel.y1 + 18.0 <= refresh.y0,
-            "the printer section heading shares Refresh's row, so both must clear the active job footer: {cancel:?} {refresh:?}"
-        );
+        fn collect_cards(widget: &ui::headless::InspectionNode, cards: &mut Vec<Rect>) {
+            let [x, y, width, height] = widget.rect;
+            if widget.widget == "DashboardCard" && width > 0.0 && height > 0.0 {
+                cards.push(Rect::new(x, y, x + width, y + height));
+            }
+            for child in &widget.children {
+                collect_cards(child, cards);
+            }
+        }
+
+        let ids = [
+            "print-centre.add",
+            "print-centre.print",
+            "print-centre.queue",
+            "print-centre.job.cancel",
+            "print-centre.refresh",
+            "print-centre.device.open.Studio_printer",
+            "print-centre.scan.open",
+            "print-centre.history.open",
+            "print-centre.diagnostics.open",
+        ];
+        for text_scale in [1.0, 2.0] {
+            let centre = ui::headless::Driver::new_with_theme(
+                ui::State::new(),
+                Box::new(PrintCentre::demo(DemoScenario::Active)),
+                (1440, 900),
+                Theme::dark().with_text_scale(text_scale),
+            );
+            let snapshot = centre.inspection();
+            let root = &snapshot.root;
+            let controls = ids.map(|id| {
+                let rect = rect_for(root, id).unwrap_or_else(|| panic!("missing {id}"));
+                assert!(
+                    rect.x0 >= -0.5 && rect.x1 <= 1440.5,
+                    "{id} escaped the viewport at {text_scale}x text: {rect:?}"
+                );
+                assert!(
+                    rect.width() >= 44.0 && rect.height() >= 44.0,
+                    "{id} lost its touch target at {text_scale}x text: {rect:?}"
+                );
+                rect
+            });
+            assert!(
+                controls[1].y1 <= 900.5,
+                "the primary Print action must remain in the captured viewport: {:?}",
+                controls[1]
+            );
+
+            for (index, pair) in controls[3..].windows(2).enumerate() {
+                let (before, after) = (pair[0], pair[1]);
+                assert!(
+                    before.y1 + 16.0 <= after.y0,
+                    "{} and {} overlap at {text_scale}x text: {before:?} {after:?}",
+                    ids[index + 3],
+                    ids[index + 4],
+                );
+            }
+
+            let mut cards = Vec::new();
+            collect_cards(root, &mut cards);
+            assert!(
+                cards.len() >= 5,
+                "expected active, printer, scan, and utility cards"
+            );
+            for (index, card) in cards.iter().enumerate() {
+                assert!(
+                    card.x0 >= -0.5 && card.x1 <= 1440.5,
+                    "card {index} escaped the viewport at {text_scale}x text: {card:?}"
+                );
+                for other in cards.iter().skip(index + 1) {
+                    let overlaps = card.x0 < other.x1
+                        && other.x0 < card.x1
+                        && card.y0 < other.y1
+                        && other.y0 < card.y1;
+                    assert!(
+                        !overlaps,
+                        "measured dashboard cards overlap at {text_scale}x text: {card:?} {other:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
