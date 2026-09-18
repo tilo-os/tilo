@@ -3411,6 +3411,7 @@ impl StoreApp {
         // sort from `visible_items`, then give those two honest states their
         // own editorial groups instead of presenting one anonymous wall of
         // identical cards.
+        let mut update_cards: Vec<Box<dyn Widget>> = Vec::new();
         let mut ready_cards: Vec<Box<dyn Widget>> = Vec::new();
         let mut discover_cards: Vec<Box<dyn Widget>> = Vec::new();
         let mut search_cards: Vec<Box<dyn Widget>> = Vec::new();
@@ -3441,6 +3442,8 @@ impl StoreApp {
             );
             if !group_by_availability {
                 search_cards.push(card);
+            } else if item.installed.update_available() {
+                update_cards.push(card);
             } else if item.installed.is_installed() {
                 ready_cards.push(card);
             } else {
@@ -3465,9 +3468,23 @@ impl StoreApp {
                             .with_color(theme.text_dim),
                     )),
             ));
-            if group_by_availability && !ready_cards.is_empty() {
+            if group_by_availability && !update_cards.is_empty() {
                 column = column.push(Box::new(
                     Container::new().with_no_padding().with_height(12.0),
+                ));
+                column = column.push(Box::new(
+                    Text::new(&format!("Updates ready · {}", update_cards.len()))
+                        .with_scaled_size(16.0)
+                        .with_weight(TextWeight::Semibold)
+                        .with_heading_level(2),
+                ));
+            }
+            for card in update_cards {
+                column = column.push(card);
+            }
+            if group_by_availability && !ready_cards.is_empty() {
+                column = column.push(Box::new(
+                    Container::new().with_no_padding().with_height(16.0),
                 ));
                 column = column.push(Box::new(
                     Text::new(&format!("Ready to use · {}", ready_cards.len()))
@@ -3556,6 +3573,21 @@ impl StoreApp {
                         )),
                 ) as Box<dyn Widget>
             };
+            if group_by_availability && !update_cards.is_empty() {
+                let update_count = update_cards.len();
+                recommended = recommended.push(make_section(
+                    &format!("Updates ready · {update_count}"),
+                    "A newer verified version is available on this device.",
+                    update_cards,
+                    104.0,
+                    330.0,
+                ));
+                if !ready_cards.is_empty() || !discover_cards.is_empty() {
+                    recommended = recommended.push(Box::new(
+                        Container::new().with_no_padding().with_height(22.0),
+                    ));
+                }
+            }
             if group_by_availability && !ready_cards.is_empty() {
                 let ready_count = ready_cards.len();
                 recommended = recommended.push(make_section(
@@ -5253,6 +5285,44 @@ mod tests {
             .expect("failure has a semantic notice");
         assert_eq!(error.name.as_deref(), Some("The last operation failed"));
         assert_eq!(error.live, Some(Politeness::Assertive));
+    }
+
+    #[test]
+    fn update_priority_follows_the_current_catalogue_snapshot() {
+        let mut app = seeded_app();
+        let mut files = item(
+            "Files",
+            StoreSource::Tilo {
+                registry_name: "Tilo".into(),
+            },
+            "System",
+            InstalledState::Installed {
+                version: "1.0.0".into(),
+                available: "1.1.0".into(),
+                pinned: false,
+                user_managed: true,
+            },
+        );
+        files.versions[0].version = "1.1.0".into();
+        app.set_items({
+            let mut items = app.items().to_vec();
+            items.push(files);
+            items
+        });
+        assert!(
+            app.visible_items()
+                .iter()
+                .any(|item| item.installed.update_available()),
+            "the current catalogue exposes the verified update candidate"
+        );
+
+        app.set_active_filter(SourceFilter::Flatpak);
+        assert!(
+            app.visible_items()
+                .iter()
+                .all(|item| !item.installed.update_available()),
+            "the update shelf must be derived from the active visible catalogue"
+        );
     }
 
     #[test]
