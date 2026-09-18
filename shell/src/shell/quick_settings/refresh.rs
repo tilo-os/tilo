@@ -13,7 +13,7 @@
 use std::collections::HashSet;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use crate::shell::qs_actions as qs;
+use os_actions as qs;
 
 /// Each field independently optional: a missing daemon leaves that value
 /// alone rather than blanking the panel. Boxed in [`QsReading::Fast`] since
@@ -132,26 +132,26 @@ impl QsRefresh {
 
     pub fn kick_fast(&mut self) {
         self.spawn(Tier::Fast, || {
-            let bluetooth = qs::log_qs_get("get_bluetooth", qs::get_bluetooth());
+            let bluetooth = qs::log_get("get_bluetooth", qs::get_bluetooth());
             QsReading::Fast(Box::new(FastReading {
-                brightness: qs::log_qs_get("get_brightness", qs::get_brightness()),
-                volume: qs::log_qs_get("get_volume", qs::get_volume()),
-                wifi: qs::log_qs_get("get_wifi", qs::get_wifi()),
+                brightness: qs::log_get("get_brightness", qs::get_brightness()),
+                volume: qs::log_get("get_volume", qs::get_volume()),
+                wifi: qs::log_get("get_wifi", qs::get_wifi()),
                 bluetooth_available: bluetooth.is_some(),
                 bluetooth,
-                power: qs::log_qs_get("get_power_profile", qs::get_power_profile()),
-                wired: qs::log_qs_get("get_wired", qs::get_wired()),
+                power: qs::log_get("get_power_profile", qs::get_power_profile()),
+                wired: qs::log_get("get_wired", qs::get_wired()),
                 battery: qs::BatteryInfo::from_system(),
-                radios: qs::log_qs_get("get_radio_state", qs::get_radio_state()),
+                radios: qs::log_get("get_radio_state", qs::get_radio_state()),
                 privacy: qs::get_privacy_status(),
-                vpns: qs::log_qs_get("list_vpn_connections", qs::list_vpn_connections()),
+                vpns: qs::log_get("list_vpn_connections", qs::list_vpn_connections()),
             }))
         });
     }
 
     pub fn kick_firmware(&mut self) {
         self.spawn(Tier::Firmware, || {
-            QsReading::Firmware(qs::log_qs_get(
+            QsReading::Firmware(qs::log_get(
                 "get_firmware_updates",
                 qs::get_firmware_updates(),
             ))
@@ -160,16 +160,13 @@ impl QsRefresh {
 
     pub fn kick_wifi_networks(&mut self) {
         self.spawn(Tier::Wifi, || {
-            QsReading::WifiNetworks(qs::log_qs_get(
-                "list_wifi_networks",
-                qs::list_wifi_networks(),
-            ))
+            QsReading::WifiNetworks(qs::log_get("list_wifi_networks", qs::list_wifi_networks()))
         });
     }
 
     pub fn kick_bt_devices(&mut self) {
         self.spawn(Tier::Bt, || {
-            QsReading::BtDevices(qs::log_qs_get("list_bt_devices", qs::list_bt_devices()))
+            QsReading::BtDevices(qs::log_get("list_bt_devices", qs::list_bt_devices()))
         });
     }
 

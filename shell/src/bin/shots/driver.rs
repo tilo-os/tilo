@@ -1286,7 +1286,7 @@ impl ShellDriver {
             st.overlays.quick_settings = true;
             st.quick_settings.radios.wifi_available = false;
             st.quick_settings.bluetooth_available = false;
-            st.quick_settings.wired = Some(shell::shell::qs_actions::WiredInfo {
+            st.quick_settings.wired = Some(shell::shell::quick_settings::actions::WiredInfo {
                 connected: true,
                 device: Some("enp0s31f6".into()),
                 ..Default::default()

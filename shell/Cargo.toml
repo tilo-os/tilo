@@ -119,9 +119,9 @@ word-processor = { path = "../apps/word-processor" }
 qdoc = { path = "../crates/doc/qdoc" }
 mime_guess = "2.0.5"
 # Shared OS-action shell-outs (brightnessctl/wpctl/nmcli/bluetoothctl/
-# powerprofilesctl). Lifted out of `shell::shell::qs_actions` so the
+# powerprofilesctl). Kept outside `shell::shell::quick_settings::actions` so the
 # Settings app can call the same bindings without depending on the
-# compositor. The module at the old path now re-exports from this crate.
+# compositor. Quick Settings keeps only dispatcher aliases and fixture policy.
 os-actions = { path = "../crates/system/os-actions" }
 # Session-owned balance/mono policy and PipeWire graph enumeration. Settings
 # persists intent; the compositor is the single long-lived actuator.
