@@ -152,9 +152,10 @@ export async function mountDesktop(target,options={}) {
     await presented;
     return {cleanup:async()=>{registry.remove(token);await cleanup();},flush:()=>{persistenceFailed=false;return persist();},
       state:()=>lastState,canvas,editor,semantics:accessibility,
-      durableState:()=>storage.hydrate(),probePixels:async()=>JSON.parse(await runtime.probe_pixels(id)),failNextWrite:()=>{storage.abortNext=true;},destroyDevice:()=>runtime.destroy_device(id),recover:()=>runtime.recover(id),
+      durableState:()=>acquired.hydrate(),probePixels:async()=>JSON.parse(await runtime.probe_pixels(id)),failNextWrite:()=>{storage.abortNext=true;},destroyDevice:()=>runtime.destroy_device(id),recover:()=>runtime.recover(id),
       semantic:(...args)=>runtime.semantic(id,...args)};
   }catch(error){registry.remove(token);await cleanup();throw error;}
 }
+export function pendingRecoveryCount(){return recoveryJobs.size;}
 export async function retryPendingRecovery(){for(const retry of [...recoveryJobs])await retry();}
 export async function shutdown(){await retryPendingRecovery();registry.shutdown();await Promise.all([...closures].map(close=>close()));await new Promise(resolve=>runtime.shutdown(resolve));registry=new MountRegistry();}

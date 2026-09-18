@@ -43,3 +43,6 @@ export function shutdown(): Promise<void>;
 
 /** Retry retained close failures before releasing exclusive actor custody. */
 export function retryPendingRecovery(): Promise<void>;
+
+/** Number of failed closes retaining actor custody and pending durable bytes. */
+export function pendingRecoveryCount(): number;
