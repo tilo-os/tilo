@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+#[cfg(not(windows))]
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -9,6 +10,8 @@ use sha2::{Digest, Sha256};
 mod fallback;
 #[cfg(test)]
 mod tests;
+#[cfg(windows)]
+mod windows;
 
 const MANIFEST: &str = include_str!("../assets/fonts/manifest.toml");
 
@@ -296,6 +299,15 @@ impl FontCatalog {
     }
 }
 
+#[cfg(windows)]
+fn hash_file(path: &Path) -> Result<String, FontCatalogError> {
+    let file = std::fs::File::open(path).map_err(|error| FontCatalogError::at(path, error))?;
+    windows::digest(file)
+        .map(hex::encode)
+        .map_err(|error| FontCatalogError::at(path, error))
+}
+
+#[cfg(not(windows))]
 #[allow(clippy::large_stack_arrays)]
 fn hash_file(path: &Path) -> Result<String, FontCatalogError> {
     let mut file = std::fs::File::open(path).map_err(|e| FontCatalogError::at(path, e))?;
