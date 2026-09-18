@@ -29,6 +29,9 @@ pub enum MenuItem {
     Action {
         label: String,
         action: MenuAction,
+        /// Optional leading icon for command recognition. Icons are visual
+        /// reinforcement only; `label` remains the accessible name.
+        icon: Option<Icon>,
         /// `Some` reserves the leading selection gutter and publishes a
         /// semantic checked state. `None` is an ordinary command row.
         checked: Option<bool>,
@@ -57,6 +60,21 @@ impl MenuItem {
         MenuItem::Action {
             label: label.into(),
             action: Arc::new(action),
+            icon: None,
+            checked: None,
+        }
+    }
+
+    /// A command row with a themed leading icon. Menus containing icon rows
+    /// reserve the same gutter for every command so labels stay aligned.
+    pub fn icon_action<F>(icon: Icon, label: impl Into<String>, action: F) -> Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        MenuItem::Action {
+            label: label.into(),
+            action: Arc::new(action),
+            icon: Some(icon),
             checked: None,
         }
     }
@@ -90,6 +108,7 @@ impl MenuItem {
         MenuItem::Action {
             label: label.into(),
             action: Arc::new(action),
+            icon: None,
             checked: Some(checked),
         }
     }
@@ -477,9 +496,17 @@ impl ContextMenu {
             &rows_viewport,
         );
         let mut y = self.rect.y0 + self.padding() - self.scroll_y;
+        let has_leading_gutter = self.items.iter().any(|item| {
+            matches!(item, MenuItem::Action { icon: Some(_), .. }) || item.checked().is_some()
+        });
         for (idx, item) in self.items.iter().enumerate() {
             match item {
-                MenuItem::Action { label, checked, .. } => {
+                MenuItem::Action {
+                    label,
+                    icon,
+                    checked,
+                    ..
+                } => {
                     if self.hovered == Some(idx) {
                         let hl = Rect::new(
                             self.rect.x0 + 4.0 * self.text_scale,
@@ -497,7 +524,7 @@ impl ContextMenu {
                         );
                     }
                     let label_y = y + (self.row_height() - rendered_text_size) / 2.0;
-                    let label_x = if checked.is_some() {
+                    let label_x = if has_leading_gutter {
                         let icon_size = 14.0 * self.text_scale;
                         let icon_rect = Rect::new(
                             self.rect.x0 + 10.0 * self.text_scale,
@@ -505,12 +532,14 @@ impl ContextMenu {
                             self.rect.x0 + 24.0 * self.text_scale,
                             y + f64::midpoint(self.row_height(), icon_size),
                         );
-                        if *checked == Some(true) {
+                        let leading_icon =
+                            (*icon).or_else(|| (*checked == Some(true)).then_some(Icon::Check));
+                        if let Some(icon) = leading_icon {
                             draw_icon(
                                 scene,
                                 transform,
                                 icon_rect,
-                                Icon::Check,
+                                icon,
                                 theme.tokens.colors.text_primary,
                                 1.8 * self.text_scale,
                             );

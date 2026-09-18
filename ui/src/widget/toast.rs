@@ -183,6 +183,21 @@ impl ToastStack {
         }
     }
 
+    /// Place this overlay inside `area` without making it a layout child.
+    /// Useful for app-level notification stacks that must float above their
+    /// content rather than reserve document space.
+    pub fn place_bottom_right(&mut self, area: Rect, margin: f64) {
+        let n = self.toasts.len();
+        let height = (TOAST_HEIGHT * idx_to_f64(n)) + (TOAST_GAP * idx_to_f64(n.saturating_sub(1)));
+        let x1 = area.x1 - margin;
+        let y1 = area.y1 - margin;
+        self.rect = if n == 0 {
+            Rect::ZERO
+        } else {
+            Rect::new(x1 - TOAST_WIDTH, y1 - height, x1, y1)
+        };
+    }
+
     /// Advance time. Each toast's `ttl_remaining` is saturatingly
     /// decremented by `dt`; entries that reach zero are removed. Expiry is
     /// **paused while the pointer hovers the stack** so a toast can be read
