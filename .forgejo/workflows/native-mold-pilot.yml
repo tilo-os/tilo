@@ -1,0 +1,30 @@
+name: CI / native mold qualification pilot
+
+# Manual, branch-only experiment. No candidate publication or default change.
+on:
+  workflow_dispatch:
+
+jobs:
+  x86-mold:
+    if: github.ref == 'refs/heads/codex/ci-native-linker'
+    runs-on: runner
+    timeout-minutes: 15
+    container:
+      image: code.podesta.ai/qos/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - name: Checkout exact qualification scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Install candidate linker only in the disposable job container
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          dnf install -y --setopt=install_weak_deps=False mold
+          rpm -q --qf '%{NEVRA}\n' mold
+          mold --version
+      - name: Qualify native Rust dev and thinLTO links with the wrapper
+        run: bash experiments/ci-forgejo/native-mold-runtime-smoke.sh

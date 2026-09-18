@@ -91,3 +91,13 @@ RUN cargo install --locked cargo-nextest cargo-deny cargo-machete \
 # compiling against the wrong libraries.
 COPY tools/check-build-env.sh /usr/local/bin/tilo-check-build-env
 RUN chmod +x /usr/local/bin/tilo-check-build-env && tilo-check-build-env
+
+# Keep this optional linker in a separate final layer: adding it must not
+# invalidate the expensive native dependencies, Rust toolchain or Cargo tools.
+# The signed immutable image identifies the installed package exactly. Selection
+# remains opt-in until native representative link/runtime qualification passes.
+RUN dnf install -y --setopt=install_weak_deps=False mold \
+    && mkdir -p /usr/local/share/tilo-builder \
+    && rpm -q --qf '%{NEVRA}\n' mold | tee /usr/local/share/tilo-builder/mold-nevra.txt \
+    && mold --version \
+    && dnf clean all
