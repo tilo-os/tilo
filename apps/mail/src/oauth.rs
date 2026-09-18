@@ -556,7 +556,7 @@ pub fn refresh_tokens(
 /// consents or `timeout` elapses. Network path — compiled only under `live`.
 ///
 /// # Errors
-/// Returns `Err` if the loopback listener can't be bound, the redirect
+/// Returns `Err` if the loopback listener can't be bound, the browser cannot open, the redirect
 /// never arrives (timeout, state mismatch, provider `error=`), or the
 /// subsequent code exchange fails.
 #[cfg(feature = "live")]
@@ -564,7 +564,7 @@ pub fn run_loopback_authorization(
     provider: OAuthProvider,
     client_id: &str,
     login_hint: &str,
-    open_browser: impl FnOnce(&str),
+    open_browser: impl FnOnce(&str) -> Result<(), String>,
     timeout: std::time::Duration,
 ) -> Result<OAuthTokens, String> {
     let server = LoopbackServer::bind().map_err(|e| format!("could not bind loopback: {e}"))?;
@@ -579,7 +579,8 @@ pub fn run_loopback_authorization(
         state: state.clone(),
         login_hint: login_hint.to_string(),
     };
-    open_browser(&req.authorization_url());
+    open_browser(&req.authorization_url())
+        .map_err(|error| format!("could not open sign-in browser: {error}"))?;
     let code = server.wait_for_code(&state, timeout)?;
     exchange_code(provider, client_id, &redirect_uri, &code, &pkce.verifier)
         .map(OAuthTokens::stamp_now)
@@ -813,6 +814,25 @@ pub fn sha256(input: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "live")]
+    #[test]
+    fn authorization_reports_browser_failure_before_waiting_for_callback() {
+        let result = run_loopback_authorization(
+            OAuthProvider::Google,
+            "test-client",
+            "fixture@example.invalid",
+            |url| {
+                assert!(url.starts_with("https://accounts.google.com/o/oauth2/v2/auth?"));
+                Err("fixture browser unavailable".into())
+            },
+            std::time::Duration::ZERO,
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "could not open sign-in browser: fixture browser unavailable"
+        );
+    }
 
     fn hex(bytes: &[u8]) -> String {
         bytes.iter().fold(String::new(), |mut out, b| {
