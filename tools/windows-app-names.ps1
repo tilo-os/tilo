@@ -13,6 +13,7 @@ function Get-TiloWindowsAppName {
         'git-client' { 'Git Client' }
         'pdf-viewer' { 'PDF Viewer' }
         'video-player' { 'Video Player' }
+        'music' { 'Music' }
         'ebook' { 'Books' }
         'totp' { 'Authenticator' }
         'typst-editor' { 'Typst' }
