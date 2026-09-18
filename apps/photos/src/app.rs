@@ -238,7 +238,12 @@ struct AnalysisResult {
     invocation: tilo_actions::InvocationId,
     photo_id: String,
     content: Option<String>,
-    result: Result<crate::model::ImageAnalysis, String>,
+    result: AnalysisOutcome,
+}
+
+enum AnalysisOutcome {
+    Image(Result<crate::model::ImageAnalysis, String>),
+    People(Result<crate::people::VerifiedFaceClusterBatch, String>),
 }
 
 struct AnalysisJob {
@@ -257,6 +262,10 @@ enum AnalysisJobKind {
     },
     Vision {
         capability: tilo_vision::LocalVisionCapability,
+    },
+    People {
+        capability: tilo_vision::LocalFaceCapability,
+        images: Vec<(String, OpenImage)>,
     },
 }
 
@@ -283,11 +292,14 @@ fn analysis_worker(rx: &Receiver<AnalysisJob>, tx: &SyncSender<AnalysisResult>) 
                 photo_id: job.photo_id,
                 content: job.content,
                 result: match job.kind {
-                    AnalysisJobKind::Ocr { language } => {
-                        crate::analysis::recognize_text(&job.image, &language)
-                    }
-                    AnalysisJobKind::Vision { capability } => {
-                        crate::analysis::analyze_image(&job.image, &capability)
+                    AnalysisJobKind::Ocr { language } => AnalysisOutcome::Image(
+                        crate::analysis::recognize_text(&job.image, &language),
+                    ),
+                    AnalysisJobKind::Vision { capability } => AnalysisOutcome::Image(
+                        crate::analysis::analyze_image(&job.image, &capability),
+                    ),
+                    AnalysisJobKind::People { capability, images } => {
+                        AnalysisOutcome::People(crate::analysis::detect_people(images, &capability))
                     }
                 },
             })
@@ -697,6 +709,10 @@ pub struct PhotosApp {
     /// field nor a resource: unconfirmed face proposals belong only on this
     /// device until an explicit review commits a compact label membership.
     people_controller: crate::people::PeopleController,
+    /// Next library offset for the explicitly started People scan.  Keeping a
+    /// cursor makes a large local library progress in 12-photo work units
+    /// without ever submitting hundreds of biometric previews at once.
+    people_scan_offset: usize,
     /// A distinct People collection surface. Its private suggestion state is
     /// visually and semantically separated from shared approved labels.
     people_mode: bool,
@@ -893,10 +909,10 @@ impl PhotosApp {
             if self.cancelled_analysis.remove(&completed.invocation) {
                 continue;
             }
-            let current = PhotosDoc::photo(doc, &completed.photo_id);
-            let stale = current
-                .as_ref()
-                .is_none_or(|photo| photo.image.content != completed.content);
+            let stale = matches!(&completed.result, AnalysisOutcome::Image(_))
+                && PhotosDoc::photo(doc, &completed.photo_id)
+                    .as_ref()
+                    .is_none_or(|photo| photo.image.content != completed.content);
             let update = if stale {
                 tilo_actions::InvocationUpdate::Failed {
                     invocation: completed.invocation,
@@ -911,7 +927,7 @@ impl PhotosApp {
                 }
             } else {
                 match completed.result {
-                    Ok(mut analysis) => {
+                    AnalysisOutcome::Image(Ok(mut analysis)) => {
                         "shared".clone_into(&mut analysis.provenance.scope);
                         let action = crate::actions::PhotosAction::SetImageAnalysis {
                             photo_id: completed.photo_id,
@@ -940,7 +956,24 @@ impl PhotosApp {
                             Err(error) => analysis_failure(completed.invocation, error.to_string()),
                         }
                     }
-                    Err(error) => analysis_failure(completed.invocation, error),
+                    AnalysisOutcome::Image(Err(error)) | AnalysisOutcome::People(Err(error)) => {
+                        analysis_failure(completed.invocation, error)
+                    }
+                    AnalysisOutcome::People(Ok(batch)) => {
+                        let added = self.people_controller.ingest_verified_face_clusters(batch);
+                        self.notice = Some(if added == 0 {
+                            "No new local face suggestions were found in this batch".to_owned()
+                        } else {
+                            format!(
+                                "{added} local People suggestion{} ready to review",
+                                if added == 1 { " is" } else { "s are" }
+                            )
+                        });
+                        tilo_actions::InvocationUpdate::Succeeded {
+                            invocation: completed.invocation,
+                            output: tilo_actions::ActionOutput::default(),
+                        }
+                    }
                 }
             };
             self.resource_result = Some(update);
@@ -1017,6 +1050,7 @@ impl PhotosApp {
             active_analysis: HashSet::new(),
             cancelled_analysis: HashSet::new(),
             people_controller: crate::people::PeopleController::new(),
+            people_scan_offset: 0,
             people_mode: false,
             canvas_state: CanvasState::Empty,
             search_provider: crate::search::PhotosSearchProvider::empty(),
@@ -2323,7 +2357,8 @@ impl PhotosApp {
                 return Err("directory indexing requires the Photos indexing job host".to_owned());
             }
             crate::actions::PhotosOperation::AnalyzeText { .. }
-            | crate::actions::PhotosOperation::AnalyzeImage { .. } => {
+            | crate::actions::PhotosOperation::AnalyzeImage { .. }
+            | crate::actions::PhotosOperation::AnalyzePeopleLibrary => {
                 return Err("local image analysis requires document dispatch".to_owned());
             }
             crate::actions::PhotosOperation::Copy => {
@@ -2370,6 +2405,12 @@ impl PhotosApp {
                     "Open Settings › Models to install and start a signed local face-recognition model"
                         .to_owned(),
                 );
+            }
+            crate::actions::PhotosOperation::EnablePeopleRecognition => {
+                self.people_controller.set_recognition_enabled(true);
+                self.people_controller
+                    .discover_face_capability(&agent_provider_config::ProviderConfig::load());
+                self.notice = Some(self.people_controller.capability().summary().to_owned());
             }
             crate::actions::PhotosOperation::ViewFavorites => self.view_favorites(doc)?,
             crate::actions::PhotosOperation::ViewPlaces => {
@@ -4327,6 +4368,46 @@ impl PhotosApp {
                 );
             }
         }
+        let suggestions: Vec<_> = self
+            .people_controller
+            .visible_clusters()
+            .into_iter()
+            .filter(|cluster| cluster.is_proposal())
+            .take(6)
+            .collect();
+        let suggestion_y = if self.library_people.is_empty() {
+            y + 44.0
+        } else {
+            let columns = if content.width() < 620.0 { 2 } else { 4 };
+            y + (self.library_people.len().min(8).div_ceil(columns) as f64) * 184.0 + 12.0
+        };
+        text_renderer.draw_text_weighted(
+            scene,
+            "Local suggestions",
+            17.0,
+            theme.text_primary,
+            transform * Affine::translate((content.x0, suggestion_y)),
+            Some(content.width() as f32),
+            TextWeight::Medium,
+        );
+        let suggestion_copy = if suggestions.is_empty() {
+            "No local suggestions yet. Enable recognition, then scan a local batch.".to_owned()
+        } else {
+            format!(
+                "{} suggestion{} waiting for a name and approval; none are shared.",
+                suggestions.len(),
+                if suggestions.len() == 1 { "" } else { "s" }
+            )
+        };
+        text_renderer.draw_text_weighted(
+            scene,
+            &suggestion_copy,
+            14.0,
+            theme.text_dim,
+            transform * Affine::translate((content.x0, suggestion_y + 25.0)),
+            Some(content.width() as f32),
+            TextWeight::Regular,
+        );
     }
 
     fn draw_library(
@@ -7678,6 +7759,66 @@ impl Widget for PhotosApp {
             self.active_analysis.insert(invocation);
             return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
         }
+        if matches!(
+            operation,
+            crate::actions::PhotosOperation::AnalyzePeopleLibrary
+        ) {
+            if !self.people_controller.privacy().recognition_enabled {
+                return Err("People recognition is off on this device. Enable it in People before scanning local photographs.".to_owned());
+            }
+            let config = agent_provider_config::ProviderConfig::load();
+            self.people_controller.discover_face_capability(&config);
+            let capability =
+                tilo_vision::discover_local_face_capability(&config).ok_or_else(|| {
+                    "No verified local face model is ready. Install and start one in Settings."
+                        .to_owned()
+                })?;
+            let library = PhotosDoc::library(doc);
+            let locally_available: Vec<_> = library
+                .photos
+                .into_iter()
+                .filter(|photo| crate::doc::bytes_of(&photo.image).is_some())
+                .map(|photo| (photo.id, photo.image))
+                .collect();
+            if locally_available.is_empty() {
+                return Err(
+                    "No locally available photographs are ready for People recognition.".to_owned(),
+                );
+            }
+            let start = self.people_scan_offset % locally_available.len();
+            let photos: Vec<_> = locally_available
+                .iter()
+                .cycle()
+                .skip(start)
+                .take(tilo_vision::MAX_FACE_BATCH.min(locally_available.len()))
+                .cloned()
+                .collect();
+            self.people_scan_offset = start.saturating_add(photos.len()) % locally_available.len();
+            let Some((_, first)) = photos.first() else {
+                return Err(
+                    "No locally available photographs are ready for People recognition.".to_owned(),
+                );
+            };
+            let sender = self.analysis_tx.as_ref().ok_or_else(|| {
+                "local People recognition is unavailable on this device".to_owned()
+            })?;
+            sender
+                .try_send(AnalysisJob {
+                    invocation,
+                    photo_id: "photos.people".to_owned(),
+                    content: None,
+                    image: first.clone(),
+                    kind: AnalysisJobKind::People {
+                        capability,
+                        images: photos,
+                    },
+                })
+                .map_err(|_| {
+                    "local image analysis is busy; wait for the current photos to finish".to_owned()
+                })?;
+            self.active_analysis.insert(invocation);
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
 
         let crate::actions::PhotosOperation::ImportCameraMedia { media_id, name } = operation
         else {
@@ -9385,10 +9526,10 @@ mod tests {
                 invocation: cancelled,
                 photo_id: "photos.photo:missing".to_owned(),
                 content: None,
-                result: Ok(crate::model::ImageAnalysis {
+                result: AnalysisOutcome::Image(Ok(crate::model::ImageAnalysis {
                     ocr_text: "must not persist".to_owned(),
                     ..crate::model::ImageAnalysis::default()
-                }),
+                })),
             })
             .unwrap();
         app.drain_analysis_results(&mut doc);
@@ -9400,10 +9541,10 @@ mod tests {
                 invocation: stale,
                 photo_id: "photos.photo:missing".to_owned(),
                 content: None,
-                result: Ok(crate::model::ImageAnalysis {
+                result: AnalysisOutcome::Image(Ok(crate::model::ImageAnalysis {
                     ocr_text: "also must not persist".to_owned(),
                     ..crate::model::ImageAnalysis::default()
-                }),
+                })),
             })
             .unwrap();
         app.drain_analysis_results(&mut doc);

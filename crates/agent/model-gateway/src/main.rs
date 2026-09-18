@@ -16,7 +16,7 @@ use agent_provider_config::{EndpointLocation, ProviderConfig, ProviderProfile, P
 use base64::Engine as _;
 use clap::{Parser, Subcommand};
 use tilo_model_gateway::{
-    Frame, RPC_VERSION, Request, Response, VisionImage, read_frame, write_frame,
+    FaceImage, Frame, RPC_VERSION, Request, Response, VisionImage, read_frame, write_frame,
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -50,6 +50,11 @@ const SETTINGS_APP: &str = "dev.tilo.settings";
 const AGENT_APP: &str = "dev.tilo.agent";
 const PHOTOS_APP: &str = "dev.tilo.photos";
 const MAX_VISION_IMAGE_BYTES: usize = 1024 * 1024;
+/// Face batches are intentionally small.  A large library is scanned as
+/// bounded background batches by Photos, never materialized into one giant
+/// biometric request or kept in the gateway's memory.
+const MAX_FACE_IMAGES: usize = 12;
+const MAX_FACE_IMAGE_BYTES: usize = 128 * 1024;
 const VISION_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[derive(serde::Deserialize)]
@@ -235,6 +240,21 @@ fn handle(app_id: &str, request: Request) -> Response {
         }
         Request::AnalyzeImage { .. } => {
             Err("only Photos may request fixed local image analysis".into())
+        }
+        Request::ClusterFaces {
+            profile_id,
+            model_id,
+            images,
+        } if app_id == PHOTOS_APP => {
+            cluster_faces(&profile_id, &model_id, &images).map(|output| Response {
+                ok: true,
+                output: Some(output),
+                configured: None,
+                error: None,
+            })
+        }
+        Request::ClusterFaces { .. } => {
+            Err("only Photos may request fixed local face clustering".into())
         }
         Request::SecretStatus { profile_id } if app_id == SETTINGS_APP => {
             secret_status(&profile_id).map(|configured| Response {
@@ -425,6 +445,44 @@ fn analyze_image(profile_id: &str, model_id: &str, image: &VisionImage) -> Resul
     )
 }
 
+/// Run one fixed face-clustering request against the separate signed local
+/// capability.  An OpenAI-compatible local runner can expose its face model
+/// behind the normal chat endpoint, but it must explicitly advertise
+/// `face_recognition`; generic image description models cannot use this path.
+fn cluster_faces(profile_id: &str, model_id: &str, images: &[FaceImage]) -> Result<String, String> {
+    validate_face_images(images)?;
+    let profile = configured_profile(profile_id)?;
+    if profile.location != EndpointLocation::ThisDevice
+        || profile.protocol != ProviderProtocol::OpenAiCompatible
+        || !loopback_http_endpoint(&profile.endpoint)
+    {
+        return Err("face clustering requires a supervised loopback local model".into());
+    }
+    let model = profile
+        .models
+        .iter()
+        .find(|model| model.id == model_id)
+        .ok_or_else(|| "model is not configured for this provider".to_string())?;
+    if !model.face_recognition {
+        return Err("the selected local model does not declare face-recognition capability".into());
+    }
+    if !model.revision.as_deref().is_some_and(is_pinned_revision) {
+        return Err("the selected local face model has no pinned revision".into());
+    }
+    let endpoint = provider_url(&profile);
+    let body = local_face_body(model_id, images);
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|_| "gateway HTTP client is unavailable".to_string())?;
+    let began = Instant::now();
+    while_busy(
+        || VISION_TIMEOUT.checked_sub(began.elapsed()),
+        std::thread::sleep,
+        |budget| provider_attempt(&client, &profile, &endpoint, None, &body, budget),
+    )
+}
+
 fn validate_vision_image(image: &VisionImage) -> Result<(), String> {
     if !matches!(
         image.media_type.as_str(),
@@ -445,6 +503,38 @@ fn validate_vision_image(image: &VisionImage) -> Result<(), String> {
         .map_err(|_| "image analysis preview is not valid base64".to_string())?;
     if decoded.is_empty() || decoded.len() > MAX_VISION_IMAGE_BYTES {
         return Err("image analysis preview exceeds the 1 MiB input limit".into());
+    }
+    Ok(())
+}
+
+fn validate_face_images(images: &[FaceImage]) -> Result<(), String> {
+    if images.is_empty() || images.len() > MAX_FACE_IMAGES {
+        return Err("face clustering accepts 1 through 12 bounded photographs".into());
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    for image in images {
+        if !image.photo_id.starts_with("photos.photo:")
+            || image.photo_id.len() > 4096
+            || image.photo_id.chars().any(char::is_control)
+            || !ids.insert(&image.photo_id)
+        {
+            return Err("face clustering requires unique Photos resource ids".into());
+        }
+        if image.media_type != "image/jpeg"
+            || image.source_content_hash.len() != 64
+            || !image
+                .source_content_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err("face clustering requires hashed JPEG previews".into());
+        }
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&image.data_base64)
+            .map_err(|_| "face preview is not valid base64".to_string())?;
+        if decoded.is_empty() || decoded.len() > MAX_FACE_IMAGE_BYTES {
+            return Err("face preview exceeds the 128 KiB input limit".into());
+        }
     }
     Ok(())
 }
@@ -474,7 +564,7 @@ fn is_pinned_revision(revision: &str) -> bool {
 }
 
 fn local_vision_body(model_id: &str, image: &VisionImage) -> serde_json::Value {
-    const INSTRUCTIONS: &str = "You are a device-local image indexing component. Return JSON only, with exactly these keys: description (a concise factual caption, at most 480 Unicode characters), labels (an array of up to 24 common visible object, animal, place, or activity labels; do not guess identity or sensitive traits), ocr (literal visible text, or an empty string). Do not name people: face identity requires a separate consented face-clustering capability. If uncertain, omit the label or use an empty value.";
+    const INSTRUCTIONS: &str = "You are a device-local image indexing component. Return JSON only, with exactly these keys: description (a concise factual caption, at most 480 Unicode characters), labels (an array of up to 24 common visible object, animal, place, or activity labels; do not guess identity or sensitive traits), pets (an array of up to 24 visible companion-animal labels, or an empty array), ocr (literal visible text, or an empty string). A pet must be visibly present; do not infer one from context. Do not name people: face identity requires a separate consented face-clustering capability. If uncertain, omit the label or use an empty value.";
     let data_url = format!("data:{};base64,{}", image.media_type, image.data_base64);
     serde_json::json!({
         "model": model_id,
@@ -487,6 +577,35 @@ fn local_vision_body(model_id: &str, image: &VisionImage) -> serde_json::Value {
                 { "type": "text", "text": "Index this photo using the fixed JSON schema." },
                 { "type": "image_url", "image_url": { "url": data_url, "detail": "low" } }
             ] }
+        ]
+    })
+}
+
+fn local_face_body(model_id: &str, images: &[FaceImage]) -> serde_json::Value {
+    const INSTRUCTIONS: &str = "You are a device-local face detection and clustering component. Return JSON only with exactly one key, clusters: an array of objects with id and photo_ids. Detect visible faces and group only faces that you can determine are the same person among the supplied photographs. Never output a person's name, age, gender, race, emotion, face rectangle, crop, confidence, embedding, or any biometric value. A cluster id must be a short opaque token and photo_ids must contain only supplied ids. Omit uncertain matches and omit single-photo clusters.";
+    let mut content = Vec::with_capacity(images.len() + 1);
+    content.push(serde_json::json!({
+        "type": "text",
+        "text": "Detect and cluster faces in this bounded local batch using the fixed JSON schema."
+    }));
+    for image in images {
+        content.push(serde_json::json!({
+            "type": "text",
+            "text": format!("Photo resource id: {}", image.photo_id),
+        }));
+        content.push(serde_json::json!({
+            "type": "image_url",
+            "image_url": { "url": format!("data:{};base64,{}", image.media_type, image.data_base64), "detail": "low" }
+        }));
+    }
+    serde_json::json!({
+        "model": model_id,
+        "temperature": 0,
+        "max_tokens": 700,
+        "response_format": { "type": "json_object" },
+        "messages": [
+            { "role": "system", "content": INSTRUCTIONS },
+            { "role": "user", "content": content }
         ]
     })
 }
@@ -706,6 +825,25 @@ mod tests {
         assert!(encoded.contains("Do not name people"));
         assert!(!encoded.contains("ignore previous"));
         assert_eq!(body["model"], "vision-model");
+    }
+
+    #[test]
+    fn local_face_input_is_bounded_and_prompt_never_requests_identity() {
+        let face = FaceImage {
+            photo_id: "photos.photo:one".into(),
+            media_type: "image/jpeg".into(),
+            data_base64: base64::engine::general_purpose::STANDARD.encode(b"preview"),
+            source_content_hash: "a".repeat(64),
+        };
+        assert!(validate_face_images(&[face.clone()]).is_ok());
+        let mut duplicate = face.clone();
+        duplicate.photo_id = face.photo_id.clone();
+        assert!(validate_face_images(&[face.clone(), duplicate]).is_err());
+        let body = local_face_body("face-model", &[face]);
+        let encoded = body.to_string();
+        assert!(encoded.contains("face detection and clustering"));
+        assert!(encoded.contains("Never output a person's name"));
+        assert!(!encoded.contains("identify the person"));
     }
 
     struct Fake {
