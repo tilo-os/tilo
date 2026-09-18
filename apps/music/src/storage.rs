@@ -1,25 +1,14 @@
-//! On-disk persistence for the music library document.
+//! Device-local persistence for Music.
 //!
-//! The collaborative library is an Automerge document ([`crate::doc`]). For the
-//! Tilo self-hosting model — and so a headless home server's replica survives
-//! restarts — the raw `doc.save()` bytes are persisted to disk rather than a
-//! JSON projection, as in `chat/src/storage.rs`: persisting the Automerge
-//! save means a future peer can merge against the file directly.
-//!
-//! The default GUI app keeps its document in memory, starting from an **empty**
-//! library each run (tracks arrive from playback, search, or a synced relay);
-//! this module is the seam the headless relay
-//! ([`crate::relay`]) uses to load and atomically persist its authoritative
-//! copy. Playback and credentials remain device-local effects and are
-//! intentionally absent from this file. Durable media bytes live in the
-//! separate device-local content-addressed cache below; they never enter the
-//! profile or replicated document.
+//! Collaborative library state is owned and persisted by the platform app
+//! document. This module owns only device-private playback preferences and a
+//! content-addressed media cache. Neither local file paths nor media bytes
+//! enter the shared document or collaboration channel.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -356,19 +345,8 @@ impl DeviceProfile {
     }
 }
 
-/// Resolve the on-disk path for the library document. Honours an explicit
-/// override (`TILO_MUSIC_DATA`) so a relay can be pointed at a chosen location;
-/// otherwise `$XDG_DATA_HOME/tilo-music/library.automerge`.
-pub fn doc_path() -> PathBuf {
-    if let Ok(p) = std::env::var("TILO_MUSIC_DATA") {
-        return PathBuf::from(p);
-    }
-    let base = dirs_data_dir();
-    base.join("tilo-music").join("library.automerge")
-}
-
 /// Resolve the local-only profile path. `TILO_MUSIC_PROFILE` is useful for
-/// sandboxed tests; unlike `doc_path`, it is never a replication input.
+/// sandboxed tests; it is never a replication input.
 pub fn device_profile_path() -> PathBuf {
     if let Ok(p) = std::env::var("TILO_MUSIC_PROFILE") {
         return PathBuf::from(p);
@@ -434,52 +412,9 @@ fn dirs_data_dir() -> PathBuf {
     PathBuf::from(".")
 }
 
-/// Load a document from `path`, or `None` if it doesn't exist / can't parse.
-pub fn load_from(path: &Path) -> Option<AutoCommit> {
-    let bytes = std::fs::read(path).ok()?;
-    AutoCommit::load(&bytes).ok()
-}
-
-/// Atomically persist `doc` to `path` (temp file + rename) so a crash mid-write
-/// can't corrupt the saved library.
-///
-/// # Errors
-///
-/// Returns an error if the parent directory can't be created, or if the
-/// atomic temp-file write/rename fails (e.g. permissions, no space left).
-pub fn save_to(path: &Path, doc: &mut AutoCommit) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let bytes = doc.save();
-    atomic_file::write(path, &bytes)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{doc, seed};
-
-    #[test]
-    fn save_then_load_round_trips() {
-        let dir = std::env::temp_dir().join(format!("tilo-music-test-{}", std::process::id()));
-        let path = dir.join("library.automerge");
-        let mut d = AutoCommit::new();
-        let lib = seed::sample_library();
-        doc::seed(&mut d, &lib, &seed::sample_playback(&lib));
-        save_to(&path, &mut d).expect("save");
-
-        let loaded = load_from(&path).expect("load");
-        assert_eq!(doc::load_library(&loaded).total_tracks(), lib.tracks.len());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_missing_is_none() {
-        let path = std::env::temp_dir().join("tilo-music-nonexistent-xyz.automerge");
-        assert!(load_from(&path).is_none());
-    }
 
     #[test]
     fn device_profile_round_trips_locally_and_forces_paused_resume() {
