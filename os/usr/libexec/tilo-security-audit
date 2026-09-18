@@ -222,7 +222,11 @@ for protocol in \
   fi
 done
 check_sysctl kernel.perf_event_paranoid 3
-check_sysctl kernel.io_uring_disabled 2
+if grep -Fqx '# CONFIG_IO_URING is not set' "$running_kernel_config" 2>/dev/null; then
+  ok "io_uring syscall and worker surface is not compiled"
+else
+  check_sysctl kernel.io_uring_disabled 2
+fi
 check_sysctl kernel.randomize_va_space 2
 check_sysctl vm.unprivileged_userfaultfd 0
 check_sysctl vm.mmap_min_addr 65536
