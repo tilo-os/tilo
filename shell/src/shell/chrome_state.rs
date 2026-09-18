@@ -300,6 +300,40 @@ pub struct QuickSettingsState {
     pub power_profile: PowerProfile,
 }
 
+/// One compositor-authoritative screen exposure projected into trusted
+/// chrome. This is session-local: it must never be persisted or replicated,
+/// because a stale viewer is worse than no disclosure at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ActiveExposure {
+    pub peer: u64,
+    pub surface: u64,
+    pub can_control: bool,
+}
+
+/// Session-local drill-down into one app-published resource directory.
+/// Route identity is retained with the resource so a similarly named object
+/// in another room or app can never receive the child query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchResourceScope {
+    pub peer_id: u64,
+    pub cluster_id: String,
+    pub app_id: String,
+    pub resource: String,
+    pub label: String,
+}
+
+/// Session-local presence changes requested through the semantic action
+/// surface. The overlay host owns the live publisher and follow viewport, so
+/// chrome queues these rather than pretending the action provider can mutate
+/// either subsystem directly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PresenceRequest {
+    Follow(String),
+    StopFollowing,
+    SetManualStatus(Option<String>),
+    SetStatusSharing(ui::StatusSharing),
+}
+
 impl Default for QuickSettingsState {
     fn default() -> Self {
         #[cfg(test)]
@@ -407,6 +441,7 @@ pub struct ChromeState {
     /// Caret + selection inside `editing_workspace_name`.
     pub editing_workspace_name_selection: ui::text_selection::Selection,
     pub search_scope: SearchScope,
+    pub search_resource_scope: Option<SearchResourceScope>,
     /// Set by the tab strip's "+", cleared when the palette closes.
     pub open_target: OpenTarget,
     /// Copied here once per frame from
@@ -480,6 +515,9 @@ pub struct ChromeState {
     /// While `true`, the notification stack withholds app
     /// names/summaries/bodies and shows only a count.
     session_locked: bool,
+    /// Live viewers/controllers copied from the compositor's share registry
+    /// each frame. Trusted chrome and accessibility read this same snapshot.
+    active_exposures: Vec<ActiveExposure>,
     /// Edge-triggered request from the shell's power menu.  The native
     /// compositor drains this and is the only layer allowed to transition
     /// the session lock state, so a UI action cannot diverge from the lock
@@ -506,6 +544,7 @@ pub struct ChromeState {
     records: RecordStore,
     /// Drained once per frame by `ShellOverlayHost::pump_peer_sync`.
     peer_sync_requests: Vec<crate::shell::overlay_host::PeerSyncAction>,
+    presence_requests: Vec<PresenceRequest>,
     /// An exported action asked into the current room, as `(record
     /// id, record kind)`. Queued because the room's index lives on
     /// the overlay host, unreachable from an action's `apply`.
@@ -593,6 +632,7 @@ impl ChromeState {
             editing_workspace_name: None,
             editing_workspace_name_selection: ui::text_selection::Selection::default(),
             search_scope: SearchScope::default(),
+            search_resource_scope: None,
             open_target: OpenTarget::default(),
             status: crate::shell::status::SystemStatus::default(),
             clock_activity: None,
@@ -619,12 +659,14 @@ impl ChromeState {
             dnd: false,
             visual_alert_until: None,
             session_locked: false,
+            active_exposures: Vec::new(),
             session_lock_requested: false,
             fullscreen_group: None,
             maximized_group: None,
             peer_sync_enabled: false,
             collab_unavailable: None,
             peer_sync_requests: Vec::new(),
+            presence_requests: Vec::new(),
             wheel_summon: None,
             record_requests: Vec::new(),
             close_surface_requests: Vec::new(),
@@ -670,6 +712,14 @@ impl ChromeState {
 
     pub fn take_peer_sync_requests(&mut self) -> Vec<crate::shell::overlay_host::PeerSyncAction> {
         std::mem::take(&mut self.peer_sync_requests)
+    }
+
+    pub fn push_presence_request(&mut self, request: PresenceRequest) {
+        self.presence_requests.push(request);
+    }
+
+    pub fn take_presence_requests(&mut self) -> Vec<PresenceRequest> {
+        std::mem::take(&mut self.presence_requests)
     }
 
     /// Same effect as activating that record's row in search — a
@@ -1576,6 +1626,21 @@ impl ChromeState {
         self.session_locked
     }
 
+    /// Replace the trusted disclosure snapshot. Sorting keeps cache
+    /// invalidation independent of the registry's hash iteration order.
+    pub fn set_active_exposures(&mut self, mut exposures: Vec<ActiveExposure>) {
+        exposures.sort_unstable();
+        exposures.dedup();
+        if self.active_exposures != exposures {
+            self.active_exposures = exposures;
+            self.bump();
+        }
+    }
+
+    pub fn active_exposures(&self) -> &[ActiveExposure] {
+        &self.active_exposures
+    }
+
     /// Queue a lock requested by the in-compositor power menu.  This is an
     /// edge, rather than a second source of truth for whether the session is
     /// locked: the native loop drains it into [`SessionManager`].
@@ -2305,5 +2370,32 @@ mod active_tab_tests {
         assert_eq!(state.revision, initial.wrapping_add(1));
         assert!(!state.sync_external_tree_revision());
         assert_eq!(state.revision, initial.wrapping_add(1));
+    }
+
+    #[test]
+    fn active_exposure_snapshot_is_sorted_deduplicated_and_edge_triggered() {
+        let cell = ChromeState::new(WorkspaceTree::default());
+        let mut state = cell.borrow_mut();
+        let initial = state.revision;
+        let a = ActiveExposure {
+            peer: 9,
+            surface: 42,
+            can_control: true,
+        };
+        let b = ActiveExposure {
+            peer: 3,
+            surface: 77,
+            can_control: false,
+        };
+        state.set_active_exposures(vec![a, b, a]);
+        assert_eq!(state.active_exposures(), &[b, a]);
+        assert_eq!(state.revision, initial.wrapping_add(1));
+
+        state.set_active_exposures(vec![a, b]);
+        assert_eq!(
+            state.revision,
+            initial.wrapping_add(1),
+            "an unchanged authority snapshot must not force a frame"
+        );
     }
 }
