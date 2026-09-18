@@ -21,7 +21,7 @@ use crate::portal::{
 };
 use crate::shell::personal_continuity::DeviceId;
 use crate::shell::realtime_session::VerifiedAppRegistration;
-use crate::shell::remote_capture_device::{
+use crate::shell::remote_capture::device::{
     MAX_REMOTE_CAPTURE_SESSIONS, RemoteCaptureChunk, RemoteCaptureGrant, RemoteCaptureKind,
     RemoteCaptureProfile, RemoteCaptureRequest,
 };
@@ -601,7 +601,7 @@ impl ProductionRemoteCaptureAdapter {
         session_id: [u8; 16],
         profile: &RemoteCaptureProfile,
     ) -> Result<RemoteCaptureEndpoint, RemoteCaptureAdapterError> {
-        use crate::shell::remote_capture_device::RemoteVideoFormat;
+        use crate::shell::remote_capture::device::RemoteVideoFormat;
         let RemoteCaptureProfile::Camera {
             format,
             width,
@@ -659,7 +659,7 @@ impl ProductionRemoteCaptureAdapter {
         session_id: [u8; 16],
         profile: &RemoteCaptureProfile,
     ) -> Result<RemoteCaptureEndpoint, RemoteCaptureAdapterError> {
-        use crate::shell::remote_capture_device::RemoteAudioFormat;
+        use crate::shell::remote_capture::device::RemoteAudioFormat;
         let RemoteCaptureProfile::Microphone {
             format,
             sample_rate,
@@ -886,7 +886,7 @@ pub(crate) enum RemoteCaptureAdapterError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::remote_capture_device::{
+    use crate::shell::remote_capture::device::{
         REMOTE_CAPTURE_PROTOCOL_VERSION, RemoteDocumentFormat, RemoteVideoFormat,
     };
 
@@ -938,7 +938,7 @@ mod tests {
     }
 
     fn grant_for(request: &RemoteCaptureRequest) -> ([u8; 16], RemoteCaptureGrant) {
-        let mut registry = crate::shell::remote_capture_device::RemoteCaptureRegistry::default();
+        let mut registry = crate::shell::remote_capture::device::RemoteCaptureRegistry::default();
         registry
             .grant(
                 request,

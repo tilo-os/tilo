@@ -14,8 +14,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
-use crate::shell::remote_capture_adapter::RemoteCaptureAvailability;
-use crate::shell::remote_capture_device::{
+use crate::shell::remote_capture::adapter::RemoteCaptureAvailability;
+use crate::shell::remote_capture::device::{
     MAX_REMOTE_CAPTURE_CHUNK_BYTES, MAX_REMOTE_CAPTURE_SESSIONS, RemoteAudioFormat,
     RemoteCaptureKind, RemoteCaptureProfile, RemoteVideoFormat,
 };
@@ -488,7 +488,7 @@ mod tests {
     #[test]
     fn scanner_spools_before_publishing_consistent_total_offsets() {
         let profile = RemoteCaptureProfile::DocumentScanner {
-            format: crate::shell::remote_capture_device::RemoteDocumentFormat::Png,
+            format: crate::shell::remote_capture::device::RemoteDocumentFormat::Png,
             max_pages: 1,
             max_document_bytes: 200_000,
         };
@@ -515,7 +515,7 @@ mod tests {
     #[test]
     fn scanner_queue_saturation_reports_failure_instead_of_blocking() {
         let profile = RemoteCaptureProfile::DocumentScanner {
-            format: crate::shell::remote_capture_device::RemoteDocumentFormat::Png,
+            format: crate::shell::remote_capture::device::RemoteDocumentFormat::Png,
             max_pages: 1,
             max_document_bytes: 200_000,
         };
