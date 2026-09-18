@@ -10,6 +10,7 @@ pub mod desktop_worker;
 mod destination_security;
 pub mod folders;
 pub mod import_view;
+pub mod internal_bundle;
 pub mod known_folders;
 pub mod migration;
 mod migration_durability;
