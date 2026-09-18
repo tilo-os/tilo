@@ -1,0 +1,32 @@
+[package]
+name = "qos-session-peer"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish.workspace = true
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+ed25519-dalek.workspace = true
+blake3.workspace = true
+hex.workspace = true
+uuid.workspace = true
+libc.workspace = true
+tokio = { workspace = true, features = ["full"] }
+iroh.workspace = true
+iroh-base.workspace = true
+iroh-relay = { version = "1.0.3", features = ["server"] }
+web-time = { version = "1", features = ["serde"] }
+atomic-file = { path = "../../system/atomic-file" }
+qos-peer-state = { path = "../../collab/qos-peer-state" }
+qos-user-identity = { path = "../../identity/qos-user-identity" }
+qos-relay = { path = "../qos-relay" }
+ui = { path = "../../../ui" }
+word-processor = { path = "../../../apps/word-processor" }
+chat = { path = "../../../apps/chat", default-features = false }
+[dev-dependencies]
+collab-types = { path = "../../collab/collab-types" }
+tempfile.workspace = true
+qos-browser-runtime = { path = "../../browser/qos-browser-runtime" }

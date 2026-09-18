@@ -110,6 +110,7 @@ members = [
     "crates/packaging/notes-cli",
     "crates/identity/qos-user-identity",
     "crates/hosting/qos-relay",
+    "crates/hosting/qos-session-peer",
     "apps/file-explorer",
     "apps/terminal",
     "apps/browser",

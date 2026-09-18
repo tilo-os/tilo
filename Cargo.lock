@@ -11508,6 +11508,7 @@ dependencies = [
  "automerge",
  "blake3",
  "chacha20poly1305",
+ "chat",
  "clap",
  "collab-types",
  "ed25519-dalek 2.2.0",
@@ -11521,6 +11522,7 @@ dependencies = [
  "libc",
  "n0-future",
  "postcard",
+ "qdoc",
  "qos-browser-runtime",
  "qos-peer-state",
  "qos-user-identity",
@@ -11537,8 +11539,10 @@ dependencies = [
  "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
+ "ui",
  "uuid",
  "web-time",
+ "word-processor",
  "x25519-dalek 2.0.1",
 ]
 
@@ -11578,6 +11582,36 @@ dependencies = [
  "tokio",
  "vello",
  "winit",
+]
+
+[[package]]
+name = "qos-session-peer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "atomic-file",
+ "blake3",
+ "chat",
+ "collab-types",
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "iroh",
+ "iroh-base",
+ "iroh-relay",
+ "libc",
+ "postcard",
+ "qos-browser-runtime",
+ "qos-peer-state",
+ "qos-relay",
+ "qos-user-identity",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "ui",
+ "uuid",
+ "web-time",
+ "word-processor",
 ]
 
 [[package]]
