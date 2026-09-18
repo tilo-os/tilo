@@ -3,6 +3,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -17,7 +18,8 @@ if LOCAL_CRYPTO.is_file():
     trust.CRYPTO = LOCAL_CRYPTO
 
 
-@unittest.skipUnless(shutil.which('openssl'), 'OpenSSL required')
+@unittest.skipUnless(shutil.which('cosign') and trust.CRYPTO.is_file(),
+                     'Cosign and Rust-native crypto required')
 class PublicBundleTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -25,17 +27,17 @@ class PublicBundleTests(unittest.TestCase):
         cls.addClassCleanup(cls.scratch.cleanup)
         cls.root = Path(cls.scratch.name)
 
-        def command(*args):
-            subprocess.run(['openssl', *map(str, args)], check=True, capture_output=True)
-
         private = cls.root / 'fixture-private.pem'
-        ec_private = cls.root / 'fixture-ec-private.pem'
-        command('genpkey', '-algorithm', 'RSA', '-pkeyopt', 'rsa_keygen_bits:2048', '-out', private)
-        command('pkey', '-in', private, '-pubout', '-out', cls.root / trust.FILES[1])
-        command('genpkey', '-algorithm', 'EC', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-out', ec_private)
-        command('pkey', '-in', ec_private, '-pubout', '-out', cls.root / trust.FILES[0])
-        command('req', '-new', '-x509', '-key', private, '-subj', '/CN=Tilo disposable test/',
-                '-days', '1', '-out', cls.root / trust.FILES[2])
+        subprocess.run([trust.CRYPTO, 'generate-secure-boot-cert', 'Tilo disposable test',
+                        private, cls.root / trust.FILES[2]], check=True, capture_output=True)
+        subprocess.run([trust.CRYPTO, 'rsa-public-key', private,
+                        cls.root / trust.FILES[1]], check=True, capture_output=True)
+        prefix = cls.root / 'fixture-cosign'
+        environment = os.environ.copy()
+        environment['COSIGN_PASSWORD'] = ''
+        subprocess.run(['cosign', 'generate-key-pair', '--output-key-prefix', prefix],
+                       check=True, capture_output=True, env=environment)
+        Path(str(prefix) + '.pub').rename(cls.root / trust.FILES[0])
         (cls.root / trust.FILES[3]).write_text('ab' * 32 + '\n')
         cls.sources = [cls.root / name for name in trust.FILES]
 
