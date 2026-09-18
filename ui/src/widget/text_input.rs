@@ -10,14 +10,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::color_compat::ColorCompat;
+use crate::gesture::{DragSelect, Granularity};
 use crate::presence::{PathSegment, PresenceKey};
 use crate::richtext::{RichSpan, RichTextLayout, TextAlign};
 use crate::text_break::line_break_opportunities;
 use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use crate::text_selection::{
     TextAffinity, TextPosition, clipboard_copy, clipboard_copy_primary, clipboard_paste,
-    clipboard_paste_primary, extend_span_drag, grapheme_boundary_at_or_before, next_char_boundary,
-    next_word_boundary, prev_char_boundary, prev_word_boundary, word_boundaries,
+    clipboard_paste_primary, extend_span_drag, grapheme_boundary_at_or_before, line_boundaries,
+    next_char_boundary, next_word_boundary, prev_char_boundary, prev_word_boundary,
+    word_boundaries,
 };
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -119,9 +121,6 @@ const FONT_SIZE: f32 = 16.0;
 /// Caret centres against this band, not `FONT_SIZE`, to line up with where
 /// cosmic-text draws the glyphs.
 const LINE_HEIGHT_RATIO: f32 = 1.25;
-/// 400 ms matches the GTK / Qt default.
-const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
-const MULTI_CLICK_RADIUS: f64 = 4.0;
 /// Spellcheck runs immediately, but the word containing the caret stays
 /// visually quiet for this long after an edit so its underline does not
 /// flicker while the user is still forming it.
@@ -142,7 +141,7 @@ const GUTTER_PAD_R: f64 = 12.0;
 enum DragUnit {
     Char,
     Word,
-    All,
+    Line,
 }
 
 type TextChangeCallback = Box<dyn FnMut(&str)>;
@@ -178,10 +177,8 @@ pub struct TextInput {
     /// Anchor span snapped to `drag_unit` boundaries; the drag extends from
     /// whichever end is "opposite" the current pointer.
     drag_anchor_span: (usize, usize),
-    /// For double/triple-click detection against `MULTI_CLICK_INTERVAL`/`_RADIUS`.
-    last_click_time: Option<Instant>,
-    last_click_pos: Point,
-    click_count: u32,
+    /// Session-configured click counting shared by every editable surface.
+    drag_select: DragSelect,
     /// Cleared on `take_dirty()`/`set_text()` — a programmatic write isn't a user edit.
     dirty: bool,
     /// App-local notification hook. The comparison value prevents cursor,
@@ -370,9 +367,7 @@ impl TextInput {
             active_touch: None,
             drag_unit: DragUnit::Char,
             drag_anchor_span: (0, 0),
-            last_click_time: None,
-            last_click_pos: Point::ZERO,
-            click_count: 0,
+            drag_select: DragSelect::new(),
             on_change_path: String::new(),
             last_mouse_pos: Point::ZERO,
             char_x_positions: Vec::new(),
@@ -4496,7 +4491,10 @@ impl TextInput {
                 let (w_start, w_end) = word_boundaries(&self.text, raw);
                 extend_span_drag(anchor_lo, anchor_hi, raw, w_start, w_end)
             }
-            DragUnit::All => (anchor_lo, anchor_hi),
+            DragUnit::Line => {
+                let (line_start, line_end) = line_boundaries(&self.text, raw);
+                extend_span_drag(anchor_lo, anchor_hi, raw, line_start, line_end)
+            }
         };
         if new_anchor != self.cursor_pos
             || self.selection_anchor != Some(new_anchor)
@@ -4559,12 +4557,13 @@ impl TextInput {
         self.publish_primary_selection();
     }
 
-    fn click_select_all_drag(&mut self) {
-        self.selection_anchor = Some(0);
-        self.cursor_pos = self.text.len();
+    fn click_select_line(&mut self, pos: usize) {
+        let (start, end) = line_boundaries(&self.text, pos);
+        self.selection_anchor = Some(start);
+        self.cursor_pos = end;
         self.caret_affinity = TextAffinity::Before;
-        self.drag_unit = DragUnit::All;
-        self.drag_anchor_span = (0, self.text.len());
+        self.drag_unit = DragUnit::Line;
+        self.drag_anchor_span = (start, end);
         self.is_dragging = true;
         self.publish_primary_selection();
     }
@@ -4580,33 +4579,17 @@ impl TextInput {
             *focus_target = Some(node_id);
         }
 
-        // Multi-click ladder: single → double (word) → triple (all).
-        let now = Instant::now();
-        let within_time = self
-            .last_click_time
-            .is_some_and(|t| now.duration_since(t) <= MULTI_CLICK_INTERVAL);
-        // `Point - Point` is a geometric vector subtraction over
-        // f64 coordinates; it has no integer overflow/wrap semantics.
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Point subtraction over f64 screen coordinates"
-        )]
-        let within_radius =
-            (self.last_click_pos - self.last_mouse_pos).hypot() <= MULTI_CLICK_RADIUS;
-        self.click_count = if within_time && within_radius {
-            self.click_count.saturating_add(1)
-        } else {
-            1
-        };
-        self.last_click_time = Some(now);
-        self.last_click_pos = self.last_mouse_pos;
-
+        let intent = self
+            .drag_select
+            .press(self.last_mouse_pos, modifiers.state().shift_key());
         let position = self.resolve_position(self.last_mouse_pos);
         let pos = position.byte;
-        match self.click_count {
-            1 => self.click_place_caret(pos, position.affinity, modifiers),
-            2 => self.click_select_word(pos),
-            _ => self.click_select_all_drag(),
+        match intent.granularity {
+            Granularity::Char => self.click_place_caret(pos, position.affinity, modifiers),
+            Granularity::Word => self.click_select_word(pos),
+            Granularity::Line if self.multiline => self.click_select_line(pos),
+            // A single-line field has exactly one line, so this is select-all.
+            Granularity::Line => self.click_select_line(pos),
         }
         *handled = true;
     }
@@ -4646,6 +4629,7 @@ impl TextInput {
             }
             ElementState::Released if self.is_dragging => {
                 self.is_dragging = false;
+                self.drag_select.release();
                 self.publish_primary_selection();
                 *handled = true;
             }
