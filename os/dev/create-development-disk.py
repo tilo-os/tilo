@@ -43,6 +43,26 @@ def command(argv):
     return result.stdout.decode('utf-8', 'strict')
 
 
+def reject_firmware_access(mountinfo=Path('/proc/self/mountinfo'),
+                           efivars=Path('/sys/firmware/efi/efivars'),
+                           devices=Path('/dev'), tpm_class=Path('/sys/class/tpm')):
+    # EFI-enabled kernels may expose an empty directory without a variable
+    # store. Check actual exposure, including efivarfs mounted elsewhere.
+    mounts = mountinfo.read_text().splitlines()
+    if not mounts:
+        raise ValueError('cannot inspect guest firmware mounts')
+    for line in mounts:
+        fields = line.split(' - ')
+        if len(fields) != 2 or len(fields[1].split()) < 3:
+            raise ValueError('cannot inspect guest firmware mounts')
+        if fields[1].split()[0] == 'efivarfs':
+            raise ValueError('disk creation guest must not expose EFI variables')
+    if (efivars.exists() and any(efivars.iterdir())):
+        raise ValueError('disk creation guest must not expose EFI variables')
+    if any(devices.glob('tpm*')) or (tpm_class.exists() and any(tpm_class.iterdir())):
+        raise ValueError('disk creation guest must not expose a TPM')
+
+
 def guest_inputs(args):
     if not args.disposable_guest:
         raise ValueError('explicit disposable guest acknowledgement is required')
@@ -59,9 +79,7 @@ def guest_inputs(args):
         raise ValueError('a disposable QEMU/KVM guest is required')
     # Privileged image execution must not receive a TPM or firmware variable
     # store, even belonging to the temporary build guest.
-    if (Path('/sys/firmware/efi/efivars').exists()
-            or any(Path('/dev').glob('tpm*'))):
-        raise ValueError('disk creation guest must not expose TPM or EFI variables')
+    reject_firmware_access()
     if ':' in str(args.output):
         raise ValueError('disk output path cannot contain volume option delimiters')
     source.inputs(args.source, args.target, args.architecture, args.revision)
