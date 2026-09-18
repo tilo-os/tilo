@@ -2390,6 +2390,50 @@ fn generic_x11_client_relays_compositor_token_through_private_satellite() {
 /// to a focused foreign client. Electron and Xwayland both consume this same
 /// seat contract.
 #[test]
+fn keyboard_focus_does_not_wait_for_mismatched_frame_presentation() {
+    let compositor = Compositor::start();
+    let app_id = "org.tilo.test.focus-before-resize";
+    let mut client = TestClient::new(compositor.connect(), app_id);
+    client.assert_is_tilo_compositor();
+
+    // `map_window` attaches its deliberate 320x240 first frame and only
+    // returns once it has received wl_keyboard.enter. The tab is much larger,
+    // so visual presentation remains behind the anti-spoof resize gate; input
+    // must not wait for that gate's ten-second backstop.
+    client.map_window(&compositor);
+
+    let frames = compositor.control(&serde_json::json!({ "op": "foreign_frames" }));
+    let frame = frames
+        .get("foreign_frames")
+        .and_then(|payload| payload.get("frames"))
+        .and_then(serde_json::Value::as_array)
+        .and_then(|frames| {
+            frames.iter().find(|frame| {
+                frame.get("app_id").and_then(serde_json::Value::as_str) == Some(app_id)
+            })
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "mapped focused client was absent from foreign frame state: {frames:?}\\ncompositor log:\\n{}",
+                compositor.recent_log()
+            )
+        });
+    assert_eq!(
+        frame.get("buffer").and_then(|buffer| buffer.get("w")),
+        Some(&serde_json::json!(320))
+    );
+    assert_eq!(
+        frame.get("buffer").and_then(|buffer| buffer.get("h")),
+        Some(&serde_json::json!(240))
+    );
+    assert_eq!(
+        frame.get("presented").and_then(serde_json::Value::as_bool),
+        Some(false),
+        "the test must retain the visual resize gate while proving focus arrived first; frame: {frame:?}"
+    );
+}
+
+#[test]
 fn real_wayland_client_gets_de_nodeadkeys_symbols_modifiers_and_repeat_contract() {
     let compositor = Compositor::start_with_input_settings(&serde_json::json!({
         "keyboard_layout": "de:nodeadkeys",
