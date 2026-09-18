@@ -55,8 +55,20 @@ case ${COSIGN_KEY_REF:-} in
       echo 'Forgejo returned an empty OIDC token' >&2
       exit 1
     }
+    tilo_oidc_payload=$(cut -d. -f2 < "$AWS_WEB_IDENTITY_TOKEN_FILE" | tr '_-' '/+')
+    case $((${#tilo_oidc_payload} % 4)) in
+      2) tilo_oidc_payload="${tilo_oidc_payload}==" ;;
+      3) tilo_oidc_payload="${tilo_oidc_payload}=" ;;
+      0) ;;
+      *) echo 'Forgejo returned a malformed OIDC token' >&2; exit 1 ;;
+    esac
+    tilo_oidc_subject=$(printf '%s' "$tilo_oidc_payload" | base64 -d 2>/dev/null | jq -er .sub) || {
+      echo 'Forgejo OIDC token has no valid subject' >&2
+      exit 1
+    }
+    printf 'Using Forgejo OIDC subject: %s\n' "$tilo_oidc_subject"
     export AWS_REGION AWS_DEFAULT_REGION AWS_ROLE_ARN AWS_ROLE_SESSION_NAME \
       AWS_WEB_IDENTITY_TOKEN_FILE
-    unset tilo_kms_arn tilo_kms_region tilo_kms_account
+    unset tilo_kms_arn tilo_kms_region tilo_kms_account tilo_oidc_payload tilo_oidc_subject
     ;;
 esac
