@@ -189,5 +189,50 @@ class CreationTests(unittest.TestCase):
         self.assertNotIn('allocated', self.events)
 
 
+class FirmwareExposureTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.mountinfo = root / 'mountinfo'
+        self.mountinfo.write_text('20 1 0:5 / /sys rw - sysfs sysfs rw\n')
+        self.efivars, self.devices, self.tpm = [root / name for name in ('efivars', 'dev', 'tpm')]
+        for path in (self.efivars, self.devices, self.tpm):
+            path.mkdir()
+
+    def inspect(self):
+        disk_creator.reject_firmware_access(self.mountinfo, self.efivars, self.devices, self.tpm)
+
+    def test_empty_unmounted_directory_has_no_variable_access(self):
+        self.inspect()
+
+    def test_empty_variable_store_mounted_elsewhere_is_rejected(self):
+        self.mountinfo.write_text('21 20 0:6 / /other rw - efivarfs efivarfs rw\n')
+        with self.assertRaisesRegex(ValueError, 'EFI variables'):
+            self.inspect()
+
+    def test_variable_entries_are_rejected_without_visible_mount(self):
+        (self.efivars / 'BootOrder-example').touch()
+        with self.assertRaisesRegex(ValueError, 'EFI variables'):
+            self.inspect()
+
+    def test_tpm_sysfs_is_rejected_without_device_node(self):
+        (self.tpm / 'tpm0').mkdir()
+        with self.assertRaisesRegex(ValueError, 'TPM'):
+            self.inspect()
+
+    def test_tpm_device_is_rejected(self):
+        (self.devices / 'tpmrm0').touch()
+        with self.assertRaisesRegex(ValueError, 'TPM'):
+            self.inspect()
+
+    def test_unknown_mount_table_is_rejected(self):
+        for content in ('', 'not mountinfo\n'):
+            with self.subTest(content=content):
+                self.mountinfo.write_text(content)
+                with self.assertRaisesRegex(ValueError, 'cannot inspect'):
+                    self.inspect()
+
+
 if __name__ == '__main__':
     unittest.main()
