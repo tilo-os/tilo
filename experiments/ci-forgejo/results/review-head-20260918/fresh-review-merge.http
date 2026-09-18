@@ -1,0 +1,7 @@
+HTTP/1.1 200
+Cache-Control: max-age=0, private, must-revalidate
+Date: Fri, 18 Sep 2026 20:55:47 GMT
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+Content-Length: 0
+

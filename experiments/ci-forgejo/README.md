@@ -98,6 +98,39 @@ digest was not emitted in the retained logs; this is permission evidence, not
 reproducible-build evidence. The failed default-image pull motivates measuring
 worker setup separately; one failed pull is not a throughput benchmark.
 
+## Different-identity review invalidation
+
+PR #4 in the repeat pilot was authored as `xemmerling`. Its protection was changed
+only in that private pilot to require one approval, whitelist reviewer `claude`,
+dismiss stale approvals and apply the rule to administrators. Synthetic required
+checks were green throughout the relevant merge attempts.
+
+1. Before any review, immediate exact-head merge returned HTTP 405, explicitly
+   reporting insufficient approvals.
+2. The existing `claude` web-UI login approved head
+   `cc1461402a4cfcfdd4575adda2aabb342ab68c4e`. Review #52 was official, approved,
+   not dismissed, and bound to that exact commit.
+3. The author advanced the branch to `41d99b13834f1243937be2264b130de52baf15c4`.
+   Review #52 became dismissed. Even with a green status on the new head, its
+   immediate merge returned HTTP 405 for insufficient approvals.
+4. `claude` approved the new head as review #53. Immediate fast-forward merge
+   returned HTTP 200; both the PR merge SHA and final pilot main equal that head.
+
+Raw policy, reviews, HTTP responses and final state are under
+`results/review-head-20260918/`. Run `python3
+experiments/ci-forgejo/verify-review-evidence.py` to check their consistency.
+The SHA-bound status readbacks were collected after the experiment; their server
+creation and update timestamps precede the corresponding rejected merge requests.
+The verifier checks that ordering against each retained HTTP response's Date header.
+The browser inspected and approved only the two trivial fixture text files.
+
+This establishes native exact-head stale-review enforcement using different
+authenticated identities. Both identities have owner-level repository access,
+and one experiment operator exercised them. It does not demonstrate independent
+agent code-review quality, ordinary-user permission isolation, review races during
+landing, or resistance to an owner changing the protection itself. No product
+review policy or account permissions were changed.
+
 ## Decision and next evidence
 
 Keep native Forgejo primitives for immediate merging. There is now
@@ -111,13 +144,12 @@ review and underlying CI evidence, then immediately requests an exact-head
 fast-forward merge. It must not become a new build scheduler.
 
 Still unqualified: simultaneous merges, native auto-merge with independent review,
-review invalidation, resistance to the demonstrated issuer spoofing, non-admin direct-push
+review/merge races, resistance to the demonstrated issuer spoofing, non-admin direct-push
 restrictions, restart/duplicate-event recovery, runner resource isolation and
 latest-pending coalescing. These are the next isolated probes. A trusted merge
 identity and independent reviewer are still needed. The user identified `claude`;
-its existing configured web-UI authentication was successfully exercised as a
-different identity from API user `xemmerling`. Review invalidation is the next
-test, not a claim already established by signing in.
+its existing configured web-UI authentication was exercised as a different
+identity from API user `xemmerling` in the review-invalidation probe above.
 
 The pilot repositories remain private and retained for inspection. The head-change
 PR has merged and has no pending auto-merge. Both issuer-probe runs are terminal.

@@ -1,0 +1,8 @@
+{
+  "final_main": "41d99b13834f1243937be2264b130de52baf15c4",
+  "merged": true,
+  "merge_commit_sha": "41d99b13834f1243937be2264b130de52baf15c4",
+  "reviewer": "claude",
+  "expected_head": "41d99b13834f1243937be2264b130de52baf15c4",
+  "reviewer_repository_permission": "owner"
+}

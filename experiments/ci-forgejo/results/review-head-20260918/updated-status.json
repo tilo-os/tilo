@@ -1,0 +1,14 @@
+{
+  "sha": "41d99b13834f1243937be2264b130de52baf15c4",
+  "collected_at": "2026-09-18T20:59:27.0322520+00:00",
+  "state": "success",
+  "statuses": [
+    {
+      "id": 1,
+      "context": "pilot/ready",
+      "status": "success",
+      "created_at": "2026-09-18T20:54:49Z",
+      "updated_at": "2026-09-18T20:54:49Z"
+    }
+  ]
+}

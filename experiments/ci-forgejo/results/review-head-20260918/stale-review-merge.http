@@ -1,0 +1,9 @@
+HTTP/1.1 405
+Cache-Control: max-age=0, private, must-revalidate
+Content-Type: application/json;charset=utf-8
+Date: Fri, 18 Sep 2026 20:54:52 GMT
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+Content-Length: 120
+
+{"message":"not allowed to merge [reason: Does not have enough approvals]","url":"https://code.podesta.ai/api/swagger"}

@@ -1,0 +1,18 @@
+[
+  {
+    "id": 52,
+    "state": "APPROVED",
+    "commit_id": "cc1461402a4cfcfdd4575adda2aabb342ab68c4e",
+    "dismissed": true,
+    "official": false,
+    "user": "claude"
+  },
+  {
+    "id": 53,
+    "state": "APPROVED",
+    "commit_id": "41d99b13834f1243937be2264b130de52baf15c4",
+    "dismissed": false,
+    "official": true,
+    "user": "claude"
+  }
+]

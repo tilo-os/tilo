@@ -43,6 +43,11 @@ Main and the ongoing hardware bring-up remain untouched.
   a trusted integration boundary remains required. Both probe runs are terminal.
 - Confirmed the user-supplied `claude` identity and its existing web-UI login for
   the upcoming independent-review probe. No new account or credential was created.
+- The follow-up review probe passed: `claude` approved an exact head authored by
+  `xemmerling`; a new commit dismissed that approval and could not merge despite
+  green checks; a fresh approval allowed exact-head landing. Both accounts have
+  owner access, so non-admin isolation and actual independent-agent review remain
+  distinct unqualified requirements. Only private pilot protection was changed.
 
 ## Validation of this implementation
 
