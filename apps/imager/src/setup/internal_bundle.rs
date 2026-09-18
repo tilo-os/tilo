@@ -201,6 +201,24 @@ pub fn validate_internal_bundle(manifest: &[u8]) -> Result<InternalBundle, Strin
         !manifest.is_empty() && manifest.len() <= MAX_MANIFEST_BYTES,
         "manifest exceeds size limit",
     )?;
+    // Serde's derived structs also accept positional arrays. Check the wire
+    // shapes first, then strictly decode the ORIGINAL bytes below: never
+    // serialize this Value, which would collapse duplicate object keys.
+    {
+        let shape: serde_json::Value =
+            serde_json::from_slice(manifest).map_err(|error| error.to_string())?;
+        require(
+            shape.is_object()
+                && shape
+                    .get("boot_binding")
+                    .is_some_and(serde_json::Value::is_object)
+                && shape
+                    .get("components")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|entries| entries.iter().all(serde_json::Value::is_object)),
+            "manifest, component and boot-binding records must be JSON objects",
+        )?;
+    }
     let data: Manifest = serde_json::from_slice(manifest).map_err(|error| error.to_string())?;
     require(
         data.schema == 1 && data.installer_protocol == 1,
@@ -1176,5 +1194,43 @@ pub(crate) mod tests {
         data["components"][1]["sha256"] = data["components"][0]["sha256"].clone();
         let bundle = validate_internal_bundle(&bytes(&data)).unwrap();
         assert!(verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_err());
+    }
+    fn positional_record(value: &Value, fields: &str) -> Value {
+        Value::Array(
+            fields
+                .split_whitespace()
+                .map(|key| value[key].clone())
+                .collect(),
+        )
+    }
+    #[test]
+    fn representation_manifest_must_be_an_object() {
+        let value = fixture();
+        assert!(validate_internal_bundle(&bytes(&value)).is_ok());
+        let array = positional_record(
+            &value,
+            "schema purpose release_id architecture firmware secure_boot installer_protocol source_image_bytes components boot_binding",
+        );
+        assert!(validate_internal_bundle(&bytes(&array)).is_err());
+    }
+    #[test]
+    fn representation_component_must_be_an_object() {
+        let mut value = fixture();
+        assert!(validate_internal_bundle(&bytes(&value)).is_ok());
+        value["components"][0] = positional_record(
+            &value["components"][0],
+            "role filename byte_size sha256 partition_type_guid filesystem_type filesystem_uuid minimum_partition_bytes source_offset",
+        );
+        assert!(validate_internal_bundle(&bytes(&value)).is_err());
+    }
+    #[test]
+    fn representation_boot_binding_must_be_an_object() {
+        let mut value = fixture();
+        assert!(validate_internal_bundle(&bytes(&value)).is_ok());
+        value["boot_binding"] = positional_record(
+            &value["boot_binding"],
+            "efi_path uki_architecture uki_sha256 uki_cmdline root_locator composefs_digest",
+        );
+        assert!(validate_internal_bundle(&bytes(&value)).is_err());
     }
 }
