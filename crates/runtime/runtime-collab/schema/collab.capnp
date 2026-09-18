@@ -356,6 +356,9 @@ struct ActionDirectoryRow {
   # metadata must travel here rather than forcing shells to render raw ids.
   resourceKind @7 :Text;
   resourceLabel @8 :Text;
+  # Bounded declarative metadata. The shell parses this into its own themed
+  # primitives; application drawing code never crosses this boundary.
+  resourcePresentationJson @9 :Text;
 }
 
 struct ActionDirectoryPage {

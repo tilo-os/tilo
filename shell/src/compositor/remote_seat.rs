@@ -36,6 +36,10 @@ pub struct RemoteSeat {
     /// one collaborator cannot release another's held key or leave a modifier
     /// stuck after disconnecting.
     pressed_keys: HashSet<u32>,
+    /// Pointer buttons held by this peer. Legacy clients see one pointer, so
+    /// button releases are refcounted just like modifiers: one collaborator
+    /// must not terminate another collaborator's drag.
+    pressed_buttons: HashSet<u32>,
 }
 
 impl RemoteSeat {
@@ -74,9 +78,26 @@ impl RemoteSeat {
 #[derive(Debug, Default)]
 pub struct RemoteSeats {
     seats: HashMap<PeerId, RemoteSeat>,
-    /// Number of peers currently holding each key. Only the 0→1 and 1→0
-    /// transitions are forwarded to the shared Wayland seat.
+    /// Keys held by the person at this machine. Local and remote input feed
+    /// the same Wayland seat, so their ownership must share the same counts.
+    local_pressed_keys: HashSet<u32>,
+    /// Buttons held by the physical pointer on this machine.
+    local_pressed_buttons: HashSet<u32>,
+    /// Number of peers currently holding each key. Releases are forwarded on
+    /// the final 1→0 transition. Modifier presses are also folded to 0→1;
+    /// printable presses are each forwarded so two collaborators typing the
+    /// same letter do not collapse into one character.
     key_holders: HashMap<u32, usize>,
+    /// Number of local/remote participants holding each pointer button.
+    button_holders: HashMap<u32, usize>,
+}
+
+/// Evdev modifier keycodes. A legacy client has one XKB modifier state, so a
+/// second collaborator holding the same modifier must not generate another
+/// app-facing press, and either collaborator releasing it must not clear the
+/// other's hold.
+fn is_modifier_key(keycode: u32) -> bool {
+    matches!(keycode, 29 | 42 | 54 | 56 | 97 | 100 | 125 | 126)
 }
 
 impl RemoteSeats {
@@ -108,7 +129,7 @@ impl RemoteSeats {
             }
             let holders = self.key_holders.entry(keycode).or_default();
             *holders = holders.saturating_add(1);
-            *holders == 1
+            *holders == 1 || !is_modifier_key(keycode)
         } else {
             if !seat.pressed_keys.remove(&keycode) {
                 return false;
@@ -126,6 +147,97 @@ impl RemoteSeats {
         }
     }
 
+    /// Fold the physical/local keyboard into the same app-facing key state as
+    /// remote collaborators. Printable presses remain distinct typing; a
+    /// modifier release is emitted only after every local/remote holder lets go.
+    pub fn local_key_transition(&mut self, keycode: u32, pressed: bool) -> bool {
+        if pressed {
+            if !self.local_pressed_keys.insert(keycode) {
+                return false;
+            }
+            let holders = self.key_holders.entry(keycode).or_default();
+            *holders = holders.saturating_add(1);
+            *holders == 1 || !is_modifier_key(keycode)
+        } else {
+            if !self.local_pressed_keys.remove(&keycode) {
+                return false;
+            }
+            let Some(holders) = self.key_holders.get_mut(&keycode) else {
+                return false;
+            };
+            *holders = holders.saturating_sub(1);
+            if *holders == 0 {
+                self.key_holders.remove(&keycode);
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    /// Retire every key owned by the physical keyboard. Returned transitions
+    /// are the final shared-seat releases; a trusted seat reset may ignore
+    /// that list when it rebuilds the complete Smithay XKB state itself.
+    pub fn release_local_keys(&mut self) -> Vec<u32> {
+        let mut keys = self.local_pressed_keys.iter().copied().collect::<Vec<_>>();
+        keys.sort_unstable();
+        keys.into_iter()
+            .filter(|key| self.local_key_transition(*key, false))
+            .collect()
+    }
+
+    fn button_transition_for(
+        held: &mut HashSet<u32>,
+        holders: &mut HashMap<u32, usize>,
+        button: u32,
+        pressed: bool,
+    ) -> bool {
+        if pressed {
+            if !held.insert(button) {
+                return false;
+            }
+            let count = holders.entry(button).or_default();
+            *count = count.saturating_add(1);
+            *count == 1
+        } else {
+            if !held.remove(&button) {
+                return false;
+            }
+            let Some(count) = holders.get_mut(&button) else {
+                return false;
+            };
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                holders.remove(&button);
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    /// Fold a remote pointer-button edge into the one pointer exposed to a
+    /// legacy client. Only the first press and final release are delivered.
+    pub fn button_transition(&mut self, peer: PeerId, button: u32, pressed: bool) -> bool {
+        let seat = self.seats.entry(peer).or_default();
+        Self::button_transition_for(
+            &mut seat.pressed_buttons,
+            &mut self.button_holders,
+            button,
+            pressed,
+        )
+    }
+
+    /// Fold the host's physical pointer buttons into remote ownership.
+    pub fn local_button_transition(&mut self, button: u32, pressed: bool) -> bool {
+        Self::button_transition_for(
+            &mut self.local_pressed_buttons,
+            &mut self.button_holders,
+            button,
+            pressed,
+        )
+    }
+
     /// Release everything attributed to `peer`. Returned keycodes are the
     /// ones whose final holder disappeared and therefore need a synthetic
     /// release on the app-facing seat.
@@ -139,6 +251,42 @@ impl RemoteSeats {
         keys.into_iter()
             .filter(|key| self.key_transition(peer, *key, false))
             .collect()
+    }
+
+    /// Release buttons owned by `peer`, returning only final shared-seat
+    /// releases that must be sent to the legacy client.
+    pub fn release_peer_buttons(&mut self, peer: PeerId) -> Vec<u32> {
+        let mut buttons = self
+            .seats
+            .get(&peer)
+            .map(|seat| seat.pressed_buttons.iter().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        buttons.sort_unstable();
+        buttons
+            .into_iter()
+            .filter(|button| self.button_transition(peer, *button, false))
+            .collect()
+    }
+
+    /// Retire every button held by the host pointer, returning the final
+    /// shared-seat releases. Used when the backend loses the pointer and no
+    /// matching physical release edge can be relied upon.
+    pub fn release_local_buttons(&mut self) -> Vec<u32> {
+        let mut buttons = self
+            .local_pressed_buttons
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        buttons.sort_unstable();
+        buttons
+            .into_iter()
+            .filter(|button| self.local_button_transition(*button, false))
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub fn button_holder_count(&self, button: u32) -> usize {
+        self.button_holders.get(&button).copied().unwrap_or(0)
     }
 
     /// Number of active peers. Diagnostics only.
@@ -163,6 +311,7 @@ impl RemoteSeats {
     /// share ends.
     pub fn drop_peer(&mut self, peer: PeerId) {
         let _ = self.release_peer_keys(peer);
+        let _ = self.release_peer_buttons(peer);
         self.seats.remove(&peer);
     }
 }
@@ -239,6 +388,17 @@ mod tests {
     }
 
     #[test]
+    fn identical_printable_presses_from_two_peers_both_reach_the_app() {
+        let mut seats = RemoteSeats::new();
+        // Evdev KEY_A. Both collaborators typed; the single legacy caret
+        // must receive two presses even though their holds overlap.
+        assert!(seats.key_transition(7, 30, true));
+        assert!(seats.key_transition(8, 30, true));
+        assert!(!seats.key_transition(7, 30, false));
+        assert!(seats.key_transition(8, 30, false));
+    }
+
+    #[test]
     fn peer_cleanup_releases_only_final_holders() {
         let mut seats = RemoteSeats::new();
         assert!(seats.key_transition(7, 42, true));
@@ -246,5 +406,75 @@ mod tests {
         assert!(!seats.key_transition(8, 42, true));
         assert_eq!(seats.release_peer_keys(7), vec![30]);
         assert_eq!(seats.release_peer_keys(8), vec![42]);
+    }
+
+    #[test]
+    fn local_and_remote_modifiers_share_one_app_facing_hold() {
+        let mut seats = RemoteSeats::new();
+        assert!(seats.local_key_transition(42, true));
+        assert!(
+            !seats.key_transition(7, 42, true),
+            "the app already sees local Shift held"
+        );
+        assert!(
+            !seats.local_key_transition(42, false),
+            "local release cannot clear the remote holder"
+        );
+        assert!(seats.key_transition(7, 42, false));
+
+        assert!(seats.key_transition(7, 29, true));
+        assert!(!seats.local_key_transition(29, true));
+        assert!(!seats.key_transition(7, 29, false));
+        assert!(seats.local_key_transition(29, false));
+    }
+
+    #[test]
+    fn local_and_remote_printable_presses_both_type_at_the_single_caret() {
+        let mut seats = RemoteSeats::new();
+        assert!(seats.local_key_transition(30, true));
+        assert!(seats.key_transition(7, 30, true));
+        assert!(!seats.local_key_transition(30, false));
+        assert!(seats.key_transition(7, 30, false));
+    }
+
+    #[test]
+    fn local_and_remote_pointer_holds_form_one_legacy_drag() {
+        let mut seats = RemoteSeats::new();
+        assert!(seats.local_button_transition(272, true));
+        assert!(!seats.button_transition(7, 272, true));
+        assert!(!seats.local_button_transition(272, false));
+        assert!(seats.button_transition(7, 272, false));
+    }
+
+    #[test]
+    fn peer_cleanup_releases_only_its_final_pointer_buttons() {
+        let mut seats = RemoteSeats::new();
+        assert!(seats.button_transition(7, 272, true));
+        assert!(!seats.button_transition(8, 272, true));
+        assert!(seats.button_transition(7, 273, true));
+        assert_eq!(seats.release_peer_buttons(7), vec![273]);
+        assert_eq!(seats.release_peer_buttons(8), vec![272]);
+    }
+
+    #[test]
+    fn local_pointer_loss_preserves_a_remote_drag() {
+        let mut seats = RemoteSeats::new();
+        assert!(seats.local_button_transition(272, true));
+        assert!(!seats.button_transition(7, 272, true));
+        assert!(seats.local_button_transition(273, true));
+        assert_eq!(seats.release_local_buttons(), vec![273]);
+        assert_eq!(seats.button_holder_count(272), 1);
+        assert!(seats.button_transition(7, 272, false));
+    }
+
+    #[test]
+    fn local_keyboard_reset_retires_ownership_for_the_next_press() {
+        let mut seats = RemoteSeats::new();
+        assert!(seats.local_key_transition(42, true));
+        assert_eq!(seats.release_local_keys(), vec![42]);
+        assert!(
+            seats.local_key_transition(42, true),
+            "the first press after device recovery is not a stale duplicate"
+        );
     }
 }

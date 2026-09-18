@@ -2013,6 +2013,7 @@ pub struct ActionDirectoryRow {
     /// shape without parsing raw resource identifiers.
     pub resource_kind: String,
     pub resource_label: String,
+    pub resource_presentation_json: String,
     pub action: Option<String>,
     pub descriptor: Option<ExportedAction>,
     pub has_children: bool,
@@ -2089,6 +2090,7 @@ fn decode_action_directory_row(
         resource: capnp_text(row.get_resource()?)?,
         resource_kind: capnp_text(row.get_resource_kind()?)?,
         resource_label: capnp_text(row.get_resource_label()?)?,
+        resource_presentation_json: capnp_text(row.get_resource_presentation_json()?)?,
         action: (!action.is_empty()).then_some(action),
         descriptor,
         has_children: row.get_has_children(),
@@ -3010,5 +3012,29 @@ mod tests {
                 .valid()
             );
         }
+    }
+
+    #[test]
+    fn action_directory_resource_presentation_round_trips() {
+        let mut message = capnp::message::Builder::new_default();
+        {
+            let mut page = message.init_root::<collab_capnp::action_directory_page::Builder<'_>>();
+            page.set_revision("r1");
+            page.set_exhausted(true);
+            let mut rows = page.init_rows(1);
+            let mut row = rows.reborrow().get(0);
+            row.set_resource("totp:mail");
+            row.set_resource_kind("totp");
+            row.set_resource_label("Mail code");
+            row.set_resource_presentation_json(r#"{"detail":"expires in 18 s","badge":"438 291"}"#);
+        }
+        let reader = message
+            .get_root_as_reader::<collab_capnp::action_directory_page::Reader<'_>>()
+            .expect("page reader");
+        let decoded = decode_action_directory_page(reader).expect("page decodes");
+        assert_eq!(
+            decoded.rows[0].resource_presentation_json,
+            r#"{"detail":"expires in 18 s","badge":"438 291"}"#
+        );
     }
 }

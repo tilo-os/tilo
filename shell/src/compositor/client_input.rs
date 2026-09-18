@@ -272,6 +272,7 @@ impl State {
     /// a fabricated release.
     pub fn reset_client_keyboard_state(&mut self) {
         self.set_client_keyboard_focus(None);
+        let _ = self.remote_seats.release_local_keys();
         let Some(keyboard) = self.seat.get_keyboard() else {
             self.client_input.forwarded_keys.clear();
             return;
@@ -296,6 +297,12 @@ impl State {
     pub fn set_client_keyboard_focus(&mut self, surface_id: Option<u64>) {
         if self.client_input.keyboard_focus == surface_id {
             return;
+        }
+        if let Some(previous) = self.client_input.keyboard_focus {
+            // Remote participants share this one app-facing Wayland seat.
+            // Retire their held keys while the old client still owns focus,
+            // before Smithay sends the next client its focus-enter key array.
+            self.release_remote_keys_for_surface(previous);
         }
         let target = match surface_id {
             Some(id) => self.client_input.surfaces.get(&id).map(|s| (id, s.clone())),
@@ -793,6 +800,9 @@ pub fn consume_keyboard_while_captured(state: &mut State, event: &WindowEvent) {
     };
     state.set_client_keyboard_focus(None);
     let pressed = key.state == ElementState::Pressed;
+    if !state.remote_seats.local_key_transition(code, pressed) {
+        return;
+    }
     let _ = track_forwarded_key(&mut state.client_input.forwarded_keys, code, pressed, false);
     // `Intercept` updates XKB but does not remove a previously forwarded
     // key from Smithay's focus-enter key array.  Focus is already `None`, so
@@ -919,6 +929,13 @@ fn route_cursor_moved(
 /// `WindowEvent::CursorLeft` half of [`route_input`]: the pointer left the
 /// output entirely, so any client focus and implicit grab go with it.
 fn route_cursor_left(state: &mut State) -> bool {
+    // A backend may not deliver matching button-up edges after pointer leave
+    // or device loss. Retire the host's ownership while the existing client
+    // focus/grab is still present. Refcounting leaves a remote participant's
+    // overlapping drag intact.
+    for button in state.remote_seats.release_local_buttons() {
+        let _ = state.forward_client_pointer_button(button, false);
+    }
     let global = state.client_input.cursor();
     state.forward_client_pointer_motion(global, None);
     state.client_input.grab = None;
@@ -1014,7 +1031,17 @@ fn route_mouse_input(
         || (chrome_drag && !pressed);
     let consumed = if to_client {
         match evdev_button(button) {
-            Some(code) => state.forward_client_pointer_button(code, pressed),
+            Some(code) => {
+                if state.remote_seats.local_button_transition(code, pressed) {
+                    state.forward_client_pointer_button(code, pressed)
+                } else {
+                    // The shared legacy pointer already has this button in
+                    // the requested state. It still belongs to the client
+                    // grab; do not let the duplicate edge fall through to
+                    // shell chrome.
+                    true
+                }
+            }
             None => false,
         }
     } else {
@@ -1140,6 +1167,9 @@ fn route_keyboard_input(
         pressed,
         !shell_owns && state.client_input.keyboard_focus.is_some(),
     );
+    if !state.remote_seats.local_key_transition(code, pressed) {
+        return false;
+    }
     // Runs for shell-owned keys too: the seat's xkb state has to track every key, or its modifier view drifts (see `deliver_client_key`).
     state.deliver_client_key(code, pressed, forward)
 }
@@ -1758,6 +1788,250 @@ mod tests {
             .pressed_keys()
             .iter()
             .any(|code| u32::from(*code) == evdev.saturating_add(8))
+    }
+
+    /// A remote key held on app A must be retired before the shared Wayland
+    /// seat focuses app B. The peer keeps its logical caret target on A, and
+    /// a late network release is harmless rather than landing in B.
+    #[test]
+    fn focus_change_retires_remote_keys_before_the_next_legacy_app() {
+        use crate::network::input_firewall::{Denial, ShellView};
+        use crate::network::streaming::InputEvent;
+
+        const SHARED: u64 = 808;
+        const PRIVATE: u64 = 909;
+        const LEFT_SHIFT: u32 = 42;
+
+        let mut state = state_sharing(SHARED);
+        state.client_input.keyboard_focus = Some(SHARED);
+        let _ = state.remote_seats.seat_mut(KILL_PEER).enter(SHARED);
+        state
+            .review_remote_input(
+                KILL_PEER,
+                SHARED,
+                InputEvent::Key {
+                    keysym: LEFT_SHIFT,
+                    pressed: true,
+                    modifiers: 0,
+                },
+            )
+            .expect("focused collaborator presses Shift");
+        assert!(seat_has_evdev_key(&state, LEFT_SHIFT));
+
+        state.set_client_keyboard_focus(None);
+        assert!(!seat_has_evdev_key(&state, LEFT_SHIFT));
+        assert_eq!(
+            state
+                .remote_seats
+                .seat(KILL_PEER)
+                .and_then(|seat| seat.focused_surface),
+            Some(SHARED),
+            "temporary host focus changes preserve the remote caret target"
+        );
+
+        state.remote_input_firewall.publish_view(ShellView::new(
+            vec![(SHARED, Rect::new(0.0, 0.0, 400.0, 300.0))],
+            Some(PRIVATE),
+            false,
+            false,
+        ));
+        assert_eq!(
+            state.review_remote_input(
+                KILL_PEER,
+                SHARED,
+                InputEvent::Key {
+                    keysym: LEFT_SHIFT,
+                    pressed: false,
+                    modifiers: 0,
+                },
+            ),
+            Err(Denial::FocusMuted)
+        );
+        assert!(!seat_has_evdev_key(&state, LEFT_SHIFT));
+    }
+
+    /// Two remote pointers are multiplexed into one legacy `wl_pointer`.
+    /// Releasing one participant's left button must not end the other one's
+    /// implicit drag; only the last release reaches Smithay.
+    #[test]
+    fn overlapping_remote_button_holds_keep_one_legacy_drag_alive() {
+        use crate::network::streaming::{InputEvent, StreamingShare};
+
+        const SHARED: u64 = 808;
+        const SECOND_PEER: u64 = 78;
+        const LEFT: u32 = 272;
+
+        let mut state = state_sharing(SHARED);
+        state
+            .share_registry
+            .insert(SECOND_PEER, SHARED, StreamingShare::new());
+        for peer in [KILL_PEER, SECOND_PEER] {
+            state
+                .review_remote_input(peer, SHARED, InputEvent::PointerMotion { x: 20.0, y: 20.0 })
+                .expect("participant positions their pointer in the shared surface");
+            state
+                .review_remote_input(
+                    peer,
+                    SHARED,
+                    InputEvent::PointerButton {
+                        button: LEFT,
+                        pressed: true,
+                    },
+                )
+                .expect("participant begins a drag");
+        }
+        assert_eq!(state.remote_seats.button_holder_count(LEFT), 2);
+
+        state
+            .review_remote_input(
+                KILL_PEER,
+                SHARED,
+                InputEvent::PointerButton {
+                    button: LEFT,
+                    pressed: false,
+                },
+            )
+            .expect("first participant releases");
+        assert_eq!(
+            state.remote_seats.button_holder_count(LEFT),
+            1,
+            "the second participant still owns the legacy drag"
+        );
+
+        state
+            .review_remote_input(
+                SECOND_PEER,
+                SHARED,
+                InputEvent::PointerButton {
+                    button: LEFT,
+                    pressed: false,
+                },
+            )
+            .expect("final participant releases");
+        assert_eq!(state.remote_seats.button_holder_count(LEFT), 0);
+    }
+
+    #[test]
+    fn remote_click_restores_that_participants_cursor_after_another_peer_moves() {
+        use crate::network::streaming::{InputEvent, StreamingShare};
+
+        const SHARED: u64 = 808;
+        const SECOND_PEER: u64 = 78;
+        const LEFT: u32 = 272;
+
+        let mut state = state_sharing(SHARED);
+        state
+            .share_registry
+            .insert(SECOND_PEER, SHARED, StreamingShare::new());
+        state
+            .review_remote_input(
+                KILL_PEER,
+                SHARED,
+                InputEvent::PointerMotion { x: 20.0, y: 30.0 },
+            )
+            .expect("first peer positions cursor");
+        state
+            .review_remote_input(
+                SECOND_PEER,
+                SHARED,
+                InputEvent::PointerMotion { x: 170.0, y: 180.0 },
+            )
+            .expect("second peer moves the shared Wayland pointer last");
+        assert_eq!(
+            state
+                .remote_seats
+                .seat(KILL_PEER)
+                .and_then(|seat| seat.pointer_surface),
+            Some(SHARED),
+            "accepted motion attributes pointer-only control for later revocation"
+        );
+        assert_eq!(
+            state
+                .seat
+                .get_pointer()
+                .expect("pointer")
+                .current_location(),
+            (170.0, 180.0).into()
+        );
+
+        state
+            .review_remote_input(
+                KILL_PEER,
+                SHARED,
+                InputEvent::PointerButton {
+                    button: LEFT,
+                    pressed: true,
+                },
+            )
+            .expect("first peer clicks at their own retained cursor");
+        assert_eq!(
+            state
+                .seat
+                .get_pointer()
+                .expect("pointer")
+                .current_location(),
+            (20.0, 30.0).into(),
+            "the click must not land at the other participant's cursor"
+        );
+    }
+
+    #[test]
+    fn remote_pointer_leave_ends_drag_but_preserves_caret_focus() {
+        use crate::network::streaming::InputEvent;
+
+        const SHARED: u64 = 808;
+        const LEFT: u32 = 272;
+        let mut state = state_sharing(SHARED);
+        for event in [
+            InputEvent::PointerEnter { surface: SHARED },
+            InputEvent::PointerMotion { x: 20.0, y: 30.0 },
+            InputEvent::PointerButton {
+                button: LEFT,
+                pressed: true,
+            },
+        ] {
+            state
+                .review_remote_input(KILL_PEER, SHARED, event)
+                .expect("remote pointer setup");
+        }
+        assert_eq!(state.remote_seats.button_holder_count(LEFT), 1);
+
+        state
+            .review_remote_input(
+                KILL_PEER,
+                SHARED,
+                InputEvent::PointerLeave { surface: SHARED },
+            )
+            .expect("remote pointer leaves");
+        assert_eq!(state.remote_seats.button_holder_count(LEFT), 0);
+        assert_eq!(
+            state
+                .remote_seats
+                .seat(KILL_PEER)
+                .and_then(|seat| seat.focused_surface),
+            Some(SHARED),
+            "pointer leave must not destroy the legacy text caret"
+        );
+    }
+
+    #[test]
+    fn pointer_leave_retires_local_hold_without_ending_remote_drag() {
+        const PEER: u64 = 77;
+        const LEFT: u32 = 272;
+
+        let mut state = seat_state();
+        assert!(state.remote_seats.local_button_transition(LEFT, true));
+        assert!(!state.remote_seats.button_transition(PEER, LEFT, true));
+        state.client_input.buttons_down = 1;
+
+        assert!(!route_cursor_left(&mut state));
+        assert_eq!(state.client_input.buttons_down, 0);
+        assert_eq!(
+            state.remote_seats.button_holder_count(LEFT),
+            1,
+            "pointer loss retires only the host's ownership"
+        );
+        assert!(state.remote_seats.button_transition(PEER, LEFT, false));
     }
 
     /// A lock is a trusted input-capture boundary, not permission to stop
