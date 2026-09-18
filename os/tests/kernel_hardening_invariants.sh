@@ -508,6 +508,13 @@ grep -Fq 'failures=$((failures + 1))' "$audit" \
   || bad 'boot audit warnings do not contribute to a failing health result'
 grep -Fq 'exit 1' "$audit" \
   || bad 'boot audit cannot return failure when a required invariant is inactive'
+if grep -Fq 'attrs" != 06000000' "$audit" \
+   && grep -Fq '1:0) ok "Secure Boot enabled with firmware outside Setup Mode"' "$audit" \
+   && grep -Fq 'SecureBoot=$sb SetupMode=$setup' "$audit"; then
+  ok 'runtime Secure Boot evidence requires authentic attributes and exited Setup Mode'
+else
+  bad 'runtime Secure Boot audit accepts malformed or setup-mode firmware state'
+fi
 if grep -Fq 'SuccessExitStatus=0 1' "$repo/os/usr/lib/systemd/system/tilo-security-audit.service"; then
   bad 'systemd still converts the security audit failure into success'
 else
