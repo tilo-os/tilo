@@ -107,6 +107,11 @@ pub enum Role {
 pub struct AccessState {
     pub focused: bool,
     pub focusable: bool,
+    /// The control owns a standard context menu.  The bridge exposes
+    /// AccessKit/AT-SPI's `ShowContextMenu` verb only when this is true, so
+    /// canvas-style apps can make a menu discoverable without claiming that
+    /// every focusable list row has one.
+    pub context_menu: bool,
     pub selected: bool,
     /// `None` = not checkable; tri-state goes through [`AccessState::mixed`], not a third value here.
     pub checked: Option<bool>,
@@ -140,6 +145,11 @@ impl AccessState {
     }
     pub fn focusable(mut self, v: bool) -> Self {
         self.focusable = v;
+        self
+    }
+    /// Advertise a standard context-menu action for this control.
+    pub fn context_menu(mut self, v: bool) -> Self {
+        self.context_menu = v;
         self
     }
     pub fn selected(mut self, v: bool) -> Self {
