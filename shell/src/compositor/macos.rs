@@ -89,7 +89,7 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, String> {
     let mut options = Options {
         state_dir: dirs::data_local_dir()
             .ok_or("no local data directory")?
-            .join("qos/macos-shell"),
+            .join("tilo/macos-shell"),
         files_dir: dirs::home_dir().ok_or("no home directory")?,
         shots: None,
     };
