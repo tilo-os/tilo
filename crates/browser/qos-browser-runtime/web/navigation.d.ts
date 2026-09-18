@@ -11,12 +11,15 @@ export interface DesktopNavigationSnapshot {
   active: DesktopRoute | null;
   widthPermille: number | null;
   maximized: boolean;
-  capabilities: {select: boolean; width: boolean; maximize: boolean; strips: boolean; commands?: boolean};
+  capabilities: {select: boolean; width: boolean; maximize: boolean; strips: boolean; commands?: boolean; globalSearch?: boolean};
+  desktopPan?: {workspace: string; strip: string; offset: number; viewport: number; content: number; max: number} | null;
   history?: {target: string} | null;
   scroll: {region: string; offset: number; viewport: number; content: number; max: number} | null;
 }
 export type DesktopScrollAction = {kind: "line" | "page"; value: -1 | 1} | {kind: "absolute"; value: number} | {kind: "start" | "end"};
 export type DesktopNavigationCommand = {generation: string} & (
+  {kind: "global-search"} |
+  {kind: "pan"; workspace: string; strip: string; offset: number} |
   {kind: "history"; route: DesktopRoute; target: string} |
   {kind: "select"; route: DesktopRoute} |
   {kind: "strip"; workspace: string; strip: string} |
