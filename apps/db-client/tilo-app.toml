@@ -1,7 +1,7 @@
 # Database Client — Tilo application manifest.
 #
-# SQLite runs in-memory; the Postgres/MySQL entries are display-only because
-# no network driver is linked.
+# SQLite supports local files; PostgreSQL and MySQL use real network drivers.
+# The bundled in-memory sample database is limited to the screenshot/demo path.
 #
 
 
