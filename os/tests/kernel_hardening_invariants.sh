@@ -317,7 +317,7 @@ if grep -Eq 'KERNEL=="(vd|loop|dm-)' "$io_scheduler_rule"; then
   bad 'BFQ policy changes virtual, loop, or device-mapper release paths'
 fi
 
-grep -Fq 'fragment_missing=""' "$repo/os/kernel/Containerfile" \
+grep -Fq 'python3 /work/check-config.py .config --fragment /work/tilo-effective.config' "$repo/os/kernel/Containerfile" \
   || bad 'kernel build does not reject silently dropped fragment settings'
 
 grep -Fqx 'compression-algorithm = lz4' "$repo/os/etc/systemd/zram-generator.conf" \
