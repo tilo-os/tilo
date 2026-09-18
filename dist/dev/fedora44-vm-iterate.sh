@@ -130,6 +130,9 @@ build_one() {
         # across host and /run/host paths can corrupt a later host build.
         export SCCACHE_SERVER_PORT='$sccache_port'
         export SCCACHE_DIR=\"\$HOME/.cache/$sccache_cache_name\"
+        # Generated libspa C wrappers require the compiler's own preprocessor;
+        # sccache direct mode can omit PipeWire inline declarations on Fedora.
+        export SCCACHE_DIRECT=false
         mkdir -p '$target_rel'
         # This is a persistent, disposable build cache rather than source. The
         # standard tag keeps backup/indexing tools from treating it as project
