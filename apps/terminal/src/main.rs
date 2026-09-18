@@ -80,6 +80,7 @@ pub fn main() {
                 "colors",
                 "tui",
                 "scrollback",
+                "find",
                 "empty",
                 "empty-menu",
                 "ended",
@@ -382,6 +383,20 @@ fn run_scenario(
             widget.sync(doc, root);
             // Scroll up so retained history (not the live tail) is visible.
             widget.scroll_up(20);
+        }
+        // Search state is explicitly local and is shown over real retained
+        // scrollback, not a fabricated remote/agent transcript operation.
+        "find" => {
+            let mut s = String::new();
+            for i in 0..80 {
+                // A terminal LF preserves the current column. Use the shell's
+                // normal CRLF output so this models a readable transcript.
+                let _ = writeln!(s, "{i:>4}  build step {i:03}: compiling terminal search\r");
+            }
+            widget.feed(doc, root, s.as_bytes());
+            widget.sync(doc, root);
+            widget.open_find();
+            widget.set_find_query("build step 042");
         }
         // A command that exits immediately exercises the persistent terminal
         // lifecycle status, including the reader's EOF transition.
