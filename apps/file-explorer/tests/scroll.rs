@@ -5,8 +5,8 @@
 //! viewport, then drive scrolling through the genuine winit event path
 //! (mouse wheel + a scrollbar-thumb drag) and assert that
 //!  * the list actually moves (the content offset changes), and
-//!  * entries that were below the fold become visible (the content's bottom
-//!    edge reaches the viewport bottom once scrolled to the end).
+//!  * entries that were below the fold become visible above the reserved
+//!    status-bubble lane once scrolled to the end.
 //!
 //! Geometry is read only through the public `Widget` trait (`name`,
 //! `get_rect`, `children`) so the assertions ride the production layout — no
@@ -25,6 +25,7 @@
 use std::collections::HashMap;
 
 use file_explorer::FileExplorerWidget;
+use file_explorer::files_app::STATUS_BUBBLE_SAFE_INSET_PX;
 use file_explorer::model::ViewMode;
 use taffy::prelude::*;
 use ui::text_render::TextRenderer;
@@ -273,12 +274,14 @@ fn assert_scrolls_via_wheel(mode: ViewMode) {
         "{mode:?}: a wheel-down must scroll the list; offset stayed {one_notch}",
     );
 
-    // Fling to the bottom: the content's bottom edge reaches the viewport
-    // bottom, i.e. the previously-below-the-fold last entries are now visible.
+    // Fling to the bottom: the content's bottom edge reaches the top of the
+    // reserved status-bubble lane, so the last entries remain visible rather
+    // than sitting under the floating status pill.
     h.wheel(1000.0);
     h.relayout();
     let content_after = h.rect_of("FileView");
-    let max_offset = (content_before.height() - viewport.height()).max(0.0);
+    let safe_inset = f64::from(STATUS_BUBBLE_SAFE_INSET_PX);
+    let max_offset = (content_before.height() - (viewport.height() - safe_inset)).max(0.0);
     let bottom = applied_offset(&h);
     assert!(
         bottom > one_notch,
@@ -286,14 +289,14 @@ fn assert_scrolls_via_wheel(mode: ViewMode) {
     );
     assert!(
         (bottom - max_offset).abs() < 2.0,
-        "{mode:?}: scroll clamps to content-minus-viewport (got {bottom}, max {max_offset})",
+        "{mode:?}: scroll clamps above the status lane (got {bottom}, max {max_offset})",
     );
     assert!(
-        (content_after.y1 - viewport.y1).abs() < 2.0,
-        "{mode:?}: fully scrolled, the last entries sit at the viewport bottom \
-         (content.y1={} viewport.y1={})",
+        (content_after.y1 - (viewport.y1 - safe_inset)).abs() < 2.0,
+        "{mode:?}: fully scrolled, the last entries sit above the status lane \
+         (content.y1={} safe-bottom={})",
         content_after.y1,
-        viewport.y1,
+        viewport.y1 - safe_inset,
     );
 }
 
