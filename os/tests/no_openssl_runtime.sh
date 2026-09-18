@@ -294,7 +294,8 @@ grep -Fq -- "-path '*/ossl-modules/legacy.so'" "$repo/os/Containerfile" \
   && grep -Fq -- "-path '*/gstreamer-1.0/libgstdtls.so'" "$repo/os/Containerfile" \
   && grep -Fq -- "-path '*/gstreamer-1.0/libgstcurl.so'" "$repo/os/Containerfile" \
   && grep -Fq -- "-path '*/gstreamer-1.0/libgstshout2.so'" "$repo/os/Containerfile" \
-  && grep -Fq 'optional OpenSSL provider, engines, and GStreamer network plugins absent' \
+  && grep -Fq -- "-path '*/qt6/plugins/tls/libqopensslbackend.so'" "$repo/os/Containerfile" \
+  && grep -Fq 'optional OpenSSL provider, engines, and network TLS plugins absent' \
        "$repo/os/usr/libexec/tilo-security-audit" \
   || bad 'sealed rootfs does not remove and audit optional OpenSSL provider/engine/media modules'
 rootfs_end_line="$(grep -n '^FROM rootfs AS split' "$repo/os/Containerfile" | cut -d: -f1)"
