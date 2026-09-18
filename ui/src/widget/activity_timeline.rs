@@ -224,6 +224,17 @@ struct GroupChips {
     restore: Option<Rect>,
 }
 
+impl GroupChips {
+    fn left_edge(&self, fallback: f64) -> f64 {
+        self.undo
+            .into_iter()
+            .chain(self.restore)
+            .chain((self.name.area() > 0.0).then_some(self.name))
+            .map(|rect| rect.x0)
+            .fold(fallback, f64::min)
+    }
+}
+
 /// The field the user is typing a name into.
 #[derive(Clone, Debug, PartialEq)]
 enum NameTarget {
@@ -775,6 +786,9 @@ impl ActivityTimeline {
     }
 
     pub fn begin_naming_group_at_row(&mut self, i: usize) -> bool {
+        if self.on_name_group.is_none() {
+            return false;
+        }
         let Some(VisualRow::Group(g)) = self.rows.get(i).copied() else {
             return false;
         };
@@ -790,9 +804,9 @@ impl ActivityTimeline {
         true
     }
 
-    /// `false` when nothing is selected.
+    /// `false` when nothing is selected or the host cannot persist a name.
     pub fn begin_naming_selection(&mut self) -> bool {
-        if self.selection.is_none() {
+        if self.selection.is_none() || self.on_name_group.is_none() {
             return false;
         }
         self.naming = Some(NamingState {
@@ -1088,12 +1102,12 @@ impl ActivityTimeline {
         Some(rect)
     }
 
-    /// `None` when the line is off-screen, is a group header, or its op class
-    /// is non-revertible.
+    /// `None` when the host cannot revert, the line is off-screen, is a group
+    /// header, or its op class is non-revertible.
     pub fn revert_chip_rect(&self, i: usize) -> Option<Rect> {
         let row = self.row_rect(i)?;
         let entry = self.row_entry(i)?;
-        if !entry.is_revertible() {
+        if self.on_revert.is_none() || !entry.is_revertible() {
             return None;
         }
         let depth = self.row_depth(i);
@@ -1108,8 +1122,8 @@ impl ActivityTimeline {
         ))
     }
 
-    /// `(name, restore)`. `restore` is `None` when nothing in the range can
-    /// be restored to.
+    /// `(name, restore)`. `name` is zero-sized without a naming callback;
+    /// `restore` is `None` without a restore callback or restorable change.
     pub fn group_chip_rects(&self, i: usize) -> Option<(Rect, Option<Rect>)> {
         let VisualRow::Group(g) = *self.rows.get(i)? else {
             return None;
@@ -1666,7 +1680,7 @@ impl ActivityTimeline {
         let glyph_x = row.x0 + author_slot_w;
         // Reserved only when hovered — reserving it on every row cost the
         // summary a third of its width for something not on screen.
-        let chip_reserve = if is_hovered {
+        let chip_reserve = if is_hovered && self.on_revert.is_some() && entry.is_revertible() {
             self.revert_chip_w() + 6.0
         } else {
             0.0
@@ -1987,7 +2001,7 @@ impl ActivityTimeline {
 
         // Two veto conditions on the chip: op-class non-revertibility, and a
         // redaction — we never offer "revert" across a redaction boundary.
-        if is_hovered && entry.is_revertible() && !is_redacted_row {
+        if self.on_revert.is_some() && is_hovered && entry.is_revertible() && !is_redacted_row {
             let chip_h = ROW_HEIGHT - 16.0;
             let chip_rect = Rect::new(
                 row.x1 - self.revert_chip_w() - 6.0,
@@ -2038,8 +2052,17 @@ impl ActivityTimeline {
         let title_x = row.x0 + 26.0;
         let chips = self.group_chip_rects_local(row, rg);
         Self::draw_group_row_title(
-            scene, transform, tr, theme, row, rg, is_hovered, naming, title_x, title_size,
-            chips.0.x0,
+            scene,
+            transform,
+            tr,
+            theme,
+            row,
+            rg,
+            is_hovered,
+            naming,
+            title_x,
+            title_size,
+            self.group_chip_rects_full(row, rg).left_edge(row.x1),
         );
 
         // Line two: who and how much, plus — right-aligned — when.
@@ -2050,15 +2073,17 @@ impl ActivityTimeline {
 
         if is_hovered || naming.is_some() {
             let (name_rect, restore_rect) = chips;
-            draw_chip(
-                scene,
-                transform,
-                tr,
-                theme,
-                name_rect,
-                if rg.name.is_some() { "Rename" } else { "Name" },
-                rg.name.is_some(),
-            );
+            if name_rect.area() > 0.0 {
+                draw_chip(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    name_rect,
+                    if rg.name.is_some() { "Rename" } else { "Name" },
+                    rg.name.is_some(),
+                );
+            }
             if let Some(r) = self.group_chip_rects_full(row, rg).undo {
                 draw_chip(scene, transform, tr, theme, r, "Undo", false);
             }
@@ -2293,7 +2318,7 @@ impl ActivityTimeline {
         let name_w = if narrow { 46.0 } else { 54.0 };
         let mut x1 = row.x1 - 6.0;
         let chip = |x1: f64, w: f64| Rect::new(x1 - w, cy - chip_h / 2.0, x1, cy + chip_h / 2.0);
-        let restore = if rg.restorable {
+        let restore = if self.on_revert.is_some() && rg.restorable {
             let r = chip(x1, restore_w);
             x1 -= restore_w + 5.0;
             Some(r)
@@ -2308,7 +2333,11 @@ impl ActivityTimeline {
             None
         };
         GroupChips {
-            name: chip(x1, name_w),
+            name: if self.on_name_group.is_some() {
+                chip(x1, name_w)
+            } else {
+                Rect::ZERO
+            },
             undo,
             restore,
         }
@@ -2549,7 +2578,11 @@ impl ActivityTimeline {
         );
 
         let clear_w = 54.0_f64;
-        let action_w = if naming { 0.0 } else { 96.0_f64 };
+        let action_w = if naming || self.on_name_group.is_none() {
+            0.0
+        } else {
+            96.0_f64
+        };
         let clear = Rect::new(
             bar.x1 - 8.0 - clear_w,
             bar.center().y - 11.0,
@@ -2587,7 +2620,7 @@ impl ActivityTimeline {
             {
                 state.field.draw(scene, transform, tr, theme, field, size);
             }
-        } else {
+        } else if self.on_name_group.is_some() {
             let action = Rect::new(
                 clear.x0 - 6.0 - action_w,
                 bar.center().y - 11.0,
@@ -3425,7 +3458,7 @@ impl ActivityTimeline {
                 *handled = true;
                 return;
             }
-            if name.contains(self.last_cursor) {
+            if name.area() > 0.0 && name.contains(self.last_cursor) {
                 self.begin_naming_group_at_row(i);
                 *focus_target = Some(node_id);
                 *handled = true;
@@ -3514,6 +3547,14 @@ mod tests {
         );
         t.set_newest_first(false); // ascending order for clarity
         t
+    }
+
+    // Geometry and naming-input tests explicitly install the capabilities they
+    // exercise; the ordinary fixture remains a read-only history viewer.
+    fn editable_timeline_at(rect: Rect, entries: Vec<HistoryEntry>) -> ActivityTimeline {
+        timeline_at(rect, entries)
+            .on_revert(|_| {})
+            .on_name_group(|_| {})
     }
 
     #[test]
@@ -3785,7 +3826,7 @@ mod tests {
             entry(OpClass::Govern, "Bob", 2, 2),
             entry(OpClass::Splice, "Carol", 3, 3),
         ];
-        let t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
+        let t = editable_timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
         assert!(t.revert_chip_rect(0).is_none(), "Comment must hide chip");
         assert!(t.revert_chip_rect(1).is_none(), "Govern must hide chip");
         assert!(
@@ -4076,8 +4117,8 @@ mod tests {
         // On a narrow pane the revert chip must still sit inside the row and
         // leave the summary somewhere to go.
         let entries = vec![entry(OpClass::Splice, "Alice", 1, 1)];
-        let wide = timeline_at(Rect::new(0.0, 0.0, 700.0, 300.0), entries.clone());
-        let narrow = timeline_at(Rect::new(0.0, 0.0, 300.0, 300.0), entries);
+        let wide = editable_timeline_at(Rect::new(0.0, 0.0, 700.0, 300.0), entries.clone());
+        let narrow = editable_timeline_at(Rect::new(0.0, 0.0, 300.0, 300.0), entries);
 
         let wide_chip = wide.revert_chip_rect(0).unwrap();
         let narrow_chip = narrow.revert_chip_rect(0).unwrap();
@@ -4167,6 +4208,65 @@ mod group_tests {
                 .unwrap_or(SystemTime::UNIX_EPOCH),
         );
         t
+    }
+
+    // Capability-dependent layout fixtures must declare the operations they offer.
+    fn editable_timeline_at(rect: Rect, entries: Vec<HistoryEntry>) -> ActivityTimeline {
+        timeline_at(rect, entries)
+            .on_revert(|_| {})
+            .on_name_group(|_| {})
+    }
+
+    #[test]
+    fn readonly_timeline_hides_mutations_but_keeps_selectable_semantics() {
+        let mut timeline = timeline_at(Rect::new(0.0, 0.0, 620.0, 620.0), typing_run(20));
+        let (name, restore) = timeline.group_chip_rects(0).expect("group row");
+        assert_eq!(name, Rect::ZERO);
+        assert!(restore.is_none());
+        assert!(!timeline.begin_naming_group_at_row(0));
+        timeline.set_all_expanded(true);
+        let row = (0..timeline.row_count())
+            .find(|row| timeline.row_entry(*row).is_some())
+            .expect("entry row");
+        assert!(timeline.revert_chip_rect(row).is_none());
+        assert!(timeline.activate_row(row));
+        assert!(!timeline.begin_naming_selection());
+        paint(&mut timeline);
+        assert_eq!(timeline.name_selection_rect(), Rect::ZERO);
+        assert!(
+            timeline.clear_selection_rect.area() > 0.0,
+            "selection can still be cleared"
+        );
+        let semantics = timeline.accessibility().expect("history semantics");
+        assert!(
+            semantics.children.iter().any(
+                |node| node.role == crate::a11y::Role::ListItem && node.action_target.is_some()
+            )
+        );
+        assert!(semantics.children.iter().all(|node| matches!(
+            node.role,
+            crate::a11y::Role::ListItem | crate::a11y::Role::TreeItem
+        )));
+    }
+
+    #[test]
+    fn history_mutation_affordances_require_their_own_callback() {
+        let rect = Rect::new(0.0, 0.0, 620.0, 620.0);
+        let mut naming = timeline_at(rect, typing_run(20)).on_name_group(|_| {});
+        let (name, restore) = naming.group_chip_rects(0).expect("group row");
+        assert!(name.area() > 0.0);
+        assert!(restore.is_none());
+        assert!(naming.begin_naming_group_at_row(0));
+        let mut restoring = timeline_at(rect, typing_run(20)).on_revert(|_| {});
+        let (name, restore) = restoring.group_chip_rects(0).expect("group row");
+        assert_eq!(name, Rect::ZERO);
+        assert!(restore.is_some());
+        assert!(!restoring.begin_naming_group_at_row(0));
+        restoring.set_all_expanded(true);
+        let row = (0..restoring.row_count())
+            .find(|row| restoring.row_entry(*row).is_some())
+            .expect("entry row");
+        assert!(restoring.revert_chip_rect(row).is_some());
     }
 
     /// Run a real paint so the rects the click handler reads from the last frame
@@ -4377,7 +4477,7 @@ mod group_tests {
     fn typing_a_name_does_not_leak_into_the_author_filter() {
         // The pane's other keyboard consumer is the author typeahead. A version
         // called "Bob's edits" must not silently filter the pane to Bob.
-        let mut t = timeline_at(Rect::new(0.0, 0.0, 520.0, 500.0), typing_run(20));
+        let mut t = editable_timeline_at(Rect::new(0.0, 0.0, 520.0, 500.0), typing_run(20));
         let (name_chip, _) = t.group_chip_rects(0).unwrap();
         click(&mut t, name_chip.center());
         type_str(&mut t, "Bob");
@@ -4518,7 +4618,8 @@ mod group_tests {
     fn three_band_chips_still_fit_inside_the_row() {
         for w in [360.0_f64, 620.0, 980.0] {
             let entries = typing_run(20);
-            let t = timeline_at(Rect::new(0.0, 0.0, w, 500.0), entries).on_undo_band(|_| {});
+            let t =
+                editable_timeline_at(Rect::new(0.0, 0.0, w, 500.0), entries).on_undo_band(|_| {});
             let row = t.row_rect(0).expect("a band header");
             let (name, restore) = t.group_chip_rects(0).unwrap();
             let undo = t.group_undo_chip_rect(0).unwrap();
@@ -4775,7 +4876,7 @@ mod group_tests {
         let long = "Rewrote the introduction, then the second section, then \
                     reconsidered the whole framing and put most of it back"
             .to_string();
-        let mut t = timeline_at(Rect::new(0.0, 0.0, 520.0, 500.0), entries.clone());
+        let mut t = editable_timeline_at(Rect::new(0.0, 0.0, 520.0, 500.0), entries.clone());
         t.set_named_ranges(vec![NamedRange {
             id: "tilo:group:rec".into(),
             label: long.clone(),
@@ -4810,7 +4911,7 @@ mod group_tests {
 
     #[test]
     fn a_narrow_pane_keeps_the_band_actions_inside_the_row() {
-        let mut t = timeline_at(Rect::new(0.0, 0.0, 300.0, 500.0), typing_run(20));
+        let mut t = editable_timeline_at(Rect::new(0.0, 0.0, 300.0, 500.0), typing_run(20));
         let row = t.row_rect(0).unwrap();
         let (name, restore) = t.group_chip_rects(0).unwrap();
         let restore = restore.unwrap();
@@ -4821,7 +4922,7 @@ mod group_tests {
 
         // Narrow, but tall enough to scroll the child band into view — an
         // off-screen line correctly does not lay out at all.
-        let mut t = timeline_at(Rect::new(0.0, 0.0, 300.0, 1200.0), typing_run(20));
+        let mut t = editable_timeline_at(Rect::new(0.0, 0.0, 300.0, 1200.0), typing_run(20));
         let entries = typing_run(20);
         t.set_named_ranges(vec![
             NamedRange {
