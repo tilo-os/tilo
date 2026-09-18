@@ -10,6 +10,7 @@
 //! the settings-specific row/section shapes on top of it.
 
 use ui::icons::Icon;
+pub use ui::widget::BadgeTone as StatusTone;
 use ui::widget::{Badge, Column, Container, IconWidget, Row, Section, Spacer, Text, Widget};
 
 /// Type alias for the boxed-widget currency the `ui` tree speaks.
@@ -180,11 +181,15 @@ pub fn status_pill(label: &str, tint: vello::peniko::Color) -> El {
     Box::new(Badge::pill(label, tint))
 }
 
+/// A status pill that resolves its colour from the active theme.
+pub fn semantic_status_pill(label: &str, tone: StatusTone) -> El {
+    Box::new(Badge::semantic_pill(label, tone))
+}
+
 /// A prominent identity block for a pane's first card: a large accent icon,
 /// a bold title, and a dim one-line subtitle stacked beside it. Used where a
 /// pane benefits from a hero (About's device identity, Power's battery).
 pub fn hero(icon: Icon, title: &str, subtitle: &str) -> El {
-    let accent = ui::Theme::dark().accent_primary;
     let text_block = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
@@ -194,7 +199,7 @@ pub fn hero(icon: Icon, title: &str, subtitle: &str) -> El {
             Text::new(subtitle).with_scaled_size(12.0).dimmed(),
         ));
     let row = Row::new()
-        .push(Box::new(IconWidget::new(icon, 34.0).with_color(accent)))
+        .push(Box::new(IconWidget::new(icon, 34.0).accent()))
         .push(hgap(14.0))
         .push(Box::new(text_block))
         .push(Box::new(Spacer::new()));
