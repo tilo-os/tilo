@@ -22,6 +22,34 @@ CONTEXT = 'broker-authenticated-api'
 MAX_STREAM = spool.MAX_INPUT + 65536
 INSPECT = '{"Id":{{json .Id}},"Image":{{json .Image}},"State":{{json .State}},"RestartCount":{{json .RestartCount}}}'
 
+# Watchdog runs in the pinned worker even if the API connection disappears.
+REMOTE_WRAPPER = r'''
+import json,os,select,signal,subprocess,sys,tempfile,time
+remaining=int(sys.argv[1]);deadline=time.monotonic()+float(sys.argv[2])
+command=json.loads(sys.argv[3]);child=None
+with tempfile.TemporaryFile() as payload:
+ try:
+  while remaining:
+   budget=deadline-time.monotonic()
+   if budget<=0 or not select.select([sys.stdin.fileno()],[],[],budget)[0]:
+    raise TimeoutError('remote input deadline')
+   data=os.read(sys.stdin.fileno(),min(remaining,65536))
+   if not data: raise ValueError('short input')
+   payload.write(data);remaining-=len(data)
+  payload.seek(0)
+  budget=deadline-time.monotonic()
+  if budget<=0: raise TimeoutError('remote operation deadline')
+  child=subprocess.Popen(command,stdin=payload,stderr=subprocess.DEVNULL,start_new_session=True)
+  result=child.wait(timeout=budget)
+ finally:
+  # The leader may already have exited while descendants remain.
+  if child is not None:
+   try: os.killpg(child.pid,signal.SIGKILL)
+   except ProcessLookupError: pass
+   child.wait()
+sys.exit(result)
+'''
+
 # Runs in the existing broker. No command is derived from remote output.
 BRIDGE = r'''
 import json,sys,time
@@ -44,16 +72,16 @@ if p['operation']=='get':
  sys.stdout.buffer.write(data)
 else:
  command=p['command']
- if p['input_bytes']:
-  # Exact-length input becomes a seekable file, giving the child real EOF.
-  # Raw public data never becomes Python source; argv is JSON-decoded.
-  wrapper="import json,subprocess,sys,tempfile; n=int(sys.argv[1]); f=tempfile.TemporaryFile(); "
-  wrapper+="exec('while n:\\n b=sys.stdin.buffer.read(min(n,65536))\\n if not b: raise ValueError(\"short input\")\\n f.write(b); n-=len(b)'); "
-  wrapper+="f.seek(0); sys.exit(subprocess.call(json.loads(sys.argv[2]),stdin=f,stderr=subprocess.DEVNULL))"
-  prefix=[]
-  if command[:3]==['docker','exec','-i']:
-   prefix,command=command[:4],command[4:]
-  command=prefix+['/usr/bin/python3','-c',wrapper,str(p['input_bytes']),json.dumps(command)]
+ # Read-only Docker inspect needs no Python in DinD. All worker endpoint
+ # operations, including zero-input publication, receive their own watchdog.
+ prefix=[]
+ if command[:3]==['docker','exec','-i']:
+  prefix,command=command[:4],command[4:]
+ if command[:1]==['/usr/bin/python3']:
+  command=prefix+['/usr/bin/python3','-c',REMOTE_WRAPPER,str(p['input_bytes']),
+                  str(max(0.01,deadline-time.monotonic())),json.dumps(command)]
+ else:
+  command=prefix+command
  w=stream(v.connect_get_namespaced_pod_exec,p['pod'],p['namespace'],container=p['container'],
           command=command,stderr=True,stdin=bool(p['input_bytes']),stdout=True,tty=False,
           _preload_content=False,binary=True,_request_timeout=min(15,p['timeout']))
@@ -79,6 +107,7 @@ else:
    raise ValueError('remote operation failed')
  finally: w.close()
 '''
+BRIDGE = "REMOTE_WRAPPER = " + repr(REMOTE_WRAPPER) + "\n" + BRIDGE
 
 
 class BrokerRunner:
