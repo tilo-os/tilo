@@ -191,9 +191,17 @@ pub(crate) enum Body {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Descriptor {
+    pub profile: Profile,
     pub header: Header,
     pub body: Body,
     pub digest: [u8; 32],
+}
+/// Historical producer correlation, never a live creation witness.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Profile {
+    Neutral,
+    LegacyStage,
+    CreatedRegular,
 }
 
 /// Bounded historical admission metadata. Content is the approved proposal;
@@ -795,7 +803,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Descriptor> {
                 selection,
             })
         }
-        b"QNS2" => {
+        b"QNS2" | b"QNS3" => {
             let intent = c.array()?;
             let object = c.regular()?;
             let content = c.content()?;
@@ -819,6 +827,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Descriptor> {
                 }
                 _ => return Err(Error::Invalid),
             };
+            require(magic != *b"QNS3" || matches!(source, Source::Endpoint { .. }))?;
             Body::Stage(Stage {
                 intent,
                 object,
@@ -900,6 +909,11 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Descriptor> {
     };
     require(c.at == payload.len())?;
     Ok(Descriptor {
+        profile: match &magic {
+            b"QNS2" => Profile::LegacyStage,
+            b"QNS3" => Profile::CreatedRegular,
+            _ => Profile::Neutral,
+        },
         header,
         body,
         digest,
@@ -907,6 +921,25 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Descriptor> {
 }
 pub(crate) fn validate(bytes: &[u8]) -> Result<()> {
     decode(bytes).map(|_| ())
+}
+
+/// Explicit ordinary producer encoding. This is correlation only; the live
+/// Prepared consumer separately requires native creation evidence.
+pub(super) fn encode_created_stage(header: &Header, stage: &Stage) -> Result<Vec<u8>> {
+    require(matches!(stage.source, Source::Endpoint { .. }))?;
+    let mut bytes = encode(header, &Body::Stage(stage.clone()))?;
+    bytes
+        .get_mut(..4)
+        .ok_or(Error::Invalid)?
+        .copy_from_slice(b"QNS3");
+    let end = bytes.len() - CHECKSUM_BYTES;
+    let digest: [u8; 32] = Sha256::digest(bytes.get(..end).ok_or(Error::Invalid)?).into();
+    bytes
+        .get_mut(end..)
+        .ok_or(Error::Invalid)?
+        .copy_from_slice(&digest);
+    validate(&bytes)?;
+    Ok(bytes)
 }
 
 struct Writer(Vec<u8>);
@@ -1219,6 +1252,13 @@ impl Descriptor {
             Body::Intent(_) => require(self == intent),
             Body::Stage(stage_record) => {
                 require(stage_record.intent == intent.digest)?;
+                if self.profile == Profile::CreatedRegular {
+                    require(
+                        matches!(intent_body.decision, 1 | 2)
+                            && matches!(intent_body.selection, Selection::None)
+                            && matches!(stage_record.source, Source::Endpoint { .. }),
+                    )?;
+                }
                 match (&stage_record.source, &intent_body.selection) {
                     (
                         Source::Endpoint {
@@ -1699,6 +1739,13 @@ mod tests {
                     decode(&encode(&selected.header, &Body::Stage(stage.clone())).unwrap())
                         .unwrap();
                 assert!(staged.joined(&selected, None, None).is_ok());
+                let legacy = encode(&selected.header, &Body::Stage(stage.clone())).unwrap();
+                let mut forged = legacy[..legacy.len() - 32].to_vec();
+                forged[..4].copy_from_slice(b"QNS3");
+                assert!(
+                    decode(&seal(forged)).is_err(),
+                    "selected recovery cannot claim the ordinary created-stage profile"
+                );
                 let mut wrong = stage;
                 let Source::Recovery { recovery, .. } = &mut wrong.source else {
                     panic!("private source");
@@ -1937,6 +1984,56 @@ mod tests {
         bytes.extend(object(0o040_000));
         bytes.extend(&regular()[1..113]);
         seal(bytes)
+    }
+    #[test]
+    fn ordinary_created_stage_profile_decodes_and_binds_exact_stage_digest() {
+        let intent_bytes = intent(&[120], false, 1);
+        let legacy_bytes = stage(&intent_bytes);
+        let mut payload = legacy_bytes[..legacy_bytes.len() - 32].to_vec();
+        payload[..4].copy_from_slice(b"QNS3");
+        let created_bytes = seal(payload);
+        let created = decode(&created_bytes).expect("ordinary created-stage profile");
+        let intent = decode(&intent_bytes).unwrap();
+        assert_eq!(created.joined(&intent, None, None), Ok(()));
+        let legacy = decode(&legacy_bytes).unwrap();
+        let displaced = decode(&displaced(&intent_bytes, &legacy_bytes)).unwrap();
+        assert!(displaced.joined(&intent, Some(&created), None).is_err());
+        assert_eq!(displaced.joined(&intent, Some(&legacy), None), Ok(()));
+        assert_eq!(encode(&legacy.header, &legacy.body).unwrap(), legacy_bytes);
+        let Body::Stage(body) = &created.body else {
+            panic!("stage");
+        };
+        assert_eq!(
+            encode_created_stage(&created.header, body).unwrap(),
+            created_bytes
+        );
+        // The neutral K/O formats bind the exact selected stage profile digest.
+        let legacy_k_bytes = super::tests::displaced(&intent_bytes, &legacy_bytes);
+        let new_k_bytes = super::tests::displaced(&intent_bytes, &created_bytes);
+        let new_k = decode(&new_k_bytes).unwrap();
+        assert_eq!(new_k.joined(&intent, Some(&created), None), Ok(()));
+        assert!(new_k.joined(&intent, Some(&legacy), None).is_err());
+        for (stage_bytes, k_bytes, good_stage, good_k, wrong_stage) in [
+            (
+                &legacy_bytes,
+                &legacy_k_bytes,
+                &legacy,
+                &displaced,
+                &created,
+            ),
+            (&created_bytes, &new_k_bytes, &created, &new_k, &legacy),
+        ] {
+            let outcome = decode(&outcome(&intent_bytes, stage_bytes, k_bytes, 1)).unwrap();
+            assert_eq!(
+                outcome.joined(&intent, Some(good_stage), Some(good_k)),
+                Ok(())
+            );
+            assert!(
+                outcome
+                    .joined(&intent, Some(wrong_stage), Some(good_k))
+                    .is_err()
+            );
+        }
     }
     fn displaced(intent: &[u8], stage: &[u8]) -> Vec<u8> {
         let mut bytes = header(*b"QND1");

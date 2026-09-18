@@ -1891,6 +1891,7 @@ impl ConnectionStore {
         self.guard()?;
         self.check_native(live)?;
         source.validate_for(self, live)?;
+        source.checkpoint()?;
         let context = self.native_read_context(live, source.deadline(), flag)?;
         let RecoveryReservation { id, session, fence } = reservation;
         if !Arc::ptr_eq(&session, &self.session)
@@ -1899,6 +1900,7 @@ impl ConnectionStore {
         {
             return Err(StoreError::StaleRevision);
         }
+        let mut durable = false;
         let result = (|| {
             let mut entry = match self.row(&recovery_key(id))? {
                 Some(Row::Recovery(entry)) if entry.state == 0 => entry,
@@ -1931,7 +1933,7 @@ impl ConnectionStore {
             if offset != expected.length || <[u8; 32]>::from(copied.finalize()) != expected.digest {
                 return Err(StoreError::RecoveryRequired);
             }
-            source.validate()?;
+            source.checkpoint()?;
             storage::sync_file(&target)?;
             storage::validate_file(&parent, &object_name, &target, &target_identity)?;
             let mut reread = storage::reread_file(&parent, &object_name)?;
@@ -1966,7 +1968,7 @@ impl ConnectionStore {
             storage::validate_file(&parent, &object_name, &target, &target_identity)?;
             storage::validate_recovery_reader(&parent, &object_name, &reread, &reread_identity)?;
             storage::sync_directory(&parent)?;
-            source.validate()?;
+            source.checkpoint()?;
             cancelled(flag)?;
             self.check_native(live)?;
             entry.state = 1;
@@ -1995,6 +1997,7 @@ impl ConnectionStore {
                 },
                 &context,
             )?;
+            durable = true;
             let previous = live.revision;
             live.revision = next;
             source.advance_selected(self, live, previous)?;
@@ -2002,7 +2005,7 @@ impl ConnectionStore {
             super::run_after_native_bytes();
             // A late break retains the durable Bytes artifact, but cannot mint a
             // bound live acknowledgement or replacement authority.
-            source.validate()?;
+            source.checkpoint()?;
             cancelled(flag)?;
             self.check_native(live)?;
             let next = format::next(live.revision())?;
@@ -2025,7 +2028,7 @@ impl ConnectionStore {
             let previous = live.revision;
             live.revision = next;
             source.advance_selected(self, live, previous)?;
-            source.validate()?;
+            source.checkpoint()?;
             self.check_native(live)?;
             cancelled(flag)?;
             let proof = super::BoundRecovery {
@@ -2039,12 +2042,14 @@ impl ConnectionStore {
             proof.validate(live, source.epoch())?;
             Ok(self.ack(proof))
         })();
-        if matches!(
-            result,
-            Err(StoreError::Persistence(_)
-                | StoreError::RecoverySpace
-                | StoreError::IdentityChanged)
-        ) {
+        if (durable && result.is_err())
+            || matches!(
+                result,
+                Err(StoreError::Persistence(_)
+                    | StoreError::RecoverySpace
+                    | StoreError::IdentityChanged)
+            )
+        {
             self.poison_native();
         }
         result
@@ -2097,6 +2102,7 @@ impl ConnectionStore {
         self.guard()?;
         self.check_native(live)?;
         source.validate_for(self, live)?;
+        source.checkpoint()?;
         if id.operation != live.id() {
             return Err(StoreError::StaleRevision);
         }
@@ -2134,7 +2140,7 @@ impl ConnectionStore {
             fact: fact.encode().map_err(|_| StoreError::Corrupt)?,
             displaced,
         };
-        source.validate()?;
+        source.checkpoint()?;
         match self.row(&bound.key())? {
             Some(Row::NativeRecoveryFact(existing)) if existing == bound => {}
             None => {
@@ -2148,13 +2154,22 @@ impl ConnectionStore {
                     &context,
                 )?;
                 live.revision = format::next(live.revision())?;
-                source.advance_selected(self, live, previous)?;
+                if let Err(error) = source.advance_selected(self, live, previous) {
+                    self.poison_native();
+                    return Err(error);
+                }
             }
             _ => return Err(StoreError::RecoveryRequired),
         }
-        source.validate()?;
-        self.check_native(live)?;
-        cancelled(cancel)?;
+        let postwrite = (|| {
+            source.checkpoint()?;
+            self.check_native(live)?;
+            cancelled(cancel)
+        })();
+        if let Err(error) = postwrite {
+            self.poison_native();
+            return Err(error);
+        }
         let proof = super::BoundRecovery {
             fact,
             preserved: PreservedObject { id, file },
@@ -2163,7 +2178,10 @@ impl ConnectionStore {
             epoch: source.epoch(),
             metadata,
         };
-        proof.validate(live, source.epoch())?;
+        if let Err(error) = proof.validate(live, source.epoch()) {
+            self.poison_native();
+            return Err(error);
+        }
         Ok(self.ack(proof))
     }
 }
@@ -2222,8 +2240,13 @@ impl ConnectionStore {
         self.append_native(change, &paid)?;
         context.revision = format::next(previous)?;
         context.operation_revision = context.revision;
-        reader.advance(previous, context)?;
-        reader.validate_for(self, context)
+        let result = reader
+            .advance(previous, context)
+            .and_then(|()| reader.validate_for(self, context));
+        if result.is_err() {
+            self.poison_native();
+        }
+        result
     }
     /// Existing pre-fence quarantine only. Returns a private preserved reader,
     /// never `LiveOperation`, `StepAdmission`, `BoundRecovery` or publication authority.
