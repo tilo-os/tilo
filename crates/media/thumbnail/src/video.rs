@@ -1,6 +1,6 @@
 //! Representative-keyframe extraction from a video (feature `video`).
 //!
-//! Reuses the shared `media` GStreamer engine — the exact decode path
+//! Reuses the shared `media` `GStreamer` engine — the exact decode path
 //! `apps/video-editor` drives — rather than a second codec stack: open the
 //! file, seek a little way in (past a black intro frame), play, and poll until
 //! a decoded RGBA frame lands or a deadline passes. Only compiled under
@@ -44,7 +44,11 @@ pub fn video_thumb(path: &Path, max_edge: u32) -> Option<RgbaThumb> {
         let _ = engine.poll();
         if let Some(frame) = engine.latest_frame() {
             let (w, h) = (frame.width, frame.height);
-            if w > 0 && h > 0 && frame.rgba.len() == (w as usize) * (h as usize) * 4 {
+            let expected_len = usize::try_from(w)
+                .ok()?
+                .checked_mul(usize::try_from(h).ok()?)?
+                .checked_mul(4)?;
+            if w > 0 && h > 0 && frame.rgba.len() == expected_len {
                 return rgba_to_thumb(frame.rgba.as_ref().clone(), w, h, max_edge);
             }
         }
