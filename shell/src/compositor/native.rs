@@ -6066,13 +6066,17 @@ pub fn run() {
                 use crate::shell::device_fabric_runtime::PersonalDisplayEvent;
                 match event {
                     PersonalDisplayEvent::Started {
-                        session_id, source, ..
+                        session_id,
+                        source,
+                        mirror_only,
+                        ..
                     } => {
                         let input_net = Arc::clone(net);
                         let input_source = source.clone();
-                        let sink = Arc::new(move |event: crate::network::streaming::InputEvent| {
-                            use crate::network::streaming::InputEvent;
-                            let mapped = match event {
+                        let spatial_sink =
+                            Arc::new(move |event: crate::network::streaming::InputEvent| {
+                                use crate::network::streaming::InputEvent;
+                                let mapped = match event {
                                 InputEvent::PointerMotion { x, y } => Some(
                                     crate::shell::device_fabric::FabricInputEvent::PointerMotion {
                                         x: spatial_coord(x),
@@ -6098,14 +6102,20 @@ pub fn run() {
                                 | InputEvent::PointerLeave { .. }
                                 | InputEvent::KeyboardFocus { .. } => None,
                             };
-                            if let Some(mapped) = mapped {
-                                let _ = crate::shell::device_fabric_runtime::send_spatial_input(
-                                    &input_net,
-                                    &input_source,
-                                    mapped,
-                                );
-                            }
-                        });
+                                if let Some(mapped) = mapped {
+                                    let _ = crate::shell::device_fabric_runtime::send_spatial_input(
+                                        &input_net,
+                                        &input_source,
+                                        mapped,
+                                    );
+                                }
+                            });
+                        let sink: Arc<dyn Fn(crate::network::streaming::InputEvent) + Send + Sync> =
+                            if mirror_only {
+                                Arc::new(|_| {})
+                            } else {
+                                spatial_sink
+                            };
                         frame_builder
                             .host_mut()
                             .mount_personal_display(session_id, sink);
