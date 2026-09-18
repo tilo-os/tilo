@@ -1,8 +1,11 @@
 //! Offline tooling for the human-root -> device -> immutable-image trust chain.
 
 use std::{
+    ffi::CString,
     fs::{DirBuilder, OpenOptions},
     io::{Read, Write},
+    os::fd::FromRawFd as _,
+    os::unix::ffi::OsStrExt as _,
     os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
 };
@@ -19,6 +22,50 @@ use tilo_user_identity::{
 };
 
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024;
+
+fn open_readonly_without_symlinks(path: &Path) -> std::io::Result<std::fs::File> {
+    const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+    const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+
+    #[repr(C)]
+    struct OpenHow {
+        flags: u64,
+        mode: u64,
+        resolve: u64,
+    }
+
+    let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "artifact path contains an embedded NUL byte",
+        )
+    })?;
+    let flags = u64::try_from(libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .map_err(|_| std::io::Error::other("open flags are outside the Linux u64 ABI"))?;
+    let how = OpenHow {
+        flags,
+        mode: 0,
+        resolve: RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
+    };
+    // SAFETY: path and open_how remain live for this syscall. A successful
+    // descriptor is uniquely transferred into File below.
+    let descriptor = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            &raw const how,
+            std::mem::size_of::<OpenHow>(),
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let descriptor = i32::try_from(descriptor)
+        .map_err(|_| std::io::Error::other("openat2 returned an invalid descriptor"))?;
+    // SAFETY: openat2 returned this owned descriptor and no other File owns it.
+    Ok(unsafe { std::fs::File::from_raw_fd(descriptor) })
+}
 
 fn usage() -> String {
     "usage:\n  tilo-image-trust parse-bootc-status < status.json\n  tilo-image-trust bootc-status-field SELECTOR < status.json\n  tilo-image-trust grant ROOT_KEY DEVICE_CERT ISSUED_NS EXPIRES_NS OUTPUT\n  tilo-image-trust prepare-grant DEVICE_CERT ISSUED_NS EXPIRES_NS UNSIGNED_OUTPUT DIGEST_OUTPUT\n  tilo-image-trust attach-grant UNSIGNED_GRANT SIGNATURE OUTPUT\n  tilo-image-trust endorse DEVICE_KEY DEVICE_CERT GRANT IMAGE_SHA256 GENERATION ISSUED_NS OUTPUT\n  tilo-image-trust prepare-endorsement DEVICE_CERT GRANT IMAGE_SHA256 GENERATION ISSUED_NS UNSIGNED_OUTPUT DIGEST_OUTPUT\n  tilo-image-trust attach-endorsement UNSIGNED_ENDORSEMENT SIGNATURE OUTPUT\n  tilo-image-trust revocations ROOT_PUBLIC_KEY OUTPUT [REVOCATION_ENTRY ...]\n  tilo-image-trust verify ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT IMAGE_SHA256 GENERATION NOW_NS\n  tilo-image-trust verify-and-record ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT IMAGE_SHA256 GENERATION NOW_NS GENERATION_STATE TIME_STATE\n  tilo-image-trust arm ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT NOW_NS TRUST_DIR [UPDATE_LOCK]\n  tilo-image-trust rotate ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT NOW_NS TRUST_DIR [UPDATE_LOCK]".into()
@@ -166,11 +213,7 @@ fn decode_sha256(value: &std::ffi::OsStr) -> Result<[u8; 32], String> {
 }
 
 fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    let file = options
-        .open(path)
+    let file = open_readonly_without_symlinks(path)
         .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
     if !file
         .metadata()
@@ -193,12 +236,7 @@ fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
 }
 
 fn read_private_bounded(path: &Path) -> Result<Vec<u8>, String> {
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    let file = options
-        .open(path)
+    let file = open_readonly_without_symlinks(path)
         .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
     let metadata = file
         .metadata()
@@ -1049,6 +1087,11 @@ mod tests {
         fs::write(&artifact, b"fixture").expect("artifact fixture");
         symlink(&artifact, &link).expect("artifact symlink");
         assert!(read_bounded(&link).is_err());
+
+        let linked_parent = temp.path().join("linked-parent");
+        symlink(temp.path(), &linked_parent).expect("parent-directory symlink");
+        assert!(read_bounded(&linked_parent.join("artifact")).is_err());
+        assert!(read_private_bounded(&linked_parent.join("artifact")).is_err());
     }
 
     #[test]
