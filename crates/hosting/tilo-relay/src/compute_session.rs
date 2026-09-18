@@ -23,6 +23,7 @@ use crate::compute_transport::{
 use crate::daemon::{read_frame, write_frame};
 use crate::peer::WorkspaceRegistry;
 use crate::policy::TrustPolicy;
+use crate::workspace::SharedWorkspace;
 
 const COMPUTE_OUTBOUND_CAPACITY: usize = 32;
 static COMPUTE_QUEUE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -157,7 +158,7 @@ async fn run_server_session(
     .await;
 
     for workspace_id in attached {
-        if let Some(workspace) = protocol.workspaces.lock().await.get(&workspace_id).cloned() {
+        if let Some(workspace) = find_workspace(&protocol.workspaces, workspace_id).await {
             workspace
                 .lock()
                 .await
@@ -166,6 +167,16 @@ async fn run_server_session(
         }
     }
     outcome
+}
+
+/// Clone a workspace handle without carrying the registry lock into work on
+/// that workspace. Registry membership and workspace state have independent
+/// lock domains; nesting them needlessly serializes unrelated sessions.
+async fn find_workspace(
+    workspaces: &WorkspaceRegistry,
+    workspace_id: u64,
+) -> Option<SharedWorkspace> {
+    workspaces.lock().await.get(&workspace_id).cloned()
 }
 
 async fn authenticate_server(
@@ -214,7 +225,7 @@ async fn attach_workspace(
     disconnect: &mpsc::Sender<()>,
     send: &mut SendStream,
 ) -> Result<bool, ComputeSessionError> {
-    let Some(workspace) = workspaces.lock().await.get(&workspace_id).cloned() else {
+    let Some(workspace) = find_workspace(workspaces, workspace_id).await else {
         write_compute(
             send,
             &ComputeEnvelope::NotAuthorised {
@@ -244,6 +255,7 @@ async fn attach_workspace(
             workspace
                 .compute
                 .attach(peer.device_public_key, outbound.clone(), disconnect.clone());
+            drop(workspace);
             (pending, true)
         } else {
             (Vec::new(), false)
@@ -294,7 +306,7 @@ async fn dispatch_compute(
         sequence,
     } = envelope
     {
-        let Some(workspace) = workspaces.lock().await.get(&workspace_id).cloned() else {
+        let Some(workspace) = find_workspace(workspaces, workspace_id).await else {
             return Ok(Some(ComputeEnvelope::NotAuthorised {
                 workspace_id,
                 reason: "workspace not bound on this relay".into(),
@@ -307,14 +319,7 @@ async fn dispatch_compute(
             .ack_compute_pending(&peer.device_public_key, sequence)?;
         return Ok(None);
     }
-    if matches!(
-        envelope,
-        ComputeEnvelope::Ready { .. }
-            | ComputeEnvelope::NotAuthorised { .. }
-            | ComputeEnvelope::Pong
-            | ComputeEnvelope::Attach { .. }
-            | ComputeEnvelope::Delivery { .. }
-    ) {
+    if is_server_only(&envelope) {
         return Err(ComputeSessionError::Protocol(
             "client sent a server-only compute envelope".into(),
         ));
@@ -322,7 +327,7 @@ async fn dispatch_compute(
     let workspace_id = envelope.workspace_id().ok_or_else(|| {
         ComputeSessionError::Protocol("compute envelope has no workspace binding".into())
     })?;
-    let Some(workspace) = workspaces.lock().await.get(&workspace_id).cloned() else {
+    let Some(workspace) = find_workspace(workspaces, workspace_id).await else {
         return Ok(Some(ComputeEnvelope::NotAuthorised {
             workspace_id,
             reason: "workspace not bound on this relay".into(),
@@ -383,7 +388,19 @@ async fn dispatch_compute(
         let crate::workspace::WorkspaceRuntime { compute, store, .. } = &mut *workspace;
         compute.route(target, &envelope, store, next_queue_sequence())?;
     }
+    drop(workspace);
     Ok(None)
+}
+
+fn is_server_only(envelope: &ComputeEnvelope) -> bool {
+    matches!(
+        envelope,
+        ComputeEnvelope::Ready { .. }
+            | ComputeEnvelope::NotAuthorised { .. }
+            | ComputeEnvelope::Pong
+            | ComputeEnvelope::Attach { .. }
+            | ComputeEnvelope::Delivery { .. }
+    )
 }
 
 fn next_queue_sequence() -> u64 {
