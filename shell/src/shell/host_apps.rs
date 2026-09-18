@@ -589,7 +589,7 @@ mod tests {
 
         set_x11_session(Some(X11Session {
             display: ":1234".into(),
-            authority: PathBuf::from("/run/user/1000/qos-session/Xauthority-1234"),
+            authority: PathBuf::from("/run/user/1000/tilo-session/Xauthority-1234"),
         }));
         assert!(x11_ready());
         let requests = drain_queued_launches();
@@ -609,7 +609,7 @@ mod tests {
         assert_eq!(x11_availability(), X11Availability::Unavailable);
         set_x11_session(Some(X11Session {
             display: ":1234".into(),
-            authority: PathBuf::from("/tmp/qos-test-authority"),
+            authority: PathBuf::from("/tmp/tilo-test-authority"),
         }));
         assert_eq!(x11_availability(), X11Availability::Ready);
         set_x11_session(None);

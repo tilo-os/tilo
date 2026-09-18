@@ -9423,7 +9423,7 @@ mod tests {
         workspace: &str,
     ) -> crate::shell::realtime_session::VerifiedAppRegistration {
         crate::shell::realtime_session::VerifiedAppRegistration::new_verified(
-            "dev.qos.chat",
+            "dev.tilo.chat",
             workspace,
         )
         .expect("verified test app")
@@ -9672,7 +9672,7 @@ mod tests {
         let target =
             crate::shell::personal_continuity::DeviceId::new("tablet").expect("target device");
         let app =
-            VerifiedAppRegistration::new_verified("dev.qos.calls", "work").expect("verified app");
+            VerifiedAppRegistration::new_verified("dev.tilo.calls", "work").expect("verified app");
         let intent = RealtimeResumeIntent {
             room: SemanticRoomLocator::new("meet", "standup").expect("semantic room"),
             semantic_position: Some("main-stage".into()),
@@ -9838,7 +9838,7 @@ mod tests {
         ));
         let (subscriber, _events) = mpsc::unbounded_channel();
         let app =
-            VerifiedAppRegistration::new_verified("dev.qos.calls", "work").expect("verified app");
+            VerifiedAppRegistration::new_verified("dev.tilo.calls", "work").expect("verified app");
         {
             let mut realtime = state.realtime.lock().expect("target bridge");
             realtime.broker = Arc::clone(&target_broker);
