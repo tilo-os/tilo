@@ -1588,10 +1588,15 @@ impl BooksApp {
                 });
             }
             "large-text" => {
-                // Maximum supported scale is a first-class visual/a11y
-                // regression state.  It must use the normal settings path so
-                // pagination and all responsive chrome are exercised too.
+                // A true 200% text scale is a first-class visual/a11y
+                // regression state. It must use the normal settings path so
+                // pagination and all responsive chrome are exercised too. Do
+                // not seed demo annotations here: the proof is a normal,
+                // readable page rather than one giant highlighted range.
                 self.view = View::Reader;
+                self.demo = false;
+                self.sel = None;
+                self.selected_block = None;
                 self.shot_settings = Some(Settings {
                     font_scale: Settings::FONT_MAX,
                     ..Settings::default()
@@ -1600,11 +1605,15 @@ impl BooksApp {
             "reduced-motion" => {
                 // The headless renderer has no preference service, so stage
                 // the same app-owned motion policy the live host supplies.
-                // The still is intentionally calm: no rail/page/bubble frame
-                // is requested after this point.
+                // The still is intentionally calm, but retains the same
+                // desktop reader chrome as the normal and high-contrast
+                // references so it proves equivalent layout rather than an
+                // immersive fallback.
                 self.view = View::Reader;
                 self.reduce_motion = true;
                 self.page_turn = None;
+                self.toc_flap.snap(true);
+                self.notes_flap.snap(true);
             }
             _ => return false,
         }
@@ -14893,6 +14902,47 @@ mod interaction_tests {
                 .iter()
                 .all(|run| { run.x0 >= geom.full_content_x - 0.5 && run.x1 <= right + 0.5 }),
             "every measured painted text run reflows inside the narrow page box"
+        );
+    }
+
+    #[test]
+    fn large_text_shot_is_a_normal_two_hundred_percent_narrow_reader() {
+        let mut app = BooksApp::with_library(Vec::new());
+        let mut doc = AutoCommit::new();
+        app.seed_shot_scenario("large-text");
+        frame(&mut app, &mut doc, 480.0, 900.0);
+
+        assert_eq!(app.settings.font_scale, 2.0);
+        assert!(app.sel.is_none(), "the visual proof starts unselected");
+        assert!(
+            app.annotations.is_empty(),
+            "the visual proof is not obscured by seeded demo highlights"
+        );
+        let geom = app.reader_page_geometry(app.rect, app.settings.mode);
+        let right = geom.full_content_x + f64::from(geom.full_content_w);
+        assert!(
+            app.sel_runs
+                .iter()
+                .all(|run| run.x0 >= geom.full_content_x - 0.5 && run.x1 <= right + 0.5),
+            "every 200% text run remains within the narrow content box"
+        );
+    }
+
+    #[test]
+    fn reduced_motion_shot_keeps_the_desktop_reader_chrome() {
+        let mut app = BooksApp::with_library(Vec::new());
+        let mut doc = AutoCommit::new();
+        app.seed_shot_scenario("reduced-motion");
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+
+        assert!(app.reduce_motion);
+        assert!(app.toc_open(), "contents rail remains docked-open");
+        assert!(app.notes_open(), "annotation rail remains docked-open");
+        assert!(
+            app.hits
+                .iter()
+                .any(|hit| matches!(hit.action, Action::Back)),
+            "the equivalent reader top bar remains actionable"
         );
     }
 
