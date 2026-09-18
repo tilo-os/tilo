@@ -367,6 +367,38 @@ impl Event {
         }
     }
 
+    /// The last date an all-day event occupies in Calendar's editor and
+    /// views.  RFC 5545 represents all-day `DTEND` as an *exclusive* date,
+    /// while people naturally choose an inclusive final day.  Older local
+    /// documents used `23:59` on that final day, so accept both shapes at the
+    /// model boundary instead of making existing events appear a day longer.
+    pub fn all_day_last_date(&self) -> NaiveDate {
+        if !self.all_day {
+            return self.end.date();
+        }
+        if self.end.time() == NaiveTime::MIN && self.end.date() > self.start.date() {
+            self.end.date() - Duration::days(1)
+        } else {
+            self.end.date().max(self.start.date())
+        }
+    }
+
+    /// The RFC 5545 exclusive end date for this all-day event.  This keeps
+    /// CalDAV/ICS interchange honest while allowing pre-existing local data
+    /// that stored `23:59` on the final day to round-trip correctly.
+    pub fn all_day_end_exclusive(&self) -> NaiveDate {
+        self.all_day_last_date() + Duration::days(1)
+    }
+
+    /// Number of visible dates occupied by an all-day event.  Kept separate
+    /// from a timestamp duration because RFC all-day events are date ranges,
+    /// and a daylight-saving transition must never shorten one in the views.
+    pub fn all_day_span_days(&self) -> i64 {
+        (self.all_day_end_exclusive() - self.start.date())
+            .num_days()
+            .max(1)
+    }
+
     /// Resolve an occurrence start to an absolute UTC instant. Named-zone
     /// recurrences retain their local clock time across DST; folds choose the
     /// earlier instant and gaps advance to the first valid minute. Floating
@@ -484,6 +516,15 @@ impl Event {
     }
 
     pub fn occurs_on(&self, date: NaiveDate) -> bool {
+        if self.all_day {
+            // Query far enough back to include an event that started before
+            // `date` but still spans it.  This also makes recurring all-day
+            // conferences appear on every occupied day, not only their first.
+            let from = date - Duration::days(self.all_day_span_days().saturating_sub(1));
+            return self.occurrences_in(from, date).into_iter().any(|start| {
+                date >= start && date < start + Duration::days(self.all_day_span_days())
+            });
+        }
         !self.occurrences_in(date, date).is_empty()
     }
 
@@ -1111,6 +1152,35 @@ mod tests {
     #[test]
     fn none_recurrence_is_single_day() {
         let e = sample_event(date(2026, 6, 15));
+        assert!(e.occurs_on(date(2026, 6, 15)));
+        assert!(!e.occurs_on(date(2026, 6, 16)));
+    }
+
+    #[test]
+    fn all_day_events_use_an_exclusive_end_but_occupy_each_visible_day() {
+        let mut e = sample_event(date(2026, 6, 15));
+        e.all_day = true;
+        e.start = date(2026, 6, 15).and_time(NaiveTime::MIN);
+        e.end = date(2026, 6, 18).and_time(NaiveTime::MIN);
+
+        assert_eq!(e.all_day_last_date(), date(2026, 6, 17));
+        assert_eq!(e.all_day_end_exclusive(), date(2026, 6, 18));
+        assert_eq!(e.all_day_span_days(), 3);
+        assert!(e.occurs_on(date(2026, 6, 15)));
+        assert!(e.occurs_on(date(2026, 6, 16)));
+        assert!(e.occurs_on(date(2026, 6, 17)));
+        assert!(!e.occurs_on(date(2026, 6, 18)));
+    }
+
+    #[test]
+    fn legacy_all_day_final_minute_stays_one_visible_day() {
+        let mut e = sample_event(date(2026, 6, 15));
+        e.all_day = true;
+        e.start = date(2026, 6, 15).and_time(NaiveTime::MIN);
+        e.end = date(2026, 6, 15).and_hms_opt(23, 59, 0).unwrap();
+
+        assert_eq!(e.all_day_last_date(), date(2026, 6, 15));
+        assert_eq!(e.all_day_end_exclusive(), date(2026, 6, 16));
         assert!(e.occurs_on(date(2026, 6, 15)));
         assert!(!e.occurs_on(date(2026, 6, 16)));
     }

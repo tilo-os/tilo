@@ -241,6 +241,56 @@ struct AnalysisResult {
     result: AnalysisOutcome,
 }
 
+/// Per-device checkpoint for the sensitive People scan.  It contains only a
+/// cursor and status, never face geometry, embeddings, crops, model output,
+/// source paths, or a person name.  Keeping it outside Automerge makes resume
+/// local to the owner who consented.
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
+struct PeopleScanProgress {
+    next_offset: usize,
+    completed_batches: u64,
+    last_library_size: usize,
+    status: String,
+    last_error: Option<String>,
+}
+
+impl PeopleScanProgress {
+    fn load() -> Self {
+        let Some(path) = Self::path() else {
+            return Self::default();
+        };
+        std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    fn save(&self) {
+        let Some(path) = Self::path() else {
+            return;
+        };
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        if std::fs::create_dir_all(parent).is_ok()
+            && let Ok(bytes) = serde_json::to_vec(self)
+        {
+            let _ = atomic_file::write(&path, &bytes);
+        }
+    }
+
+    fn path() -> Option<std::path::PathBuf> {
+        let base = std::env::var_os("XDG_STATE_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(std::path::PathBuf::from)
+                    .map(|home| home.join(".local/state"))
+            })?;
+        Some(base.join("tilo/photos/people-scan.json"))
+    }
+}
+
 enum AnalysisOutcome {
     Image(Result<crate::model::ImageAnalysis, String>),
     People(Result<crate::people::VerifiedFaceClusterBatch, String>),
@@ -705,6 +755,7 @@ pub struct PhotosApp {
     analysis_rx: Receiver<AnalysisResult>,
     active_analysis: HashSet<tilo_actions::InvocationId>,
     cancelled_analysis: HashSet<tilo_actions::InvocationId>,
+    active_people_scans: HashSet<tilo_actions::InvocationId>,
     /// Private People-review state. It is intentionally neither a document
     /// field nor a resource: unconfirmed face proposals belong only on this
     /// device until an explicit review commits a compact label membership.
@@ -712,7 +763,7 @@ pub struct PhotosApp {
     /// Next library offset for the explicitly started People scan.  Keeping a
     /// cursor makes a large local library progress in 12-photo work units
     /// without ever submitting hundreds of biometric previews at once.
-    people_scan_offset: usize,
+    people_scan_progress: PeopleScanProgress,
     /// A distinct People collection surface. Its private suggestion state is
     /// visually and semantically separated from shared approved labels.
     people_mode: bool,
@@ -906,6 +957,7 @@ impl PhotosApp {
     fn drain_analysis_results(&mut self, doc: &mut AutoCommit) {
         while let Ok(completed) = self.analysis_rx.try_recv() {
             self.active_analysis.remove(&completed.invocation);
+            self.active_people_scans.remove(&completed.invocation);
             if self.cancelled_analysis.remove(&completed.invocation) {
                 continue;
             }
@@ -956,11 +1008,24 @@ impl PhotosApp {
                             Err(error) => analysis_failure(completed.invocation, error.to_string()),
                         }
                     }
-                    AnalysisOutcome::Image(Err(error)) | AnalysisOutcome::People(Err(error)) => {
+                    AnalysisOutcome::Image(Err(error)) => {
+                        analysis_failure(completed.invocation, error)
+                    }
+                    AnalysisOutcome::People(Err(error)) => {
+                        self.people_scan_progress.status = "error".to_owned();
+                        self.people_scan_progress.last_error = Some(error.clone());
+                        self.people_scan_progress.save();
                         analysis_failure(completed.invocation, error)
                     }
                     AnalysisOutcome::People(Ok(batch)) => {
                         let added = self.people_controller.ingest_verified_face_clusters(batch);
+                        self.people_scan_progress.status = "paused".to_owned();
+                        self.people_scan_progress.completed_batches = self
+                            .people_scan_progress
+                            .completed_batches
+                            .saturating_add(1);
+                        self.people_scan_progress.last_error = None;
+                        self.people_scan_progress.save();
                         self.notice = Some(if added == 0 {
                             "No new local face suggestions were found in this batch".to_owned()
                         } else {
@@ -1049,8 +1114,9 @@ impl PhotosApp {
             analysis_rx,
             active_analysis: HashSet::new(),
             cancelled_analysis: HashSet::new(),
+            active_people_scans: HashSet::new(),
             people_controller: crate::people::PeopleController::new(),
-            people_scan_offset: 0,
+            people_scan_progress: PeopleScanProgress::load(),
             people_mode: false,
             canvas_state: CanvasState::Empty,
             search_provider: crate::search::PhotosSearchProvider::empty(),
@@ -4408,6 +4474,41 @@ impl PhotosApp {
             Some(content.width() as f32),
             TextWeight::Regular,
         );
+        let progress = &self.people_scan_progress;
+        let progress_copy = match progress.status.as_str() {
+            "running" => format!(
+                "Scanning locally: next batch starts at photo {} of {}. You can cancel; scanning resumes from there.",
+                progress.next_offset.saturating_add(1),
+                progress.last_library_size
+            ),
+            "cancelled" => format!(
+                "Local scan paused after {} batch(es). Start Scan local library for faces to resume.",
+                progress.completed_batches
+            ),
+            "error" => format!(
+                "Last local scan failed: {}. Retry resumes at the next batch.",
+                progress
+                    .last_error
+                    .as_deref()
+                    .unwrap_or("local model unavailable")
+            ),
+            "paused" if progress.completed_batches > 0 => format!(
+                "{} local batch(es) completed. Scan again to continue through this device's library.",
+                progress.completed_batches
+            ),
+            _ => String::new(),
+        };
+        if !progress_copy.is_empty() {
+            text_renderer.draw_text_weighted(
+                scene,
+                &progress_copy,
+                12.0,
+                theme.text_dim,
+                transform * Affine::translate((content.x0, suggestion_y + 48.0)),
+                Some(content.width() as f32),
+                TextWeight::Regular,
+            );
+        }
     }
 
     fn draw_library(
@@ -7785,7 +7886,7 @@ impl Widget for PhotosApp {
                     "No locally available photographs are ready for People recognition.".to_owned(),
                 );
             }
-            let start = self.people_scan_offset % locally_available.len();
+            let start = self.people_scan_progress.next_offset % locally_available.len();
             let photos: Vec<_> = locally_available
                 .iter()
                 .cycle()
@@ -7793,7 +7894,12 @@ impl Widget for PhotosApp {
                 .take(tilo_vision::MAX_FACE_BATCH.min(locally_available.len()))
                 .cloned()
                 .collect();
-            self.people_scan_offset = start.saturating_add(photos.len()) % locally_available.len();
+            self.people_scan_progress.next_offset =
+                start.saturating_add(photos.len()) % locally_available.len();
+            self.people_scan_progress.last_library_size = locally_available.len();
+            self.people_scan_progress.status = "running".to_owned();
+            self.people_scan_progress.last_error = None;
+            self.people_scan_progress.save();
             let Some((_, first)) = photos.first() else {
                 return Err(
                     "No locally available photographs are ready for People recognition.".to_owned(),
@@ -7817,6 +7923,7 @@ impl Widget for PhotosApp {
                     "local image analysis is busy; wait for the current photos to finish".to_owned()
                 })?;
             self.active_analysis.insert(invocation);
+            self.active_people_scans.insert(invocation);
             return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
         }
 
@@ -7858,6 +7965,10 @@ impl Widget for PhotosApp {
     ) -> Option<tilo_actions::InvocationUpdate> {
         if cancellation_requested && self.active_analysis.remove(&invocation) {
             self.cancelled_analysis.insert(invocation);
+            if self.active_people_scans.remove(&invocation) {
+                self.people_scan_progress.status = "cancelled".to_owned();
+                self.people_scan_progress.save();
+            }
             return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("local image analysis was cancelled".into()),

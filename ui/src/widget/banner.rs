@@ -220,6 +220,7 @@ pub struct Banner {
     rect: Rect,
     dismiss_rect: Rect,
     last_cursor: Point,
+    layout_theme: Theme,
 }
 
 impl Banner {
@@ -235,6 +236,7 @@ impl Banner {
             rect: Rect::ZERO,
             dismiss_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
+            layout_theme: Theme::dark(),
         }
     }
 
@@ -349,9 +351,10 @@ impl Widget for Banner {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.layout_theme = theme.clone();
         let node = taffy.leaf_node(Style {
             flex_shrink: 0.0,
             size: taffy::Size {
@@ -379,7 +382,6 @@ impl Widget for Banner {
         available: taffy::Size<taffy::AvailableSpace>,
         tr: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        let theme = Theme::dark();
         let width = known.width.unwrap_or(match available.width {
             taffy::AvailableSpace::Definite(width) => width,
             taffy::AvailableSpace::MinContent => 1.0,
@@ -388,7 +390,7 @@ impl Widget for Banner {
         let h = if self.dismissed {
             0.0
         } else {
-            self.content_height(&theme, tr, width) as f32
+            self.content_height(&self.layout_theme, tr, width) as f32
         };
         taffy::Size { width, height: h }
     }
@@ -502,7 +504,29 @@ impl Widget for Banner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use taffy::prelude::TaffyMaxContent;
     use vello_encoding::DrawTag;
+
+    #[test]
+    fn retained_measure_uses_the_active_text_scale() {
+        let mut banner = Banner::info("A title").with_message("Supporting detail");
+        let mut taffy = TaffyTree::new();
+        let mut map = HashMap::new();
+        banner.build_layout(&mut taffy, &Theme::dark().with_text_scale(2.0), &mut map);
+        let mut text = TextRenderer::new();
+        let measured = banner.measure(
+            taffy::Size {
+                width: Some(320.0),
+                height: None,
+            },
+            taffy::Size::MAX_CONTENT,
+            &mut text,
+        );
+        let default_height = Banner::info("A title")
+            .with_message("Supporting detail")
+            .content_height(&Theme::dark(), &mut text, 320.0);
+        assert!(f64::from(measured.height) > default_height);
+    }
 
     fn lay_out(w: &mut dyn Widget, vw: f32, vh: f32) {
         let theme = Theme::dark();

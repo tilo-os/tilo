@@ -68,6 +68,7 @@ pub struct Popover {
     /// One-shot channel: the row the user just chose, drained via
     /// [`Popover::take_selection`].
     pending: Option<usize>,
+    layout_theme: Theme,
 }
 
 impl Default for Popover {
@@ -90,6 +91,7 @@ impl Popover {
             selected: None,
             last_cursor: Point::ZERO,
             pending: None,
+            layout_theme: Theme::dark(),
         }
     }
 
@@ -325,9 +327,10 @@ impl Widget for Popover {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.layout_theme = theme.clone();
         // A zero-extent leaf: the body is positioned manually against the
         // anchor + viewport in `place`, not by the parent's flexbox. Register
         // in the node map so the host's overlay/hit sweeps still reach us.
@@ -344,12 +347,12 @@ impl Widget for Popover {
 
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {
         // Resolve the body rect so hit-testing works after layout even before
-        // the first draw. Text metrics are theme-independent, so a throwaway
-        // renderer + the dark theme's spacing yield the same geometry the live
-        // pipeline computes (mirrors `PopoverWidget::apply_layout`).
+        // the first draw. Preserve the active theme and text scale so the hit
+        // target matches the first painted frame under large text.
         if self.open {
             let mut tr = TextRenderer::new();
-            let theme = Theme::dark();
+            tr.set_text_scale(self.layout_theme.text_scale);
+            let theme = self.layout_theme.clone();
             self.place(&mut tr, &theme);
         }
     }
@@ -566,6 +569,15 @@ mod tests {
     use super::*;
     use winit::event::{DeviceId, KeyEvent};
     use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
+
+    #[test]
+    fn retained_layout_keeps_the_active_theme_before_first_paint() {
+        let mut popover = opened();
+        let mut taffy = TaffyTree::new();
+        let mut map = HashMap::new();
+        popover.build_layout(&mut taffy, &Theme::dark().with_text_scale(2.0), &mut map);
+        assert_eq!(popover.layout_theme.text_scale, 2.0);
+    }
 
     fn synth_device() -> DeviceId {
         unsafe { std::mem::zeroed() }

@@ -68,10 +68,11 @@ const FOOTER_HEIGHT: f32 = 57.0;
 /// acknowledgement above the ordinary action row so large text and compact
 /// displays never hide the gate inside scrolling explanatory copy.
 const ACKNOWLEDGEMENT_FOOTER_EXTRA_HEIGHT: f32 = 72.0;
-/// The recovery form is the primary task on Backup. Reserve its two 40 px
-/// fields, action row, and compact gaps outside the explanatory scroller so a
-/// short display never opens on the opt-out path while hiding recovery.
-const BACKUP_FORM_HEIGHT: f32 = 144.0;
+/// The recovery form is the primary task on Backup. Reserve its explanation,
+/// two labelled 40 px fields, action row, and compact gaps outside the
+/// explanatory scroller so a short display never lets the pinned form clip
+/// the created-identity banner above it.
+const BACKUP_FORM_HEIGHT: f32 = 264.0;
 /// Eyebrow row, gap, padded 8 px progress track, and gap below the sticky header.
 const PROGRESS_HEADER_HEIGHT: f32 = 58.0;
 const PROGRESS_FILE: &str = ".onboarding-progress.json";
@@ -1040,18 +1041,20 @@ impl OnboardingView {
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(theme.tokens.spacing.s2)
-            .push(Box::new(secret_input(
+            .push(labelled_secret_field(
                 "onboarding.backup.passphrase",
+                "New backup passphrase",
                 &self.backup_passphrase,
                 "New backup passphrase",
                 "Long, unique passphrase — 12+ characters",
-            )))
-            .push(Box::new(secret_input(
+            ))
+            .push(labelled_secret_field(
                 "onboarding.backup.confirmation",
+                "Confirm new backup passphrase",
                 &self.backup_confirmation,
                 "Confirm new backup passphrase",
                 "Confirm passphrase",
-            )));
+            ));
         let action = Button::new(
             "onboarding.backup.button",
             if self.backup_was_verified {
@@ -1864,6 +1867,33 @@ fn secret_input(
         Ok(value) => input.with_initial_value(&value),
         Err(_) => input,
     }
+}
+
+fn labelled_secret_field(
+    id: &str,
+    label: &str,
+    buffer: &Arc<Mutex<String>>,
+    accessible_name: &str,
+    placeholder: &str,
+) -> Box<dyn Widget> {
+    let label_id = format!("{id}.label");
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(4.0)
+            .push(Box::new(
+                Text::new(label)
+                    .with_id(label_id)
+                    .with_role(ui::tokens::typography::TextRole::Label),
+            ))
+            .push(Box::new(secret_input(
+                id,
+                buffer,
+                accessible_name,
+                placeholder,
+            ))),
+    )
 }
 
 fn clear_secret(buffer: &Arc<Mutex<String>>) {
@@ -4925,8 +4955,34 @@ mod tests {
             };
             let passphrase = rect("onboarding.backup.passphrase");
             let confirmation = rect("onboarding.backup.confirmation");
+            let passphrase_label = rect("onboarding.backup.passphrase.label");
+            let confirmation_label = rect("onboarding.backup.confirmation.label");
             let save = rect("onboarding.backup.button");
             let skip = rect("onboarding.backup.skip-acknowledged.row");
+            for (label_id, label, field_id, field) in [
+                (
+                    "passphrase label",
+                    passphrase_label,
+                    "passphrase",
+                    passphrase,
+                ),
+                (
+                    "confirmation label",
+                    confirmation_label,
+                    "confirmation",
+                    confirmation,
+                ),
+            ] {
+                assert!(
+                    label.area() > 0.0
+                        && label.x0 >= 0.0
+                        && label.x1 <= f64::from(width)
+                        && label.y0 >= 0.0
+                        && label.y1 <= f64::from(height)
+                        && label.y1 <= field.y0,
+                    "{label_id} must remain visible above {field_id} at {width}x{height}: label={label:?}, field={field:?}"
+                );
+            }
             for (id, control) in [
                 ("passphrase", passphrase),
                 ("confirmation", confirmation),

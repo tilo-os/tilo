@@ -3,6 +3,21 @@
 
 files-time-unknown = unbekannter Zeitpunkt
 
+## Tastaturkurzbefehle
+files-shortcuts-title = Tastaturkurzbefehle
+files-shortcuts-summary = Dateien-Steuerung mit der Tastaturkonvention des aktuellen Desktops
+files-shortcuts-primary = Primäre Modifikatortaste: Strg auf den meisten Desktops, Befehl unter macOS
+files-shortcuts-navigate = Auswahl bewegen: ↑ / ↓ · Bereich auswählen: Umschalt + ↑ / ↓
+files-shortcuts-grid = Raster-Navigation: ← / → bewegen sich horizontal; ↑ / ↓ nach sichtbarer Zeile
+files-shortcuts-open = Auswahl öffnen: Eingabe · umbenennen: F2 · in Papierkorb verschieben: Entf
+files-shortcuts-location = Ort bearbeiten: Primär + L · aktualisieren: F5
+files-shortcuts-new-folder = Neuer Ordner: Primär + Umschalt + N
+files-shortcuts-edit = Kopieren, ausschneiden, einfügen, alles auswählen: Primär + C / X / V / A
+files-shortcuts-hidden = Versteckte Dateien zeigen oder ausblenden: Primär + H
+files-shortcuts-size = Elementgröße ändern: Primär + + / − · Größe zurücksetzen: Primär + 0
+files-shortcuts-context = Kontextmenü: Menütaste oder Rechtsklick
+files-shortcuts-close = Diese Hilfe öffnen: ? oder F1 · Blätter und Menüs schließen: Esc
+
 ## Verfügbarkeit: Aktionen und Status
 files-keep-offline = Offline verfügbar halten
 files-use-automatic-storage = Automatische Speicherverwaltung verwenden

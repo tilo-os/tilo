@@ -191,6 +191,14 @@ struct ListRow {
     id: Id,
 }
 
+/// Hit regions produced alongside the custom reader paint pass.
+type ReaderPaint = (
+    Vec<(Rect, String)>,
+    Vec<(Rect, crate::model::TagKey)>,
+    Option<Rect>,
+    f64,
+);
+
 /// A live dialog: the shared [`ModalDialog`] plus the intent that says which
 /// real mutation its primary action runs. The dialog owns the backdrop, box,
 /// title, footer buttons, Esc + backdrop dismissal, and the focus trap; the
@@ -387,7 +395,12 @@ pub struct FeedsApp {
     list_rows: Vec<ListRow>,
     toolbar_buttons: Vec<ToolbarButton>,
     reader_links: Vec<(Rect, String)>,
+    /// Visible tag chips in the reader. Tags are a discovery affordance: a
+    /// click narrows the local list to that canonical tag resource.
+    reader_tags: Vec<(Rect, crate::model::TagKey)>,
     reader_open_rect: Option<Rect>,
+    /// The sidebar-header affordance for creating an organizing folder.
+    new_folder_rect: Rect,
 
     last_mouse: Point,
     modal: Option<FeedsModal>,
@@ -476,6 +489,10 @@ pub struct FeedsApp {
     /// bundled sample subscriptions. The live app leaves this false and never
     /// fabricates feeds — it starts empty on the user's persisted document.
     demo: bool,
+    /// OS accessibility text scale. Geometry follows this as well as glyph
+    /// painting: treating it as paint-only made 200% text overlap fixed-height
+    /// list rows and headers.
+    text_scale: f64,
     now: i64,
 }
 
@@ -519,7 +536,9 @@ impl FeedsApp {
             list_rows: Vec::new(),
             toolbar_buttons: Vec::new(),
             reader_links: Vec::new(),
+            reader_tags: Vec::new(),
             reader_open_rect: None,
+            new_folder_rect: Rect::ZERO,
             last_mouse: Point::ZERO,
             modal: None,
             toast: None,
@@ -551,6 +570,7 @@ impl FeedsApp {
             actions: ui::ActionHost::new(),
             store_heads: Vec::new(),
             demo,
+            text_scale: 1.0,
             now: chrono::Utc::now().timestamp(),
         };
         if demo {
@@ -561,7 +581,22 @@ impl FeedsApp {
 
     /// The responsive tier resolved from the current allocated width.
     fn tier(&self) -> Tier {
-        Tier::from_width(self.rect.width())
+        // A 1600px window at 200% text has the usable information density of
+        // an 800px window. Resolve pane breakpoints in those logical pixels so
+        // columns never become narrow text traps.
+        Tier::from_width(self.rect.width() / self.text_scale.max(1.0))
+    }
+
+    fn header_h(&self) -> f64 {
+        HEADER_H * self.text_scale
+    }
+
+    fn side_row_h(&self) -> f64 {
+        SIDE_ROW_H * self.text_scale
+    }
+
+    fn list_row_h(&self) -> f64 {
+        LIST_ROW_H * self.text_scale
     }
 
     /// Whether the content is a single pane showing one of {list, reader} at a
@@ -767,6 +802,53 @@ impl FeedsApp {
         }
     }
 
+    /// Add a folder through the same replayable action exported to Ctrl+K.
+    /// The dialog itself is local; only the accepted name and pre-minted id
+    /// become collaborative document state.
+    fn add_folder(&mut self, name: &str, doc: &mut AutoCommit) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        let order = self
+            .store
+            .folders
+            .iter()
+            .map(|folder| folder.order)
+            .max()
+            .map_or(0, |last| last.saturating_add(1));
+        let folder = crate::model::Folder {
+            id: Uuid::new_v4(),
+            name: name.to_string(),
+            order,
+            collapsed: false,
+        };
+        self.store.upsert_folder(folder.clone());
+        self.perform_action(
+            doc,
+            &actions::add_folder_action(folder.id, &folder.name, folder.order),
+        );
+        self.set_filter(Filter::Folder(folder.id));
+        self.set_toast(format!("Created folder {}", folder.name));
+    }
+
+    fn open_add_folder(&mut self) {
+        let body = ModalBody::input(
+            "Group subscriptions for a calmer reading list.",
+            "Folder name",
+            "",
+            "Work, Newsletters, Research…",
+        );
+        self.modal = Some(FeedsModal::new(
+            ModalIntent::AddFolder,
+            "New folder",
+            body,
+            "Create",
+            520.0,
+            236.0,
+        ));
+    }
+
     /// The article currently open, if any. Lets a test observe where a Ctrl+K
     /// activation navigated.
     pub fn selected_article(&self) -> Option<Id> {
@@ -842,9 +924,9 @@ impl FeedsApp {
                 .iter()
                 .position(|a| a.id == sel)
         {
-            let row_top = pos as f64 * LIST_ROW_H;
-            let row_bot = row_top + LIST_ROW_H;
-            let view_h = (self.list_rect.height() - HEADER_H).max(0.0);
+            let row_top = pos as f64 * self.list_row_h();
+            let row_bot = row_top + self.list_row_h();
+            let view_h = (self.list_rect.height() - self.header_h()).max(0.0);
             if row_top < self.list_scroll {
                 self.list_scroll = row_top;
             } else if row_bot > self.list_scroll + view_h {
@@ -1111,6 +1193,14 @@ impl FeedsApp {
             Some("Reading settings".into())
         } else if self.tags_btn_rect.area() > 0.0 && self.tags_btn_rect.contains(p) {
             Some("Edit article tags (T)".into())
+        } else if self.new_folder_rect.area() > 0.0 && self.new_folder_rect.contains(p) {
+            Some("New folder".into())
+        } else if let Some((_, key)) = self.reader_tags.iter().find(|(rect, _)| rect.contains(p)) {
+            self.store
+                .tags()
+                .into_iter()
+                .find(|tag| crate::model::tag_key(tag) == *key)
+                .map(|tag| format!("Show articles tagged #{tag}"))
         } else if let Some(button) = self
             .toolbar_buttons
             .iter()
@@ -1484,6 +1574,7 @@ impl FeedsApp {
         self.modal = None;
         match intent {
             ModalIntent::AddSubscription => self.subscribe(&value, doc),
+            ModalIntent::AddFolder => self.add_folder(&value, doc),
             ModalIntent::RenameFeed { feed_id } => self.rename_feed(feed_id, &value, doc),
             ModalIntent::Unsubscribe { feed_id } => self.unsubscribe_feed(feed_id, doc),
             ModalIntent::EditArticleTags { article_id } => {
@@ -1685,7 +1776,7 @@ impl FeedsApp {
         let r = self.rect;
         let reveal = self.sidebar.reveal();
         // Sidebar can't be wider than the window (very narrow phones).
-        let sw = SIDEBAR_W.min(r.width());
+        let sw = (SIDEBAR_W * self.text_scale).min(r.width());
 
         match self.tier() {
             Tier::Wide => {
@@ -1695,19 +1786,20 @@ impl FeedsApp {
                 let inset = sw * reveal;
                 self.sidebar_rect = Rect::new(r.x0, r.y0, r.x0 + inset, r.y1);
                 let content_x0 = r.x0 + inset;
-                self.list_rect = Rect::new(content_x0, r.y0, content_x0 + LIST_W, r.y1);
-                self.reader_rect = Rect::new(content_x0 + LIST_W, r.y0, r.x1, r.y1);
+                let list_w = (LIST_W * self.text_scale).min((r.x1 - content_x0).max(0.0));
+                self.list_rect = Rect::new(content_x0, r.y0, content_x0 + list_w, r.y1);
+                self.reader_rect = Rect::new(content_x0 + list_w, r.y0, r.x1, r.y1);
                 self.toolbar_rect = Rect::new(
                     self.list_rect.x0,
                     self.list_rect.y0,
                     self.list_rect.x1,
-                    self.list_rect.y0 + HEADER_H,
+                    self.list_rect.y0 + self.header_h(),
                 );
                 self.scrim_rect = Rect::ZERO;
                 // The hamburger only appears while the docked rail is collapsing
                 // / collapsed, so a hidden rail can always be summoned back.
                 self.hamburger_rect = if reveal < 0.999 {
-                    Self::toggle_button_rect(self.toolbar_rect)
+                    self.toggle_button_rect(self.toolbar_rect)
                 } else {
                     Rect::ZERO
                 };
@@ -1740,7 +1832,7 @@ impl FeedsApp {
                 self.hamburger_rect = if self.detail_pushed {
                     Rect::ZERO
                 } else {
-                    Self::toggle_button_rect(self.toolbar_rect)
+                    self.toggle_button_rect(self.toolbar_rect)
                 };
             }
         }
@@ -1749,6 +1841,16 @@ impl FeedsApp {
         self.build_list_rows();
         self.build_toolbar();
         self.build_back_affordance();
+        self.new_folder_rect = if self.sidebar_rect.width() >= 64.0 * self.text_scale {
+            Rect::new(
+                self.sidebar_rect.x1 - 12.0 - 36.0 * self.text_scale,
+                self.sidebar_rect.y0 + 10.0 * self.text_scale,
+                self.sidebar_rect.x1 - 12.0 * self.text_scale,
+                self.sidebar_rect.y0 + 46.0 * self.text_scale,
+            )
+        } else {
+            Rect::ZERO
+        };
     }
 
     /// Lay out the single content pane used at the middle + narrow tiers: the
@@ -1756,7 +1858,12 @@ impl FeedsApp {
     /// one fills the pane while the other is parked off to the side (so a
     /// selection can slide the reader in and Back can slide it back out).
     fn place_single_content(&mut self, content: Rect) {
-        self.toolbar_rect = Rect::new(content.x0, content.y0, content.x1, content.y0 + HEADER_H);
+        self.toolbar_rect = Rect::new(
+            content.x0,
+            content.y0,
+            content.x1,
+            content.y0 + self.header_h(),
+        );
         if self.detail_pushed {
             // Detail (reader) fills the content; list is parked off to the left.
             self.list_rect = Rect::new(
@@ -1788,10 +1895,10 @@ impl FeedsApp {
     /// The hamburger / close toggle rect, pinned to the top-left of the
     /// content's toolbar so it never collides with the right-aligned action
     /// buttons.
-    fn toggle_button_rect(toolbar: Rect) -> Rect {
+    fn toggle_button_rect(&self, toolbar: Rect) -> Rect {
         let size = 36.0;
         let x = toolbar.x0 + 10.0;
-        let cy = toolbar.y0 + HEADER_H / 2.0;
+        let cy = toolbar.y0 + self.header_h() / 2.0;
         Rect::new(x, cy - size / 2.0, x + size, cy + size / 2.0)
     }
 
@@ -1801,7 +1908,7 @@ impl FeedsApp {
         self.back_rect = if self.single_pane() && self.detail_pushed {
             let size = 36.0;
             let x = self.reader_rect.x0 + 10.0;
-            let cy = self.reader_rect.y0 + HEADER_H / 2.0;
+            let cy = self.reader_rect.y0 + self.header_h() / 2.0;
             Rect::new(x, cy - size / 2.0, x + size, cy + size / 2.0)
         } else {
             Rect::ZERO
@@ -1817,7 +1924,7 @@ impl FeedsApp {
         let mut rows = Vec::new();
         let x0 = self.sidebar_rect.x0;
         let x1 = self.sidebar_rect.x1;
-        let mut y = self.sidebar_rect.y0 + HEADER_H + 8.0;
+        let mut y = self.sidebar_rect.y0 + self.header_h() + 8.0 * self.text_scale;
 
         let push = |rows: &mut Vec<SidebarRow>,
                     y: &mut f64,
@@ -1851,7 +1958,7 @@ impl FeedsApp {
         push(
             &mut rows,
             &mut y,
-            SIDE_ROW_H,
+            self.side_row_h(),
             14.0,
             "All Articles".into(),
             self.store.total_unread(),
@@ -1861,7 +1968,7 @@ impl FeedsApp {
         push(
             &mut rows,
             &mut y,
-            SIDE_ROW_H,
+            self.side_row_h(),
             14.0,
             "Unread".into(),
             self.store.total_unread(),
@@ -1871,7 +1978,7 @@ impl FeedsApp {
         push(
             &mut rows,
             &mut y,
-            SIDE_ROW_H,
+            self.side_row_h(),
             14.0,
             "Starred".into(),
             self.store.total_starred(),
@@ -1902,7 +2009,7 @@ impl FeedsApp {
             push(
                 &mut rows,
                 &mut y,
-                SIDE_ROW_H,
+                self.side_row_h(),
                 14.0,
                 name,
                 self.store.unread_for_folder(fid),
@@ -1921,7 +2028,7 @@ impl FeedsApp {
                     push(
                         &mut rows,
                         &mut y,
-                        SIDE_ROW_H - 2.0,
+                        self.side_row_h() - 2.0 * self.text_scale,
                         34.0,
                         title,
                         self.store.unread_for_feed(id),
@@ -1945,7 +2052,7 @@ impl FeedsApp {
                 push(
                     &mut rows,
                     &mut y,
-                    SIDE_ROW_H - 2.0,
+                    self.side_row_h() - 2.0 * self.text_scale,
                     18.0,
                     title,
                     self.store.unread_for_feed(id),
@@ -1973,7 +2080,7 @@ impl FeedsApp {
                 push(
                     &mut rows,
                     &mut y,
-                    SIDE_ROW_H - 2.0,
+                    self.side_row_h() - 2.0 * self.text_scale,
                     18.0,
                     format!("#{tag}"),
                     self.store.count_for(Filter::Tag(key)),
@@ -1998,7 +2105,7 @@ impl FeedsApp {
 
     fn build_list_rows(&mut self) {
         let mut rows = Vec::new();
-        let content_top = self.list_rect.y0 + HEADER_H + self.refresh_strip_h();
+        let content_top = self.list_rect.y0 + self.header_h() + self.refresh_strip_h();
         let x0 = self.list_rect.x0;
         let x1 = self.list_rect.x1;
         let articles: Vec<Id> = self
@@ -2007,15 +2114,16 @@ impl FeedsApp {
             .iter()
             .map(|a| a.id)
             .collect();
-        self.list_content_h = articles.len() as f64 * LIST_ROW_H;
+        self.list_content_h = articles.len() as f64 * self.list_row_h();
         for (i, id) in articles.iter().enumerate() {
-            let top = content_top + i as f64 * LIST_ROW_H - self.list_scroll;
-            let rect = Rect::new(x0, top, x1, top + LIST_ROW_H);
+            let row_h = self.list_row_h();
+            let top = content_top + i as f64 * row_h - self.list_scroll;
+            let rect = Rect::new(x0, top, x1, top + row_h);
             let star_rect = Rect::new(
                 x1 - 40.0,
-                top + LIST_ROW_H - 34.0,
+                top + row_h - 34.0 * self.text_scale,
                 x1 - 8.0,
-                top + LIST_ROW_H - 2.0,
+                top + row_h - 2.0 * self.text_scale,
             );
             rows.push(ListRow {
                 rect,
@@ -2032,7 +2140,7 @@ impl FeedsApp {
             return;
         }
         let mut buttons = Vec::new();
-        let cy = self.toolbar_rect.y0 + HEADER_H / 2.0;
+        let cy = self.toolbar_rect.y0 + self.header_h() / 2.0;
         let mut x = self.toolbar_rect.x1 - 28.0;
         let specs = [
             (ToolbarAction::AddSubscription, "Add subscription (N)"),
@@ -2065,6 +2173,13 @@ impl FeedsApp {
         // without the user having to move the mouse — and nothing on this path
         // ever calls the blocking network fetch.
         self.drain_fetches_live();
+        self.text_scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
+        // A staged/live settings popover means an article is already in focus;
+        // preserve that intent when larger text changes wide columns into a
+        // single-pane layout.
+        if self.show_reader_settings && self.single_pane() && self.selected.is_some() {
+            self.detail_pushed = true;
+        }
 
         // Advance the sidebar flap transition with real elapsed time, then
         // recompute the eased geometry so the slide is reflected this frame.
@@ -2100,6 +2215,7 @@ impl FeedsApp {
         // The subscriptions sidebar is an overlay (scrim) drawer only at the
         // narrow tier; docked (wide + middle) otherwise.
         let overlay = tier == Tier::Narrow;
+        let header_h = self.header_h();
 
         // Base background covers the whole widget so an off-pane child never
         // shows through during a push slide.
@@ -2132,6 +2248,7 @@ impl FeedsApp {
                 count: self.store.count_for(self.filter),
                 header_inset: list_inset,
                 refresh: &self.refresh,
+                header_h,
             },
         );
         // The reader shifts right to clear the top-left Back button whenever it
@@ -2148,7 +2265,7 @@ impl FeedsApp {
             .is_some();
         let article = self.selected.and_then(|id| self.store.article(id));
         let feed = article.and_then(|article| self.store.feed(article.feed_id));
-        let (links, open_rect, content_h) = draw_reader(
+        let (links, tags, open_rect, content_h) = draw_reader(
             PaintContext {
                 scene,
                 transform: t,
@@ -2165,9 +2282,11 @@ impl FeedsApp {
                 settings: self.settings,
                 palette,
                 family: self.reader_family(),
+                header_h,
             },
         );
         self.reader_links = links;
+        self.reader_tags = tags;
         self.reader_open_rect = open_rect;
         self.reader_content_h = content_h;
 
@@ -2235,7 +2354,16 @@ impl FeedsApp {
             // open sidebar (overlay mode). Inset the wordmark past the toggle
             // footprint so the title and the toggle never overlap — keeping the
             // praised sidebar look otherwise untouched.
-            draw_sidebar(scene, t, tr, theme, &self.sidebar_rect, &self.sidebar_rows);
+            draw_sidebar(
+                scene,
+                t,
+                tr,
+                theme,
+                &self.sidebar_rect,
+                &self.sidebar_rows,
+                header_h,
+            );
+            draw_new_folder_button(scene, t, theme, &self.new_folder_rect, self.last_mouse);
         }
 
         // The hamburger / close toggle sits over the content's top-left, drawn
@@ -2313,19 +2441,25 @@ impl FeedsApp {
             return;
         }
         let c = &theme.tokens.colors;
+        let scale = self.text_scale;
 
         // Gear button: top-right of the reader pane header, left of nothing
         // (the shared toolbar actions live over the list/content toolbar, so
         // the reader header's right edge is free).
-        let size = 36.0;
-        let bx1 = self.reader_rect.x1 - 12.0;
-        let cy = self.reader_rect.y0 + HEADER_H / 2.0;
+        let size = 36.0 * scale;
+        let bx1 = self.reader_rect.x1 - 12.0 * scale;
+        let cy = self.reader_rect.y0 + self.header_h() / 2.0;
         let btn = Rect::new(bx1 - size, cy - size / 2.0, bx1, cy + size / 2.0);
         self.settings_btn_rect = btn;
 
-        let tag_btn = Rect::new(btn.x0 - size - 8.0, btn.y0, btn.x0 - 8.0, btn.y1);
+        let tag_btn = Rect::new(
+            btn.x0 - size - 8.0 * scale,
+            btn.y0,
+            btn.x0 - 8.0 * scale,
+            btn.y1,
+        );
         self.tags_btn_rect = tag_btn;
-        let tag_shape = RoundedRect::from_rect(tag_btn, 9.0);
+        let tag_shape = RoundedRect::from_rect(tag_btn, 9.0 * scale);
         scene.fill(
             Fill::NonZero,
             t,
@@ -2350,12 +2484,12 @@ impl FeedsApp {
             "#",
             16.0,
             c.text_primary,
-            t * Affine::translate((tag_btn.center().x - 4.5, tag_btn.y0 + 7.0)),
+            t * Affine::translate((tag_btn.center().x - 4.5 * scale, tag_btn.y0 + 7.0 * scale)),
             None,
             TextWeight::Semibold,
         );
 
-        let shape = RoundedRect::from_rect(btn, 9.0);
+        let shape = RoundedRect::from_rect(btn, 9.0 * scale);
         let hovered = btn.contains(self.last_mouse);
         let bg = if self.show_reader_settings {
             c.accent[5]
@@ -2377,7 +2511,7 @@ impl FeedsApp {
         } else {
             c.text_primary
         };
-        icons::gear(scene, t, btn.center(), 6.5, glyph_col);
+        icons::gear(scene, t, btn.center(), 6.5 * scale, glyph_col);
 
         if !self.show_reader_settings {
             return;
@@ -2386,30 +2520,32 @@ impl FeedsApp {
         // --- popover ----------------------------------------------------
         // Right-align under the gear, but clamp inside the reader pane so the
         // controls never spill off the edge on a narrow reader column.
-        let ph = 196.0;
-        let pw = 268.0_f64.min(self.reader_rect.width() - 16.0).max(180.0);
-        let px1 = btn.x1.min(self.reader_rect.x1 - 8.0);
-        let px0 = (px1 - pw).max(self.reader_rect.x0 + 8.0);
-        let py0 = btn.y1 + 8.0;
+        let ph = 196.0 * scale;
+        let pw = (268.0 * scale)
+            .min(self.reader_rect.width() - 16.0 * scale)
+            .max(180.0 * scale);
+        let px1 = btn.x1.min(self.reader_rect.x1 - 8.0 * scale);
+        let px0 = (px1 - pw).max(self.reader_rect.x0 + 8.0 * scale);
+        let py0 = btn.y1 + 8.0 * scale;
         let card = Rect::new(px0, py0, px0 + pw, py0 + ph);
         scene.fill(
             Fill::NonZero,
             t,
             c.surfaces.raised,
             None,
-            &RoundedRect::from_rect(card, 12.0),
+            &RoundedRect::from_rect(card, 12.0 * scale),
         );
         scene.stroke(
             &Stroke::new(1.0),
             t,
             alpha(c.border_standard, 180),
             None,
-            &RoundedRect::from_rect(card, 12.0),
+            &RoundedRect::from_rect(card, 12.0 * scale),
         );
 
-        let lx = card.x0 + 16.0;
-        let rx = card.x1 - 16.0;
-        let mut y = card.y0 + 16.0;
+        let lx = card.x0 + 16.0 * scale;
+        let rx = card.x1 - 16.0 * scale;
+        let mut y = card.y0 + 16.0 * scale;
 
         tr.draw_text_weighted(
             scene,
@@ -2420,7 +2556,7 @@ impl FeedsApp {
             None,
             TextWeight::Bold,
         );
-        y += 26.0;
+        y += 26.0 * scale;
 
         // Font size row: −  Aa NNN%  +
         tr.draw_text(
@@ -2428,17 +2564,17 @@ impl FeedsApp {
             "Text size",
             12.5,
             c.text_dim,
-            t * Affine::translate((lx, y + 6.0)),
+            t * Affine::translate((lx, y + 6.0 * scale)),
             None,
         );
-        let bsz = 26.0;
+        let bsz = 26.0 * scale;
         let plus = Rect::new(rx - bsz, y, rx, y + bsz);
         let pct = format!("{}%", (self.settings.font_scale * 100.0).round() as i32);
         let pctw = measure_w(tr, &pct, 12.5);
         let minus = Rect::new(
-            plus.x0 - 8.0 - pctw - 8.0 - bsz,
+            plus.x0 - 8.0 * scale - pctw - 8.0 * scale - bsz,
             y,
-            plus.x0 - 8.0 - pctw - 8.0,
+            plus.x0 - 8.0 * scale - pctw - 8.0 * scale,
             y + bsz,
         );
         self.step_button(
@@ -2457,7 +2593,7 @@ impl FeedsApp {
             &pct,
             12.5,
             c.text_primary,
-            t * Affine::translate((minus.x1 + 8.0, y + 5.0)),
+            t * Affine::translate((minus.x1 + 8.0 * scale, y + 5.0 * scale)),
             None,
         );
         self.step_button(
@@ -2471,7 +2607,7 @@ impl FeedsApp {
             "+",
             SettingsAction::FontInc,
         );
-        y += bsz + 14.0;
+        y += bsz + 14.0 * scale;
 
         // Font family segmented control (Sans / Serif / Mono).
         tr.draw_text(
@@ -2479,10 +2615,10 @@ impl FeedsApp {
             "Font",
             12.5,
             c.text_dim,
-            t * Affine::translate((lx, y + 6.0)),
+            t * Affine::translate((lx, y + 6.0 * scale)),
             None,
         );
-        let seg_x0 = lx + 52.0;
+        let seg_x0 = lx + 52.0 * scale;
         let seg_w = rx - seg_x0;
         let n = ReadFont::ALL.len();
         let cellw = seg_w / n as f64;
@@ -2507,7 +2643,7 @@ impl FeedsApp {
                 SettingsAction::SetFont(*f),
             );
         }
-        y += bsz + 14.0;
+        y += bsz + 14.0 * scale;
 
         // Reading theme segmented control (Light / Sepia / Dark).
         tr.draw_text(
@@ -2515,7 +2651,7 @@ impl FeedsApp {
             "Theme",
             12.5,
             c.text_dim,
-            t * Affine::translate((lx, y + 6.0)),
+            t * Affine::translate((lx, y + 6.0 * scale)),
             None,
         );
         let n = ReadTheme::ALL.len();
@@ -2706,6 +2842,14 @@ impl FeedsApp {
             self.open_tag_editor();
             return true;
         }
+        if self.new_folder_rect.area() > 0.0 && self.new_folder_rect.contains(p) {
+            self.open_add_folder();
+            return true;
+        }
+        if let Some((_, key)) = self.reader_tags.iter().find(|(rect, _)| rect.contains(p)) {
+            self.set_filter(Filter::Tag(*key));
+            return true;
+        }
         // Open popover: apply a control, or dismiss on an outside click.
         if self.show_reader_settings {
             for (rect, action) in self.settings_hits.clone() {
@@ -2795,7 +2939,7 @@ impl FeedsApp {
     fn list_rect_content(&self) -> Rect {
         Rect::new(
             self.list_rect.x0,
-            self.list_rect.y0 + HEADER_H,
+            self.list_rect.y0 + self.header_h(),
             self.list_rect.x1,
             self.list_rect.y1,
         )
@@ -2843,6 +2987,7 @@ struct ListView<'a> {
     count: usize,
     header_inset: f64,
     refresh: &'a RefreshState,
+    header_h: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -2856,6 +3001,7 @@ struct ReaderView<'a> {
     settings: ReadSettings,
     palette: ReaderPalette,
     family: FontFamily,
+    header_h: f64,
 }
 
 struct BlockPaintContext<'a> {
@@ -2936,6 +3082,58 @@ fn badge(paint: PaintContext<'_>, right_x: f64, cy: f64, n: usize, bg: Color, fg
     reason = "a single linear draw pass over this panel's fixed regions; splitting it would \
               only relocate the line count, not the amount a reader must hold in mind"
 )]
+/// Compact sidebar-header control for creating a subscription folder. It is
+/// intentionally local chrome rather than another custom widget: the durable
+/// folder record still travels through `FeedsAction::AddFolder` on submit.
+fn draw_new_folder_button(scene: &mut Scene, t: Affine, theme: &Theme, rect: &Rect, mouse: Point) {
+    if rect.area() <= 0.0 {
+        return;
+    }
+    let c = &theme.tokens.colors;
+    let shape = RoundedRect::from_rect(*rect, 8.0);
+    scene.fill(
+        Fill::NonZero,
+        t,
+        if rect.contains(mouse) {
+            c.neutral[3]
+        } else {
+            c.neutral[2]
+        },
+        None,
+        &shape,
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        t,
+        alpha(c.border_standard, 130),
+        None,
+        &shape,
+    );
+    // Folder tab + body, with a small plus: recognizable at the same density
+    // as the rest of the sidebar controls without spending a row on chrome.
+    let center = rect.center();
+    let mut folder = vello::kurbo::BezPath::new();
+    folder.move_to(Point::new(center.x - 9.0, center.y - 5.0));
+    folder.line_to(Point::new(center.x - 2.0, center.y - 5.0));
+    folder.line_to(Point::new(center.x, center.y - 2.5));
+    folder.line_to(Point::new(center.x + 9.0, center.y - 2.5));
+    folder.line_to(Point::new(center.x + 9.0, center.y + 6.5));
+    folder.line_to(Point::new(center.x - 9.0, center.y + 6.5));
+    folder.close_path();
+    scene.stroke(&Stroke::new(1.45), t, c.text_primary, None, &folder);
+    icons::plus(
+        scene,
+        t,
+        Point::new(center.x + 7.0, center.y + 5.5),
+        3.0,
+        c.accent[6],
+    );
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the sidebar has one linear rendering pass for its fixed row kinds"
+)]
 fn draw_sidebar(
     scene: &mut Scene,
     t: Affine,
@@ -2943,6 +3141,7 @@ fn draw_sidebar(
     theme: &Theme,
     rect: &Rect,
     rows: &[SidebarRow],
+    header_h: f64,
 ) {
     let c = &theme.tokens.colors;
     // The sidebar's own fill (see `paint`), used for the label fade-out band.
@@ -2950,7 +3149,7 @@ fn draw_sidebar(
     // No app-name wordmark: the OS titlebar shows "Feeds". The header band is
     // kept only to align the sidebar's first section with the content toolbar
     // (and to clear the overlay collapse toggle) — its divider stays.
-    let header = Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + HEADER_H);
+    let header = Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + header_h);
     hline(
         scene,
         t,
@@ -3187,6 +3386,7 @@ fn draw_list(paint: PaintContext<'_>, view: &ListView<'_>) {
         count,
         header_inset,
         refresh,
+        header_h,
     } = *view;
     let c = &theme.tokens.colors;
     // Header. `header_inset` shifts the title right of the hamburger toggle
@@ -3214,7 +3414,7 @@ fn draw_list(paint: PaintContext<'_>, view: &ListView<'_>) {
         t * Affine::translate((title_x + title_w0 + 18.0, rect.y0 + 19.0)),
         None,
     );
-    let header_bottom = rect.y0 + HEADER_H;
+    let header_bottom = rect.y0 + header_h;
     hline(
         scene,
         t,
@@ -3508,10 +3708,7 @@ fn draw_refresh_strip(
     reason = "a single linear draw pass over this panel's fixed regions; splitting it would \
               only relocate the line count, not the amount a reader must hold in mind"
 )]
-fn draw_reader(
-    paint: PaintContext<'_>,
-    view: &ReaderView<'_>,
-) -> (Vec<(Rect, String)>, Option<Rect>, f64) {
+fn draw_reader(paint: PaintContext<'_>, view: &ReaderView<'_>) -> ReaderPaint {
     let PaintContext {
         scene,
         transform: t,
@@ -3528,14 +3725,16 @@ fn draw_reader(
         settings,
         palette,
         family,
+        header_h,
     } = *view;
     let mut links = Vec::new();
+    let mut tag_hits = Vec::new();
     let mut open_rect = None;
 
     // The reader PAGE uses the reading palette (light/sepia/dark paper), which
     // is deliberately independent of the OS theme. Chrome (toolbar/sidebar)
     // still reads from the OS theme.
-    let page = Rect::new(rect.x0, rect.y0 + HEADER_H, rect.x1, rect.y1);
+    let page = Rect::new(rect.x0, rect.y0 + header_h, rect.x1, rect.y1);
     scene.fill(Fill::NonZero, t, palette.page, None, &page);
 
     let Some(a) = article else {
@@ -3544,10 +3743,10 @@ fn draw_reader(
             "Select an article to read",
             16.0,
             palette.ink_dim,
-            t * Affine::translate((rect.x0 + 48.0 + header_inset, rect.y0 + HEADER_H + 36.0)),
+            t * Affine::translate((rect.x0 + 48.0 + header_inset, rect.y0 + header_h + 36.0)),
             None,
         );
-        return (links, open_rect, 0.0);
+        return (links, tag_hits, open_rect, 0.0);
     };
 
     let pad = (48.0_f64).max(header_inset);
@@ -3556,7 +3755,7 @@ fn draw_reader(
     // The shared toolbar bar occupies the top HEADER_H of this pane, so the
     // article body begins beneath it. Clip the scrolling content to the
     // area below the toolbar. Articles are infinite-scroll (no page modes).
-    let top = rect.y0 + HEADER_H;
+    let top = rect.y0 + header_h;
     let body = Rect::new(rect.x0, top, rect.x1, rect.y1);
     let content_top = top + 24.0;
     scene.push_layer(
@@ -3707,6 +3906,7 @@ fn draw_reader(
                 None,
                 TextWeight::Semibold,
             );
+            tag_hits.push((chip, crate::model::tag_key(tag)));
             chip_x += chip_w + 7.0;
         }
         y = chip_y + 29.0;
@@ -3737,7 +3937,7 @@ fn draw_reader(
     scene.pop_layer();
 
     let content_h = (y + scroll) - content_top;
-    (links, open_rect, content_h)
+    (links, tag_hits, open_rect, content_h)
 }
 
 /// Render one body block through `RichTextLayout` so the reader's chosen font
@@ -4337,9 +4537,10 @@ impl Widget for FeedsApp {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.text_scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -4466,13 +4667,14 @@ impl Widget for FeedsApp {
                     MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
                 };
                 if self.reader_rect.contains(self.last_mouse) {
-                    let visible = (self.reader_rect.height() - HEADER_H).max(0.0);
+                    let visible = (self.reader_rect.height() - self.header_h()).max(0.0);
                     let max = (self.reader_content_h - visible + 60.0).max(0.0);
                     self.reader_scroll = (self.reader_scroll - dy).clamp(0.0, max);
                 } else if self.list_rect.contains(self.last_mouse) {
                     // The refresh strip (when visible) eats into the row viewport.
                     let view_h =
-                        (self.list_rect.height() - HEADER_H - self.refresh_strip_h()).max(0.0);
+                        (self.list_rect.height() - self.header_h() - self.refresh_strip_h())
+                            .max(0.0);
                     let max = (self.list_content_h - view_h).max(0.0);
                     self.list_scroll = (self.list_scroll - dy).clamp(0.0, max);
                 }
@@ -4504,6 +4706,7 @@ impl Widget for FeedsApp {
             || (self.back_rect.area() > 0.0 && self.back_rect.contains(point))
             || (self.settings_btn_rect.area() > 0.0 && self.settings_btn_rect.contains(point))
             || (self.tags_btn_rect.area() > 0.0 && self.tags_btn_rect.contains(point))
+            || (self.new_folder_rect.area() > 0.0 && self.new_folder_rect.contains(point))
             || self
                 .toolbar_buttons
                 .iter()
@@ -4517,6 +4720,11 @@ impl Widget for FeedsApp {
                 .is_some_and(|rect| rect.contains(point))
             || self
                 .reader_links
+                .iter()
+                .any(|(rect, _)| rect.contains(point));
+        let interactive = interactive
+            || self
+                .reader_tags
                 .iter()
                 .any(|(rect, _)| rect.contains(point));
         interactive.then_some(winit::window::CursorIcon::Pointer)
@@ -4598,6 +4806,16 @@ impl Widget for FeedsApp {
                     .with_state(AccessState::new().focusable(true))
                     .with_bounds(self.tags_btn_rect)
                     .with_action_target("feeds.edit-tags"),
+            );
+        }
+        if self.new_folder_rect.area() > 0.0 {
+            toolbar.push(
+                AccessNode::new(Role::Button)
+                    .with_name("New folder")
+                    .with_description("Create a subscription folder")
+                    .with_state(AccessState::new().focusable(true))
+                    .with_bounds(self.new_folder_rect)
+                    .with_action_target("feeds.new-folder"),
             );
         }
         if self.show_reader_settings {
@@ -4737,12 +4955,21 @@ impl Widget for FeedsApp {
                 reader_children
                     .push(AccessNode::new(Role::StaticText).with_name(article.author.clone()));
             }
-            if !article.tags.is_empty() {
-                reader_children.push(
-                    AccessNode::new(Role::StaticText)
-                        .with_name(format!("Tags: {}", article.tags.join(", "))),
-                );
-            }
+            reader_children.extend(article.tags.iter().filter_map(|tag| {
+                let key = crate::model::tag_key(tag);
+                let rect = self
+                    .reader_tags
+                    .iter()
+                    .find_map(|(rect, found)| (*found == key).then_some(*rect))?;
+                Some(
+                    AccessNode::new(Role::Link)
+                        .with_name(format!("Tag #{tag}"))
+                        .with_description("Show articles with this tag")
+                        .with_state(AccessState::new().focusable(true))
+                        .with_bounds(rect)
+                        .with_action_target(format!("feeds.reader-tag:{key}")),
+                )
+            }));
             reader_children.extend(article.blocks.iter().enumerate().map(|(index, block)| {
                 let role = match block.kind {
                     BlockKind::Heading1 => Role::Heading { level: 1 },
@@ -4826,6 +5053,7 @@ impl Widget for FeedsApp {
             "feeds.back" => self.show_master(),
             "feeds.reader-settings" => self.show_reader_settings = !self.show_reader_settings,
             "feeds.edit-tags" => self.open_tag_editor(),
+            "feeds.new-folder" => self.open_add_folder(),
             "feeds.filter:all" => self.set_filter(Filter::All),
             "feeds.filter:unread" => self.set_filter(Filter::Unread),
             "feeds.filter:starred" => self.set_filter(Filter::Starred),
@@ -4885,6 +5113,23 @@ impl Widget for FeedsApp {
             _ if target.starts_with("feeds.tag-filter:") => {
                 let Some(key) = target
                     .strip_prefix("feeds.tag-filter:")
+                    .and_then(|value| value.parse::<crate::model::TagKey>().ok())
+                else {
+                    return false;
+                };
+                if !self.store.articles.iter().any(|article| {
+                    article
+                        .tags
+                        .iter()
+                        .any(|tag| crate::model::tag_key(tag) == key)
+                }) {
+                    return false;
+                }
+                self.set_filter(Filter::Tag(key));
+            }
+            _ if target.starts_with("feeds.reader-tag:") => {
+                let Some(key) = target
+                    .strip_prefix("feeds.reader-tag:")
                     .and_then(|value| value.parse::<crate::model::TagKey>().ok())
                 else {
                     return false;
@@ -5895,6 +6140,101 @@ mod tests {
         );
         assert!(!a.sidebar.is_animating(SplitLayout::Overlay));
         assert!(a.sidebar.is_open(SplitLayout::Overlay));
+    }
+
+    #[test]
+    fn sidebar_new_folder_uses_the_canonical_action_and_persists() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        lay_out(&mut a, 1280.0, 800.0);
+
+        assert!(
+            a.new_folder_rect.area() > 0.0,
+            "wide sidebar exposes folder creation"
+        );
+        assert!(a.click(a.new_folder_rect.center(), &mut doc));
+        assert_eq!(
+            a.modal.as_ref().map(|modal| modal.intent),
+            Some(ModalIntent::AddFolder),
+            "the sidebar affordance opens the shared real-input dialog"
+        );
+        a.modal
+            .as_mut()
+            .unwrap()
+            .dialog
+            .content_mut()
+            .set_value("Later");
+        a.submit_modal(&mut doc);
+
+        let folder_id = a
+            .store
+            .folders
+            .iter()
+            .find(|folder| folder.name == "Later")
+            .expect("created folder joins the local store")
+            .id;
+        assert_eq!(a.active_filter(), Filter::Folder(folder_id));
+        assert!(
+            FeedsDoc::load(&doc)
+                .folders
+                .iter()
+                .any(|persisted| persisted.id == folder_id && persisted.name == "Later"),
+            "the exact folder is persisted through FeedsAction::AddFolder"
+        );
+        assert!(
+            a.take_committed_action().is_some(),
+            "folder creation creates one undo boundary"
+        );
+    }
+
+    #[test]
+    fn reader_tag_chips_filter_articles_and_are_semantically_actionable() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        let mut text = TextRenderer::new();
+        headless_frame(&mut a, &mut doc, &mut text);
+
+        let (chip, key) = a
+            .reader_tags
+            .first()
+            .copied()
+            .expect("featured fixture article exposes a visible tag chip");
+        assert!(a.click(chip.center(), &mut doc));
+        assert_eq!(a.active_filter(), Filter::Tag(key));
+
+        // Re-render after the filter transition and drive the same tagged
+        // discovery affordance through the semantic tree's stable target.
+        a.select_featured();
+        headless_frame(&mut a, &mut doc, &mut text);
+        assert!(a.perform_semantic_action(
+            &format!("feeds.reader-tag:{key}"),
+            &A11yAction::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(a.active_filter(), Filter::Tag(key));
+    }
+
+    #[test]
+    fn large_text_reflows_to_a_single_pane_with_generous_vertical_metrics() {
+        let mut a = app();
+        a.text_scale = 2.0;
+        lay_out(&mut a, 1600.0, 900.0);
+
+        assert_eq!(
+            a.tier(),
+            Tier::Middle,
+            "200% text reduces usable column density"
+        );
+        assert!(a.single_pane());
+        assert!((a.sidebar_rect.width() - SIDEBAR_W * 2.0).abs() < 0.5);
+        assert!((a.header_h() - HEADER_H * 2.0).abs() < f64::EPSILON);
+        assert!((a.list_row_h() - LIST_ROW_H * 2.0).abs() < f64::EPSILON);
+        assert!(
+            a.new_folder_rect.height() >= 70.0,
+            "the sidebar-header folder control retains a spacious touch target"
+        );
     }
 
     // --- responsive layout ------------------------------------------------

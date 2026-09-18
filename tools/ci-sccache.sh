@@ -11,6 +11,13 @@ mode="${1:?usage: ci-sccache.sh <prepare|prepare-shell|report>}"
 case "$mode" in
   prepare|prepare-shell)
     if path="$(command -v sccache 2>/dev/null)"; then
+      # libspa-sys generates C wrappers around PipeWire's static inline
+      # functions.  sccache's direct/preprocessor mode can drop declarations
+      # from that generated translation unit (observed with Fedora 44's GCC
+      # 16), while the identical compiler invocation succeeds uncached.  Keep
+      # caching enabled, but use the compiler-driven mode that preserves the
+      # real preprocessor semantics for native build scripts as well as rustc.
+      export SCCACHE_DIRECT=false
       # Forgejo runner-level environment variables intentionally provide the
       # production defaults, and take precedence over workflow `env` entries.
       # A canary needs a fresh namespace, though, so carry its request under a
@@ -33,6 +40,7 @@ case "$mode" in
         && "$path" "$compiler" -vV >/dev/null; then
         if [ "$mode" = prepare ] && [ -n "${GITHUB_ENV:-}" ]; then
           printf 'RUSTC_WRAPPER=%s\n' "$path" >> "$GITHUB_ENV"
+          printf 'SCCACHE_DIRECT=false\n' >> "$GITHUB_ENV"
           if [ -n "${TILO_SCCACHE_KEY_PREFIX:-}" ]; then
             printf 'SCCACHE_S3_KEY_PREFIX=%s\n' "$TILO_SCCACHE_KEY_PREFIX" >> "$GITHUB_ENV"
           fi

@@ -59,6 +59,7 @@ use crate::model::{
     AccountConfig, Addr, Attachment, ComposeFormat, Draft, Folder, Message, MessageId,
 };
 use crate::pane::{Pane, Role};
+use crate::shortcuts_overlay::MailShortcutsOverlay;
 use crate::state::{BulkAction, CtxAction, Intent, MailState, Shared};
 use crate::util::format_absolute;
 
@@ -256,6 +257,9 @@ pub struct MailApp {
     first_run: EmptyState,
     first_run_node: Option<NodeId>,
     compose: ComposeWindow,
+    /// A modal, read-only key map. It is local presentation state; every
+    /// shortcut it documents still routes to the normal visible/canonical path.
+    shortcuts: MailShortcutsOverlay,
     /// The Drafts-folder message the open composer is editing, if any. On save
     /// the same message is updated (not duplicated); on send it is removed.
     editing_draft: Option<MessageId>,
@@ -416,6 +420,7 @@ impl MailApp {
                 .with_action_id("mail.add-account"),
             first_run_node: None,
             compose: ComposeWindow::new(compose_format),
+            shortcuts: MailShortcutsOverlay::new(),
             editing_draft: None,
             context_menu: None,
             bulk_purge_confirmation: None,
@@ -4307,6 +4312,7 @@ impl Widget for MailApp {
             self.first_run.apply_layout_external(self.rect);
         }
         self.layout_nav();
+        self.shortcuts.set_viewport(self.rect);
     }
 
     fn draw(
@@ -4355,6 +4361,7 @@ impl Widget for MailApp {
         self.draw_context_menu(scene, t, tr, theme);
         self.draw_bulk_purge_confirmation(scene, t, tr, theme);
         self.draw_status(scene, t, tr, theme);
+        self.shortcuts.draw(scene, t, tr, theme);
     }
 
     fn handle_event(
@@ -4373,6 +4380,14 @@ impl Widget for MailApp {
             let point = Point::new(position.x / scale_factor, position.y / scale_factor);
             self.shared.borrow_mut().last_mouse = point;
             self.dirty = true;
+        }
+
+        // The shortcut sheet is a genuine modal first-responder.  It must
+        // consume all input before any Mail command can observe it.
+        if self.shortcuts.handle_event(event, scale_factor) {
+            *handled = true;
+            self.dirty = true;
+            return;
         }
 
         let modal_consumed = {
@@ -4452,6 +4467,9 @@ impl Widget for MailApp {
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
 
+        if self.shortcuts.visible() {
+            return Some(self.shortcuts.accessibility());
+        }
         if let Some(count) = self.bulk_purge_confirmation {
             let noun = if count == 1 { "message" } else { "messages" };
             return Some(
@@ -4592,7 +4610,9 @@ impl Widget for MailApp {
     }
 
     fn modal_capture(&self) -> Option<Rect> {
-        if self.bulk_purge_confirmation.is_some() {
+        if self.shortcuts.visible() {
+            self.shortcuts.card_rect()
+        } else if self.bulk_purge_confirmation.is_some() {
             Some(self.bulk_purge_confirmation_rect())
         } else if self.compose.open {
             Some(self.compose.window_rect())
@@ -4610,6 +4630,7 @@ impl Widget for MailApp {
             || self.shared.borrow().dirty
             || self.nav.needs_redraw()
             || self.compose.needs_redraw()
+            || self.shortcuts.needs_redraw()
             || self.setup_inputs.iter().any(ui::Widget::needs_redraw)
     }
 
@@ -4634,6 +4655,7 @@ impl Widget for MailApp {
         self.shared.borrow_mut().dirty = false;
         self.nav.mark_drawn();
         self.compose.mark_drawn();
+        self.shortcuts.mark_drawn();
         for i in &mut self.setup_inputs {
             i.mark_drawn();
         }
@@ -5156,8 +5178,37 @@ impl MailApp {
         // into a hidden selection operation on narrow layouts.
         let list_context = !self.shared.borrow().narrow || self.nav.pane() == NavPane::Overview;
         match logical_key {
+            // Selection browsing is intentionally harmless (see
+            // `move_selection`); Enter is the unmistakable read boundary. It
+            // uses the same `open_message` path as a list click and Ctrl+K’s
+            // normal Open action, including the canonical SetRead action.
+            Key::Named(NamedKey::Enter) if plain && list_context && !bulk_selecting => {
+                if let Some(id) = selected {
+                    if self.shared.borrow_mut().open_message(state, id) {
+                        self.process_intents();
+                        *handled = true;
+                    }
+                }
+            }
             Key::Named(NamedKey::Escape) if bulk_selecting => {
                 self.shared.borrow_mut().set_bulk_selecting(false);
+                *handled = true;
+            }
+            // `P` is deliberately named Preview, not Open: it keeps the read
+            // flag untouched and shows the same persistent reader disclosure
+            // as the explicit resource operation.
+            Key::Character(ch) if plain && ch.eq_ignore_ascii_case("p") && !bulk_selecting => {
+                if let Some(id) = selected {
+                    if self.shared.borrow_mut().preview_message(id) {
+                        self.shared.borrow_mut().status =
+                            Some("Previewing without changing this message’s read state".into());
+                        self.process_intents();
+                        *handled = true;
+                    }
+                }
+            }
+            Key::Character(ch) if plain && ch == "?" => {
+                self.shortcuts.show();
                 *handled = true;
             }
             Key::Character(ch) if plain && ch.eq_ignore_ascii_case("x") => {
@@ -6809,6 +6860,89 @@ mod tests {
             "c shortcut consumed"
         );
         assert!(app.compose.open, "'c' opened the composer");
+    }
+
+    #[test]
+    fn shortcut_enter_opens_and_records_the_same_read_action_as_a_row() {
+        let (mut app, mut doc) = app();
+        app.layout_for_test(1280.0, 800.0);
+        let unread = app
+            .shared
+            .borrow()
+            .list_rows()
+            .into_iter()
+            .map(|(id, _)| id)
+            .find(|id| {
+                app.shared
+                    .borrow()
+                    .mailbox
+                    .get(*id)
+                    .is_some_and(|mail| !mail.read)
+            })
+            .expect("sample inbox has unread mail");
+        app.shared.borrow_mut().selected = Some(unread);
+
+        assert!(dispatch(&mut app, &named_key(NamedKey::Enter), &mut doc));
+        assert!(
+            app.shared
+                .borrow()
+                .mailbox
+                .get(unread)
+                .is_some_and(|mail| mail.read),
+            "Enter uses the normal Open boundary, rather than silently previewing"
+        );
+        assert!(app.take_committed_action().is_some());
+        assert_ne!(app.shared.borrow().inspection, Some(unread));
+    }
+
+    #[test]
+    fn shortcut_p_is_explicit_read_neutral_preview() {
+        let (mut app, mut doc) = app();
+        app.layout_for_test(1280.0, 800.0);
+        let unread = app
+            .shared
+            .borrow()
+            .list_rows()
+            .into_iter()
+            .map(|(id, _)| id)
+            .find(|id| {
+                app.shared
+                    .borrow()
+                    .mailbox
+                    .get(*id)
+                    .is_some_and(|mail| !mail.read)
+            })
+            .expect("sample inbox has unread mail");
+        app.shared.borrow_mut().selected = Some(unread);
+        let heads_before = doc.get_heads();
+
+        assert!(dispatch(&mut app, &char_key("p"), &mut doc));
+        let state = app.shared.borrow();
+        assert!(state.mailbox.get(unread).is_some_and(|mail| !mail.read));
+        assert_eq!(state.inspection, Some(unread));
+        assert_eq!(
+            doc.get_heads(),
+            heads_before,
+            "preview does not author a mail action"
+        );
+    }
+
+    #[test]
+    fn shortcut_reference_is_modal_and_explains_open_vs_preview() {
+        let (mut app, mut doc) = app();
+        app.layout_for_test(1280.0, 800.0);
+        assert!(dispatch(&mut app, &char_key("?"), &mut doc));
+        assert!(app.shortcuts.visible());
+        let overlay = app.accessibility().expect("shortcut sheet semantics");
+        assert_eq!(overlay.name.as_deref(), Some("Mail keyboard shortcuts"));
+        assert!(
+            overlay
+                .description
+                .as_deref()
+                .is_some_and(|copy| copy.contains("Open marks") && copy.contains("Preview keeps"))
+        );
+        assert!(dispatch(&mut app, &esc_event(), &mut doc));
+        assert!(!app.shortcuts.visible(), "Escape dismisses the modal sheet");
     }
 
     #[test]

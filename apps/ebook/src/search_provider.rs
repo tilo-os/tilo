@@ -38,6 +38,10 @@ use crate::model::{AnnoKind, Annotation, AnnotationAnchor, Book, HiColor, Librar
 pub const BOOK_KIND: &str = "Books";
 pub const CHAPTER_KIND: &str = "Chapters";
 pub const ANNOTATION_KIND: &str = "Annotations";
+/// A precise, lazy full-text match. Unlike a chapter row this resource names
+/// the exact immutable block that satisfied a query, so activating a search
+/// hit never guesses at a nearby reading location.
+pub const LOCATION_KIND: &str = "Reading locations";
 
 const MAX_METADATA_TOKENS_PER_ROW: usize = 32;
 const BODY_PHASE: u64 = 1_u64 << 63;
@@ -651,6 +655,87 @@ impl BookSearchProvider {
         }
     }
 
+    /// Build one canonical, block-level full-text hit without retaining an
+    /// excerpt or another copy of EPUB prose. The stable resource id is
+    /// resolved lazily on activation against the same immutable book snapshot.
+    fn body_result(&self, entry: &SearchEntry, block: usize) -> Option<SearchResult> {
+        let SearchTarget::Chapter {
+            book: book_index,
+            chapter: chapter_index,
+        } = entry.target
+        else {
+            return None;
+        };
+        let book = self.books.get(book_index)?;
+        let chapter = book.chapters.get(chapter_index)?;
+        chapter.blocks.get(block)?;
+        let chapter_title = chapter_label(chapter, chapter_index);
+        Some(
+            SearchResult::for_action(
+                LOCATION_KIND,
+                format!("Match in {chapter_title}"),
+                Self::location_address(&book.id, chapter_index, block),
+            )
+            .with_subtitle(format!("{} · {chapter_title}", Self::book_title(book)))
+            .with_icon(Icon::FileText),
+        )
+    }
+
+    fn location_address(book_id: &str, chapter: usize, block: usize) -> ActionAddress {
+        ActionAddress::new(
+            format!("ebook.location:{book_id}:{chapter}:{block}"),
+            "open",
+        )
+    }
+
+    /// Resolve a full-text location resource exactly. This performs a bounded
+    /// metadata lookup plus one block bounds check; it does not construct a
+    /// prose index or hydrate unrelated chapters.
+    fn location_resource_for(&self, address: &ActionAddress) -> Option<Resource> {
+        let suffix = address.resource.strip_prefix("ebook.location:")?;
+        let (book, location) = self.books.iter().find_map(|book| {
+            let prefix = format!("{}:", book.id);
+            suffix
+                .strip_prefix(&prefix)
+                .map(|location| (book, location))
+        })?;
+        let mut parts = location.split(':');
+        let (Some(chapter), Some(block), None) = (parts.next(), parts.next(), parts.next()) else {
+            return None;
+        };
+        let (Ok(chapter), Ok(block)) = (chapter.parse::<usize>(), block.parse::<usize>()) else {
+            return None;
+        };
+        let chapter_data = book.chapters.get(chapter)?;
+        chapter_data.blocks.get(block)?;
+        let chapter_title = chapter_label(chapter_data, chapter);
+        let resource = Resource::new(
+            &address.resource,
+            "ebook.location",
+            format!("{} · {chapter_title}", Self::book_title(book)),
+        )
+        .with_action(
+            ActionSpec::operation(
+                "open",
+                "Open match",
+                OperationKind::View,
+                EBOOK_OPERATION_TYPE,
+                &EbookOperation::Reveal {
+                    book_id: book.id.clone(),
+                    chapter,
+                    page: 0,
+                    block: Some(block),
+                },
+            )
+            .ok()?,
+        );
+        resource
+            .actions
+            .iter()
+            .any(|action| action.id == address.action)
+            .then_some(resource)
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "all exact action variants are kept together so their canonical payloads can be audited"
@@ -1172,8 +1257,33 @@ impl SearchProvider for BookSearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.search_page(query, None, DEFAULT_SEARCH_CANDIDATE_LIMIT, limit)
-            .results
+        let first = self.search_page(query, None, DEFAULT_SEARCH_CANDIDATE_LIMIT, limit);
+        // Metadata and body matching are separate bounded phases. A normal
+        // one-shot search should still include an exact prose location when
+        // the metadata phase completed within its budget, so consume one body
+        // page without turning the call into an unbounded corpus walk.
+        let mut results = first.results;
+        let remaining = limit.saturating_sub(results.len());
+        if remaining == 0 {
+            return results;
+        }
+        let Some(cursor) = first
+            .next
+            .as_ref()
+            .filter(|cursor| Self::body_start(cursor).is_some())
+        else {
+            return results;
+        };
+        results.extend(
+            self.search_page(
+                query,
+                Some(cursor),
+                DEFAULT_SEARCH_CANDIDATE_LIMIT,
+                remaining,
+            )
+            .results,
+        );
+        results
     }
 
     #[allow(
@@ -1327,9 +1437,7 @@ impl SearchProvider for BookSearchProvider {
             && results.len() < result_limit
         {
             let entry = &self.entries[entry_index];
-            if !matches!(entry.target, SearchTarget::Chapter { .. })
-                || self.metadata_matches(entry, &query)
-            {
+            if !matches!(entry.target, SearchTarget::Chapter { .. }) {
                 // Skipped rows are still work: otherwise a catalogue of book
                 // rows could hide an unbounded walk behind `inspected == 0`.
                 inspected += 1;
@@ -1364,7 +1472,9 @@ impl SearchProvider for BookSearchProvider {
                     matcher_state = 0;
                 }
                 BodyChunk::Scanned { matched: true, .. } => {
-                    results.push(entry.result.clone());
+                    if let Some(result) = self.body_result(entry, block_index) {
+                        results.push(result);
+                    }
                     entry_index += 1;
                     block_index = 0;
                     span_index = 0;
@@ -1421,6 +1531,9 @@ impl SearchProvider for BookSearchProvider {
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+        if let Some(resource) = self.location_resource_for(address) {
+            return Some(resource);
+        }
         let row = *self.resource_rows.get(&address.resource)?;
         let entry = self.entries.get(row)?;
         let resource = self.resource_for(entry, address)?;
@@ -1589,10 +1702,59 @@ mod tests {
             provider
                 .search(&needle)
                 .iter()
-                .any(|hit| hit.kind == CHAPTER_KIND)
+                .any(|hit| hit.kind == LOCATION_KIND)
         );
         assert_eq!(provider.stats().retained_chapter_scalars, 0);
         assert!(Arc::ptr_eq(&books, &provider.books));
+    }
+
+    #[test]
+    fn full_text_hits_resolve_to_the_exact_canonical_block_location() {
+        let books = vec![Book {
+            id: "stable-book".into(),
+            title: "Exact places".into(),
+            chapters: vec![crate::model::Chapter {
+                title: "Opening".into(),
+                blocks: vec![
+                    crate::model::Block::Paragraph {
+                        spans: vec![crate::model::Span::plain("an earlier paragraph")],
+                    },
+                    crate::model::Block::Paragraph {
+                        spans: vec![crate::model::Span::plain("the unique needle is here")],
+                    },
+                ],
+                ..crate::model::Chapter::default()
+            }],
+            ..Book::default()
+        }];
+        let provider = BookSearchProvider::new(&books, &[]);
+        let hit = provider
+            .search("unique needle")
+            .into_iter()
+            .find(|hit| hit.kind == LOCATION_KIND)
+            .expect("precise full-text location");
+        let address = hit.action_address().expect("canonical location address");
+        assert_eq!(address.resource, "ebook.location:stable-book:0:1");
+        let resource = provider
+            .resolve_action_resource(&address)
+            .expect("exact lazy location resource");
+        let open = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .expect("open action");
+        let tilo_actions::ActionInput::Immediate(encoded) = &open.input else {
+            panic!("location open is immediate");
+        };
+        assert_eq!(
+            crate::actions::decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(EbookOperation::Reveal {
+                book_id: "stable-book".into(),
+                chapter: 0,
+                page: 0,
+                block: Some(1),
+            })
+        );
     }
 
     #[test]
@@ -1626,7 +1788,7 @@ mod tests {
         let mut found = false;
         while let Some(next_cursor) = cursor {
             let page = provider.search_page("tail-needle", Some(&next_cursor), 32, 8);
-            found |= page.results.iter().any(|hit| hit.kind == CHAPTER_KIND);
+            found |= page.results.iter().any(|hit| hit.kind == LOCATION_KIND);
             cursor = page.next;
         }
         assert!(found);
@@ -1754,7 +1916,7 @@ mod tests {
             found |= page
                 .results
                 .iter()
-                .any(|result| result.kind == CHAPTER_KIND);
+                .any(|result| result.kind == LOCATION_KIND);
             cursor = page.next;
         }
         assert!(found);
@@ -1796,7 +1958,7 @@ mod tests {
             found |= page
                 .results
                 .iter()
-                .any(|result| result.kind == CHAPTER_KIND);
+                .any(|result| result.kind == LOCATION_KIND);
             cursor = page.next;
         }
         assert!(

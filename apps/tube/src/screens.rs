@@ -361,6 +361,53 @@ fn compact_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v
         )
 }
 
+/// A resource-addressed save/remove control. The shared queue is intentionally
+/// not optimistically mutated here: its server-preferred action either commits
+/// through the collaboration host and comes back in the document projection,
+/// or remains unchanged. That keeps the visible state honest when offline.
+fn queue_control(model: &TubeModel, theme: &Theme, video_id: &str) -> Flex {
+    let queued = model.is_queued(video_id);
+    let label = if queued { "In queue" } else { "Add to queue" };
+    let sel = selected_accent_fill(theme);
+    let surface = if queued {
+        Surface {
+            fill: Some(sel.bg),
+            radius: f64::from(theme.tokens.radii.full),
+            border: None,
+        }
+    } else {
+        Surface {
+            fill: Some(subtle_fill(theme)),
+            radius: f64::from(theme.tokens.radii.full),
+            border: Some((1.0, theme.border_standard)),
+        }
+    };
+    let fg = if queued { sel.fg } else { theme.text_primary };
+    let control = Flex::row()
+        .id(&format!("queue_btn_{video_id}"))
+        .gap(6.0)
+        .pad_xy(12.0, 8.0)
+        .align(Align::Center)
+        .surface(surface)
+        .hover_surface(Surface {
+            fill: Some(if queued {
+                theme.tokens.colors.accent.stops[3]
+            } else {
+                hover_fill(theme)
+            }),
+            radius: f64::from(theme.tokens.radii.full),
+            border: surface.border,
+        })
+        .accessible_name(format!("{label}: shared watch queue"))
+        .push(icon(Icon::ListVideo, 15.0, fg))
+        .push(text_c(label, 12.5, fg));
+    if let Some(binding) = crate::actions::queue_binding(model, video_id) {
+        control.on_action(binding)
+    } else {
+        control
+    }
+}
+
 /// A "N views • date" line that drops any missing part (and its separator), so a
 /// row never shows "0", a dangling "•", or an empty count. Empty when neither is
 /// known.
@@ -594,6 +641,14 @@ pub fn nav_rail(model: &TubeModel, theme: &Theme, _bus: &ActionBus, width: f64) 
             "Subs",
             &Route::Subscriptions,
             sec == "subs",
+            expanded,
+        ))
+        .push(nav_item(
+            theme,
+            Icon::ListVideo,
+            "Queue",
+            &Route::Queue,
+            sec == "queue",
             expanded,
         ))
         .push(nav_item(
@@ -968,6 +1023,144 @@ pub fn history(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) ->
             )
             .push(col),
     )
+}
+
+/// The collaborative queue is membership-based rather than a shared ordered
+/// playlist. Say that plainly in the view: people can save the same videos,
+/// while each device still controls what plays next and in which order.
+pub fn queue(
+    model: &TubeModel,
+    theme: &Theme,
+    bus: &ActionBus,
+    imgs: Imgs,
+    available_width: f64,
+) -> Scrollable {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a desktop viewport width is safely representable as f32"
+    )]
+    let content_width = ((available_width - 64.0).max(1.0).min(920.0)) as f32;
+    let videos: Vec<&Video> = model
+        .queue
+        .iter()
+        .filter_map(|id| model.video(id))
+        .collect();
+    let unavailable = model.queue.len().saturating_sub(videos.len());
+    let mut entries = Flex::col().fill_w().gap(10.0);
+    if videos.is_empty() {
+        entries = entries.push(queue_empty_state(theme, content_width));
+    }
+    for video in videos {
+        entries = entries.push(
+            // Keep the queue action on its own line: at a narrow window or
+            // 200% text the compact card retains a useful title lane instead
+            // of sacrificing it to a fixed-width secondary button.
+            Flex::col()
+                .fill_w()
+                .gap(8.0)
+                .push(compact_card(model, theme, bus, imgs, video))
+                .push(queue_control(model, theme, &video.id)),
+        );
+    }
+    if unavailable > 0 {
+        entries = entries.push(dim(
+            theme,
+            format!("{unavailable} queued item(s) need metadata before they can be shown."),
+            12.5,
+        ));
+    }
+    scroll(
+        Flex::col()
+            .id("queue_page")
+            .fill_w()
+            .pad(24.0)
+            .gap(18.0)
+            .max_w(920.0)
+            .push(queue_heading(theme, model.queue.len(), content_width))
+            .push(entries),
+    )
+}
+
+/// Queue-specific large-text heading. Generic one-line chrome is fine at the
+/// normal scale, but at 200% it can become a multi-line `Text` inside a flex
+/// row. Splitting the compact, stable phrases into independently measured
+/// lines makes their vertical geometry explicit instead of letting glyphs
+/// paint below their one-line allocation.
+fn queue_heading(theme: &Theme, count: usize, content_width: f32) -> Flex {
+    if theme.text_scale >= 1.5 {
+        return Flex::col()
+            .id("queue_heading")
+            .w(Len::Px(content_width))
+            .gap(8.0)
+            .push(
+                Flex::row()
+                    .gap(10.0)
+                    .align(Align::Center)
+                    .push(icon(Icon::ListVideo, 22.0, theme.accent_primary))
+                    .push(text("Shared queue", 21.0).with_id("queue_heading_title")),
+            )
+            .push(
+                Flex::row().fill_w().push(
+                    dim(theme, format!("{count} saved"), 13.0).with_id("queue_heading_count"),
+                ),
+            )
+            .push(gap(1.0, 8.0))
+            .push(Flex::row().fill_w().push(
+                dim(theme, "Membership is shared.", 13.0).with_id("queue_heading_membership"),
+            ))
+            .push(Flex::row().fill_w().push(
+                dim(theme, "Playback order stays local.", 13.0).with_id("queue_heading_order"),
+            ));
+    }
+    Flex::col()
+        .id("queue_heading")
+        .fill_w()
+        .gap(8.0)
+        .push(section_header(
+            theme,
+            Icon::ListVideo,
+            "Shared queue",
+            &format!("{count} saved video{}", if count == 1 { "" } else { "s" }),
+        ))
+        .push(dim(
+            theme,
+            "Shared membership; each person controls local playback order.",
+            13.0,
+        ))
+}
+
+/// An explicit large-text empty state for the queue. Its short individual
+/// lines are deliberately all independently laid out; the regular generic
+/// empty state is retained at normal scale where its compact prose has room.
+fn queue_empty_state(theme: &Theme, content_width: f32) -> Flex {
+    if theme.text_scale >= 1.5 {
+        return Flex::col()
+            .id("queue_empty_state")
+            .w(Len::Px(content_width))
+            .gap(12.0)
+            .pad(48.0)
+            .align(Align::Center)
+            .justify(Justify::Center)
+            .push(icon(Icon::Eye, 40.0, theme.text_dim))
+            .push(
+                Flex::row()
+                    .fill_w()
+                    .justify(Justify::Center)
+                    .push(text("Queue empty", 18.0).with_id("queue_empty_title")),
+            )
+            .push(Flex::row().fill_w().justify(Justify::Center).push(
+                dim(theme, "Add from a video's watch page.", 13.0).with_id("queue_empty_add"),
+            ))
+            .push(Flex::row().fill_w().justify(Justify::Center).push(
+                dim(theme, "Sync needs a collaboration host.", 13.0).with_id("queue_empty_sync"),
+            ));
+    }
+    empty_state(
+        theme,
+        "Your shared queue is empty",
+        "Add a video from its watch page. Queue membership syncs with collaborators when a collaboration host is available.",
+    )
+    .id("queue_empty_state")
 }
 
 /// One multi-select type-filter chip (Video · Playlist · Creator). Reuses the
@@ -1612,6 +1805,10 @@ pub fn watch(
     let mut meta = Flex::row()
         .fill_w()
         .gap(12.0)
+        // Like, queue and share remain individually addressable at large text;
+        // wrapping preserves their 44px-ish targets instead of crushing the
+        // title statistics into an unreadable single line.
+        .wrap()
         .align(Align::Center)
         .push(dim(
             theme,
@@ -1639,6 +1836,7 @@ pub fn watch(
             .map_or_else(|| "—".to_string(), human_count);
         meta = meta.push(stat_pill(theme, &label, Icon::ThumbsDown).id("dislike_pill"));
     }
+    meta = meta.push(queue_control(model, theme, &v.id));
     let meta = meta.push(
         pill(
             theme,

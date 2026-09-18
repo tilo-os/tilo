@@ -143,9 +143,9 @@ impl AccessibilityInputSettings {
 }
 
 /// Slowest auto-repeat the `key_repeat` slider can select, in keys per second — below this, holding a key feels broken rather than slow.
-pub const REPEAT_RATE_MIN: u32 = 10;
+pub const REPEAT_RATE_MIN: u32 = settings_store::hardware::KEY_REPEAT_SLIDER_MIN_HZ;
 /// Fastest auto-repeat the slider can select, in keys per second.
-pub const REPEAT_RATE_MAX: u32 = 50;
+pub const REPEAT_RATE_MAX: u32 = settings_store::hardware::KEY_REPEAT_SLIDER_MAX_HZ;
 /// Longest delay before repeat starts, in milliseconds.
 pub const REPEAT_DELAY_MAX_MS: u32 = 600;
 /// Shortest delay before repeat starts, in milliseconds.

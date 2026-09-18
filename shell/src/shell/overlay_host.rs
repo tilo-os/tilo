@@ -5414,16 +5414,23 @@ impl ShellOverlayHost {
                 st.set_maximized_group(None);
             }
         }
+        let mut tree = st.tree_mut();
+        let mut changed = false;
         for (_strip_id, group_id, new_value) in changes {
             // Flat scan is correct since group ids are tree-unique.
-            let mut tree = st.tree_mut();
             for ws in &mut tree.workspaces {
                 for strip in &mut ws.strips {
                     if let Some(g) = strip.window_groups.iter_mut().find(|g| g.id == group_id) {
-                        g.maximized = new_value;
+                        if g.maximized != new_value {
+                            g.maximized = new_value;
+                            changed = true;
+                        }
                     }
                 }
             }
+        }
+        if changed {
+            tree.flush_to_disk();
         }
     }
 
@@ -14037,14 +14044,48 @@ pub(crate) fn shortcut_chord_matches(
     modifiers: winit::event::Modifiers,
     chord: &settings_store::hardware::KeyChord,
 ) -> bool {
-    let key_matches =
-        shortcut_key_name(logical_key).is_some_and(|key| chord.key.eq_ignore_ascii_case(&key));
     let state = modifiers.state();
+    let key_matches = shortcut_key_name(logical_key).is_some_and(|key| {
+        chord.key.eq_ignore_ascii_case(&key)
+            || state.shift_key()
+                && unshifted_shortcut_key(&key)
+                    .is_some_and(|base| chord.key.eq_ignore_ascii_case(base))
+    });
     key_matches
         && chord.modifiers.contains("Super") == state.super_key()
         && chord.modifiers.contains("Ctrl") == state.control_key()
         && chord.modifiers.contains("Alt") == state.alt_key()
         && chord.modifiers.contains("Shift") == state.shift_key()
+}
+
+/// Winit reports the logical character produced by Shift, while shortcut
+/// configuration stores the physical punctuation printed on the key. Keep
+/// those two representations equivalent without weakening modifier matching.
+fn unshifted_shortcut_key(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "?" => "/",
+        ":" => ";",
+        "\"" => "'",
+        "<" => ",",
+        ">" => ".",
+        "_" => "-",
+        "+" => "=",
+        "{" => "[",
+        "}" => "]",
+        "|" => "\\",
+        "~" => "`",
+        "!" => "1",
+        "@" => "2",
+        "#" => "3",
+        "$" => "4",
+        "%" => "5",
+        "^" => "6",
+        "&" => "7",
+        "*" => "8",
+        "(" => "9",
+        ")" => "0",
+        _ => return None,
+    })
 }
 
 /// The sole configurable shortcut resolver.  The input pre-router owns a
@@ -23593,10 +23634,10 @@ mod palette_dispatch_tests {
             .shortcut_config
             .bindings
             .get(&ShortcutAction::ShortcutHelp)
-            .cloned()
             .expect("default global help binding");
-        let key = Key::Character(chord.key.into());
-        let modifiers = Modifiers::from(ModifiersState::SUPER);
+        assert_eq!(chord.display(), "Super+Shift+/");
+        let key = Key::Character("?".into());
+        let modifiers = Modifiers::from(ModifiersState::SUPER | ModifiersState::SHIFT);
         handled = false;
         assert!(host.handle_shell_keyboard_event(
             &key,

@@ -103,6 +103,8 @@ enum Hit {
     /// Route to the POI whose info card is open.
     PoiDirections,
     Recent(String),
+    /// Clear collaborative recent-search history through its canonical action.
+    ClearRecents,
     /// Toggle the overlay drawer (narrow layouts only).
     ToggleNav,
     /// Dismiss the overlay drawer (scrim tap).
@@ -1051,7 +1053,7 @@ impl MapsApp {
 
     /// Local (offline) search: substring match over known places. Also kicks
     /// off a live Nominatim request whose results fold in later.
-    fn run_search(&mut self) {
+    fn run_search(&mut self, doc: Option<&mut AutoCommit>) {
         let q = self.model.query.trim().to_string();
         if q.is_empty() {
             return;
@@ -1063,7 +1065,11 @@ impl MapsApp {
             self.model.selected = Some(id);
         }
         self.model.results = results;
-        self.model.push_recent(&q);
+        if let Some(doc) = doc {
+            self.perform(doc, &MapsAction::CommitSearch { query: q.clone() });
+        } else {
+            self.model.push_recent(&q);
+        }
         self.model.panel = Panel::Explore;
         self.scroll = 0.0;
         // Enter commits the search: dismiss the floating overlay and stop the
@@ -1963,8 +1969,9 @@ impl MapsApp {
             Hit::PoiDirections => self.poi_directions(),
             Hit::Recent(q) => {
                 q.clone_into(&mut self.model.query);
-                self.run_search();
+                self.run_search(Some(doc));
             }
+            Hit::ClearRecents => self.perform(doc, &MapsAction::ClearRecents),
             Hit::ToggleNav => {
                 self.nav_open = !self.nav_open;
             }
@@ -3221,6 +3228,9 @@ impl MapsApp {
         }
 
         if !self.model.recents.is_empty() {
+            let clear_label = "Clear";
+            let clear_w = draw::measure_w(tr, clear_label, 11.0) + 12.0;
+            let clear = Rect::new(right - clear_w, y - 5.0, right, y + 15.0);
             draw::text_w(
                 scene,
                 tr,
@@ -3232,6 +3242,17 @@ impl MapsApp {
                 theme.text_dim,
                 TextWeight::Semibold,
             );
+            draw::text_right(
+                scene,
+                tr,
+                t,
+                clear_label,
+                right,
+                y,
+                11.0,
+                theme.accent_primary,
+            );
+            self.click_targets.push((clear, Hit::ClearRecents));
             y += 20.0;
             let recents = self.model.recents.clone();
             for q in &recents {
@@ -4283,6 +4304,12 @@ impl MapsApp {
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
+            Hit::ClearRecents => (
+                "Clear search history".to_string(),
+                "maps.recent.clear".to_string(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
             Hit::ToggleNav => (
                 if self.nav_open {
                     "Close map navigation"
@@ -4863,7 +4890,7 @@ impl Widget for MapsApp {
                 // shortcuts apply.
                 let field_focused = self.endpoints.is_focused() || self.search.is_focused();
                 if field_focused {
-                    if self.route_field_key(event, scale_factor, *modifiers) {
+                    if self.route_field_key(event, scale_factor, *modifiers, state) {
                         *handled = true;
                     }
                 } else if self.handle_key(&key_event.logical_key, *modifiers, state) {
@@ -4969,7 +4996,7 @@ impl Widget for MapsApp {
                 let query: String =
                     serde_json::from_slice(payload).map_err(|error| error.to_string())?;
                 self.model.query = query;
-                self.run_search();
+                self.run_search(None);
             }
             (OperationKind::Effect, "maps.locate") => {
                 if self.location_rx.is_some() {

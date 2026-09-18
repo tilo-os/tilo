@@ -877,6 +877,7 @@ fn navigation_resource() -> Resource {
         ("home", "Open Home", Route::Home),
         ("trending", "Open Trending", Route::Trending),
         ("subscriptions", "Open subscriptions", Route::Subscriptions),
+        ("queue", "Open shared watch queue", Route::Queue),
         ("history", "Open watch history", Route::History),
         ("settings", "Open settings", Route::Settings),
     ] {
@@ -904,6 +905,7 @@ pub fn navigation_binding(route: &Route) -> Option<tilo_actions::ActionBinding<(
         Route::Home => "home",
         Route::Trending => "trending",
         Route::Subscriptions => "subscriptions",
+        Route::Queue => "queue",
         Route::History => "history",
         Route::Settings => "settings",
         // Entity routes require an id and are therefore reached by their
@@ -920,6 +922,15 @@ pub fn navigation_binding(route: &Route) -> Option<tilo_actions::ActionBinding<(
 /// keyboard users, assistive technology, Ctrl+K, and agents use one route.
 pub fn sidebar_binding() -> Option<tilo_actions::ActionBinding<()>> {
     tilo_actions::ActionBinding::unit_for(&navigation_resource(), "toggle-sidebar").ok()
+}
+
+/// Resolve the canonical queue-membership action used by a visible video
+/// control. It stays an action binding rather than a local UI mutation: queue
+/// writes are host-serialised shared-document changes, so an unavailable host
+/// can never make the app pretend a video was saved.
+pub fn queue_binding(model: &TubeModel, video_id: &str) -> Option<tilo_actions::ActionBinding<()>> {
+    let resource = video_resource(model, video_id, false)?;
+    tilo_actions::ActionBinding::unit_for(&resource, "queue").ok()
 }
 
 fn library_resource(model: &TubeModel) -> Resource {

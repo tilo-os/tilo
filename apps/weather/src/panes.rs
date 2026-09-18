@@ -269,6 +269,10 @@ impl Widget for DetailPane {
         self.rect
     }
 
+    fn tooltip(&self) -> Option<&str> {
+        self.core.borrow().detail_tooltip()
+    }
+
     fn accessibility(&self) -> Option<AccessNode> {
         Some(self.core.borrow().detail_accessibility(self.rect))
     }

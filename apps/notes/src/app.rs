@@ -34,7 +34,7 @@ use ui::widget::page_palette::PageJumpPalette;
 
 use crate::actions::{self, NotesAction};
 use crate::doc::NotesDoc;
-use crate::main_panel::MainPanel;
+use crate::main_panel::{MainPanel, TagChip};
 use crate::model::{PageId, TagAssignment, TagId, Workspace};
 use crate::num;
 use crate::shortcuts_overlay::ShortcutsOverlay;
@@ -398,18 +398,7 @@ impl NotesApp {
             pending_responsive_view: None,
         };
         app.refresh_link_pages();
-        let visible_tags = app
-            .workspace
-            .selected()
-            .map(|page| {
-                app.workspace
-                    .tags_for_page(page)
-                    .into_iter()
-                    .map(|tag| tag.name.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
-        app.main.set_tags(visible_tags);
+        app.main.set_tags(app.selected_tag_chips());
         app.refresh_status();
         app
     }
@@ -588,6 +577,25 @@ impl NotesApp {
             title: format!("# {}", tag.name),
         }));
         self.palette.set_items(palette_entries);
+    }
+
+    /// Metadata projection for the selected note header. The page/tag ids stay
+    /// attached to their labels so the header can invoke a stable canonical
+    /// tag resource even after a collaborator renames a tag.
+    fn selected_tag_chips(&self) -> Vec<TagChip> {
+        self.workspace
+            .selected()
+            .map(|page| {
+                self.workspace
+                    .tags_for_page(page)
+                    .into_iter()
+                    .map(|tag| TagChip {
+                        id: tag.id,
+                        name: tag.name.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Test accessor: the currently selected page id.
@@ -1831,6 +1839,21 @@ impl NotesApp {
         }
     }
 
+    /// Route a note-header tag activation through the durable resource
+    /// operation. It is intentionally a view operation (each collaborator may
+    /// browse a different tag) but still validates the keyed tag record in the
+    /// canonical document before selecting a collection.
+    fn drain_tag_open(&mut self, state: &AutoCommit) {
+        let Some(tag) = self.main.take_tag_open() else {
+            return;
+        };
+        if let Err(error) =
+            self.open_notes_operation(actions::NotesOperation::OpenTag { tag }, state)
+        {
+            tracing::warn!(%error, %tag, "notes: tag chip target went stale");
+        }
+    }
+
     /// Schedule a debounced save of the current workspace.
     fn persist(&self) {
         if let Some(legacy) = &self.legacy_fixture_storage {
@@ -2360,18 +2383,8 @@ impl Widget for NotesApp {
             self.drain_title_rename(state);
         }
         self.ensure_editor_bound(state);
-        let visible_tags = self
-            .workspace
-            .selected()
-            .map(|page| {
-                self.workspace
-                    .tags_for_page(page)
-                    .into_iter()
-                    .map(|tag| tag.name.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
-        self.main.set_tags(visible_tags);
+        self.drain_tag_open(state);
+        self.main.set_tags(self.selected_tag_chips());
         self.sidebar.sync(state, path);
         self.main.sync(state, path);
         // Synthetic accessibility buttons do not pass through handle_event;

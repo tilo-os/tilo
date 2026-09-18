@@ -29,6 +29,8 @@ use crate::model::Id;
 pub enum ModalIntent {
     /// Add a new subscription from the typed URL.
     AddSubscription,
+    /// Create a named folder in the subscription sidebar.
+    AddFolder,
     /// Rename an existing feed to the typed name.
     RenameFeed { feed_id: Id },
     /// Confirm unsubscribing (destructive) from a feed. No text input.
@@ -43,7 +45,7 @@ impl ModalIntent {
     pub fn requires_input(self) -> bool {
         matches!(
             self,
-            ModalIntent::AddSubscription | ModalIntent::RenameFeed { .. }
+            ModalIntent::AddSubscription | ModalIntent::AddFolder | ModalIntent::RenameFeed { .. }
         )
     }
 }

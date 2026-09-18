@@ -367,6 +367,33 @@ pub(crate) const fn capture_destination(is_video: bool) -> (&'static str, &'stat
     }
 }
 
+/// Canonical application-launch action for browsing the still-image library.
+///
+/// Camera is deliberately allowed to *route* to Photos, but never to project
+/// Photos' collection into a second, stale gallery of its own.  Keeping the
+/// action here lets the painted navigation affordance, global search, agents,
+/// and history all address the exact same external operation.
+pub fn open_photos_action() -> ActionSpec {
+    ActionSpec::typed_operation(
+        "open-photos",
+        "Open Photos",
+        "Browse your photo library in Photos",
+        OperationKind::Effect,
+        APPLICATION_LAUNCH_TYPE,
+        Vec::new(),
+        |_| {
+            EncodedAction::encode_operation(
+                APPLICATION_LAUNCH_TYPE,
+                &serde_json::json!({ "app_id": "dev.tilo.photos" }),
+            )
+            .unwrap_or_else(|_| EncodedAction {
+                type_id: APPLICATION_LAUNCH_TYPE.into(),
+                payload: Vec::new(),
+            })
+        },
+    )
+}
+
 pub(crate) fn capture_resource_id(it: &CaptureItem) -> String {
     format!(
         "{}:{}",
@@ -443,6 +470,10 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
         }
     }
     let mut root = Resource::new("camera.capture", "camera.capture", "Capture");
+    // A focused capture app can always hand people to the single owner of
+    // photo browsing. This is intentionally an action, rather than a Camera
+    // gallery resource, so it creates no local collection state to drift.
+    root = root.with_action(open_photos_action());
     if let Ok(spec) = ActionSpec::operation(
         "capture",
         "Capture photo",
@@ -847,6 +878,22 @@ mod tests {
             .find(|resource| resource.id.as_str() == "camera.capture")
             .expect("capture root");
         assert_eq!(captures.kind, "camera.capture");
+        let browse = captures
+            .actions
+            .iter()
+            .find(|action| action.id == "open-photos")
+            .expect("capture surface routes browsing to Photos");
+        assert_eq!(
+            browse.operation_type.as_deref(),
+            Some(APPLICATION_LAUNCH_TYPE)
+        );
+        let ActionInput::Immediate(encoded) = &browse.input else {
+            panic!("Photos browse is a zero-argument application handoff");
+        };
+        let browse_payload: serde_json::Value =
+            serde_json::from_slice(&encoded.payload).expect("Photos handoff payload JSON");
+        assert_eq!(browse_payload["app_id"].as_str(), Some("dev.tilo.photos"));
+        assert!(browse_payload.get("content_hash").is_none());
         assert!(captures.children.len() <= 1);
         for resource in &captures.children {
             let action = resource

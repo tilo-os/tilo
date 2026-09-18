@@ -1615,7 +1615,7 @@ fn run_bench_scroll(
 /// Parse a route specification into a starting [`tube::model::Route`] for a
 /// screen-specific shot. Recognises `home`, `trending`, `subs`/
 /// `subscriptions`, `history`, `settings`, `watch:<video_id>`, and
-/// `search:<query>`.
+/// `queue`, `search:<query>`.
 fn route_from_spec(spec: &str) -> tube::model::Route {
     use tube::model::Route;
     let lower = spec.to_ascii_lowercase();
@@ -1623,6 +1623,7 @@ fn route_from_spec(spec: &str) -> tube::model::Route {
         "home" => Route::Home,
         "trending" => Route::Trending,
         "subs" | "subscriptions" => Route::Subscriptions,
+        "queue" => Route::Queue,
         "history" => Route::History,
         "settings" => Route::Settings,
         _ => {

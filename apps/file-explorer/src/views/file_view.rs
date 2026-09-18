@@ -32,6 +32,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat};
 use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use thumbnail::{FileCategory, ThumbKey, ThumbState, ThumbnailService, category_for_path};
 
@@ -354,6 +355,28 @@ impl FileView {
         } else {
             self.entries.len().div_ceil(columns.max(1))
         }
+    }
+
+    /// Resolve a directional key in the visible icon grid.  The grid owns the
+    /// measured column count, so it is the only layer that can make Down mean
+    /// "the card below" after responsive reflow, text scaling, or item zoom.
+    /// The app applies the resulting selection command, retaining one shared
+    /// selection model for pointer, keyboard and assistive interactions.
+    fn grid_key_target(&self, key: NamedKey) -> Option<usize> {
+        let len = self.entries.len();
+        if len == 0 {
+            return None;
+        }
+        let current = self.selection.primary().unwrap_or(0).min(len - 1);
+        let columns = self.columns.max(1);
+        let target = match key {
+            NamedKey::ArrowLeft => current.saturating_sub(1),
+            NamedKey::ArrowRight => (current + 1).min(len - 1),
+            NamedKey::ArrowUp => current.saturating_sub(columns),
+            NamedKey::ArrowDown => (current + columns).min(len - 1),
+            _ => return None,
+        };
+        Some(target)
     }
 
     fn content_height(&self, width: f64) -> f64 {
@@ -1370,6 +1393,30 @@ impl Widget for FileView {
         _taffy: &TaffyTree<()>,
     ) {
         match event {
+            // A list's up/down movement is linear and remains app-level. An
+            // icon grid, however, must use its *live measured* columns or a
+            // responsive two-column phone grid would advance one whole row on
+            // every arrow press. Capture all four directions here only while
+            // this focusable collection owns focus.
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } if self.is_focused
+                && self.mode == ViewMode::Grid
+                && key_event.state == ElementState::Pressed =>
+            {
+                if let Key::Named(key) = key_event.logical_key
+                    && let Some(index) = self.grid_key_target(key)
+                {
+                    push(
+                        &self.sink,
+                        FileCommand::MoveSelection {
+                            index,
+                            extend: modifiers.state().shift_key(),
+                        },
+                    );
+                    *handled = true;
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor = pt;
@@ -1975,6 +2022,26 @@ mod tests {
             grid(20, 10.0).columns >= 1,
             "never collapses below one column"
         );
+    }
+
+    #[test]
+    fn grid_arrow_targets_follow_the_measured_visual_row() {
+        let mut v = grid(8, 400.0);
+        // Keep the assertion about directional semantics independent of a
+        // particular theme metric: a responsive reflow has resolved three
+        // columns for this test frame.
+        v.columns = 3;
+        v.selection.select_only(1);
+        assert_eq!(v.grid_key_target(NamedKey::ArrowRight), Some(2));
+        assert_eq!(v.grid_key_target(NamedKey::ArrowLeft), Some(0));
+        assert_eq!(v.grid_key_target(NamedKey::ArrowDown), Some(4));
+        assert_eq!(v.grid_key_target(NamedKey::ArrowUp), Some(0));
+
+        // The final short row remains reachable without producing an invalid
+        // selection index when moving down or right from its edge.
+        v.selection.select_only(7);
+        assert_eq!(v.grid_key_target(NamedKey::ArrowDown), Some(7));
+        assert_eq!(v.grid_key_target(NamedKey::ArrowRight), Some(7));
     }
 
     #[test]

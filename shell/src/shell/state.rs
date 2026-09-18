@@ -7649,6 +7649,10 @@ impl WorkspaceTree {
             self.active_group.insert(strip_id, first.id);
         }
         self.doc_rewrite_strip_groups(strip_id, &persisted);
+        // Same-strip drag/split changes are user-visible layout state. Keep
+        // the local restart snapshot in step with the cache and room doc;
+        // callers may have no later mutation before a crash or shutdown.
+        self.flush_to_disk();
         true
     }
 
@@ -10404,6 +10408,9 @@ mod active_group_tests {
         use automerge::{ROOT, ReadDoc};
 
         let (mut tree, strip_id, ids) = tree_with_n_groups(1);
+        let state_dir = tempfile::tempdir().expect("temporary state directory");
+        let state_path = state_dir.path().join("state.json");
+        tree.persist_path = Some(state_path.clone());
         let source_group = ids[0];
         let make_tab = |id: u64, title: &str| Tab {
             id,
@@ -10463,6 +10470,22 @@ mod active_group_tests {
         let (_, detached) = tree.doc.get(&doc_groups, 1_usize).unwrap().unwrap();
         let (_, detached_tabs) = tree.doc.get(&detached, "tabs").unwrap().unwrap();
         assert_eq!(tree.doc.length(&detached_tabs), 1);
+
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("same-strip topology creates valid durable state");
+        let restarted_groups = &restarted.workspaces[0].strips[0].window_groups;
+        assert_eq!(restarted_groups.len(), 2);
+        assert_eq!(
+            restarted_groups[0]
+                .tabs
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            vec![10, 12],
+            "the surviving group membership must survive an immediate restart"
+        );
+        assert_eq!(restarted_groups[1].tabs[0].id, 11);
+        assert_eq!(restarted_groups[0].width, WindowWidth::Fraction(700));
     }
 
     #[test]

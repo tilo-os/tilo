@@ -63,6 +63,10 @@ pub struct Chip {
     x_rect: Rect,
     last_cursor: Point,
     label_w: f64,
+    /// Effective logical font size captured during `build_layout`. `measure`
+    /// has no theme parameter, so retaining it prevents large-text chips from
+    /// falling back to the default palette's 100% metrics.
+    layout_font_size: f32,
 }
 
 impl Chip {
@@ -79,6 +83,7 @@ impl Chip {
             x_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             label_w: 0.0,
+            layout_font_size: 14.0,
         }
     }
 
@@ -136,9 +141,13 @@ impl Chip {
         self.x_rect
     }
 
-    fn intrinsic_width(&self, text_renderer: &mut TextRenderer, theme: &Theme) -> f64 {
-        let size = theme.tokens.typography.scale.sm / text_renderer.text_scale();
-        let (w, _) = text_renderer.measure(&self.label, size, None);
+    fn measured_label(&self, text_renderer: &mut TextRenderer) -> (f32, f32) {
+        let size = self.layout_font_size / text_renderer.text_scale();
+        text_renderer.measure(&self.label, size, None)
+    }
+
+    fn intrinsic_width(&self, text_renderer: &mut TextRenderer) -> f64 {
+        let (w, _) = self.measured_label(text_renderer);
         let mut total = PAD_X * 2.0 + f64::from(w);
         if self.dot.is_some() {
             total += DOT_D + GAP;
@@ -460,17 +469,18 @@ impl Widget for Chip {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.layout_font_size = theme.tokens.typography.scale.sm;
         // Approximate width from a fixed advance; measure() refines it.
         let char_count = u32::try_from(self.label.chars().count()).unwrap_or(u32::MAX);
         let approx = PAD_X * 2.0
-            + f64::from(char_count) * (f64::from(theme.tokens.typography.scale.sm) * 0.6)
+            + f64::from(char_count) * (f64::from(self.layout_font_size) * 0.6)
             + if self.dot.is_some() { DOT_D + GAP } else { 0.0 }
             + if self.removable { GAP + X_D } else { 0.0 };
         let node = taffy.leaf_node(Style {
             flex_shrink: 0.0,
             size: taffy::Size {
                 width: length(approx as f32),
-                height: length(HEIGHT as f32),
+                height: length((HEIGHT.max(f64::from(self.layout_font_size) * 1.25 + 12.0)) as f32),
             },
             ..Default::default()
         });
@@ -489,9 +499,10 @@ impl Widget for Chip {
         _a: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
+        let (_, label_h) = self.measured_label(text_renderer);
         taffy::Size {
-            width: self.intrinsic_width(text_renderer, &Theme::dark()) as f32,
-            height: HEIGHT as f32,
+            width: self.intrinsic_width(text_renderer) as f32,
+            height: (HEIGHT.max(f64::from(label_h) + 12.0)) as f32,
         }
     }
 
@@ -651,11 +662,15 @@ mod tests {
     use super::*;
 
     fn lay_out(w: &mut dyn Widget) {
-        let theme = Theme::dark();
+        lay_out_with_theme(w, &Theme::dark());
+    }
+
+    fn lay_out_with_theme(w: &mut dyn Widget, theme: &Theme) {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let mut tr = TextRenderer::new();
-        let node = w.build_layout(&mut taffy, &theme, &mut node_map);
+        tr.set_text_scale(theme.text_scale);
+        let node = w.build_layout(&mut taffy, theme, &mut node_map);
         taffy
             .compute_layout_with_measure(
                 node,
@@ -671,6 +686,24 @@ mod tests {
             )
             .unwrap();
         w.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    #[test]
+    fn retained_chip_reserves_large_text_metrics_and_hit_height() {
+        let mut normal = Chip::new("Collaboration").removable();
+        lay_out(&mut normal);
+        let mut large = Chip::new("Collaboration").removable();
+        lay_out_with_theme(&mut large, &Theme::dark().with_text_scale(2.0));
+
+        assert!(
+            large.get_rect().width() > normal.get_rect().width() * 1.45,
+            "200% label width must be measured rather than painted outside a 100% chip"
+        );
+        assert!(
+            large.get_rect().height() >= 40.0,
+            "200% chip must grow its pointer target with its line, got {:?}",
+            large.get_rect()
+        );
     }
 
     fn draw(w: &mut dyn Widget) {

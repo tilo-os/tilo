@@ -2211,7 +2211,19 @@ impl PdfApp {
                 }
                 (items, y - base)
             }
-            SidebarTab::Outline => (items, 0.0),
+            SidebarTab::Outline => {
+                // Contents is a genuine navigable list, not a static preview.
+                // Keep its geometry here with the other sidebar lists so wheel
+                // scrolling and draw-time hit regions remain in lockstep.
+                let row_h = 30.0 * s;
+                let row_gap = 2.0 * s;
+                let mut y = body.y0 + 38.0 * s;
+                for (index, _) in self.doc.outline.iter().enumerate() {
+                    items.push((format!("outline:{index}"), y, row_h));
+                    y += row_h + row_gap;
+                }
+                (items, (y - (body.y0 + 38.0 * s)).max(0.0))
+            }
         }
     }
 
@@ -2219,14 +2231,19 @@ impl PdfApp {
     /// freshly created comment/signature into view) and clamp to the list's
     /// scroll range so a deleted tail can't leave the list scrolled off.
     fn prepare_sidebar_scroll(&mut self, tr: &mut TextRenderer) {
-        if !self.show_sidebar || self.sidebar_tab == SidebarTab::Outline {
+        if !self.show_sidebar {
             self.sidebar_scroll = 0.0;
             self.sidebar_reveal = None;
             return;
         }
         let body = self.sidebar_body();
         let s = f64::from(tr.text_scale()).clamp(1.0, 2.0);
-        let viewport = (body.height() - 24.0 * s).max(0.0);
+        let list_origin = match self.sidebar_tab {
+            SidebarTab::Comments => body.y0 + 34.0 * s,
+            SidebarTab::Signatures => self.sig_list_top(body) + 20.0,
+            SidebarTab::Outline => body.y0 + 38.0 * s,
+        };
+        let viewport = (body.y1 - list_origin).max(0.0);
         let (items, content_h) = self.sidebar_item_layout(tr);
         let max_scroll = (content_h - viewport).max(0.0);
 
@@ -2235,11 +2252,6 @@ impl PdfApp {
         {
             // `top` is content-relative-from-list-origin; bring it just
             // inside the viewport.
-            let list_origin = match self.sidebar_tab {
-                SidebarTab::Comments => body.y0 + 12.0 * s + 22.0 * s,
-                SidebarTab::Signatures => body.y0 + 12.0 + 70.0 + 52.0 + 20.0,
-                SidebarTab::Outline => body.y0,
-            };
             let rel_top = top - list_origin;
             let rel_bot = rel_top + h;
             if rel_top < self.sidebar_scroll {
@@ -2692,10 +2704,32 @@ impl PdfApp {
         body: Rect,
         hits: &mut Vec<(SidebarHit, Rect)>,
     ) {
-        let pad = 12.0;
-        let mut y = body.y0 + 10.0;
+        let s = f64::from(theme.text_scale).clamp(1.0, 2.0);
+        let pad = 12.0 * s;
+        let row_h = 30.0 * s;
+        let row_gap = 2.0 * s;
+        let header_y = body.y0 + 12.0 * s;
+        let header = if self.doc.outline.is_empty() {
+            "No contents available".to_string()
+        } else {
+            format!("{} sections", self.doc.outline.len())
+        };
+        tr.draw_text(
+            scene,
+            &header,
+            11.0,
+            theme.text_dim,
+            base * Affine::translate((body.x0 + pad, header_y)),
+            None,
+        );
+
+        let mut y = body.y0 + 38.0 * s - self.sidebar_scroll;
         for item in &self.doc.outline {
-            let row = Rect::new(body.x0 + 6.0, y, body.x1 - 6.0, y + 30.0);
+            let row = Rect::new(body.x0 + 6.0 * s, y, body.x1 - 6.0 * s, y + row_h);
+            if row.y1 < body.y0 || row.y0 > body.y1 {
+                y += row_h + row_gap;
+                continue;
+            }
             let current = item.page == self.current_page;
             if current {
                 scene.fill(
@@ -2716,7 +2750,7 @@ impl PdfApp {
                     &RoundedRect::from_rect(row, f64::from(theme.tokens.radii.md)),
                 );
             }
-            let indent = pad + f64::from(item.level) * 16.0;
+            let indent = pad + f64::from(item.level) * 16.0 * s;
             let weight = if item.level == 0 {
                 TextWeight::Semibold
             } else {
@@ -2732,8 +2766,8 @@ impl PdfApp {
                 &item.title,
                 12.0,
                 col,
-                base * Affine::translate((row.x0 + indent, vcenter(row, 12.0))),
-                Some((row.width() - indent - 28.0) as f32),
+                base * Affine::translate((row.x0 + indent, vcenter(row, 12.0 * s as f32))),
+                Some((row.width() - indent - 40.0 * s) as f32),
                 weight,
             );
             let pnum = format!("{}", item.page);
@@ -2743,14 +2777,14 @@ impl PdfApp {
                 &pnum,
                 11.0,
                 theme.text_dim,
-                base * Affine::translate((row.x1 - 10.0 - f64::from(pw), vcenter(row, 11.0))),
+                base * Affine::translate((
+                    row.x1 - 10.0 * s - f64::from(pw),
+                    vcenter(row, 11.0 * s as f32),
+                )),
                 None,
             );
             hits.push((SidebarHit::Outline(item.page), row));
-            y += 32.0;
-            if y > body.y1 {
-                break;
-            }
+            y += row_h + row_gap;
         }
     }
 

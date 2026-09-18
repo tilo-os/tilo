@@ -3331,7 +3331,54 @@ impl Core {
                 button: MouseButton::Left,
                 ..
             } => self.hourly_bar.release(),
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                self.handle_detail_key(&event.logical_key)
+            }
             _ => false,
+        }
+    }
+
+    /// Route compact forecast shortcuts without making the pointer handler a
+    /// monolith. These keys are useful when the detail screen is reached from
+    /// the saved-locations list without a mouse or precise touch target.
+    fn handle_detail_key(&mut self, key: &winit::keyboard::Key) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+
+        let page = (self.hourly_viewport.width() * 0.8).max(80.0);
+        match key {
+            Key::Named(NamedKey::ArrowLeft) if self.hourly_max_scroll > 0.0 => {
+                self.hourly_scroll_x = (self.hourly_scroll_x - page).max(0.0);
+                true
+            }
+            Key::Named(NamedKey::ArrowRight) if self.hourly_max_scroll > 0.0 => {
+                self.hourly_scroll_x = (self.hourly_scroll_x + page).min(self.hourly_max_scroll);
+                true
+            }
+            Key::Named(NamedKey::Home) if self.hourly_max_scroll > 0.0 => {
+                self.hourly_scroll_x = 0.0;
+                true
+            }
+            Key::Named(NamedKey::End) if self.hourly_max_scroll > 0.0 => {
+                self.hourly_scroll_x = self.hourly_max_scroll;
+                true
+            }
+            Key::Character(text) if text.as_str().eq_ignore_ascii_case("r") => {
+                self.refresh_selected();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Pointer teaching for compact, icon-only forecast controls. The visual
+    /// layout stays quiet while every affordance remains discoverable.
+    pub fn detail_tooltip(&self) -> Option<&'static str> {
+        if self.refresh_btn.contains(self.last_mouse) {
+            Some("Refresh forecast (R)")
+        } else if self.hourly_viewport.contains(self.last_mouse) && self.hourly_max_scroll > 0.0 {
+            Some("Hourly forecast — use Left and Right Arrow to scroll")
+        } else {
+            None
         }
     }
 

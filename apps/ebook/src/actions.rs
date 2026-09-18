@@ -1677,6 +1677,7 @@ impl ResourceProvider for crate::app::BooksApp {
         if [
             "ebook.book:",
             "ebook.chapter:",
+            "ebook.location:",
             "ebook.highlight:",
             "ebook.bookmark:",
             "ebook.note:",

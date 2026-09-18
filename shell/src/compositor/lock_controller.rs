@@ -26,6 +26,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use super::lock_auth::PasswordVerifier;
+use ui::text_selection::prev_char_boundary;
 
 /// The non-leaky error shown if the verify worker vanishes without a result
 /// (thread panic / dropped channel). Fail-closed: treat it as "stay locked",
@@ -135,10 +136,11 @@ impl LockController {
         self.buffer.push(c);
     }
 
-    /// Remove the last character. Clears any shown error.
+    /// Remove the last user-perceived character. Clears any shown error.
     pub fn backspace(&mut self) {
         self.error = None;
-        self.buffer.pop();
+        let boundary = prev_char_boundary(&self.buffer, self.buffer.len());
+        self.buffer.truncate(boundary);
     }
 
     /// Clear the buffer (Escape). Also clears any shown error.
@@ -349,12 +351,38 @@ mod tests {
     }
 
     #[test]
-    fn backspace_and_cancel_edit_the_buffer() {
+    fn backspace_and_cancel_edit_the_ascii_buffer() {
         let mut c = controller("hunter2");
         c.push_str("hunt");
         c.backspace();
         assert_eq!(c.buffer_len(), 3);
         c.clear_input();
+        assert_eq!(c.buffer_len(), 0);
+    }
+
+    #[test]
+    fn backspace_removes_a_whole_composed_grapheme() {
+        let mut c = controller("unused");
+        c.push_str("e\u{301}");
+        assert_eq!(
+            c.buffer_len(),
+            2,
+            "the fixture contains two Unicode scalars"
+        );
+        c.backspace();
+        assert_eq!(c.buffer_len(), 0);
+    }
+
+    #[test]
+    fn backspace_removes_a_whole_zwj_emoji() {
+        let mut c = controller("unused");
+        c.push_str("👩‍💻");
+        assert_eq!(
+            c.buffer_len(),
+            3,
+            "the fixture contains three Unicode scalars"
+        );
+        c.backspace();
         assert_eq!(c.buffer_len(), 0);
     }
 

@@ -53,6 +53,69 @@ fn clicking_a_nav_tab_switches_route() {
 }
 
 #[test]
+fn shared_queue_is_a_real_navigation_destination() {
+    // The queue has both a visible rail destination and a canonical navigation
+    // action, rather than being an agent-only collection hidden behind Ctrl+K.
+    let mut h = Harness::new(
+        TubeApp::new().with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1)),
+        VIEWPORT,
+    );
+    h.click_id("nav_queue");
+    assert_eq!(h.app.route_for_test(), &Route::Queue);
+    assert!(
+        h.has_id("queue_page"),
+        "the shared queue screen is laid out"
+    );
+}
+
+#[test]
+fn shared_queue_200_percent_text_reserves_a_distinct_rect_for_every_line() {
+    // Regression for the 200%-text screenshot: wrapped prose used to paint
+    // beneath a one-line flex allocation, causing the heading and empty state
+    // to collide. The real layout tree must give every rendered line a later
+    // y-origin than the one before it.
+    let app = TubeApp::new()
+        .with_viewport(800.0, 720.0)
+        .with_route_shot(Route::Queue);
+    let h = Harness::with_theme(
+        app,
+        (800.0, 720.0),
+        ui::theme::Theme::dark().with_text_scale(2.0),
+    );
+    let ids = [
+        "queue_heading_title",
+        "queue_heading_count",
+        "queue_heading_membership",
+        "queue_heading_order",
+        "queue_empty_title",
+        "queue_empty_add",
+        "queue_empty_sync",
+    ];
+    let rects: Vec<_> = ids
+        .iter()
+        .map(|id| h.rect_by_id(id).unwrap_or_else(|| panic!("missing {id}")))
+        .collect();
+    assert!(
+        rects[0].height() >= 40.0,
+        "200% title must reserve scaled line height, got {:?}",
+        rects[0]
+    );
+    assert!(
+        rects[1].height() >= 25.0,
+        "200% metadata must reserve scaled line height, got {:?}",
+        rects[1]
+    );
+    for pair in rects.windows(2) {
+        assert!(
+            pair[0].y1 <= pair[1].y0,
+            "large-text lines overlap: {:?} then {:?}",
+            pair[0],
+            pair[1]
+        );
+    }
+}
+
+#[test]
 fn selected_nav_tab_is_visible_and_addressable_after_switch() {
     // After navigating, the selected tab must still resolve (it's re-rendered
     // with the accent fill, same test_id) — i.e. selection is real, not a

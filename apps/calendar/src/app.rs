@@ -2831,7 +2831,33 @@ impl CalendarApp {
 
     /// Flip the selected event's all-day flag.
     fn toggle_all_day(&mut self, doc: &mut AutoCommit) {
-        self.cycle_event(doc, |e| e.all_day = !e.all_day);
+        self.cycle_event(doc, |e| {
+            if e.all_day {
+                // Preserve the date range when returning to a timed event.
+                // A midnight exclusive end is a useful all-day boundary but
+                // reads as an accidental overnight event on the timed grid.
+                let last = e.all_day_last_date();
+                e.all_day = false;
+                e.end = last.and_time(NaiveTime::from_hms_opt(17, 0, 0).unwrap_or(NaiveTime::MIN));
+            } else {
+                // Calendar's editor chooses inclusive days; the durable
+                // all-day representation is [start, end), as required by
+                // RFC 5545.  A timed event ending on its start date therefore
+                // becomes one full all-day date, not a zero-length event.
+                let last = if e.end.date() > e.start.date() {
+                    if e.end.time() == NaiveTime::MIN {
+                        e.end.date() - Duration::days(1)
+                    } else {
+                        e.end.date()
+                    }
+                } else {
+                    e.start.date()
+                };
+                e.start = e.start.date().and_time(NaiveTime::MIN);
+                e.end = (last + Duration::days(1)).and_time(NaiveTime::MIN);
+                e.all_day = true;
+            }
+        });
         self.event_popovers.close();
     }
 
@@ -2841,15 +2867,27 @@ impl CalendarApp {
     fn set_event_date(&mut self, which: FormPopover, date: NaiveDate, doc: &mut AutoCommit) {
         self.cycle_event(doc, |e| match which {
             FormPopover::StartDate => {
-                e.start = date.and_time(e.start.time());
-                if e.end < e.start {
-                    e.end = e.start + Duration::hours(1);
+                if e.all_day {
+                    let days = (e.all_day_end_exclusive() - e.start.date())
+                        .num_days()
+                        .max(1);
+                    e.start = date.and_time(NaiveTime::MIN);
+                    e.end = (date + Duration::days(days)).and_time(NaiveTime::MIN);
+                } else {
+                    e.start = date.and_time(e.start.time());
+                    if e.end < e.start {
+                        e.end = e.start + Duration::hours(1);
+                    }
                 }
             }
             FormPopover::EndDate => {
-                e.end = date.and_time(e.end.time());
-                if e.end < e.start {
-                    e.end = e.start + Duration::hours(1);
+                if e.all_day {
+                    e.end = (date.max(e.start.date()) + Duration::days(1)).and_time(NaiveTime::MIN);
+                } else {
+                    e.end = date.and_time(e.end.time());
+                    if e.end < e.start {
+                        e.end = e.start + Duration::hours(1);
+                    }
                 }
             }
             _ => {}
@@ -5323,7 +5361,11 @@ impl CalendarApp {
             "Ends",
             f.end_date,
             f.end_time,
-            &date::fmt_day_long(e.end.date()),
+            &date::fmt_day_long(if e.all_day {
+                e.all_day_last_date()
+            } else {
+                e.end.date()
+            }),
             &date::fmt_time(&e.end),
             FormPopover::EndDate,
             FormPopover::EndTime,

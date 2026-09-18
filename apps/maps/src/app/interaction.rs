@@ -13,6 +13,7 @@ impl MapsApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
     ) -> bool {
         if self.endpoints.is_focused() {
             if let Some(effect) = self.endpoints.handle_key(event, scale, modifiers) {
@@ -27,7 +28,7 @@ impl MapsApp {
                     self.model.query = text;
                     self.on_search_input();
                 }
-                SearchKeyEffect::Submit => self.run_search(),
+                SearchKeyEffect::Submit => self.run_search(Some(doc)),
             }
             return true;
         }

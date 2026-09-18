@@ -4,8 +4,9 @@
 //!
 //! ```text
 //! ┌──────────────────────────────────────────────────────────────────────┐
-//! │ [icon]  Name                 v0.1.0 · Tilo main            [Action]   │
-//! │ [ ⎔  ]  One-line description                                         │
+//! │ [art]  Name · provenance                                             │
+//! │        Clear one-or-two-line reason to care                          │
+//! │                                      [Details] [Primary action]      │
 //! └──────────────────────────────────────────────────────────────────────┘
 //! ```
 //!
@@ -52,27 +53,22 @@ pub fn store_card(
     large_text: bool,
     operation_active: bool,
 ) -> Box<dyn Widget> {
-    // Left column: name + description. Secondary text reads its dim tone
-    // from the live theme so it stays legible in light and dark.
-    // A flex-grow Container owns the width beside the fixed artwork. This is
-    // important because a bare Column deliberately claims the full row width.
+    // Identity is intentionally short. A title, origin/version and category
+    // make a catalogue tile understandable at a glance; the description gets
+    // its own line below rather than competing with the artwork and actions.
     let identity = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
         .with_gap(3.0)
         .push(Box::new(
             Text::new(&item.name)
-                .with_scaled_size(if compact { 18.0 } else { 19.0 })
+                .with_scaled_size(if compact { 18.0 } else { 20.0 })
                 .with_weight(TextWeight::Semibold),
         ))
         .push(Box::new(
-            Text::new(&if !compact && item.installed.is_installed() {
-                source_line(item)
-            } else {
-                badge_line(item)
-            })
-            .with_scaled_size(12.0)
-            .with_color(theme.text_dim),
+            Text::new(&desktop_metadata(item))
+                .with_scaled_size(12.0)
+                .with_color(theme.text_dim),
         ));
 
     // The primary action button (Open / Update / Install / Remove-flatpak)
@@ -157,76 +153,49 @@ pub fn store_card(
                 .push(Box::new(action_btn)),
         ));
         Box::new(column)
-    } else if item.installed.is_installed() {
-        // Installed software is already a known quantity. Keep this row
-        // compact and operational: stable identity at left, one restrained
-        // provenance line, and one aligned action cluster. Full descriptive
-        // copy remains in the Details tooltip/sheet instead of repeating a
-        // paragraph in the "ready" shelf.
-        Box::new(
-            Row::new()
-                .no_wrap()
-                .with_fill_remaining_height()
-                .push(Box::new(super::Artwork::new(
-                    images,
-                    item.icon_url.as_deref(),
-                    &item.name,
-                    48.0,
-                    48.0,
-                )))
-                .push(Box::new(Container::new().with_no_padding().with_width(8.0)))
-                .push(Box::new(
-                    Container::new()
-                        .with_no_padding()
-                        .with_flex_grow()
-                        .with_child(Box::new(identity)),
-                ))
-                .push(Box::new(details))
-                .push(Box::new(action_btn)),
-        )
     } else {
+        // A vertical desktop tile gives discovery copy and the action rail
+        // stable, independent regions. The old horizontal row was readable
+        // only in two very wide columns; at three useful desktop columns it
+        // turned titles, artwork and buttons into one cramped line.
+        let header = Row::new()
+            .no_wrap()
+            .push(Box::new(super::Artwork::new(
+                images,
+                item.icon_url.as_deref(),
+                &item.name,
+                58.0,
+                58.0,
+            )))
+            .push(Box::new(
+                Container::new().with_no_padding().with_width(10.0),
+            ))
+            .push(Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_flex_grow()
+                    .with_child(Box::new(identity)),
+            ));
         Box::new(
-            Row::new()
-                .no_wrap()
+            Column::new()
+                .with_no_padding()
                 .with_fill_remaining_height()
+                .push(Box::new(header))
                 .push(Box::new(
-                    Container::new()
-                        .with_no_padding()
-                        .with_size(64.0, 64.0)
-                        .with_child(Box::new(super::Artwork::new(
-                            images,
-                            item.icon_url.as_deref(),
-                            &item.name,
-                            64.0,
-                            64.0,
-                        ))),
+                    Container::new().with_no_padding().with_height(10.0),
                 ))
-                .push(Box::new(Container::new().with_no_padding().with_width(8.0)))
                 .push(Box::new(
-                    Container::new()
-                        .with_no_padding()
-                        .with_flex_grow()
-                        .filling()
-                        .with_child(Box::new(
-                            Column::new()
-                                .with_no_padding()
-                                .with_fill_remaining_height()
-                                .with_gap(5.0)
-                                .push(Box::new(identity))
-                                .push(Box::new(
-                                    Text::new(&item.description)
-                                        .with_scaled_size(13.0)
-                                        .with_color(theme.text_dim),
-                                ))
-                                .push(Box::new(Spacer::new()))
-                                .push(Box::new(
-                                    Row::new()
-                                        .no_wrap()
-                                        .push(Box::new(Spacer::new()))
-                                        .push(Box::new(details))
-                                        .push(Box::new(action_btn)),
-                                )),
-                        )),
+                    Text::new(&item.description)
+                        .with_scaled_size(13.0)
+                        .with_color(theme.text_dim),
+                ))
+                .push(Box::new(Spacer::new()))
+                .push(Box::new(
+                    Row::new()
+                        .no_wrap()
+                        .push(Box::new(Spacer::new()))
+                        .push(Box::new(details))
+                        .push(Box::new(action_btn)),
                 )),
         )
     };
@@ -285,11 +254,12 @@ fn badge_line(item: &StoreItem) -> String {
     }
 }
 
-fn source_line(item: &StoreItem) -> String {
-    match &item.source {
-        StoreSource::Tilo { .. } => "Tilo verified".into(),
-        StoreSource::Flathub => "Flathub".into(),
-    }
+fn desktop_metadata(item: &StoreItem) -> String {
+    let category = item.categories.first().map_or_else(
+        || "General".to_string(),
+        |category| category_label(category),
+    );
+    format!("{} · {category}", badge_line(item))
 }
 
 /// Full card copy for the Details hover/focus affordance. The visual card

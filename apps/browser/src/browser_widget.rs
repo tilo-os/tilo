@@ -53,10 +53,15 @@ const PIP_ID: &str = "browser.media-pip";
 const PIP_ELEMENT_REFRESH: std::time::Duration = std::time::Duration::from_millis(250);
 /// How many address-bar suggestions to show.
 const SUGGESTION_LIMIT: usize = 8;
+/// A library query is local presentation state, but it can also be set by a
+/// resource action. Keep the agent-facing operation bounded just like the
+/// persisted collections it searches.
+const MAX_LIBRARY_FILTER_BYTES: usize = 256;
 
 /// e2e id of the address input (also used internally to detect whether
 /// the user is editing it).
 const URL_INPUT_ID: &str = "browser.url_input";
+const LIBRARY_FILTER_INPUT_ID: &str = "browser.library.filter";
 const PIP_FEEDBACK_LIFETIME: std::time::Duration = std::time::Duration::from_millis(4200);
 const PIP_FEEDBACK_FADE: std::time::Duration = std::time::Duration::from_millis(180);
 const SEARCH_QUERY_TOKEN: &str = "{query}";
@@ -139,6 +144,43 @@ enum LibrarySection {
     Extensions,
 }
 
+impl LibrarySection {
+    fn label(self) -> &'static str {
+        match self {
+            Self::History => "history",
+            Self::Bookmarks => "bookmarks",
+            Self::Downloads => "downloads",
+            Self::Extensions => "extensions",
+        }
+    }
+}
+
+/// Case-insensitive, space-tolerant matching for the small, local Library
+/// collections.  Splitting the query gives people a useful "rust docs"
+/// experience without growing a second fuzzy-search engine beside the global
+/// resource index.
+fn library_filter_matches(query: &str, fields: &[&str]) -> bool {
+    let terms: Vec<_> = query.split_whitespace().map(str::to_lowercase).collect();
+    terms.is_empty()
+        || terms.iter().all(|term| {
+            fields
+                .iter()
+                .any(|field| field.to_lowercase().contains(term))
+        })
+}
+
+fn bounded_library_filter(query: &str) -> String {
+    let query = query.trim();
+    if query.len() <= MAX_LIBRARY_FILTER_BYTES {
+        return query.to_string();
+    }
+    let mut end = MAX_LIBRARY_FILTER_BYTES;
+    while !query.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    query.get(..end).unwrap_or_default().to_string()
+}
+
 #[derive(Clone, Debug)]
 enum BrowserOperation {
     Back,
@@ -146,6 +188,8 @@ enum BrowserOperation {
     Reload,
     Navigate { url: String },
     ShowLibrary { section: LibrarySection },
+    SetLibraryFilter { query: String },
+    ClearLibraryFilter,
     ShowSettings,
     ShowPage,
     ClearHistory,
@@ -176,6 +220,12 @@ fn browser_operation_payload(operation: &BrowserOperation) -> serde_json::Value 
                 LibrarySection::Extensions => "extensions",
             }
         }),
+        BrowserOperation::SetLibraryFilter { query } => {
+            serde_json::json!({ "operation": "set-library-filter", "query": query })
+        }
+        BrowserOperation::ClearLibraryFilter => {
+            serde_json::json!({ "operation": "clear-library-filter" })
+        }
         BrowserOperation::ShowSettings => serde_json::json!({ "operation": "show-settings" }),
         BrowserOperation::ShowPage => serde_json::json!({ "operation": "show-page" }),
         BrowserOperation::ClearHistory => serde_json::json!({ "operation": "clear-history" }),
@@ -239,6 +289,9 @@ fn decode_browser_operation(payload: &[u8]) -> Result<BrowserOperation, String> 
             };
             Ok(BrowserOperation::ShowLibrary { section })
         }
+        Some("set-library-filter") => required_string(&value, "query")
+            .map(|query| BrowserOperation::SetLibraryFilter { query }),
+        Some("clear-library-filter") => Ok(BrowserOperation::ClearLibraryFilter),
         Some("show-settings") => Ok(BrowserOperation::ShowSettings),
         Some("show-page") => Ok(BrowserOperation::ShowPage),
         Some("clear-history") => Ok(BrowserOperation::ClearHistory),
@@ -430,6 +483,10 @@ pub struct BrowserWidget {
     show_settings: bool,
     show_library: bool,
     library_section: LibrarySection,
+    /// A single local query follows the reader between Library sections. It
+    /// is intentionally not collaborative: filtering is a view preference,
+    /// not a change to the user's history, bookmarks, or downloads.
+    library_filter: ui::LocalState<String>,
     /// Set when `show_settings` flips, so the host rebuilds the tree.
     structure_dirty: bool,
     /// Last address-bar text a suggestion query ran for, to avoid
@@ -568,6 +625,7 @@ impl BrowserWidget {
             show_settings: false,
             show_library: false,
             library_section: LibrarySection::History,
+            library_filter: ui::LocalState::new(String::new()),
             structure_dirty: false,
             last_query: None,
             force_suggestions: false,
@@ -683,6 +741,14 @@ impl BrowserWidget {
         };
         self.show_library = true;
         self.show_settings = false;
+    }
+
+    /// Headless visual-review hook for a Library filter. This uses the same
+    /// local state as typing and the canonical resource operation, so a shot
+    /// can exercise the real empty- and matched-result layouts.
+    pub fn debug_set_library_filter(&mut self, query: &str) {
+        self.library_filter.set(bounded_library_filter(query));
+        self.structure_dirty = true;
     }
 
     /// Deterministic download-model fixtures for visual review. These use the
@@ -804,6 +870,22 @@ impl BrowserWidget {
                 self.library_section = section;
                 self.show_library = true;
                 self.show_settings = false;
+                self.structure_dirty = true;
+            }
+            BrowserOperation::SetLibraryFilter { query } => {
+                let query = query.trim();
+                if query.len() > MAX_LIBRARY_FILTER_BYTES {
+                    return Err(format!(
+                        "library filter must be at most {MAX_LIBRARY_FILTER_BYTES} bytes"
+                    ));
+                }
+                self.library_filter.set(query.to_string());
+                self.show_library = true;
+                self.show_settings = false;
+                self.structure_dirty = true;
+            }
+            BrowserOperation::ClearLibraryFilter => {
+                self.library_filter.set(String::new());
                 self.structure_dirty = true;
             }
             BrowserOperation::ShowSettings => {
@@ -1770,6 +1852,47 @@ impl BrowserWidget {
             Box::new(row)
         };
 
+        let filter_query = self.library_filter.get();
+        let section_label = self.library_section.label();
+        let filter_input = TextInput::from_state(&self.library_filter)
+            .with_id(LIBRARY_FILTER_INPUT_ID)
+            .with_kind(TextInputKind::Search)
+            .with_accessible_name(&format!("Filter {section_label}"))
+            .with_placeholder(&format!("Filter {section_label}"));
+        let clear_filter = self.bind_button(
+            Button::new("browser.library.clear-filter", "Clear", None)
+                .with_accessible_name("Clear library filter")
+                .tooltip("Clear filter")
+                .with_enabled(!filter_query.trim().is_empty())
+                .with_size(if large_text { 112.0 } else { 76.0 }, action_height),
+            "browser.library",
+            "clear-filter",
+        );
+        let filter_bar: Box<dyn Widget> = if compact_layout && large_text {
+            Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .push(Box::new(filter_input))
+                    .push(Box::new(
+                        Container::new().with_no_padding().with_height(8.0),
+                    ))
+                    .push(Box::new(clear_filter.fill_width(action_height))),
+            )
+        } else {
+            Box::new(
+                Row::new()
+                    .no_wrap()
+                    .push(Box::new(
+                        Container::new()
+                            .with_no_padding()
+                            .with_flex_grow()
+                            .with_child(Box::new(filter_input)),
+                    ))
+                    .push(Box::new(clear_filter)),
+            )
+        };
+
         let body: Box<dyn Widget> = match self.library_section {
             LibrarySection::History if self.history.is_empty() => {
                 let (title, message) = if self.compact_chrome {
@@ -1799,7 +1922,12 @@ impl BrowserWidget {
             }
             LibrarySection::History => {
                 let mut rows = Column::new().with_no_padding().with_intrinsic_height();
+                let mut matched = 0;
                 for entry in self.history.entries().iter().rev().take(12) {
+                    if !library_filter_matches(&filter_query, &[&entry.title, &entry.url]) {
+                        continue;
+                    }
+                    matched += 1;
                     let resource_id = history_resource_id(&entry.url);
                     let title = if entry.title.trim().is_empty() {
                         entry.url.as_str()
@@ -1861,7 +1989,13 @@ impl BrowserWidget {
                             Container::new().with_no_padding().with_height(8.0),
                         ));
                 }
-                if compact_layout {
+                if matched == 0 {
+                    Box::new(
+                        EmptyState::new("No history matches")
+                            .with_icon(Icon::History)
+                            .with_message("Try a different title, address, or keyword."),
+                    )
+                } else if compact_layout {
                     Box::new(rows)
                 } else {
                     Box::new(
@@ -1879,7 +2013,12 @@ impl BrowserWidget {
             ),
             LibrarySection::Bookmarks => {
                 let mut rows = Column::new().with_no_padding().with_intrinsic_height();
+                let mut matched = 0;
                 for entry in self.bookmarks.entries().iter().take(12) {
+                    if !library_filter_matches(&filter_query, &[&entry.title, &entry.url]) {
+                        continue;
+                    }
+                    matched += 1;
                     // Use the same normalized identity as the resource
                     // surface. In particular, legacy JSON can contain a URL
                     // without its canonical trailing slash.
@@ -1953,7 +2092,13 @@ impl BrowserWidget {
                             Container::new().with_no_padding().with_height(8.0),
                         ));
                 }
-                if compact_layout {
+                if matched == 0 {
+                    Box::new(
+                        EmptyState::new("No bookmarks match")
+                            .with_icon(Icon::Star)
+                            .with_message("Try a different title, address, or keyword."),
+                    )
+                } else if compact_layout {
                     Box::new(rows)
                 } else {
                     Box::new(
@@ -1997,9 +2142,18 @@ impl BrowserWidget {
             }
             LibrarySection::Downloads => {
                 let mut rows = Column::new().with_no_padding().with_intrinsic_height();
+                let mut matched = 0;
                 for entry in self.downloads.entries().iter().rev().take(40) {
-                    let resource_id = entry.resource_id();
                     let status = download_status_text(entry);
+                    let display_name = entry.display_name();
+                    if !library_filter_matches(
+                        &filter_query,
+                        &[&display_name, &entry.source_url, &status],
+                    ) {
+                        continue;
+                    }
+                    matched += 1;
+                    let resource_id = entry.resource_id();
                     let mut details = Column::new()
                         .with_no_padding()
                         .with_intrinsic_height()
@@ -2142,7 +2296,13 @@ impl BrowserWidget {
                             Container::new().with_no_padding().with_height(8.0),
                         ));
                 }
-                if compact_layout {
+                if matched == 0 {
+                    Box::new(
+                        EmptyState::new("No downloads match")
+                            .with_icon(Icon::Download)
+                            .with_message("Try a different filename, address, or status."),
+                    )
+                } else if compact_layout {
                     Box::new(rows)
                 } else {
                     Box::new(
@@ -2169,7 +2329,15 @@ impl BrowserWidget {
                     )
                 } else {
                     let mut rows = Column::new().with_no_padding().with_intrinsic_height();
+                    let mut matched = 0;
                     for extension in installed.into_iter().take(100) {
+                        if !library_filter_matches(
+                            &filter_query,
+                            &[&extension.name, &extension.id, &extension.version],
+                        ) {
+                            continue;
+                        }
+                        matched += 1;
                         let status = format!("Version {} · installed, inactive", extension.version);
                         rows = rows
                             .push(Box::new(
@@ -2204,7 +2372,13 @@ impl BrowserWidget {
                                 Container::new().with_no_padding().with_height(8.0),
                             ));
                     }
-                    if compact_layout {
+                    if matched == 0 {
+                        Box::new(
+                            EmptyState::new("No extensions match")
+                                .with_icon(Icon::Layers)
+                                .with_message("Try a different name, identifier, or version."),
+                        )
+                    } else if compact_layout {
                         Box::new(rows)
                     } else {
                         Box::new(
@@ -2248,6 +2422,10 @@ impl BrowserWidget {
         let content: Box<dyn Widget> = Box::new(
             content_column
                 .push(sections)
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(14.0),
+                ))
+                .push(filter_bar)
                 .push(Box::new(
                     Container::new().with_no_padding().with_height(18.0),
                 ))
@@ -2770,19 +2948,26 @@ impl BrowserWidget {
     /// page cannot intercept the shortcut and leave keyboard users hunting
     /// for the address field.
     fn focus_address_input(&mut self) -> bool {
+        self.focus_input(URL_INPUT_ID)
+    }
+
+    /// Move focus to one of Browser's retained local text controls. Keeping
+    /// this traversal centralized gives the Library's Ctrl/Cmd+F the exact
+    /// same predictable focus reset as Ctrl/Cmd+L.
+    fn focus_input(&mut self, input_id: &str) -> bool {
         fn clear(widget: &mut dyn Widget) {
             widget.set_focus(false);
             for child in widget.children_mut() {
                 clear(child);
             }
         }
-        fn focus(widget: &mut dyn Widget) -> bool {
-            if widget.test_id() == Some(URL_INPUT_ID) {
+        fn focus(widget: &mut dyn Widget, input_id: &str) -> bool {
+            if widget.test_id() == Some(input_id) {
                 widget.set_focus(true);
                 return true;
             }
             for child in widget.children_mut() {
-                if focus(child) {
+                if focus(child, input_id) {
                     return true;
                 }
             }
@@ -2790,8 +2975,24 @@ impl BrowserWidget {
         }
         self.composed.as_mut().is_some_and(|composed| {
             clear(composed.as_mut());
-            focus(composed.as_mut())
+            focus(composed.as_mut(), input_id)
         })
+    }
+
+    fn handle_library_shortcut(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        let modifiers = modifiers.state();
+        let requested = key.state == ElementState::Pressed
+            && (modifiers.control_key() || modifiers.super_key())
+            && !modifiers.alt_key()
+            && matches!(&key.logical_key, WKey::Character(c) if c.eq_ignore_ascii_case("f"));
+        requested && self.show_library && self.focus_input(LIBRARY_FILTER_INPUT_ID)
     }
 
     fn handle_address_shortcut(
@@ -3324,6 +3525,76 @@ impl Widget for BrowserWidget {
             }
             extensions.children.push(child);
         }
+        // Library is a first-class presentation resource rather than an
+        // unaddressable collection of tabs.  This lets keyboard users,
+        // assistive technology, global action search, and agents all use the
+        // same section and filter operations as the visible surface.
+        let mut library = Resource::new("browser.library", "browser.library", "Library");
+        for (id, label, section) in [
+            ("show-history", "Show history", LibrarySection::History),
+            (
+                "show-bookmarks",
+                "Show bookmarks",
+                LibrarySection::Bookmarks,
+            ),
+            (
+                "show-downloads",
+                "Show downloads",
+                LibrarySection::Downloads,
+            ),
+            (
+                "show-extensions",
+                "Show extensions",
+                LibrarySection::Extensions,
+            ),
+        ] {
+            if let Some(spec) = operation(
+                id,
+                label,
+                OperationKind::View,
+                BrowserOperation::ShowLibrary { section },
+            ) {
+                library.actions.push(spec);
+            }
+        }
+        library.actions.push(
+            ActionSpec::typed_operation(
+                "set-filter",
+                "Filter library",
+                "keyword",
+                OperationKind::View,
+                BROWSER_OPERATION_TYPE,
+                vec![ActionParam::required_owned(
+                    "query",
+                    ParamType::Text,
+                    "Words to match in the current library section",
+                )],
+                |args: &ActionArgs| {
+                    encode_browser_operation(&BrowserOperation::SetLibraryFilter {
+                        query: args.text("query").unwrap_or_default().to_string(),
+                    })
+                },
+            )
+            .with_contract(local_effect_contract(&[
+                "device-local",
+                "presentation",
+                "library",
+            ])),
+        );
+        if let Some(spec) = operation(
+            "clear-filter",
+            "Clear library filter",
+            OperationKind::View,
+            BrowserOperation::ClearLibraryFilter,
+        ) {
+            library
+                .actions
+                .push(if self.library_filter.get().trim().is_empty() {
+                    spec.unavailable("already_clear", "Library filter is already clear")
+                } else {
+                    spec
+                });
+        }
         let mut settings = Resource::new("browser.settings", "browser.settings", "Settings");
         if let Some(spec) = operation(
             "show",
@@ -3440,7 +3711,7 @@ impl Widget for BrowserWidget {
             browser.actions.push(spec);
         }
         browser.children = vec![
-            page, session, history, bookmarks, downloads, extensions, settings,
+            page, session, history, bookmarks, downloads, extensions, library, settings,
         ];
         vec![browser]
     }
@@ -3950,6 +4221,14 @@ impl Widget for BrowserWidget {
             return;
         }
 
+        // Ctrl/Cmd+F is scoped to Library; normal page find remains the
+        // website's concern. The visible filter has a canonical resource
+        // operation too, so this is only a convenient focus path.
+        if self.handle_library_shortcut(event, *modifiers) {
+            *handled = true;
+            return;
+        }
+
         // Conventional browser navigation keys. These must be handled before
         // forwarding into the page: an embedded site should not be able to
         // steal the browser's own history controls. The queued invocation is
@@ -3990,6 +4269,7 @@ impl Widget for BrowserWidget {
             }
         }
 
+        let filter_before = self.library_filter.get();
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node_id)
             && let Some(&child_node) = children.first()
@@ -4005,6 +4285,17 @@ impl Widget for BrowserWidget {
                 child_node,
                 taffy,
             );
+        }
+        let filter_after = self.library_filter.get();
+        if self.show_library && filter_after != filter_before {
+            let bounded = bounded_library_filter(&filter_after);
+            if bounded != filter_after {
+                self.library_filter.set(bounded);
+            }
+            // `TextInput` owns the immediate edit, but the result rows are
+            // rebuilt by Browser. Mark this immediately so typing never
+            // leaves stale rows under a changed query for a frame.
+            self.structure_dirty = true;
         }
 
         // Enter in the focused address bar submits it (no suggestion picked).
@@ -4223,6 +4514,35 @@ mod architecture_tests {
     }
 
     #[test]
+    fn library_filter_is_a_local_canonical_action_with_a_bound_control() {
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_show_library("bookmarks");
+        compose(&mut widget);
+        assert_action_binding(
+            &widget,
+            "browser.library.clear-filter",
+            "browser.library",
+            "clear-filter",
+        );
+
+        widget
+            .perform_browser_operation(BrowserOperation::SetLibraryFilter {
+                query: "rust learn".into(),
+            })
+            .unwrap();
+        assert_eq!(widget.library_filter.get(), "rust learn");
+        assert!(widget.show_library);
+        assert!(widget.take_structure_dirty());
+        assert!(
+            widget
+                .perform_browser_operation(BrowserOperation::SetLibraryFilter {
+                    query: "x".repeat(MAX_LIBRARY_FILTER_BYTES + 1),
+                })
+                .is_err()
+        );
+    }
+
+    #[test]
     fn every_hosted_browser_affordance_uses_a_canonical_action() {
         let mut page = BrowserWidget::new_headless();
         compose(&mut page);
@@ -4243,6 +4563,17 @@ mod architecture_tests {
         ] {
             assert_action_binding(&page, control, resource, action);
         }
+
+        let mut library = BrowserWidget::new_headless();
+        library.debug_show_library("history");
+        compose(&mut library);
+        assert_no_document_control_paths(&library);
+        assert_action_binding(
+            &library,
+            "browser.library.clear-filter",
+            "browser.library",
+            "clear-filter",
+        );
 
         let mut settings = BrowserWidget::new_headless();
         settings.show_settings = true;
@@ -4383,6 +4714,40 @@ mod tests {
 
         assert!(w.focus_address_input());
         assert!(w.url_input_focused());
+    }
+
+    #[test]
+    fn library_filter_matches_every_word_across_titles_and_addresses() {
+        assert!(library_filter_matches(
+            "rust learn",
+            &["Learn Rust", "https://www.rust-lang.org/learn"],
+        ));
+        assert!(library_filter_matches(
+            "RUST",
+            &["Learn Rust", "https://www.rust-lang.org/learn"],
+        ));
+        assert!(!library_filter_matches(
+            "rust missing",
+            &["Learn Rust", "https://www.rust-lang.org/learn"],
+        ));
+    }
+
+    #[test]
+    fn library_filter_bound_preserves_utf8_boundaries() {
+        let query = format!("rust {}", "🦀".repeat(MAX_LIBRARY_FILTER_BYTES));
+        let bounded = bounded_library_filter(&query);
+        assert!(bounded.len() <= MAX_LIBRARY_FILTER_BYTES);
+        assert!(bounded.is_char_boundary(bounded.len()));
+    }
+
+    #[test]
+    fn library_filter_is_visible_and_keyboard_focusable_at_compact_large_text() {
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_show_library("bookmarks");
+        let theme = Theme::dark().with_text_scale(2.0);
+        layout_with_theme(&mut widget, 390.0, 780.0, &theme);
+        assert!(widget.find_rect(LIBRARY_FILTER_INPUT_ID).is_some());
+        assert!(widget.focus_input(LIBRARY_FILTER_INPUT_ID));
     }
 
     #[test]
@@ -5159,6 +5524,7 @@ mod tests {
             "browser.bookmarks",
             "browser.downloads",
             "browser.extensions",
+            "browser.library",
             "browser.settings",
         ] {
             assert!(
@@ -5199,6 +5565,19 @@ mod tests {
             .iter()
             .find(|child| child.id.0 == "browser.settings")
             .unwrap();
+        let library = resources[0]
+            .children
+            .iter()
+            .find(|child| child.id.0 == "browser.library")
+            .unwrap();
+        let filter = library
+            .actions
+            .iter()
+            .find(|action| action.id == "set-filter")
+            .unwrap();
+        assert_eq!(filter.kind, OperationKind::View);
+        assert_eq!(filter.params()[0].name.as_ref(), "query");
+        assert!(filter.contract.validate_declaration().is_empty());
         assert_eq!(
             settings
                 .actions
@@ -5233,6 +5612,25 @@ mod tests {
             w.poll_resource_operation(invocation, false, &doc, &root),
             Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
+
+        let mut filter_args = serde_json::Map::new();
+        filter_args.insert("query".into(), serde_json::json!("tilo example"));
+        let encoded = filter.build_json(&filter_args).unwrap();
+        let started = w
+            .start_resource_operation(
+                ui::tilo_actions::InvocationId::new(),
+                filter.kind,
+                &encoded.type_id,
+                &encoded.payload,
+                &doc,
+                &root,
+            )
+            .unwrap();
+        assert!(matches!(
+            started,
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
+        assert_eq!(w.library_filter.get(), "tilo example");
     }
 
     #[test]

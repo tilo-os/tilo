@@ -882,6 +882,15 @@ impl Harness {
         )
     }
 
+    /// Press a named key with Shift held (the standard Shift+F10 context-menu
+    /// equivalent on keyboards without a dedicated Menu key).
+    fn press_named_shift(&mut self, key: NamedKey) -> bool {
+        self.dispatch_key_mods(
+            &key_input_event(Key::Named(key), None),
+            ModifiersState::SHIFT,
+        )
+    }
+
     /// Press a single character key (no modifiers) — a global shortcut like
     /// `n`, `e`, `/` when no field is focused.
     fn press_char(&mut self, c: &str) -> bool {
@@ -1329,6 +1338,45 @@ fn right_click_row_opens_context_menu_then_delete_opens_confirm() {
         h.app.popup.is_none(),
         "the context menu closes when an item is chosen"
     );
+}
+
+#[test]
+fn keyboard_context_menu_keys_open_selected_contacts_canonical_actions() {
+    let mut h = Harness::new(1280, 800);
+    let id = h.app.selected.expect("a contact starts selected");
+
+    assert!(
+        h.press_named(NamedKey::ContextMenu),
+        "the dedicated Menu key opens the selected contact's actions"
+    );
+    match &h.app.popup {
+        Some(Popup::ContextMenu { target, .. }) => assert_eq!(*target, id),
+        _ => panic!("Menu key should open the selected contact's context menu"),
+    }
+
+    h.press_named(NamedKey::Escape);
+    assert!(h.app.popup.is_none(), "Escape dismisses the transient menu");
+    assert!(
+        h.press_named_shift(NamedKey::F10),
+        "Shift+F10 opens the same context menu on keyboards without Menu"
+    );
+    match &h.app.popup {
+        Some(Popup::ContextMenu { target, .. }) => assert_eq!(*target, id),
+        _ => panic!("Shift+F10 should open the selected contact's context menu"),
+    }
+}
+
+#[test]
+fn enter_opens_the_selected_contact_in_narrow_push_navigation() {
+    let mut h = Harness::new(420, 800);
+    assert!(h.app.narrow, "phone width uses push navigation");
+    assert_eq!(h.app.push.pane(), Pane::List);
+
+    assert!(
+        h.press_named(NamedKey::Enter),
+        "Enter opens the selected contact"
+    );
+    assert_eq!(h.app.push.pane(), Pane::Detail);
 }
 
 /// The context-menu Favorite item flips the contact's flag, persists it to

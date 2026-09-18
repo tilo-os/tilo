@@ -106,10 +106,37 @@ class Cache(unittest.TestCase):
         self.assertLess(derived.index('cargo clean --profile thin-app'),derived.index('python3 /tilo-thin-cache/restore-thin-cache.py'))
         self.assertLess(derived.index('cp /tilo-resume/partial/*'),derived.index('python3 /tilo-thin-cache/restore-thin-cache.py'))
         marker='    && build_phase rust-output-validation'
-        self.assertEqual(normal[normal.index(marker):],derived[derived.index(marker):])
+        export = 'COPY --from=builder /build/thin-cache-restoration.json /out/thin-cache-restoration.json\n'
+        self.assertEqual(derived.count(export), 1)
+        self.assertEqual(normal[normal.index(marker):],derived[derived.index(marker):].replace(export, ''))
+        payload = derived.split('FROM scratch AS native-builder-payload\n', 1)[1].split('\nFROM ', 1)[0]
+        self.assertIn(export, payload)
         self.assertEqual(normal.count('/build/os/scripts/build-thin-apps.sh'),1)
         self.assertIn('from=tilo-thin-cache,target=/tilo-thin-cache,ro',derived)
         with self.assertRaises(ValueError):resume.derive_recipe(original,{'browser'},['tilo'],thin_cache_approval_sha256='bad')
+
+    def test_public_evidence_survives_scratch_projection_and_is_validated(self):
+        import shutil
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d); builder = base / 'builder'; payload = base / 'payload'
+            (builder / 'build').mkdir(parents=True); (payload / 'out').mkdir(parents=True)
+            receipt = dict(purpose='tilo-incomplete-thin-cache-restored', approval_sha256='a'*64,
+                           cargo_revalidation_required=True, complete=False)
+            raw = json.dumps(receipt).encode()
+            (builder / 'build/thin-cache-restoration.json').write_bytes(raw)
+            # Reproduce the exact optional COPY across the final scratch boundary.
+            shutil.copy2(builder / 'build/thin-cache-restoration.json',
+                         payload / resume.THIN_CACHE_EVIDENCE)
+            self.assertFalse((payload / 'build').exists())
+            def bounded(path, limit):
+                data = path.read_bytes(); self.assertLessEqual(len(data), limit); return data
+            tools = SimpleNamespace(read_bounded=bounded, strict_json=json.loads)
+            self.assertEqual(resume.read_thin_cache_evidence(tools, payload, 'a'*64), (raw, receipt))
+            with self.assertRaisesRegex(ValueError, 'actual thin cache'):
+                resume.read_thin_cache_evidence(tools, payload, 'b'*64)
+            (payload / resume.THIN_CACHE_EVIDENCE).unlink()
+            with self.assertRaises(FileNotFoundError):
+                resume.read_thin_cache_evidence(tools, payload, 'a'*64)
 
     def test_registry_stage_verifies_public_bytes_and_preserves_approval(self):
         with tempfile.TemporaryDirectory() as d:

@@ -432,7 +432,7 @@ fn zoom_clamps() {
 fn local_search_selects_match() {
     let mut a = app_at(1280.0, 800.0);
     a.model.query = "viktualien".to_string();
-    a.run_search();
+    a.run_search(None);
     assert_eq!(a.model.selected.as_deref(), Some("viktualienmarkt"));
     assert!(
         a.model
@@ -446,7 +446,7 @@ fn local_search_selects_match() {
 fn keyword_search_finds_cafe() {
     let mut a = app_at(1280.0, 800.0);
     a.model.query = "coffee".to_string();
-    a.run_search();
+    a.run_search(None);
     assert!(a.model.results.iter().any(|p| p.category == Category::Cafe));
 }
 
@@ -1173,7 +1173,7 @@ fn search_opens_drawer_on_narrow() {
     a.set_nav_open(false);
     a.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
     a.model.query = "café".to_string();
-    a.run_search();
+    a.run_search(None);
     assert!(a.panel_visible(), "results should reveal the drawer");
 }
 
@@ -2400,11 +2400,49 @@ fn panel_offline_escape_keys_via_key_event() {
 fn clear_search_dispatch() {
     let mut a = app_at(1280.0, 720.0);
     a.model.query = "café".to_string();
-    a.run_search();
+    a.run_search(None);
     assert!(!a.model.results.is_empty(), "search populated results");
     tap(&mut a, &Hit::Search(SearchHit::Clear));
     assert!(a.model.query.is_empty(), "clear empties the query");
     assert!(a.model.results.is_empty(), "clear empties the results");
+}
+
+#[test]
+fn search_history_affordances_dispatch_canonical_actions() {
+    use crate::actions::encode;
+
+    let mut a = app_at(1280.0, 720.0);
+    let mut doc = AutoCommit::new();
+    a.model.query = "coffee".to_string();
+    a.run_search(Some(&mut doc));
+    assert_eq!(
+        a.actions.last_dispatched(),
+        Some(&encode(&MapsAction::CommitSearch {
+            query: "coffee".to_string(),
+        })),
+        "visible search commits history through MapsAction"
+    );
+    assert!(
+        MapsDoc::load(&doc)
+            .is_some_and(|model| { model.recents.first().is_some_and(|query| query == "coffee") })
+    );
+
+    let theme = Theme::dark();
+    let mut renderer = TextRenderer::new();
+    let mut scene = Scene::new();
+    a.draw_app(&mut scene, Affine::IDENTITY, &mut renderer, &theme);
+    assert!(
+        a.click_targets
+            .iter()
+            .any(|(_, hit)| matches!(hit, Hit::ClearRecents)),
+        "durable clear-history operation has an on-screen affordance"
+    );
+    a.dispatch(&Hit::ClearRecents, &mut doc);
+    assert_eq!(
+        a.actions.last_dispatched(),
+        Some(&encode(&MapsAction::ClearRecents))
+    );
+    assert!(MapsDoc::load(&doc).is_some_and(|model| model.recents.is_empty()));
 }
 
 /// Clearing an active route drops it (the place-card / directions clear-×).

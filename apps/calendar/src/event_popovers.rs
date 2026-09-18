@@ -105,7 +105,13 @@ impl EventPopovers {
                 self.date_picker.set_focus(true);
             }
             PopoverKind::EndDate => {
-                self.date_picker.set_selected(event.end.date());
+                // The form shows an inclusive final day for an all-day
+                // event, whereas RFC 5545 stores its end date exclusively.
+                self.date_picker.set_selected(if event.all_day {
+                    event.all_day_last_date()
+                } else {
+                    event.end.date()
+                });
                 self.date_picker.set_focus(true);
             }
             PopoverKind::StartTime => {

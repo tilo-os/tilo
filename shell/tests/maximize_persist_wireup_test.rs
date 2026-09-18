@@ -150,7 +150,10 @@ fn shell_tick_writes_maximize_click_through_to_persisted_state() {
     use winit::dpi::PhysicalPosition;
     use winit::event::WindowEvent;
 
-    let (tree, strip_id, group_id) = single_group_tree();
+    let (mut tree, strip_id, group_id) = single_group_tree();
+    let state_dir = tempfile::tempdir().expect("state directory");
+    let state_path = state_dir.path().join("state.json");
+    tree.persist_path = Some(state_path.clone());
 
     // The host captures per-strip GroupRow pointers internally and wires
     // them into its `harvest_pending_maximize_changes` hook.
@@ -216,6 +219,12 @@ fn shell_tick_writes_maximize_click_through_to_persisted_state() {
              the persisted WorkspaceTree (#105 writeback)",
         );
     }
+    let restarted = shell::shell::persist::load_tree_from(&state_path)
+        .expect("maximize-on writeback creates valid durable state");
+    assert!(
+        restarted.workspaces[0].strips[0].window_groups[0].maximized,
+        "maximize-on must survive an immediate restart"
+    );
 
     // Round-trip: pins that the harvest is bidirectional, not a
     // "latch true once" hack.
@@ -241,6 +250,12 @@ fn shell_tick_writes_maximize_click_through_to_persisted_state() {
             "harvest must mirror the inverse flip, not just the rising edge",
         );
     }
+    let restarted = shell::shell::persist::load_tree_from(&state_path)
+        .expect("maximize-off writeback creates valid durable state");
+    assert!(
+        !restarted.workspaces[0].strips[0].window_groups[0].maximized,
+        "maximize-off must survive an immediate restart"
+    );
 }
 
 /// A no-op tick must not perturb a group whose persisted `maximized =

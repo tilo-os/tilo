@@ -83,6 +83,9 @@ pub struct ModalDialog<C: Widget> {
     content_taffy: Option<TaffyTree<()>>,
     content_node: Option<NodeId>,
     platform: PlatformConventions,
+    /// Effective theme captured by the outer retained layout. Inner content
+    /// is solved from `apply_layout`, which otherwise has no theme parameter.
+    layout_theme: Theme,
 }
 
 impl<C: Widget> ModalDialog<C> {
@@ -105,6 +108,7 @@ impl<C: Widget> ModalDialog<C> {
             content_taffy: None,
             content_node: None,
             platform: PlatformConventions::default(),
+            layout_theme: Theme::dark(),
         }
     }
 
@@ -196,6 +200,7 @@ impl<C: Widget> ModalDialog<C> {
     /// it in the host's retained Taffy tree. The dialog still lays out its own
     /// content normally; only the full-viewport wrapper is supplied directly.
     pub fn layout_in(&mut self, viewport: Rect, theme: &Theme, text_renderer: &mut TextRenderer) {
+        self.layout_theme = theme.clone();
         self.viewport = viewport;
         self.recompute_layout();
         self.place_content(theme, text_renderer);
@@ -462,6 +467,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.layout_theme = theme.clone();
         // The body is registered as a child node so its focusable widgets
         // join the host's keyboard focus order (and the focus trap), even
         // though `place_content` re-lays it out separately for drawing.
@@ -491,8 +497,9 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.recompute_layout();
+        let theme = self.layout_theme.clone();
         let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
+        tr.set_text_scale(theme.text_scale);
         self.place_content(&theme, &mut tr);
     }
 
@@ -511,6 +518,12 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         if !self.open {
             return;
         }
+
+        // Re-solve with the live renderer before painting. This preserves
+        // custom-font metrics in addition to the scale-correct pre-paint
+        // fallback used by `apply_layout`.
+        self.layout_theme = theme.clone();
+        self.place_content(theme, text_renderer);
 
         let backdrop = Color::BLACK.with_alpha_factor(0.7);
         scene.fill(Fill::NonZero, transform, backdrop, None, &self.viewport);
@@ -750,6 +763,7 @@ mod tests {
     //! surface is exercised end-to-end without depending on another
     //! widget's behaviour.
     use super::*;
+    use crate::widget::Text;
     use std::cell::Cell;
     use std::rc::Rc;
     use vello_encoding::DrawTag;
@@ -1012,6 +1026,35 @@ mod tests {
             &mut TextRenderer::new(),
         );
         assert_eq!(dialog.get_rect(), Rect::new(220.0, 230.0, 620.0, 430.0));
+    }
+
+    #[test]
+    fn retained_layout_preserves_large_text_before_the_first_draw() {
+        let mut dialog = ModalDialog::new(
+            "Large text",
+            Text::new("Scaled dialog content").with_scaled_size(20.0),
+        )
+        .open(true);
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = dialog.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(800.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
+                },
+            )
+            .unwrap();
+        dialog.apply_layout(&taffy, node, Point::ZERO);
+
+        assert!(
+            dialog.content().get_rect().height() >= 49.0,
+            "dialog content must reserve its 200% line height before paint, got {:?}",
+            dialog.content().get_rect()
+        );
     }
 
     #[test]
