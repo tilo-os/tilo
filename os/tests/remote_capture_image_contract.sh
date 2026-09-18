@@ -32,14 +32,14 @@ done
 
 # Keep the image contract tied to the production probe rather than merely
 # proving that an unrelated scanner package happens to be installed.
-source_adapter="$repo/shell/src/shell/remote_capture_source.rs"
+source_adapter="$repo/shell/src/shell/remote_capture/source.rs"
 if grep -Fq 'trusted_command("scanimage")' "$source_adapter"; then
   ok 'remote scanner discovery requires the packaged scanimage binary'
 else
   bad 'remote scanner discovery no longer matches the image contract'
 fi
 
-camera_adapter="$repo/shell/src/shell/remote_capture_adapter.rs"
+camera_adapter="$repo/shell/src/shell/remote_capture/adapter.rs"
 kernel_containerfile="$repo/os/kernel/Containerfile"
 kernel_acceptance="$repo/os/kernel/tests/test-rpm.sh"
 camera_options="$repo/os/etc/modprobe.d/tilo-remote-camera.conf"
