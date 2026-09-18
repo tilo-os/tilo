@@ -2,6 +2,7 @@ import init,* as runtime from './pkg/qos_browser_runtime.js';
 import {MountRegistry,wheelPixels} from './host-core.mjs';
 import {acquireStorage} from './storage.mjs';
 import {semanticBridge} from './semantics.mjs';
+import {settleComponentClose} from './close-recovery.mjs';
 let registry=new MountRegistry();
 const closures=new Set();
 const recoveryJobs=new Set();
@@ -82,14 +83,13 @@ export async function mountDesktop(target,options={}) {
     semantic.close();surface.remove();
     try{
       await flush.catch(()=>{});
-      if(storage&&writes.length){await storage.commit(writes);for(const w of writes)runtime.acknowledge_storage(config.profile,config.device,BigInt(w.revision),undefined);}
+      if(storage&&id!==undefined)await settleComponentClose(runtime,id,storage,config.profile,config.device);
       report({phase:'closed',persistence:'committed'});
     }catch(error){
       // Keep actor custody and the immutable pending bytes until durable retry.
       const retained=storage;storage=undefined;
       const retry=async()=>{
-        await retained.commit(writes);
-        for(const w of writes)runtime.acknowledge_storage(config.profile,config.device,BigInt(w.revision),undefined);
+        await settleComponentClose(runtime,id,retained,config.profile,config.device);
         await retained.release();recoveryJobs.delete(retry);
         report({phase:'closed',persistence:'committed',pendingWrites:0,error:null});
       };
@@ -156,6 +156,7 @@ export async function mountDesktop(target,options={}) {
       semantic:(...args)=>runtime.semantic(id,...args)};
   }catch(error){registry.remove(token);await cleanup();throw error;}
 }
+export function pendingComponentCloseCount(){return runtime.component_close_count();}
 export function pendingRecoveryCount(){return recoveryJobs.size;}
 export async function retryPendingRecovery(){for(const retry of [...recoveryJobs])await retry();}
 export async function shutdown(){await retryPendingRecovery();registry.shutdown();await Promise.all([...closures].map(close=>close()));await new Promise(resolve=>runtime.shutdown(resolve));registry=new MountRegistry();}

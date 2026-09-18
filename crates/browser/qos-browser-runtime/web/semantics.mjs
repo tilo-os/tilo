@@ -23,16 +23,18 @@ export function semanticBridge(root,invoke,report) {
       }
       element.route={owner,target:node.action_target};
       if(element.parentNode!==parent)parent.append(element);
-      const role=typeof node.role==='object'?'heading':roles[node.role];
-      if(role)element.setAttribute('role',role);
+      const role=node.role&&typeof node.role==='object'?(node.role.Heading?'heading':undefined):roles[node.role];
+      if(role)element.setAttribute('role',role);else element.removeAttribute('role');
+      const level=node.role?.Heading?.level;
+      if(level!==undefined)element.setAttribute('aria-level',String(level));else element.removeAttribute('aria-level');
       if(node.name)element.setAttribute('aria-label',node.name);else element.removeAttribute('aria-label');
-      if(node.description)element.setAttribute('aria-description',node.description);
-      if(node.state?.focusable)element.tabIndex=0;
+      if(node.description)element.setAttribute('aria-description',node.description);else element.removeAttribute('aria-description');
+      element.tabIndex=node.state?.focusable?0:-1;
       for(const flag of ['selected','checked','expanded','disabled','busy','multiline','read_only']){
         const value=node.state?.[flag]; const attribute=`aria-${flag==='read_only'?'readonly':flag}`;
         if(value!==undefined&&value!==null)element.setAttribute(attribute,String(value));else element.removeAttribute(attribute);
       }
-      if(node.live)element.setAttribute('aria-live',node.live.toLowerCase());
+      if(node.live)element.setAttribute('aria-live',node.live.toLowerCase());else element.removeAttribute('aria-live');
       const value=node.state?.protected?'':node.value??'';
       if(editable){if(document.activeElement!==element)element.value=value;}
       else if(!node.children?.length)element.textContent=value||node.name||'';

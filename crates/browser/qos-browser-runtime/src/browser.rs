@@ -29,7 +29,7 @@ thread_local! {
     static REQUESTS: RefCell<HashMap<u64, Request>> = RefCell::new(HashMap::new());
     static CACHES: RefCell<HashMap<(String,String), PortableStorage>> = RefCell::new(HashMap::new());
     static NEXT: RefCell<u64> = const { RefCell::new(1) };
-    static CLOSED: RefCell<HashMap<u64, Vec<ui::application::ComponentCloseReport>>> = RefCell::new(HashMap::new());
+    static CLOSED: RefCell<crate::close_recovery::ClosedComponents> = RefCell::new(crate::close_recovery::ClosedComponents::default());
     static STOP: RefCell<Option<Function>> = const { RefCell::new(None) };
 }
 #[derive(serde::Deserialize)]
@@ -203,7 +203,7 @@ pub fn close(id: u64) -> Result<String, JsValue> {
         // Bytes stay in the shared cache until the host's transaction completes.
         let writes=pending.iter().map(write_json).collect::<Vec<_>>();
         emit(&mount.status,serde_json::json!({"phase":"closed","id":id,"closeReports":reports.len(),"pendingWrites":writes.len()}));
-        CLOSED.with_borrow_mut(|closed|closed.insert(id,reports));
+        CLOSED.with_borrow_mut(|closed|closed.retain(id,reports,mount.storage.clone()));
         unconfigure(&mount.canvas);
         mount.gpu.take();
         Ok(serde_json::to_string(&writes).map_err(error)?)
@@ -226,6 +226,11 @@ pub fn shutdown(done: Function) -> Result<(), JsValue> {
     let ids = MOUNTS.with_borrow(|m| m.keys().copied().collect::<Vec<_>>());
     for id in ids {
         close(id)?;
+    }
+    if CLOSED.with_borrow(|closed| closed.len() > 0) {
+        return Err(error(
+            "component close recovery must settle before terminal shutdown",
+        ));
     }
     REQUESTS.with_borrow_mut(HashMap::clear);
     STOP.with_borrow_mut(|s| *s = Some(done));
@@ -1021,4 +1026,22 @@ pub fn refresh_storage_lease(profile: &str, device: &str) -> Result<(), JsValue>
         caches.remove(&key);
         Ok(())
     })
+}
+
+/// Retry component-level owners first; retries may enqueue additional durable bytes.
+#[wasm_bindgen]
+pub fn prepare_close(id: u64) -> Result<String, JsValue> {
+    let (writes, errors) = CLOSED.with_borrow_mut(|closed| closed.prepare(id));
+    serde_json::to_string(&serde_json::json!({"writes":writes.iter().map(write_json).collect::<Vec<_>>(),"errors":errors})).map_err(error)
+}
+/// Only release captured view envelopes after the host acknowledged durable writes.
+#[wasm_bindgen]
+pub fn finish_close(id: u64) -> Result<(), JsValue> {
+    CLOSED
+        .with_borrow_mut(|closed| closed.finish(id))
+        .map_err(error)
+}
+#[wasm_bindgen]
+pub fn component_close_count() -> usize {
+    CLOSED.with_borrow(|closed| closed.len())
 }

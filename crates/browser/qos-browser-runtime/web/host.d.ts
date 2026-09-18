@@ -46,3 +46,6 @@ export function retryPendingRecovery(): Promise<void>;
 
 /** Number of failed closes retaining actor custody and pending durable bytes. */
 export function pendingRecoveryCount(): number;
+
+/** Actual retained Rust component reports, including captured view envelopes. */
+export function pendingComponentCloseCount(): number;

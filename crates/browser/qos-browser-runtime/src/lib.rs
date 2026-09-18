@@ -4,3 +4,6 @@ mod browser;
 
 #[cfg(target_arch = "wasm32")]
 mod clipboard;
+
+#[cfg(any(target_arch = "wasm32", test))]
+mod close_recovery;
