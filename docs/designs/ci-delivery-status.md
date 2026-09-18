@@ -6,10 +6,11 @@ authorization. Broader experiments and the production roadmap remain incomplete.
 
 ## Deployed relief versus experiments
 
-The coordinating emergency task reports product checkpoint `0975d89a8` and
-infrastructure checkpoint `ffbd` deployed. Product contents were inspected in the
-emergency checkout; infrastructure deployment is the operator's reported snapshot.
-Neither checkpoint establishes green main CI. The [emergency runbook](../ci-emergency-relief.md)
+The coordinating task inspected product checkpoint `fc2d86d54` and infrastructure
+checkpoint `7195b86` on 2026-09-18 at 23:45 UTC. The deployed broker image is
+`8d313aa76ff57f9589defbad60e6817278547d2a6a84b204799d342349b0b0a4`.
+These are observations, not permanent health guarantees or proof that every
+main revision is green. The [emergency runbook](../ci-emergency-relief.md)
 on main records deployment details, recovery and per-run validation; that file
 may not yet exist in older experiment checkouts.
 
@@ -23,6 +24,51 @@ heavy-run cleanup policy. Continuous dependency-aware packaging remains unfinish
 
 Routine automatic merging is still unimplemented. Task-branch/PR instructions and
 private protection experiments do not create a deployed integration service.
+
+## Latest verified progress and remaining rollout gates
+
+- Ordinary main quality jobs used isolated trusted snapshot clones and created
+  containers in 0.34–0.54 seconds after task receipt, with no pull event. A full
+  main lint completed in 127.911 seconds. These measurements apply to the seeded
+  on-prem workers; unseeded AWS workers still transfer/extract the images.
+- The default native builder is now resolved once to an immutable manifest
+  digest. Actual authenticated run 22806 verified that the API's digest equals
+  the raw registry index SHA and contains x86-64/ARM64 descriptors. App packaging
+  also shares one resolved index across its native architecture jobs. No
+  continuous main packaging trigger was restored by this change.
+- Two cloud security workers were lost; Forgejo's existing zombie-task reaper
+  marked their tasks failed. Targeted job reruns then passed the complete security
+  suite for main revisions `87e99138d` and `11e501209`, without restarting their
+  independent architecture jobs. This supersedes the old interrupted local
+  security-suite observation below, for these exact live revisions only.
+- Requested disk-heavy workers now receive priority 1000 with preemption disabled.
+  Manual OS run 9331 actually started at 23:40:50 UTC on the prioritized ARM worker.
+  The earlier pending-pod replacement exhausted a zero-retry Job; ordinary broker
+  reconciliation created the fresh prioritized worker. Active work was preserved.
+- Cloud runtime inspection found QEMU in unlimited, incorrectly interpreted
+  systemd-style cgroup paths. Kata guest-agent timeouts terminated affected workers;
+  the underlying stall cause is not yet proven. A reviewed isolated-node canary
+  pairs corrected accounting with conservative admission overhead and a real
+  image-extraction workload. Its node is reserved, but existing jobs must finish
+  naturally before configuration changes. No fleet runtime correction is claimed.
+- AWS EBS seed support and a bounded clean-source/snapshot/clone pilot are prepared
+  and disabled. Live CSI/storage prerequisites were inspected. Actual clone and
+  image-reuse acceptance wait for safe runtime accounting and capacity.
+- A historical 51-package artifact passed package/runtime signature and payload
+  checks, and the current assembler produced identical outputs twice. This proves
+  transport/assembly compatibility, not current toolkit ABI or native execution.
+- The private packaging coordinator persists dispatch intent, preserves its active
+  build, replaces pending requests, and advances the comparison baseline only on
+  success. Ten tests cover crash/restart/concurrent callers. Its live A→latest-C
+  experiment is underway; production dispatch/publication remains disabled.
+- Native ARM64 mold compatibility passed a small pinned-Rust dev/thin-LTO fixture
+  with ELF hardening intact. Representative memory/performance measurements and
+  exact CI-image qualification remain prerequisites for changing defaults.
+
+The latest observed main checkpoint's lint (22821) passed after 23 seconds of
+queueing and 178 seconds of execution; its check run (22820) started after one
+second. The private coordinator fixture used a global uncached worker and waited
+221 seconds, which is not a production qOS quality-lane latency measurement.
 
 ## Implementation and experiment history
 
@@ -114,10 +160,12 @@ The affected-package selector now treats moves as deletion plus addition and
 reads NUL-delimited Git paths. A real Git regression fixture proved that the old
 reader omitted the source package and quoted Unicode filenames; all 12 selector
 tests pass with the fix. Cargo metadata now uses `--locked`.
-An actual metadata probe on the current 141-package workspace selected 4 packages
+An earlier metadata probe on the then-current 141-package workspace selected 4 packages
 for `apps/calculator/src/main.rs` (2 native matrix jobs), 68 for `ui/src/lib.rs`
 (4 jobs), and 3 contract packages for `docs/architecture.md` (2 jobs). These are
 selection counts, not build-time measurements. Later policy omits Rust for design prose and four audited developer/CI documents.
+The toolkit has since moved under `crates/sdk/ui-core`; remeasure current graph
+counts rather than treating those historical paths or counts as a present contract.
 Live Forgejo testing found empty matrices could block the aggregate; the deployed
 sentinel row is skipped without allocating a runner and preserves an explicit
 aggregate result. Security/selection remain mandatory; full requests override it.
@@ -139,8 +187,8 @@ so that consumer remains unqualified. No website state was changed.
 | Automatic routine integration and independent review | Implement trusted worker; qualify CI provenance, simultaneous merges, ordinary author/reviewer permissions and recovery; restricted integrator enforcement is proven only in the private pilot |
 | First useful retained baseline | Discover/admit actual bootable image and unsigned inputs; preserve digests, trust, source/helper identities and separate VM/board evidence |
 | Targeted real installer/desktop testing | Supported commands consume that baseline, restore disposable state and produce actual test results without unrelated compilation/assembly |
-| End-to-end feedback measurements | Trace real planning, queue, compilation, layer snapshots, transfers, finalization/signing, worker setup and tests; current contract timings are only a small part |
-| Continuous app/runtime packaging | Native artifact handoff qualification, portable compatible artifact selection, active/latest-pending coalescing, restart/retry and stale-publication tests |
+| End-to-end feedback measurements | Extend verified production quality startup/queue results to native compilation, AWS snapshots/transfers, linking, finalization/signing and tests |
+| Continuous app/runtime packaging | Current native/runtime ABI qualification beyond historical artifact replay; production active/latest-pending dispatch, compatible artifact selection, recovery and atomic stale-safe channel promotion |
 | Full enabled product matrix | Linux/qOS apps, desktop distro/architecture combinations, Windows/Linux setup and generic/device OS candidates; Windows app fleet remains a staged decision |
 | macOS exclusion | Disable every macOS build/publication prerequisite and test push/tag/manual paths without removing future capability definitions |
 | Manual OS version release | Qualify the locally tested publication restrictions with real credentials; manual promotion must pin a fully tested compatible manifest |
