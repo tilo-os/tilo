@@ -5323,7 +5323,6 @@ mod tests {
         tr: TextRenderer,
     }
 
-    #[allow(dead_code)]
     impl Frame {
         fn demo() -> Self {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
