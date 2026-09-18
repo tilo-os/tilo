@@ -8017,41 +8017,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// Not a correctness test: a perf guard demonstrating that a no-op reload
-    /// (no document change, as on every scroll/selection/hover frame) skips the
-    /// snapshot + full recalculation. Run with `--ignored --nocapture`.
     #[test]
-    #[ignore = "a benchmark that prints timings; run with --ignored --nocapture"]
-    fn bench_reload_memoisation() {
+    fn reload_reuses_unchanged_cache_and_invalidates_it_after_an_edit() {
         let (mut app, mut doc) = seeded_app();
-        let n = 20_000;
+        // Commit the startup seed and refresh once at its steady-state heads.
+        app.sync(&mut doc, &automerge::ROOT);
+        let cached_heads = app
+            .cache
+            .as_ref()
+            .expect("seed reload populates cache")
+            .heads
+            .clone();
 
-        // Memoised path (heads unchanged) — what interaction frames now hit.
-        let t0 = std::time::Instant::now();
-        for _ in 0..n {
-            app.reload(&mut doc);
-        }
-        let memo = t0.elapsed();
-
-        // Forced path (snapshot + recalculate every call) — the old behaviour.
-        let t1 = std::time::Instant::now();
-        for _ in 0..n {
-            app.cache = None;
-            app.reload(&mut doc);
-        }
-        let forced = t1.elapsed();
-
-        eprintln!(
-            "reload x{n}: memoised={:?} ({:.3}us/call)  forced={:?} ({:.3}us/call)",
-            memo,
-            memo.as_secs_f64() * 1e6 / f64::from(n),
-            forced,
-            forced.as_secs_f64() * 1e6 / f64::from(n),
-        );
+        app.pending.redraw = false;
+        app.reload(&mut doc);
         assert!(
-            memo < forced,
-            "memoised reload must be cheaper than a forced one"
+            !app.pending.redraw,
+            "unchanged reload should return before rebuilding"
         );
+        assert_eq!(app.cache.as_ref().unwrap().heads, cached_heads);
+
+        SheetsDoc::set_cell_raw(&mut doc, 0, (0, 0), "1234");
+        app.pending.redraw = false;
+        app.reload(&mut doc);
+
+        let refreshed_heads = &app
+            .cache
+            .as_ref()
+            .expect("edited reload refreshes cache")
+            .heads;
+        assert_ne!(refreshed_heads, &cached_heads);
+        assert_eq!(refreshed_heads, &doc.get_heads());
+        assert_eq!(value_at(&app, (0, 0)), Some(CellValue::Number(1234.0)));
+        assert!(app.pending.redraw, "rebuilt grid must request a redraw");
     }
 
     #[test]
