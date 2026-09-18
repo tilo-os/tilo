@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use iroh::endpoint::{Endpoint, RecvStream, SendStream, presets};
@@ -24,6 +25,7 @@ use crate::auth::{self, Hello, HelloAck2, PeerRole};
 use crate::client::RelayClient;
 use crate::compute_session::ComputeProtocol;
 use crate::compute_transport::COMPUTE_ALPN;
+use crate::compute_worker::{ProductionComputeWorkerConfig, run_production_compute_worker};
 use crate::config::{PeerRelayConfig, RelayConfig};
 use crate::metrics::Metrics;
 use crate::peer::{
@@ -118,6 +120,9 @@ pub struct Relay {
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
     /// Atomic filesystem completeness proof shared with the headless replica.
     full_replica_status: PathBuf,
+    /// Live proof that the owned signed-package compute worker completed all
+    /// health checks and still owns its authenticated session.
+    compute_ready: Arc<AtomicBool>,
 }
 
 /// A tokio `JoinHandle` that aborts on drop — used so that dropping
@@ -159,6 +164,7 @@ pub struct RelayHandle {
     /// Effective device-mesh policy for routing and replication consumers.
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
     full_replica_status: PathBuf,
+    compute_ready: Arc<AtomicBool>,
 }
 
 /// Bundle of identity material the relay needs to run. Loaded by
@@ -210,10 +216,15 @@ impl Relay {
         // exist. The composite process starts relay + filesystem planes; live
         // workspace control uses relay's non-retained presence plane, while
         // app and compute claims remain unavailable here.
+        let compute_requested = cfg.services.compute
+            && matches!(cfg.device_role, crate::mesh::DeviceRole::AlwaysOnServer);
+        let mut available_services = crate::mesh::ServiceCapabilities::home_peer();
+        available_services.compute = compute_requested;
         cfg.services = cfg
             .services
             .authorized_by(&identity.device_cert.capabilities)
-            .limited_to(&crate::mesh::ServiceCapabilities::home_peer());
+            .limited_to(&available_services);
+        let compute_ready = Arc::new(AtomicBool::new(false));
         let mesh_profile = Arc::new(crate::mesh::DeviceMeshProfile {
             device: identity.device_cert.device_public_key,
             role: cfg.device_role,
@@ -255,6 +266,7 @@ impl Relay {
             own_sk: identity.device_signing_key.clone(),
             mesh_profile: mesh_profile.clone(),
             full_replica_status: cfg.full_replica_status.clone(),
+            compute_ready: Arc::clone(&compute_ready),
             home_peer_bundle: cfg.home_peer_bundle.clone(),
             autobind: matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser).then(|| {
                 WorkspaceAutobind {
@@ -270,6 +282,7 @@ impl Relay {
             revocations: revocations.clone(),
             mesh_profile: mesh_profile.clone(),
             full_replica_status: cfg.full_replica_status.clone(),
+            compute_ready: Arc::clone(&compute_ready),
             state_root: cfg.state_root.clone(),
         };
         let compute = ComputeProtocol::new(
@@ -294,6 +307,31 @@ impl Relay {
             &metrics,
             revocations,
         );
+        if cfg.services.compute {
+            for workspace in workspaces.lock().await.values() {
+                workspace
+                    .lock()
+                    .await
+                    .admit_device(identity.device_cert.device_public_key)?;
+            }
+            let worker_config = ProductionComputeWorkerConfig {
+                endpoint: endpoint.clone(),
+                relay_address: endpoint.addr(),
+                user_public_key: identity.user_public_key,
+                device_cert: identity.device_cert.clone(),
+                device_signing_key: identity.device_signing_key.clone(),
+                revocations: identity.revocations.clone(),
+                workspaces: cfg.workspaces.iter().map(|binding| binding.id).collect(),
+                state_root: cfg.state_root.join("compute-worker"),
+                readiness: Arc::clone(&compute_ready),
+            };
+            let worker_task = tokio::spawn(async move {
+                if let Err(error) = run_production_compute_worker(worker_config).await {
+                    tracing::warn!(%error, "production compute worker withdrawn");
+                }
+            });
+            push_peer_relay_task(&peer_relay_tasks, worker_task);
+        }
         if matches!(cfg.trust_policy, TrustPolicy::AllowList { .. })
             && cfg.home_peer_bundle.exists()
         {
@@ -319,6 +357,7 @@ impl Relay {
             peer_relay_tasks,
             mesh_profile,
             full_replica_status: cfg.full_replica_status.clone(),
+            compute_ready,
         })
     }
 
@@ -393,6 +432,7 @@ impl Relay {
             metrics: self.metrics.clone(),
             mesh_profile: self.mesh_profile.clone(),
             full_replica_status: self.full_replica_status.clone(),
+            compute_ready: Arc::clone(&self.compute_ready),
         }
     }
 
@@ -572,6 +612,7 @@ impl RelayHandle {
     pub fn advertised_services(&self) -> crate::mesh::ServiceCapabilities {
         let mut services = self.mesh_profile.services.clone();
         services.full_content_replication &= !self.filesystem_endpoints().is_empty();
+        services.compute &= self.compute_ready.load(Ordering::Acquire);
         services
     }
 
@@ -1116,6 +1157,7 @@ struct DiscoveryProtocol {
     own_sk: ed25519_dalek::SigningKey,
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
     full_replica_status: PathBuf,
+    compute_ready: Arc<AtomicBool>,
     home_peer_bundle: PathBuf,
     autobind: Option<WorkspaceAutobind>,
 }
@@ -1129,6 +1171,7 @@ struct ManagementProtocol {
     revocations: Arc<std::sync::RwLock<RevocationList>>,
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
     full_replica_status: PathBuf,
+    compute_ready: Arc<AtomicBool>,
     state_root: PathBuf,
 }
 
@@ -1173,6 +1216,8 @@ impl ProtocolHandler for ManagementProtocol {
             nonce,
             &hello.client_nonce,
         );
+        let mut services = self.mesh_profile.services.clone();
+        services.compute &= self.compute_ready.load(Ordering::Acquire);
         write_frame(
             &mut send,
             &postcard::to_allocvec(&ack)
@@ -1258,7 +1303,7 @@ impl ProtocolHandler for ManagementProtocol {
                 relay_endpoint: self.endpoint.addr(),
                 label: label.trim().to_string(),
                 files_ready,
-                services: self.mesh_profile.services.clone(),
+                services,
                 decommissioned,
             })
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?,
@@ -1375,6 +1420,7 @@ impl ProtocolHandler for DiscoveryProtocol {
             )));
         }
         let mut profile = (*self.mesh_profile).clone();
+        profile.services.compute &= self.compute_ready.load(Ordering::Acquire);
         let proof = full_replica_proof(&self.full_replica_status);
         profile.filesystem_endpoints = proof
             .as_ref()
@@ -2001,6 +2047,10 @@ mod tests {
         assert!(!services.app_serving);
         assert!(!services.compute);
         assert!(services.remote_control_relay);
+        relay.compute_ready.store(true, Ordering::Release);
+        assert!(relay.handle().mesh_profile().services.compute);
+        relay.compute_ready.store(false, Ordering::Release);
+        assert!(!relay.handle().mesh_profile().services.compute);
         relay.shutdown().await;
     }
 
