@@ -67,3 +67,5 @@ from that retained native payload.
 No physical PC partitions, boot entries or removable media are changed by these
 preparation steps. Physical media writing and the eventual Windows-preserving
 installation require separate execution after preparation and backup.
+
+Target bundle materialization deliberately refuses an existing `tilo-target` directory on the selected ESP. Reinstalling over a previous Tilo bundle requires a separately reviewed ownership/recovery operation; preparation never overwrites another bundle. Promotion selects the exact `bootc_composefs-<signed target digest>.efi` entry, preserving older entries on a shared ESP.
