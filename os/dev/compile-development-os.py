@@ -455,7 +455,7 @@ def compile_with_capacity_watchdog(env):
     receipt = {'capacity_experiment': True, 'sufficiency_previously_proven': False,
                'initial_free_bytes': initial, 'minimum_free_bytes': initial,
                'abort_free_bytes': ABORT_FREE, 'samples': 0, 'status': 'running'}
-    child = subprocess.Popen(['bash', 'os/dev/build-image.sh'], cwd=REPO, env=env,
+    child = subprocess.Popen([sys.executable, str(CONTROLLER / 'os/dev/assembly-cache-fallback.py')], cwd=REPO, env=env,
                              start_new_session=True)
     try:
         while True:

@@ -173,6 +173,7 @@ jobs:
           python3 os/tests/test_native_builder_artifact.py
           python3 os/tests/test_compile_tools_source.py
           python3 os/tests/test_compile_tools_cache.py
+          python3 os/tests/test_assembly_cache_fallback.py
           if [ "$COMPILE_MODE" != cache-only ]; then
             bash os/tests/app_store.sh
           fi
@@ -306,7 +307,7 @@ jobs:
           mkdir "$evidence"
           cleanup() {
             # Export an explicit public allowlist, never the private workspace.
-            for file in controller-source.json native-source-compatibility.json reconstructed-native-adoption.json native-builder.json firmware-import.json inputs.json native-inputs.json tools.json workspace.json result.json wpe-stage.json wpe-adoption.json raw-rootfs.json raw-rootfs-audit.json retained-rootfs.json installed-rpms.tsv admission-capacity.json capacity.json memory-initial.json memory-final.json cache-configuration.json base-installation-tooling.json raw-installation-tooling.json; do
+            for file in cache-export-fallback.json controller-source.json native-source-compatibility.json reconstructed-native-adoption.json native-builder.json firmware-import.json inputs.json native-inputs.json tools.json workspace.json result.json wpe-stage.json wpe-adoption.json raw-rootfs.json raw-rootfs-audit.json retained-rootfs.json installed-rpms.tsv admission-capacity.json capacity.json memory-initial.json memory-final.json cache-configuration.json base-installation-tooling.json raw-installation-tooling.json; do
               docker cp "$name:/evidence/$file" "$evidence/$file" >/dev/null 2>&1 || true
             done
             mkdir -p "$evidence/public-trust"
