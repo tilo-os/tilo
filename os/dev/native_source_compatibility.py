@@ -44,9 +44,12 @@ def verify(repo, revision, path, digest, native_receipt_sha256, reconstruction_s
     approval = read_approval(path, digest)
     rootfs = approval.get('purpose') == 'tilo-rootfs-native-source-compatibility'
     policy = rootfs and 'rootfs_revision' in approval
+    followup = policy and 'policy_revision' in approval
     extra = {'provider_revision', 'wpe_bridge'} if rootfs else set()
     if policy:
         extra.add('rootfs_revision')
+    if followup:
+        extra.add('policy_revision')
     require(set(approval) == {'schema', 'purpose', 'native_source_revision', 'assembly_source_revision',
         'native_receipt_sha256', 'approved_reconstruction_sha256', 'changes'} | extra, 'source admission schema differs')
     require(type(approval['schema']) is int and approval['schema'] == 1
@@ -60,13 +63,22 @@ def verify(repo, revision, path, digest, native_receipt_sha256, reconstruction_s
     require(git(repo, 'rev-parse', 'HEAD').decode().strip() == revision
         and not git(repo, 'status', '--porcelain', '--untracked-files=all').strip(),
         'compatible assembly source must be clean and exact')
-    # Authenticated checkout includes the explicit two/three/four-commit chain.
+    # Authenticated checkout includes the explicit two/three/four/five-commit chain.
     # No hidden ancestors, rename heuristics, or unrecorded changes are permitted.
     recipe_revision = approval['rootfs_revision'] if policy else revision
+    policy_revision = approval['policy_revision'] if followup else revision
+    if followup:
+        require(re.fullmatch('[0-9a-f]{40}', policy_revision or '')
+            and git(repo, 'show', '-s', '--format=%P', revision).decode().strip() == policy_revision,
+            'rootfs follow-up ancestry differs')
+        require(git(repo, 'diff-tree', '--no-commit-id', '--name-only', '--no-renames', '-r', '-z', policy_revision, revision) == b'os/Containerfile\0',
+            'rootfs follow-up must change only Containerfile')
+        verify_rootfs(git(repo, 'show', policy_revision + ':os/Containerfile'),
+            git(repo, 'show', revision + ':os/Containerfile'))
     if policy:
         require(re.fullmatch('[0-9a-f]{40}', recipe_revision or '')
-            and git(repo, 'show', '-s', '--format=%P', revision).decode().strip() == recipe_revision, 'policy correction ancestry differs')
-        require(git(repo, 'diff-tree', '--no-commit-id', '--name-only', '--no-renames', '-r', '-z', recipe_revision, revision) .split(b'\0')[:-1] == [p.encode() for p in POLICY_PATHS], 'policy correction must change only reviewed rootfs policy files')
+            and git(repo, 'show', '-s', '--format=%P', policy_revision).decode().strip() == recipe_revision, 'policy correction ancestry differs')
+        require(git(repo, 'diff-tree', '--no-commit-id', '--name-only', '--no-renames', '-r', '-z', recipe_revision, policy_revision) .split(b'\0')[:-1] == [p.encode() for p in POLICY_PATHS], 'policy correction must change only reviewed rootfs policy files')
     parent = approval['provider_revision'] if rootfs else SOURCE
     if rootfs:
         require(re.fullmatch('[0-9a-f]{40}', parent or '') and
