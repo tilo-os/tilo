@@ -355,6 +355,18 @@ fn item_label(it: &CaptureItem) -> String {
     }
 }
 
+/// The owning application for a contextual capture handoff. Camera produces
+/// media, but deliberately does not grow a second collection browser around
+/// it. Keeping this mapping beside the typed resource action makes the visible
+/// handoff, palette action, and automation target use the same boundary.
+pub(crate) const fn capture_destination(is_video: bool) -> (&'static str, &'static str) {
+    if is_video {
+        ("dev.tilo.video-player", "Video Player")
+    } else {
+        ("dev.tilo.photos", "Photos")
+    }
+}
+
 pub(crate) fn capture_resource_id(it: &CaptureItem) -> String {
     format!(
         "{}:{}",
@@ -380,21 +392,13 @@ pub(crate) fn capture_resource(it: &CaptureItem) -> Resource {
         .filter(|id| crate::media::is_media_id(id))
         .and_then(|id| id.strip_prefix(crate::media::MEDIA_PREFIX))
     {
-        let app_id = if it.is_video {
-            "dev.tilo.video-player"
-        } else {
-            "dev.tilo.photos"
-        };
-        let label = if it.is_video {
-            "Open in Video Player"
-        } else {
-            "Open in Photos"
-        };
+        let (app_id, destination) = capture_destination(it.is_video);
+        let label = format!("Open in {destination}");
         let app_id = app_id.to_owned();
         let content_hash = content_hash.to_owned();
         let spec = ActionSpec::typed_operation(
             "open",
-            label,
+            &label,
             "Open the verified portable capture in its owning app",
             OperationKind::Effect,
             APPLICATION_LAUNCH_TYPE,
@@ -884,7 +888,21 @@ mod tests {
         assert!(ids.contains(&"camera.settings"));
         assert!(
             !ids.iter()
+                .any(|id| { matches!(*id, "dev.tilo.photos.app" | "dev.tilo.video-player.app") }),
+            "handoff applications are destinations on the current capture, never Camera roots"
+        );
+        assert!(
+            !ids.iter()
                 .any(|id| id.contains("gallery") || id.contains("library"))
+        );
+    }
+
+    #[test]
+    fn capture_handoff_destination_is_typed_and_kind_specific() {
+        assert_eq!(capture_destination(false), ("dev.tilo.photos", "Photos"));
+        assert_eq!(
+            capture_destination(true),
+            ("dev.tilo.video-player", "Video Player")
         );
     }
 
