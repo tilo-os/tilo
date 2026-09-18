@@ -4,6 +4,7 @@
 //! iroh. Tilo only names authenticated endpoint ids and workspace topics.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -34,6 +35,7 @@ const MAX_SURFACE_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const SURFACE_STREAM_ALPN: &[u8] = b"tilo-surface-stream/1";
 const PERSONAL_FABRIC_ALPN: &[u8] = b"tilo-personal-fabric/1";
 pub const PERSONAL_MEDIA_CHUNK_BYTES: usize = 256 * 1024;
+const MAX_ACTIVE_PERSONAL_MEDIA_TRANSFERS: usize = 8;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct SurfaceWireFrame {
@@ -245,6 +247,11 @@ pub enum NetCmd {
         total_bytes: u64,
         file: std::fs::File,
     },
+    /// Stop only the active stream with this exact transport peer/id binding.
+    CancelPersonalMedia {
+        target: EndpointId,
+        transfer_id: [u8; 16],
+    },
     PublishNearbyTransfer {
         ws: WorkspaceId,
         user_public_key: [u8; 32],
@@ -284,27 +291,28 @@ pub enum NetEvent {
     PeerJoined {
         ws: WorkspaceId,
         peer: PeerId,
+        membership_epoch: MembershipEpoch,
     },
     PeerLeft {
         ws: WorkspaceId,
         peer: PeerId,
         cause: PeerDepartureCause,
+        membership_epoch: Option<MembershipEpoch>,
     },
     /// An authenticated durable host finished subscribing to this workspace.
     /// Distinct from a direct peer arrival: the shell uses this edge to seed
     /// transport-level checkpoints for future first-time/offline devices.
-    HostReady {
-        ws: WorkspaceId,
-        peer: PeerId,
-    },
+    HostReady { ws: WorkspaceId, peer: PeerId },
     Msg {
         ws: WorkspaceId,
         peer: PeerId,
+        membership_epoch: Option<MembershipEpoch>,
         msg: NeighbourMsg,
     },
     PersonalFabric {
         ws: WorkspaceId,
         peer: PeerId,
+        membership_epoch: MembershipEpoch,
         user_public_key: [u8; 32],
         payload: PersonalFabricPayload,
     },
@@ -324,12 +332,26 @@ pub enum NetEvent {
     },
 }
 
+/// Actor-minted identity of one endpoint's membership incarnation on one
+/// workspace topic. This value never crosses the wire: it is authority only
+/// for local consumers of [`NetEvent`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MembershipEpoch(u64);
+
+impl MembershipEpoch {
+    #[cfg(test)]
+    pub(crate) const fn for_test(value: u64) -> Self {
+        Self(value)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PersonalMediaTransferStatus {
     Started,
     Progress,
     Completed,
     Failed,
+    Cancelled,
 }
 
 /// Why the transport stopped treating a peer as live on a workspace topic.
@@ -344,6 +366,8 @@ pub enum PeerDepartureCause {
     HostSessionClosed,
     /// The peer stopped refreshing its liveness heartbeat.
     LivenessTimedOut,
+    /// The local topic subscription ended or was explicitly left.
+    WorkspaceRouteClosed,
 }
 
 enum InternalEvent {
@@ -374,8 +398,26 @@ enum InternalEvent {
     PersonalFabric {
         ws: WorkspaceId,
         peer: EndpointId,
+        connection_incarnation: u64,
         user_public_key: [u8; 32],
         payload: PersonalFabricPayload,
+    },
+    PersonalFabricClosed {
+        peer: EndpointId,
+        connection_incarnation: u64,
+    },
+    PersonalMediaProgress {
+        target: EndpointId,
+        transfer_id: [u8; 16],
+        generation: u64,
+        sent_bytes: u64,
+    },
+    PersonalMediaFinished {
+        target: EndpointId,
+        transfer_id: [u8; 16],
+        generation: u64,
+        outcome: PersonalMediaStreamOutcome,
+        sent_bytes: u64,
     },
     Closed {
         ws: WorkspaceId,
@@ -470,6 +512,7 @@ impl ProtocolHandler for SurfaceStreamProtocol {
 #[derive(Clone)]
 struct PersonalFabricProtocol {
     internal_tx: mpsc::Sender<InternalEvent>,
+    next_connection_incarnation: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for PersonalFabricProtocol {
@@ -482,9 +525,19 @@ impl ProtocolHandler for PersonalFabricProtocol {
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
         let peer = connection.remote_id();
         let tx = self.internal_tx.clone();
+        let connection_incarnation = self
+            .next_connection_incarnation
+            .fetch_add(1, Ordering::Relaxed)
+            .max(1);
         tokio::spawn(async move {
             loop {
                 let Ok(mut recv) = connection.accept_uni().await else {
+                    let _ = tx
+                        .send(InternalEvent::PersonalFabricClosed {
+                            peer,
+                            connection_incarnation,
+                        })
+                        .await;
                     return;
                 };
                 let bytes = match recv
@@ -511,6 +564,7 @@ impl ProtocolHandler for PersonalFabricProtocol {
                     .send(InternalEvent::PersonalFabric {
                         ws: frame.workspace,
                         peer,
+                        connection_incarnation,
                         user_public_key: frame.user_public_key,
                         payload: frame.payload,
                     })
@@ -567,16 +621,139 @@ struct ActorState {
     host_sessions: HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     connecting_hosts: HashSet<(WorkspaceId, EndpointId)>,
     content_discovery_tasks: HashMap<(WorkspaceId, EndpointId), tokio::task::JoinHandle<()>>,
-    peers_seen: HashMap<(WorkspaceId, EndpointId), Instant>,
+    peers_seen: HashMap<(WorkspaceId, EndpointId), PeerMembership>,
+    next_membership_epoch: u64,
+    /// Inbound ALPN connections are bound once to the membership active on
+    /// their first frame. `None` is a tombstone retained until that concrete
+    /// connection closes, so an old connection cannot rebind after reconnect.
+    personal_fabric_ingress: HashMap<(EndpointId, u64), Option<(WorkspaceId, MembershipEpoch)>>,
     recent: HashSet<(WorkspaceId, [u8; 32])>,
     recent_order: VecDeque<(WorkspaceId, [u8; 32])>,
     /// Long-lived direct media connections. One unidirectional QUIC stream
     /// per frame avoids head-of-line blocking between viewers and frames.
     surface_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
     personal_fabric_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
+    active_personal_media: HashMap<(EndpointId, [u8; 16]), ActivePersonalMediaTransfer>,
+    next_personal_media_generation: u64,
+}
+
+struct ActivePersonalMediaTransfer {
+    generation: u64,
+    workspace: WorkspaceId,
+    total_bytes: u64,
+    sent_bytes: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    cancel: tokio::sync::watch::Sender<bool>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PersonalMediaStreamOutcome {
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+fn take_personal_media_generation(
+    active: &mut HashMap<(EndpointId, [u8; 16]), ActivePersonalMediaTransfer>,
+    key: (EndpointId, [u8; 16]),
+    generation: u64,
+) -> Option<ActivePersonalMediaTransfer> {
+    active
+        .get(&key)
+        .is_some_and(|entry| entry.generation == generation)
+        .then(|| active.remove(&key))
+        .flatten()
+}
+
+#[derive(Clone, Copy)]
+struct PeerMembership {
+    last_seen: Instant,
+    epoch: MembershipEpoch,
+}
+
+fn bind_personal_fabric_ingress(
+    ingress: &mut HashMap<(EndpointId, u64), Option<(WorkspaceId, MembershipEpoch)>>,
+    peer: EndpointId,
+    connection_incarnation: u64,
+    ws: WorkspaceId,
+    epoch: MembershipEpoch,
+) -> bool {
+    let key = (peer, connection_incarnation);
+    match ingress.get(&key).copied() {
+        Some(Some(bound)) => bound == (ws, epoch),
+        Some(None) => false,
+        None => {
+            ingress.insert(key, Some((ws, epoch)));
+            true
+        }
+    }
+}
+
+fn revoke_personal_fabric_ingress(
+    ingress: &mut HashMap<(EndpointId, u64), Option<(WorkspaceId, MembershipEpoch)>>,
+    ws: WorkspaceId,
+    epoch: MembershipEpoch,
+) {
+    for binding in ingress.values_mut() {
+        if binding.is_some_and(|bound| bound == (ws, epoch)) {
+            *binding = None;
+        }
+    }
 }
 
 impl ActorState {
+    fn touch_or_mint_membership(
+        &mut self,
+        ws: WorkspaceId,
+        peer: EndpointId,
+    ) -> (MembershipEpoch, bool) {
+        if let Some(membership) = self.peers_seen.get_mut(&(ws, peer)) {
+            membership.last_seen = Instant::now();
+            return (membership.epoch, false);
+        }
+        self.next_membership_epoch = self.next_membership_epoch.saturating_add(1).max(1);
+        let epoch = MembershipEpoch(self.next_membership_epoch);
+        self.peers_seen.insert(
+            (ws, peer),
+            PeerMembership {
+                last_seen: Instant::now(),
+                epoch,
+            },
+        );
+        (epoch, true)
+    }
+
+    fn touch_existing_membership(
+        &mut self,
+        ws: WorkspaceId,
+        peer: EndpointId,
+    ) -> Option<MembershipEpoch> {
+        let membership = self.peers_seen.get_mut(&(ws, peer))?;
+        membership.last_seen = Instant::now();
+        Some(membership.epoch)
+    }
+
+    fn remove_membership_if_epoch(
+        &mut self,
+        ws: WorkspaceId,
+        peer: EndpointId,
+        epoch: MembershipEpoch,
+    ) -> bool {
+        if !self
+            .peers_seen
+            .get(&(ws, peer))
+            .is_some_and(|membership| membership.epoch == epoch)
+        {
+            return false;
+        }
+        self.peers_seen.remove(&(ws, peer));
+        self.cancel_personal_media_route(ws, peer);
+        revoke_personal_fabric_ingress(&mut self.personal_fabric_ingress, ws, epoch);
+        if let Some(connection) = self.personal_fabric_connections.remove(&peer) {
+            connection.close(0_u32.into(), b"membership departed");
+        }
+        true
+    }
+
     /// Handle one [`NetCmd`]. Returns `false` once the command channel has
     /// closed, so [`run`]'s loop should stop.
     #[allow(
@@ -589,8 +766,29 @@ impl ActorState {
                 self.handle_join_workspace(ws, on_event).await;
             }
             Some(NetCmd::LeaveWorkspace { ws }) => {
+                let subscriber = self.subscribers.get(&ws).cloned();
+                let leaving = self
+                    .peers_seen
+                    .iter()
+                    .filter_map(|(&(peer_ws, peer), membership)| {
+                        (peer_ws == ws).then_some((peer, membership.epoch))
+                    })
+                    .collect::<Vec<_>>();
+                for (peer, epoch) in leaving {
+                    if self.remove_membership_if_epoch(ws, peer, epoch)
+                        && let Some(tx) = subscriber.as_ref()
+                    {
+                        let _ = tx
+                            .send(NetEvent::PeerLeft {
+                                ws,
+                                peer,
+                                cause: PeerDepartureCause::WorkspaceRouteClosed,
+                                membership_epoch: Some(epoch),
+                            })
+                            .await;
+                    }
+                }
                 self.subscribers.remove(&ws);
-                self.peers_seen.retain(|(peer_ws, _), _| *peer_ws != ws);
                 if let Some(topic) = self.topics.remove(&ws) {
                     topic.pump.abort();
                 }
@@ -674,6 +872,12 @@ impl ActorState {
                     total_bytes,
                     file,
                 );
+            }
+            Some(NetCmd::CancelPersonalMedia {
+                target,
+                transfer_id,
+            }) => {
+                self.cancel_personal_media((target, transfer_id));
             }
             Some(NetCmd::PublishNearbyTransfer {
                 ws,
@@ -937,7 +1141,7 @@ impl ActorState {
         reason = "the arguments are the complete authenticated transfer manifest plus its local-only file handle"
     )]
     fn publish_personal_media(
-        &self,
+        &mut self,
         ws: WorkspaceId,
         user_public_key: [u8; 32],
         target: EndpointId,
@@ -973,11 +1177,35 @@ impl ActorState {
             report(PersonalMediaTransferStatus::Failed, 0);
             return;
         };
+        let key = (target, transfer_id);
+        if self.active_personal_media.contains_key(&key) {
+            tracing::warn!(peer = %target, "refusing duplicate active personal media transfer");
+            return;
+        }
+        if self.active_personal_media.len() >= MAX_ACTIVE_PERSONAL_MEDIA_TRANSFERS {
+            tracing::warn!(peer = %target, "refusing media transfer while source streams are full");
+            report(PersonalMediaTransferStatus::Failed, 0);
+            return;
+        }
+        self.next_personal_media_generation = self.next_personal_media_generation.wrapping_add(1);
+        let generation = self.next_personal_media_generation;
+        let sent_bytes = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (cancel, cancel_rx) = tokio::sync::watch::channel(false);
+        self.active_personal_media.insert(
+            key,
+            ActivePersonalMediaTransfer {
+                generation,
+                workspace: ws,
+                total_bytes,
+                sent_bytes: std::sync::Arc::clone(&sent_bytes),
+                cancel,
+            },
+        );
         let endpoint = self.endpoint.clone();
+        let internal = self.internal_tx.clone();
         report(PersonalMediaTransferStatus::Started, 0);
         tokio::spawn(async move {
-            let sent_bytes = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-            let result = stream_personal_media(
+            let outcome = stream_personal_media(
                 endpoint,
                 addr,
                 ws,
@@ -986,29 +1214,72 @@ impl ActorState {
                 file_name,
                 total_bytes,
                 file,
-                progress.clone(),
+                internal.clone(),
                 target,
                 std::sync::Arc::clone(&sent_bytes),
+                generation,
+                cancel_rx,
             )
             .await;
-            let status = if result.is_ok() {
-                PersonalMediaTransferStatus::Completed
-            } else {
-                tracing::warn!(peer = %target, "personal media transfer did not complete");
-                PersonalMediaTransferStatus::Failed
-            };
-            if let Some(progress) = progress {
-                let _ = progress
-                    .send(NetEvent::PersonalMediaTransfer {
-                        target,
-                        transfer_id,
-                        sent_bytes: sent_bytes.load(std::sync::atomic::Ordering::Relaxed),
-                        total_bytes,
-                        status,
-                    })
-                    .await;
-            }
+            let _ = internal
+                .send(InternalEvent::PersonalMediaFinished {
+                    target,
+                    transfer_id,
+                    generation,
+                    outcome,
+                    sent_bytes: sent_bytes.load(std::sync::atomic::Ordering::Relaxed),
+                })
+                .await;
         });
+    }
+
+    fn report_personal_media(
+        &self,
+        workspace: WorkspaceId,
+        target: EndpointId,
+        transfer_id: [u8; 16],
+        sent_bytes: u64,
+        total_bytes: u64,
+        status: PersonalMediaTransferStatus,
+    ) {
+        if let Some(progress) = self.subscribers.get(&workspace) {
+            let _ = progress.try_send(NetEvent::PersonalMediaTransfer {
+                target,
+                transfer_id,
+                sent_bytes: sent_bytes.min(total_bytes),
+                total_bytes,
+                status,
+            });
+        }
+    }
+
+    fn cancel_personal_media(&mut self, key: (EndpointId, [u8; 16])) -> bool {
+        let Some(active) = self.active_personal_media.remove(&key) else {
+            return false;
+        };
+        let _ = active.cancel.send(true);
+        self.report_personal_media(
+            active.workspace,
+            key.0,
+            key.1,
+            active.sent_bytes.load(std::sync::atomic::Ordering::Relaxed),
+            active.total_bytes,
+            PersonalMediaTransferStatus::Cancelled,
+        );
+        true
+    }
+
+    fn cancel_personal_media_route(&mut self, workspace: WorkspaceId, target: EndpointId) {
+        let keys = self
+            .active_personal_media
+            .iter()
+            .filter_map(|(key, active)| {
+                (key.0 == target && active.workspace == workspace).then_some(*key)
+            })
+            .collect::<Vec<_>>();
+        for key in keys {
+            self.cancel_personal_media(key);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1215,6 +1486,28 @@ impl ActorState {
             }
             Some(InternalEvent::Closed { ws }) => {
                 self.topics.remove(&ws);
+                let subscriber = self.subscribers.get(&ws).cloned();
+                let closed = self
+                    .peers_seen
+                    .iter()
+                    .filter_map(|(&(peer_ws, peer), membership)| {
+                        (peer_ws == ws).then_some((peer, membership.epoch))
+                    })
+                    .collect::<Vec<_>>();
+                for (peer, epoch) in closed {
+                    if self.remove_membership_if_epoch(ws, peer, epoch)
+                        && let Some(tx) = subscriber.as_ref()
+                    {
+                        let _ = tx
+                            .send(NetEvent::PeerLeft {
+                                ws,
+                                peer,
+                                cause: PeerDepartureCause::WorkspaceRouteClosed,
+                                membership_epoch: Some(epoch),
+                            })
+                            .await;
+                    }
+                }
             }
             Some(InternalEvent::HostConnected {
                 ws,
@@ -1237,42 +1530,118 @@ impl ActorState {
                 // the peer to have appeared on this workspace's authenticated
                 // gossip topic first; ShellNetwork performs the capability
                 // and claimed-publisher checks before dispatch.
-                if !self.peers_seen.contains_key(&(ws, peer)) {
+                let Some(membership_epoch) = self.touch_existing_membership(ws, peer) else {
                     tracing::warn!(ws, peer = %peer, "surface frame from unknown workspace peer");
                     return true;
-                }
-                self.peers_seen.insert((ws, peer), Instant::now());
+                };
                 // Input has no event id or timestamp, so two deliberate
                 // identical key/button events must not be content-deduped.
                 if (matches!(&msg, NeighbourMsg::RemoteInput { .. })
                     || mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order))
                     && let Some(tx) = self.subscribers.get(&ws)
                 {
-                    let _ = tx.send(NetEvent::Msg { ws, peer, msg }).await;
+                    let _ = tx
+                        .send(NetEvent::Msg {
+                            ws,
+                            peer,
+                            membership_epoch: Some(membership_epoch),
+                            msg,
+                        })
+                        .await;
                 }
             }
             Some(InternalEvent::PersonalFabric {
                 ws,
                 peer,
+                connection_incarnation,
                 user_public_key,
                 payload,
             }) => {
                 // Topic membership establishes reachability only. ShellNetwork
                 // still binds the frame to the peer's certified person/device.
-                if !self.peers_seen.contains_key(&(ws, peer)) {
+                let Some(membership_epoch) = self.touch_existing_membership(ws, peer) else {
                     tracing::warn!(ws, peer = %peer, "personal fabric frame from unknown peer");
                     return true;
+                };
+                if !bind_personal_fabric_ingress(
+                    &mut self.personal_fabric_ingress,
+                    peer,
+                    connection_incarnation,
+                    ws,
+                    membership_epoch,
+                ) {
+                    tracing::warn!(ws, peer = %peer, "personal fabric connection crossed membership authority");
+                    return true;
                 }
-                self.peers_seen.insert((ws, peer), Instant::now());
                 if let Some(tx) = self.subscribers.get(&ws) {
                     let _ = tx
                         .send(NetEvent::PersonalFabric {
                             ws,
                             peer,
+                            membership_epoch,
                             user_public_key,
                             payload,
                         })
                         .await;
+                }
+            }
+            Some(InternalEvent::PersonalFabricClosed {
+                peer,
+                connection_incarnation,
+            }) => {
+                self.personal_fabric_ingress
+                    .remove(&(peer, connection_incarnation));
+            }
+            Some(InternalEvent::PersonalMediaProgress {
+                target,
+                transfer_id,
+                generation,
+                sent_bytes,
+            }) => {
+                let key = (target, transfer_id);
+                if let Some(active) = self
+                    .active_personal_media
+                    .get(&key)
+                    .filter(|active| active.generation == generation)
+                {
+                    self.report_personal_media(
+                        active.workspace,
+                        target,
+                        transfer_id,
+                        sent_bytes,
+                        active.total_bytes,
+                        PersonalMediaTransferStatus::Progress,
+                    );
+                }
+            }
+            Some(InternalEvent::PersonalMediaFinished {
+                target,
+                transfer_id,
+                generation,
+                outcome,
+                sent_bytes,
+            }) => {
+                let key = (target, transfer_id);
+                if let Some(active) =
+                    take_personal_media_generation(&mut self.active_personal_media, key, generation)
+                {
+                    let status = match outcome {
+                        PersonalMediaStreamOutcome::Completed => {
+                            PersonalMediaTransferStatus::Completed
+                        }
+                        PersonalMediaStreamOutcome::Failed => PersonalMediaTransferStatus::Failed,
+                        PersonalMediaStreamOutcome::Cancelled => {
+                            PersonalMediaTransferStatus::Cancelled
+                        }
+                    };
+                    self.report_personal_media(
+                        active.workspace,
+                        target,
+                        transfer_id,
+                        sent_bytes,
+                        active.total_bytes,
+                        status,
+                    );
                 }
             }
             None => return false,
@@ -1289,35 +1658,48 @@ impl ActorState {
             // announcement and be rejected by the peer.
             self.announce_identity(ws).await;
         }
-        let Some(tx) = self.subscribers.get(&ws) else {
+        let Some(tx) = self.subscribers.get(&ws).cloned() else {
             return;
         };
         let event = match event {
             GossipEvent::NeighborUp(peer) => {
-                self.peers_seen.insert((ws, peer), Instant::now());
-                Some(NetEvent::PeerJoined { ws, peer })
-            }
-            GossipEvent::NeighborDown(peer) => {
-                self.peers_seen.remove(&(ws, peer));
-                Some(NetEvent::PeerLeft {
+                let (membership_epoch, _) = self.touch_or_mint_membership(ws, peer);
+                Some(NetEvent::PeerJoined {
                     ws,
                     peer,
-                    cause: PeerDepartureCause::GossipNeighborDown,
+                    membership_epoch,
                 })
+            }
+            GossipEvent::NeighborDown(peer) => {
+                // Gossip does not attach a connection incarnation to a down
+                // edge. Revoking the current epoch here could let a delayed
+                // Down(N) kill a newer Up(N+1). Keep the exact membership
+                // until its actor-owned heartbeat deadline confirms loss.
+                tracing::debug!(ws, peer = %peer, "gossip neighbour down awaits liveness confirmation");
+                None
             }
             GossipEvent::Received(message) => {
                 let peer = message.delivered_from;
-                let rediscovered = self.peers_seen.insert((ws, peer), Instant::now()).is_none();
+                let (membership_epoch, rediscovered) = self.touch_or_mint_membership(ws, peer);
                 let fingerprint = message_fingerprint(&message.content);
                 if !mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order) {
                     return;
                 }
                 match postcard::from_bytes::<NeighbourMsg>(&message.content) {
                     Ok(NeighbourMsg::Heartbeat { .. }) if rediscovered => {
-                        Some(NetEvent::PeerJoined { ws, peer })
+                        Some(NetEvent::PeerJoined {
+                            ws,
+                            peer,
+                            membership_epoch,
+                        })
                     }
                     Ok(NeighbourMsg::Heartbeat { .. }) => None,
-                    Ok(msg) => Some(NetEvent::Msg { ws, peer, msg }),
+                    Ok(msg) => Some(NetEvent::Msg {
+                        ws,
+                        peer,
+                        membership_epoch: Some(membership_epoch),
+                        msg,
+                    }),
                     Err(error) => {
                         tracing::warn!(ws, %error, "invalid collaboration message");
                         None
@@ -1385,6 +1767,7 @@ impl ActorState {
                 Some(NetEvent::Msg {
                     ws,
                     peer: author,
+                    membership_epoch: None,
                     msg,
                 })
             }
@@ -1396,6 +1779,7 @@ impl ActorState {
                     ws,
                     peer,
                     cause: PeerDepartureCause::HostSessionClosed,
+                    membership_epoch: None,
                 })
             }
         };
@@ -1410,18 +1794,25 @@ impl ActorState {
         let stale: Vec<_> = self
             .peers_seen
             .iter()
-            .filter_map(|(&(ws, peer), seen)| {
-                (now.duration_since(*seen) > PEER_TIMEOUT).then_some((ws, peer))
+            .filter_map(|(&(ws, peer), membership)| {
+                (now.duration_since(membership.last_seen) > PEER_TIMEOUT).then_some((
+                    ws,
+                    peer,
+                    membership.epoch,
+                ))
             })
             .collect();
-        for (ws, peer) in stale {
-            self.peers_seen.remove(&(ws, peer));
+        for (ws, peer, membership_epoch) in stale {
+            if !self.remove_membership_if_epoch(ws, peer, membership_epoch) {
+                continue;
+            }
             if let Some(tx) = self.subscribers.get(&ws) {
                 let _ = tx
                     .send(NetEvent::PeerLeft {
                         ws,
                         peer,
                         cause: PeerDepartureCause::LivenessTimedOut,
+                        membership_epoch: Some(membership_epoch),
                     })
                     .await;
             }
@@ -1709,20 +2100,26 @@ async fn stream_personal_media(
     file_name: String,
     total_bytes: u64,
     file: std::fs::File,
-    progress: Option<mpsc::Sender<NetEvent>>,
+    internal: mpsc::Sender<InternalEvent>,
     target: EndpointId,
     sent_bytes: std::sync::Arc<std::sync::atomic::AtomicU64>,
-) -> Result<(), ()> {
+    generation: u64,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+) -> PersonalMediaStreamOutcome {
     use tokio::io::AsyncReadExt as _;
 
-    let connection = tokio::time::timeout(
+    let connect = tokio::time::timeout(
         Duration::from_secs(10),
         endpoint.connect(addr, PERSONAL_FABRIC_ALPN),
-    )
-    .await
-    .map_err(|_| ())?
-    .map_err(|_| ())?;
-    send_personal_media_frame(
+    );
+    let connection = tokio::select! {
+        result = connect => match result {
+            Ok(Ok(connection)) => connection,
+            _ => return PersonalMediaStreamOutcome::Failed,
+        },
+        _ = personal_media_cancelled(&mut cancel) => return PersonalMediaStreamOutcome::Cancelled,
+    };
+    let start = send_personal_media_frame(
         &connection,
         workspace,
         user_public_key,
@@ -1731,27 +2128,54 @@ async fn stream_personal_media(
             file_name,
             total_bytes,
         },
-    )
-    .await?;
+    );
+    let start_outcome = tokio::select! {
+        result = start => result.map_or(PersonalMediaStreamOutcome::Failed, |_| PersonalMediaStreamOutcome::Completed),
+        _ = personal_media_cancelled(&mut cancel) => PersonalMediaStreamOutcome::Cancelled,
+    };
+    if start_outcome != PersonalMediaStreamOutcome::Completed {
+        if start_outcome == PersonalMediaStreamOutcome::Cancelled {
+            let _ = tokio::time::timeout(
+                Duration::from_secs(1),
+                send_personal_media_frame(
+                    &connection,
+                    workspace,
+                    user_public_key,
+                    PersonalMediaTransferFrame::Abort { transfer_id },
+                ),
+            )
+            .await;
+            return PersonalMediaStreamOutcome::Cancelled;
+        }
+        return PersonalMediaStreamOutcome::Failed;
+    }
 
     let mut file = tokio::fs::File::from_std(file);
     let mut offset = 0_u64;
     let mut last_reported = 0_u64;
     let mut hasher = blake3::Hasher::new();
     let mut buffer = vec![0_u8; PERSONAL_MEDIA_CHUNK_BYTES];
-    let transfer = async {
+    let transfer: Result<(), PersonalMediaStreamOutcome> = async {
         while offset < total_bytes {
             let remaining = total_bytes.saturating_sub(offset);
             let want = usize::try_from(remaining.min(PERSONAL_MEDIA_CHUNK_BYTES as u64))
-                .map_err(|_| ())?;
-            let window = buffer.get_mut(..want).ok_or(())?;
-            let read = file.read(window).await.map_err(|_| ())?;
+                .map_err(|_| PersonalMediaStreamOutcome::Failed)?;
+            let window = buffer
+                .get_mut(..want)
+                .ok_or(PersonalMediaStreamOutcome::Failed)?;
+            let read = tokio::select! {
+                result = file.read(window) => result.map_err(|_| PersonalMediaStreamOutcome::Failed)?,
+                _ = personal_media_cancelled(&mut cancel) => return Err(PersonalMediaStreamOutcome::Cancelled),
+            };
             if read == 0 {
-                return Err(());
+                return Err(PersonalMediaStreamOutcome::Failed);
             }
-            let bytes = buffer.get(..read).ok_or(())?.to_vec();
+            let bytes = buffer
+                .get(..read)
+                .ok_or(PersonalMediaStreamOutcome::Failed)?
+                .to_vec();
             hasher.update(&bytes);
-            send_personal_media_frame(
+            let send = send_personal_media_frame(
                 &connection,
                 workspace,
                 user_public_key,
@@ -1760,28 +2184,34 @@ async fn stream_personal_media(
                     offset,
                     bytes,
                 },
-            )
-            .await?;
-            offset = offset.saturating_add(u64::try_from(read).map_err(|_| ())?);
+            );
+            tokio::select! {
+                result = send => result.map_err(|_| PersonalMediaStreamOutcome::Failed)?,
+                _ = personal_media_cancelled(&mut cancel) => return Err(PersonalMediaStreamOutcome::Cancelled),
+            }
+            offset = offset.saturating_add(
+                u64::try_from(read).map_err(|_| PersonalMediaStreamOutcome::Failed)?,
+            );
             sent_bytes.store(offset, std::sync::atomic::Ordering::Relaxed);
             if offset == total_bytes || offset.saturating_sub(last_reported) >= 8 * 1024 * 1024 {
-                if let Some(progress) = progress.as_ref() {
-                    let _ = progress.try_send(NetEvent::PersonalMediaTransfer {
-                        target,
-                        transfer_id,
-                        sent_bytes: offset,
-                        total_bytes,
-                        status: PersonalMediaTransferStatus::Progress,
-                    });
-                }
+                let _ = internal.try_send(InternalEvent::PersonalMediaProgress {
+                    target,
+                    transfer_id,
+                    generation,
+                    sent_bytes: offset,
+                });
                 last_reported = offset;
             }
         }
         let mut trailing = [0_u8; 1];
-        if file.read(&mut trailing).await.map_err(|_| ())? != 0 {
-            return Err(());
+        let trailing_read = tokio::select! {
+            result = file.read(&mut trailing) => result.map_err(|_| PersonalMediaStreamOutcome::Failed)?,
+            _ = personal_media_cancelled(&mut cancel) => return Err(PersonalMediaStreamOutcome::Cancelled),
+        };
+        if trailing_read != 0 {
+            return Err(PersonalMediaStreamOutcome::Failed);
         }
-        send_personal_media_frame(
+        let finish = send_personal_media_frame(
             &connection,
             workspace,
             user_public_key,
@@ -1789,20 +2219,38 @@ async fn stream_personal_media(
                 transfer_id,
                 content_hash: *hasher.finalize().as_bytes(),
             },
-        )
-        .await
+        );
+        tokio::select! {
+            result = finish => result.map_err(|_| PersonalMediaStreamOutcome::Failed),
+            _ = personal_media_cancelled(&mut cancel) => Err(PersonalMediaStreamOutcome::Cancelled),
+        }
     }
     .await;
-    if transfer.is_err() {
-        let _ = send_personal_media_frame(
-            &connection,
-            workspace,
-            user_public_key,
-            PersonalMediaTransferFrame::Abort { transfer_id },
-        )
-        .await;
+    match transfer {
+        Ok(()) => PersonalMediaStreamOutcome::Completed,
+        Err(outcome) => {
+            let _ = tokio::time::timeout(
+                Duration::from_secs(1),
+                send_personal_media_frame(
+                    &connection,
+                    workspace,
+                    user_public_key,
+                    PersonalMediaTransferFrame::Abort { transfer_id },
+                ),
+            )
+            .await;
+            outcome
+        }
     }
-    transfer
+}
+
+async fn personal_media_cancelled(cancel: &mut tokio::sync::watch::Receiver<bool>) {
+    if *cancel.borrow() {
+        return;
+    }
+    if cancel.changed().await.is_err() {
+        return;
+    }
 }
 
 async fn run(
@@ -1828,6 +2276,7 @@ async fn run(
             PERSONAL_FABRIC_ALPN,
             PersonalFabricProtocol {
                 internal_tx: internal_tx.clone(),
+                next_connection_incarnation: Arc::new(AtomicU64::new(1)),
             },
         )
         .spawn();
@@ -1846,10 +2295,14 @@ async fn run(
         connecting_hosts: HashSet::new(),
         content_discovery_tasks: HashMap::new(),
         peers_seen: HashMap::new(),
+        next_membership_epoch: 0,
+        personal_fabric_ingress: HashMap::new(),
         recent: HashSet::new(),
         recent_order: VecDeque::new(),
         surface_connections: HashMap::new(),
         personal_fabric_connections: HashMap::new(),
+        active_personal_media: HashMap::new(),
+        next_personal_media_generation: 0,
     };
     let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
     let mut eviction = tokio::time::interval(EVICTION_INTERVAL);
@@ -2360,6 +2813,66 @@ fn topic_id(ws: WorkspaceId) -> TopicId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn active_personal_media(generation: u64) -> ActivePersonalMediaTransfer {
+        let (cancel, _receiver) = tokio::sync::watch::channel(false);
+        ActivePersonalMediaTransfer {
+            generation,
+            workspace: 7,
+            total_bytes: 8,
+            sent_bytes: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            cancel,
+        }
+    }
+
+    #[test]
+    fn personal_media_generation_is_exact_and_stale_completion_cannot_remove_replacement() {
+        let first = iroh::SecretKey::from_bytes(&[0xB1; 32]).public();
+        let sibling = iroh::SecretKey::from_bytes(&[0xB2; 32]).public();
+        let transfer_id = [0xB3; 16];
+        let key = (first, transfer_id);
+        let sibling_key = (sibling, transfer_id);
+        let mut active = HashMap::from([
+            (key, active_personal_media(12)),
+            (sibling_key, active_personal_media(4)),
+        ]);
+
+        assert!(take_personal_media_generation(&mut active, key, 11).is_none());
+        assert!(
+            active.contains_key(&key),
+            "old worker cannot remove replacement"
+        );
+        assert!(
+            take_personal_media_generation(&mut active, sibling_key, 12).is_none(),
+            "same id on another target is isolated"
+        );
+        assert!(take_personal_media_generation(&mut active, key, 12).is_some());
+        assert!(active.contains_key(&sibling_key));
+    }
+
+    #[test]
+    fn departed_personal_connection_cannot_rebind_after_membership_reconnect() {
+        let peer = iroh::SecretKey::from_bytes(&[0xA1; 32]).public();
+        let old_epoch = MembershipEpoch::for_test(7);
+        let new_epoch = MembershipEpoch::for_test(8);
+        let mut ingress = HashMap::new();
+        assert!(bind_personal_fabric_ingress(
+            &mut ingress,
+            peer,
+            11,
+            21,
+            old_epoch,
+        ));
+        revoke_personal_fabric_ingress(&mut ingress, 21, old_epoch);
+        assert!(
+            !bind_personal_fabric_ingress(&mut ingress, peer, 11, 21, new_epoch),
+            "the old QUIC connection stays tombstoned after reconnect"
+        );
+        assert!(
+            bind_personal_fabric_ingress(&mut ingress, peer, 12, 21, new_epoch),
+            "a fresh connection may bind the fresh membership epoch"
+        );
+    }
     use iroh::endpoint::presets;
     use tilo_relay::{
         Relay, RelayConfig, ReplicationIntent, WorkspaceBinding, daemon::RelayIdentity,

@@ -274,9 +274,140 @@ mod device_fabric_ui_tests {
                 revertible_calibrations: Vec::new(),
                 tethering: Vec::new(),
                 remote_capture: Default::default(),
+                display_mirror_consents: Vec::new(),
+                display_mirrors: Vec::new(),
+                display_mirror_available: false,
             },
             remote,
         )
+    }
+
+    #[test]
+    fn continuity_providers_register_in_either_order_and_replace_stale_bridges() {
+        use crate::shell::search::action_api::AllVisible;
+        use crate::shell::search::providers::continuity::{CALL_PROVIDER_ID, DEVICE_PROVIDER_ID};
+
+        let realtime: RealtimeContinuityBridge =
+            Rc::new(|_| Ok(RealtimeContinuityUiView::default()));
+        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        host.set_realtime_continuity_bridge(Rc::clone(&realtime));
+        assert_eq!(
+            host.search_registry
+                .providers_iter()
+                .filter(|provider| provider.id() == CALL_PROVIDER_ID)
+                .count(),
+            0
+        );
+
+        let (old_view, _) = fixture();
+        host.set_device_fabric_bridge(Rc::new(move |_| Ok(old_view.clone())));
+        for id in [DEVICE_PROVIDER_ID, CALL_PROVIDER_ID] {
+            assert_eq!(
+                host.search_registry
+                    .providers_iter()
+                    .filter(|provider| provider.id() == id)
+                    .count(),
+                1,
+                "{id} must be registered exactly once"
+            );
+        }
+
+        let (mut current_view, _) = fixture();
+        current_view.local_media[0].title = "Replacement film".into();
+        host.set_device_fabric_bridge(Rc::new(move |_| Ok(current_view.clone())));
+        for id in [DEVICE_PROVIDER_ID, CALL_PROVIDER_ID] {
+            assert_eq!(
+                host.search_registry
+                    .providers_iter()
+                    .filter(|provider| provider.id() == id)
+                    .count(),
+                1,
+                "rebinding must replace {id}, not append it"
+            );
+        }
+
+        let tree = WorkspaceTree::bootstrap_demo();
+        let chrome = ChromeState::new(tree);
+        let state = chrome.borrow();
+        let doc = AutoCommit::new();
+        let catalog = host.action_catalog(
+            "Replacement film",
+            &state,
+            &doc,
+            &automerge::ROOT,
+            &AllVisible,
+        );
+        assert!(
+            catalog
+                .enumerate()
+                .iter()
+                .any(|action| action.title.contains("Replacement film"))
+        );
+
+        let (view, _) = fixture();
+        let mut reverse = ShellOverlayHost::new(Box::new(Container::new()));
+        reverse.set_device_fabric_bridge(Rc::new(move |_| Ok(view.clone())));
+        reverse.set_realtime_continuity_bridge(realtime);
+        assert_eq!(
+            reverse
+                .search_registry
+                .providers_iter()
+                .filter(|provider| provider.id() == CALL_PROVIDER_ID)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn headless_continuity_catalog_lists_and_resolves_beyond_palette_page() {
+        use crate::shell::search::action_api::{AllVisible, ResourceRef};
+        use crate::shell::search::providers::continuity::DEVICE_PROVIDER_ID;
+
+        let (mut view, _) = fixture();
+        view.devices = (0..60)
+            .map(|index| FabricDeviceView {
+                id: DeviceId::new(format!("certified-screen-{index}")).unwrap(),
+                label: format!("Screen {index}"),
+                kind: DeviceKind::Laptop,
+                is_local: false,
+                online: true,
+                audio_output: true,
+                video_output: true,
+                display: true,
+                controls_local: false,
+                local_can_control: false,
+            })
+            .collect();
+        view.local_media[0].targets = view
+            .devices
+            .iter()
+            .map(|device| device.id.clone())
+            .collect();
+        view.local_media[0].title = "Paging proof".into();
+        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        host.set_device_fabric_bridge(Rc::new(move |_| Ok(view.clone())));
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
+        let state = chrome.borrow();
+        let doc = AutoCommit::new();
+
+        let catalog =
+            host.action_catalog("Paging proof", &state, &doc, &automerge::ROOT, &AllVisible);
+        let actions = catalog
+            .enumerate()
+            .into_iter()
+            .filter(|action| action.resource.provider == DEVICE_PROVIDER_ID)
+            .collect::<Vec<_>>();
+        assert_eq!(actions.len(), 60);
+        let last = actions.last().unwrap().resource.clone();
+        let exact = host.exact_action_catalog(
+            &last.provider,
+            &last.id,
+            &state,
+            &doc,
+            &automerge::ROOT,
+            &AllVisible,
+        );
+        assert!(exact.contains(&ResourceRef::new(&last.provider, &last.id)));
     }
 
     #[test]
@@ -739,6 +870,63 @@ mod device_fabric_ui_tests {
                 kind: crate::shell::remote_capture_device::RemoteCaptureKind::Camera,
             })
         );
+    }
+
+    #[test]
+    fn device_pane_mirror_requires_consent_and_stops_exact_session() {
+        let (mut view, remote) = fixture();
+        view.local_media.clear();
+        view.local_outputs.clear();
+        view.display_mirror_available = true;
+        view.display_mirror_consents = vec![
+            crate::shell::device_fabric_runtime::DisplayMirrorConsentView {
+                session_id: [21; 16],
+                source_label: "Desk computer".into(),
+            },
+        ];
+        view.display_mirrors = vec![
+            crate::shell::device_fabric_runtime::DisplayMirrorStatusView {
+                session_id: [22; 16],
+                peer: remote.clone(),
+                peer_label: "Travel laptop".into(),
+                outbound: true,
+                phase: crate::shell::device_fabric_runtime::DisplayMirrorPhase::Streaming,
+            },
+        ];
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&actions);
+        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        host.set_device_fabric_bridge(Rc::new(move |action| {
+            recorded.borrow_mut().push(action);
+            Ok(view.clone())
+        }));
+
+        let (allow, decline) =
+            ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
+        host.handle_qs_device_fabric_click(allow.center());
+        host.handle_qs_device_fabric_click(decline.center());
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(3).center());
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(2).center());
+
+        let actions = actions.borrow();
+        assert!(
+            actions.contains(&DeviceFabricUiAction::ResolveDisplayMirror {
+                session_id: [21; 16],
+                approved: true,
+            })
+        );
+        assert!(
+            actions.contains(&DeviceFabricUiAction::ResolveDisplayMirror {
+                session_id: [21; 16],
+                approved: false,
+            })
+        );
+        assert!(actions.contains(&DeviceFabricUiAction::RequestDisplayMirror { target: remote }));
+        assert!(actions.contains(&DeviceFabricUiAction::StopDisplayMirror {
+            session_id: [22; 16],
+        }));
     }
 
     #[test]
@@ -1226,11 +1414,16 @@ pub struct DeviceFabricView {
     pub revertible_calibrations: Vec<crate::shell::personal_continuity::DeviceId>,
     pub tethering: Vec<crate::shell::personal_tethering_runtime::TetheringStatusView>,
     pub remote_capture: crate::shell::remote_capture_runtime::RemoteCaptureView,
+    pub display_mirror_consents: Vec<crate::shell::device_fabric_runtime::DisplayMirrorConsentView>,
+    pub display_mirrors: Vec<crate::shell::device_fabric_runtime::DisplayMirrorStatusView>,
+    pub display_mirror_available: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeviceFabricUiAction {
     Snapshot,
+    /// Bypass presentation caching for semantic action revalidation.
+    SnapshotFresh,
     HandoffMedia {
         session_id: String,
         target: crate::shell::personal_continuity::DeviceId,
@@ -1293,6 +1486,16 @@ pub enum DeviceFabricUiAction {
         session_id: [u8; 16],
     },
     StopRemoteCapture {
+        session_id: [u8; 16],
+    },
+    RequestDisplayMirror {
+        target: crate::shell::personal_continuity::DeviceId,
+    },
+    ResolveDisplayMirror {
+        session_id: [u8; 16],
+        approved: bool,
+    },
+    StopDisplayMirror {
         session_id: [u8; 16],
     },
     RequestPhoneTethering {
@@ -1359,6 +1562,9 @@ enum DeviceFabricPaneRow {
     RemoteCaptureSource(crate::shell::remote_capture_device::RemoteCaptureKind),
     RemoteCaptureSession(crate::shell::remote_capture_runtime::RemoteCaptureSessionView),
     RemoteCaptureDegraded(crate::shell::remote_capture_runtime::RemoteCaptureDegradedView),
+    DisplayMirrorConsent(crate::shell::device_fabric_runtime::DisplayMirrorConsentView),
+    DisplayMirrorSource,
+    DisplayMirrorStatus(crate::shell::device_fabric_runtime::DisplayMirrorStatusView),
     RealtimeConsent(crate::shell::collab_broker_capnp::RealtimeConsentUiView),
     RealtimeSource(crate::shell::collab_broker_capnp::RealtimeSourceUiView),
     BluetoothAuthorization(BluetoothHandoffAuthorizationView),
@@ -1448,6 +1654,22 @@ fn device_fabric_pane_rows(
                 .map(DeviceFabricPaneRow::RemoteCaptureDegraded),
         )
         .chain(
+            view.display_mirror_consents
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::DisplayMirrorConsent),
+        )
+        .chain(
+            view.display_mirror_available
+                .then_some(DeviceFabricPaneRow::DisplayMirrorSource),
+        )
+        .chain(
+            view.display_mirrors
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::DisplayMirrorStatus),
+        )
+        .chain(
             realtime
                 .consents
                 .iter()
@@ -1525,6 +1747,19 @@ fn remote_capture_kind_label(
         crate::shell::remote_capture_device::RemoteCaptureKind::Camera => "camera",
         crate::shell::remote_capture_device::RemoteCaptureKind::Microphone => "microphone",
         crate::shell::remote_capture_device::RemoteCaptureKind::DocumentScanner => "scanner",
+    }
+}
+
+fn display_mirror_failure_label(
+    failure: crate::shell::device_fabric_runtime::DisplayMirrorFailure,
+) -> &'static str {
+    use crate::shell::device_fabric_runtime::DisplayMirrorFailure;
+    match failure {
+        DisplayMirrorFailure::Denied => "declined on the target",
+        DisplayMirrorFailure::PeerOffline => "certified peer went offline",
+        DisplayMirrorFailure::TimedOut => "session timed out",
+        DisplayMirrorFailure::Transport => "private video route failed",
+        DisplayMirrorFailure::Policy => "display continuity was disabled",
     }
 }
 
@@ -1671,6 +1906,7 @@ enum ShortcutGuideFocus {
 /// semantic path onto the wrong target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AccessibleOverlay {
+    PowerMenu,
     CommandPalette,
     MemberSheet,
     WorkspaceSettings,
@@ -1860,6 +2096,7 @@ pub struct ShellOverlayHost {
     qs_selected_gamepad: Option<u64>,
     qs_selected_remote_audio: Option<u64>,
     qs_selected_remote_capture: Option<crate::shell::remote_capture_device::RemoteCaptureKind>,
+    qs_selected_display_mirror: bool,
     /// Session action modal, including destructive-action arming and its
     /// own open/close transition.
     power_menu: PowerMenu,
@@ -2901,8 +3138,11 @@ impl ShellOverlayHost {
     }
 
     fn accessible_overlay_order(&self) -> Vec<AccessibleOverlay> {
-        let mut order = Vec::with_capacity(6);
+        let mut order = Vec::with_capacity(8);
         let flags = self.overlay_flags();
+        if self.power_menu.is_open() {
+            order.push(AccessibleOverlay::PowerMenu);
+        }
         // The palette has a complete semantic tree (query, result list, and
         // focused result).  It is drawn as a top overlay, so publish it from
         // the same ordered synthetic tree as every other overlay rather than
@@ -3068,6 +3308,7 @@ impl ShellOverlayHost {
             qs_selected_gamepad: None,
             qs_selected_remote_audio: None,
             qs_selected_remote_capture: None,
+            qs_selected_display_mirror: false,
             power_menu: PowerMenu::default(),
             session_inhibitors: tilo_power_mgmt::InhibitRegistry::new(),
             strip_ribbon_hover: None,
@@ -4027,13 +4268,38 @@ impl ShellOverlayHost {
     /// Attach the authenticated personal-device and local-output control
     /// surface. An absent bridge renders an honest unprovisioned state.
     pub fn set_device_fabric_bridge(&mut self, bridge: DeviceFabricBridge) {
-        self.device_fabric_bridge = Some(bridge);
+        self.device_fabric_bridge = Some(std::rc::Rc::clone(&bridge));
+        self.search_registry.register_or_replace(std::rc::Rc::new(
+            crate::shell::search::providers::DeviceContinuityActionsProvider::new(
+                std::rc::Rc::clone(&bridge),
+            ),
+        ));
+        if let Some(realtime) = self.realtime_continuity_bridge.as_ref() {
+            self.search_registry.register_or_replace(std::rc::Rc::new(
+                crate::shell::search::providers::CallContinuityActionsProvider::new(
+                    std::rc::Rc::clone(realtime),
+                    bridge,
+                ),
+            ));
+        }
+        self.last_search_query = "\0continuity-provider-rebound\0".into();
+        self.last_search_revision.clear();
     }
 
     /// Attach trusted shell-only call handoff controls. The app sees semantic
     /// lifecycle edges, never the certified-device picker or raw source IDs.
     pub fn set_realtime_continuity_bridge(&mut self, bridge: RealtimeContinuityBridge) {
-        self.realtime_continuity_bridge = Some(bridge);
+        self.realtime_continuity_bridge = Some(std::rc::Rc::clone(&bridge));
+        if let Some(devices) = self.device_fabric_bridge.as_ref() {
+            self.search_registry.register_or_replace(std::rc::Rc::new(
+                crate::shell::search::providers::CallContinuityActionsProvider::new(
+                    bridge,
+                    std::rc::Rc::clone(devices),
+                ),
+            ));
+        }
+        self.last_search_query = "\0call-continuity-provider-rebound\0".into();
+        self.last_search_revision.clear();
     }
 
     fn realtime_continuity_call(
@@ -7631,6 +7897,31 @@ impl ShellOverlayHost {
         )
     }
 
+    /// Rebuild one exact semantic action from current provider state.
+    pub fn exact_action_catalog(
+        &self,
+        provider: &str,
+        id: &str,
+        chrome: &crate::shell::chrome_state::ChromeState,
+        doc: &automerge::AutoCommit,
+        root: &ObjId,
+        visibility: &dyn crate::shell::search::action_api::ActionVisibility,
+    ) -> crate::shell::search::action_api::ActionCatalog {
+        let scope = chrome.search_scope;
+        let active_provider = active_tab_provider_id(chrome, &self.search_registry);
+        crate::shell::search::action_api::ActionCatalog::build_exact(
+            &self.search_registry,
+            provider,
+            id,
+            scope,
+            active_provider.as_deref(),
+            chrome,
+            doc,
+            root,
+            visibility,
+        )
+    }
+
     /// The command-palette query buffer, for the `shots` harness to
     /// assert a synthetic `Type("…")` landed.
     pub fn palette_query(&self) -> &str {
@@ -8488,6 +8779,7 @@ impl ShellOverlayHost {
                     Some(
                         DeviceFabricPaneRow::RemoteAudioConsent(_)
                             | DeviceFabricPaneRow::RemoteCaptureConsent(_)
+                            | DeviceFabricPaneRow::DisplayMirrorConsent(_)
                             | DeviceFabricPaneRow::RealtimeConsent(_)
                             | DeviceFabricPaneRow::GamepadAuthorization(_)
                     )
@@ -11885,6 +12177,7 @@ impl ShellOverlayHost {
                 self.qs_selected_media = None;
                 self.qs_selected_gamepad = None;
                 self.qs_selected_remote_capture = None;
+                self.qs_selected_display_mirror = false;
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().bump();
                 }
@@ -11924,6 +12217,7 @@ impl ShellOverlayHost {
                 self.qs_selected_realtime = None;
                 self.qs_selected_media = None;
                 self.qs_selected_gamepad = None;
+                self.qs_selected_display_mirror = false;
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().bump();
                 }
@@ -11949,6 +12243,56 @@ impl ShellOverlayHost {
                 }
             }
             DeviceFabricPaneRow::RemoteCaptureDegraded(_) => None,
+            DeviceFabricPaneRow::DisplayMirrorConsent(consent) => {
+                let (allow, decline) =
+                    Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
+                let approved = if allow.contains(point) {
+                    true
+                } else if decline.contains(point) {
+                    false
+                } else {
+                    return;
+                };
+                Some((
+                    DeviceFabricUiAction::ResolveDisplayMirror {
+                        session_id: consent.session_id,
+                        approved,
+                    },
+                    if approved {
+                        format!("Allowed {} to mirror here once", consent.source_label)
+                    } else {
+                        format!("Declined display mirroring from {}", consent.source_label)
+                    },
+                ))
+            }
+            DeviceFabricPaneRow::DisplayMirrorSource => {
+                self.qs_selected_display_mirror = true;
+                self.qs_selected_remote_capture = None;
+                self.qs_selected_remote_audio = None;
+                self.qs_selected_realtime = None;
+                self.qs_selected_media = None;
+                self.qs_selected_gamepad = None;
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
+                return;
+            }
+            DeviceFabricPaneRow::DisplayMirrorStatus(status) => {
+                use crate::shell::device_fabric_runtime::DisplayMirrorPhase;
+                if matches!(
+                    status.phase,
+                    DisplayMirrorPhase::Failed(_) | DisplayMirrorPhase::Stopped
+                ) {
+                    None
+                } else {
+                    Some((
+                        DeviceFabricUiAction::StopDisplayMirror {
+                            session_id: status.session_id,
+                        },
+                        format!("Stopped display mirroring with {}", status.peer_label),
+                    ))
+                }
+            }
             DeviceFabricPaneRow::RealtimeConsent(consent) => {
                 let (allow, decline) =
                     Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
@@ -12077,6 +12421,7 @@ impl ShellOverlayHost {
                     self.qs_selected_realtime = None;
                     self.qs_selected_remote_audio = None;
                     self.qs_selected_remote_capture = None;
+                    self.qs_selected_display_mirror = false;
                     if let Some(chrome) = self.chrome.as_ref() {
                         chrome.borrow_mut().bump();
                     }
@@ -12108,6 +12453,7 @@ impl ShellOverlayHost {
                 self.qs_selected_gamepad = None;
                 self.qs_selected_remote_audio = None;
                 self.qs_selected_remote_capture = None;
+                self.qs_selected_display_mirror = false;
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().bump();
                 }
@@ -12160,6 +12506,17 @@ impl ShellOverlayHost {
             DeviceFabricPaneRow::Device(device)
                 if !device.is_local
                     && device.online
+                    && device.video_output
+                    && self.qs_selected_display_mirror =>
+            {
+                Some((
+                    DeviceFabricUiAction::RequestDisplayMirror { target: device.id },
+                    format!("Asked {} to allow display mirroring once", device.label),
+                ))
+            }
+            DeviceFabricPaneRow::Device(device)
+                if !device.is_local
+                    && device.online
                     && self.qs_selected_remote_capture.is_some() =>
             {
                 let kind = self
@@ -12202,6 +12559,7 @@ impl ShellOverlayHost {
                     && self.qs_selected_gamepad.is_none()
                     && self.qs_selected_realtime.is_none()
                     && self.qs_selected_remote_capture.is_none()
+                    && !self.qs_selected_display_mirror
                     && self.qs_selected_media.is_none() =>
             {
                 Some((
@@ -14650,11 +15008,13 @@ impl Widget for ShellOverlayHost {
         use ui::a11y::{AccessNode, AccessState, Role};
 
         let mut root = AccessNode::new(Role::Group).with_name("Tilo workspace");
-        if let Some(power_menu) = self.power_menu.accessibility_snapshot() {
-            root.children.push(power_menu);
-        }
         for overlay in self.accessible_overlay_order() {
             match overlay {
+                AccessibleOverlay::PowerMenu => {
+                    if let Some(power_menu) = self.power_menu.accessibility_snapshot() {
+                        root.children.push(power_menu);
+                    }
+                }
                 AccessibleOverlay::CommandPalette => {
                     if let Some(palette) = self.palette.accessibility() {
                         root.children.push(palette);
@@ -15050,6 +15410,39 @@ impl Widget for ShellOverlayHost {
                                             },
                                             Vec::new(),
                                         ),
+                                        DeviceFabricPaneRow::DisplayMirrorConsent(consent) => (
+                                            format!("Mirror display from {}", consent.source_label),
+                                            "A certified device requested a private, view-only display mirror"
+                                                .into(),
+                                            vec![
+                                                AccessNode::new(Role::Button)
+                                                    .with_name("Allow display mirroring once"),
+                                                AccessNode::new(Role::Button)
+                                                    .with_name("Decline display mirroring"),
+                                            ],
+                                        ),
+                                        DeviceFabricPaneRow::DisplayMirrorSource => (
+                                            "Mirror this display".into(),
+                                            "Choose a certified video display; the target must approve once and receives no input authority"
+                                                .into(),
+                                            Vec::new(),
+                                        ),
+                                        DeviceFabricPaneRow::DisplayMirrorStatus(status) => (
+                                            format!("Display mirror with {}", status.peer_label),
+                                            match status.phase {
+                                                crate::shell::device_fabric_runtime::DisplayMirrorPhase::AwaitingConsent =>
+                                                    "Waiting for target approval; activate to cancel".into(),
+                                                crate::shell::device_fabric_runtime::DisplayMirrorPhase::Starting =>
+                                                    "Starting private view-only stream; activate to stop".into(),
+                                                crate::shell::device_fabric_runtime::DisplayMirrorPhase::Streaming =>
+                                                    "Private view-only stream active; activate to stop".into(),
+                                                crate::shell::device_fabric_runtime::DisplayMirrorPhase::Failed(failure) =>
+                                                    format!("Display mirroring ended: {}", display_mirror_failure_label(failure)),
+                                                crate::shell::device_fabric_runtime::DisplayMirrorPhase::Stopped =>
+                                                    "Display mirroring stopped".into(),
+                                            },
+                                            Vec::new(),
+                                        ),
                                         DeviceFabricPaneRow::RealtimeConsent(consent) => (
                                             format!("Continue call in {}", consent.room_label),
                                             "Approve this one handoff and its requested local capture sources"
@@ -15305,6 +15698,9 @@ impl Widget for ShellOverlayHost {
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         let (&overlay_index, child_path) = path.split_first()?;
         match self.accessible_overlay_order().get(overlay_index)? {
+            AccessibleOverlay::PowerMenu => self
+                .power_menu
+                .accessibility_rect_for_path(self.rect, child_path),
             AccessibleOverlay::CommandPalette => {
                 self.palette.synthetic_accessibility_rect(child_path)
             }
@@ -15364,6 +15760,7 @@ impl Widget for ShellOverlayHost {
             return false;
         };
         match overlay {
+            AccessibleOverlay::PowerMenu => self.power_menu.focus_accessibility_path(child_path),
             AccessibleOverlay::CommandPalette => {
                 self.palette.focus_synthetic_accessibility(child_path)
             }
@@ -19996,6 +20393,42 @@ impl ShellOverlayHost {
                     false,
                     false,
                 ),
+                DeviceFabricPaneRow::DisplayMirrorConsent(consent) => (
+                    "Allow display mirroring?".into(),
+                    format!(
+                        "{} requested a private view-only stream · allow once or decline",
+                        consent.source_label
+                    ),
+                    ui::icons::Icon::Monitor,
+                    false,
+                    true,
+                ),
+                DeviceFabricPaneRow::DisplayMirrorSource => (
+                    "Mirror this display".into(),
+                    "Select a certified video display below · approval required there".into(),
+                    ui::icons::Icon::Monitor,
+                    self.qs_selected_display_mirror,
+                    true,
+                ),
+                DeviceFabricPaneRow::DisplayMirrorStatus(status) => {
+                    use crate::shell::device_fabric_runtime::DisplayMirrorPhase;
+                    let detail = match status.phase {
+                        DisplayMirrorPhase::AwaitingConsent => "Waiting for approval · select to cancel",
+                        DisplayMirrorPhase::Starting => "Starting view-only stream · select to stop",
+                        DisplayMirrorPhase::Streaming => "View-only stream active · select to stop",
+                        DisplayMirrorPhase::Failed(failure) => {
+                            display_mirror_failure_label(failure)
+                        }
+                        DisplayMirrorPhase::Stopped => "Display mirroring stopped",
+                    };
+                    (
+                        format!("Mirror · {}", status.peer_label),
+                        detail.into(),
+                        ui::icons::Icon::Monitor,
+                        status.phase == DisplayMirrorPhase::Streaming,
+                        !matches!(status.phase, DisplayMirrorPhase::Failed(_) | DisplayMirrorPhase::Stopped),
+                    )
+                }
                 DeviceFabricPaneRow::RealtimeConsent(consent) => {
                     let source_label = view
                         .devices
@@ -20189,6 +20622,7 @@ impl ShellOverlayHost {
                             || self.qs_selected_gamepad.is_some()
                             || self.qs_selected_remote_audio.is_some()
                             || self.qs_selected_remote_capture.is_some()
+                            || (self.qs_selected_display_mirror && device.video_output)
                             || self.qs_selected_realtime.is_some()
                             || selected.is_some_and(|media| media.targets.contains(&device.id)));
                     let mut detail = if device.kind
@@ -20198,6 +20632,7 @@ impl ShellOverlayHost {
                         && self.qs_selected_gamepad.is_none()
                         && self.qs_selected_remote_audio.is_none()
                         && self.qs_selected_remote_capture.is_none()
+                        && !self.qs_selected_display_mirror
                         && self.qs_selected_realtime.is_none()
                         && self.qs_selected_media.is_none()
                     {
@@ -20207,6 +20642,15 @@ impl ShellOverlayHost {
                         && device.online
                     {
                         "Use selected controller here · target approves once".into()
+                    } else if self.qs_selected_display_mirror
+                        && !device.is_local
+                        && device.online
+                    {
+                        if device.video_output {
+                            "Mirror this display here · view-only · target approves once".into()
+                        } else {
+                            "This device cannot receive video".into()
+                        }
                     } else if let Some(kind) = self.qs_selected_remote_capture
                         && !device.is_local
                         && device.online
@@ -20272,6 +20716,7 @@ impl ShellOverlayHost {
                         | DeviceFabricPaneRow::CalibrationProposal(_)
                         | DeviceFabricPaneRow::RemoteAudioConsent(_)
                         | DeviceFabricPaneRow::RemoteCaptureConsent(_)
+                        | DeviceFabricPaneRow::DisplayMirrorConsent(_)
                         | DeviceFabricPaneRow::RealtimeConsent(_)
                         | DeviceFabricPaneRow::GamepadAuthorization(_)
                 ) {
@@ -20323,6 +20768,7 @@ impl ShellOverlayHost {
                     DeviceFabricPaneRow::CalibrationProposal(_)
                         | DeviceFabricPaneRow::RemoteAudioConsent(_)
                         | DeviceFabricPaneRow::RemoteCaptureConsent(_)
+                        | DeviceFabricPaneRow::DisplayMirrorConsent(_)
                         | DeviceFabricPaneRow::RealtimeConsent(_)
                         | DeviceFabricPaneRow::GamepadAuthorization(_)
                 )
@@ -20346,6 +20792,9 @@ impl ShellOverlayHost {
                             }
                             DeviceFabricPaneRow::RemoteCaptureConsent(_) => {
                                 "Allow this remote input once"
+                            }
+                            DeviceFabricPaneRow::DisplayMirrorConsent(_) => {
+                                "Allow display mirroring once"
                             }
                             DeviceFabricPaneRow::GamepadAuthorization(_) => {
                                 "Allow this controller once"
@@ -20375,6 +20824,9 @@ impl ShellOverlayHost {
                             }
                             DeviceFabricPaneRow::RemoteCaptureConsent(_) => {
                                 "Decline this remote input"
+                            }
+                            DeviceFabricPaneRow::DisplayMirrorConsent(_) => {
+                                "Decline display mirroring"
                             }
                             DeviceFabricPaneRow::GamepadAuthorization(_) => {
                                 "Decline this controller"
@@ -24751,6 +25203,25 @@ mod overlay_event_absorb_tests {
     }
 
     #[test]
+    fn quick_settings_power_tile_opens_the_power_menu_on_the_first_click() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.quick_settings = true;
+        h.host.force_quick_settings_settled();
+        paint(&mut h);
+        let power = h
+            .host
+            .quick_settings_semantic_rects()
+            .into_iter()
+            .find_map(|(name, rect)| (name == "quick_settings_power").then_some(rect))
+            .expect("the visible Power tile has semantic geometry");
+
+        let _ = pump(&mut h, &cursor_moved_at(power.center()));
+        assert!(pump(&mut h, &left_button_pressed()));
+        assert!(h.host.power_menu.is_open());
+        assert!(!h.chrome.borrow().overlays.quick_settings);
+    }
+
+    #[test]
     fn overlay_absorbs_keyboard_text_and_release_when_qs_open() {
         let mut h = build_harness();
         h.chrome.borrow_mut().overlays.quick_settings = true;
@@ -25879,6 +26350,48 @@ mod tests {
         assert!(
             h.host.synthetic_accessibility_rect(&[2, 0]).is_some(),
             "Quick Settings moves to child two when both earlier overlays are visible"
+        );
+    }
+
+    #[test]
+    fn power_menu_accessibility_paths_focus_and_activate_exact_rows() {
+        let mut h = build_harness();
+        h.host.power_menu.open();
+        h.host.power_menu.force_settled_for_visual_test();
+
+        let semantics = h.host.accessibility().expect("shell semantics");
+        assert_eq!(
+            semantics
+                .children
+                .first()
+                .and_then(|node| node.name.as_deref()),
+            Some("Session")
+        );
+        assert_eq!(
+            h.host.synthetic_accessibility_rect(&[0, 0]),
+            h.host
+                .power_menu_semantic_rects()
+                .into_iter()
+                .find(|(name, _)| *name == "power_lock")
+                .map(|(_, rect)| rect)
+        );
+        assert!(h.host.focus_synthetic_accessibility(&[0, 0]));
+        assert_eq!(
+            h.host.power_menu.key(
+                &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
+                false
+            ),
+            PowerMenuClick::Lock
+        );
+
+        h.host.power_menu.open();
+        assert!(h.host.focus_synthetic_accessibility(&[0, 5]));
+        assert_eq!(
+            h.host.power_menu.key(
+                &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
+                false
+            ),
+            PowerMenuClick::Execute(os_actions::SessionAction::ShutDown)
         );
     }
 

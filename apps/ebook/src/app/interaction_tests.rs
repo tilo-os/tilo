@@ -3954,6 +3954,35 @@ fn double_click_then_drag_extends_by_whole_words() {
     );
 }
 
+#[test]
+fn triple_click_selects_the_complete_logical_text_block() {
+    let mut app = app_with_sample();
+    let mut doc = AutoCommit::new();
+    frame(&mut app, &mut doc, 1000.0, 700.0);
+    let run = app
+        .sel_runs
+        .iter()
+        .find(|run| run.cl > 1)
+        .copied()
+        .expect("the page has selectable text");
+    let point = Point::new(f64::midpoint(run.x0, run.x1), f64::midpoint(run.y0, run.y1));
+
+    dbl_click(&mut app, &mut doc, point);
+    ptr_down(&mut app, &mut doc);
+    ptr_up(&mut app, &mut doc);
+
+    let (start, end) = app.sel.expect("triple-click selected a line").ordered();
+    assert_eq!(
+        start,
+        DocPos {
+            block: run.block,
+            ch: 0
+        }
+    );
+    assert_eq!(end.block, run.block);
+    assert_eq!(end.ch, app.block_char_len(run.block));
+}
+
 /// Headline: the font control lists the reader's *real* installed system
 /// families and, once picked, actually re-renders the book body in that
 /// family. Drives the real enumeration + picker hit + apply path.

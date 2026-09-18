@@ -84,6 +84,32 @@ impl PowerMenu {
         })
     }
 
+    pub(crate) fn accessibility_rect_for_path(
+        &self,
+        viewport: Rect,
+        path: &[usize],
+    ) -> Option<Rect> {
+        if !self.open {
+            return None;
+        }
+        match path {
+            [] => Some(panel_rect(viewport)),
+            [index] if *index < ACTIONS.len() => Some(action_rect(viewport, *index)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn focus_accessibility_path(&mut self, path: &[usize]) -> bool {
+        let [index] = path else {
+            return false;
+        };
+        if !self.open || *index >= ACTIONS.len() {
+            return false;
+        }
+        self.selected = *index;
+        true
+    }
+
     pub(crate) fn open(&mut self) {
         self.open = true;
         self.selected = 0;
