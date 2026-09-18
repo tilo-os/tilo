@@ -4584,22 +4584,8 @@ impl PhotosApp {
             bounds.x1 - f64::from(PAD),
             bounds.y0 + 64.0,
         );
-        if desktop_library {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.raised,
-                None,
-                &masthead,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.border_standard,
-                None,
-                &masthead,
-            );
-        }
+        // The library header is a quiet reading order, not a boxed dashboard.
+        // Photographs start immediately below it and remain the visual anchor.
         let heading_y = if desktop_library {
             masthead.y0 + 15.0
         } else {
@@ -5228,17 +5214,10 @@ impl PhotosApp {
                 }
                 timeline_y = group_top;
                 let day_label = timeline_date_label(&item.captured_at);
-                let index_hint = if self.timeline_index_metrics.overflows() {
-                    "Jump by date →"
-                } else {
-                    "One-day view"
-                };
-                let hint_width = if large_text { 138.0 } else { 112.0 };
-                let hint_x = bounds.x1 - f64::from(PAD) - hint_width - 18.0;
                 let day_rule = Rect::new(
                     bounds.x0 + f64::from(PAD),
                     timeline_y + 24.0,
-                    hint_x - 8.0,
+                    bounds.x1 - f64::from(PAD) - 18.0,
                     timeline_y + 25.0,
                 );
                 text_renderer.draw_text_weighted(
@@ -5247,7 +5226,7 @@ impl PhotosApp {
                     if large_text { 15.0 } else { 13.0 },
                     theme.text_primary,
                     transform * Affine::translate((day_rule.x0, timeline_y + 4.0)),
-                    Some((day_rule.width() - 84.0) as f32),
+                    Some(day_rule.width() as f32),
                     TextWeight::Medium,
                 );
                 scene.fill(
@@ -5256,15 +5235,6 @@ impl PhotosApp {
                     theme.border_standard,
                     None,
                     &Rect::new(day_rule.x0 + 148.0, day_rule.y0, day_rule.x1, day_rule.y1),
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    index_hint,
-                    if large_text { 13.0 } else { 11.0 },
-                    theme.text_dim,
-                    transform * Affine::translate((hint_x, timeline_y + 5.0)),
-                    Some(hint_width as f32),
-                    TextWeight::Medium,
                 );
                 timeline_y += 34.0;
                 timeline_column = 0;
