@@ -141,12 +141,14 @@ jobs:
         if: needs.plan.outputs.publish == 'true'
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: |
           set -euo pipefail
           case "$COSIGN_KEY_REF" in
             gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
             *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
           esac
+          . os/dev/configure-cosign-kms.sh
           resolved="$RUNNER_TEMP/os-release-signing-authority.pub"
           cosign public-key --key "$COSIGN_KEY_REF" > "$resolved"
           cmp --silent keys/cosign.pub "$resolved" || {
@@ -1001,11 +1003,13 @@ jobs:
           # hashivault://). The signing key is non-exportable and never enters
           # the Forgejo secret database or runner filesystem.
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: |
           case "$COSIGN_KEY_REF" in
             gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
             *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
           esac
+          . os/dev/configure-cosign-kms.sh
           cosign sign --yes --key "$COSIGN_KEY_REF" \
             "code.sandbox.example/qos/tilo@${{ steps.release.outputs.digest }}"
 
@@ -1028,7 +1032,9 @@ jobs:
         if: steps.release-mode.outputs.publish == 'true'
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: |
+          . os/dev/configure-cosign-kms.sh
           cosign attest --yes \
             --predicate sbom.spdx.json --type spdxjson \
             --key "$COSIGN_KEY_REF" \
@@ -1038,8 +1044,10 @@ jobs:
         if: steps.release-mode.outputs.publish == 'true'
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
           RELEASE_DIGEST: ${{ steps.release.outputs.digest }}
         run: |
+          . os/dev/configure-cosign-kms.sh
           ./os/dev/release-provenance.sh provenance.json
           cosign attest --yes \
             --predicate provenance.json --type slsaprovenance1 \
@@ -1055,9 +1063,11 @@ jobs:
         if: steps.release-mode.outputs.publish == 'true'
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
           RELEASE_DIGEST: ${{ steps.release.outputs.digest }}
           FRESHNESS_TTL_SECONDS: "86400"
         run: |
+          . os/dev/configure-cosign-kms.sh
           ./os/dev/release-freshness.sh freshness.json
           cosign attest --yes \
             --predicate freshness.json --type https://tilo.dev/security/release-freshness/v1 \
@@ -1169,12 +1179,14 @@ jobs:
       - name: Assemble, sign, attest, and promote the OS index
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: |
           set -euo pipefail
           case "$COSIGN_KEY_REF" in
             gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
             *) echo '::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key'; exit 1 ;;
           esac
+          . os/dev/configure-cosign-kms.sh
           mapfile -t descriptors < <(find release-children -type f -name '*.json' -print | LC_ALL=C sort)
           [[ ${#descriptors[@]} -eq 2 ]] || {
             echo "::error::expected exactly two native child descriptors, found ${#descriptors[@]}"
