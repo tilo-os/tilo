@@ -240,11 +240,13 @@ def _read_gpt(stream):
         require(identity not in identities, 'duplicate partition identity')
         identities.add(identity)
         start, end, attrs = struct.unpack_from('<QQQ', entry, 32)
-        require(first <= start <= end <= last and attrs == 0, 'unsupported partition extent/attributes')
+        require(first <= start <= end <= last, 'unsupported partition extent')
+        allowed_attributes = (0, 1 << 59) if kind in ROOT_GUIDS.values() else (0,)
+        require(attrs in allowed_attributes, 'unsupported partition attributes for type')
         role = 'staging-esp' if kind == ESP_GUID else 'staging-root'
         require(kind in (ESP_GUID, ROOT_GUID, *ROOT_GUIDS.values()), 'unsupported partition type')
         partitions.append({'number': number+1, 'role': role, 'partition_type_guid': kind,
-                           'partition_uuid': identity, 'offset': start*SECTOR, 'size': (end-start+1)*SECTOR})
+                           'partition_uuid': identity, 'attributes': attrs, 'offset': start*SECTOR, 'size': (end-start+1)*SECTOR})
     require(len(partitions) == 2 and {p['role'] for p in partitions} == {'staging-root', 'staging-esp'},
             'require exactly one ESP and one root')
     disjoint([(p['offset'], p['size']) for p in partitions], size)
@@ -259,12 +261,14 @@ def read_gpt(path):
         return result
 
 
-def copy_extent(stream, destination, offset, size, *, directory_fd=None):
+def copy_extent(stream, destination, offset, size, *, directory_fd=None, created=None):
     digest = hashlib.sha256()
     stream.seek(offset)
     descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                          0o600, dir_fd=directory_fd)
     with os.fdopen(descriptor, 'wb') as output:
+        if created is not None:
+            created(destination, descriptor)
         remaining = size
         while remaining:
             data = stream.read(min(1024*1024, remaining))
@@ -282,50 +286,78 @@ def export_ranges(image, output):
 
     Returned descriptors intentionally lack filesystem/UKI facts. Only inspection
     of actual artifacts can provide those; callers must not infer them from GPT.
+    Source attributes are observations, never target/staging growth policy.
+    Failed exports retain partial output: portable pathname cleanup cannot prove
+    exclusive ownership against concurrent substitution. Destination identity,
+    privacy and emptiness checks detect changes but do not confine a hostile
+    same-UID writer between checks.
     """
     output = Path(output)
     with regular_file(image) as stream:
         before = fingerprint(stream)
         partitions = _read_gpt(stream)
-        # mkdir is the no-replace claim: a preexisting/concurrently created output
-        # is never removed by the failure handler.
+        # mkdir/O_EXCL reserve names; they do not grant cleanup authority over
+        # later pathname replacements. On failure retain all partial artifacts.
         output.mkdir(mode=0o700)
-        directory_fd = os.open(output, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        identity = os.fstat(directory_fd)
-        filenames = [p['role'] + '.img' for p in partitions]
+        directory_fd = None
+        created_files = {}
         try:
+            expected = output.stat(follow_symlinks=False)
+            directory_fd = os.open(output, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            identity = os.fstat(directory_fd)
+            require((expected.st_dev, expected.st_ino) == (identity.st_dev, identity.st_ino),
+                    'output directory substituted before pinning')
+            require(identity.st_uid == os.getuid() and stat.S_IMODE(identity.st_mode) == 0o700,
+                    'output directory must be private and owned by current user')
+            with os.scandir(directory_fd) as entries:
+                require(next(entries, None) is None, 'output directory unexpectedly contains files')
+
+            def record_creation(filename, descriptor):
+                # Called only after successful O_EXCL; partial writes are tracked
+                # too. This identity is used for readback, never pathname deletion.
+                created_files[filename] = None
+                # Retain the object itself so inode reuse cannot defeat readback.
+                created_files[filename] = os.dup(descriptor)
+
+            def check_directory():
+                current = output.stat(follow_symlinks=False)
+                require((current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino),
+                        'output directory replaced during export')
+
             components = []
             for partition in partitions:
+                check_directory()
                 filename = partition['role'] + '.img'
                 digest = copy_extent(stream, filename, partition['offset'], partition['size'],
-                                     directory_fd=directory_fd)
+                                     directory_fd=directory_fd, created=record_creation)
                 components.append({'role': partition['role'], 'filename': filename,
                                    'byte_size': partition['size'], 'sha256': digest,
                                    'partition_type_guid': partition['partition_type_guid'],
                                    'minimum_partition_bytes': partition['size'],
-                                   'source_offset': partition['offset']})
+                                   'source_offset': partition['offset'],
+                                   'source_attributes': partition['attributes']})
             require(before == fingerprint(stream), 'source changed during export')
-            current = output.stat(follow_symlinks=False)
-            require((current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino),
-                    'output directory replaced during export')
+            check_directory()
+            for component in components:
+                current = os.stat(component['filename'], dir_fd=directory_fd, follow_symlinks=False)
+                pinned = os.fstat(created_files[component['filename']])
+                require((current.st_dev, current.st_ino) == (pinned.st_dev, pinned.st_ino)
+                        and stat.S_ISREG(current.st_mode) and current.st_size == component['byte_size'],
+                        'exported component replaced or resized')
             return components
-        except BaseException:
-            # Work through the pinned owned directory, not its possibly replaced
-            # pathname. Never recurse into/delete unrelated replacement content.
-            for filename in filenames:
-                try:
-                    os.unlink(filename, dir_fd=directory_fd)
-                except FileNotFoundError:
-                    pass
-            try:
-                current = output.stat(follow_symlinks=False)
-                if (current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino):
-                    output.rmdir()
-            except FileNotFoundError:
-                pass
-            raise
+        except BaseException as error:
+            # A stat→unlink/rmdir check is not atomic. With portable stdlib APIs,
+            # retaining bounded artifacts is preferable to deleting another
+            # writer's same-name file/directory. No pathname cleanup occurs.
+            raise OSError('partition export failed; partial output retained at ' + str(output) +
+                          '; exclusively created component count=' + str(len(created_files)) +
+                          '; reason: ' + str(error)) from error
         finally:
-            os.close(directory_fd)
+            for descriptor in created_files.values():
+                if descriptor is not None:
+                    os.close(descriptor)
+            if directory_fd is not None:
+                os.close(directory_fd)
 
 
 def inspect_bundle(path):
@@ -403,8 +435,8 @@ def specialize_uki(data, filesystem_uuid):
     spec = importlib.util.spec_from_file_location('qos_uki_cmdline', Path(__file__).with_name('uki-cmdline.py'))
     uki = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(uki)
-    require(not any(name in ('.pcrsig', '.pcrpkey') for name, *_ in uki.sections(data)),
-            'PCR signature-bearing specialization unsupported')
+    require(not any(name in ('.pcrsig', '.pcrpkey', '.profile') for name, *_ in uki.sections(data)),
+            'PCR signature-bearing or multi-profile specialization unsupported')
     pe = struct.unpack_from('<I', data, 0x3c)[0]
     directories = struct.unpack_from('<I', data, pe+24+108)[0]
     if directories > 4:
