@@ -50,7 +50,6 @@ anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 libc.workspace = true
-tar.workspace = true
 tempfile.workspace = true
 
 # systemd notify (sd_notify); missing environment variables are tolerated.
@@ -60,6 +59,7 @@ sd-notify.workspace = true
 capnpc.workspace = true
 
 [dev-dependencies]
+tar.workspace = true
 tokio = { workspace = true, features = ["full"] }
 ed25519-dalek.workspace = true
 rand.workspace = true
