@@ -23,6 +23,19 @@ pub struct RsaCertificate {
     pub certificate_pem: String,
 }
 
+/// Ephemeral CA and server credentials for a loopback TLS fixture.
+pub struct TlsFixture {
+    pub ca_certificate_pem: String,
+    pub server_private_key_pem: String,
+    pub server_certificate_pem: String,
+}
+
+impl Drop for TlsFixture {
+    fn drop(&mut self) {
+        self.server_private_key_pem.zeroize();
+    }
+}
+
 impl Drop for RsaCertificate {
     fn drop(&mut self) {
         self.private_key_pem.zeroize();
@@ -381,6 +394,59 @@ pub fn generate_secure_boot_certificate(common_name: &str) -> Result<RsaCertific
     Ok(RsaCertificate {
         private_key_pem: private_key_pem.to_string(),
         certificate_pem: certificate.pem(),
+    })
+}
+
+/// Generate a constrained ephemeral CA and an IP-SAN server certificate.
+pub fn generate_tls_fixture(server_ip: std::net::IpAddr) -> Result<TlsFixture, String> {
+    use rcgen::{
+        BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose,
+        IsCa, Issuer, KeyPair, KeyUsagePurpose,
+    };
+
+    let now = time::OffsetDateTime::now_utc();
+    let not_before = now
+        .checked_sub(time::Duration::hours(1))
+        .ok_or("TLS certificate start date overflow")?;
+    let not_after = now
+        .checked_add(time::Duration::days(2))
+        .ok_or("TLS certificate expiry date overflow")?;
+    let mut ca_params = CertificateParams::default();
+    ca_params.not_before = not_before;
+    ca_params.not_after = not_after;
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    ca_params.distinguished_name = DistinguishedName::new();
+    ca_params
+        .distinguished_name
+        .push(DnType::CommonName, "Tilo Disposable Registry CA");
+    let ca_key =
+        KeyPair::generate().map_err(|error| format!("cannot generate TLS CA key: {error}"))?;
+    let ca_certificate = ca_params
+        .self_signed(&ca_key)
+        .map_err(|error| format!("cannot generate TLS CA certificate: {error}"))?;
+    let issuer = Issuer::new(ca_params, ca_key);
+
+    let mut server_params = CertificateParams::new(vec![server_ip.to_string()])
+        .map_err(|error| format!("cannot encode TLS server IP: {error}"))?;
+    server_params.not_before = not_before;
+    server_params.not_after = not_after;
+    server_params.is_ca = IsCa::NoCa;
+    server_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    server_params.distinguished_name = DistinguishedName::new();
+    server_params
+        .distinguished_name
+        .push(DnType::CommonName, "Tilo Loopback Registry");
+    let server_key =
+        KeyPair::generate().map_err(|error| format!("cannot generate TLS server key: {error}"))?;
+    let server_certificate = server_params
+        .signed_by(&server_key, &issuer)
+        .map_err(|error| format!("cannot sign TLS server certificate: {error}"))?;
+    Ok(TlsFixture {
+        ca_certificate_pem: ca_certificate.pem(),
+        server_private_key_pem: server_key.serialize_pem(),
+        server_certificate_pem: server_certificate.pem(),
     })
 }
 
@@ -1278,6 +1344,33 @@ mod tests {
                 &esl
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn generated_tls_fixture_has_constrained_ca_and_loopback_san() {
+        use x509_parser::{extensions::GeneralName, pem::parse_x509_pem};
+
+        let fixture = generate_tls_fixture("127.0.0.1".parse().unwrap()).expect("TLS fixture");
+        assert!(fixture.server_private_key_pem.contains("PRIVATE KEY"));
+
+        let (_, ca_pem) = parse_x509_pem(fixture.ca_certificate_pem.as_bytes()).unwrap();
+        let ca = ca_pem.parse_x509().unwrap();
+        assert!(ca.basic_constraints().unwrap().unwrap().value.ca);
+
+        let (_, server_pem) = parse_x509_pem(fixture.server_certificate_pem.as_bytes()).unwrap();
+        let server = server_pem.parse_x509().unwrap();
+        assert!(
+            !server
+                .basic_constraints()
+                .unwrap()
+                .is_some_and(|constraints| constraints.value.ca)
+        );
+        let san = server.subject_alternative_name().unwrap().unwrap();
+        assert!(
+            san.value.general_names.iter().any(
+                |name| matches!(name, GeneralName::IPAddress(bytes) if *bytes == [127, 0, 0, 1])
+            )
         );
     }
 
