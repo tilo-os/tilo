@@ -1,7 +1,8 @@
 name: Release / desktop
 
 # Native builds cover the compositor's distribution graphics/input stack.
-# Pull requests install-test the payload; release tags publish verified artifacts.
+# Pull requests run cheap preflight only. Full distro builds run weekly, on
+# release tags, or by explicit dispatch while CI capacity is constrained.
 on:
   pull_request:
     branches: [main]
@@ -19,23 +20,11 @@ on:
       - ".forgejo/workflows/package-desktop.yml"
       - "docs/install-contract.json"
       - "scripts/check-install-contract.py"
+  schedule:
+    # One weekly candidate, separated from Saturday's OS image build.
+    - cron: "0 4 * * 5"
   push:
-    branches: ["main", "codex/package-desktop-release"]
     tags: ["desktop-v*"]
-    paths:
-      - "dist/**"
-      - "flake.nix"
-      - "flake.lock"
-      - ".cargo/config.toml"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - "shell/**"
-      - "crates/packaging/launcher/**"
-      - "crates/session/tilo-unlock-helper/**"
-      - ".forgejo/workflows/package-desktop.yml"
-      - "docs/install-contract.json"
-      - "scripts/check-install-contract.py"
   workflow_dispatch:
     inputs:
       full_native:
@@ -138,6 +127,8 @@ jobs:
           echo "release_arches=$release_arches" >> "$GITHUB_OUTPUT"
 
   package:
+    # Full five-distro compilation is opt-in for branch/PR changes.
+    if: github.event_name != 'pull_request'
     needs: validate
     name: package lane / ${{ matrix.arch }}
     # Desktop packaging uses the larger native runner class.
@@ -239,7 +230,7 @@ jobs:
           if-no-files-found: error
 
   publish-os-payload:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     needs: package
     runs-on: runner
     timeout-minutes: 120
@@ -251,7 +242,8 @@ jobs:
       - name: Publish immutable desktop payloads and advance their channels
         env:
           DESKTOP_AUDIENCE: ${{ vars.TILO_DESKTOP_RELEASE_AUDIENCE }}
-          CONTINUOUS_OS_RELEASE: ${{ vars.TILO_CONTINUOUS_OS_RELEASE }}
+          # Keep future chaining available, but never publish OS versions automatically.
+          CONTINUOUS_OS_RELEASE: "0"
         shell: bash
         run: |
           set -euo pipefail
