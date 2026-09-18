@@ -172,7 +172,7 @@ arboard = { workspace = true, features = ["image-data"] }
 # the desktop portal on Linux) when activated. Same crate + pin the file
 # explorer already uses to open files with the desktop default; already
 # resolved in the workspace lockfile, so this adds no registry fetch.
-open.workspace = true
+open = { workspace = true, features = ["shellexecute-on-windows"] }
 # Shared collaboration types used by the history/conflict/channel widgets and
 # by the signed wire envelopes carried by
 # `CollabRequest::SignedSyncIncremental` /
