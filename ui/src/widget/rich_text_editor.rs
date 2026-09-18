@@ -760,6 +760,72 @@ impl RichTextEditor {
             _ => {}
         }
     }
+
+    fn handle_cursor_move(&mut self, point: Point, handled: &mut bool) {
+        self.last_cursor = point;
+        let Some(granularity) = self.drag_select.drag() else {
+            return;
+        };
+        let position = self.position_at(point);
+        let raw = position.byte;
+        let (anchor_start, anchor_end) = self.drag_anchor_span;
+        let (anchor, caret) = match granularity {
+            Granularity::Char => (anchor_start, raw),
+            Granularity::Word => {
+                let (start, end) = word_boundaries(&self.text, raw);
+                extend_span_drag(anchor_start, anchor_end, raw, start, end)
+            }
+            Granularity::Line => {
+                let (start, end) = line_boundaries(&self.text, raw);
+                extend_span_drag(anchor_start, anchor_end, raw, start, end)
+            }
+        };
+        self.core.set_selection(anchor, caret);
+        self.redraw = true;
+        *handled = true;
+    }
+
+    fn handle_primary_press(
+        &mut self,
+        shift: bool,
+        node_id: NodeId,
+        focus_target: &mut Option<NodeId>,
+        handled: &mut bool,
+    ) {
+        let point = self.last_cursor;
+        if !self.rect.contains(point) {
+            return;
+        }
+        // Clear any in-flight preedit before hit-testing so byte offsets are
+        // in committed-text space.
+        self.preedit.clear();
+        let intent = self.drag_select.press(point, shift);
+        let position = self.position_at(point);
+        let byte = position.byte;
+        match intent.granularity {
+            Granularity::Char => self.core.place_position(position, intent.extend),
+            Granularity::Word => {
+                let (start, end) = word_boundaries(&self.text, byte);
+                self.core.set_selection(start, end);
+            }
+            Granularity::Line => {
+                let (start, end) = line_boundaries(&self.text, byte);
+                self.core.set_selection(start, end);
+            }
+        }
+        let selection = self.core.selection();
+        self.drag_anchor_span = if intent.granularity == Granularity::Char {
+            // Preserve the true (possibly right-hand) anchor for Shift-click.
+            (selection.anchor, selection.anchor)
+        } else {
+            (selection.min(), selection.max())
+        };
+        self.focused = true;
+        *focus_target = Some(node_id);
+        self.goal_x = None;
+        self.redraw = true;
+        *handled = true;
+    }
 }
 
 fn char_to_byte(text: &str, char_idx: usize) -> usize {
@@ -953,66 +1019,15 @@ impl Widget for RichTextEditor {
         let shift = modifiers.state().shift_key();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.last_cursor = pt;
-                if let Some(granularity) = self.drag_select.drag() {
-                    let position = self.position_at(pt);
-                    let raw = position.byte;
-                    let (anchor_start, anchor_end) = self.drag_anchor_span;
-                    let (anchor, caret) = match granularity {
-                        Granularity::Char => (anchor_start, raw),
-                        Granularity::Word => {
-                            let (start, end) = word_boundaries(&self.text, raw);
-                            extend_span_drag(anchor_start, anchor_end, raw, start, end)
-                        }
-                        Granularity::Line => {
-                            let (start, end) = line_boundaries(&self.text, raw);
-                            extend_span_drag(anchor_start, anchor_end, raw, start, end)
-                        }
-                    };
-                    self.core.set_selection(anchor, caret);
-                    self.redraw = true;
-                    *handled = true;
-                }
+                let point = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.handle_cursor_move(point, handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                let pt = self.last_cursor;
-                if !self.rect.contains(pt) {
-                    return;
-                }
-                // Clear any in-flight preedit before hit-testing so byte offsets
-                // are in committed-text space.
-                self.preedit.clear();
-                let intent = self.drag_select.press(pt, shift);
-                let position = self.position_at(pt);
-                let b = position.byte;
-                match intent.granularity {
-                    Granularity::Char => self.core.place_position(position, intent.extend),
-                    Granularity::Word => {
-                        let (s, e) = word_boundaries(&self.text, b);
-                        self.core.set_selection(s, e);
-                    }
-                    Granularity::Line => {
-                        let (s, e) = line_boundaries(&self.text, b);
-                        self.core.set_selection(s, e);
-                    }
-                }
-                let selection = self.core.selection();
-                self.drag_anchor_span = if intent.granularity == Granularity::Char {
-                    // Preserve the true (possibly right-hand) anchor for Shift-click.
-                    (selection.anchor, selection.anchor)
-                } else {
-                    (selection.min(), selection.max())
-                };
-                self.focused = true;
-                *focus_target = Some(node_id);
-                self.goal_x = None;
-                self.redraw = true;
-                *handled = true;
+                self.handle_primary_press(shift, node_id, focus_target, handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
