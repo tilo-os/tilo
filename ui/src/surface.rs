@@ -649,6 +649,33 @@ pub fn card_on(
     );
 }
 
+/// A floating Panel-role surface (menu, popover, sheet, toast) in one call:
+/// the theme's [`crate::chrome::panel_ground`] fill with the
+/// [`crate::chrome::panel_border`] edge on a crisp inset outline — HIG §9.5's
+/// Panel row, so an app never spells the fill + stroke pair itself. Rows
+/// inside it use [`separator`] with an `s3` inset and
+/// [`crate::chrome::selection_tier_on`] against the panel ground.
+pub fn panel(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, theme: &Theme) {
+    let rect = snap(rect);
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        crate::chrome::panel_ground(theme),
+        None,
+        &RoundedRect::from_rect(rect, radius),
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        crate::chrome::panel_border(theme),
+        None,
+        &edge_outline(rect, radius),
+    );
+}
+
 /// A 1 px separator between rows inside a surface: derived against
 /// `surface`, inset `inset` from both ends (HIG §9.5: `spacing.s3`, never
 /// full-bleed into a corner radius), centred on `y`.
@@ -783,6 +810,26 @@ mod tests {
                 assert_eq!(edge_on(surface), derive_edge_on(surface));
             }
         }
+    }
+
+    #[test]
+    fn panel_edge_registers_on_the_panel_ground_in_every_preset() {
+        for (name, theme) in [
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high-contrast", Theme::high_contrast()),
+        ] {
+            let ground = crate::chrome::panel_ground(&theme);
+            let border = crate::chrome::panel_border(&theme);
+            assert!(
+                edge_delta(border, ground) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                "{name}: the panel border must register on the panel ground"
+            );
+        }
+        // Degenerate rects paint nothing rather than a stray hairline.
+        let mut scene = Scene::new();
+        panel(&mut scene, Affine::IDENTITY, Rect::new(10.0, 10.0, 10.0, 40.0), 8.0, &Theme::dark());
+        assert!(scene.encoding().is_empty(), "an empty panel encodes no draw ops");
     }
 
     #[test]
