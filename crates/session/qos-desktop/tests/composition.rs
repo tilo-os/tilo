@@ -345,3 +345,54 @@ fn moving_a_tab_with_changed_application_resolves_the_new_identity() {
         assert_eq!(surface.row(StripId(2)).unwrap().groups[0].id, 99);
     }
 }
+
+fn empty_workspace_chrome() -> SurfaceChrome {
+    SurfaceChrome {
+        empty_workspace: Some(Box::new(
+            ui::widget::Text::new("Empty workspace").with_id("empty-workspace-marker"),
+        )),
+        ..SurfaceChrome::default()
+    }
+}
+fn has_empty_workspace_marker(widget: &dyn ui::Widget) -> bool {
+    widget.test_id() == Some("empty-workspace-marker")
+        || widget
+            .children()
+            .into_iter()
+            .any(has_empty_workspace_marker)
+}
+fn check_empty_workspace_transition(initially_empty: bool) {
+    let populated = tree();
+    let mut empty = populated.clone();
+    empty.workspaces[0].strips[0].window_groups.clear();
+    let (before, after) = if initially_empty {
+        (&empty, &populated)
+    } else {
+        (&populated, &empty)
+    };
+    let records = RecordStore::in_memory();
+    let mut surface =
+        DesktopSurface::build(before, &records, &mut Unavailable, empty_workspace_chrome());
+    assert_eq!(has_empty_workspace_marker(&surface), initially_empty);
+    assert_eq!(surface.strip_ids(), vec![StripId(2)]);
+    assert_eq!(
+        surface.reconcile(after, &records, &mut Unavailable),
+        qos_desktop::composition::ReconcileOutcome::RebuildRequired
+    );
+    // The host replaces only after handling the explicit rebuild outcome.
+    surface = DesktopSurface::build(after, &records, &mut Unavailable, empty_workspace_chrome());
+    assert_eq!(surface.strip_ids(), vec![StripId(2)]);
+    assert_eq!(has_empty_workspace_marker(&surface), !initially_empty);
+    assert_eq!(
+        surface.reconcile(after, &records, &mut Unavailable),
+        qos_desktop::composition::ReconcileOutcome::Unchanged
+    );
+}
+#[test]
+fn opening_first_group_rebuilds_empty_workspace_child_with_same_strips() {
+    check_empty_workspace_transition(true);
+}
+#[test]
+fn closing_last_group_rebuilds_empty_workspace_child_with_same_strips() {
+    check_empty_workspace_transition(false);
+}

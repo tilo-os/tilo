@@ -3249,6 +3249,9 @@ impl ShellOverlayHost {
     /// both [`Widget::update`] and [`Widget::take_structure_dirty`] — the
     /// shots driver's relayout-only path skips `update`.
     fn resync_workspace_content(&mut self) -> bool {
+        // Both update and structure-dirty enter here before canonical reconciliation.
+        // Commit only actual widget gestures, before a resync can restore an old selection.
+        self.harvest_active_tab_writeback();
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
@@ -3767,23 +3770,40 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
+        let pending: HashMap<_, _> = self
+            .content
+            .as_any_mut()
+            .and_then(|widget| widget.downcast_mut::<qos_desktop::composition::DesktopSurface>())
+            .map(|surface| surface.take_tab_selection_intents())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|intent| match intent {
+                qos_desktop::intents::LocalViewIntent::Tab { group, tab } => Some((group, tab)),
+                _ => None,
+            })
+            .collect();
+        if pending.is_empty() {
+            return;
+        }
         let mut writes: Vec<Writeback> = Vec::new();
         for (&strip_id, &ptr) in &self.group_row_ids {
             let row: &GroupRow = crate::shell::desktop_row(self.content.as_ref(), ptr);
             for g in &row.groups {
-                writes.push(Writeback {
-                    strip: strip_id,
-                    group: g.id,
-                    tab: g.active_tab_id(),
-                });
+                if let Some(&tab) = pending.get(&g.id) {
+                    writes.push(Writeback {
+                        strip: strip_id,
+                        group: g.id,
+                        tab,
+                    });
+                }
             }
         }
         if writes.is_empty() {
             return;
         }
         let st = chrome.borrow_mut();
-        // A divergence between `bar.active_id()` and the tree means a tab
-        // pill was clicked; stamp `active_strip`/`active_group` after the
+        // A widget change since its last harvested/canonical selection is a
+        // local gesture; stamp `active_strip`/`active_group` after the
         // writeback, or Ctrl+K's scope stays on the old group.
         let mut focus_writes: Vec<(WorkspaceId, StripId, GroupId)> = Vec::new();
         // A FileReference card is inert until the person explicitly selects
@@ -26136,6 +26156,85 @@ mod resync_strips_tests {
             "a crash after the input boundary must restore the newly selected tab"
         );
         assert_eq!(restarted.active_group_for(strip_id), Some(group_id));
+    }
+
+    fn review_selection_fixture() -> (
+        ShellOverlayHost,
+        crate::shell::chrome_state::Chrome,
+        StripId,
+        GroupId,
+        tempfile::TempDir,
+        std::path::PathBuf,
+    ) {
+        let (mut tree, strip, group) = one_group_seed();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.json");
+        tree.persist_path = Some(path.clone());
+        let mut second = tree.workspaces[0].strips[0].window_groups[0].tabs[0].clone();
+        second.id = 2;
+        second.title = "Second".into();
+        tree.workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .push(second);
+        tree.flush_to_disk();
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        host.take_structure_dirty();
+        (host, chrome, strip, group, directory, path)
+    }
+
+    fn review_pending_selection_survives_revision(structure_only: bool) {
+        let (mut host, chrome, strip, group, _directory, path) = review_selection_fixture();
+        assert!(host.focus_window_widget(strip, group, 2));
+        chrome.borrow_mut().bump(); // unrelated status/launch revision after the gesture
+        if structure_only {
+            host.take_structure_dirty();
+        } else {
+            host.update(&mut AutoCommit::new(), &automerge::ROOT);
+        }
+        assert_eq!(
+            host.group_at_for_tests(strip, 0).unwrap().active_tab_id(),
+            2
+        );
+        assert_eq!(
+            chrome.borrow().tree().workspaces[0].strips[0].window_groups[0].active_tab,
+            2
+        );
+        let restored = crate::shell::persist::load_tree_from(&path).unwrap();
+        assert_eq!(
+            restored.workspaces[0].strips[0].window_groups[0].active_tab,
+            2
+        );
+        assert_eq!(restored.active_group_for(strip), Some(group));
+        assert_eq!(restored.active_strip.get(&restored.active), Some(&strip));
+    }
+
+    #[test]
+    fn review_pending_selection_survives_update_revision() {
+        review_pending_selection_survives_revision(false);
+    }
+
+    #[test]
+    fn review_pending_selection_survives_structure_revision() {
+        review_pending_selection_survives_revision(true);
+    }
+
+    #[test]
+    fn review_canonical_selection_without_widget_gesture_is_not_overwritten() {
+        let (mut host, chrome, strip, _group, _directory, _path) = review_selection_fixture();
+        {
+            let mut state = chrome.borrow_mut();
+            state.tree_mut().workspaces[0].strips[0].window_groups[0].active_tab = 2;
+            state.bump();
+        }
+        host.take_structure_dirty();
+        assert_eq!(
+            host.group_at_for_tests(strip, 0).unwrap().active_tab_id(),
+            2
+        );
+        assert_eq!(
+            chrome.borrow().tree().workspaces[0].strips[0].window_groups[0].active_tab,
+            2
+        );
     }
 
     #[allow(

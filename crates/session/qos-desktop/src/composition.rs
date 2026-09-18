@@ -49,6 +49,7 @@ pub struct DesktopSurface {
     component_wake: std::sync::Arc<std::sync::atomic::AtomicBool>,
     wake_sink: std::sync::Arc<dyn Fn() + Send + Sync>,
     context: Option<(crate::WorkspaceId, RoomId)>,
+    empty_workspace_visible: Option<bool>,
     rows: HashMap<StripId, usize>,
     order: Vec<StripId>,
     failures: Vec<ui::launch::LaunchError>,
@@ -149,11 +150,12 @@ impl DesktopSurface {
                     .unwrap_or(0),
             )))
             .push(Box::new(StripView::new(strips, active_strip)));
-        let mut row_offset = 2;
-        if tree
+        let empty_workspace = tree
             .active_workspace()
-            .is_some_and(|w| w.strips.iter().all(|s| s.window_groups.is_empty()))
-        {
+            .is_some_and(|w| w.strips.iter().all(|s| s.window_groups.is_empty()));
+        let empty_workspace_visible = chrome.empty_workspace.as_ref().map(|_| empty_workspace);
+        let mut row_offset = 2;
+        if empty_workspace {
             if let Some(empty) = chrome.empty_workspace {
                 column = column.push(empty);
                 row_offset += 1;
@@ -201,6 +203,7 @@ impl DesktopSurface {
         Self {
             root,
             context: tree.active_workspace().map(|w| (w.id, w.room)),
+            empty_workspace_visible,
             component_wake,
             wake_sink,
             rows,
@@ -260,25 +263,43 @@ impl DesktopSurface {
     pub fn take_setup_failures(&mut self) -> Vec<ui::launch::LaunchError> {
         std::mem::take(&mut self.failures)
     }
+    /// Drain widget tab selections since the last canonical reconciliation or harvest.
+    /// Hosts must apply these local requests before reconciling a new canonical snapshot.
+    /// A canonical change alone is not a widget gesture and must not be written back.
+    pub fn take_tab_selection_intents(&mut self) -> Vec<crate::intents::LocalViewIntent> {
+        let mut intents = Vec::new();
+        let mut selected = std::mem::take(&mut self.selected_tabs);
+        for strip in self.strip_ids() {
+            if let Some(row) = self.row(strip) {
+                for group in &row.groups {
+                    if selected.insert(group.id, group.active_tab_id())
+                        != Some(group.active_tab_id())
+                    {
+                        intents.push(crate::intents::LocalViewIntent::Tab {
+                            group: group.id,
+                            tab: group.active_tab_id(),
+                        });
+                    }
+                }
+            }
+        }
+        self.selected_tabs = selected;
+        intents
+    }
     /// Harvest requests without mutating the caller's canonical tree or granting session authority.
     pub fn take_intents(&mut self) -> Vec<crate::intents::DesktopIntent> {
         use crate::intents::{self, DesktopIntent, LocalViewIntent};
-        let mut out = Vec::new();
-        let mut selected = std::mem::take(&mut self.selected_tabs);
+        let mut out: Vec<_> = self
+            .take_tab_selection_intents()
+            .into_iter()
+            .map(DesktopIntent::Local)
+            .collect();
         for strip in self.strip_ids() {
             if let Some(row) = self.row_mut(strip) {
                 if let Some(intent) = intents::take_group_reorder(strip, row) {
                     out.push(DesktopIntent::Session(intent));
                 }
                 for group in &mut row.groups {
-                    if selected.insert(group.id, group.active_tab_id())
-                        != Some(group.active_tab_id())
-                    {
-                        out.push(DesktopIntent::Local(LocalViewIntent::Tab {
-                            group: group.id,
-                            tab: group.active_tab_id(),
-                        }));
-                    }
                     if let Some(intent) = intents::take_maximize(group) {
                         out.push(DesktopIntent::Local(intent));
                     }
@@ -299,7 +320,6 @@ impl DesktopSurface {
                 }
             }
         }
-        self.selected_tabs = selected;
         if let Some(view) = child(self.root.as_ref(), &[0, 1, 1, 0])
             .and_then(Widget::as_any)
             .and_then(|v| v.downcast_ref::<WorkspaceView>())
@@ -338,6 +358,16 @@ impl DesktopSurface {
             return ReconcileOutcome::RebuildRequired;
         }
         if workspace.strips.iter().map(|s| s.id).collect::<Vec<_>>() != self.order {
+            return ReconcileOutcome::RebuildRequired;
+        }
+        let empty = workspace
+            .strips
+            .iter()
+            .all(|strip| strip.window_groups.is_empty());
+        if self
+            .empty_workspace_visible
+            .is_some_and(|visible| visible != empty)
+        {
             return ReconcileOutcome::RebuildRequired;
         }
         let mut failures = vec![];

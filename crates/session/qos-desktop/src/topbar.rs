@@ -3943,13 +3943,6 @@ mod tests {
             Some("Ada · Prepared launch brief".to_string()),
             3,
             42,
-            Some(super::fixture::ActivityFocus {
-                author: Some("Ada".into()),
-                group_id: Some("issue:42".into()),
-                entry_id: None,
-                resource_id: None,
-                resource_version: None,
-            }),
         );
         bar.refresh_status_and_media_state();
         assert!(bar.activity_is_visible());
@@ -3959,7 +3952,6 @@ mod tests {
             Some("Ada · Prepared launch brief".to_string()),
             0,
             42,
-            None,
         );
         bar.refresh_status_and_media_state();
         assert!(!bar.activity_is_visible());
@@ -4354,14 +4346,6 @@ mod fixture {
         rc::Rc,
     };
     #[derive(Default)]
-    pub struct ActivityFocus {
-        pub author: Option<String>,
-        pub group_id: Option<String>,
-        pub entry_id: Option<[u8; 16]>,
-        pub resource_id: Option<String>,
-        pub resource_version: Option<String>,
-    }
-    #[derive(Default)]
     pub struct Overlays {
         pub overview: bool,
         pub collaborators: bool,
@@ -4382,7 +4366,6 @@ mod fixture {
             headline: Option<String>,
             unread: usize,
             pulse: u64,
-            _: Option<ActivityFocus>,
         ) {
             self.glance = ActivityGlance {
                 headline,
