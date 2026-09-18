@@ -18,7 +18,8 @@ containerfile="$repo/os/Containerfile"
 # activation sockets, the staged-image owner trust gate, and the deferred
 # BootPack status-projection timer, the physical-disk BFQ policy, the
 # root-owned device-key initializer, the off-critical-path TPM hardening timer,
-# the authenticated Chrony policy used by the image-trust freshness floor, and
+# the authenticated Chrony policy used by the image-trust freshness floor, the
+# zero-delay NetworkManager timer that keeps networking off the login chain, and
 # the build-only residual OpenSSL ABI package gate (removed after it runs).
 # Rustls now compiles the fixed CA-bundle path
 # into its loader, so the former systemd environment override is absent. Sorting
@@ -27,7 +28,7 @@ containerfile="$repo/os/Containerfile"
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=d96563dc483f3085d71060493b57f723d97e35630118bc61a71b96a7fcddf511
+expected_contract=45adad218db55aaa9ba24db7063888976420472b55579d83f2da5e8a96064e92
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
