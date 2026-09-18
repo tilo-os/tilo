@@ -1280,6 +1280,7 @@ fn write_directory_row(
     out.set_resource(&row.resource);
     out.set_resource_kind(&row.resource_kind);
     out.set_resource_label(&row.resource_label);
+    out.set_resource_presentation_json(&row.resource_presentation_json);
     out.set_action(row.action.as_deref().unwrap_or(""));
     out.set_has_children(row.has_children);
     out.set_visibility_action(row.visibility_action.as_deref().unwrap_or(""));
@@ -7959,6 +7960,19 @@ fn permits_directory_row(
         DIRECTORY_MAX_LABEL_BYTES,
         true,
     )?;
+    let presentation = if row.resource_presentation_json.is_empty() {
+        None
+    } else {
+        serde_json::from_str::<tilo_actions::ResourcePresentation>(&row.resource_presentation_json)
+            .ok()
+    };
+    if !row.resource_presentation_json.is_empty()
+        && !presentation.as_ref().is_some_and(|value| value.is_valid())
+    {
+        return Err(capnp::Error::failed(
+            "invalid resource presentation metadata".into(),
+        ));
+    }
     match (&row.action, &row.descriptor) {
         (Some(action), Some(descriptor)) => {
             validate_directory_identifier(action, "action", DIRECTORY_MAX_IDENTIFIER_BYTES, true)?;
@@ -7969,6 +7983,7 @@ fn permits_directory_row(
                 || row.has_children
                 || row.visibility_action.as_deref() != Some(action)
                 || row.visibility_contract_json != descriptor.contract_json
+                || presentation.is_some()
             {
                 return Err(capnp::Error::failed(
                     "directory action row does not match its descriptor".into(),
@@ -10252,6 +10267,7 @@ mod tests {
                 resource: descriptor.resource.clone(),
                 resource_kind: descriptor.resource_kind.clone(),
                 resource_label: descriptor.resource_label.clone(),
+                resource_presentation_json: String::new(),
                 action: Some(descriptor.action.clone()),
                 descriptor: Some(descriptor),
                 has_children: false,
@@ -10535,7 +10551,7 @@ mod tests {
     }
 
     #[test]
-    fn directory_wire_rows_refuse_control_framing_in_identifiers_before_policy_or_invocation() {
+    fn directory_wire_rows_refuse_untrusted_presentation_and_control_framing() {
         let fixture = local_directory_fixture();
         let mut row = fixture.directory_state.borrow().row();
         row.resource = "workspace:atlas\u{1f}admin".into();
@@ -10562,6 +10578,24 @@ mod tests {
             )
             .is_err(),
             "control characters cannot turn one wire action into several shell fields"
+        );
+        let mut row = fixture.directory_state.borrow().row();
+        row.action = None;
+        row.descriptor = None;
+        row.resource_presentation_json = serde_json::json!({
+            "detail": "x".repeat(tilo_actions::ResourcePresentation::MAX_DETAIL_BYTES + 1)
+        })
+        .to_string();
+        assert!(
+            permits_directory_row(
+                &fixture.state,
+                &fixture.cluster_id,
+                &BrokerActor::person("actor-a"),
+                &fixture.route.app_id,
+                &row,
+            )
+            .is_err(),
+            "oversized app metadata cannot reach shell chrome"
         );
     }
 
