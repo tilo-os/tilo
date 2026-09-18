@@ -205,7 +205,7 @@ else
 fi
 for interface in \
   DEVKMEM PROC_KCORE COREDUMP FW_LOADER_USER_HELPER FANOTIFY DNOTIFY \
-  CUSE FUSE_PASSTHROUGH \
+  CUSE FUSE_PASSTHROUGH VIRTIO_FS FUSE_DAX FUSE_IO_URING \
   FW_LOADER_USER_HELPER_FALLBACK TLS CRYPTO_USER_API; do
   if grep -Fqx "# CONFIG_${interface} is not set" "$running_kernel_config" 2>/dev/null; then
     ok "unused privileged kernel interface $interface is not compiled"
