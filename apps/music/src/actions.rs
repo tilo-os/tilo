@@ -1185,10 +1185,10 @@ fn with_queue_actions(
 fn queue_item_effect_spec(
     id: &str,
     label: &str,
-    operation: MusicOperation,
+    operation: &MusicOperation,
     destructive: bool,
 ) -> ActionSpec {
-    let spec = operation_spec(id, label, OperationKind::Effect, &operation)
+    let spec = operation_spec(id, label, OperationKind::Effect, operation)
         .requiring(PermissionRequirement::Write);
     if destructive {
         spec.destructive()
@@ -1219,7 +1219,7 @@ fn queue_item_resource(item: &QueueItemResource, total: usize) -> Resource {
             } else {
                 "Play queue item"
             },
-            MusicOperation::PlayQueueItem {
+            &MusicOperation::PlayQueueItem {
                 index,
                 track: track.clone(),
             },
@@ -1237,7 +1237,7 @@ fn queue_item_resource(item: &QueueItemResource, total: usize) -> Resource {
     .with_action(queue_item_effect_spec(
         "remove",
         "Remove from queue",
-        MusicOperation::RemoveQueueItem {
+        &MusicOperation::RemoveQueueItem {
             index,
             track: track.clone(),
         },
@@ -1247,7 +1247,7 @@ fn queue_item_resource(item: &QueueItemResource, total: usize) -> Resource {
     let move_up = queue_item_effect_spec(
         "move-up",
         "Move queue item up",
-        MusicOperation::MoveQueueItem {
+        &MusicOperation::MoveQueueItem {
             index,
             track: track.clone(),
             to: index.saturating_sub(1),
@@ -1266,7 +1266,7 @@ fn queue_item_resource(item: &QueueItemResource, total: usize) -> Resource {
     let move_down = queue_item_effect_spec(
         "move-down",
         "Move queue item down",
-        MusicOperation::MoveQueueItem {
+        &MusicOperation::MoveQueueItem {
             index,
             track,
             to: index.saturating_add(1),
