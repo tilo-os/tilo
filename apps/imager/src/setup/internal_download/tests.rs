@@ -1522,3 +1522,567 @@ fn interrupted_write_allowance_is_cumulative_across_successful_partial_writes() 
     assert_eq!(contents(&mut file), vec![b'E'; 7]);
     assert_eq!(events.received, 7);
 }
+
+thread_local! { static CHECKPOINT_INTERVAL: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) }; }
+pub(super) fn checkpoint_interval_override() -> Option<u64> {
+    CHECKPOINT_INTERVAL.get()
+}
+#[cfg(unix)]
+use super::super::internal_cache::tests::{
+    DiskProvider, clear_reads, fail, read_totals, start_prefix, test_prepared,
+};
+#[cfg(unix)]
+use super::super::internal_cache::{Provider, Session};
+#[cfg(unix)]
+#[test]
+fn persistent_success_has_linear_readback_final_verification_and_reopened_candidate() {
+    let payload = vec![b'R'; 512 * 1024];
+    let mut value = super::super::internal_bundle::tests::fixture();
+    value["components"][1]["byte_size"] = serde_json::json!(payload.len());
+    value["components"][1]["minimum_partition_bytes"] = serde_json::json!(payload.len());
+    value["components"][1]["sha256"] = serde_json::json!(format!("{:x}", Sha256::digest(&payload)));
+    value["source_image_bytes"] = serde_json::json!(payload.len() + 21504);
+    let bytes = serde_json::to_vec(&value).unwrap();
+    let server = Server::new(vec![response(200, "", &payload)]);
+    let selected = SelectedManifest::checked(
+        &server.release(&bytes),
+        bytes,
+        &Url::parse(&server.url).unwrap(),
+    )
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let (p, mut f) = DiskProvider::new(dir.path());
+    let own = p.ownership();
+    let cancel = AtomicBool::new(false);
+    let pause = AtomicBool::new(false);
+    clear_reads();
+    CHECKPOINT_INTERVAL.set(Some(32768));
+    let final_reads = Arc::new(Mutex::new(0));
+    let count = final_reads.clone();
+    with_hook(
+        Box::new(move |stage, n| {
+            if stage == "hash-eof" {
+                *count.lock().unwrap() += n;
+            }
+        }),
+        || {
+            let mut session = Session::new(&selected, 1, 41, p).unwrap();
+            let prepared = session.prepare(&selected, &mut f, &cancel).unwrap();
+            assert!(matches!(
+                server
+                    .transport()
+                    .transfer_persistent(prepared, &cancel, &pause, |_| {})
+                    .unwrap(),
+                PersistentOutcome::Complete(_)
+            ));
+        },
+    );
+    CHECKPOINT_INTERVAL.set(None);
+    assert_eq!(contents(&mut f), payload);
+    assert_eq!(read_totals("periodic"), (524288, 524288));
+    assert_eq!(*final_reads.lock().unwrap(), 524288);
+    assert_eq!(
+        std::fs::read_dir(dir.path().join("journal"))
+            .unwrap()
+            .count(),
+        2
+    );
+    drop(f);
+    clear_reads();
+    let (p, mut f) = DiskProvider::reopen(dir.path(), own);
+    let mut session = Session::new(&selected, 1, 42, p).unwrap();
+    let prepared = session.prepare(&selected, &mut f, &cancel).unwrap();
+    assert_eq!(read_totals("restart"), (524288, 524288));
+    assert!(matches!(
+        server
+            .transport()
+            .transfer_persistent(prepared, &cancel, &pause, |_| {})
+            .unwrap(),
+        PersistentOutcome::Complete(_)
+    ));
+    assert_eq!(server.requests.lock().unwrap().len(), 1);
+}
+#[cfg(unix)]
+#[test]
+fn persistent_pause_retains_tail_but_full_count_before_eof_is_not_committed() {
+    for full in [false, true] {
+        let data = vec![b'E'; if full { 4096 } else { 1024 }];
+        let server = Server::new(vec![response(200, "Content-Length: 4096\r\n", &data)]);
+        let selected = context(&server);
+        let dir = tempfile::tempdir().unwrap();
+        let (p, mut f) = DiskProvider::new(dir.path());
+        let own = p.ownership();
+        let cancel = AtomicBool::new(false);
+        let pause = Arc::new(AtomicBool::new(false));
+        let signal = pause.clone();
+        let mut session = Session::new(&selected, 0, 1, p).unwrap();
+        let prepared = session.prepare(&selected, &mut f, &cancel).unwrap();
+        with_hook(
+            Box::new(move |stage, _| {
+                if stage == "write" {
+                    signal.store(true, Ordering::Release);
+                }
+            }),
+            || {
+                assert!(
+                    matches!(server.transport().transfer_persistent(prepared,&cancel,&pause,|_|{}).unwrap(),PersistentOutcome::Paused{committed} if committed==if full {0}else{1024})
+                );
+            },
+        );
+        drop(session);
+        drop(f);
+        let (p, mut f) = DiskProvider::reopen(dir.path(), own);
+        let mut session = Session::new(&selected, 0, 2, p).unwrap();
+        let prepared = session.prepare(&selected, &mut f, &cancel).unwrap();
+        let committed = prepared.committed();
+        assert_eq!(committed, if full { 0 } else { 1024 });
+        drop(prepared);
+        assert_eq!(f.metadata().unwrap().len(), committed);
+    }
+}
+#[cfg(unix)]
+#[test]
+fn persistent_failed_reset_ack_never_truncates_and_failed_full_eof_never_commits() {
+    for full_eof in [false, true] {
+        let body = vec![b'E'; 4096];
+        let raw = if full_eof {
+            response(
+                200,
+                "Transfer-Encoding: chunked\r\n",
+                format!("1000\r\n{}\r\n", String::from_utf8_lossy(&body)).as_bytes(),
+            )
+        } else {
+            response(416, "", b"")
+        };
+        let server = Server::new(vec![raw]);
+        let selected = context(&server);
+        let dir = tempfile::tempdir().unwrap();
+        let (p, mut f) = DiskProvider::new(dir.path());
+        let own = p.ownership();
+        let cancel = AtomicBool::new(false);
+        let mut session = Session::new(&selected, 0, 1, p).unwrap();
+        let mut prepared = session.prepare(&selected, &mut f, &cancel).unwrap();
+        if !full_eof {
+            start_prefix(&mut prepared, &vec![b'E'; 1024]);
+            drop(prepared);
+            drop(session);
+            drop(f);
+            let reopened = DiskProvider::reopen(dir.path(), own.clone());
+            f = reopened.1;
+            session = Session::new(&selected, 0, 2, reopened.0).unwrap();
+            prepared = session.prepare(&selected, &mut f, &cancel).unwrap();
+        }
+        fail(Some("record-create"));
+        let error = server
+            .transport()
+            .transfer_persistent(prepared, &cancel, &AtomicBool::new(false), |_| {})
+            .unwrap_err();
+        fail(None);
+        assert!(error.message.contains("record-create"));
+        assert!(error.uncertain);
+        assert_eq!(error.committed, if full_eof { 0 } else { 1024 });
+        assert_eq!(
+            f.metadata().unwrap().len(),
+            if full_eof { 4096 } else { 1024 }
+        );
+        drop(session);
+        drop(f);
+        let (p, mut f) = DiskProvider::reopen(dir.path(), own);
+        let mut session = Session::new(&selected, 0, 3, p).unwrap();
+        assert_eq!(
+            session
+                .prepare(&selected, &mut f, &cancel)
+                .unwrap()
+                .committed(),
+            if full_eof { 0 } else { 1024 }
+        );
+        assert_eq!(server.requests.lock().unwrap().len(), 1);
+    }
+}
+#[cfg(unix)]
+#[test]
+fn persistent_cancel_wins_pause_and_final_callback_and_partial_write_retains_prefix() {
+    for mode in [0, 1, 2] {
+        let server = Server::new(vec![response(200, "", &vec![b'E'; 4096])]);
+        let selected = context(&server);
+        let dir = tempfile::tempdir().unwrap();
+        let (p, mut f) = DiskProvider::new(dir.path());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let pause = Arc::new(AtomicBool::new(false));
+        let mut session = Session::new(&selected, 0, 1, p).unwrap();
+        let prepared = session.prepare(&selected, &mut f, &cancel).unwrap();
+        if mode == 0 {
+            let c = cancel.clone();
+            let p = pause.clone();
+            with_hook(
+                Box::new(move |stage, _| {
+                    if stage == "write" {
+                        c.store(true, Ordering::Release);
+                        p.store(true, Ordering::Release);
+                    }
+                }),
+                || {
+                    assert!(matches!(
+                        server
+                            .transport()
+                            .transfer_persistent(prepared, &cancel, &pause, |_| {})
+                            .unwrap(),
+                        PersistentOutcome::Cancelled { committed: 0, .. }
+                    ));
+                },
+            );
+            assert!(cancel.load(Ordering::Acquire));
+        } else if mode == 1 {
+            assert!(matches!(
+                server
+                    .transport()
+                    .transfer_persistent(prepared, &cancel, &pause, |p| {
+                        if p.phase == Phase::Complete {
+                            cancel.store(true, Ordering::Release)
+                        }
+                    })
+                    .unwrap(),
+                PersistentOutcome::Cancelled { committed: 0, .. }
+            ));
+        } else {
+            with_write_failure(17, || {
+                let error = server
+                    .transport()
+                    .transfer_persistent(prepared, &cancel, &pause, |_| {})
+                    .unwrap_err();
+                assert_eq!(error.committed, 0);
+            });
+            assert_eq!(contents(&mut f), vec![b'E'; 17]);
+        }
+    }
+}
+#[cfg(unix)]
+#[test]
+fn persistent_retry_revalidates_frozen_prefix_after_advisory_callback() {
+    let server = Server::new(vec![response(
+        200,
+        "Content-Length: 4096\r\n",
+        &vec![b'E'; 1024],
+    )]);
+    let selected = context(&server);
+    let dir = tempfile::tempdir().unwrap();
+    let (p, mut f) = DiskProvider::new(dir.path());
+    let own = p.ownership();
+    let cancel = AtomicBool::new(false);
+    let path = dir.path().join(own.leaf);
+    let mut session = Session::new(&selected, 0, 1, p).unwrap();
+    let prepared = session.prepare(&selected, &mut f, &cancel).unwrap();
+    let error = server
+        .transport()
+        .transfer_persistent(prepared, &cancel, &AtomicBool::new(false), |event| {
+            if event.phase == Phase::Retrying {
+                let mut corrupt = File::options().write(true).open(&path).unwrap();
+                corrupt.write_all(b"X").unwrap();
+            }
+        })
+        .unwrap_err();
+    assert!(error.message.contains("digest mismatch"));
+    assert_eq!(error.committed, 1024);
+    assert_eq!(server.requests.lock().unwrap().len(), 1);
+}
+
+#[cfg(unix)]
+struct AckAdapter<'a> {
+    inner: &'a mut dyn cache::Observer,
+    stale: bool,
+    cancel: Option<&'a AtomicBool>,
+}
+#[cfg(unix)]
+impl cache::Observer for AckAdapter<'_> {
+    fn begin_attempt(&mut self, id: cache::BoundaryId, file: &File) -> Result<(), String> {
+        self.inner.begin_attempt(id, file)
+    }
+    fn boundary(
+        &mut self,
+        id: cache::BoundaryId,
+        file: &mut File,
+        c: cache::Candidate,
+    ) -> Result<cache::Ack, String> {
+        let mut ack = self.inner.boundary(id, file, c)?;
+        if self.stale {
+            ack.id.epoch += 1;
+        }
+        if let Some(cancel) = self.cancel {
+            cancel.store(true, Ordering::Release);
+        }
+        Ok(ack)
+    }
+}
+#[cfg(unix)]
+#[test]
+fn persistent_stale_ack_refuses_truncation_and_final_ack_cancel_stays_terminal() {
+    for stale in [false, true] {
+        let server = Server::new(vec![if stale {
+            response(416, "", b"")
+        } else {
+            response(200, "", &vec![b'E'; 4096])
+        }]);
+        let selected = context(&server);
+        let dir = tempfile::tempdir().unwrap();
+        let (p, mut f) = DiskProvider::new(dir.path());
+        let own = p.ownership();
+        let cancel = AtomicBool::new(false);
+        let mut session = Session::new(&selected, 0, 1, p).unwrap();
+        let mut prepared = session.prepare(&selected, &mut f, &cancel).unwrap();
+        if stale {
+            start_prefix(&mut prepared, &vec![b'E'; 1024]);
+            drop(prepared);
+            drop(session);
+            drop(f);
+            let (p, file) = DiskProvider::reopen(dir.path(), own);
+            f = file;
+            session = Session::new(&selected, 0, 2, p).unwrap();
+            prepared = session.prepare(&selected, &mut f, &cancel).unwrap();
+        }
+        let parts = prepared.into_parts();
+        let mut observer = AckAdapter {
+            inner: parts.observer,
+            stale,
+            cancel: if stale { None } else { Some(&cancel) },
+        };
+        let prepared = test_prepared(cache::TransferParts {
+            observer: &mut observer,
+            ..parts
+        });
+        let result = server.transport().transfer_persistent(
+            prepared,
+            &cancel,
+            &AtomicBool::new(false),
+            |_| {},
+        );
+        if stale {
+            let error = result.unwrap_err();
+            assert!(error.message.contains("Stale durable"));
+            assert_eq!(error.committed, 1024);
+            assert!(error.uncertain);
+            assert_eq!(f.metadata().unwrap().len(), 1024);
+        } else {
+            assert!(matches!(
+                result.unwrap(),
+                PersistentOutcome::Cancelled {
+                    committed: 4096,
+                    error: None,
+                    uncertain: false
+                }
+            ));
+            assert!(cancel.load(Ordering::Acquire));
+        }
+    }
+}
+#[cfg(unix)]
+#[test]
+fn persistent_failed_full_eof_reset_allows_only_a_new_successful_response() {
+    let payload = vec![b'E'; 4096];
+    let broken = response(
+        200,
+        "Transfer-Encoding: chunked\r\n",
+        format!("1000\r\n{}\r\n", String::from_utf8_lossy(&payload)).as_bytes(),
+    );
+    let server = Server::new(vec![broken, response(200, "", &payload)]);
+    let selected = context(&server);
+    let dir = tempfile::tempdir().unwrap();
+    let (p, mut f) = DiskProvider::new(dir.path());
+    let cancel = AtomicBool::new(false);
+    let mut session = Session::new(&selected, 0, 1, p).unwrap();
+    let prepared = session.prepare(&selected, &mut f, &cancel).unwrap();
+    let mut resets = 0;
+    assert!(matches!(
+        server
+            .transport()
+            .transfer_persistent(prepared, &cancel, &AtomicBool::new(false), |p| {
+                if p.phase == Phase::Resetting {
+                    resets += 1
+                }
+            })
+            .unwrap(),
+        PersistentOutcome::Complete(_)
+    ));
+    assert_eq!(resets, 1);
+    assert_eq!(server.requests.lock().unwrap().len(), 2);
+    assert_eq!(contents(&mut f), payload);
+}
+#[cfg(unix)]
+#[test]
+fn persistent_pause_checkpoint_failure_reports_prior_commit_and_uncertainty() {
+    let server = Server::new(vec![response(
+        200,
+        "Content-Length: 4096\r\n",
+        &vec![b'E'; 1024],
+    )]);
+    let selected = context(&server);
+    let dir = tempfile::tempdir().unwrap();
+    let (p, mut f) = DiskProvider::new(dir.path());
+    let cancel = AtomicBool::new(false);
+    let pause = Arc::new(AtomicBool::new(false));
+    let signal = pause.clone();
+    let mut session = Session::new(&selected, 0, 1, p).unwrap();
+    let prepared = session.prepare(&selected, &mut f, &cancel).unwrap();
+    fail(Some("lost-ack"));
+    with_hook(
+        Box::new(move |stage, _| {
+            if stage == "write" {
+                signal.store(true, Ordering::Release)
+            }
+        }),
+        || {
+            let error = server
+                .transport()
+                .transfer_persistent(prepared, &cancel, &pause, |_| {})
+                .unwrap_err();
+            assert_eq!(error.committed, 0);
+            assert!(error.uncertain);
+            assert!(error.message.contains("lost-ack"));
+        },
+    );
+    fail(None);
+    assert_eq!(contents(&mut f), vec![b'E'; 1024]);
+}
+
+#[cfg(unix)]
+#[test]
+fn persistent_partial_pause_close_reauthenticate_reopen_resumes_one_validated_prefix() {
+    let server = Server::new(vec![
+        response(200, "Content-Length: 4096\r\n", &vec![b'E'; 1024]),
+        response(
+            206,
+            "Content-Range: bytes 1024-4095/4096\r\nContent-Length: 3072\r\n",
+            &vec![b'E'; 3072],
+        ),
+    ]);
+    let dir = tempfile::tempdir().unwrap();
+    let (p, mut f) = DiskProvider::new(dir.path());
+    let own = p.ownership();
+    let cancel = AtomicBool::new(false);
+    let pause = Arc::new(AtomicBool::new(false));
+    let signal = pause.clone();
+    {
+        let selected = context(&server);
+        let mut session = Session::new(&selected, 0, 101, p).unwrap();
+        let prepared = session.prepare(&selected, &mut f, &cancel).unwrap();
+        with_hook(
+            Box::new(move |stage, _| {
+                if stage == "write" {
+                    signal.store(true, Ordering::Release)
+                }
+            }),
+            || {
+                assert!(matches!(
+                    server
+                        .transport()
+                        .transfer_persistent(prepared, &cancel, &pause, |_| {})
+                        .unwrap(),
+                    PersistentOutcome::Paused { committed: 1024 }
+                ));
+            },
+        );
+    }
+    drop(f);
+    clear_reads();
+    let selected = context(&server); // Reauthenticate exact manifest bytes in a new operation.
+    let (p, mut f) = DiskProvider::reopen(dir.path(), own);
+    let mut session = Session::new(&selected, 0, 102, p).unwrap();
+    let prepared = session.prepare(&selected, &mut f, &cancel).unwrap();
+    assert_eq!(read_totals("restart"), (1024, 1024));
+    let final_reads = Arc::new(Mutex::new(0));
+    let count = final_reads.clone();
+    with_hook(
+        Box::new(move |stage, n| {
+            if stage == "hash-eof" {
+                *count.lock().unwrap() += n
+            }
+        }),
+        || {
+            let outcome = server
+                .transport()
+                .transfer_persistent(prepared, &cancel, &AtomicBool::new(false), |_| {})
+                .unwrap();
+            match outcome {
+                PersistentOutcome::Complete(done) => assert_eq!(done.byte_size(), 4096),
+                other => panic!("{other:?}"),
+            }
+        },
+    );
+    assert_eq!(contents(&mut f), vec![b'E'; 4096]);
+    assert_eq!(read_totals("restart"), (1024, 1024));
+    assert_eq!(read_totals("periodic"), (3072, 3072));
+    assert_eq!(read_totals("retry"), (0, 0));
+    assert_eq!(*final_reads.lock().unwrap(), 4096);
+    assert_eq!(read_totals("full-file"), (4098, 4096));
+    let requests = server.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(!requests[0].contains("range:"));
+    assert!(requests[1].contains("range: bytes=1024-"));
+    println!(
+        "restart bytes requested/actual=1024/1024; new-tail readback=3072/3072; final full requested/actual=4098/4096 (EOF sentinel included); resumed HTTP body=3072; saved network bytes=1024"
+    );
+}
+
+pub(super) struct HashReader<'a>(pub &'a mut File);
+impl Read for HashReader<'_> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.0.read(bytes)?;
+        super::super::internal_cache::tests::read_event("full-file", bytes.len() as u64, n as u64);
+        Ok(n)
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn persistent_pause_at_entry_or_request_boundary_never_starts_network_or_completes() {
+    for at_request in [false, true] {
+        let server = Server::new(vec![]);
+        let selected = context(&server);
+        let dir = tempfile::tempdir().unwrap();
+        let (p, mut f) = DiskProvider::new(dir.path());
+        let cancel = AtomicBool::new(false);
+        let pause = AtomicBool::new(!at_request);
+        let mut session = Session::new(&selected, 0, 1, p).unwrap();
+        let prepared = session.prepare(&selected, &mut f, &cancel).unwrap();
+        assert!(matches!(
+            server
+                .transport()
+                .transfer_persistent(prepared, &cancel, &pause, |p| {
+                    if at_request && p.phase == Phase::Requesting {
+                        pause.store(true, Ordering::Release)
+                    }
+                })
+                .unwrap(),
+            PersistentOutcome::Paused { committed: 0 }
+        ));
+        assert!(server.requests.lock().unwrap().is_empty());
+    }
+    let server = Server::new(vec![response(200, "", &vec![b'E'; 4096])]);
+    let selected = context(&server);
+    let dir = tempfile::tempdir().unwrap();
+    let (p, mut f) = DiskProvider::new(dir.path());
+    let own = p.ownership();
+    let cancel = AtomicBool::new(false);
+    {
+        let mut session = Session::new(&selected, 0, 1, p).unwrap();
+        let prepared = session.prepare(&selected, &mut f, &cancel).unwrap();
+        assert!(matches!(
+            server
+                .transport()
+                .transfer_persistent(prepared, &cancel, &AtomicBool::new(false), |_| {})
+                .unwrap(),
+            PersistentOutcome::Complete(_)
+        ));
+    }
+    drop(f);
+    let (p, mut f) = DiskProvider::reopen(dir.path(), own);
+    let mut session = Session::new(&selected, 0, 2, p).unwrap();
+    let prepared = session.prepare(&selected, &mut f, &cancel).unwrap();
+    assert!(matches!(
+        server
+            .transport()
+            .transfer_persistent(prepared, &cancel, &AtomicBool::new(true), |_| {})
+            .unwrap(),
+        PersistentOutcome::Paused { committed: 4096 }
+    ));
+    assert_eq!(server.requests.lock().unwrap().len(), 1);
+}
