@@ -175,6 +175,7 @@ RUN mkdir -p -m 0700 /work/module-signing \
 COPY os/kernel/config-fragments/ /work/kernel-config/
 COPY os/kernel/build-support.sh /work/kernel-build-support.sh
 COPY os/kernel/check-config.py /work/check-config.py
+COPY os/kernel/patches/ /work/kernel-patches/
 
 # The prepared source lands at /work/rpmbuild/BUILD/kernel-<VER>/linux-<VER>-<ARCH>/
 # with a resolved .config in place.  Use the in-tree merge_config.sh (the
@@ -188,6 +189,8 @@ RUN set -eux; \
     KSRC="$(find /work/rpmbuild/BUILD -maxdepth 4 -type d -name 'linux-*' | head -1)"; \
     test -n "$KSRC" || { echo "no prepared kernel source tree found"; exit 1; }; \
     cd "$KSRC"; \
+    git apply --check /work/kernel-patches/*.patch; \
+    git apply /work/kernel-patches/*.patch; \
     # Do not compile upstream's libcrypto-backed sign-file/extract-cert.
     # Kbuild still asks extract-cert for our CONFIG_MODULE_SIG_KEY, so provide
     # the already-validated DER certificate through a deliberately tiny shim.
