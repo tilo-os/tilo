@@ -723,12 +723,10 @@ log "  update ref  : $TILO_TARGET_IMGREF"
 # must install the independently signed target variant on its selected ESP.
 promote_target_uki() {
   local esp="$1" TARGET_UKI TARGET_VARIANT
+  local -a target_digests installed_digests
   # Promote the deterministic installed-target UKI. It was built over this
   # exact composefs tree and uses boot-ESP/same-disk Tilo root discovery, so no
   # per-machine bytes enter PCR 11.
-  TARGET_UKI="$(find "$esp/EFI/Linux" -type f \
-    -path '*/bootc/bootc_composefs-*.efi' -print -quit)"
-  [ -n "$TARGET_UKI" ] || die "installed target has no bootc UKI on its ESP"
   # bootc 1.16.4 copies recognized live UKIs, not arbitrary /boot sidecars.
   # Recover the authority-signed target bundle from the same offline image used
   # above, never from a network update tag or a mutable live ESP. This changes
@@ -741,6 +739,20 @@ promote_target_uki() {
     --entrypoint /usr/bin/cp "$LOCAL_IMG" -R /boot/tilo-target /target-esp/
   TARGET_VARIANT="$esp/tilo-target/tilo-target.efi"
   [ -f "$TARGET_VARIANT" ] || die "installed image has no deterministic target UKI"
+  TILO_PREFLIGHT_ROOT="$esp/tilo-target" \
+    /usr/libexec/tilo-verified-boot-install-preflight --skip-platform \
+    || die "target boot bundle failed authority/prediction verification"
+  mapfile -t target_digests < <(/usr/libexec/tilo-uki-cmdline show "$TARGET_VARIANT" |
+    tr ' ' '\n' | sed -n 's/^composefs=//p')
+  [ "${#target_digests[@]}" -eq 1 ] && [[ "${target_digests[0]}" =~ ^[0-9a-f]{128}$ ]] \
+    || die "signed target UKI must bind exactly one composefs digest"
+  TARGET_UKI="$esp/EFI/Linux/bootc/bootc_composefs-${target_digests[0]}.efi"
+  [ -f "$TARGET_UKI" ] && [ ! -L "$TARGET_UKI" ] \
+    || die "installed target has no exact current bootc UKI on its ESP"
+  mapfile -t installed_digests < <(/usr/libexec/tilo-uki-cmdline show "$TARGET_UKI" |
+    tr ' ' '\n' | sed -n 's/^composefs=//p')
+  [ "${#installed_digests[@]}" -eq 1 ] && [ "${installed_digests[0]}" = "${target_digests[0]}" ] \
+    || die "installed entry differs from signed target composefs identity"
   /usr/libexec/tilo-uki-cmdline show "$TARGET_VARIANT" | grep -qw root=tilo-auto \
     || die "target UKI lacks Tilo root discovery"
   ! /usr/libexec/tilo-uki-cmdline show "$TARGET_VARIANT" | grep -qw tilo.install \
