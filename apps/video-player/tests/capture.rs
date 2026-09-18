@@ -1,0 +1,37 @@
+//! Explicit file captures must prove playback rather than save a placeholder.
+
+#![allow(
+    clippy::expect_used,
+    reason = "test prerequisites must fail explicitly"
+)]
+
+#[test]
+fn an_unreadable_video_cannot_produce_a_successful_capture() {
+    let output_path = std::env::temp_dir().join(format!(
+        "tilo-video-invalid-capture-{}.png",
+        std::process::id()
+    ));
+    let missing_path = output_path.with_extension("missing-video");
+    assert!(!output_path.exists());
+    assert!(!missing_path.exists());
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_video-player"));
+    command
+        .arg("--shots")
+        .arg(&output_path)
+        .arg("--open")
+        .arg(missing_path);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let output = command.output().expect("run the production video capture");
+    assert!(!output.status.success());
+    assert!(!output_path.exists(), "an undecoded video is not a capture");
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("requires the GStreamer decoder")
+            || error.contains("did not produce a frame"),
+        "the failure must identify unavailable decoding: {error}"
+    );
+}
