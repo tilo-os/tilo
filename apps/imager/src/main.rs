@@ -121,6 +121,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui::launch::run(
         &LaunchSpec::new_with_args("dev.qos.imager", live_root)
+            .runtime_attachment(|_| !cfg!(target_os = "windows"))
             .shot_handler(render_shot)
             .shot_root(shot_root)
             .allowed_live_flags(&["--demo", "--setup", "--import-folders"])
