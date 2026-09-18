@@ -1883,6 +1883,11 @@ pub mod tabs;
 pub use tabs::{TabBar, TabDescriptor};
 pub mod scrollbar;
 pub use scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
+pub mod date_indexed_scrollbar;
+pub use date_indexed_scrollbar::{
+    DateIndexIntent, DateIndexMarker, DateIndexMarkerKind, DateIndexPreview, DateIndexedScrollbar,
+    ProjectedDateMarker,
+};
 pub mod drag;
 pub use drag::{Axis as DragAxis, DragController, ListMetrics, REORDER_THRESHOLD_PX};
 mod scrollable;
