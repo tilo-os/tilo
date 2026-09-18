@@ -3,6 +3,7 @@ import io
 from pathlib import Path
 import stat
 import struct
+import subprocess
 from test_development_boot import synthetic_uki
 import sys
 import tempfile
@@ -52,8 +53,37 @@ class InstalledAuditTests(unittest.TestCase):
                 audit.Scanner().initramfs(data)
 
     def test_nested_filesystem_not_silently_skipped(self):
-        with self.assertRaises(audit.AuditError):
+        with self.assertRaises((audit.AuditError, audit.archive.VerificationError)):
             audit.Scanner().initramfs(cpio([('squash-root.img', b'opaque', stat.S_IFREG)]))
+
+    def test_real_squashfs_public_and_hidden_private_material(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'tree'
+            root.mkdir()
+            (root / 'usr').mkdir()
+            (root / 'usr' / 'public').write_bytes(b'-----BEGIN PUBLIC KEY-----')
+            (root / 'link').symlink_to('/etc/outside')
+            (root / 'literal[*]').write_bytes(b'public wildcard filename')
+            image = Path(tmp) / 'payload.img'
+            def build():
+                if image.exists():
+                    image.unlink()
+                subprocess.run(['/usr/bin/mksquashfs', str(root), str(image), '-noappend',
+                                '-processors', '1', '-quiet'], check=True, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
+                return gzip.compress(cpio([('squash-root.img', image.read_bytes(), stat.S_IFREG)]))
+            self.assertEqual(audit.Scanner().initramfs(build())['squashfs_images'], 1)
+            (root / 'usr' / 'innocent').write_bytes(b'-----BEGIN PRIVATE KEY-----')
+            with self.assertRaises(audit.AuditError):
+                audit.Scanner().initramfs(build())
+            (root / 'usr' / 'innocent').unlink()
+            (root / 'cosign.key').write_bytes(b'opaque binary private key')
+            with self.assertRaises(audit.AuditError):
+                audit.Scanner().initramfs(build())
+            (root / 'cosign.key').unlink()
+            (root / 'ambiguous\nname').write_bytes(b'public')
+            with self.assertRaises(audit.AuditError):
+                audit.Scanner().initramfs(build())
 
     def test_registry_json_and_nonempty_identity(self):
         for name, data in (('var/config.json', b'{"auths":{"registry":{"auth":"abc"}}}'),
