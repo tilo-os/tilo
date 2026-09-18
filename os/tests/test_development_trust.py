@@ -12,6 +12,9 @@ import unittest
 SPEC = importlib.util.spec_from_file_location('trust', Path(__file__).resolve().parents[1] / 'dev/development-trust.py')
 trust = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(trust)
+LOCAL_CRYPTO = Path(__file__).resolve().parents[2] / 'target/debug/tilo-crypto'
+if LOCAL_CRYPTO.is_file():
+    trust.CRYPTO = LOCAL_CRYPTO
 
 
 @unittest.skipUnless(shutil.which('openssl'), 'OpenSSL required')
