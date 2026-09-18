@@ -39,6 +39,11 @@ case ${COSIGN_KEY_REF:-} in
     AWS_DEFAULT_REGION=$tilo_kms_region
     AWS_ROLE_ARN=$AWS_SIGNING_ROLE_ARN
     AWS_ROLE_SESSION_NAME="tilo-forgejo-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
+    # Native runners also carry an unrelated IAM user's credentials for
+    # sccache. The AWS SDK prefers those environment credentials over web
+    # identity, so remove every ambient selector before invoking Cosign.
+    unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN
+    unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_SHARED_CREDENTIALS_FILE
     AWS_WEB_IDENTITY_TOKEN_FILE=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/tilo-forgejo-oidc.XXXXXX")
     chmod 0600 "$AWS_WEB_IDENTITY_TOKEN_FILE"
     trap 'rm -f "${AWS_WEB_IDENTITY_TOKEN_FILE:-}"' EXIT HUP INT TERM
