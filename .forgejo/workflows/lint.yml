@@ -22,7 +22,7 @@ jobs:
     runs-on: runner
     timeout-minutes: 30
     container:
-      image: code.podesta.ai/qos/ci-fast@sha256:b30e3f76cb3c43731d27f49d9fcef14f55d7173ca086e568418fe771541177f8
+      image: code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
