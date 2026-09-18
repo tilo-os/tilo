@@ -1150,9 +1150,14 @@ impl PasswordsSurface {
             let save = Rect::new(panel.x1 - 98.0, y, panel.x1 - 24.0, y + 44.0);
             let cancel = Rect::new(save.x0 - 61.0, y, save.x0 - 6.0, y + 44.0);
             (
-                self.editing
-                    .is_some()
-                    .then(|| Rect::new(panel.x0 + 36.0, y, panel.x0 + 124.0, y + 44.0)),
+                self.editing.is_some().then(|| {
+                    Rect::new(
+                        panel.x0 + 24.0,
+                        y,
+                        (panel.x0 + 112.0).min(cancel.x0 - 8.0),
+                        y + 44.0,
+                    )
+                }),
                 cancel,
                 save,
             )
@@ -5646,6 +5651,17 @@ mod tests {
             "delete must remain a secondary action"
         );
         assert!(delete.x1 < cancel.x0 && cancel.x1 < save.x0);
+    }
+
+    #[test]
+    fn minimum_width_editor_actions_do_not_overlap() {
+        let app = PasswordsSurface::demo(ShowcaseMode::Editor);
+        let panel = Rect::new(24.0, 24.0, 296.0, 736.0);
+        let (delete, cancel, save) = app.editor_footer_rects(panel);
+        let delete = delete.expect("editing exposes delete");
+        assert!(delete.width() >= 44.0 && cancel.width() >= 44.0 && save.width() >= 44.0);
+        assert!(delete.x1 < cancel.x0 && cancel.x1 < save.x0);
+        assert!(delete.x0 >= panel.x0 && save.x1 <= panel.x1);
     }
 
     #[test]
