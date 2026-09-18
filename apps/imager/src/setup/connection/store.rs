@@ -17,6 +17,7 @@ pub(super) enum StoreError {
     StaleRevision,
     Disconnected,
     RecoveryRequired,
+    LegacyNativePending,
     RecoverySpace,
     Cancelled,
     Persistence(std::io::Error),
@@ -509,6 +510,50 @@ impl PreparedRows {
     }
 }
 impl ConnectionStore {
+    /// Bounded historical classification; this never issues a live native proof.
+    pub(super) fn legacy_native_pending(&self, id: OperationId) -> Result<bool, StoreError> {
+        use super::transaction::native::descriptor as d;
+        self.validate()?;
+        if self.connection(id.connection)?.pending != Some(id.serial) {
+            return Ok(false);
+        }
+        let operation = self.operation(id)?;
+        if operation.action.is_some() || !matches!(operation.decision, 1 | 2) {
+            return Ok(false);
+        }
+        let mut legacy = false;
+        // Canonical attempts are 1..=8. Unrelated rows never enlarge this scan.
+        for attempt in 1_u32..=8 {
+            let mut key = format::key(5, id.connection.0, id.serial);
+            key.extend(attempt.to_be_bytes());
+            let registration = match self.row(&key)? {
+                Some(Row::NativeRegistration(registration)) => registration,
+                None => continue,
+                _ => return Err(StoreError::Corrupt),
+            };
+            registration.validate()?;
+            if registration.key() != key {
+                return Err(StoreError::Corrupt);
+            }
+            if let (Some(intent), Some(stage)) = (&registration.intent, &registration.stage) {
+                let intent = d::decode(intent).map_err(|_| StoreError::Corrupt)?;
+                let stage = d::decode(stage).map_err(|_| StoreError::Corrupt)?;
+                if matches!(
+                    intent.body,
+                    d::Body::Intent(d::Intent {
+                        decision: 1 | 2,
+                        selection: d::Selection::None,
+                        ..
+                    })
+                ) && stage.profile == d::Profile::LegacyStage
+                {
+                    legacy = true;
+                }
+            }
+        }
+        Ok(legacy)
+    }
+
     pub(super) fn open_default() -> Result<Self, StoreError> {
         let path = dirs::data_local_dir()
             .ok_or(StoreError::UnsupportedDurability)?
@@ -4731,10 +4776,6 @@ impl ConnectionStore {
             value: comparison.value().cloned(),
         })
     }
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "Consume the one-shot admission or candidate even when validation only borrows its fields."
-    )]
     pub(super) fn commit_baseline(
         &mut self,
         live: &mut LiveOperation,
@@ -4846,7 +4887,10 @@ impl ConnectionStore {
             &context,
         )?;
         live.revision = format::next(live.revision)?;
-        proof.validate(live)?;
+        if let Err(error) = proof.validate(live) {
+            self.poison_native();
+            return Err(error);
+        }
         Ok(())
     }
     pub(super) fn record_native_deletion(
@@ -4902,7 +4946,10 @@ impl ConnectionStore {
             expected: live.revision,
         })?;
         live.revision = revision;
-        proof.validate(live)?;
+        if let Err(error) = proof.validate(live) {
+            self.poison_native();
+            return Err(error);
+        }
         Ok(self.ack(PreparedNative {
             registration,
             lifetime: live.lifetime.clone(),
