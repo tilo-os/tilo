@@ -46,7 +46,7 @@ const CLOSE_SCALE_END: f64 = 0.95;
 const CLOSE_Y_OFFSET_END: f64 = -20.0;
 
 /// Idle "+" slot dotted-outline alpha; aliases the shell-wide hairline weight
-/// (`ui/HIG.md` §9.5) so the tab strip can't drift from the rest of the chrome.
+/// (`crates/sdk/ui-core/HIG.md` §9.5) so the tab strip can't drift from the rest of the chrome.
 const PILL_BORDER_ALPHA: u8 = crate::chrome::shell::HAIRLINE_ALPHA;
 
 /// Alias of [`crate::chrome::shell::SelectionTier`] so the tab strip, top bar,

@@ -99,7 +99,7 @@ blake3.workspace = true
 # `--backend drm` path to fail cleanly with a useful diagnostic.
 thiserror.workspace = true
 
-ui = { path = "../ui" }
+ui = { path = "../crates/sdk/ui-core" }
 
 tilo-actions = { path = "../crates/collab/actions" }
 # The record/room-index store. The compositor keeps one document per room

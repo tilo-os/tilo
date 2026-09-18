@@ -12,7 +12,7 @@ edge of the filesystem.
 ## What is wrong today
 
 An app's entire state is one flat CRDT addressed by `(package_id,
-workspace_uuid)` — see `auto_hello_env` in `ui/src/collaboration.rs`. The
+workspace_uuid)` — see `auto_hello_env` in `crates/sdk/ui-core/src/collaboration.rs`. The
 consequences are concrete, and all three are current behaviour:
 
 - Two people editing two **different** `.odt` files in one workspace announce

@@ -98,7 +98,8 @@ mod tests {
 
     fn inputs(parent: &std::path::Path) -> ShellFixtureInputs {
         let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/assets/fonts"),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../crates/sdk/ui-core/assets/fonts"),
             "en-US",
         );
         let renderer = ui::text_render::TextRenderer::with_font_catalog(&catalog).unwrap();
