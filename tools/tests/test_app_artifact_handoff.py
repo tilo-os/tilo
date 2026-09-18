@@ -94,11 +94,37 @@ else:
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result
 
+    def test_pack_failure_preserves_status_and_names_the_app(self):
+        self.env["FIXTURE_ARCH"] = "x86_64"
+        self.write("target/release/tilo-pkg", """#!/bin/sh
+if [ "$1" = pack ]; then
+    echo 'application qpkg is too large' >&2
+    exit 37
+fi
+echo 'verify must not run' >&2
+exit 99
+""")
+        result = subprocess.run(["bash", "dist/apps/package-apps.sh"],
+                                cwd=self.root, env=self.env, text=True,
+                                capture_output=True, timeout=60)
+        self.assertEqual(result.returncode, 37, result.stdout + result.stderr)
+        self.assertIn("packing app=calculator binary=", result.stdout)
+        self.assertIn("application qpkg is too large", result.stderr)
+        self.assertIn("pack failed: app=calculator output=", result.stderr)
+        self.assertIn("calculator-0.1.0-x86_64.qpkg", result.stderr)
+        self.assertIn("exit_status=37 binary_bytes=26 limit=5242880", result.stderr)
+        self.assertNotIn("verify must not run", result.stderr)
+        self.assertNotIn("packed app=", result.stdout)
+
     def test_native_outputs_survive_actual_upload_selection_and_collection_assembly(self):
         for architecture in ("x86_64", "aarch64"):
             with self.subTest(architecture=architecture):
                 self.env["FIXTURE_ARCH"] = architecture
-                self.command("bash", "dist/apps/package-apps.sh")
+                result = self.command("bash", "dist/apps/package-apps.sh")
+                self.assertIn("packing app=calculator binary=", result.stdout)
+                self.assertIn("binary_bytes=26", result.stdout)
+                self.assertIn("packed app=calculator output=", result.stdout)
+                self.assertIn("qpkg_bytes=26 limit=5242880", result.stdout)
                 out = self.root / "dist/app-release"
                 artifact = self.root / "download" / architecture
                 artifact.mkdir(parents=True)
