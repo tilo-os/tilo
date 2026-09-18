@@ -369,6 +369,11 @@ struct ForeignEntry {
     configured: Option<(i32, i32)>,
     /// When this surface was first heard of (toplevel adoption) — start of the window [`ForeignFrameStore::mark_presented`] waits before giving up.
     first_seen: Instant,
+    /// Whether the client has committed a non-null buffer. This is deliberately
+    /// independent of `presented`: Wayland keyboard focus needs a mapped
+    /// surface, while the visual anti-spoof gate may still wait for a frame
+    /// that answers the current configure.
+    mapped: bool,
     /// Latched: this surface has produced something worth showing, so its
     /// window is on screen and stays there. One-way on purpose: the
     /// predicate asks whether the current frame fits its tab, which
@@ -396,6 +401,7 @@ impl ForeignEntry {
             placement: None,
             configured: None,
             first_seen: Instant::now(),
+            mapped: false,
             presented: false,
             #[cfg(any(test, target_os = "linux"))]
             capture_tokens: VecDeque::new(),
@@ -749,6 +755,11 @@ impl ForeignFrameStore {
         dmabuf_token: Option<u64>,
     ) -> CaptureOutcome {
         let shm_result = self.with_entry(id, |e| {
+            // A non-null buffer commit maps the xdg surface even when its
+            // pixels cannot yet be captured or do not fit its latest
+            // configure. Input readiness must follow this protocol fact, not
+            // the later visual-presentation decision.
+            e.mapped = true;
             let r = buffer_to_rgba(buffer, &mut e.rgba);
             match r {
                 Ok((w, h)) => {
@@ -927,6 +938,7 @@ impl ForeignFrameStore {
     /// Publish an RGBA frame directly — used by callers that already hold decoded pixels (tests, future non-`wl_buffer` capture routes).
     pub fn publish_rgba(&self, id: SurfaceId, rgba: &[u8], width: u32, height: u32) {
         self.with_entry(id, |e| {
+            e.mapped = true;
             e.rgba.clear();
             e.rgba.extend_from_slice(rgba);
             e.width = width;
@@ -951,9 +963,12 @@ impl ForeignFrameStore {
         });
     }
 
-    /// The client detached its buffer (`attach(NULL)`): drop the frame but keep placement bookkeeping (the tab exists until the toplevel is destroyed).
+    /// The client detached its buffer (`attach(NULL)`): unmap it and drop the
+    /// frame, while keeping placement bookkeeping until the toplevel is
+    /// destroyed.
     pub fn clear_frame(&self, id: SurfaceId) {
         self.with_entry(id, |e| {
+            e.mapped = false;
             e.rgba.clear();
             e.rgba.shrink_to_fit();
             e.width = 0;
@@ -984,6 +999,17 @@ impl ForeignFrameStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.get(&id).map_or(0, |e| e.seq)
+    }
+
+    /// Whether `id` has committed a non-null buffer and is therefore eligible
+    /// for Wayland seat focus. Unlike [`Self::is_presented`], this does not
+    /// wait for a captured frame to match the tab's configured size.
+    pub fn is_mapped(&self, id: SurfaceId) -> bool {
+        let guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.get(&id).is_some_and(|e| e.mapped)
     }
 
     /// Copy out the current frame, or `None` when the surface has no pixels staged.
@@ -2454,6 +2480,10 @@ mod tests {
             "a failed capture must not leave the previous frame visible"
         );
         assert_eq!(store().last_error(id).as_deref(), Some("test failure"));
+        assert!(
+            store().is_mapped(id),
+            "a capture failure does not unmap the client or revoke its input eligibility"
+        );
         store().forget(id);
     }
 
@@ -2465,6 +2495,10 @@ mod tests {
         store().publish_rgba(id, &[7; 16], 2, 2);
         store().clear_frame(id);
         assert!(store().snapshot(id).is_none());
+        assert!(
+            !store().is_mapped(id),
+            "attach(NULL) must revoke the same map-based input eligibility it created"
+        );
         assert_eq!(
             store().viewport(id),
             Some((800, 600)),

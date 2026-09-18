@@ -2530,27 +2530,21 @@ fn range_label(
     Some(format!("Result: {}", short(&text, "Empty match")))
 }
 
-/// Build the resource tree the word processor currently has open: the document
-/// (exporting the structural inserts + paragraph alignment over the current
-/// target blocks) and a child resource per image, table and heading, each
-/// exporting the document-mutating operations the data model implies.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the resource catalogue is one ordered declaration of the live document surface"
-)]
-pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    let mut root = Resource::new(
+fn document_resource() -> Resource {
+    Resource::new(
         "word-processor.document",
         "word_processor.document",
         "Document",
-    );
+    )
+}
 
+fn add_file_operations(root: &mut Resource) {
     for (id, label, variant) in [
         ("open", "Open document", 0_u8),
         ("save", "Save document", 1_u8),
         ("save-as", "Save document as", 2_u8),
     ] {
-        root = root.with_action(
+        root.actions.push(
             ActionSpec::typed_operation(
                 id,
                 label,
@@ -2584,136 +2578,116 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
             .returns(ResultSpec::Job),
         );
     }
+}
 
-    for (id, label, kind, value) in [
-        (
-            "find",
-            "Find in document",
-            OperationKind::View,
-            WordProcessorOperation::Find,
-        ),
-        (
-            "zoom-in",
-            "Zoom in",
-            OperationKind::View,
-            WordProcessorOperation::ZoomIn,
-        ),
-        (
-            "zoom-out",
-            "Zoom out",
-            OperationKind::View,
-            WordProcessorOperation::ZoomOut,
-        ),
+fn add_view_operations(root: &mut Resource) {
+    for (id, label, value) in [
+        ("find", "Find in document", WordProcessorOperation::Find),
+        ("zoom-in", "Zoom in", WordProcessorOperation::ZoomIn),
+        ("zoom-out", "Zoom out", WordProcessorOperation::ZoomOut),
         (
             "spellcheck",
             "Toggle spellcheck",
-            OperationKind::View,
             WordProcessorOperation::ToggleSpellcheck,
         ),
         (
             "markup",
             "Toggle review markup",
-            OperationKind::View,
             WordProcessorOperation::ToggleMarkup,
         ),
         (
             "styles",
             "Toggle styles panel",
-            OperationKind::View,
             WordProcessorOperation::ToggleStyles,
         ),
-        (
-            "ruler",
-            "Toggle ruler",
-            OperationKind::View,
-            WordProcessorOperation::ToggleRuler,
-        ),
+        ("ruler", "Toggle ruler", WordProcessorOperation::ToggleRuler),
         (
             "outline",
             "Toggle outline",
-            OperationKind::View,
             WordProcessorOperation::ToggleOutline,
         ),
         (
             "history",
             "Toggle history",
-            OperationKind::View,
             WordProcessorOperation::ToggleHistory,
         ),
     ] {
-        if let Some(spec) = operation(id, label, kind, &value) {
-            root = root.with_action(spec);
+        if let Some(spec) = operation(id, label, OperationKind::View, &value) {
+            root.actions.push(spec);
         }
     }
+}
 
-    // Document-level structural inserts, anchored on the caret.
-    root = root.with_action(immediate_spec(
+fn add_caret_actions(root: &mut Resource, ctx: &WpResourceCtx) {
+    root.actions.push(immediate_spec(
         "insert-table",
         "Insert table",
         &insert_table_action(&ctx.caret_block, 2, 2),
     ));
-    if !ctx.format_spans.is_empty() {
-        let spans = ctx.format_spans.clone();
-        let region = ctx.region;
-        root = root.with_action(ActionSpec::typed(
-            "set-hyperlink",
-            "Add or change hyperlink",
-            "Web URL (https://… or mailto:…) or #bookmark",
-            ExecutionLocus::ClientLocal,
-            vec![ActionParam::required_owned(
-                "target",
-                ParamType::Text,
-                "A safe external URL, mail address, or document-local #bookmark target",
-            )],
-            move |args: &ActionArgs| {
-                let target = args.text("target").unwrap_or_default().trim();
-                if !valid_hyperlink_target(target) {
-                    return EncodedAction {
-                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                        payload: b"hyperlink target must use https:, mailto:, or #bookmark"
-                            .to_vec(),
-                    };
-                }
-                encode(&set_hyperlink_action(region, spans.clone(), target))
-            },
-        ));
+    if ctx.format_spans.is_empty() {
+        return;
     }
-    if let Some(selection) = &ctx.selection {
-        let selection = selection.clone();
-        let root_selection = selection.clone();
-        let region = ctx.region;
-        root = root.with_action(ActionSpec::typed(
-            "replace-selection",
-            "Replace selection",
-            "Replacement text for the selected document range",
-            ExecutionLocus::ClientLocal,
-            vec![ActionParam::required_owned(
-                "text",
-                ParamType::Text,
-                "Text that replaces the current selection (empty deletes it)",
-            )],
-            move |args: &ActionArgs| {
-                let Some(text) = args.text("text") else {
-                    return EncodedAction {
-                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                        payload: b"replacement text is required".to_vec(),
-                    };
+    let spans = ctx.format_spans.clone();
+    let region = ctx.region;
+    root.actions.push(ActionSpec::typed(
+        "set-hyperlink",
+        "Add or change hyperlink",
+        "Web URL (https://… or mailto:…) or #bookmark",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::required_owned(
+            "target",
+            ParamType::Text,
+            "A safe external URL, mail address, or document-local #bookmark target",
+        )],
+        move |args: &ActionArgs| {
+            let target = args.text("target").unwrap_or_default().trim();
+            if !valid_hyperlink_target(target) {
+                return EncodedAction {
+                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                    payload: b"hyperlink target must use https:, mailto:, or #bookmark".to_vec(),
                 };
-                encode(&replace_selection_action(
-                    region,
-                    &root_selection.start_block,
-                    root_selection.start,
-                    &root_selection.end_block,
-                    root_selection.end,
-                    text,
-                ))
-            },
-        ));
+            }
+            encode(&set_hyperlink_action(region, spans.clone(), target))
+        },
+    ));
+}
 
-        // Selection is a first-class, exact-range resource as well as a root
-        // convenience action. Agents/global search can target it without
-        // reconstructing a UI-local selection from an unstable block index.
-        let selection_resource = Resource::new(
+fn add_selection_resources(root: &mut Resource, ctx: &WpResourceCtx) {
+    let Some(selection) = &ctx.selection else {
+        return;
+    };
+    let selection = selection.clone();
+    let root_selection = selection.clone();
+    let region = ctx.region;
+    root.actions.push(ActionSpec::typed(
+        "replace-selection",
+        "Replace selection",
+        "Replacement text for the selected document range",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::required_owned(
+            "text",
+            ParamType::Text,
+            "Text that replaces the current selection (empty deletes it)",
+        )],
+        move |args: &ActionArgs| {
+            let Some(text) = args.text("text") else {
+                return EncodedAction {
+                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                    payload: b"replacement text is required".to_vec(),
+                };
+            };
+            encode(&replace_selection_action(
+                region,
+                &root_selection.start_block,
+                root_selection.start,
+                &root_selection.end_block,
+                root_selection.end,
+                text,
+            ))
+        },
+    ));
+    root.children.push(
+        Resource::new(
             format!(
                 "word-processor.selection:{}:{}:{}:{}",
                 selection.start_block, selection.start, selection.end_block, selection.end
@@ -2747,106 +2721,106 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
                     text,
                 ))
             },
-        ));
-        root = root.with_child(selection_resource);
-    }
+        )),
+    );
+}
 
-    // Creating a comment is a real collaborative action, not a local overlay.
-    // A multi-block selection stays available for replacement/formatting; its
-    // comment action is withheld because qdoc comment anchors intentionally
-    // address one stable block range at a time.
-    if ctx.region == RegionKind::Body
-        && let Some(selection) = &ctx.selection
-        && selection.start_block == selection.end_block
-        && selection.start < selection.end
-    {
-        let target = selection.clone();
-        root = root.with_action(ActionSpec::typed(
-            "add-comment",
-            "Add comment",
-            "Comment text and author for the selected text",
-            ExecutionLocus::ClientLocal,
-            vec![
-                ActionParam::required_owned("author", ParamType::Text, "Comment author"),
-                ActionParam::required_owned("text", ParamType::Text, "Comment text"),
-                ActionParam::optional_owned("date", ParamType::Text, "ISO-8601 comment date"),
-            ],
-            move |args: &ActionArgs| {
-                let author = args.text("author").unwrap_or_default().trim();
-                let text = args.text("text").unwrap_or_default();
-                if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
-                    return EncodedAction {
-                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                        payload: b"comment author is required and comment text is too long"
-                            .to_vec(),
-                    };
-                }
-                encode(&add_comment_action(
-                    &target.start_block,
-                    target.start,
-                    target.end,
-                    author,
-                    args.text("date").unwrap_or_default(),
-                    text,
-                ))
-            },
-        ));
-    }
-
-    // Materialize the stable content once for all structural resources below.
-    // This intentionally sits outside the bounded per-hit loops.
-    let Ok(c) = qdoc::model::open(doc, &automerge::ROOT) else {
-        return vec![root];
+fn add_comment_resource_action(root: &mut Resource, ctx: &WpResourceCtx) {
+    let Some(selection) = &ctx.selection else {
+        return;
     };
-    let snap = qdoc::model::materialize(doc, &c);
-
-    if !ctx.search_hits.is_empty() {
-        let mut search = Resource::new(
-            "word-processor.search-results",
-            "word_processor.search-results",
-            "Search results",
-        );
-        let mut seen = HashSet::new();
-        let mut result_index = 0usize;
-        for hit in &ctx.search_hits {
-            if !seen.insert((hit.block.as_str(), hit.start, hit.end)) {
-                continue;
-            }
-            if result_index >= MAX_RESOURCE_SEARCH_HITS {
-                break;
-            }
-            result_index += 1;
-            let label = range_label(&snap.blocks, &hit.block, hit.start, hit.end)
-                .unwrap_or_else(|| format!("Result {result_index}"));
-            let view_operation = WordProcessorOperation::NavigateTo {
-                block: hit.block.clone(),
-                start: hit.start,
-                end: hit.end,
-            };
-            if let Some(spec) = operation(
-                "go-to",
-                "Go to result",
-                OperationKind::View,
-                &view_operation,
-            ) {
-                search = search.with_child(
-                    Resource::new(
-                        format!(
-                            "word-processor.search-hit:{}:{}:{}",
-                            hit.block, hit.start, hit.end
-                        ),
-                        "word_processor.search-hit",
-                        label,
-                    )
-                    .with_action(spec),
-                );
-            }
-        }
-        root = root.with_child(search);
+    if ctx.region != RegionKind::Body
+        || selection.start_block != selection.end_block
+        || selection.start >= selection.end
+    {
+        return;
     }
+    let target = selection.clone();
+    root.actions.push(ActionSpec::typed(
+        "add-comment",
+        "Add comment",
+        "Comment text and author for the selected text",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required_owned("author", ParamType::Text, "Comment author"),
+            ActionParam::required_owned("text", ParamType::Text, "Comment text"),
+            ActionParam::optional_owned("date", ParamType::Text, "ISO-8601 comment date"),
+        ],
+        move |args: &ActionArgs| {
+            let author = args.text("author").unwrap_or_default().trim();
+            let text = args.text("text").unwrap_or_default();
+            if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
+                return EncodedAction {
+                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                    payload: b"comment author is required and comment text is too long".to_vec(),
+                };
+            }
+            encode(&add_comment_action(
+                &target.start_block,
+                target.start,
+                target.end,
+                author,
+                args.text("date").unwrap_or_default(),
+                text,
+            ))
+        },
+    ));
+}
+
+fn add_search_resources(
+    root: &mut Resource,
+    ctx: &WpResourceCtx,
+    snapshot: &qdoc::snapshot::DocSnapshot,
+) {
+    if ctx.search_hits.is_empty() {
+        return;
+    }
+    let mut search = Resource::new(
+        "word-processor.search-results",
+        "word_processor.search-results",
+        "Search results",
+    );
+    let mut seen = HashSet::new();
+    for (result_index, hit) in ctx
+        .search_hits
+        .iter()
+        .filter(|hit| seen.insert((hit.block.as_str(), hit.start, hit.end)))
+        .take(MAX_RESOURCE_SEARCH_HITS)
+        .enumerate()
+    {
+        let label = range_label(&snapshot.blocks, &hit.block, hit.start, hit.end)
+            .unwrap_or_else(|| format!("Result {}", result_index + 1));
+        let view_operation = WordProcessorOperation::NavigateTo {
+            block: hit.block.clone(),
+            start: hit.start,
+            end: hit.end,
+        };
+        if let Some(spec) = operation(
+            "go-to",
+            "Go to result",
+            OperationKind::View,
+            &view_operation,
+        ) {
+            search.children.push(
+                Resource::new(
+                    format!(
+                        "word-processor.search-hit:{}:{}:{}",
+                        hit.block, hit.start, hit.end
+                    ),
+                    "word_processor.search-hit",
+                    label,
+                )
+                .with_action(spec),
+            );
+        }
+    }
+    root.children.push(search);
+}
+
+fn add_document_edit_actions(root: &mut Resource, ctx: &WpResourceCtx) {
     let image_anchor = ctx.caret_block.clone();
     let image_offset = ctx.caret_offset;
-    root = root.with_action(
+    root.actions.push(
         ActionSpec::prompted_content(
             "place-image",
             "Place image",
@@ -2876,448 +2850,470 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
         )
         .reversible(),
     );
-    root = root.with_action(immediate_spec(
+    root.actions.push(immediate_spec(
         "insert-page-break",
         "Insert page break",
         &insert_page_break_action(&ctx.caret_block, ctx.caret_offset),
     ));
-
-    // Document-level paragraph alignment over the current target blocks.
     for (id, label, align) in [
         ("align-left", "Align left", "left"),
         ("align-center", "Align centre", "center"),
         ("align-right", "Align right", "right"),
         ("align-justify", "Justify", "justify"),
     ] {
-        root = root.with_action(immediate_spec(
+        root.actions.push(immediate_spec(
             id,
             label,
             &set_align_action(ctx.target_blocks.clone(), align),
         ));
     }
+}
 
-    // Review is document state, not an overlay-only island: comments and
-    // tracked changes are navigable resources, and every resolution decision
-    // is the same typed, replayable action used by the margin cards.
-    if !snap.comments.is_empty() || !snap.changes.is_empty() {
-        let mut review = Resource::new("word-processor.review", "word_processor.review", "Review");
-        if !snap.changes.is_empty() {
-            review = review
-                .with_action(immediate_spec(
-                    "accept-all",
-                    "Accept all changes",
-                    &WordProcessorAction::AcceptChanges { id: None },
-                ))
-                .with_action(immediate_spec(
-                    "reject-all",
-                    "Reject all changes",
-                    &WordProcessorAction::RejectChanges { id: None },
-                ));
-        }
-        for comment in &snap.comments {
-            let text = comment
-                .blocks
-                .iter()
-                .map(|block| block.text.as_str())
-                .collect::<Vec<_>>()
-                .join(" ");
-            let label = format!(
-                "Comment by {}: {}",
-                short(&comment.author, "Unknown author"),
-                short(&text, "Empty comment")
-            );
-            let mut comment_resource = Resource::new(
-                format!("word-processor.comment:{}", comment.id),
-                "word_processor.comment",
-                label,
+fn comment_resource(comment: &qdoc::snapshot::CommentView) -> Resource {
+    let text = comment
+        .blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut resource = Resource::new(
+        format!("word-processor.comment:{}", comment.id),
+        "word_processor.comment",
+        format!(
+            "Comment by {}: {}",
+            short(&comment.author, "Unknown author"),
+            short(&text, "Empty comment")
+        ),
+    )
+    .with_action(immediate_spec(
+        "resolve",
+        "Resolve comment",
+        &WordProcessorAction::ResolveComment {
+            id: comment.id.clone(),
+        },
+    ));
+    if let Some((block, start, end)) = &comment.range
+        && let Some(spec) = operation(
+            "go-to-anchor",
+            "Go to commented text",
+            OperationKind::View,
+            &WordProcessorOperation::NavigateTo {
+                block: block.clone(),
+                start: *start,
+                end: *end,
+            },
+        )
+    {
+        resource.actions.push(spec);
+    }
+    for reply in comment.replies.iter().take(MAX_RESOURCE_SEARCH_HITS) {
+        let reply_text = reply
+            .blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        resource.children.push(Resource::new(
+            format!("word-processor.comment-reply:{}:{}", comment.id, reply.id),
+            "word_processor.comment-reply",
+            format!(
+                "Reply by {}: {}",
+                short(&reply.author, "Unknown author"),
+                short(&reply_text, "Empty reply")
+            ),
+        ));
+    }
+    let parent = comment.id.clone();
+    resource.actions.push(ActionSpec::typed(
+        "reply",
+        "Reply to comment",
+        "Reply text and author, stored in the shared comment thread",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required_owned("author", ParamType::Text, "Reply author"),
+            ActionParam::required_owned("text", ParamType::Text, "Reply text"),
+            ActionParam::optional_owned("date", ParamType::Text, "ISO-8601 reply date"),
+        ],
+        move |args: &ActionArgs| {
+            let author = args.text("author").unwrap_or_default().trim();
+            let text = args.text("text").unwrap_or_default();
+            if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
+                return EncodedAction {
+                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                    payload: b"reply author is required and reply text is too long".to_vec(),
+                };
+            }
+            encode(&reply_to_comment_action(
+                &parent,
+                author,
+                args.text("date").unwrap_or_default(),
+                text,
+            ))
+        },
+    ));
+    resource
+}
+
+fn add_review_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnapshot) {
+    if snapshot.comments.is_empty() && snapshot.changes.is_empty() {
+        return;
+    }
+    let mut review = Resource::new("word-processor.review", "word_processor.review", "Review");
+    if !snapshot.changes.is_empty() {
+        review.actions.push(immediate_spec(
+            "accept-all",
+            "Accept all changes",
+            &WordProcessorAction::AcceptChanges { id: None },
+        ));
+        review.actions.push(immediate_spec(
+            "reject-all",
+            "Reject all changes",
+            &WordProcessorAction::RejectChanges { id: None },
+        ));
+    }
+    review
+        .children
+        .extend(snapshot.comments.iter().map(comment_resource));
+    for change in &snapshot.changes {
+        let kind = match change.kind {
+            qdoc::snapshot::ChangeKind::Ins => "Insertion",
+            qdoc::snapshot::ChangeKind::Del => "Deletion",
+        };
+        review.children.push(
+            Resource::new(
+                format!("word-processor.change:{}", change.id),
+                "word_processor.change",
+                format!("{kind} by {}", short(&change.author, "Unknown author")),
             )
             .with_action(immediate_spec(
-                "resolve",
-                "Resolve comment",
-                &WordProcessorAction::ResolveComment {
-                    id: comment.id.clone(),
+                "accept",
+                "Accept change",
+                &WordProcessorAction::AcceptChanges {
+                    id: Some(change.id.clone()),
                 },
-            ));
-            if let Some((block, start, end)) = &comment.range
-                && let Some(spec) = operation(
-                    "go-to-anchor",
-                    "Go to commented text",
-                    OperationKind::View,
-                    &WordProcessorOperation::NavigateTo {
-                        block: block.clone(),
-                        start: *start,
-                        end: *end,
-                    },
-                )
-            {
-                comment_resource = comment_resource.with_action(spec);
-            }
-            for reply in comment.replies.iter().take(MAX_RESOURCE_SEARCH_HITS) {
-                let reply_text = reply
-                    .blocks
-                    .iter()
-                    .map(|block| block.text.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                comment_resource = comment_resource.with_child(Resource::new(
-                    format!("word-processor.comment-reply:{}:{}", comment.id, reply.id),
-                    "word_processor.comment-reply",
-                    format!(
-                        "Reply by {}: {}",
-                        short(&reply.author, "Unknown author"),
-                        short(&reply_text, "Empty reply")
-                    ),
-                ));
-            }
-            let parent = comment.id.clone();
-            comment_resource = comment_resource.with_action(ActionSpec::typed(
-                "reply",
-                "Reply to comment",
-                "Reply text and author, stored in the shared comment thread",
-                ExecutionLocus::ClientLocal,
-                vec![
-                    ActionParam::required_owned("author", ParamType::Text, "Reply author"),
-                    ActionParam::required_owned("text", ParamType::Text, "Reply text"),
-                    ActionParam::optional_owned("date", ParamType::Text, "ISO-8601 reply date"),
-                ],
-                move |args: &ActionArgs| {
-                    let author = args.text("author").unwrap_or_default().trim();
-                    let text = args.text("text").unwrap_or_default();
-                    if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
-                        return EncodedAction {
-                            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                            payload: b"reply author is required and reply text is too long"
-                                .to_vec(),
-                        };
-                    }
-                    encode(&reply_to_comment_action(
-                        &parent,
-                        author,
-                        args.text("date").unwrap_or_default(),
-                        text,
-                    ))
+            ))
+            .with_action(immediate_spec(
+                "reject",
+                "Reject change",
+                &WordProcessorAction::RejectChanges {
+                    id: Some(change.id.clone()),
                 },
-            ));
-            review = review.with_child(comment_resource);
-        }
-        for change in &snap.changes {
-            let kind = match change.kind {
-                qdoc::snapshot::ChangeKind::Ins => "Insertion",
-                qdoc::snapshot::ChangeKind::Del => "Deletion",
-            };
-            review = review.with_child(
-                Resource::new(
-                    format!("word-processor.change:{}", change.id),
-                    "word_processor.change",
-                    format!("{kind} by {}", short(&change.author, "Unknown author")),
-                )
-                .with_action(immediate_spec(
-                    "accept",
-                    "Accept change",
-                    &WordProcessorAction::AcceptChanges {
-                        id: Some(change.id.clone()),
-                    },
-                ))
-                .with_action(immediate_spec(
-                    "reject",
-                    "Reject change",
-                    &WordProcessorAction::RejectChanges {
-                        id: Some(change.id.clone()),
-                    },
-                )),
-            );
-        }
-        root = root.with_child(review);
+            )),
+        );
     }
+    root.children.push(review);
+}
 
-    // The change graph is also searchable: expose a bounded tail as stable
-    // hash-addressed revision resources. The action is view-only and opens the
-    // existing history strip at the exact graph position.
-    // Automerge exposes causal history through a mutable reader API even
-    // though enumeration itself is read-only. Clone the lightweight document
-    // handle so the resource-provider contract remains immutable.
+fn add_revision_resources(root: &mut Resource, doc: &AutoCommit) {
     let mut history_doc = doc.clone();
     let changes = history_doc.get_changes(&[]);
-    if !changes.is_empty() {
-        let mut history = Resource::new(
-            "word-processor.revisions",
-            "word_processor.revisions",
-            "Revision history",
-        );
-        let start = changes.len().saturating_sub(MAX_RESOURCE_REVISIONS);
-        for (index, change) in changes.iter().enumerate().skip(start) {
-            let label = change.message().map_or_else(
-                || format!("Revision {}", index + 1),
-                |message| short(message, "Revision"),
-            );
-            let view_operation = WordProcessorOperation::ShowRevision { index };
-            if let Some(spec) = operation(
-                "show",
-                "Show revision",
-                OperationKind::View,
-                &view_operation,
-            ) {
-                history = history.with_child(
-                    Resource::new(
-                        format!("word-processor.revision:{}", change.hash()),
-                        "word_processor.revision",
-                        label,
-                    )
-                    .with_action(spec),
-                );
-            }
-        }
-        root = root.with_child(history);
+    if changes.is_empty() {
+        return;
     }
+    let mut history = Resource::new(
+        "word-processor.revisions",
+        "word_processor.revisions",
+        "Revision history",
+    );
+    let start = changes.len().saturating_sub(MAX_RESOURCE_REVISIONS);
+    for (index, change) in changes.iter().enumerate().skip(start) {
+        let label = change.message().map_or_else(
+            || format!("Revision {}", index + 1),
+            |message| short(message, "Revision"),
+        );
+        if let Some(spec) = operation(
+            "show",
+            "Show revision",
+            OperationKind::View,
+            &WordProcessorOperation::ShowRevision { index },
+        ) {
+            history.children.push(
+                Resource::new(
+                    format!("word-processor.revision:{}", change.hash()),
+                    "word_processor.revision",
+                    label,
+                )
+                .with_action(spec),
+            );
+        }
+    }
+    root.children.push(history);
+}
 
-    if !snap.notes.is_empty() {
+fn add_metadata_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnapshot) {
+    if !snapshot.notes.is_empty() {
         let mut notes = Resource::new("word-processor.notes", "word_processor.notes", "Notes");
-        for note in &snap.notes {
+        for note in &snapshot.notes {
             let text = note
                 .blocks
                 .iter()
                 .map(|block| block.text.as_str())
                 .collect::<Vec<_>>()
                 .join(" ");
-            notes = notes.with_child(Resource::new(
+            notes.children.push(Resource::new(
                 format!("word-processor.note:{}", note.id),
                 "word_processor.note",
                 format!("{}: {}", note.kind, short(&text, "Empty note")),
             ));
         }
-        root = root.with_child(notes);
+        root.children.push(notes);
     }
-
-    if !snap.bookmarks.is_empty() {
+    if !snapshot.bookmarks.is_empty() {
         let mut bookmarks = Resource::new(
             "word-processor.bookmarks",
             "word_processor.bookmarks",
             "Bookmarks",
         );
-        for bookmark in &snap.bookmarks {
-            bookmarks = bookmarks.with_child(Resource::new(
+        for bookmark in &snapshot.bookmarks {
+            bookmarks.children.push(Resource::new(
                 format!("word-processor.bookmark:{}", bookmark.name),
                 "word_processor.bookmark",
                 bookmark.name.clone(),
             ));
         }
-        root = root.with_child(bookmarks);
+        root.children.push(bookmarks);
     }
+}
 
-    if !snap.styles.is_empty() {
-        let mut styles = Resource::new(
-            "word-processor.styles",
-            "word_processor.styles",
-            "Paragraph styles",
+fn add_style_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnapshot) {
+    if snapshot.styles.is_empty() {
+        return;
+    }
+    let mut styles = Resource::new(
+        "word-processor.styles",
+        "word_processor.styles",
+        "Paragraph styles",
+    );
+    for (style, properties) in &snapshot.styles {
+        let bold = matches!(
+            properties.get(qdoc::schema::STYLE_BOLD),
+            Some(qdoc::AttrVal::Bool(true))
         );
-        for (style, properties) in &snap.styles {
-            let bold = matches!(
-                properties.get(qdoc::schema::STYLE_BOLD),
-                Some(qdoc::AttrVal::Bool(true))
-            );
-            let mut child = Resource::new(
-                format!("word-processor.style:{style}"),
-                "word_processor.style",
-                style.clone(),
-            )
-            .with_action(immediate_spec(
-                "toggle-bold",
-                if bold { "Remove bold" } else { "Make bold" },
-                &set_style_property_action(style, qdoc::schema::STYLE_BOLD, AttrVal::Bool(!bold)),
-            ));
-            if !crate::styles::StyleSheet::is_builtin(style) {
-                let instances = snap
-                    .blocks
-                    .iter()
-                    .filter(|block| {
-                        matches!(block.attrs.get("style"), Some(qdoc::AttrVal::Str(id)) if id == style)
-                    })
-                    .map(|block| block.id.clone())
-                    .collect();
-                child = child.with_action(immediate_spec(
-                    "delete",
-                    "Delete style",
-                    &delete_style_action(style, instances),
-                ));
-            }
-            styles = styles.with_child(child);
-        }
-        root = root.with_child(styles);
-    }
-
-    // Images are first-class document resources.  Object layout is not a
-    // private canvas gesture: crop, flow/free placement, and delete all use
-    // the same replayable action envelope as the inspector controls.
-    for b in snap.blocks.iter().filter(|b| b.kind == "image") {
-        let edge = |key: &str| match b.attrs.get(key) {
-            // Imported/legacy attributes are not action-validated, so clamp
-            // before the resource builder does arithmetic for its next crop.
-            Some(qdoc::AttrVal::Int(value)) => (*value).clamp(0, 9_500),
-            _ => 0,
-        };
-        let left = edge("crop_left");
-        let top = edge("crop_top");
-        let right = edge("crop_right");
-        let bottom = edge("crop_bottom");
-        let can_crop_further =
-            left.saturating_add(right) <= 8_500 && top.saturating_add(bottom) <= 8_500;
         let mut child = Resource::new(
-            format!("word-processor.image:{}", b.id),
-            "word_processor.image",
-            "Image",
+            format!("word-processor.style:{style}"),
+            "word_processor.style",
+            style.clone(),
         )
         .with_action(immediate_spec(
-            "delete",
-            "Delete image",
-            &remove_blocks_action(vec![b.id.clone()]),
+            "toggle-bold",
+            if bold { "Remove bold" } else { "Make bold" },
+            &set_style_property_action(style, qdoc::schema::STYLE_BOLD, AttrVal::Bool(!bold)),
         ));
-        if can_crop_further {
-            child = child.with_action(immediate_spec(
-                "crop-inset",
-                "Crop image by 5%",
-                &set_image_crop_action(&b.id, left + 250, top + 250, right + 250, bottom + 250),
+        if !crate::styles::StyleSheet::is_builtin(style) {
+            let instances = snapshot
+                .blocks
+                .iter()
+                .filter(|block| {
+                    matches!(block.attrs.get("style"), Some(qdoc::AttrVal::Str(id)) if id == style)
+                })
+                .map(|block| block.id.clone())
+                .collect();
+            child.actions.push(immediate_spec(
+                "delete",
+                "Delete style",
+                &delete_style_action(style, instances),
             ));
         }
-        if left != 0 || top != 0 || right != 0 || bottom != 0 {
-            child = child.with_action(immediate_spec(
-                "reset-crop",
-                "Reset crop",
-                &set_image_crop_action(&b.id, 0, 0, 0, 0),
-            ));
-        }
-        child = child
-            .with_action(immediate_spec(
-                "free-position",
-                "Place freely on page",
-                &set_image_placement_action(&b.id, "page", "none", 0, 0, 0),
-            ))
-            .with_action(immediate_spec(
-                "flow-left",
-                "Wrap text on right",
-                &set_image_placement_action(&b.id, "paragraph", "left", 0, 0, 0),
-            ))
-            .with_action(immediate_spec(
-                "flow-right",
-                "Wrap text on left",
-                &set_image_placement_action(&b.id, "paragraph", "right", 0, 0, 0),
-            ));
-        root = root.with_child(child);
+        styles.children.push(child);
     }
+    root.children.push(styles);
+}
 
-    // Tables (grouped by the shared `table` id, in first-cell document order) →
-    // a resource each, deleting every cell of the table.
-    let mut table_ids: Vec<String> = Vec::new();
-    for b in snap.blocks.iter().filter(|b| b.kind == "cell") {
-        if let Some(qdoc::AttrVal::Str(tid)) = b.attrs.get("table")
-            && !table_ids.contains(tid)
-        {
-            table_ids.push(tid.clone());
-        }
+fn image_resource(block: &qdoc::snapshot::BlockView) -> Resource {
+    let edge = |key: &str| match block.attrs.get(key) {
+        Some(qdoc::AttrVal::Int(value)) => (*value).clamp(0, 9_500),
+        _ => 0,
+    };
+    let left = edge("crop_left");
+    let top = edge("crop_top");
+    let right = edge("crop_right");
+    let bottom = edge("crop_bottom");
+    let can_crop_further =
+        left.saturating_add(right) <= 8_500 && top.saturating_add(bottom) <= 8_500;
+    let mut resource = Resource::new(
+        format!("word-processor.image:{}", block.id),
+        "word_processor.image",
+        "Image",
+    )
+    .with_action(immediate_spec(
+        "delete",
+        "Delete image",
+        &remove_blocks_action(vec![block.id.clone()]),
+    ));
+    if can_crop_further {
+        resource.actions.push(immediate_spec(
+            "crop-inset",
+            "Crop image by 5%",
+            &set_image_crop_action(&block.id, left + 250, top + 250, right + 250, bottom + 250),
+        ));
     }
-    for tid in &table_ids {
-        let table_blocks: Vec<_> = snap
+    if left != 0 || top != 0 || right != 0 || bottom != 0 {
+        resource.actions.push(immediate_spec(
+            "reset-crop",
+            "Reset crop",
+            &set_image_crop_action(&block.id, 0, 0, 0, 0),
+        ));
+    }
+    for (id, label, anchor, wrap) in [
+        ("free-position", "Place freely on page", "page", "none"),
+        ("flow-left", "Wrap text on right", "paragraph", "left"),
+        ("flow-right", "Wrap text on left", "paragraph", "right"),
+    ] {
+        resource.actions.push(immediate_spec(
+            id,
+            label,
+            &set_image_placement_action(&block.id, anchor, wrap, 0, 0, 0),
+        ));
+    }
+    resource
+}
+
+fn table_resource(table_id: &str, table_blocks: &[&qdoc::snapshot::BlockView]) -> Resource {
+    let coordinate = |block: &qdoc::snapshot::BlockView, key: &str| match block.attrs.get(key) {
+        Some(qdoc::AttrVal::Int(value)) if *value >= 0 => num::usize_of_i64(*value),
+        _ => 0,
+    };
+    let rows = table_blocks
+        .iter()
+        .map(|block| coordinate(block, "row"))
+        .max()
+        .map_or(0, |value| value.saturating_add(1));
+    let columns = table_blocks
+        .iter()
+        .map(|block| coordinate(block, "col"))
+        .max()
+        .map_or(0, |value| value.saturating_add(1));
+    let mut resource = Resource::new(
+        format!("word-processor.table:{table_id}"),
+        "word_processor.table",
+        "Table",
+    )
+    .with_action(immediate_spec(
+        "append-row",
+        "Add row",
+        &edit_table_action(table_id, TableEdit::InsertRow { at: rows }),
+    ))
+    .with_action(immediate_spec(
+        "append-column",
+        "Add column",
+        &edit_table_action(table_id, TableEdit::InsertColumn { at: columns }),
+    ))
+    .with_action(immediate_spec(
+        "delete",
+        "Delete table",
+        &edit_table_action(table_id, TableEdit::Delete),
+    ));
+    for cell in table_blocks {
+        let row = coordinate(cell, "row");
+        let column = coordinate(cell, "col");
+        let mut cell_resource = Resource::new(
+            format!("word-processor.cell:{}", cell.id),
+            "word_processor.table-cell",
+            format!(
+                "Cell {}, {}",
+                row.saturating_add(1),
+                column.saturating_add(1)
+            ),
+        )
+        .with_action(immediate_spec(
+            "delete-row",
+            "Delete row",
+            &edit_table_action(table_id, TableEdit::DeleteRow { row }),
+        ))
+        .with_action(immediate_spec(
+            "delete-column",
+            "Delete column",
+            &edit_table_action(table_id, TableEdit::DeleteColumn { column }),
+        ));
+        if let Some(spec) = operation(
+            "go-to",
+            "Go to cell",
+            OperationKind::View,
+            &WordProcessorOperation::NavigateTo {
+                block: cell.id.clone(),
+                start: 0,
+                end: cell.text.chars().count(),
+            },
+        ) {
+            cell_resource.actions.push(spec);
+        }
+        resource.children.push(cell_resource);
+    }
+    resource
+}
+
+fn add_structural_resources(root: &mut Resource, snapshot: &qdoc::snapshot::DocSnapshot) {
+    root.children.extend(
+        snapshot
             .blocks
             .iter()
-            .filter(|b| {
-                b.kind == "cell"
-                    && matches!(b.attrs.get("table"), Some(qdoc::AttrVal::Str(s)) if s == tid)
-            })
-            .collect();
-        let coordinate = |block: &qdoc::snapshot::BlockView, key: &str| match block.attrs.get(key) {
-            Some(qdoc::AttrVal::Int(value)) if *value >= 0 => num::usize_of_i64(*value),
-            _ => 0,
-        };
-        let rows = table_blocks
-            .iter()
-            .map(|block| coordinate(block, "row"))
-            .max()
-            .map_or(0, |value| value.saturating_add(1));
-        let columns = table_blocks
-            .iter()
-            .map(|block| coordinate(block, "col"))
-            .max()
-            .map_or(0, |value| value.saturating_add(1));
-        let mut child = Resource::new(
-            format!("word-processor.table:{tid}"),
-            "word_processor.table",
-            "Table",
-        )
-        .with_action(immediate_spec(
-            "append-row",
-            "Add row",
-            &edit_table_action(tid, TableEdit::InsertRow { at: rows }),
-        ))
-        .with_action(immediate_spec(
-            "append-column",
-            "Add column",
-            &edit_table_action(tid, TableEdit::InsertColumn { at: columns }),
-        ))
-        .with_action(immediate_spec(
-            "delete",
-            "Delete table",
-            &edit_table_action(tid, TableEdit::Delete),
-        ));
-        for cell in table_blocks {
-            let row = coordinate(cell, "row");
-            let column = coordinate(cell, "col");
-            let mut cell_resource = Resource::new(
-                format!("word-processor.cell:{}", cell.id),
-                "word_processor.table-cell",
-                format!(
-                    "Cell {}, {}",
-                    row.saturating_add(1),
-                    column.saturating_add(1)
-                ),
-            )
-            .with_action(immediate_spec(
-                "delete-row",
-                "Delete row",
-                &edit_table_action(tid, TableEdit::DeleteRow { row }),
-            ))
-            .with_action(immediate_spec(
-                "delete-column",
-                "Delete column",
-                &edit_table_action(tid, TableEdit::DeleteColumn { column }),
-            ));
-            if let Some(spec) = operation(
-                "go-to",
-                "Go to cell",
-                OperationKind::View,
-                &WordProcessorOperation::NavigateTo {
-                    block: cell.id.clone(),
-                    start: 0,
-                    end: cell.text.chars().count(),
-                },
-            ) {
-                cell_resource = cell_resource.with_action(spec);
-            }
-            child = child.with_child(cell_resource);
+            .filter(|block| block.kind == "image")
+            .map(image_resource),
+    );
+    let mut table_ids = Vec::new();
+    for block in snapshot.blocks.iter().filter(|block| block.kind == "cell") {
+        if let Some(qdoc::AttrVal::Str(table_id)) = block.attrs.get("table")
+            && !table_ids.contains(table_id)
+        {
+            table_ids.push(table_id.clone());
         }
-        root = root.with_child(child);
     }
-
-    // Headings → a `section` resource each, labelled by the heading text, with
-    // alignment actions over that heading block.
-    for b in snap.blocks.iter().filter(|b| b.kind == "heading") {
-        let mut child = Resource::new(
-            format!("word-processor.section:{}", b.id),
+    for table_id in &table_ids {
+        let blocks = snapshot
+            .blocks
+            .iter()
+            .filter(|block| {
+                block.kind == "cell"
+                    && matches!(block.attrs.get("table"), Some(qdoc::AttrVal::Str(id)) if id == table_id)
+            })
+            .collect::<Vec<_>>();
+        root.children.push(table_resource(table_id, &blocks));
+    }
+    for block in snapshot
+        .blocks
+        .iter()
+        .filter(|block| block.kind == "heading")
+    {
+        let mut section = Resource::new(
+            format!("word-processor.section:{}", block.id),
             "word_processor.section",
-            short(&b.text, "Heading"),
+            short(&block.text, "Heading"),
         );
         for (id, label, align) in [
             ("align-left", "Align left", "left"),
             ("align-center", "Align centre", "center"),
             ("align-right", "Align right", "right"),
         ] {
-            child = child.with_action(immediate_spec(
+            section.actions.push(immediate_spec(
                 id,
                 label,
-                &set_align_action(vec![b.id.clone()], align),
+                &set_align_action(vec![block.id.clone()], align),
             ));
         }
-        root = root.with_child(child);
+        root.children.push(section);
     }
+}
 
+/// Build the resource tree the word processor currently has open.
+pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+    let mut root = document_resource();
+    add_file_operations(&mut root);
+    add_view_operations(&mut root);
+    add_caret_actions(&mut root, ctx);
+    add_selection_resources(&mut root, ctx);
+    add_comment_resource_action(&mut root, ctx);
+
+    let Ok(containers) = qdoc::model::open(doc, &automerge::ROOT) else {
+        return vec![root];
+    };
+    let snapshot = qdoc::model::materialize(doc, &containers);
+    add_search_resources(&mut root, ctx, &snapshot);
+    add_document_edit_actions(&mut root, ctx);
+    add_review_resources(&mut root, &snapshot);
+    add_revision_resources(&mut root, doc);
+    add_metadata_resources(&mut root, &snapshot);
+    add_style_resources(&mut root, &snapshot);
+    add_structural_resources(&mut root, &snapshot);
     vec![root]
 }
 
@@ -3903,12 +3899,10 @@ mod tests {
         }));
     }
 
-    /// Ctrl+K publishes the document resource with its structural children: an
-    /// image, a table and a heading each surface as their own resource with the
-    /// expected actions. Drives the real resource-builder path.
+    /// The catalogue publishes each structural document object as a stable,
+    /// directly actionable resource.
     #[test]
-    fn ctrl_k_publishes_document_and_structure() {
-        // A document with a heading, an image and a table.
+    fn resource_catalogue_exposes_structural_document_contract() {
         let (mut state, ids) = seeded("# Section\n\nBody\n");
         let para = ids[1].clone();
         dispatch(
@@ -3956,45 +3950,15 @@ mod tests {
             ids_of("word_processor.section") >= 1,
             "a heading section resource"
         );
-
-        // The one palette surfaces the tree's actions as rows.
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        palette.set_query("Insert table");
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Insert table")),
-            "{labels:?}"
-        );
-        palette.set_query("Delete image");
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Delete image")),
-            "{labels:?}"
-        );
-        palette.set_query("Delete table");
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Delete table")),
-            "{labels:?}"
-        );
-        palette.set_query("Delete row");
-        assert!(
-            palette
-                .result_labels()
-                .iter()
-                .any(|label| label.contains("Delete row")),
-            "cell structural actions are searchable"
-        );
-        palette.set_query("Crop image");
-        assert!(
-            palette
-                .result_labels()
-                .iter()
-                .any(|label| label.contains("Crop image")),
-            "image crop is a searchable resource action"
-        );
+        let image = root
+            .children
+            .iter()
+            .find(|resource| resource.kind == "word_processor.image")
+            .unwrap();
+        assert!(image.actions.iter().any(|action| action.id == "delete"));
+        assert!(image.actions.iter().any(|action| action.id == "crop-inset"));
+        assert!(table.actions.iter().any(|action| action.id == "delete"));
+        assert!(table.actions.iter().any(|action| action.id == "append-row"));
     }
 
     #[test]

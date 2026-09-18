@@ -73,6 +73,10 @@ fn configure_settled_capture_renderer() {
 ///   * a Flatpak item, flatpak unavailable path is covered by a
 ///     `set_flatpak_available(false)` variant used by the
 ///     "no-flatpak" scenario.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the deterministic visual fixture keeps every app/action state together so screenshot review can see the complete catalogue vocabulary"
+)]
 pub fn fixture_catalog() -> Vec<StoreItem> {
     let tilo =
         |name: &str, desc: &str, cat: &str, installed: InstalledState, ver: &str| StoreItem {

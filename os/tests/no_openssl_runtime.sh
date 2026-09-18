@@ -33,6 +33,8 @@ development_signer_setup="$repo/os/dev/setup-development-signer.py"
 development_compiler="$repo/os/dev/compile-development-os.py"
 development_trust="$repo/os/dev/development-trust.py"
 development_compile_container="$repo/os/Containerfile.development-compile"
+development_boot_fixture="$repo/os/tests/test_development_boot.py"
+development_signer_fixture="$repo/os/tests/development_signer.py"
 if grep -Eq 'pkcs1v15::SigningKey|SigningKey::<Sha(256|512)>' "$crypto_source"; then
   bad 'Tilo-owned RSA signing regressed from ring to the timing-vulnerable RustCrypto operation'
 elif grep -Fq 'AuthenticodeSignature::new' "$crypto_source"; then
@@ -71,6 +73,16 @@ elif grep -Eq 'dnf .*install.*(openssl|sbsigntools)' "$development_compile_conta
   bad 'retained development compiler still installs OpenSSL or sbsigntools'
 else
   ok 'retained development trust tooling uses only Rust-native crypto'
+fi
+if rg -n -i '\b(openssl|sbsign)\b' \
+    "$development_boot_fixture" "$development_signer_fixture" \
+    "$repo/os/tests/test_development_trust.py" \
+    "$repo/os/tests/development_source_registry.py" \
+    "$repo/os/tests/test_rebind_development_trust.py" \
+    "$repo/os/tests/test_complete_initramfs_rebind.py" >/dev/null; then
+  bad 'development EFI/private-signing fixtures still invoke OpenSSL or sbsign'
+else
+  ok 'development EFI/private-signing fixtures use Rust-native crypto'
 fi
 if RUSTC_WRAPPER= cargo tree --manifest-path "$repo/Cargo.toml" -p tilo-crypto -d \
     | grep -Eq '^rsa v'; then

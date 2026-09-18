@@ -254,6 +254,11 @@ pub fn build_accessibility_tree(
         password.set_disabled();
     } else {
         password.add_action(AccessAction::SetValue);
+        // A screen-reader user must be able to complete the same trusted
+        // credential flow as a keyboard user. Click is AccessKit's standard
+        // activation action; native maps it to LockKey::Submit and nowhere
+        // else, so it does not expose hidden desktop actions while locked.
+        password.add_action(AccessAction::Click);
     }
 
     let mut help = AccessNode::new(AccessRole::Label);
@@ -725,9 +730,9 @@ fn draw_status(
 /// distinction between a rejected credential and an unavailable verifier.
 fn lock_error_status(error: &str) -> &'static str {
     if error == UNAVAILABLE_MSG {
-        "Can't verify · Press Enter to retry"
+        "Can't verify · Enter your password to try again"
     } else {
-        "Sign-in failed · Press Enter to retry"
+        "Sign-in failed · Enter your password to try again"
     }
 }
 
@@ -783,6 +788,7 @@ mod tests {
         assert_eq!(password.label(), Some("Password"));
         assert!(password.supports_action(AccessAction::Focus));
         assert!(password.supports_action(AccessAction::SetValue));
+        assert!(password.supports_action(AccessAction::Click));
         assert_eq!(password.value(), None, "credential values never enter AT");
         assert!(
             update.nodes.iter().all(|(_, node)| {
@@ -807,6 +813,7 @@ mod tests {
             .find(|(id, _)| *id == LOCK_PASSWORD_ID)
             .expect("password field is present");
         assert!(!password.supports_action(AccessAction::SetValue));
+        assert!(!password.supports_action(AccessAction::Click));
         assert!(update.nodes.iter().any(|(_, node)| {
             node.label()
                 .is_some_and(|label| label == "Verifying password")
@@ -885,11 +892,11 @@ mod tests {
     fn lock_error_status_is_concise_and_preserves_retry_guidance() {
         assert_eq!(
             lock_error_status("Incorrect username or password"),
-            "Sign-in failed · Press Enter to retry"
+            "Sign-in failed · Enter your password to try again"
         );
         assert_eq!(
             lock_error_status(UNAVAILABLE_MSG),
-            "Can't verify · Press Enter to retry"
+            "Can't verify · Enter your password to try again"
         );
     }
 
